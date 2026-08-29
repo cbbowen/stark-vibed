@@ -41,10 +41,10 @@ use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
 };
 use super::incremental::Carried;
-use super::scratch::{BufKey, Key};
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use crate::gpu::scratch::{BufKey, Key};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
 /// accumulated mass, the selection, and the opacity uniform.

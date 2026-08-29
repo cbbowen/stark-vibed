@@ -44,8 +44,8 @@ use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, Zeroes};
+use crate::gpu::scratch::{ScratchPool, SubmitScope};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
-use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
 use stark_model::document::{Homography, TransformMap};
 use stark_model::geom::{Affine2, Mat2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
@@ -278,6 +278,12 @@ pub struct TransformRenderer {
     /// The base of a virgin destination and the parcel of a cut-only tile, so the
     /// combine is one shader whatever exists.
     zeroes: Zeroes,
+    /// The scratch every recording here opens its scope on — **the one the stroke
+    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
+    /// named, and a shared pool is what makes those releases feed each other: a
+    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
+    /// warm set serves both.
+    scratch: ScratchPool,
     /// For the selection constants (0/1 coverage) bound where a mask has no tile.
     selection: SelectionRenderer,
 }
@@ -288,6 +294,7 @@ impl TransformRenderer {
         color_space: &dyn ColorSpace,
         selection: SelectionRenderer,
         zeroes: Zeroes,
+        scratch: ScratchPool,
     ) -> Self {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
@@ -465,6 +472,7 @@ impl TransformRenderer {
             combine_bgl,
             sampler,
             zeroes,
+            scratch,
             selection,
         }
     }
@@ -500,7 +508,7 @@ impl TransformRenderer {
         let plan = plan_paint(base, selection, affine)?;
         let mask_plan = plan_mask(selection, affine)?;
 
-        let mut scope = TileScope::new(&self.ctx, "stark transform");
+        let mut scope = self.scratch.scope(&self.ctx, "stark transform");
 
         // Source-tile bind groups are shared across every destination they reach.
         let mut from = Source::new(pool, base, selection);
@@ -571,7 +579,7 @@ impl TransformRenderer {
             GatedKind::Warp { .. } => None,
         };
 
-        let mut scope = TileScope::new(&self.ctx, "stark transform gated");
+        let mut scope = self.scratch.scope(&self.ctx, "stark transform gated");
 
         let mut from = Source::new(pool, base, selection);
         let paint = Gated {
@@ -636,7 +644,7 @@ impl TransformRenderer {
     /// to [`SourceUnit`]s and the deposit gated by the source rect.
     fn render_gated_parcel(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         from: &mut Source<'_>,
         g: &Gated<'_>,
         unit_idxs: &[usize],
@@ -718,7 +726,7 @@ impl TransformRenderer {
     /// drawn over with max blending — the soft union (§16.8).
     fn render_gated_mask(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         selection: &Selection,
         g: &Gated<'_>,
         unit_idxs: &[usize],
@@ -778,7 +786,7 @@ impl TransformRenderer {
     /// binds the same uniform and does not read it (`transform.wesl`).
     fn gated_bg(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         unit: &SourceUnit,
         inv: Option<&Homography>,
         rect: (Vec2, Vec2),
@@ -791,14 +799,14 @@ impl TransformRenderer {
     /// The group-0 bind for the mask residue pass.
     fn gated_base_bg(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         rect: (Vec2, Vec2),
         dest: TileCoord,
     ) -> wgpu::BindGroup {
         self.gated_uniform_bg(scope, gated_base(rect, dest))
     }
 
-    fn gated_uniform_bg(&self, scope: &mut TileScope, uniform: GatedUniform) -> wgpu::BindGroup {
+    fn gated_uniform_bg(&self, scope: &mut SubmitScope, uniform: GatedUniform) -> wgpu::BindGroup {
         let device = &self.ctx.device;
         // Registered with the scope, so it is destroyed at the submit that reads it
         // rather than waiting on the GC (`ScopedResources`). Still a buffer per
@@ -829,7 +837,7 @@ impl TransformRenderer {
     /// `None` when nothing reaches this tile (a cut with no incoming paint).
     fn render_parcel(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         from: &mut Source<'_>,
         affine: Affine2,
         dest: TileCoord,
@@ -911,7 +919,7 @@ impl TransformRenderer {
     /// untouched.
     fn combine(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         from: &Source<'_>,
         dest: TileCoord,
         parcel: Option<&Parcel>,
@@ -976,7 +984,7 @@ impl TransformRenderer {
     /// mask's tiles, with the transformed source mask quads drawn over.
     fn render_mask(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         selection: &Selection,
         affine: Affine2,
         dest: TileCoord,
@@ -1030,7 +1038,7 @@ impl TransformRenderer {
     /// shape rather than to this function.
     fn quad_bg(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         affine: Affine2,
         src: TileCoord,
         dest: TileCoord,

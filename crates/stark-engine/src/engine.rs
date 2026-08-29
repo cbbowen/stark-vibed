@@ -30,6 +30,7 @@ mod pick;
 pub(crate) mod render;
 
 use crate::command::Tool;
+use crate::gpu::scratch::ScratchPool;
 use stark_model::DocError;
 use stark_model::Srgb;
 use std::sync::Arc;
@@ -596,6 +597,11 @@ pub struct EngineShared {
     /// `selection` is color-space independent (a mask is one coverage channel whatever
     /// the paint is), so unlike the pool and the stroke renderer it survives a rebuild.
     apply: ApplyCtx,
+    /// The working textures and buffers every recording leases (`gpu::scratch`), one
+    /// pool for the whole stack. Here as well as inside the renderers that lease from
+    /// it, because a rebuild has to carry it across and the renderers it would ask do
+    /// not survive one (`GpuKeep`).
+    scratch: ScratchPool,
     /// The compiled compositing passes — the ~19 shaders and ~30 pipelines that make
     /// building an engine expensive. A sibling's [`CompositorPipeline`] is built over
     /// these ([`CompositorPipeline::sharing`]), so it pays for its own three view
@@ -846,10 +852,12 @@ impl Engine {
         // Read out before the registry moves into the keep — the live object, not the
         // registry, is what the media pass binds.
         let environment = environments.current();
+        let scratch = ScratchPool::default();
         let built = build_gpu(GpuBuild {
             keep: GpuKeep {
                 assets: AssetStore::new(gpu.clone()),
-                selection: SelectionRenderer::new(&gpu),
+                selection: SelectionRenderer::new(&gpu, scratch.clone()),
+                scratch,
                 gpu: gpu.clone(),
                 substrates,
                 environments,
@@ -2345,6 +2353,16 @@ struct GpuKeep {
     /// A mask is one coverage channel whatever the paint is, so the rasterizer is
     /// color-space independent and is handed back in rather than rebuilt (§6.8).
     selection: SelectionRenderer,
+    /// The working textures and buffers every recording leases and gives back
+    /// (`gpu::scratch`) — **one pool for the whole stack**, so a stroke's ring, a
+    /// transform's parcel and a merge's expansions feed one another's free lists.
+    ///
+    /// Kept across a color-space rebuild, unlike the renderers it serves: what a
+    /// checkout asks for is a size, a format and a usage, so a pool holds no opinion
+    /// about the space and would only have to warm up again (§6.7). Nothing in it is
+    /// live at the moment a rebuild happens — a rebuild needs an empty document, and
+    /// a lease outlives no submit.
+    scratch: ScratchPool,
     /// The canvas substrates and their registered bytes: a height map, likewise
     /// nothing to do with how color is represented (§6.4). Keyed by the substrate *and
     /// the scale it is laid at*, since that is what a substrate is baked from
@@ -2382,6 +2400,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
                 gpu,
                 assets,
                 selection,
+                scratch,
                 substrates,
                 environments,
             },
@@ -2415,6 +2434,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         selection.clone(),
         zeroes.clone(),
         tile_bgl.clone(),
+        scratch.clone(),
     );
     // Built once and shared: `gpu::merge` runs this very pipeline on tile-sized
     // targets to merge a layer down through its mode (§14.11), and building a second
@@ -2436,9 +2456,21 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         },
     );
     let compositor = Compositor::new(&compositor_pipeline);
-    let transform = TransformRenderer::new(&gpu, cs.as_ref(), selection.clone(), zeroes.clone());
-    let fill = FillRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
-    let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter);
+    let transform = TransformRenderer::new(
+        &gpu,
+        cs.as_ref(),
+        selection.clone(),
+        zeroes.clone(),
+        scratch.clone(),
+    );
+    let fill = FillRenderer::new(
+        &gpu,
+        cs.clone(),
+        selection.clone(),
+        zeroes.clone(),
+        scratch.clone(),
+    );
+    let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter, scratch.clone());
     // No pipeline and no layout: a placed image's tiles are computed on the CPU
     // (§23), so this is the color space and the queue and nothing else.
     let place = crate::gpu::PlaceRenderer::new(&gpu, cs.clone());
@@ -2456,6 +2488,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         target_format,
         color_space: cs.clone(),
         environment: environments,
+        scratch,
         apply: ApplyCtx {
             pool,
             stroke,

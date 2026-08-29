@@ -661,6 +661,7 @@ impl Engine {
                 gpu: self.shared.gpu.clone(),
                 assets: self.shared.apply.assets.clone(),
                 selection: self.shared.apply.selection.clone(),
+                scratch: self.shared.scratch.clone(),
                 substrates: self.shared.apply.substrates.clone(),
                 environments: self.shared.environment.clone(),
             },

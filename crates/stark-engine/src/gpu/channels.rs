@@ -148,7 +148,7 @@ impl Channels {
     /// trio is returned to the caller and becomes a tile of the document, so its life
     /// is the document's and not the recording's.
     pub(crate) fn scratch(
-        scope: &mut crate::gpu::submit::TileScope,
+        scope: &mut crate::gpu::scratch::SubmitScope,
         pool: &TilePool,
         formats: ChannelFormats,
         source: AllocSource,

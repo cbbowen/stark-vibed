@@ -53,9 +53,9 @@ use crate::gpu::channels::Targets;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle};
 
-use super::scratch::{Kept, Key, SubmitScope};
 use super::swept::SweepDraws;
 use super::{StrokeRenderer, StrokeScene};
+use crate::gpu::scratch::{Kept, Key, SubmitScope};
 
 /// The most lanes a parcel can have: the channel trio (§6.7), which is the widest
 /// thing a swept pass writes. The erase's single transparency mass is the other end

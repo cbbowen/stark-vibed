@@ -70,9 +70,9 @@ use super::accum::{
 };
 use super::incremental::Carried;
 use super::region::tiles_with_segments;
-use super::scratch::{BufKey, Key};
 use super::segments::{Segment, SegmentInstance, generate_segments_in};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use crate::gpu::scratch::{BufKey, Key};
 use crate::gpu::uniforms::UniformSlots;
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across
@@ -602,7 +602,7 @@ impl RingSlot {
     /// Check one out. The **wide** scratch aux (§6.2), and the color space's own color
     /// and residual beside it — the same trio a parcel lane carries, at the same keys,
     /// which is what lets the two paths draw from one free list.
-    fn take(r: &StrokeRenderer, scope: &mut super::scratch::SubmitScope) -> Self {
+    fn take(r: &StrokeRenderer, scope: &mut crate::gpu::scratch::SubmitScope) -> Self {
         let mut view = |format| scope.take_piece(parcel_key(format)).1;
         Self {
             color: view(r.color_space.color_format()),
@@ -627,7 +627,7 @@ impl RingSlot {
 /// second copy of its inputs would be a place to disagree about what that is.
 pub(super) fn sweep_binds(
     r: &StrokeRenderer,
-    scope: &mut super::scratch::SubmitScope,
+    scope: &mut crate::gpu::scratch::SubmitScope,
     assets: &crate::assets::AssetStore,
     rec: &StrokeRecord,
     substrate: &crate::gpu::substrate::SubstrateMap,
@@ -679,7 +679,7 @@ pub(super) fn sweep_binds(
 /// unscaled path, which binds it because the layout names it either way.
 pub(super) fn opacity_uniform(
     r: &StrokeRenderer,
-    scope: &mut super::scratch::SubmitScope,
+    scope: &mut crate::gpu::scratch::SubmitScope,
     opacity: f32,
 ) -> wgpu::Buffer {
     let u = stark_shaders::mirror::integrate::Integrate {
@@ -739,7 +739,7 @@ impl SweepDraws {
 /// appears under a handful of tiles. What it replaces grew with the *stroke*.
 pub(super) fn sweep_draws(
     r: &StrokeRenderer,
-    scope: &mut super::scratch::SubmitScope,
+    scope: &mut crate::gpu::scratch::SubmitScope,
     rec: &StrokeRecord,
     k: &super::StrokeConstants,
     segments: &[Segment],

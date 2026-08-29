@@ -23,6 +23,7 @@ pub(crate) mod pigment;
 pub(crate) mod place;
 pub(crate) mod readback;
 pub(crate) mod registry;
+pub(crate) mod scratch;
 pub(crate) mod selection;
 pub(crate) mod stroke;
 pub(crate) mod submit;

@@ -88,7 +88,7 @@ const RASTERIZE_SLOTS: &[Slot] = &[
 /// sits, and one mask tile drawn into it.
 const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
 const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
-use crate::gpu::submit::TileScope;
+use crate::gpu::scratch::ScratchPool;
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -124,6 +124,12 @@ pub struct SelectionRenderer {
     constants: Arc<[OnceLock<wgpu::TextureView>; 256]>,
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
+    /// The scratch every recording here opens its scope on — **the one the stroke
+    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
+    /// named, and a shared pool is what makes those releases feed each other: a
+    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
+    /// warm set serves both.
+    scratch: ScratchPool,
 }
 
 /// The shape half of a selection rasterize: what to draw, as opposed to where.
@@ -149,7 +155,7 @@ struct RasterShape<'a> {
 }
 
 impl SelectionRenderer {
-    pub fn new(ctx: &GpuContext) -> Self {
+    pub(crate) fn new(ctx: &GpuContext, scratch: ScratchPool) -> Self {
         let device = &ctx.device;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -235,6 +241,7 @@ impl SelectionRenderer {
             region_tile_bgl,
             constants,
             dummy_edges,
+            scratch,
         }
     }
 
@@ -391,7 +398,7 @@ impl SelectionRenderer {
     /// the free list only through a submit — is what keeps that sound.
     ///
     /// The pass writes every texel it owns, clear included, so the pool's
-    /// no-zero-init contract is met (`stroke::scratch`).
+    /// no-zero-init contract is met (`gpu::scratch`).
     ///
     /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
     /// already carries the mask's opacity (`Stamp::opacity`), and a mask that
@@ -500,7 +507,7 @@ impl SelectionRenderer {
         // The lasso's edge texture and the shape's parameters both belong to the
         // whole rasterize and outlive every flush; only the per-tile uniform below
         // is scoped to one submit.
-        let mut scope = TileScope::new(&self.ctx, "stark selection edit");
+        let mut scope = self.scratch.scope(&self.ctx, "stark selection edit");
         // One slot per tile, all written before the first submit (`UniformSlots`).
         let params: Vec<MaskUniform> = coords
             .iter()

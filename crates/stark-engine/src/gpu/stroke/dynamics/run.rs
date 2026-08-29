@@ -26,7 +26,6 @@ use stark_shaders::mirror::composite::binding as cb;
 
 use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
-use super::super::scratch::{BufKey, Kept, Key, SubmitScope};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use super::BAKE_FORMAT;
@@ -35,6 +34,7 @@ use super::plan::{
     dynamics_plan,
 };
 use super::slots;
+use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
 /// Resolution (texels per side) of the stamp loop's tool reservoir
 /// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
 /// for smeared paint, and small enough that the per-stamp reservoir update is
@@ -1428,7 +1428,7 @@ impl<'a> DynamicsRun<'a> {
     /// straight into whatever it is handed. 64² rgba16f ×2, so the copy is ~64 KB —
     /// nothing beside the region work it saves the next pointer move.
     ///
-    /// The copies are pooled [`Kept`](super::super::scratch::Kept) leases rather
+    /// The copies are pooled [`Kept`](crate::gpu::scratch::Kept) leases rather
     /// than fresh textures: one of these is captured per pointer move, and the pool
     /// hands the same textures back — the drop that returns one is provably behind
     /// the resuming run's submit (see `Kept`).

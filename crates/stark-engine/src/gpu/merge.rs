@@ -28,7 +28,7 @@ use crate::gpu::channels::{ChannelFormats, Channels, Targets};
 use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
-use crate::gpu::submit::TileScope;
+use crate::gpu::scratch::{ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
@@ -143,6 +143,12 @@ pub struct MergeRenderer {
     /// Bound for whichever side has no tile at a coordinate the other does — the
     /// §6.8 pattern, so a one-sided tile runs the same shader as a two-sided one.
     zeroes: Zeroes,
+    /// The scratch every recording here opens its scope on — **the one the stroke
+    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
+    /// named, and a shared pool is what makes those releases feed each other: a
+    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
+    /// warm set serves both.
+    scratch: ScratchPool,
 }
 
 impl MergeRenderer {
@@ -152,6 +158,7 @@ impl MergeRenderer {
         zeroes: Zeroes,
         blend: Arc<BlendPass>,
         filter: Arc<FilterPass>,
+        scratch: ScratchPool,
     ) -> Self {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
@@ -205,6 +212,7 @@ impl MergeRenderer {
             blend,
             filter,
             zeroes,
+            scratch,
         }
     }
 
@@ -242,7 +250,7 @@ impl MergeRenderer {
 
         // The five uniforms above are per *merge* and outlive every flush below,
         // which is what lets the recording be cut at any tile boundary.
-        let mut scope = TileScope::new(&self.ctx, "stark merge");
+        let mut scope = self.scratch.scope(&self.ctx, "stark merge");
         let mut tiles = lower.tiles.clone();
         for coord in self.rewritten(&scene) {
             let src = upper.tiles.get(&coord);
@@ -308,7 +316,7 @@ impl MergeRenderer {
              it, because no apron makes a gather a function of canvas position (§6.4)",
         );
         let uniform = self.filter_uniform(draw);
-        let mut scope = TileScope::new(&self.ctx, "stark merge filter");
+        let mut scope = self.scratch.scope(&self.ctx, "stark merge filter");
         let mut tiles = dest.clone();
         for (coord, handle) in dest.iter() {
             let out = self.acquire(pool, AllocSource::MergeDestination);
@@ -335,7 +343,7 @@ impl MergeRenderer {
     /// blend and has no meaning here.
     fn encode_filter(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         uniform: &UniformSlots<FilterUniform>,
         tile: &TilePairHandle,
         out: &Channels,
@@ -384,7 +392,7 @@ impl MergeRenderer {
     /// The direct tile-space law: one pass, `merge.wesl` (§14.11).
     fn encode_direct(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         uniform: &wgpu::Buffer,
         dst: Option<&TilePairHandle>,
         src: Option<&TilePairHandle>,
@@ -428,7 +436,7 @@ impl MergeRenderer {
     /// produced by the very shader the screen would have run.
     fn encode_blended(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         pool: &TilePool,
         u: Uniforms<'_>,
         (dst, src): (Option<&TilePairHandle>, Option<&TilePairHandle>),
@@ -448,7 +456,7 @@ impl MergeRenderer {
     /// One direction of the slab law over one tile (`slab.wesl`).
     fn encode_slab(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         pipeline: &wgpu::RenderPipeline,
         uniform: &wgpu::Buffer,
         input: Targets<'_>,
@@ -479,7 +487,7 @@ impl MergeRenderer {
     /// the offset is always the first.
     fn encode_blend(
         &self,
-        scope: &mut TileScope,
+        scope: &mut SubmitScope,
         uniform: &UniformSlots<BlendUniform>,
         back: &Channels,
         src: &Channels,
@@ -516,7 +524,7 @@ impl MergeRenderer {
 
     /// [`acquire`](Self::acquire) for a trio the recording reads back — registered
     /// with the scope, so it outlives the submit by construction.
-    fn scratch(&self, scope: &mut TileScope, pool: &TilePool, source: AllocSource) -> Channels {
+    fn scratch(&self, scope: &mut SubmitScope, pool: &TilePool, source: AllocSource) -> Channels {
         Channels::scratch(scope, pool, self.formats, source)
     }
 
@@ -604,11 +612,11 @@ impl MergeRenderer {
 
 /// One fullscreen pass over a tile's three channel targets.
 ///
-/// Thin, because [`TileScope::fullscreen_pass`] carries the attachment count — the
+/// Thin, because [`SubmitScope::fullscreen_pass`] carries the attachment count — the
 /// residual's `Option` (§6.7) — for this pass, the transform and the fill alike,
 /// rather than each deciding it again.
 fn pass(
-    scope: &mut TileScope,
+    scope: &mut SubmitScope,
     label: &str,
     pipeline: &wgpu::RenderPipeline,
     bg: &wgpu::BindGroup,

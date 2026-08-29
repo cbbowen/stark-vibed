@@ -83,7 +83,7 @@ pub mod view;
 /// or not.
 ///
 /// Every `Mutex` this crate holds guards derived state — a baked tip texture
-/// (`gpu::stroke::tips`), a pooled scratch list (`gpu::stroke::scratch`), the tile
+/// (`gpu::stroke::tips`), a pooled scratch list (`gpu::scratch`), the tile
 /// pool's free list and census (`gpu::tile`), the decoded brush masks ([`assets`])
 /// and substrate/environment builds (`gpu::registry`), the seed of the last stroke
 /// complained about, the timing histograms ([`timing`]) — whose values are moved in

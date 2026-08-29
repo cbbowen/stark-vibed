@@ -42,15 +42,14 @@ mod dynamics;
 mod erase;
 mod incremental;
 mod region;
-mod scratch;
 mod segments;
 mod swept;
 mod tips;
 
+use crate::gpu::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
 use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
 use erase::{EraseKit, build_erase_kit};
-use scratch::ScratchPool;
 use swept::{SweptKit, build_swept_kit};
 use tips::TipCache;
 
@@ -163,6 +162,7 @@ impl StrokeRenderer {
         selection: SelectionRenderer,
         zeroes: Zeroes,
         tile_bgl: wgpu::BindGroupLayout,
+        scratch: ScratchPool,
     ) -> Self {
         // Composition, not construction: each path's objects are built by the module
         // that uses them, and the brush textures both paths resolve live with their
@@ -182,7 +182,7 @@ impl StrokeRenderer {
             dynamics,
             erase,
             tips: TipCache::new(ctx),
-            scratch: ScratchPool::default(),
+            scratch,
             zeroes,
             selection,
             complained: Arc::default(),

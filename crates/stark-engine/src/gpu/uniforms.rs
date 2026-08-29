@@ -20,7 +20,7 @@
 //! their stride from [`UniformSlots::STRIDE`] like everyone else (`XFORM_STRIDE`,
 //! `STAMP_STRIDE`), so the law is stated once; what they do not take is the grow-only
 //! buffer, because that path has something stronger. A stroke's buffers are *leased*
-//! from its scratch pool (`stroke::scratch`), which recycles them across strokes
+//! from its scratch pool (`gpu::scratch`), which recycles them across strokes
 //! rather than across the frames of one, and releases them only behind the submit of
 //! the commands that named them.
 //!

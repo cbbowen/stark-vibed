@@ -51,6 +51,32 @@
 
 use std::sync::{Arc, Mutex};
 
+/// How many tiles one a scope records before it submits what it has and
+/// releases the scratch behind it.
+///
+/// **This is what stops peak GPU memory scaling with the operation.** A blended
+/// merge takes three scratch trios per tile on top of the destination it keeps
+/// (`merge::encode_blended`), and a merge has no cap — its tile count is the union
+/// of two layers the document already holds, which on a full canvas is tens of
+/// thousands. Recorded into one encoder that is submitted once, that is every one
+/// of those trios live at the same moment: ~15 GB at 10k tiles, and ~40,000 render
+/// passes in a single command buffer, which is a Windows TDR as much as it is an
+/// allocation failure.
+///
+/// A cadence rather than a cap on the operation, because the operation is not the
+/// problem — holding all of it at once is. Tiles are independent: destinations are
+/// disjoint, each pass reads only its own tile's inputs and per-operation uniforms
+/// that outlive the whole recording, and submits on one queue execute in order. So
+/// cutting the recording anywhere is invisible in the result.
+///
+/// 256 bounds the blended merge's transient scratch at roughly 150 MB and its
+/// command buffers at about a thousand render passes. Like
+/// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::tile) it is **a bound on a cost that has
+/// not been measured**, not a tuned figure: raising it costs memory and lowers the
+/// submit count, and the honest way to change it is to measure and say so.
+pub(crate) const FLUSH_TILES: usize = 256;
+
+use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
 use stark_model::geom::TILE_TEX;
 
@@ -78,11 +104,11 @@ const POOL_BUDGET: u64 = 256 << 20;
 /// that a capture may show a reused texture under the name it was first created
 /// with, which is a label being stale rather than a picture being wrong.
 #[derive(Clone, Copy)]
-pub(super) struct Key {
-    pub(super) size: (u32, u32),
-    pub(super) format: wgpu::TextureFormat,
-    pub(super) usage: wgpu::TextureUsages,
-    pub(super) label: &'static str,
+pub(crate) struct Key {
+    pub(crate) size: (u32, u32),
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) usage: wgpu::TextureUsages,
+    pub(crate) label: &'static str,
 }
 
 impl Key {
@@ -93,7 +119,7 @@ impl Key {
     /// because that pair is not a size somebody chose: it is what a tile *is* (§6.4),
     /// and a scratch that got it wrong would be one the write-back cut the wrong block
     /// out of.
-    pub(super) const fn tile(
+    pub(crate) const fn tile(
         format: wgpu::TextureFormat,
         usage: wgpu::TextureUsages,
         label: &'static str,
@@ -113,7 +139,7 @@ impl Key {
     /// disagreed with the allocation it addresses does not fail, it moves the wrong
     /// block — and there is nothing in a bare `Extent3d` to compare against the key
     /// that made the texture.
-    pub(super) const fn extent(&self) -> wgpu::Extent3d {
+    pub(crate) const fn extent(&self) -> wgpu::Extent3d {
         wgpu::Extent3d {
             width: self.size.0,
             height: self.size.1,
@@ -141,11 +167,11 @@ impl Key {
 ///
 /// The label is out of the match for [`Key`]'s reason.
 #[derive(Clone, Copy)]
-pub(super) struct BufKey {
+pub(crate) struct BufKey {
     /// What the caller asked for. [`Self::bucket`] is what is actually allocated.
-    pub(super) size: u64,
-    pub(super) usage: wgpu::BufferUsages,
-    pub(super) label: &'static str,
+    pub(crate) size: u64,
+    pub(crate) usage: wgpu::BufferUsages,
+    pub(crate) label: &'static str,
 }
 
 impl BufKey {
@@ -213,12 +239,12 @@ struct Inner {
 /// commit that replaces it draw from one free list. `Default` is the empty pool —
 /// it needs no device; each checkout brings one.
 #[derive(Clone, Default)]
-pub(super) struct ScratchPool(Arc<Mutex<Inner>>);
+pub(crate) struct ScratchPool(Arc<Mutex<Inner>>);
 
 impl ScratchPool {
     /// Open a [`SubmitScope`] on this pool: the encoder one render call records
     /// into, and the only holder its leases can have.
-    pub(super) fn scope(&self, ctx: &GpuContext, label: &'static str) -> SubmitScope {
+    pub(crate) fn scope(&self, ctx: &GpuContext, label: &'static str) -> SubmitScope {
         SubmitScope {
             ctx: ctx.clone(),
             pool: self.clone(),
@@ -228,13 +254,15 @@ impl ScratchPool {
             piece_leases: Vec::new(),
             piece_buf_leases: Vec::new(),
             piece_held: Vec::new(),
+            piece_scoped: crate::gpu::submit::ScopedResources::default(),
             piece_open: false,
+            since_flush: 0,
         }
     }
 
     /// Check a lease out that will **outlive** the scope that records against it —
     /// the tool-state copies — wrapped so its return path is its drop.
-    pub(super) fn keep(&self, device: &wgpu::Device, key: Key) -> Kept {
+    pub(crate) fn keep(&self, device: &wgpu::Device, key: Key) -> Kept {
         Kept {
             lease: Some(self.take(device, key)),
             pool: self.clone(),
@@ -401,14 +429,14 @@ impl ScratchPool {
 /// owner can only drop this, and return the lease, after that submit. An unwind
 /// mid-run drops the run's encoder unsubmitted, so nothing pending names the lease
 /// on that path either.
-pub(super) struct Kept {
+pub(crate) struct Kept {
     lease: Option<Lease>,
     pool: ScratchPool,
 }
 
 impl Kept {
     /// The leased texture — what a resume copy reads from and a capture writes to.
-    pub(super) fn tex(&self) -> &wgpu::Texture {
+    pub(crate) fn tex(&self) -> &wgpu::Texture {
         &self
             .lease
             .as_ref()
@@ -418,7 +446,7 @@ impl Kept {
 
     /// The whole-texture view — what the erase pass binds its carried
     /// accumulator by, and renders its working one through (§6.12).
-    pub(super) fn view(&self) -> &wgpu::TextureView {
+    pub(crate) fn view(&self) -> &wgpu::TextureView {
         &self
             .lease
             .as_ref()
@@ -445,7 +473,7 @@ impl Drop for Kept {
 /// [`finish`](Self::finish); **piece** leases (the region, the snapshot, the cells)
 /// go back at each [`flush`](Self::flush), which is what keeps a long stroke's peak
 /// transient memory at one region however many pieces it takes.
-pub(super) struct SubmitScope {
+pub(crate) struct SubmitScope {
     ctx: GpuContext,
     pool: ScratchPool,
     encoder: wgpu::CommandEncoder,
@@ -457,13 +485,21 @@ pub(super) struct SubmitScope {
     /// for the piece that draws with them, where the textures that *do* carry (the
     /// reservoir ping-pong, the bake pair) are the loop's running state.
     piece_buf_leases: Vec<BufLease>,
-    /// Arbitrary resources whose *drop* must trail the submit — the swept path's
-    /// pooled tile pair, whose early drop puts it back on the tile pool's free list
-    /// while this encoder still names it.
+    /// Arbitrary resources whose *drop* must trail the submit — a pooled tile handle,
+    /// whose early drop puts it back on `TilePool`'s free list while this encoder
+    /// still names it.
     piece_held: Vec<Box<dyn std::any::Any>>,
-    /// Whether anything piece-scoped has been taken since the last submit — what
-    /// makes [`flush`](Self::flush) free when there is nothing to flush.
+    /// Unpooled per-piece buffers, destroyed at the submit that reads them — the
+    /// uniform buffers written at creation, which cannot come from a pool.
+    piece_scoped: crate::gpu::submit::ScopedResources,
+    /// Whether anything has been recorded or taken since the last submit — what
+    /// makes [`flush`](Self::flush) free when there is nothing to flush, and what
+    /// keeps an operation that touched no tile from submitting an empty command
+    /// buffer.
     piece_open: bool,
+    /// Tiles recorded since the last submit, against [`FLUSH_TILES`] — the cadence
+    /// [`tile_done`](Self::tile_done) counts and nothing else uses.
+    since_flush: usize,
 }
 
 fn fresh_encoder(ctx: &GpuContext, label: &'static str) -> wgpu::CommandEncoder {
@@ -473,13 +509,74 @@ fn fresh_encoder(ctx: &GpuContext, label: &'static str) -> wgpu::CommandEncoder 
 
 impl SubmitScope {
     /// The encoder this scope's commands are recorded into.
-    pub(super) fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+    pub(crate) fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        // Recording is enough to open the piece: a pass that names only handles the
+        // caller owns still has to be submitted before those handles are released, and
+        // a scope that recorded but took nothing would otherwise flush to nothing.
+        self.piece_open = true;
         &mut self.encoder
+    }
+
+    /// Register a per-piece buffer; returns it unchanged, destroyed at the submit.
+    ///
+    /// For the buffers that cannot be pooled because they are written at creation.
+    /// Everything else takes [`take_piece_buffer`](Self::take_piece_buffer), where the
+    /// rate is not merely bounded but gone.
+    pub(crate) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
+        self.piece_open = true;
+        self.piece_scoped.buffer(buf)
+    }
+
+    /// Record one **fullscreen pass over a tile's channels**: the shape every
+    /// renderer here writes a destination tile with.
+    ///
+    /// The merge's four passes, the fill's one and the transform's combine were each
+    /// spelling out the same fifteen lines — a render pass over two-or-three
+    /// attachments, a pipeline, a bind group, `draw(0..3, 0..1)` — and the attachment
+    /// count was the residual's `Option` decided a fourth and fifth time (§6.7). With
+    /// [`Targets`] carrying that, what is left is one call.
+    ///
+    /// `ops` because the callers do differ there, if only just: everything writes
+    /// every texel and clears, but a pass that reads its own target would not, and a
+    /// helper that hid the choice would be the wrong kind of shared.
+    pub(crate) fn fullscreen_pass(
+        &mut self,
+        label: &str,
+        pipeline: &wgpu::RenderPipeline,
+        bg: &wgpu::BindGroup,
+        offsets: &[u32],
+        into: Targets<'_>,
+        ops: wgpu::Operations<wgpu::Color>,
+    ) {
+        let attachments = into.attachments(ops);
+        let mut pass = self
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &attachments[..into.count()],
+                ..Default::default()
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bg, offsets);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Note that one tile has been recorded, submitting and releasing if that
+    /// reaches [`FLUSH_TILES`].
+    ///
+    /// Called once per destination tile, at the point where everything that tile
+    /// needs has been recorded — never in the middle of one, since the scratch a
+    /// half-recorded tile is holding is exactly what a flush would hand away.
+    pub(crate) fn tile_done(&mut self) {
+        self.since_flush += 1;
+        if self.since_flush >= FLUSH_TILES {
+            self.flush();
+        }
     }
 
     /// Check out scratch that carries state **across** pieces — released only at
     /// [`finish`](Self::finish), behind the submit of everything recorded.
-    pub(super) fn take_run(&mut self, key: Key) -> (wgpu::Texture, wgpu::TextureView) {
+    pub(crate) fn take_run(&mut self, key: Key) -> (wgpu::Texture, wgpu::TextureView) {
         let lease = self.pool.take(&self.ctx.device, key);
         let out = (lease.tex.clone(), lease.view.clone());
         self.run_leases.push(lease);
@@ -488,7 +585,7 @@ impl SubmitScope {
 
     /// Check out scratch for the piece being recorded — released at the piece's own
     /// submit ([`flush`](Self::flush) or [`finish`](Self::finish)).
-    pub(super) fn take_piece(&mut self, key: Key) -> (wgpu::Texture, wgpu::TextureView) {
+    pub(crate) fn take_piece(&mut self, key: Key) -> (wgpu::Texture, wgpu::TextureView) {
         self.piece_open = true;
         let lease = self.pool.take(&self.ctx.device, key);
         let out = (lease.tex.clone(), lease.view.clone());
@@ -502,7 +599,7 @@ impl SubmitScope {
     /// **At least `key.size` bytes, and possibly more** ([`BufKey::bucket`]): a
     /// caller writes its own prefix and draws its own range, so slack past the end is
     /// unread. Contents are not zeroed, on the pool's general contract.
-    pub(super) fn take_piece_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
+    pub(crate) fn take_piece_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
         self.piece_open = true;
         let lease = self.pool.take_buf(&self.ctx.device, key);
         let out = lease.buf.clone();
@@ -512,7 +609,7 @@ impl SubmitScope {
 
     /// Keep `thing` alive past the submit, dropping it just after — for resources
     /// whose drop *is* their release to some other pool.
-    pub(super) fn hold(&mut self, thing: impl std::any::Any) {
+    pub(crate) fn hold(&mut self, thing: impl std::any::Any) {
         self.piece_open = true;
         self.piece_held.push(Box::new(thing));
     }
@@ -522,13 +619,15 @@ impl SubmitScope {
     /// reason to exist. Run leases stay. Peak transient memory is then one region
     /// however long the stroke, and a stroke that fits one region never records a
     /// second submit.
-    pub(super) fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         if !self.piece_open {
             return;
         }
         self.piece_open = false;
+        self.since_flush = 0;
         let done = std::mem::replace(&mut self.encoder, fresh_encoder(&self.ctx, self.label));
         self.ctx.queue.submit([done.finish()]);
+        drop(std::mem::take(&mut self.piece_scoped));
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..) {
             self.pool.give(lease);
@@ -540,8 +639,9 @@ impl SubmitScope {
 
     /// Close the scope: submit what is still recorded, then release everything —
     /// the piece's resources and the run leases both, behind that same submit.
-    pub(super) fn finish(mut self) {
+    pub(crate) fn finish(mut self) {
         self.ctx.queue.submit([self.encoder.finish()]);
+        drop(self.piece_scoped);
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..).chain(self.run_leases.drain(..)) {
             self.pool.give(lease);
@@ -549,5 +649,93 @@ impl SubmitScope {
         for lease in self.piece_buf_leases.drain(..) {
             self.pool.give_buf(lease);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::context::GpuContext;
+    use crate::gpu::tile::{AllocSource, TilePool};
+
+    const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+    /// A context, or `None` where the machine has no adapter *and*
+    /// `STARK_ALLOW_NO_GPU=1` permits the skip — `tests/tile_pool.rs`'s guard, for
+    /// the same reason: a skipped GPU test still reports `ok`.
+    fn context_or_skip() -> Option<GpuContext> {
+        match pollster::block_on(GpuContext::headless()) {
+            Ok(ctx) => Some(ctx),
+            Err(e) if std::env::var("STARK_ALLOW_NO_GPU").is_ok_and(|v| v == "1") => {
+                eprintln!("skipping GPU test (STARK_ALLOW_NO_GPU=1): {e}");
+                None
+            }
+            Err(e) => {
+                panic!("no usable GPU adapter: {e}\nset STARK_ALLOW_NO_GPU=1 to skip GPU tests")
+            }
+        }
+    }
+
+    /// **The cadence is what bounds peak memory**, which is the whole reason
+    /// [`FLUSH_TILES`] exists: without it a merge holds every tile's scratch at once,
+    /// and a merge has no cap on its tile count.
+    ///
+    /// Asked of the pool rather than of the scope, because the pool is where the cost
+    /// actually lands. A scope that never flushed would leave every texture it ever
+    /// took on the free list at `finish` — one per tile — where a flushing one keeps
+    /// reusing the same working set and ends with about a cadence's worth. The gap
+    /// between `3 · FLUSH_TILES` and `FLUSH_TILES` is the finding.
+    ///
+    /// The tile count stays under `TRIM_INTERVAL` acquires so the pool's own trim
+    /// cannot fire and make the numbers a matter of two policies rather than one.
+    #[test]
+    fn a_scope_hands_its_scratch_back_as_it_goes() {
+        let Some(ctx) = context_or_skip() else { return };
+        let pool = TilePool::new(ctx.clone(), [COLOR]);
+        let mut scope = ScratchPool::default().scope(&ctx, "stark submit test");
+
+        const TILES: usize = FLUSH_TILES * 3;
+        for _ in 0..TILES {
+            let scratch = pool.acquire_tex(COLOR, AllocSource::MergeScratch);
+            // Something has to be *recorded* against it, or the flush is a no-op by
+            // design and this would be testing nothing.
+            scope
+                .encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark submit test pass"),
+                    color_attachments: &[Some(crate::gpu::desc::attach(
+                        scratch.view(),
+                        crate::gpu::desc::CLEAR,
+                    ))],
+                    ..Default::default()
+                });
+            scope.hold(scratch);
+            scope.tile_done();
+        }
+        scope.finish();
+
+        let idle = pool.free_count(COLOR);
+        assert!(
+            idle <= FLUSH_TILES + 1,
+            "the scope held {idle} textures across {TILES} tiles; \
+             a cadence of {FLUSH_TILES} should have kept it to about that",
+        );
+        // And it really did serve them all — a scope that somehow released nothing
+        // would also fail the bound above by holding every one.
+        assert!(idle > 0, "nothing was ever handed back to the pool");
+    }
+
+    /// A scope that recorded nothing submits nothing — an operation whose every tile
+    /// passed through by handle (the lopsided merge, §14.11) should not cost an empty
+    /// command buffer per flush boundary, nor one at `finish`.
+    #[test]
+    fn an_empty_scope_submits_nothing() {
+        let Some(ctx) = context_or_skip() else { return };
+        let mut scope = ScratchPool::default().scope(&ctx, "stark submit test empty");
+        for _ in 0..FLUSH_TILES * 2 {
+            scope.tile_done();
+        }
+        assert!(!scope.piece_open, "nothing was recorded");
+        scope.finish();
     }
 }

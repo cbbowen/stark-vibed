@@ -27,8 +27,8 @@ use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::mask_tex_origin;
+use crate::gpu::scratch::ScratchPool;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 use stark_model::document::{FillOp, GradientAxis, Parcel};
@@ -88,6 +88,12 @@ pub struct FillRenderer {
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
     /// runs the same shader as a fill onto paint.
     zeroes: Zeroes,
+    /// The scratch every recording here opens its scope on — **the one the stroke
+    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
+    /// named, and a shared pool is what makes those releases feed each other: a
+    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
+    /// warm set serves both.
+    scratch: ScratchPool,
     /// Borrowed for the coverage rasterize and for the 0/1 constants bound where a
     /// mask has no tile.
     selection: SelectionRenderer,
@@ -99,6 +105,7 @@ impl FillRenderer {
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
         zeroes: Zeroes,
+        scratch: ScratchPool,
     ) -> Self {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space.as_ref());
@@ -133,6 +140,7 @@ impl FillRenderer {
             pipeline,
             bgl,
             zeroes,
+            scratch,
             selection,
         }
     }
@@ -168,7 +176,7 @@ impl FillRenderer {
         };
 
         let device = &self.ctx.device;
-        let mut scope = TileScope::new(&self.ctx, "stark fill");
+        let mut scope = self.scratch.scope(&self.ctx, "stark fill");
 
         // Every stop's color converts to this space's channels **on the CPU, once
         // per fill** — the shader then interpolates in the working space, which is

@@ -36,7 +36,7 @@ pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so
 /// each is 2048² × 8 B = 32 MiB. And it really is *per piece* rather than per stroke,
 /// because a piece's region is a `ScratchPool` lease its `SubmitScope` releases at the
-/// flush that submits it (`stroke::scratch`), so the next piece takes the same memory.
+/// flush that submits it (`gpu::scratch`), so the next piece takes the same memory.
 ///
 /// **A target, not a ceiling** — [`MAX_REGION_DIM`] is the ceiling, and the two are
 /// different numbers for a reason. Cutting is by *segment*, so a piece can be made to
