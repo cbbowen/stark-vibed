@@ -282,6 +282,39 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Whether the compositor draws this layer at all — **and with it, everything it
+    /// carries**, since the group *is* the layer (§14.3).
+    ///
+    /// The draw list's first cull, and the one that was written out six times: twice
+    /// as a `filter` in `composite_stack`'s two walks, twice as an early `continue`
+    /// in `stack_below` and `layer_items`, once in `pick::shown_paint_layers` and
+    /// once more, in the positive, inside `observe`. `LayerInfo::has_underlay`'s doc
+    /// says it "follows the renderer" and must stay in agreement with those culls —
+    /// an agreement between six hand-copied predicates in three modules, which is a
+    /// class rather than an instance (CLAUDE.md).
+    ///
+    /// Fully transparent counts as hidden because it is: the compositor multiplies by
+    /// this weight, so zero contributes nothing and the subtree beneath it is a draw
+    /// list nobody can see.
+    pub fn is_shown(&self) -> bool {
+        self.visible && self.composite.opacity > 0.0
+    }
+
+    /// Whether this layer's **own content** puts anything into the accumulator: a
+    /// matte always covers, paint only once painted, a filter never — it rewrites
+    /// what is already there and adds nothing (§21.3).
+    ///
+    /// Says nothing about what the layer carries; [`Self::is_shown`] is the other
+    /// half, and a group whose base draws nothing can still be the reason a filter
+    /// above it has something to work on.
+    pub fn draws_content(&self) -> bool {
+        match &self.content {
+            LayerContent::Matte { .. } => true,
+            LayerContent::Paint(_) => self.tiles().is_some_and(|t| !t.is_empty()),
+            LayerContent::Filter(_) => false,
+        }
+    }
+
     /// An empty paint layer, carrying nothing.
     pub fn new(id: LayerId) -> Self {
         Self {

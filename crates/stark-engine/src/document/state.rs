@@ -702,7 +702,21 @@ impl DocState {
     /// A site whose carrier has since been removed falls back to the top of the
     /// root stack: the layer is restored rather than lost, which is the property
     /// undo needs, and the alternative — dropping it — would be unrecoverable.
+    ///
+    /// **Already present is already restored.** The same refusal [`Self::insert`] and
+    /// [`Self::insert_guide`] make, against the same shape — and reachable here
+    /// rather than only from a crafted log: undoing a group's removal captures one
+    /// `Resource::Layer` per layer in the subtree, and the group's own op puts the
+    /// whole subtree back before its children's ops are read (`patch::capture`). Each
+    /// of those would then insert a layer the ancestor had already returned. The
+    /// duplicate was collapsed downstream — `PatchOp::Structure`'s rebuild is keyed by
+    /// a map — so it never survived a whole patch; it existed in between, where
+    /// `map_in`, `remove_in` and `Layer::find` all answer with whichever copy comes
+    /// first. Declined here instead, so the arrangement cannot be built at all.
     pub(crate) fn restore_layer(&self, site: &LayerSite, layer: Layer) -> Self {
+        if self.contains_layer(layer.id) {
+            return self.clone();
+        }
         let at = |stack: &Vector<Layer>| site.index.min(stack.len());
         let layers = match site.carrier {
             None => Some(insert_at(&self.layers, at(&self.layers), &layer)),

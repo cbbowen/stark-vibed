@@ -1419,6 +1419,26 @@ impl Engine {
 
     /// View-state mutations: nothing here is logged, replicated, or reachable by
     /// undo.
+    /// Show the document the action `kind` would leave behind, without logging it —
+    /// the body every `Preview*` setter arm below shares (§21.5).
+    ///
+    /// `None` clears the preview, which is what the release of a drag that changed
+    /// nothing sends. The sanitize and the fold both happen inside
+    /// [`document::apply::preview_of`], which is the point: an arm cannot forget a
+    /// step it does not perform. See that function for the two arms that had.
+    fn preview_setter(&mut self, kind: Option<ActionKind>) {
+        let actor = self.actor();
+        let preview = kind.map(|kind| {
+            crate::document::apply::preview_of(
+                kind,
+                self.timeline.current(),
+                actor,
+                &mut self.shared.apply,
+            )
+        });
+        self.set_doc_preview(preview);
+    }
+
     fn process_view(&mut self, command: ViewCommand) {
         match command {
             ViewCommand::SetTool(tool) => {
@@ -1475,23 +1495,15 @@ impl Engine {
                 }
             }
             ViewCommand::PreviewGuide(drag) => {
-                let preview = drag.map(|(id, guide)| {
-                    // Sanitized here for `PreviewFilter`'s reason (§21.5): the
-                    // commit funnels through `ActionKind::sanitized`, so a preview
-                    // that skipped it could show a pose the commit would then
-                    // refuse.
-                    self.timeline.current().set_guide(id, guide.sanitized())
-                });
-                self.set_doc_preview(preview);
+                self.preview_setter(drag.map(|(id, guide)| ActionKind::SetGuide(id, guide)));
             }
             ViewCommand::PreviewMatteRect(drag) => {
-                let preview =
-                    drag.map(|(id, min, max)| self.timeline.current().set_matte_rect(id, min, max));
-                self.set_doc_preview(preview);
+                self.preview_setter(
+                    drag.map(|(id, min, max)| ActionKind::SetMatteRect(id, min, max)),
+                );
             }
             ViewCommand::PreviewSubstrateColor(rgb) => {
-                let preview = rgb.map(|rgb| self.timeline.current().with_substrate_color(rgb));
-                self.set_doc_preview(preview);
+                self.preview_setter(rgb.map(ActionKind::SetSubstrateColor));
             }
             // The preview moves the *document* the compositor reads, and stops there:
             // no `apply_document_substrate`, so nothing is baked while the hand is on
@@ -1501,47 +1513,24 @@ impl Engine {
             // substrate is a stored bake. Paint already down looks right immediately;
             // what the next stroke will bite is right from the commit.
             ViewCommand::PreviewSubstrateScale(scale) => {
-                let preview = scale.map(|s| self.timeline.current().with_substrate_scale(s));
-                self.set_doc_preview(preview);
+                self.preview_setter(scale.map(ActionKind::SetSubstrateScale));
             }
             ViewCommand::PreviewParcel(pick) => {
-                let preview =
-                    pick.map(|(id, paint)| self.timeline.current().set_matte_paint(id, paint));
-                self.set_doc_preview(preview);
+                self.preview_setter(pick.map(|(id, paint)| ActionKind::SetMattePaint(id, paint)));
             }
             ViewCommand::PreviewSelectionOpacity(opacity) => {
-                let actor = self.actor();
-                let preview = opacity.map(|o| {
-                    // Through the action's own funnel, for `PreviewFilter`'s reason
-                    // (§21.5): a preview that skipped it could show a strength the
-                    // commit would then clamp to something else.
-                    let ActionKind::SetSelectionOpacity(o) =
-                        ActionKind::SetSelectionOpacity(o).sanitized()
-                    else {
-                        unreachable!("`sanitized` keeps the variant")
-                    };
-                    self.timeline.current().with_selection_opacity(actor, o)
-                });
-                self.set_doc_preview(preview);
+                self.preview_setter(opacity.map(ActionKind::SetSelectionOpacity));
             }
             ViewCommand::PreviewLayerOpacity(set) => {
-                let preview =
-                    set.map(|(id, opacity)| self.timeline.current().set_layer_opacity(id, opacity));
-                self.set_doc_preview(preview);
+                self.preview_setter(
+                    set.map(|(id, opacity)| ActionKind::SetLayerOpacity(id, opacity)),
+                );
             }
             ViewCommand::PreviewFilter(set) => {
-                // `set_filter` sanitizes on the way into state (§21.5), so the
-                // preview cannot show numbers the commit would then refuse.
-                let preview =
-                    set.map(|(id, filter)| self.timeline.current().set_filter(id, filter));
-                self.set_doc_preview(preview);
+                self.preview_setter(set.map(|(id, filter)| ActionKind::SetFilter(id, filter)));
             }
             ViewCommand::PreviewLayerBlend(set) => {
-                // `set_layer_blend` sanitizes on the way into state too, for the
-                // reason above: what the drag shows is what the commit would store.
-                let preview =
-                    set.map(|(id, blend)| self.timeline.current().set_layer_blend(id, blend));
-                self.set_doc_preview(preview);
+                self.preview_setter(set.map(|(id, blend)| ActionKind::SetLayerBlend(id, blend)));
             }
             ViewCommand::PreviewTransform(t) => {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
@@ -1730,24 +1719,13 @@ impl Engine {
     }
 
     pub fn observe(&self) -> ObservableState {
-        /// Whether `l`'s **own content** puts anything into the accumulator: a
-        /// matte always covers, paint only once painted, a filter never — it
-        /// rewrites what is there and adds nothing (§21.3).
-        fn draws_content(l: &Layer) -> bool {
-            match &l.content {
-                LayerContent::Matte { .. } => true,
-                LayerContent::Paint(_) => l.tiles().is_some_and(|t| !t.is_empty()),
-                LayerContent::Filter(_) => false,
-            }
-        }
         /// Whether the compositor would draw anything at all for `l` — the same
-        /// culls `render.rs` applies (visibility, opacity, emptiness), asked of the
-        /// document rather than of a viewport, so the answer does not change when
-        /// the artist scrolls.
+        /// culls `render.rs` applies, asked of the document rather than of a
+        /// viewport, so the answer does not change when the artist scrolls. Both
+        /// halves are [`Layer`]'s own, which is what keeps this in agreement with
+        /// those culls rather than merely alongside them.
         fn contributes(l: &Layer) -> bool {
-            l.visible
-                && l.composite.opacity > 0.0
-                && (draws_content(l) || l.carries.iter().any(contributes))
+            l.is_shown() && (l.draws_content() || l.carries.iter().any(contributes))
         }
         let doc = self.timeline.current();
         // The layers and the substrate color are read from the *previewed*
@@ -1876,7 +1854,7 @@ impl Engine {
                 });
                 stack[depth].below = Some(l);
                 stack[depth].index += 1;
-                carriers.push((l, draws_content(l)));
+                carriers.push((l, l.draws_content()));
             });
             layers
         });

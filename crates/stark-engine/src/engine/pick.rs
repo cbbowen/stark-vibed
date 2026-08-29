@@ -515,7 +515,7 @@ const LAYER_HIT_COVERAGE: f32 = 0.25;
 /// are not on the screen to be pointed at.
 fn shown_paint_layers(stack: &rpds::Vector<crate::document::Layer>, out: &mut Vec<LayerId>) {
     for layer in stack.iter().rev() {
-        if !layer.visible || layer.composite.opacity <= 0.0 {
+        if !layer.is_shown() {
             continue;
         }
         shown_paint_layers(&layer.carries, out);

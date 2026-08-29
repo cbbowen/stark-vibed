@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
 use stark_model::document::ActorId;
-use stark_model::document::{Action, ActionKind, Footprint, Materialize};
+use stark_model::document::{Action, ActionId, ActionKind, Footprint, Materialize};
 
 use super::layer::{Layer, LayerContent};
 use super::state::DocState;
@@ -33,7 +33,6 @@ use stark_model::document::LayerId;
 /// §11) — and cloning the context whole is what keeps a renderer added here from
 /// being shared by everything except the one constructor that listed its
 /// siblings by hand.
-#[derive(Clone)]
 pub struct ApplyCtx {
     pub pool: TilePool,
     pub stroke: StrokeRenderer,
@@ -71,6 +70,35 @@ pub struct ApplyCtx {
     /// only by *taking* it, which is how the engine learns whether the offer was
     /// accepted: a slot still full after the push was declined.
     pub prepared: Option<PreparedStroke>,
+}
+
+/// Every field is a handle, so a copy is a fistful of refcount bumps — **except
+/// [`prepared`](Self::prepared), which a clone always leaves empty.**
+///
+/// Written out rather than derived because that exception is the whole point. The
+/// slot is a message to one fold, and a sibling preview engine (`Engine::new_sharing`,
+/// §11) will never take it; a derive taken while the slot was full would hand that
+/// engine a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its
+/// life. The field's doc says a clone's slot is `None`, and the engine's
+/// fill-push-empty around a single commit is what made that true. Here it is a
+/// property of the type instead (CLAUDE.md: rule out a class).
+impl Clone for ApplyCtx {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            stroke: self.stroke.clone(),
+            assets: self.assets.clone(),
+            selection: self.selection.clone(),
+            transform: self.transform.clone(),
+            fill: self.fill.clone(),
+            merge: self.merge.clone(),
+            place: self.place.clone(),
+            pictures: self.pictures.clone(),
+            gpu: self.gpu.clone(),
+            substrates: self.substrates.clone(),
+            prepared: None,
+        }
+    }
 }
 
 /// A stroke whose tiles the live preview has already rendered, offered to the fold
@@ -363,8 +391,21 @@ impl Materialize for DocState {
     /// values under its footprint, nothing more, so the edits of commuting actions
     /// applied after it survive. Tiles come back as the same shared handles
     /// (copy-on-write means identity is equality), so this re-renders nothing.
+    ///
+    /// **Audited like the fold, and for a sharper reason.** The forward direction is
+    /// driven hundreds of times by every test in the workspace; this one runs only
+    /// where the history shifts an undone action past a commuting suffix, so its
+    /// coverage was the handful of scenarios in `tests/commute.rs`. It is also the
+    /// direction §12.6 is really about: what it writes becomes the replay base for
+    /// every later version, and a peer that patched differently diverges with no
+    /// pixel able to say so. Same checker, same `cfg`, same argument for the cost
+    /// (see [`super::audit`]).
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
+        #[cfg(debug_assertions)]
+        let before = self.clone();
         *self = super::patch::unapply(action, footprint, previous, self);
+        #[cfg(debug_assertions)]
+        super::audit::audit(&before, self, action, footprint);
     }
 }
 
@@ -664,6 +705,47 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// **Exhaustive, with no `_` arm**, for [`minted_layers`](Self::minted_layers)'s
 /// reason: a variant added later must be made to answer rather than defaulted
 /// into the safe answer and forgotten.
+/// The document as committing `kind` would leave it, **without logging it** — the
+/// preview half of every setter command (§21.5).
+///
+/// A drag previews by folding the very action its release will commit: the same
+/// [`apply`] arm, behind the same [`ActionKind::sanitized`] funnel. That is the whole
+/// of it, and the reason it is one function rather than a line in each preview arm.
+/// Written per arm the sanitize is a habit, and two arms had already forgotten it.
+/// `SetMattePaint` reached [`DocState::set_matte_paint`] directly, so it previewed a
+/// gradient whose axis nobody can place — the first sample of an axis drag has
+/// `from == to`, which `Parcel::sanitized` collapses to the ramp's anchor.
+/// `SetLayerOpacity` went through `f32::clamp`, which passes a NaN straight out
+/// (both of NaN's comparisons are false) where the commit's `finite_in` lands it on
+/// 1.0. Both are reachable from a drag, and both showed the artist a document the
+/// release would then decline to store — a `preview == committed` break (§1.3) in the
+/// one class of action with no pixels of its own to give it away.
+///
+/// **Only the kinds that move state and nothing else.** A preview mints no layer,
+/// folds no stroke and takes no prepared tiles. The two previews that *do* touch the
+/// GPU — the transform and the fill — keep their own entry points, because what they
+/// have to answer first is whether the parcel can be cut at all.
+///
+/// The id is provisional. No kind that reaches here reads the Lamport clock, so
+/// nothing is spent by not advancing it; the actor is real, because the author's own
+/// selection is keyed by it (§17.3) and `SetSelectionOpacity` previews through here.
+pub(crate) fn preview_of(
+    kind: ActionKind,
+    state: &DocState,
+    actor: ActorId,
+    ctx: &mut ApplyCtx,
+) -> DocState {
+    debug_assert!(
+        !matches!(kind, ActionKind::CommitStroke(_)),
+        "a preview folds a setter; `CommitStroke` would consume the prepared tiles",
+    );
+    let action = Action {
+        id: ActionId { lamport: 0, actor },
+        kind: kind.sanitized(),
+    };
+    apply(&action, state.clone(), ctx)
+}
+
 pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) -> bool {
     // The layer this action names, or `false` from every arm below when it is
     // absent — see the doc comment.

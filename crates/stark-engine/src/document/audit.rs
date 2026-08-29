@@ -1,5 +1,5 @@
 //! **Every `apply` touches only what its `Footprint` declares** (§12.6), checked on
-//! every fold of every debug build.
+//! every fold — and every *unfold* — of every debug build.
 //!
 //! This is the first rule in CLAUDE.md's list of the ones that break silently, and
 //! until now nothing structural held it. Seven exhaustive matches over `ActionKind`

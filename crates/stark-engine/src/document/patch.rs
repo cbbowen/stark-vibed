@@ -258,12 +258,18 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         // The coarse claim expands into the fine ones it stands for, so a footprint
         // that *writes* a whole layer restores a whole layer.
         //
-        // No action writes one today — `Resource::Layer` is how `DuplicateLayer` and
-        // `MergeLayerDown` state what they **read** — so this arm is unreached. It is
-        // written out rather than left to an `unreachable!` because a patch that
-        // answered "nothing" for a declared write is the §12.6 hazard read backwards,
-        // and an `unreachable!` is exactly how that would arrive: as a panic in the
-        // undo path, on the day someone finds a use for the coarse resource.
+        // **Five kinds write one**, and this arm is on the undo path of every one of
+        // them: `AddLayer`/`AddFilter`, `PlaceImage`, `AddMatte`, `DuplicateLayer`
+        // (one per copy) and `RemoveLayer` (one per layer in the subtree). It is the
+        // claim every action that mints a layer makes over the id it minted, and the
+        // one a removal makes over each id it took away — see `compute_footprint`.
+        //
+        // The subtree case is why `restore_layer` refuses an id already present. A
+        // group removal claims the group *and* each of its descendants, and the
+        // group's own `Existence` op puts the whole subtree back before the
+        // descendants' ops are read; each of those would otherwise insert a layer that
+        // is already there. Nine ops per claimed layer is also what this costs, which
+        // is the price of expanding rather than restoring the layer whole.
         Resource::Layer(id) => {
             capture_resource(&Resource::Existence(*id), to, from, ops);
             capture_resource(&Resource::Paint(*id, TileRect::ALL), to, from, ops);

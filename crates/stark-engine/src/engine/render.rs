@@ -757,10 +757,7 @@ impl Engine {
             //
             // Hidden reads the same way, and for the reason it does everywhere else:
             // a sample comes off the same stack the screen draws (§18.0.2).
-            let Some(layer) = doc
-                .layer(id)
-                .filter(|l| l.visible && l.composite.opacity > 0.0)
-            else {
+            let Some(layer) = doc.layer(id).filter(|l| l.is_shown()) else {
                 return Vec::new();
             };
             let items = self.layer_items(layer, visible);
@@ -838,10 +835,7 @@ impl Engine {
     ) -> Vec<CompositeGroup> {
         let (base, members): (Option<&Layer>, &rpds::Vector<Layer>) = match doc.carrier_of(layer) {
             Some(cid) => {
-                let Some(carrier) = doc
-                    .layer(cid)
-                    .filter(|l| l.visible && l.composite.opacity > 0.0)
-                else {
+                let Some(carrier) = doc.layer(cid).filter(|l| l.is_shown()) else {
                     return Vec::new();
                 };
                 (Some(carrier), &carrier.carries)
@@ -923,7 +917,7 @@ impl Engine {
         }
         let mut groups = self.composite_stack(layers.iter().take(at), visible, under);
         let ancestor = layers.get(at).expect("position() names an element");
-        if !ancestor.visible || ancestor.composite.opacity <= 0.0 {
+        if !ancestor.is_shown() {
             return groups;
         }
         // `composite_stack`'s group branch, with the carried stack cut by the rest
@@ -970,7 +964,7 @@ impl Engine {
         for layer in layers {
             // Hiding a layer hides what it carries: the group is the layer
             // (§14.3), so its visibility is the group's.
-            if !layer.visible || layer.composite.opacity <= 0.0 {
+            if !layer.is_shown() {
                 continue;
             }
             // A **filter layer** rewrites what is already composited beneath it *in
