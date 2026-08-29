@@ -967,7 +967,7 @@ pub(super) fn dynamics_plan(
 /// pointing different ways: the fade-out cap turned as the pointer came up, which is a
 /// `preview == committed` break (§1.3) in the one place it cannot be repainted.
 ///
-/// This is the same defect [`bleed_fires`] was fixed for, and the cure is the same in
+/// This is the same defect [`bleed_fires`](super::bleed::bleed_fires) was fixed for, and the cure is the same in
 /// spirit — ask the record rather than the range — but not in mechanism. Walking back
 /// along the last segment's own arc, as a firing's window does, is exactly what this
 /// function exists to avoid: the last segments *are* the degenerate ones. So it walks

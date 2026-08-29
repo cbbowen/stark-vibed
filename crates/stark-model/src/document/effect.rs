@@ -117,7 +117,7 @@ pub fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usiz
 /// except that a redone action sits at its reviving redo's slot, see
 /// [`revival_keys`]). This is what gets materialized (and what a solo load
 /// replays); the `Undo` actions themselves are resolved here and never reach
-/// [`Materialize::fold`](stark_model::document::Materialize::fold).
+/// [`Materialize::fold`](super::Materialize::fold).
 ///
 /// Sorts a copy of `log` by id first, so callers may pass a file's action list
 /// as-is (solo logs are already ordered; shared saves are written in total
@@ -132,8 +132,10 @@ pub fn effective_actions(log: &[Action]) -> Vec<Action> {
         .collect()
 }
 
-/// What a local undo and redo would target — the pair
-/// [`ReplicatedTimeline`] caches, so see its field for *why* it is cached.
+/// What a local undo and redo would target.
+///
+/// Both are pure functions of `(log, actor, undone)`, which is what makes caching the
+/// pair sound — `stark-engine`'s replicated timeline does, and its field says why.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub undo: Option<ActionId>,

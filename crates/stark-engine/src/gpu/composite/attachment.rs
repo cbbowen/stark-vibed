@@ -23,7 +23,7 @@ use super::super::channels::{ChannelFormats, Targets};
 ///
 /// These are the largest allocations the application makes: a whole set is rebuilt
 /// whenever the target changes size or the zoom crosses a supersampling threshold
-/// ([`Compositor::ensure_targets`]), budgeted by `resolve`'s
+/// (`Compositor::ensure_targets`), budgeted by `resolve`'s
 /// `MAX_SUPERSAMPLED_BYTES` at up to 224 MiB a set. On the web, dropping the view
 /// frees none of it: it releases the JS handle and leaves the texture to a collector
 /// that cannot see the GPU memory behind it, so nothing reclaims it until that

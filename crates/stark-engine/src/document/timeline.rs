@@ -118,7 +118,8 @@ impl Timeline {
     }
 
     /// Shared-mode undo (§5.4): the action an "undo" should target by logging an
-    /// [`ActionKind::Undo`], or `None` if undo is plain timeline navigation (the solo
+    /// [`ActionKind::Undo`](stark_model::document::ActionKind::Undo), or `None` if undo
+    /// is plain timeline navigation (the solo
     /// path). The engine asks this first and only falls back to [`undo`](Self::undo)
     /// when it answers `None`.
     pub fn undo_as_action(&self) -> Option<ActionId> {

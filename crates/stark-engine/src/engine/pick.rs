@@ -214,7 +214,7 @@ impl Engine {
     /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
     ///
     /// A **request**, not a command: it has to answer, so it stays a direct method
-    /// beside `save_bytes` rather than joining [`InputCommand`](crate::InputCommand),
+    /// beside `save_bytes` rather than joining [`InputCommand`](crate::command::InputCommand),
     /// whose whole property is that nothing comes back (§4).
     ///
     /// What it samples is the **raw layer channels**, not the composited, *lit*

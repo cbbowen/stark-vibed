@@ -5,7 +5,7 @@
 //! [`Engine`] owns everything and is the only entry point. Two things go in and
 //! one comes out:
 //!
-//! - [`InputCommand`] — user intent, one-way (§4). It splits by which
+//! - [`InputCommand`](command::InputCommand) — user intent, one-way (§4). It splits by which
 //!   class of state it touches: [`command::DocCommand`] mutates the document
 //!   (historized, replicated, replayed), [`command::ViewCommand`] mutates view
 //!   state (per-client, transient), and [`command::GestureCommand`] is the

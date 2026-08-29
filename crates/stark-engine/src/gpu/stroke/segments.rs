@@ -94,7 +94,7 @@ pub(super) struct Sweep {
     /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — the whole domain of
     /// the prefix-τ volume — but nothing any shape can paint lies outside the **disc**
     /// inscribed in that square, at any orientation: the round tip by construction
-    /// ([`round_coverage`]), an image stamp by its canonical form's reach
+    /// (`tips::round_coverage`), an image stamp by its canonical form's reach
     /// normalization (`stark_assetid::coverage`, §6.6). So the widest tip's radius,
     /// drawn out by the stretch, is the exact bound — where this once carried a `√2`
     /// for a mask that might fill its corners, and every stamp's boxes were that much
