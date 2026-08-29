@@ -69,9 +69,13 @@ impl Engine {
     /// the log knows about — but it is the moment the redo stack stops existing, and
     /// `can_redo` goes false straight after with nothing else said. A frontend that
     /// wants to warn has to ask before calling.
-    pub fn start_collaboration(&mut self, identity: impl Into<Identity>) {
+    /// **Answers whether it took effect**, which is what §4 asks of anything that
+    /// mutates and is not a command: `false` is "already sharing", the one case this
+    /// declines. It returned nothing and declined silently, so a caller could not tell
+    /// a conversion from a no-op without asking `is_shared` on both sides of the call.
+    pub fn start_collaboration(&mut self, identity: impl Into<Identity>) -> bool {
         if self.is_shared() {
-            return;
+            return false;
         }
         let identity = identity.into();
         let actor = identity.actor;
@@ -106,6 +110,7 @@ impl Engine {
         self.preview.set_doc(None);
         self.committed_changed();
         self.mark_live_stale();
+        true
     }
 
     /// Join a shared session (the peer side): replace the document with the
@@ -163,7 +168,18 @@ impl Engine {
     /// The peers' *selections* stay in the document, because replay still needs them
     /// to reproduce their strokes; they simply stop being drawn, since the roster is
     /// what decides that (§17.3).
-    pub fn end_collaboration(&mut self) {
+    /// **Answers whether a shared session was ended**, and declines when there was
+    /// none — §4's rule, and the reason the frontend no longer has to hold the line.
+    ///
+    /// Ending an unshared session ran the whole body, including `committed_changed`,
+    /// which bumps the document revision, drops the preview and forces a full
+    /// re-projection for nothing. The only thing stopping that was a guard in
+    /// `stark-ui`'s collaboration panel: a rule a call site could forget, in another
+    /// crate, which is exactly the shape CLAUDE.md says to make structural.
+    pub fn end_collaboration(&mut self) -> bool {
+        if !self.is_shared() {
+            return false;
+        }
         // Taking the queue away is what stops the broadcast — there is no second
         // flag to leave disagreeing with it, and whatever was still queued goes with
         // it, since there is no longer anyone owed it.
@@ -188,6 +204,7 @@ impl Engine {
         // else in the projection would say so.
         self.committed_changed();
         self.mark_live_stale();
+        true
     }
 
     /// Integrate an action authored by a peer (§12.1). Idempotent —

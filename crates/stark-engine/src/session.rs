@@ -259,6 +259,23 @@ struct Published {
     name: String,
 }
 
+impl Published {
+    /// Whether what was last published still describes the session — **the one place
+    /// the published field list lives**.
+    ///
+    /// It was written twice: once as this struct's `PartialEq`, and once by hand
+    /// inside [`Session::publish_due`]. A fourth field added here and forgotten there
+    /// makes `publish_due` answer `false` where `publish` would have produced a frame,
+    /// which is the fatal direction — that method's own doc says a pump trusting it
+    /// "would then drop that frame on the floor".
+    ///
+    /// Borrows the name rather than taking one, which is what lets the caller ask
+    /// before deciding to allocate.
+    fn matches(&self, active_layer: LayerId, cursor: Option<Vec2>, name: &str) -> bool {
+        self.active_layer == active_layer && self.cursor == cursor && self.name == name
+    }
+}
+
 pub struct Session {
     pub view: ViewTransform,
     pub tool: Tool,
@@ -279,7 +296,7 @@ pub struct Session {
     /// Edge softness (canvas px) applied by the next shape gesture, whichever
     /// action it takes: a feathered fill and a feathered selection are the same
     /// ramp, rasterized by the same shader.
-    pub selection_feather: f32,
+    selection_feather: f32,
     /// How strongly the next **fill** gesture's parcel lands, `0..=1` — the Select
     /// panel's Opacity slider under the Fill action, and [`FillOp::opacity`].
     ///
@@ -289,7 +306,7 @@ pub struct Session {
     /// question is asked of the mask instead, by the selection bar's slider — and
     /// that answer is document state, because it reaches the region already drawn
     /// (`ActionKind::SetSelectionOpacity`, §6.8).
-    pub shape_opacity: f32,
+    shape_opacity: f32,
     /// Whether collaborators' selection outlines are drawn (§17.3).
     ///
     /// View state, so each client decides for itself and nothing about it is logged
@@ -349,7 +366,7 @@ pub struct Session {
     /// somebody typed.
     name_chosen: bool,
     /// Hover position in canvas space; `None` when the pointer is off the canvas.
-    pub cursor: Option<Vec2>,
+    cursor: Option<Vec2>,
 
     in_flight: Option<StrokeBuilder>,
     selecting: Option<ShapeDrag>,
@@ -425,6 +442,49 @@ impl Session {
     /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
     /// here. Setting it empty gives the choice back, and peers resume showing the
     /// id-derived default.
+    /// Edge softness for the next shape gesture, floored at zero.
+    ///
+    /// A setter rather than a `pub` field, for the reason every `ViewTransform`
+    /// mutator is one: the value arrives in a command from outside, and the gate that
+    /// makes it usable was a line in the dispatch arm — so the invariant lived at the
+    /// one call site that happened to write it rather than on the thing it is about.
+    /// `max` and not `clamp01`: a NaN feather is refused into 0, which is the neutral
+    /// setting, since both of NaN's comparisons are false.
+    pub fn set_selection_feather(&mut self, feather: f32) {
+        self.selection_feather = if feather > 0.0 { feather } else { 0.0 };
+    }
+
+    /// Edge softness the next shape gesture will use.
+    pub fn selection_feather(&self) -> f32 {
+        self.selection_feather
+    }
+
+    /// How strongly the next fill gesture's parcel lands, clamped to `0..=1`.
+    pub fn set_shape_opacity(&mut self, opacity: f32) {
+        // `clamp01`'s rule, spelled here because the model keeps it private: NaN lands
+        // on 0 rather than passing through, since both of its comparisons are false.
+        self.shape_opacity = if opacity > 0.0 { opacity.min(1.0) } else { 0.0 };
+    }
+
+    /// How strongly the next fill gesture's parcel lands.
+    pub fn shape_opacity(&self) -> f32 {
+        self.shape_opacity
+    }
+
+    /// Where this client's pointer is, or `None` when it is off the canvas.
+    ///
+    /// **Filtered, because this one goes on the wire.** A canvas position is
+    /// `screen_to_canvas`'s output and can be non-finite (`command`'s own note), and
+    /// nothing gated it between the command and the frame every peer reads.
+    pub fn set_cursor(&mut self, at: Option<Vec2>) {
+        self.cursor = at.filter(|p| p.is_finite());
+    }
+
+    /// Where this client's pointer is.
+    pub fn cursor(&self) -> Option<Vec2> {
+        self.cursor
+    }
+
     pub fn set_name(&mut self, name: String) {
         let name = name.trim();
         self.name_chosen = !name.is_empty();
@@ -508,12 +568,13 @@ impl Session {
         let resync = self.tx.resync_due(now);
         let source = self.gesture_source();
 
-        let state = Published {
-            active_layer: self.active_layer,
-            cursor: self.cursor,
-            name: self.name.clone(),
-        };
-        let changed = self.published.as_ref() != Some(&state)
+        // Asked before anything is built. The comparison used to run against a fresh
+        // `Published`, which cloned the name on every tick of the pump — including the
+        // overwhelming majority that return `None` two lines later.
+        let changed = self
+            .published
+            .as_ref()
+            .is_none_or(|p| !p.matches(self.active_layer, self.cursor, &self.name))
             // A live gesture's path grows every move, so its frame always differs.
             || source.is_some()
             // ...and one that has just ended still owes the frame that clears it.
@@ -538,7 +599,11 @@ impl Session {
         }
         self.pub_at = now;
         self.pub_seq += 1;
-        self.published = Some(state);
+        self.published = Some(Published {
+            active_layer: self.active_layer,
+            cursor: self.cursor,
+            name: self.name.clone(),
+        });
         Some(PeerFrame {
             boot: self.boot,
             seq: self.pub_seq,
@@ -568,11 +633,10 @@ impl Session {
             // A gesture that just ended: the frame clearing it is the one that stops
             // peers drawing a stroke nobody is making any more.
             || self.tx.in_flight()
-            || self.published.as_ref().is_none_or(|p| {
-                p.active_layer != self.active_layer
-                    || p.cursor != self.cursor
-                    || p.name != self.name
-            })
+            || self
+                .published
+                .as_ref()
+                .is_none_or(|p| !p.matches(self.active_layer, self.cursor, &self.name))
     }
 
     /// The farewell frame: one publish that removes this client from every peer's

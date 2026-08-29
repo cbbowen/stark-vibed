@@ -697,10 +697,7 @@ mod tests {
 
     impl Seen {
         fn names(&self) -> Vec<String> {
-            self.0
-                .lock()
-                .expect("no test panicked holding this")
-                .clone()
+            unpoisoned(self.0.lock()).clone()
         }
     }
 
@@ -714,10 +711,7 @@ mod tests {
             _: &tracing::span::Id,
             _: Context<'_, S>,
         ) {
-            self.0
-                .lock()
-                .expect("no test panicked holding this")
-                .push(attrs.metadata().name().to_string());
+            unpoisoned(self.0.lock()).push(attrs.metadata().name().to_string());
         }
     }
 
