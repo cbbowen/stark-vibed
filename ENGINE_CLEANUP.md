@@ -269,7 +269,7 @@ present.
 | [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
 | [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `f33b2f1`, `891b164` |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
-| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1`, `993896d` |
+| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1`, `d34a4cb`, `dbc6512` |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad`, `f33b2f1` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
