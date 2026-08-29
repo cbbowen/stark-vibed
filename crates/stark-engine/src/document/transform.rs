@@ -100,15 +100,8 @@ pub(crate) fn plan_paint(
 
     let mut candidates = 0usize;
     for (coord, _) in &sources {
-        for dest in reached_tiles(affine, *coord, &mut candidates)? {
-            let list = rewrites.entry(dest).or_default();
-            if list.last() != Some(coord) {
-                list.push(*coord);
-            }
-            if rewrites.len() > MAX_TRANSFORM_TILES {
-                return None;
-            }
-        }
+        let dests = reached_tiles(affine, *coord, &mut candidates)?;
+        accumulate(&mut rewrites, *coord, dests, MAX_TRANSFORM_TILES)?;
     }
 
     let drops = sources
@@ -145,15 +138,13 @@ pub(crate) fn plan_mask(selection: &Selection, affine: Affine2) -> Option<MaskPl
     let mut rewrites: BTreeMap<TileCoord, Vec<TileCoord>> = BTreeMap::new();
     let mut candidates = 0usize;
     for coord in coords {
-        for dest in reached_tiles(affine, coord, &mut candidates)? {
-            let list = rewrites.entry(dest).or_default();
-            if list.last() != Some(&coord) {
-                list.push(coord);
-            }
-            if rewrites.len() > stark_model::document::MAX_SELECTION_TILES {
-                return None;
-            }
-        }
+        let dests = reached_tiles(affine, coord, &mut candidates)?;
+        accumulate(
+            &mut rewrites,
+            coord,
+            dests,
+            stark_model::document::MAX_SELECTION_TILES,
+        )?;
     }
     Some(MaskPlan {
         rewrites: rewrites.into_iter().collect(),
@@ -372,15 +363,8 @@ pub(crate) fn plan_gated_paint(
         let start = units.len();
         units_for_tile(geo, *coord, rect, &mut units);
         for (idx, unit) in units.iter().enumerate().skip(start) {
-            for dest in quad_reached_tiles(&unit.corners, &mut candidates)? {
-                let list = rewrites.entry(dest).or_default();
-                if list.last() != Some(&idx) {
-                    list.push(idx);
-                }
-                if rewrites.len() > MAX_TRANSFORM_TILES {
-                    return None;
-                }
-            }
+            let dests = quad_reached_tiles(&unit.corners, &mut candidates)?;
+            accumulate(&mut rewrites, idx, dests, MAX_TRANSFORM_TILES)?;
         }
     }
 
@@ -478,15 +462,13 @@ pub(crate) fn plan_gated_mask(
         let start = units.len();
         units_for_tile(geo, *coord, rect, &mut units);
         for (idx, unit) in units.iter().enumerate().skip(start) {
-            for dest in quad_reached_tiles(&unit.corners, &mut candidates)? {
-                let list = rewrites.entry(dest).or_default();
-                if list.last() != Some(&idx) {
-                    list.push(idx);
-                }
-                if rewrites.len() > stark_model::document::MAX_SELECTION_TILES {
-                    return None;
-                }
-            }
+            let dests = quad_reached_tiles(&unit.corners, &mut candidates)?;
+            accumulate(
+                &mut rewrites,
+                idx,
+                dests,
+                stark_model::document::MAX_SELECTION_TILES,
+            )?;
         }
     }
     let drops = standing
@@ -504,6 +486,38 @@ pub(crate) fn plan_gated_mask(
 /// The corners of `coord`'s *interior* under `affine`, in canvas px — the quad
 /// the parcel pass draws. Corner order matches the shader's vertex indices
 /// (`corner = (vi & 1, vi >> 1 & 1)`).
+/// Record that `key`'s quad reaches `dest`, in the destination's own source list.
+///
+/// **The dedup, the cap and the candidate budget, once.** Four planners ran this same
+/// body — affine paint, affine mask, gated paint, gated mask — differing only in what
+/// a source is called (a `TileCoord` for the affine paths, an index into `units` for
+/// the gated ones) and in which cap bounds them. Each carried its own copy of the
+/// `list.last()` test and its own `rewrites.len()` check *inside* the inner loop; a
+/// fifth that dropped the check is an unbounded `BTreeMap` on a hostile map, which is
+/// what the cap is for.
+///
+/// `None` is the refusal every caller propagates: a plan too large to run is declined
+/// whole, deterministically, so peers and replays agree (§16).
+fn accumulate<K: Copy + PartialEq>(
+    rewrites: &mut BTreeMap<TileCoord, Vec<K>>,
+    key: K,
+    dests: impl IntoIterator<Item = TileCoord>,
+    cap: usize,
+) -> Option<()> {
+    for dest in dests {
+        let list = rewrites.entry(dest).or_default();
+        // Adjacent duplicates only, which is all `reached_tiles` can produce: it walks
+        // a quad's own coverage, so one source reaches a destination in one run.
+        if list.last() != Some(&key) {
+            list.push(key);
+        }
+        if rewrites.len() > cap {
+            return None;
+        }
+    }
+    Some(())
+}
+
 pub(crate) fn quad_corners(affine: Affine2, coord: TileCoord) -> [Vec2; 4] {
     let o = coord.origin();
     let s = TILE_SIZE as f32;

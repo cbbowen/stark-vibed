@@ -47,7 +47,7 @@ use crate::document::{
     ApplyCtx, CanvasBounds, DocState, Layer, LayerContent, LinearTimeline, Timeline,
 };
 use crate::gpu::MediaParams;
-use crate::gpu::desc::Zeroes;
+use crate::gpu::channels::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
     FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Substrate,
@@ -1148,7 +1148,7 @@ impl Engine {
                     self.mark_live_stale();
                 }
             }
-            PeerCommand::SetCursor(pos) => self.session.cursor = pos,
+            PeerCommand::SetCursor(pos) => self.session.set_cursor(pos),
             PeerCommand::SetName(name) => self.session.set_name(name),
         }
     }
@@ -1318,11 +1318,12 @@ impl Engine {
                 // only a list of *sources* wearing its positions; it is still written
                 // as pairs because that is the shape `apply` reads and the shape the
                 // footprint claims a `Layer(src)` from.
-                let mut sources = Vec::new();
-                if let Some(l) = self.document().layer(source) {
-                    l.visit(0, &mut |l, _| sources.push(l.id));
-                }
-                if !sources.is_empty() {
+                //
+                // Through the document's own walk, not a second one here: `apply`
+                // declines the action unless `ids` names exactly the subtree
+                // `duplicate_layer` walks, so a copy of the traversal in the engine is
+                // two walks that must agree — on this client and on every peer.
+                if let Some(sources) = self.document().subtree_ids(source) {
                     let action = self.commit_minting(|a| ActionKind::DuplicateLayer {
                         ids: sources
                             .iter()
@@ -1477,11 +1478,9 @@ impl Engine {
             ViewCommand::Resize(viewport) => self.session.view.resize(viewport),
             ViewCommand::SetShapeAction(action) => self.session.shape_action = action,
             ViewCommand::SetSelectionFeather(feather) => {
-                self.session.selection_feather = feather.max(0.0)
+                self.session.set_selection_feather(feather);
             }
-            ViewCommand::SetShapeOpacity(opacity) => {
-                self.session.shape_opacity = opacity.clamp(0.0, 1.0)
-            }
+            ViewCommand::SetShapeOpacity(opacity) => self.session.set_shape_opacity(opacity),
             ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
             ViewCommand::SetGuideVisible(id, visible) => {
                 // The eye is the one per-client thing about a guide (§20.5), so it
@@ -1876,8 +1875,8 @@ impl Engine {
             // would fight its own slider mid-drag (§6.8).
             selection_opacity: shown.selection_of(self.actor()).opacity(),
             shape_action: self.session.shape_action,
-            selection_feather: self.session.selection_feather,
-            shape_opacity: self.session.shape_opacity,
+            selection_feather: self.session.selection_feather(),
+            shape_opacity: self.session.shape_opacity(),
             show_peer_selections: self.session.show_peer_selections,
             history_budget: self.history_budget,
             fast_commit: self.fast_commit,
@@ -2101,10 +2100,13 @@ impl Engine {
         // holding them past here would pin a stroke's worth of tiles on the one
         // setting that is about *not* using them.
         let prepared = self.preview.take_prepared();
-        self.shared.apply.prepared = prepared.filter(|_| self.fast_commit);
-        let offered = self.shared.apply.prepared.is_some();
+        let offered = self
+            .shared
+            .apply
+            .offer(prepared.filter(|_| self.fast_commit));
         self.commit(ActionKind::CommitStroke(rec));
-        if offered && self.shared.apply.prepared.take().is_none() {
+        // A slot still full after the push was declined; an empty one was taken.
+        if offered && !self.shared.apply.reclaim() {
             self.strokes_reused += 1;
         }
     }

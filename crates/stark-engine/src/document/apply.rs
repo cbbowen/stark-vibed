@@ -69,7 +69,35 @@ pub struct ApplyCtx {
     /// every clone handed to a sibling engine — it is `None`. The fold empties it
     /// only by *taking* it, which is how the engine learns whether the offer was
     /// accepted: a slot still full after the push was declined.
-    pub prepared: Option<PreparedStroke>,
+    ///
+    /// Off the public API, with [`offer`](Self::offer) and [`reclaim`](Self::reclaim)
+    /// as the doors, because that protocol is the whole of what the field is for and
+    /// it was upheld by one call site writing a `pub` field on a `Clone` struct a
+    /// sibling engine also holds. Every other field here is a renderer handle; this
+    /// one is a message to a single fold, and it is the only field whose value at any
+    /// moment is part of a handshake rather than a resource.
+    ///
+    /// `pub(crate)` rather than private only because `build_gpu`'s struct literal
+    /// names it — as `None`, which is the empty slot the protocol starts from.
+    pub(crate) prepared: Option<PreparedStroke>,
+}
+
+impl ApplyCtx {
+    /// Offer the fold the tiles the preview already drew for this stroke (§6.2),
+    /// answering whether anything was offered at all.
+    pub(crate) fn offer(&mut self, prepared: Option<PreparedStroke>) -> bool {
+        self.prepared = prepared;
+        self.prepared.is_some()
+    }
+
+    /// Take back an offer the fold declined — `true` when there was one to take back,
+    /// which is exactly "the fold did not use it".
+    ///
+    /// The slot is emptied either way, so the transience the field's doc claims holds
+    /// whichever answer this gives.
+    pub(crate) fn reclaim(&mut self) -> bool {
+        self.prepared.take().is_some()
+    }
 }
 
 /// Every field is a handle, so a copy is a fistful of refcount bumps — **except

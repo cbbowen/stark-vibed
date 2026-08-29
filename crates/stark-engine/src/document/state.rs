@@ -832,24 +832,34 @@ impl DocState {
         })
     }
 
+    /// `id` and everything it carries, at any depth, in composite order — root
+    /// first — or `None` when there is no such layer.
+    ///
+    /// **The one derivation of "what a group is"**, and both of the actions that name
+    /// a whole subtree are minted from it. A removal takes
+    /// [`Self::carried_ids`] (this without the root) and `apply` checks the action
+    /// against the same walk before folding; a duplication takes this one, and
+    /// `duplicate_layer` declines unless `ids` names exactly the subtree *it* walks.
+    /// Either way two walks that had to agree would be the §12.6 hazard, one level
+    /// down — and the duplicate path had its own copy in `engine.rs` until now.
+    pub fn subtree_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
+        let layer = self.layer(id)?;
+        let mut out = Vec::new();
+        layer.visit(0, &mut |l, _| out.push(l.id));
+        Some(out)
+    }
+
     /// The layers `id` carries, at any depth, in composite order — or `None` when
     /// there is no such layer. Empty for a leaf.
     ///
-    /// **The one derivation of "what a group holds"**, used at both ends of a
-    /// removal: the engine mints [`ActionKind::RemoveLayer`]'s `carried` from it, and
-    /// `apply` checks the action against it before folding. Two walks that had to
-    /// agree would be the §12.6 hazard the field exists to remove, one level down.
+    /// [`Self::subtree_ids`] without the root, which is the form
+    /// [`ActionKind::RemoveLayer`]'s `carried` is minted in.
     ///
     /// [`ActionKind::RemoveLayer`]: stark_model::document::ActionKind::RemoveLayer
     pub fn carried_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
-        let layer = self.layer(id)?;
-        let mut out = Vec::new();
-        layer.visit(0, &mut |l, _| {
-            if l.id != id {
-                out.push(l.id);
-            }
-        });
-        Some(out)
+        let mut ids = self.subtree_ids(id)?;
+        ids.remove(0);
+        Some(ids)
     }
 
     /// Remove the layer with the given id **and everything it carries** (no-op
