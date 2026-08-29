@@ -182,7 +182,7 @@ fn PhaseRow(phase: Phase, window: Duration) -> Element {
     // claiming a nesting the histograms do not record (see `stark_engine::timing`).
     let (prefix, leaf) = match phase.name.rsplit_once('.') {
         Some((head, tail)) => (Some(format!("{head}.")), tail.to_string()),
-        None => (None, phase.name.clone()),
+        None => (None, phase.name.to_string()),
     };
     let share = window
         .as_secs_f64()

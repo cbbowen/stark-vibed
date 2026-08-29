@@ -184,6 +184,12 @@ impl<const KEEP_TIMING: bool, S> Filter<S> for TimingFilter<KEEP_TIMING> {
 ///
 /// The name is the row, so it should read as a phase of the pipeline
 /// (`stroke.writeback`) rather than as the function it happens to sit in.
+// `#[macro_export]` puts this at the crate root, which would be a *second* public
+// spelling of one name — `stark_engine::__stark_timing_span!` beside
+// `stark_engine::timing::span!`. Hidden so the re-export below is the only one
+// documented, which is `lib.rs`'s rule about modules applied to the one item that
+// cannot obey it directly.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __stark_timing_span {
     ($name:expr) => {
@@ -359,9 +365,15 @@ fn with_layer<R>(f: impl Fn(&PhaseLayer) -> R) -> Option<R> {
 /// five. A `p50` sat here unrendered for exactly as long as it took to notice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Phase {
-    /// The [`span!`] name, dotted (`stroke.loop`). Owned, because the histograms are
-    /// read under a lock the caller must not still be holding when it renders them.
-    pub name: String,
+    /// The [`span!`] name, dotted (`stroke.loop`).
+    ///
+    /// Borrowed from the callsite that recorded it, which is where the map's key
+    /// already lives: a phase is registered under the `&'static str` the `span!`
+    /// wrote, so there is nothing here to outlive the lock the histograms are read
+    /// under. It was `String` on the argument that there might be — one allocation
+    /// per row per snapshot, twice a second for as long as the timing dialog is open,
+    /// to copy a `str` that is already `'static`.
+    pub name: &'static str,
     /// How many times the phase ran inside [`Timings::window`].
     pub count: u64,
     /// Arithmetic mean over those runs. Also what [`total`](Self::total) is built
@@ -487,7 +499,7 @@ pub fn snapshot() -> Option<Timings> {
     })?;
     // Outside the lock: the order is this function's contract, not the map's, and a
     // `HashMap`'s iteration order is not one.
-    timings.phases.sort_by(|a, b| a.name.cmp(&b.name));
+    timings.phases.sort_by(|a, b| a.name.cmp(b.name));
     Some(timings)
 }
 
@@ -571,11 +583,11 @@ impl PhaseLayer {
 }
 
 /// One histogram, read into a [`Phase`].
-fn phase(name: &str, hist: &Histogram<u64>) -> Phase {
+fn phase(name: &'static str, hist: &Histogram<u64>) -> Phase {
     let count = hist.len();
     let mean = hist.mean();
     Phase {
-        name: name.to_string(),
+        name,
         count,
         mean: Duration::from_nanos(mean as u64),
         p99: Duration::from_nanos(hist.value_at_quantile(0.99)),
@@ -741,7 +753,7 @@ mod tests {
         });
 
         assert_eq!(
-            t.phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            t.phases.iter().map(|p| p.name).collect::<Vec<_>>(),
             ["ours"],
             "the histogram layer took a span that is not one of ours",
         );
@@ -781,7 +793,7 @@ mod tests {
             }
             let t = snapshot().expect("installed");
             assert_eq!(
-                t.phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+                t.phases.iter().map(|p| p.name).collect::<Vec<_>>(),
                 ["after"],
                 "the window after a reset carries only what ran inside it",
             );
