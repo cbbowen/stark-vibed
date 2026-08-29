@@ -130,12 +130,30 @@ pub fn clamp_tolerance(tolerance: f32) -> f32 {
 const SMOOTHING: f32 = 0.05;
 
 /// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
-const CHANNELS: usize = 4;
+///
+/// **The order is the layout**, and `[0]`/`[1]`/`[2]`/`[3]` are written out at a
+/// dozen sites here and in `assist::realize`, which fits the same four the same way.
+/// Reordering the array is therefore a change that mis-maps pressure onto tilt in
+/// whichever module was not edited, with nothing failing to compile and the fit still
+/// converging — so the two ends of it, the only places the indices actually mean
+/// anything, is [`control_point_from`] below — the one direction that is genuinely
+/// shared. The *reading* direction is not: the fitter reads an `InputSample` with the
+/// clock re-based onto the stroke, and `assist::realize` reads a flattened sample with
+/// the path's own, so those are two sources rather than one function written twice.
+pub(crate) const CHANNELS: usize = 4;
 
 /// Which of [`CHANNELS`] is the clock. The odd one out: the other three are pen state,
 /// which the tip's shape follows, while this one is only a stamp on the report — which
 /// is why [`PathFitter::solve`] treats the stroke's last one differently.
 const TIME_CHANNEL: usize = 3;
+
+/// A solved row back into a [`ControlPoint`] — **through `clamped`**, which is where
+/// the range a pen can report is stated for every fitter. The channels are solved the
+/// same way the geometry is, so a point the data barely holds can overshoot them, and
+/// `assist::realize`'s solve overshoots the same way.
+pub(crate) fn control_point_from(pos: Vec2, ch: [f32; CHANNELS]) -> ControlPoint {
+    ControlPoint::clamped(pos, ch[0], Vec2::new(ch[1], ch[2]), ch[3])
+}
 
 type ChannelCtrl = OMatrix<f32, Dyn, Const<CHANNELS>>;
 type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
@@ -819,6 +837,8 @@ impl PathFitter {
         self.pts[i.min(self.pts.len() - 1)]
     }
 
+    /// A report's channels, in [`CHANNELS`] order, with the clock re-based onto this
+    /// stroke's own start.
     fn channels(&self, s: InputSample) -> [f32; CHANNELS] {
         [s.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)]
     }
@@ -1046,16 +1066,11 @@ fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
 /// [`PathFitter::path`] and [`PathFitter::path_as_finished`], so the two cannot
 /// disagree about anything but which solve they read.
 fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
-    // Through `clamped`, which is where the range a pen can report is stated for
-    // every fitter (`ControlPoint::clamped`) — the channels are solved the same way
-    // the geometry is, so a point the data barely holds can overshoot them.
     (0..geom.nrows())
         .map(|j| {
-            ControlPoint::clamped(
+            control_point_from(
                 Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-                attr[(j, 0)],
-                Vec2::new(attr[(j, 1)], attr[(j, 2)]),
-                attr[(j, 3)],
+                std::array::from_fn(|d| attr[(j, d)]),
             )
         })
         .collect()

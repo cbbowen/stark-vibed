@@ -139,7 +139,24 @@ impl SplineIndex {
     /// in the polynomial weight of conceptual control point `k + a` on any span `k`,
     /// with `u = t - k`. Thanks to the duplicating knot view, this one matrix serves
     /// every span.
-    fn basis_matrix() -> SMatrix<f32, ORDER, ORDER> {
+    /// The basis matrix, built once for the process.
+    ///
+    /// It is a compile-time constant that `const fn` cannot express — the Cox–de Boor
+    /// recurrence below needs floating-point division, and the f64 reciprocal it takes
+    /// is load-bearing for bit-identical goldens, so it cannot be a `const` and must
+    /// not be hand-transcribed as sixteen literals either. A `OnceLock` is the
+    /// remaining spelling of "computed once".
+    ///
+    /// Worth it because [`Self::solve_window`] asked for it *per call*, and the stroke
+    /// fitter runs four of those per pointer report — two candidate solves, geometry
+    /// and channels each — so a 4×4 recurrence with three nested loops ran four times
+    /// per pointer event to produce the same sixteen floats.
+    fn basis_matrix() -> &'static SMatrix<f32, ORDER, ORDER> {
+        static BASIS: std::sync::OnceLock<SMatrix<f32, ORDER, ORDER>> = std::sync::OnceLock::new();
+        BASIS.get_or_init(Self::build_basis_matrix)
+    }
+
+    fn build_basis_matrix() -> SMatrix<f32, ORDER, ORDER> {
         // Cox–de Boor on a uniform integer knot vector, carried out on polynomial
         // coefficients (rows: basis index a; columns: powers of u):
         // N_a^q(u) = ((u + q - a) N_{a-1}^{q-1}(u) + (a + 1 - u) N_a^{q-1}(u)) / q.
@@ -372,7 +389,7 @@ impl SplineIndex {
             // Scales this value's whole row of the design matrix, which is what a
             // weighted least squares is: `Σ qᵢ‖residualᵢ‖²`.
             let q = weights.get(i).copied().unwrap_or(1.0);
-            let wts = basis * Self::u_powers(u);
+            let wts = *basis * Self::u_powers(u);
             for a in 0..ORDER {
                 let ra = self.knot_row(k + a) - base;
                 for b in 0..ORDER {

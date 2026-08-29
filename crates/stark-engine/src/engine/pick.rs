@@ -373,47 +373,22 @@ impl Engine {
                 });
         let mut colors = Vec::with_capacity(points.len());
         let mut resids = Vec::with_capacity(points.len());
-        for slot in 0..views.len() {
-            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT |
-             // Used by some filters.
-             wgpu::TextureUsages::TEXTURE_BINDING;
-            let color = self.offscreen_target(
-                "stark pick color",
-                formats.color,
-                size,
-                usage | wgpu::TextureUsages::COPY_SRC,
-            );
-            // In a pigment space, the residual is just more color channels, and so it treated identically.
-            let resid = formats.resid.map(|f| {
-                self.offscreen_target(
-                    "stark pick resid",
-                    f,
+        // The `Option` is unwrapped once, around the loop, rather than per slot: "a
+        // non-empty trace prepared above" is a fact about this call, so it is a shape
+        // here instead of an `expect` inside.
+        if let Some(prepared) = &prepared {
+            for slot in 0..views.len() {
+                let (color, resid) = self.composite_patch(
+                    &mut encoder,
+                    prepared,
+                    slot,
                     size,
-                    usage | wgpu::TextureUsages::COPY_SRC,
-                )
-            });
-            // Written by pass A and never read: the height it accumulates says how *much*
-            // paint is there, not what color it is.
-            let aux = self.offscreen_target("stark pick aux", formats.aux, size, usage);
-            // Named rather than inlined into the call: a `Targets` borrows its three
-            // views, so they have to outlive it.
-            let default = wgpu::TextureViewDescriptor::default();
-            let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
-            let resid_view = resid.as_ref().map(|t| t.create_view(&default));
-            let prepared = prepared.as_ref().expect("a non-empty trace prepared above");
-            self.compositor.composite_channels(
-                &self.compositor_pipeline,
-                &mut encoder,
-                Targets {
-                    color: &color_view,
-                    aux: &aux_view,
-                    resid: resid_view.as_ref(),
-                },
-                prepared,
-                slot,
-            );
-            colors.push(color);
-            resids.push(resid);
+                    formats,
+                    ("stark pick color", "stark pick aux", "stark pick resid"),
+                );
+                colors.push(color);
+                resids.push(resid);
+            }
         }
         self.shared.gpu.queue.submit([encoder.finish()]);
         // After the submit, never before: the blend scratch inside destroys its
@@ -480,6 +455,57 @@ impl Engine {
                 })
                 .collect()
         }
+    }
+
+    /// Composite one patch of a prepared plan into fresh attachments, returning the
+    /// two a readback can name.
+    ///
+    /// **Both pick paths ran this, written out twice.** The module header says the two
+    /// "share their machinery down to the readback, and differ only in which axis the
+    /// batch runs along" — they did not share it, they repeated it, and the copies had
+    /// already drifted: one gave `aux` `COPY_SRC` for a texture nothing reads back,
+    /// the other gave `resid` `COPY_SRC` in the path that drops it.
+    ///
+    /// The usages here are the strict reading. `color` and `resid` are read back (the
+    /// eyedropper wants both; a pigment space's residual is just more colour
+    /// channels), so both get `COPY_SRC`. `aux` never is — pass A writes it and the
+    /// height it accumulates says how *much* paint is there, not what colour it is —
+    /// so it gets none, in both paths now.
+    ///
+    /// `TEXTURE_BINDING` on all three because some filters sample the accumulator.
+    fn composite_patch(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        prepared: &crate::gpu::composite::PreparedPick<'_>,
+        slot: usize,
+        size: Extent2,
+        formats: crate::gpu::channels::ChannelFormats,
+        labels: (&str, &str, &str),
+    ) -> (wgpu::Texture, Option<wgpu::Texture>) {
+        let shared = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let readable = shared | wgpu::TextureUsages::COPY_SRC;
+        let color = self.offscreen_target(labels.0, formats.color, size, readable);
+        let aux = self.offscreen_target(labels.1, formats.aux, size, shared);
+        let resid = formats
+            .resid
+            .map(|f| self.offscreen_target(labels.2, f, size, readable));
+        // Named rather than inlined into the call: a `Targets` borrows its three
+        // views, so they have to outlive it.
+        let default = wgpu::TextureViewDescriptor::default();
+        let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
+        let resid_view = resid.as_ref().map(|t| t.create_view(&default));
+        self.compositor.composite_channels(
+            &self.compositor_pipeline,
+            encoder,
+            Targets {
+                color: &color_view,
+                aux: &aux_view,
+                resid: resid_view.as_ref(),
+            },
+            prepared,
+            slot,
+        );
+        (color, resid)
     }
 }
 
@@ -609,21 +635,6 @@ impl Engine {
             .write_views(&self.compositor_pipeline, &[view]);
         let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
         for (id, groups) in &lists {
-            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC;
-            let color = self.offscreen_target("stark hit color", formats.color, size, usage);
-            // Written and never read, both of these. The height says how *much*
-            // paint is there rather than how much of the texel it covers, and in a
-            // pigment space the residual is more color channels — neither is the
-            // coverage this asks for.
-            let aux = self.offscreen_target("stark hit aux", formats.aux, size, usage);
-            let resid = formats
-                .resid
-                .map(|f| self.offscreen_target("stark hit resid", f, size, usage));
-            let default = wgpu::TextureViewDescriptor::default();
-            let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
-            let resid_view = resid.as_ref().map(|t| t.create_view(&default));
             let prepared = self
                 .compositor
                 .prepare_pick(&self.compositor_pipeline, view, groups);
@@ -634,16 +645,16 @@ impl Engine {
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("stark hit encoder"),
                     });
-            self.compositor.composite_channels(
-                &self.compositor_pipeline,
+            // The residual comes back and is dropped: what this path reads is coverage,
+            // and in a pigment space the residual is more colour channels rather than
+            // any part of that.
+            let (color, _resid) = self.composite_patch(
                 &mut encoder,
-                Targets {
-                    color: &color_view,
-                    aux: &aux_view,
-                    resid: resid_view.as_ref(),
-                },
                 &prepared,
                 0,
+                size,
+                formats,
+                ("stark hit color", "stark hit aux", "stark hit resid"),
             );
             self.shared.gpu.queue.submit([encoder.finish()]);
             // After the submit: the scratch inside destroys its textures on drop.

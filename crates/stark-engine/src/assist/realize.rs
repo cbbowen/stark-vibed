@@ -68,9 +68,10 @@ pub struct PenProfile {
     at: Vec<(f32, [f32; CHANNELS])>,
 }
 
-/// Pen channels riding the control polygon — the same four [`PathFitter`](crate::path::PathFitter)
-/// solves for.
-const CHANNELS: usize = 4;
+/// Pen channels riding the control polygon — literally the same four
+/// [`PathFitter`](crate::path::PathFitter) solves for, taken from `path` rather than
+/// declared again. Two constants meant two layouts, agreeing by habit.
+use crate::path::CHANNELS;
 
 impl PenProfile {
     /// The profile of a fitted path.
@@ -213,15 +214,13 @@ fn realize(
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
     let attr = index.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
 
-    // Through `clamped`, the same door the streaming fitter's own solved channels go
-    // through — this is a least-squares solve too, and overshoots the same way.
+    // Through the fitter's own door, which is `clamped`: this is a least-squares solve
+    // too, and overshoots the same way.
     (0..m)
         .map(|j| {
-            ControlPoint::clamped(
+            crate::path::control_point_from(
                 Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-                attr[(j, 0)],
-                Vec2::new(attr[(j, 1)], attr[(j, 2)]),
-                attr[(j, 3)],
+                std::array::from_fn(|d| attr[(j, d)]),
             )
         })
         .collect()

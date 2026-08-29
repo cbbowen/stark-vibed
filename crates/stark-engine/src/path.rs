@@ -65,7 +65,9 @@ pub use fit::{
     DEFAULT_TOLERANCE, KNOT_COST, KNOT_SPACING, MAX_TOLERANCE, MIN_TOLERANCE, PathFitter,
     clamp_tolerance, fit, fit_with_tolerance,
 };
-pub(crate) use fit::{arc_profile, param_at};
+// The pen-channel layout and its two conversions, for `assist::realize` — which fits
+// the same four channels onto the same control polygon and had its own copy of both.
+pub(crate) use fit::{CHANNELS, arc_profile, control_point_from, param_at};
 pub use flatten::{
     FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans,
     flatten_spans_from, point_at, span_end,
