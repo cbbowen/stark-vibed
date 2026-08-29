@@ -283,24 +283,30 @@ fn concurrent_layer_adds_do_not_collide() {
     assert_eq!(sorted.len(), ids.len(), "duplicate layer ids: {ids:?}");
 }
 
-/// A solo document keeps the small, readable ids it always had — `ActorId::SOLO`
-/// maps to id-space 0, so nothing about the partitioning is visible until a document
-/// is actually shared.
+/// **A layer's id is the id of the action that minted it** (§17.9), and in a solo
+/// document that is a `SOLO`-authored action at the Lamport tick the add happened on.
+///
+/// Asserted exactly rather than as "they differ", because the exactness is the
+/// property: an id nobody chose is an id nobody can collide with, and a test that only
+/// asked for two different values would pass against a counter too.
 #[test]
-fn solo_layer_ids_stay_small() {
+fn solo_layer_ids_are_the_actions_that_minted_them() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    assert_eq!(engine.observe().active_layer, LayerId(1));
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    assert_eq!(engine.observe().active_layer, LayerId(2));
+    let add = |e: &mut stark_engine::Engine| {
+        e.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        e.observe().active_layer
+    };
+    // A fresh document has committed nothing, so the first add is the first action.
+    assert_eq!(add(&mut engine), LayerId::solo(0));
+    assert_eq!(add(&mut engine), LayerId::solo(1));
+    // The root predates every action and is the one id no action mints.
+    assert_eq!(LayerId::ROOT.k, u32::MAX);
+    assert_ne!(LayerId::ROOT, LayerId::solo(0));
 }
 
 /// A peer deleting the layer this client is painting on must not leave it pointed at
@@ -481,12 +487,12 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
         boot: 0,
         seq: 1,
         name: Some("Ada".into()),
-        active_layer: LayerId(0),
+        active_layer: LayerId::ROOT,
         cursor: Some(Vec2::ZERO),
         gesture: Some(GestureFrame::Stroke {
             id: 0,
             head: Some(StrokeHead {
-                layer: LayerId(0),
+                layer: LayerId::ROOT,
                 brush: common::brush(RED, 12.0),
                 seed: 1,
             }),
@@ -527,12 +533,12 @@ fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
         boot: 0,
         seq,
         name: None,
-        active_layer: LayerId(0),
+        active_layer: LayerId::ROOT,
         cursor: None,
         gesture: (!points.is_empty()).then(|| GestureFrame::Stroke {
             id: 0,
             head: Some(StrokeHead {
-                layer: LayerId(0),
+                layer: LayerId::ROOT,
                 brush: common::brush(GREEN, 12.0),
                 seed: 1,
             }),
@@ -785,7 +791,7 @@ fn peer_selection_outlines_are_opt_in() {
             boot: 0,
             seq: 1,
             name: None,
-            active_layer: LayerId(0),
+            active_layer: LayerId::ROOT,
             cursor: None,
             gesture: None,
             leaving: false,
@@ -907,7 +913,7 @@ fn presence_never_reaches_the_save_file() {
         boot: 0,
         seq: 1,
         name: None,
-        active_layer: LayerId(0),
+        active_layer: LayerId::ROOT,
         cursor: Some(Vec2::new(10.0, 10.0)),
         gesture: Some(GestureFrame::Selection {
             id: 0,

@@ -677,23 +677,39 @@ contained two layers with one id, and `layer_index` found whichever came first �
 a real convergence failure, and exactly the class of bug "per-client identity" is
 supposed to prevent.
 
-Ids are now minted from the author (`LayerId::mint`): a mixed 32-bit fold of the
-`ActorId` in the high half, the per-actor counter in the low. `ActorId::SOLO`
-maps to high half 0, so a document that was never shared keeps the small,
-readable ids it always had — including the root layer's `LayerId(0)`, which every
-peer must agree on because it predates any actor. `Engine::resync_counters`
-resumes only *this* actor's counter, since resuming past someone else's would
-skip ids for no reason and hide the fact that they cannot collide.
+**A layer's id is the id of the action that minted it**, and which of that
+action's layers it is: `LayerId { action: ActionId, k: u32 }`. An `ActionId` is
+already the log's total-order key `(lamport, actor)` and so already globally
+unique — two actions cannot share one, therefore two layers cannot share an id.
+That is the guarantee made structural rather than kept: there is no counter, so
+there is nothing to resync when a log is picked back up, no partition to reason
+about, and no rule about re-sharing to remember. `GuideId` took this answer from
+the start (§20.5); `k` is what let layers follow, since one `AddGuide` mints one
+guide where a `DuplicateLayer` mints one per layer of a subtree.
 
-The same defect kept a second door, closed later: **sharing** restarted the
-counter outright, on the reading that a new session is a new actor with an empty
-half of the id space. An identity is a browser's persisted key rather than a
-session's, so re-sharing a painting — or sharing one this client shared before and
-has reopened — restarts inside a half it has already minted in, and mints an id
-the document holds. Both places that set the counter ask the log for it now
-(`Engine::next_ordinal`), which is the only thing either of them can trust:
-neither "the actor changed" nor "the session is new" is the question, and the
-second one has no honest answer at all.
+The mint is a door rather than a convention: `Engine::commit_minting` draws the
+action id and hands it to the closure that builds the kind, so a kind naming a
+layer it mints cannot be built without the id it will be committed under.
+`LayerId::ROOT` is the one id no action produces — a reserved `k` of `u32::MAX`,
+not a reserved action, because the Lamport clock starts at zero and
+`(0, SOLO)` is a perfectly ordinary first action of a solo document.
+
+**The two doors this replaced.** For as long as the id was a counter partitioned
+by a mixed 32-bit fold of the `ActorId`, the guarantee was statistical — two
+actors whose folds coincided minted colliding ids and nothing said so — and the
+counter had to be recovered from the log at *both* places a document arrives by.
+A load did it (`resync_counters`); **sharing** did not, restarting outright on the
+reading that a new session is a new actor with an empty half of the id space. An
+identity is a browser's persisted key rather than a session's, so re-sharing a
+painting — or sharing one this client shared before and has reopened — restarted
+inside a half it had already minted in. Both doors are gone with the counter.
+
+One consequence worth stating: `start_collaboration` rewrites the log's
+`ActorId::SOLO` actions to the sharer, and the layer ids *inside* those actions
+keep saying `SOLO`. They must — rewriting them would mean rewriting every later
+reference to those layers, which is a rewrite of the whole log to change nothing
+observable — and they stay unique anyway, since `SOLO` authors no action in a
+shared session.
 
 **A remote `RemoveLayer` could strand the active layer.** The engine repointed
 `session.active_layer` after a *local* `RemoveLayer`, but `merge_remote` had no
@@ -725,8 +741,9 @@ semantics in `stark-engine`. `tests/peer_state.rs` covers:
 - **Undo scoping**, which falls out of keying by the action's own author.
 - **A solo document is unaffected**, the check that the re-keying is invisible
   where there is nothing to key by.
-- **Layer ids** (§17.9): concurrent adds mint distinct ids; a solo document keeps
-  small ones; a remote removal repoints the active layer and painting still works.
+- **Layer ids** (§17.9): concurrent adds mint distinct ids; a solo document's ids
+  are exactly the `SOLO` actions that minted them; a remote removal repoints the
+  active layer and painting still works.
 - **Presence end to end:** a peer's live stroke previews before it commits and
   the commit lands the same pixels; a silent peer loses its gesture, then its
   place; presence never becomes an action.

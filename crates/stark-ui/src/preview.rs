@@ -263,7 +263,7 @@ mod tests {
     /// the omission is now a hole in a column of ten, not a missing paragraph.
     #[test]
     fn a_pair_shows_and_lays_the_same_value() {
-        let id = LayerId(7);
+        let id = LayerId::solo(7);
 
         check_pair!(
             LAYER_OPACITY,

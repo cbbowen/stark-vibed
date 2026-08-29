@@ -452,7 +452,7 @@ mod tests {
             boot: 0,
             seq,
             name: None,
-            active_layer: LayerId(0),
+            active_layer: LayerId::ROOT,
             cursor: None,
             gesture,
             leaving: false,
@@ -461,7 +461,7 @@ mod tests {
 
     fn head() -> StrokeHead {
         StrokeHead {
-            layer: LayerId(0),
+            layer: LayerId::ROOT,
             brush: BrushParams::default(),
             seed: 7,
         }
@@ -562,7 +562,7 @@ mod tests {
 
         // A layer selection is likewise a fact about the peer, not about the picture.
         let mut relayered = frame(3, None);
-        relayered.active_layer = LayerId(7);
+        relayered.active_layer = LayerId::solo(7);
         assert!(!peers.merge(a, relayered, 0.2).canvas);
 
         // But a gesture is.

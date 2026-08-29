@@ -675,7 +675,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     let a = pollster::block_on(
         rgba.export(
             &mut Offscreen::default(),
-            Some(LayerId(1)),
+            Some(LayerId::solo(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
             Rendered::Live,
@@ -686,7 +686,7 @@ fn export_is_rgba_whatever_the_target_format_is() {
     let b = pollster::block_on(
         bgra.export(
             &mut Offscreen::default(),
-            Some(LayerId(1)),
+            Some(LayerId::solo(1)),
             ExportScale::Factor(1.0),
             Background::Substrate,
             Rendered::Live,

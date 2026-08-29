@@ -195,8 +195,8 @@ impl Lens {
 ///
 /// **The id of the action that added it**, and that is the whole of how guide
 /// identity is kept unique across peers — there is no counter here, and nothing
-/// to resync when a log is picked back up (compare
-/// [`LayerId::mint`](super::LayerId::mint), which needs both).
+/// to resync when a log is picked back up. [`LayerId`](super::LayerId) is the same
+/// answer with one field more.
 ///
 /// An [`ActionId`] is already the log's total-order key `(lamport, actor)`, so
 /// it is already globally unique: two actions cannot share one, therefore two
@@ -205,10 +205,10 @@ impl Lens {
 /// forget, which is what §1 asks for wherever a guarantee can be made
 /// structural.
 ///
-/// It works here and not for layers because of a difference between the two
-/// vocabularies rather than a preference: one `AddGuide` mints exactly one
-/// guide, where `DuplicateLayer` mints one id per layer of a subtree and so has
-/// to carry a map of them. An action id can name one thing.
+/// A guide needs nothing beside the action id, where a layer does: one `AddGuide`
+/// mints exactly one guide, so there is no *which one* to say — where
+/// `DuplicateLayer` mints one per layer of a subtree, which is what
+/// [`LayerId`](super::LayerId)'s `k` answers.
 #[derive(
     Copy,
     Clone,

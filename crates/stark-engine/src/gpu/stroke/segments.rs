@@ -1045,7 +1045,7 @@ mod tests {
             .map(|i| stark_model::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
             .collect();
         StrokeRecord {
-            layer: stark_model::document::LayerId(0),
+            layer: stark_model::document::LayerId::ROOT,
             brush: BrushParams {
                 size: radius,
                 drain: 0.0,
@@ -1246,7 +1246,7 @@ mod tests {
             })
             .collect();
         let rec = StrokeRecord {
-            layer: stark_model::document::LayerId(0),
+            layer: stark_model::document::LayerId::ROOT,
             brush: BrushParams {
                 size: 500.0,
                 drain: 0.0,
@@ -1424,7 +1424,7 @@ mod tests {
             })
             .collect();
         StrokeRecord {
-            layer: stark_model::document::LayerId(0),
+            layer: stark_model::document::LayerId::ROOT,
             brush: BrushParams {
                 size: radius,
                 drain: 0.0,
@@ -1773,7 +1773,7 @@ mod tests {
     /// A stroke through `pts` with `brush`, as a path of plain full-pressure knots.
     fn record(brush: BrushParams, pts: &[Vec2]) -> StrokeRecord {
         StrokeRecord {
-            layer: stark_model::document::LayerId(0),
+            layer: stark_model::document::LayerId::ROOT,
             brush,
             path: pts
                 .iter()

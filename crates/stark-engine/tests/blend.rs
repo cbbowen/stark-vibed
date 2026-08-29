@@ -32,8 +32,18 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 
-const ROOT: LayerId = LayerId(0);
-const TOP: LayerId = LayerId(1);
+const ROOT: LayerId = LayerId::ROOT;
+
+/// The layer the most recent `AddLayer` created.
+///
+/// **Read back rather than predicted.** A `LayerId` is the id of the action that
+/// minted it (§17.9), so what it is depends on how many actions this test has already
+/// committed — which is exactly the sort of thing a test should not be counting. A
+/// fresh layer is armed for painting (§14.8), so the active one *is* the new one, and
+/// every use below is immediately after the add that made it.
+fn top(engine: &Engine) -> LayerId {
+    engine.observe().active_layer
+}
 
 /// Two saturated lights that overlap in the middle of the canvas. Warm and cool so
 /// the overlap is unmistakably a *combination* rather than either one of them.
@@ -153,7 +163,7 @@ fn empty_blend_layer_contributes_nothing() {
         carrier: None,
         above: None,
     });
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
     let after = engine.render_to_image();
 
     let (frac, worst) = diff_fraction(&before, &after);
@@ -179,14 +189,14 @@ fn light_modes_brighten_the_overlap() {
         crossed(&mut engine);
 
         let normal = luma(center(&engine.render_to_image()));
-        engine.process(DocCommand::SetLayerBlend(TOP, mode));
+        engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
         let blended = luma(center(&engine.render_to_image()));
 
         // The top layer alone, for "brighter than either input".
         engine.process(DocCommand::SetLayerVisible(ROOT, false));
         let top_only = luma(center(&engine.render_to_image()));
         engine.process(DocCommand::SetLayerVisible(ROOT, true));
-        engine.process(DocCommand::SetLayerVisible(TOP, false));
+        engine.process(DocCommand::SetLayerVisible(top(&engine), false));
         let bottom_only = luma(center(&engine.render_to_image()));
 
         assert!(
@@ -218,13 +228,13 @@ fn multiply_darkens_the_overlap() {
     crossed(&mut engine);
 
     let normal = luma(center(&engine.render_to_image()));
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
     let blended = luma(center(&engine.render_to_image()));
 
     engine.process(DocCommand::SetLayerVisible(ROOT, false));
     let top_only = luma(center(&engine.render_to_image()));
     engine.process(DocCommand::SetLayerVisible(ROOT, true));
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     let bottom_only = luma(center(&engine.render_to_image()));
 
     assert!(
@@ -249,7 +259,7 @@ fn blend_only_acts_where_the_layers_meet() {
     crossed(&mut engine);
     let normal = engine.render_to_image();
 
-    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
     let blended = engine.render_to_image();
 
     // The vertical stroke runs to y = ±60 canvas px; the horizontal one is 44 px
@@ -372,7 +382,7 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
     layer_with(&mut engine, WARM, V_STROKE);
     let normal = center(&engine.render_to_image());
 
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
     let glow = center(&engine.render_to_image());
 
     let worst = (0..3)
@@ -455,7 +465,7 @@ fn black_is_the_identity_through_the_round_trip() {
             stroke_with(&mut engine, opaque(color), V_STROKE);
             let over_black = center(&engine.render_to_image());
 
-            engine.process(DocCommand::SetLayerBlend(TOP, mode));
+            engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
             let blended = center(&engine.render_to_image());
 
             let worst = (0..3)
@@ -514,7 +524,7 @@ fn white_is_the_identity_through_the_round_trip() {
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let over_white = center(&engine.render_to_image());
 
-        engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
+        engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
         let blended = center(&engine.render_to_image());
 
         let worst = (0..3)
@@ -555,7 +565,7 @@ fn multiply_over_black_is_black() {
         });
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let normal = center(&engine.render_to_image());
-        engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
+        engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
         Some((normal, center(&engine.render_to_image())))
     };
 
@@ -632,7 +642,10 @@ fn a_layers_bend_moves_the_overlap() {
     let overlap = |k: f32| -> Option<f64> {
         let mut engine = engine_or_skip()?;
         crossed(&mut engine);
-        engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago { k }));
+        engine.process(DocCommand::SetLayerBlend(
+            top(&engine),
+            BlendMode::Drago { k },
+        ));
         Some(luma(center(&engine.render_to_image())))
     };
     let Some(hard) = overlap(DRAGO_K_RANGE.0) else {
@@ -681,7 +694,7 @@ fn blend_works_in_the_pigment_space() {
     engine.process(DocCommand::SetLayerBlend(ROOT, BlendMode::Normal));
     layer_with(&mut engine, COOL, V_STROKE);
     let covered = luma(center(&engine.render_to_image()));
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
     let combined = luma(center(&engine.render_to_image()));
     assert!(
         combined > covered + 4.0,
@@ -699,7 +712,7 @@ fn golden_glow_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Reinhard));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
     assert_golden("blend_glow", &engine.render_to_image(), 6);
 }
 
@@ -709,7 +722,7 @@ fn golden_radiance_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
     assert_golden("blend_radiance", &engine.render_to_image(), 6);
 }
 
@@ -719,7 +732,7 @@ fn golden_multiply_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
     assert_golden("blend_multiply", &engine.render_to_image(), 6);
 }
 

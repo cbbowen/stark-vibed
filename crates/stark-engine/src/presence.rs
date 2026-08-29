@@ -42,7 +42,13 @@ use stark_model::peer::{GESTURE_RESYNC, GestureFrame, StrokeHead};
 /// narrow window the encoder sees it through, not a second copy of it.
 pub(crate) enum GestureSource {
     Stroke {
-        head: StrokeHead,
+        /// Boxed, because it is most of this enum: a `StrokeHead` carries the whole
+        /// `BrushParams` and a `LayerId`, which together are three times the next
+        /// variant. Unboxed, every `Option<GestureSource>` a frame passes around — and
+        /// `publish` builds one per frame whether or not a gesture is in flight —
+        /// carried that width for a selection drag or nothing at all. One allocation
+        /// per published *stroke* frame buys it back.
+        head: Box<StrokeHead>,
         path: Vec<ControlPoint>,
         /// How many leading control points are final (§6.2).
         frozen: usize,
@@ -150,7 +156,7 @@ impl GestureTx {
                 self.sent = frozen;
                 Some(GestureFrame::Stroke {
                     id,
-                    head: fresh.then_some(head),
+                    head: fresh.then_some(*head),
                     from: from as u32,
                     points,
                     start,
@@ -427,7 +433,7 @@ mod tests {
             GestureFrame::Stroke {
                 id: 1,
                 head: Some(StrokeHead {
-                    layer: LayerId(0),
+                    layer: LayerId::ROOT,
                     brush: hostile,
                     seed: 0,
                 }),
@@ -436,7 +442,7 @@ mod tests {
                 start: 0.0,
             },
             1,
-            LayerId(0),
+            LayerId::ROOT,
         );
         let brush = rx
             .stroke
@@ -478,7 +484,7 @@ mod tests {
             GestureFrame::Stroke {
                 id: 2,
                 head: Some(StrokeHead {
-                    layer: LayerId(0),
+                    layer: LayerId::ROOT,
                     brush: ordinary,
                     seed: 0,
                 }),
@@ -487,7 +493,7 @@ mod tests {
                 start: 0.0,
             },
             2,
-            LayerId(0),
+            LayerId::ROOT,
         );
         assert_eq!(rx.stroke.as_ref().unwrap().head.brush, ordinary);
     }
@@ -549,7 +555,7 @@ mod tests {
         for seed in 0..64u64 {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             let mut session =
-                Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId(0));
+                Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId::ROOT);
             let mut peers = Peers::new();
             let actor = ActorId(1);
             let mut inflight: Vec<PeerFrame> = Vec::new();
@@ -671,7 +677,7 @@ mod tests {
     fn a_resync_repairs_a_receiver_that_missed_everything() {
         let mut tx = GestureTx::new();
         let mut rx = GestureRx::default();
-        let layer = LayerId(0);
+        let layer = LayerId::ROOT;
         let path: Vec<ControlPoint> = (0..12)
             .map(|i| ControlPoint::at(Vec2::new(f32::from(i as u16) * 4.0, 0.0)))
             .collect();
@@ -681,7 +687,7 @@ mod tests {
             seed: 7,
         };
         let stroke = |n: usize, frozen: usize| GestureSource::Stroke {
-            head: head.clone(),
+            head: Box::new(head.clone()),
             path: path[..n].to_vec(),
             frozen,
             start: 0.25,

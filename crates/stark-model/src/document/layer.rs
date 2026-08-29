@@ -12,13 +12,32 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::action::ActorId;
+use super::action::{ActionId, ActorId};
 use crate::geom::Vec2;
 
-/// Stable identifier for a layer within a document.
+/// Stable identifier for a layer within a document: **the action that minted it,
+/// and which of that action's layers this is**.
 ///
-/// Ids are **minted from the author**, not from a shared counter — see
-/// [`LayerId::mint`].
+/// Two peers adding a layer at the same moment must not mint the same id — the log
+/// would then hold two different layers under one, which `layer_index` resolves to
+/// whichever comes first, and no pixel says which peer's it was (§17.9). That is the
+/// convergence failure this shape rules out rather than guards against: an
+/// [`ActionId`] is already the log's total-order key `(lamport, actor)`, so it is
+/// already globally unique, and an id built from one cannot collide with an id built
+/// from another. There is no counter, nothing to resync when a log is picked back up,
+/// and no re-share rule to remember.
+///
+/// It replaced a counter partitioned by a **32-bit fold of the actor**, which was the
+/// same guarantee made statistically: two actors whose folds coincided minted
+/// colliding ids, and nothing anywhere said so. [`GuideId`](super::GuideId) took this
+/// answer from the start and its doc explains why layers could not — one `AddGuide`
+/// mints exactly one guide, where `DuplicateLayer` mints one per layer of a subtree.
+/// `k` is what closes that gap: the subtree position, assigned in the order
+/// `copy_subtree` walks, which is a function of the document the action is applied to
+/// and so the same on every peer.
+///
+/// [`ROOT`](Self::ROOT) is the one id no action mints, and it has to be: every peer
+/// must agree on the root layer, which predates every action.
 #[derive(
     Copy,
     Clone,
@@ -32,43 +51,86 @@ use crate::geom::Vec2;
     Deserialize,
     carbonite::Schema,
 )]
-pub struct LayerId(pub u64);
+pub struct LayerId {
+    /// The action that minted this layer.
+    pub action: ActionId,
+    /// Which of that action's layers — `0` for the four kinds that mint one, the
+    /// subtree position for a [`DuplicateLayer`](super::ActionKind::DuplicateLayer).
+    pub k: u32,
+}
 
 impl LayerId {
-    /// Mint the id for `actor`'s `n`th layer (§17.9).
+    /// The root layer, which every document has before any action runs.
     ///
-    /// Two peers adding a layer at the same moment must not mint the same id. A
-    /// counter resynced from the log does exactly that — both peers see `n` layers,
-    /// both mint `n + 1`, and the log ends up holding two different layers under one
-    /// id, which `layer_index` resolves to whichever comes first. That is a genuine
-    /// convergence failure, so the id space is partitioned by author instead: a
-    /// mixed 32-bit fold of the actor in the high half, the per-actor counter in the
-    /// low.
-    ///
-    /// [`ActorId::SOLO`] maps to high half 0, so a document that was never shared
-    /// keeps the small, readable ids it always had — including the root layer's
-    /// `LayerId(0)`, which every peer must agree on because it predates any actor.
-    pub fn mint(actor: ActorId, n: u64) -> Self {
-        let hi = if actor == ActorId::SOLO {
-            0
-        } else {
-            // Never 0: that is SOLO's space, and colliding with it would clash with
-            // the layers a document had before it was ever shared.
-            mix32(actor.0).max(1)
-        };
-        LayerId((u64::from(hi) << 32) | (n & 0xFFFF_FFFF))
+    /// **A reserved `k`, not a reserved action.** The lamport clock starts at zero, so
+    /// `ActionId { lamport: 0, actor: SOLO }` is a perfectly ordinary first action of a
+    /// solo document and cannot be spent on a sentinel. `u32::MAX` is the `k` no mint
+    /// produces: the four single-layer kinds pass `0`, and a duplicate's is a subtree
+    /// position bounded by `MAX_LAYERS` several orders below it.
+    pub const ROOT: LayerId = LayerId {
+        action: ActionId {
+            lamport: 0,
+            actor: ActorId::SOLO,
+        },
+        k: u32::MAX,
+    };
+
+    /// The id of `action`'s `k`th layer.
+    pub const fn new(action: ActionId, k: u32) -> Self {
+        Self { action, k }
     }
 
-    /// The per-actor counter this id was minted from — the inverse of the low half
-    /// of [`mint`](Self::mint).
-    pub fn ordinal(self) -> u64 {
-        self.0 & 0xFFFF_FFFF
-    }
-
-    /// Whether this id was minted by `actor`, so the engine can resume that actor's
-    /// counter from a log without also resuming everyone else's.
+    /// Whether `actor` minted this layer — the author of the action it came from.
+    ///
+    /// Exact, where the fold this replaced could only answer "an actor whose fold
+    /// matches yours did".
     pub fn minted_by(self, actor: ActorId) -> bool {
-        self.0 >> 32 == Self::mint(actor, 0).0 >> 32
+        self.action.actor == actor
+    }
+
+    /// The id a **solo** author's action at `lamport` mints for its first layer.
+    ///
+    /// Not a test affordance: `ActorId::SOLO` is the author of every action in a
+    /// document that has never been shared (§12.3), so this is the id such a document
+    /// really does mint — which is what makes it a usable stand-in for one, and what
+    /// makes a test that names a layer this way name a layer that could exist.
+    pub const fn solo(lamport: u64) -> Self {
+        Self::new(
+            ActionId {
+                lamport,
+                actor: ActorId::SOLO,
+            },
+            0,
+        )
+    }
+
+    /// When this layer was minted, on the author's Lamport clock — what an unnamed
+    /// layer is labelled by (§11).
+    ///
+    /// A *display* number and nothing else, which is why it is not called an ordinal:
+    /// nothing resumes from it, and it is neither dense nor unique across authors. It
+    /// is monotone within one author's layers, which is the whole of what a label
+    /// needs to be — and the per-actor counter it replaces was not unique across
+    /// authors either.
+    pub fn minted_at(self) -> u64 {
+        self.action.lamport
+    }
+}
+
+impl std::fmt::Display for LayerId {
+    /// `lamport.actor.k` — the id as a stable, unique string.
+    ///
+    /// For a frontend that needs one: a DOM row is keyed by its layer so the browser
+    /// can tell a reordered list from a rebuilt one (§11), and a key that two layers
+    /// could share would animate one row into another. Every field, in the order that
+    /// makes the common case short: a solo document's ids read `0.0.0`, `3.0.0`, and
+    /// only a duplicate or a peer's layer grows the tail.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}",
+            self.action.lamport, self.action.actor.0, self.k
+        )
     }
 }
 
@@ -119,15 +181,6 @@ impl From<Option<LayerId>> for Place {
             None => Place::Top,
         }
     }
-}
-
-/// splitmix64's finalizer, folded to 32 bits: decorrelates the bits an
-/// endpoint-derived [`ActorId`] takes verbatim from a public key.
-fn mix32(x: u64) -> u32 {
-    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    ((z ^ (z >> 31)) >> 32) as u32
 }
 
 /// How a layer combines with the layers below it (§18.0.4).
@@ -511,7 +564,7 @@ mod tests {
             Top,
         }
 
-        let id = LayerId(0x1234_5678_9ABC_DEF0);
+        let id = LayerId::solo(0x1234_5678);
         let read = |old: &Old| {
             carbonite::from_slice::<Place>(&carbonite::to_vec(old).expect("encodes"))
                 .expect("an order this build does not declare still reads")

@@ -65,7 +65,7 @@ use stark_model::geom::Extent2;
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// The starting layer present in every new document.
-const ROOT_LAYER: LayerId = LayerId(0);
+const ROOT_LAYER: LayerId = LayerId::ROOT;
 
 /// How much resident tile memory the engine will let **history retention** hold
 /// before it starts giving up undo depth (§5).
@@ -766,14 +766,6 @@ struct Authoring {
     /// This client's Lamport counter: the `lamport` half of every [`ActionId`] it
     /// mints, advanced past everything it has seen (§12.1).
     clock: u64,
-    /// The next per-actor layer ordinal, resumed past whatever this actor has
-    /// already minted in the log at both places it is set — a load
-    /// ([`Engine::resync_counters`]) and a share ([`Engine::next_ordinal`]).
-    ///
-    /// The id space is partitioned by author (§17.9), and this is the half that is
-    /// *ours*; what it is not is empty merely because a session is new, since the
-    /// actor of a second share is the first one back again.
-    next_layer: u64,
     /// Locally-committed actions awaiting broadcast to peers (§12.4), drained by
     /// the transport through [`Engine::take_outbox`].
     ///
@@ -798,17 +790,17 @@ enum Capture {
 }
 
 impl Authoring {
-    /// A fresh, unshared session: the solo actor, both counters at their origins,
-    /// nothing owed to anybody.
+    /// A fresh, unshared session: the solo actor, the clock at its origin, nothing
+    /// owed to anybody.
     ///
-    /// `next_layer` starts at 1 rather than 0 because [`ROOT_LAYER`] is
-    /// `LayerId(0)` — an id that predates any actor, which is why every peer can
-    /// agree on it (§17.9).
+    /// One counter, where there were two. The layer half went with the id shape it
+    /// served: a `LayerId` is the id of the action that minted it, so the clock is
+    /// the only thing a fresh session has to start, and the only thing a loaded one
+    /// has to resume (§17.9).
     const fn solo() -> Self {
         Self {
             actor: ActorId::SOLO,
             clock: 0,
-            next_layer: 1,
             outbox: None,
         }
     }
@@ -1234,15 +1226,15 @@ impl Engine {
                 self.apply_document_substrate();
             }
             DocCommand::AddLayer { carrier, above } => {
-                let id = self.mint_layer();
-                self.commit(ActionKind::AddLayer { id, carrier, above });
-                // A freshly added layer becomes the active painting target — but
-                // only if it landed. An unknown carrier adds nothing
-                // (§14.8), and arming an id no layer has would leave
-                // the next stroke with nowhere to go.
-                if self.document().contains_layer(id) {
-                    self.session.active_layer = id;
-                }
+                // A freshly added layer becomes the active painting target — but only
+                // if it landed and can take a stroke, which is `arm_active`'s whole
+                // question.
+                let action = self.commit_minting(|a| ActionKind::AddLayer {
+                    id: LayerId::new(a, 0),
+                    carrier,
+                    above,
+                });
+                self.arm_active(LayerId::new(action, 0));
             }
             DocCommand::PlaceImage {
                 carrier,
@@ -1251,22 +1243,17 @@ impl Engine {
                 name,
                 image,
             } => {
-                let id = self.mint_layer();
-                self.commit(ActionKind::PlaceImage {
-                    id,
+                // The active layer, exactly as an `AddLayer` is and for its reason:
+                // it is paint, so the next stroke has somewhere to go.
+                let action = self.commit_minting(|a| ActionKind::PlaceImage {
+                    id: LayerId::new(a, 0),
                     carrier,
                     above,
                     at,
                     name,
                     image,
                 });
-                // The active layer, exactly as an `AddLayer` is and for its reason: it
-                // is paint, so the next stroke has somewhere to go — and only if it
-                // landed, since an unknown carrier adds nothing (§14.8) and arming an
-                // id no layer has would leave that stroke with nowhere.
-                if self.document().contains_layer(id) {
-                    self.session.active_layer = id;
-                }
+                self.arm_active(LayerId::new(action, 0));
             }
             DocCommand::AddMatte {
                 carrier,
@@ -1274,9 +1261,8 @@ impl Engine {
                 region,
                 paint,
             } => {
-                let id = self.mint_layer();
-                self.commit(ActionKind::AddMatte {
-                    id,
+                self.commit_minting(|a| ActionKind::AddMatte {
+                    id: LayerId::new(a, 0),
                     carrier,
                     at,
                     region,
@@ -1292,9 +1278,8 @@ impl Engine {
                 above,
                 filter,
             } => {
-                let id = self.mint_layer();
-                self.commit(ActionKind::AddFilter {
-                    id,
+                self.commit_minting(|a| ActionKind::AddFilter {
+                    id: LayerId::new(a, 0),
                     carrier,
                     above,
                     filter,
@@ -1320,31 +1305,25 @@ impl Engine {
             DocCommand::SetSubstrateColor(rgb) => self.settle(ActionKind::SetSubstrateColor(rgb)),
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
-                // copies, in composite order — the map the action carries
-                // (§14.8). Collected off the document before any minting, because
-                // `mint_layer` needs `&mut self` and the walk is borrowing it.
+                // copies, in composite order — the map the action carries (§14.8).
+                // The copies are this action's own ids at `k = 0..n`, so the map is
+                // only a list of *sources* wearing its positions; it is still written
+                // as pairs because that is the shape `apply` reads and the shape the
+                // footprint claims a `Layer(src)` from.
                 let mut sources = Vec::new();
                 if let Some(l) = self.document().layer(source) {
                     l.visit(0, &mut |l, _| sources.push(l.id));
                 }
                 if !sources.is_empty() {
-                    let ids: Vec<_> = sources
-                        .into_iter()
-                        .map(|src| (src, self.mint_layer()))
-                        .collect();
-                    let copy = ids[0].1;
-                    self.commit(ActionKind::DuplicateLayer { ids });
-                    // The copy is what you go on to work on — but only if it
-                    // landed and can take a stroke. A matte cannot (§15.7), and
-                    // arming one would swallow the next stroke, which is the same
-                    // reason `AddMatte` arms nothing.
-                    if self
-                        .document()
-                        .layer(copy)
-                        .is_some_and(|l| l.is_paintable())
-                    {
-                        self.session.active_layer = copy;
-                    }
+                    let action = self.commit_minting(|a| ActionKind::DuplicateLayer {
+                        ids: sources
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &src)| (src, LayerId::new(a, k as u32)))
+                            .collect(),
+                    });
+                    // The copy is what you go on to work on.
+                    self.arm_active(LayerId::new(action, 0));
                 }
             }
             // The subtree travels in the action, read off the document the command
@@ -1375,13 +1354,8 @@ impl Engine {
                     // says *which* somewhere, because picking the nearest paintable
                     // layer is not the same as picking the paint that just absorbed
                     // what you were working on.
-                    if follow
-                        && self
-                            .document()
-                            .layer(plan.dest)
-                            .is_some_and(|l| l.is_paintable())
-                    {
-                        self.session.active_layer = plan.dest;
+                    if follow {
+                        self.arm_active(plan.dest);
                     }
                 }
             }
@@ -2064,6 +2038,15 @@ impl Engine {
     /// present at eight of them and absent from thirteen, including the gesture
     /// commit, and which thirteen was not a decision anybody had made.
     fn commit(&mut self, kind: ActionKind) {
+        let id = self.next_action_id();
+        self.commit_with_id(id, kind);
+    }
+
+    /// [`commit`](Self::commit) with the action id already drawn — the half
+    /// [`commit_minting`](Self::commit_minting) needs, since a kind that names the
+    /// layers it mints has to be built from the id before it can be committed under
+    /// it.
+    fn commit_with_id(&mut self, id: ActionId, kind: ActionKind) {
         // Every logged edit, whatever kind — a stroke landing at pen-up, a fill, a
         // layer move. One row rather than one per `ActionKind`, because what a
         // profile is being asked here is "is a commit the hitch the artist felt",
@@ -2074,7 +2057,7 @@ impl Engine {
         crate::timing::span!("doc.commit");
         self.preview.set_doc(None);
         let action = Action {
-            id: self.next_action_id(),
+            id,
             // The **minted** half of the sanitizing funnel (§21.5); `Logged::new`
             // is the "enters state" half. Here rather than inside the timeline so
             // that the log and the wire carry *what was applied* — the broadcast
@@ -2228,13 +2211,6 @@ impl Engine {
     #[cfg(not(feature = "debug-unfrozen"))]
     fn note_debug_sample(&mut self, _capture: Capture, _sample: crate::command::InputSample) {}
 
-    /// Mint the next layer id for this client (§17.9).
-    fn mint_layer(&mut self) -> LayerId {
-        let id = LayerId::mint(self.actor(), self.authoring.next_layer);
-        self.authoring.next_layer += 1;
-        id
-    }
-
     /// Point the active layer at something that exists, preferring a paintable one:
     /// a matte may legitimately be selected, but someone who just lost the layer they
     /// were painting on wants to keep painting, not to land on the frame.
@@ -2268,6 +2244,54 @@ impl Engine {
             actor: self.actor(),
         };
         self.authoring.clock += 1;
+        id
+    }
+
+    /// Point the brush at `id` if it landed and can take a stroke.
+    ///
+    /// **Both halves matter and both were written four times** (`AddLayer`,
+    /// `PlaceImage`, `DuplicateLayer`, `MergeLayerDown`), in three spellings: an
+    /// unknown carrier adds nothing (§14.8), so arming an id no layer has would leave
+    /// the next stroke with nowhere to go — and a matte or a filter has no tile map,
+    /// so arming one would swallow that stroke instead (§15.7, §21.4). Which of the
+    /// two each site checked was not a decision anybody had made: two asked
+    /// `contains_layer`, one asked `is_paintable`, and the fourth asked nothing until
+    /// it was noticed.
+    ///
+    /// A no-op otherwise, deliberately: the brush stays where it was, which is a place
+    /// that exists, rather than moving somewhere that cannot be painted on.
+    fn arm_active(&mut self, id: LayerId) {
+        if self.document().layer(id).is_some_and(|l| l.is_paintable()) {
+            self.session.active_layer = id;
+        }
+    }
+
+    /// Commit an action **whose kind names the layers it mints**, and hand back the
+    /// id it was given.
+    ///
+    /// The door [`LayerId`]'s shape asks for: a layer's id is the id of the action
+    /// that minted it, so the kind cannot be built until that id exists — and here it
+    /// cannot be built any other way. Peeking at the clock and committing separately
+    /// would work exactly as long as nothing committed in between, which is a rule a
+    /// call site could forget and no test would notice: the ids would name an action
+    /// that never happened, and the layers would still be distinct.
+    ///
+    /// Everything else goes through [`commit`](Self::commit), which is this with the
+    /// id thrown away.
+    fn commit_minting(&mut self, build: impl FnOnce(ActionId) -> ActionKind) -> ActionId {
+        let id = self.next_action_id();
+        let kind = build(id);
+        // What the door is for, asked of the kind that came back rather than trusted
+        // of the closure that built it: `ActionKind::minted_layers` is the exhaustive
+        // list of what an action claims to mint, so a variant that grew a layer and
+        // forgot to derive its id from `id` is caught here and not by two peers
+        // disagreeing about which layer a stroke landed on.
+        debug_assert!(
+            kind.minted_layers().all(|layer| layer.action == id),
+            "{} mints a layer id that is not this action's",
+            kind.label(),
+        );
+        self.commit_with_id(id, kind);
         id
     }
 }

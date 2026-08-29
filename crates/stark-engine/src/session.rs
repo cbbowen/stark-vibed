@@ -603,11 +603,11 @@ impl Session {
             Some(b) => {
                 let (path, start) = b.fitted();
                 Some(GestureSource::Stroke {
-                    head: StrokeHead {
+                    head: Box::new(StrokeHead {
                         layer: b.layer,
                         brush: b.brush,
                         seed: b.seed,
-                    },
+                    }),
                     path,
                     // A snapped stroke has **no settled prefix**: steering it moves every
                     // control point at once, so nothing may be retired. The whole path
@@ -1247,7 +1247,10 @@ mod tests {
     use stark_model::geom::Extent2;
 
     fn session(action: ShapeAction) -> Session {
-        let mut s = Session::new(ViewTransform::identity(Extent2::new(256, 256)), LayerId(0));
+        let mut s = Session::new(
+            ViewTransform::identity(Extent2::new(256, 256)),
+            LayerId::ROOT,
+        );
         s.shape_action = action;
         s
     }

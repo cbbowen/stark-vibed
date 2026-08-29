@@ -66,17 +66,17 @@ use stark_model::{Srgb, SubstrateScale};
 /// remove the most interesting rows from the table.
 const ACTOR: ActorId = ActorId(1);
 
-const A: LayerId = LayerId(0);
+const A: LayerId = LayerId::ROOT;
 
 /// The layer that **carries** [`INNER`] — a group, so the table can ask what a
 /// removal that takes a subtree commutes with (§14.2).
-const GROUP: LayerId = LayerId(1);
+const GROUP: LayerId = LayerId::solo(1);
 
 /// A layer inside [`GROUP`], painted on. The pair `remove-group` × anything naming
 /// this is the one a footprint can get wrong without any pixel saying so: a removal
 /// that declared only its own id and `StackOrder` was judged to commute with a
 /// stroke in here, and the fast-path undo then put the pre-stroke subtree back.
-const INNER: LayerId = LayerId(2);
+const INNER: LayerId = LayerId::solo(2);
 
 /// A document both runs start from: two layers with paint on them, one of them
 /// carrying a third that is also painted, a selection, and a picture placed — enough
@@ -101,7 +101,7 @@ fn base() -> Option<DocumentFile> {
         carrier: None,
         above: None,
     });
-    for (layer, y) in [(A, 90.0f32), (LayerId(1), 150.0)] {
+    for (layer, y) in [(A, 90.0f32), (LayerId::solo(1), 150.0)] {
         e.process(PeerCommand::SetActiveLayer(layer));
         common::paint(
             &mut e,
@@ -357,7 +357,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push("visible", mint(file, DocCommand::SetLayerVisible(A, false)));
     push(
         "clip",
-        mint(file, DocCommand::SetLayerClip(LayerId(1), true)),
+        mint(file, DocCommand::SetLayerClip(LayerId::solo(1), true)),
     );
     push(
         "rename",

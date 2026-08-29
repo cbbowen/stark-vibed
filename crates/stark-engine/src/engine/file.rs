@@ -25,7 +25,7 @@ use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::DocumentFile;
 use stark_model::SubstrateId;
-use stark_model::document::{Action, ActorId, LayerId};
+use stark_model::document::Action;
 
 /// A [`DocumentFile`] whose color space **this build can honour** (§6.7) — the one
 /// question every adoption path has to settle before it touches the open document.
@@ -724,42 +724,18 @@ impl Engine {
         self.committed_changed();
     }
 
-    /// After loading, advance the id counters past everything in the log so new
+    /// After loading, advance the Lamport clock past everything in the log so new
     /// edits get fresh, monotonic ids.
+    ///
+    /// **One counter, where there were two.** The layer counter that stood beside it
+    /// is gone with the id shape it served: a layer's id is the id of the action that
+    /// minted it (`LayerId`), so resuming the action clock resumes the layer ids too,
+    /// and there is nothing left that could be resumed wrongly. What that machinery
+    /// cost while it existed is written up in §17.9 — a per-actor counter has to be
+    /// recovered from the log at *both* doors a document arrives by, and `AddFilter`
+    /// was missing from the list at one of them until the list stopped being a list.
     pub(super) fn resync_counters(&mut self, actions: &[Action]) {
         let max_lamport = actions.iter().map(|a| a.id.lamport).max();
         self.authoring.clock = max_lamport.map_or(0, |m| m + 1);
-        self.authoring.next_layer = Self::next_ordinal(self.actor(), actions);
-    }
-
-    /// The next layer ordinal `actor` may mint against `actions`: one past the
-    /// highest it has minted in them, or 1 if it has minted none (§17.9).
-    ///
-    /// Only *this* actor's ids are counted, because the id space is partitioned by
-    /// author: resuming past someone else's counter would skip ids for no reason
-    /// and, worse, hide the fact that they cannot collide.
-    ///
-    /// Asked of the log rather than assumed, at both of the two places a client's
-    /// counter is set. "This actor has minted nothing here" is the answer far less
-    /// often than it looks — a re-shared session and a file this same client shared
-    /// before both arrive holding ids in this actor's half of the space — and where
-    /// it is wrong it mints an id the document already holds, which is two layers
-    /// under one id rather than an id merely reused.
-    ///
-    /// Which actions mint an id is asked of [`ActionKind::minted_layers`], beside
-    /// the variants, rather than answered by a list kept here. The list kept here is
-    /// how `AddFilter` came to be missed: it is not the same set as the actions that
-    /// *name* an id, so nothing about a wrong answer shows up until two layers share
-    /// one.
-    ///
-    /// [`ActionKind::minted_layers`]: stark_model::document::ActionKind::minted_layers
-    pub(super) fn next_ordinal(actor: ActorId, actions: &[Action]) -> u64 {
-        actions
-            .iter()
-            .flat_map(|a| a.kind.minted_layers())
-            .filter(|id| id.minted_by(actor))
-            .map(LayerId::ordinal)
-            .max()
-            .map_or(1, |n| n + 1)
     }
 }

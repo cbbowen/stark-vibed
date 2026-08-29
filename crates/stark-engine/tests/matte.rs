@@ -187,7 +187,7 @@ fn matte_below_paint_does_not_cover_it() {
     let matte_id = engine.observe().layers.last().expect("matte").id;
     engine.process(DocCommand::MoveLayer {
         carrier: None,
-        id: LayerId(0),
+        id: LayerId::ROOT,
         at: Place::Above(matte_id),
     });
     let img = engine.render_to_image();
@@ -273,7 +273,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     );
 
     // Selecting a paint layer again resumes painting, so nothing is stuck.
-    engine.process(PeerCommand::SetActiveLayer(LayerId(0)));
+    engine.process(PeerCommand::SetActiveLayer(LayerId::ROOT));
     paint(
         &mut engine,
         RED,

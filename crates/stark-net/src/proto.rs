@@ -80,8 +80,14 @@ use crate::mirror::{Mirror, Served};
 /// 15: `RemoveLayer` carries the subtree it takes, so it can declare the layers
 /// it writes (§12.6) — a reshaping *and* a meaning change, since a removal
 /// whose named subtree is not what the document holds is now declined. A build
-/// that sent the old shape would have its group removals read as a bare id.
-pub(crate) const ALPN: &[u8] = b"stark/collab/15";
+/// that sent the old shape would have its group removals read as a bare id;
+/// 16: a `LayerId` is the **action that minted it**, not a counter partitioned by a
+/// 32-bit fold of the actor (§17.9) — a reshaping of the one type every action that
+/// names a layer carries, and a meaning change besides: two peers whose folds
+/// coincided used to mint colliding ids, which is what the shape now rules out. A
+/// build that sent the old shape would have its layer ids read as an action id and a
+/// `k` cut out of the middle of one.
+pub(crate) const ALPN: &[u8] = b"stark/collab/16";
 
 /// The first byte of every response.
 ///
@@ -350,7 +356,7 @@ mod tests {
             boot: 3,
             seq: 9,
             name: Some("someone".into()),
-            active_layer: stark_model::document::LayerId(0),
+            active_layer: stark_model::document::LayerId::ROOT,
             cursor: Some(stark_model::Vec2::new(1.0, 2.0)),
             gesture: None,
             leaving: false,

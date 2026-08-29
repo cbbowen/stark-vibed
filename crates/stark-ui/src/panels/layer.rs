@@ -205,7 +205,7 @@ pub fn LayerPanel() -> Element {
                     // diffing was harmless while the panel only ever grew and shrank; a
                     // drop reorders, and it would leave the click that follows the release
                     // landing on the row that took the dragged one's place.
-                    key: "{row.info.id.0}",
+                    key: "{row.info.id}",
                     row: row.clone(),
                     motion: land.map_or_else(Motion::default, |l| l.motion(i)),
                     // The one mark that is about a row *other* than the one moving: the
@@ -563,7 +563,7 @@ fn layer_label(info: &LayerInfo) -> String {
         // first thing to know about the row — and a stack of three rows all reading
         // "Filter" would say nothing at all.
         (None, _, Some(f)) => f.label().to_string(),
-        (None, None, None) => format!("Layer {}", info.id.ordinal()),
+        (None, None, None) => format!("Layer {}", info.id.minted_at()),
     }
 }
 
@@ -741,7 +741,7 @@ pub fn LayerRow(
             // A drag measures the DOM and then talks about rows, so the two have to
             // agree; this is what lets it match on identity rather than assume an
             // order the panel does not promise.
-            "data-layer": "{id.0}",
+            "data-layer": "{id}",
             // Release, in the last step of the indent — the space this layer's own
             // membership carved out, which is the only place in the panel that means
             // "the group you are in" without a word. A layer in no group has no such
@@ -898,7 +898,7 @@ pub fn LayerRow(
                             capture_pointer(&e);
                             let p = e.client_coordinates();
                             drag.set(Some(Grab::begin(
-                                id.0.to_string(),
+                                id.to_string(),
                                 layer_boxes(),
                                 (p.x as f32, p.y as f32),
                             )));

@@ -1069,7 +1069,7 @@ fn map_in(
 ///
 /// All-or-nothing on purpose: a partially re-identified subtree would share ids
 /// with the layers it was copied from, and two layers under one id is the state
-/// [`LayerId::mint`] exists to make impossible.
+/// [`LayerId`]'s shape exists to make impossible (§17.9).
 fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
     let id = ids
         .iter()
@@ -1216,9 +1216,9 @@ mod tests {
 
     use stark_model::document::ColorAdjust;
 
-    const BASE: LayerId = LayerId(0);
-    const FILTER: LayerId = LayerId(1);
-    const OTHER: LayerId = LayerId(2);
+    const BASE: LayerId = LayerId::ROOT;
+    const FILTER: LayerId = LayerId::solo(1);
+    const OTHER: LayerId = LayerId::solo(2);
 
     /// A document with one paint layer and one filter above it in the root stack.
     fn with_filter() -> DocState {

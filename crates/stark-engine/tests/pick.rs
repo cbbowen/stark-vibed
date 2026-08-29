@@ -33,7 +33,7 @@ const RED: [f32; 3] = [0.85, 0.12, 0.1];
 const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 /// The layer every fresh document starts with.
-const ROOT: LayerId = LayerId(0);
+const ROOT: LayerId = LayerId::ROOT;
 
 /// A short horizontal stroke through the origin, wide enough that the middle is
 /// solidly covered.
@@ -272,7 +272,7 @@ fn one_layer_ignores_the_layers_over_it() {
         pick(
             &mut engine,
             Vec2::ZERO,
-            one_layer(PickSource::Layer(LayerId(9999)))
+            one_layer(PickSource::Layer(LayerId::solo(9999)))
         ),
         None,
         "a layer that is not there holds nothing"

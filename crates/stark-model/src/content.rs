@@ -214,7 +214,7 @@ mod tests {
 
     fn stroke_with(shape: BrushShape) -> Action {
         act(ActionKind::CommitStroke(StrokeRecord {
-            layer: LayerId(0),
+            layer: LayerId::ROOT,
             brush: BrushParams {
                 shape,
                 ..BrushParams::default()
@@ -248,7 +248,7 @@ mod tests {
                 stroke_with(BrushShape::Stamp(id)),
                 act(ActionKind::SetSubstrate(SubstrateId::Image(id))),
                 act(ActionKind::PlaceImage {
-                    id: LayerId(1),
+                    id: LayerId::solo(1),
                     carrier: None,
                     above: None,
                     at: crate::geom::IVec2::ZERO,

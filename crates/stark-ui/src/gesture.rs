@@ -647,7 +647,7 @@ mod transform_tests {
 
     fn state() -> TransformState {
         TransformState::begin(
-            LayerId(0),
+            LayerId::ROOT,
             (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0)),
             10.0,
         )
@@ -762,7 +762,7 @@ mod gesture_tests {
 
     #[test]
     fn a_fresh_perspective_is_the_identity_and_usable() {
-        let p = PerspectiveUi::begin(LayerId(0), rect());
+        let p = PerspectiveUi::begin(LayerId::ROOT, rect());
         assert!(p.is_identity());
         assert!(p.map().usable());
         assert!(TransformUi::Perspective(p).is_identity());
@@ -770,7 +770,7 @@ mod gesture_tests {
 
     #[test]
     fn a_dragged_corner_lands_under_the_pointer() {
-        let p = PerspectiveUi::begin(LayerId(0), rect());
+        let p = PerspectiveUi::begin(LayerId::ROOT, rect());
         let delta = Vec2::new(-30.0, 22.0);
         let dragged = PerspectiveUi::corner_dragged(p, p, 3, delta, 0.5);
         assert_eq!(dragged.corners[3], p.corners[3] + delta);
@@ -780,7 +780,7 @@ mod gesture_tests {
 
     #[test]
     fn a_corner_pulled_across_the_quad_holds_at_the_last_valid_shape() {
-        let p = PerspectiveUi::begin(LayerId(0), rect());
+        let p = PerspectiveUi::begin(LayerId::ROOT, rect());
         // Almost across: still convex, accepted.
         let near = PerspectiveUi::corner_dragged(p, p, 0, Vec2::new(150.0, 60.0), 0.5);
         assert!(near.map().usable());
@@ -792,7 +792,7 @@ mod gesture_tests {
 
     #[test]
     fn quad_regions_classify_corners_edges_and_inside() {
-        let p = PerspectiveUi::begin(LayerId(0), rect());
+        let p = PerspectiveUi::begin(LayerId::ROOT, rect());
         assert_eq!(p.region(p.corners[1], 8.0, 5.0), QuadRegion::Corner(1));
         // Mid-top edge.
         let mid = (p.corners[0] + p.corners[1]) * 0.5;
@@ -806,14 +806,14 @@ mod gesture_tests {
 
     #[test]
     fn a_fresh_warp_is_the_identity_and_usable() {
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         assert!(w.is_identity());
         assert!(w.map().usable());
     }
 
     #[test]
     fn a_dragged_control_point_lands_under_the_pointer() {
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         let delta = Vec2::new(14.0, -9.0);
         let dragged = WarpUi::point_dragged(w, w, 5, delta, 0.5);
         assert_eq!(dragged.points[5], w.points[5] + delta);
@@ -823,7 +823,7 @@ mod gesture_tests {
 
     #[test]
     fn a_surface_drag_carries_the_grabbed_paint_exactly() {
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         let grab_at = Vec2::new(20.0, -10.0);
         let (t, basis, norm) = w.grab(grab_at);
         let before = w.map().eval(t);
@@ -840,7 +840,7 @@ mod gesture_tests {
 
     #[test]
     fn a_folding_drag_holds_at_the_last_valid_shape() {
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         // Drag an interior point far past its neighbour: the mesh would fold.
         let held = WarpUi::point_dragged(w, w, 5, Vec2::new(250.0, 0.0), 0.5);
         assert_eq!(held, w, "a fold must hold, not tear");
@@ -848,7 +848,7 @@ mod gesture_tests {
 
     #[test]
     fn mesh_regions_classify_points_surface_and_outside() {
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         assert_eq!(w.region(w.points[0], 8.0), MeshRegion::Point(0));
         assert_eq!(w.region(Vec2::new(15.0, 5.0), 8.0), MeshRegion::Inside);
         assert_eq!(w.region(Vec2::new(500.0, 0.0), 8.0), MeshRegion::Outside);
@@ -856,12 +856,12 @@ mod gesture_tests {
 
     #[test]
     fn sub_epsilon_jiggles_snap_back_to_the_start() {
-        let p = PerspectiveUi::begin(LayerId(0), rect());
+        let p = PerspectiveUi::begin(LayerId::ROOT, rect());
         assert_eq!(
             PerspectiveUi::corner_dragged(p, p, 2, Vec2::splat(0.1), 0.5),
             p
         );
-        let w = WarpUi::begin(LayerId(0), rect());
+        let w = WarpUi::begin(LayerId::ROOT, rect());
         assert_eq!(WarpUi::point_dragged(w, w, 5, Vec2::splat(0.1), 0.5), w);
         assert_eq!(WarpUi::translated(w, w, Vec2::splat(0.1), 0.5), w);
     }

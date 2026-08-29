@@ -274,7 +274,8 @@ old files keep opening while promising nothing about what they produce, so an ac
 is retired by **tombstoning** it: keep the variant, hollow the payload out to what is
 still read, make it a no-op with an empty footprint. Keep whatever is load-bearing
 outside the fold, though — an `Add…` variant's `id` is still owed to `minted_layers`,
-or a reload mints that layer id a second time (§17.9). And a tombstone changes what a
+which is what every reference to that layer elsewhere in the log is resolved against
+(§17.9). And a tombstone changes what a
 log *means* with its shape untouched, so it bumps the ALPN: a file may be read by a
 build that disagrees with it, a live session may not (§12.6).
 

@@ -1635,7 +1635,7 @@ mod tests {
     /// A stroke through `pts` with `brush`, as plain full-pressure knots.
     fn record(brush: stark_model::document::BrushParams, pts: &[Vec2]) -> StrokeRecord {
         StrokeRecord {
-            layer: stark_model::document::LayerId(0),
+            layer: stark_model::document::LayerId::ROOT,
             brush,
             path: pts
                 .iter()

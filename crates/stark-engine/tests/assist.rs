@@ -24,7 +24,10 @@ use stark_model::document::{LayerId, PerspectiveGuide, Scaffold};
 use stark_model::geom::{Ellipse, Extent2, Vec2};
 
 fn session() -> Session {
-    Session::new(ViewTransform::identity(Extent2::new(512, 512)), LayerId(0))
+    Session::new(
+        ViewTransform::identity(Extent2::new(512, 512)),
+        LayerId::ROOT,
+    )
 }
 
 /// What a session is offered when no guide is up — most of the tests here.

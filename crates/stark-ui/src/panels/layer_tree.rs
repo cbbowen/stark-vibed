@@ -117,7 +117,7 @@ impl Landing {
 /// cover every depth beneath it without a gap.
 pub(super) fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
     // Each row's box, found by the id it wears rather than by where it sits.
-    let keys: Vec<String> = display.iter().map(|r| r.info.id.0.to_string()).collect();
+    let keys: Vec<String> = display.iter().map(|r| r.info.id.to_string()).collect();
     let (from, boxes) = drag.resolve(&keys)?;
     let deep = display[from].info.depth;
     // The block reaches back over the rows this one carries — everything above it
@@ -273,12 +273,12 @@ mod tests {
 
     fn info(id: u64, depth: usize, carrier: Option<u64>, is_group: bool) -> LayerInfo {
         LayerInfo {
-            id: LayerId(id),
+            id: LayerId::solo(id),
             blend: BlendMode::Normal,
             clip: false,
             opacity: 1.0,
             visible: true,
-            carrier: carrier.map(LayerId),
+            carrier: carrier.map(LayerId::solo),
             depth,
             is_group,
             has_backdrop: true,
@@ -338,8 +338,8 @@ mod tests {
     fn boxes(rows: &[Row], missing: Option<u64>) -> Vec<(String, f32, f32)> {
         rows.iter()
             .enumerate()
-            .filter(|(_, r)| Some(r.info.id.0) != missing)
-            .map(|(i, r)| (r.info.id.0.to_string(), FIRST + i as f32 * STEP, H))
+            .filter(|(_, r)| missing.map(LayerId::solo).as_ref() != Some(&r.info.id))
+            .map(|(i, r)| (r.info.id.to_string(), FIRST + i as f32 * STEP, H))
             .collect()
     }
 
@@ -351,10 +351,10 @@ mod tests {
     fn drag_of(measured: Vec<(String, f32, f32)>, rows: &[Row], id: u64, dx: f32, dy: f32) -> Grab {
         let at = rows
             .iter()
-            .position(|r| r.info.id == LayerId(id))
+            .position(|r| r.info.id == LayerId::solo(id))
             .expect("the dragged row is displayed");
         let anchor = (200.0, FIRST + at as f32 * STEP + H * 0.5);
-        let mut grab = Grab::begin(id.to_string(), measured, anchor);
+        let mut grab = Grab::begin(LayerId::solo(id).to_string(), measured, anchor);
         grab.track((anchor.0 + dx, anchor.1 + dy), true);
         grab
     }
@@ -371,7 +371,7 @@ mod tests {
     fn a_drag_down_lands_above_the_row_it_passed() {
         let rows = flat();
         let l = landing(&rows, &drag(&rows, 1, 0.0, STEP)).expect("resolves");
-        assert_eq!((l.carrier, l.at), (None, Place::Above(LayerId(3))));
+        assert_eq!((l.carrier, l.at), (None, Place::Above(LayerId::solo(3))));
         assert!(!l.inert);
     }
 
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(straight.depth, 0);
         assert_eq!(
             (over.carrier, over.at),
-            (Some(LayerId(3)), Place::Bottom),
+            (Some(LayerId::solo(3)), Place::Bottom),
             "one indent right of the same seam, layer 3 carries it"
         );
     }
@@ -409,14 +409,14 @@ mod tests {
         use stark_model::document::{ColorAdjust, Filter};
         let mut rows = flat();
         rows.iter_mut()
-            .find(|r| r.info.id == LayerId(3))
+            .find(|r| r.info.id == LayerId::solo(3))
             .expect("row 3 is displayed")
             .info
             .filter = Some(Filter::Color(ColorAdjust::NEUTRAL));
         let over = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
         assert_eq!(
             (over.depth, over.carrier, over.at),
-            (0, None, Place::Above(LayerId(3))),
+            (0, None, Place::Above(LayerId::solo(3))),
             "an indent right of the seam over a filter stays in the filter's stack"
         );
     }
@@ -463,22 +463,22 @@ mod tests {
         };
         assert_eq!(
             landed(0.0),
-            (0, None, Place::Above(LayerId(5))),
+            (0, None, Place::Above(LayerId::solo(5))),
             "the document's own stack, above the group"
         );
         assert_eq!(
             landed(1.0),
-            (1, Some(LayerId(5)), Place::Above(LayerId(4))),
+            (1, Some(LayerId::solo(5)), Place::Above(LayerId::solo(4))),
             "inside G, above H"
         );
         assert_eq!(
             landed(2.0),
-            (2, Some(LayerId(4)), Place::Above(LayerId(3))),
+            (2, Some(LayerId::solo(4)), Place::Above(LayerId::solo(3))),
             "inside H, above K"
         );
         assert_eq!(
             landed(3.0),
-            (3, Some(LayerId(3)), Place::Bottom),
+            (3, Some(LayerId::solo(3)), Place::Bottom),
             "and one deeper still is K carrying it"
         );
     }
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn a_group_cannot_be_dropped_inside_itself() {
         let rows = nested();
-        let block = [LayerId(3), LayerId(4), LayerId(5)];
+        let block = [LayerId::solo(3), LayerId::solo(4), LayerId::solo(5)];
         for steps in 0..8 {
             for dy in [-3.0 * STEP, -STEP, 0.0, STEP, 3.0 * STEP] {
                 let d = drag(&rows, 5, steps as f32 * INDENT as f32, dy);
@@ -530,7 +530,7 @@ mod tests {
         // One row down puts the seam directly over the shut group, and one indent
         // right is the depth that goes into it.
         let l = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
-        assert_eq!((l.carrier, l.at), (Some(LayerId(3)), Place::Top));
+        assert_eq!((l.carrier, l.at), (Some(LayerId::solo(3)), Place::Top));
     }
 
     /// A row the drag has no box for resolves to nothing at all: the panel draws

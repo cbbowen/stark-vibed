@@ -387,7 +387,7 @@ mod tests {
                 actor: ActorId(7),
             },
             kind: ActionKind::AddLayer {
-                id: LayerId(2),
+                id: LayerId::solo(2),
                 carrier: None,
                 above: None,
             },
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(back.canvas, doc.canvas);
         assert!(matches!(
             back.actions[0].kind,
-            ActionKind::AddLayer { id: LayerId(2), .. }
+            ActionKind::AddLayer { id, .. } if id == LayerId::solo(2)
         ));
     }
 
@@ -509,7 +509,7 @@ mod tests {
                     actor: ActorId(7),
                 },
                 kind: ActionKind::AddLayer {
-                    id: LayerId(2),
+                    id: LayerId::solo(2),
                     carrier: None,
                     above: None,
                 },
@@ -599,7 +599,7 @@ mod tests {
                 OldAction {
                     id: at(3),
                     kind: OldKind::AddMatte {
-                        id: LayerId(1),
+                        id: LayerId::solo(1),
                         carrier: None,
                         at: Place::Bottom,
                         region: MatteRegion::Everything,

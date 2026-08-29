@@ -262,7 +262,7 @@ fn undo_splices_past_a_rename() {
     bar(&mut a, RED, (20.0, 230.0), 128.0);
     sync(&mut a, &mut b);
     b.process(DocCommand::SetLayerName(
-        LayerId(0),
+        LayerId::ROOT,
         Some("underpainting".into()),
     ));
     sync(&mut b, &mut a);
@@ -275,7 +275,7 @@ fn undo_splices_past_a_rename() {
     assert_eq!(stats.fast_removes, 1);
     for e in [&mut a, &mut b] {
         let observed = e.observe();
-        let layer = observed.layers.iter().find(|l| l.id == LayerId(0));
+        let layer = observed.layers.iter().find(|l| l.id == LayerId::ROOT);
         assert_eq!(
             layer.and_then(|l| l.name.as_deref()),
             Some("underpainting"),

@@ -26,7 +26,7 @@ fn frame(seq: u64, name: &str) -> PeerFrame {
         boot: 0,
         seq,
         name: Some(name.to_string()),
-        active_layer: LayerId(0),
+        active_layer: LayerId::ROOT,
         cursor: Some(stark_model::Vec2::new(12.0, 34.0)),
         gesture: None,
         leaving: false,
@@ -96,7 +96,7 @@ async fn presence_never_enters_the_snapshot() {
             lamport: 1,
             actor: host.actor_id(),
         },
-        kind: ActionKind::SetLayerVisible(LayerId(0), true),
+        kind: ActionKind::SetLayerVisible(LayerId::ROOT, true),
     })
     .expect("broadcast action");
     for seq in 6..=10 {

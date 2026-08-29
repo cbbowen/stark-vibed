@@ -306,7 +306,10 @@ fn a_pixel_staircase_holds_its_heading() {
     use stark_model::document::{ActorId, LayerId};
     use stark_model::geom::Extent2;
 
-    let mut session = Session::new(ViewTransform::identity(Extent2::new(512, 512)), LayerId(0));
+    let mut session = Session::new(
+        ViewTransform::identity(Extent2::new(512, 512)),
+        LayerId::ROOT,
+    );
     // A 1-in-4 staircase: the pixel grid's rendering of a line at atan(1/4).
     let true_heading = 0.25_f32.atan();
     let mut samples = Vec::new();
@@ -390,7 +393,12 @@ fn the_run_up_conditions_the_strokes_entry() {
     use stark_model::document::LayerId;
     use stark_model::geom::Extent2;
 
-    let session = || Session::new(ViewTransform::identity(Extent2::new(512, 512)), LayerId(0));
+    let session = || {
+        Session::new(
+            ViewTransform::identity(Extent2::new(512, 512)),
+            LayerId::ROOT,
+        )
+    };
     let true_heading = 0.25_f32.atan();
 
     // The 1-in-4 staircase — the grid's rendering of the 14° line — from

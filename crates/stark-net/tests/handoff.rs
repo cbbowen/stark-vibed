@@ -15,7 +15,7 @@ use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionT
 fn action(actor: ActorId, lamport: u64) -> Action {
     Action {
         id: ActionId { lamport, actor },
-        kind: ActionKind::SetLayerVisible(LayerId(1), true),
+        kind: ActionKind::SetLayerVisible(LayerId::solo(1), true),
     }
 }
 

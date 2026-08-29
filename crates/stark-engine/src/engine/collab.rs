@@ -81,15 +81,18 @@ impl Engine {
                 a.id.actor = actor;
             }
         }
-        // The layer-id space belongs to the actor, so this client's counter resumes
-        // past whatever *it* has already minted here (§17.9). A first share finds
-        // nothing and so does start at 1: the layer ids in a solo log are `SOLO`'s,
-        // and unlike the action ids above they are deliberately left that way. What
-        // restarting regardless got wrong is that the actor of a second share is the
-        // first one back again — an identity is a browser's persisted key, not a
-        // session's — as is the actor of a file this client shared before and has
-        // just loaded.
-        self.authoring.next_layer = Self::next_ordinal(actor, &log);
+        // **The layer ids inside those actions still say `SOLO`, and stay that way.**
+        // A `LayerId` names the action that minted it, so rewriting the log's actor
+        // above did not rewrite them — and must not: every reference to a layer, in
+        // every later stroke, move and merge, would have to move with it, which is a
+        // rewrite of the whole log to change nothing that can be observed. What an id
+        // has to be is unique, and it still is: `SOLO` authors no action in a shared
+        // session, so nothing this actor mints from here on can land on one of these.
+        //
+        // There is no counter to resume. That is the whole of what the id's shape
+        // bought here — this was the second of the two doors §17.9's per-actor counter
+        // had to be recovered at, and getting it wrong minted an id the document
+        // already held.
         // Replay from the substrate this document's log *starts* from, not from the
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.

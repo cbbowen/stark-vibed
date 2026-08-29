@@ -31,7 +31,7 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 
-const ROOT: LayerId = LayerId(0);
+const ROOT: LayerId = LayerId::ROOT;
 
 /// Every mode that combines rather than covers, each at the setting a fresh layer
 /// wears — the three a same-mode merge has to hold for. `Drago`'s bend is part of the

@@ -428,9 +428,9 @@ mod tests {
     use stark_model::document::Place;
     use stark_model::document::{ActionId, ActionKind};
 
-    const A: LayerId = LayerId(0);
-    const B: LayerId = LayerId(1);
-    const C: LayerId = LayerId(2);
+    const A: LayerId = LayerId::ROOT;
+    const B: LayerId = LayerId::solo(1);
+    const C: LayerId = LayerId::solo(2);
 
     fn act(kind: ActionKind) -> Action {
         Action {
@@ -494,13 +494,18 @@ mod tests {
         // somewhere to land.
         let before = flat()
             .insert_matte(
-                LayerId(3),
+                LayerId::solo(3),
                 None,
                 Place::Top,
                 rect,
                 Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
             )
-            .insert_filter(LayerId(4), None, None, Filter::Color(ColorAdjust::NEUTRAL));
+            .insert_filter(
+                LayerId::solo(4),
+                None,
+                None,
+                Filter::Color(ColorAdjust::NEUTRAL),
+            );
 
         for prop in Prop::ALL {
             let (kind, target) = match prop {
@@ -510,18 +515,18 @@ mod tests {
                 Prop::Visible => (ActionKind::SetLayerVisible(B, false), B),
                 Prop::Name => (ActionKind::SetLayerName(B, Some("wash".into())), B),
                 Prop::Matte => (
-                    ActionKind::SetMattePaint(LayerId(3), Parcel::Solid(Srgb::new([1.0; 3]))),
-                    LayerId(3),
+                    ActionKind::SetMattePaint(LayerId::solo(3), Parcel::Solid(Srgb::new([1.0; 3]))),
+                    LayerId::solo(3),
                 ),
                 Prop::Filter => (
                     ActionKind::SetFilter(
-                        LayerId(4),
+                        LayerId::solo(4),
                         Filter::Color(ColorAdjust {
                             saturation: 0.0,
                             ..ColorAdjust::NEUTRAL
                         }),
                     ),
-                    LayerId(4),
+                    LayerId::solo(4),
                 ),
             };
             let action = act(kind);
@@ -588,10 +593,10 @@ mod tests {
     #[test]
     fn existence_round_trips_in_both_directions() {
         let before = flat();
-        let added = before.insert_layer(LayerId(9), None, Some(A));
+        let added = before.insert_layer(LayerId::solo(9), None, Some(A));
         let back = undo(
             &act(ActionKind::AddLayer {
-                id: LayerId(9),
+                id: LayerId::solo(9),
                 carrier: None,
                 above: Some(A),
             }),

@@ -49,8 +49,8 @@ use stark_testdata::vocabulary::{KINDS, labels, slot};
 /// are held fixed, since poisoning them is a different question and one the encoding
 /// answers (§8).
 fn kinds(n: f32) -> [ActionKind; KINDS] {
-    let id = LayerId(3);
-    let other = LayerId(1);
+    let id = LayerId::solo(3);
+    let other = LayerId::solo(1);
     let action = ActionId {
         lamport: 1,
         actor: ActorId::SOLO,
@@ -196,7 +196,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             map: WarpMap::identity(v, v, 2, 2),
         },
         ActionKind::DuplicateLayer {
-            ids: vec![(id, LayerId(9))],
+            ids: vec![(id, LayerId::solo(9))],
         },
         ActionKind::AddFilter {
             id,
@@ -562,7 +562,12 @@ fn every_action_reaching_a_state_has_been_through_the_funnel() {
 /// are: measured today, every kind claims at most 3 reads (`CommitStroke`, which
 /// names the layer it paints on, the author's mask and the substrate that tooths
 /// it) and at most 7 writes (`MergeLayerDown`, which names everything about both
-/// layers), with `size_of::<Resource>() == 32` and `size_of::<Footprint>() == 48`.
+/// layers), with `size_of::<Resource>() == 48` and `size_of::<Footprint>() == 48`.
+///
+/// A `Resource` grew from 32 bytes to 48 when a `LayerId` stopped being a `u64` and
+/// became the id of the action that minted it (§17.9) — 24 bytes, which
+/// `Resource::Paint`'s `TileRect` then rounds up. That is the price of the collision
+/// class the id's shape rules out, paid in a list of at most ten.
 ///
 /// The one kind that scales is `DuplicateLayer`, whose lists grow with the subtree
 /// it copies — and that is exactly why `Resource::Layer` exists, collapsing nine
@@ -581,7 +586,7 @@ fn a_footprint_stays_small_enough_for_a_nested_scan() {
     const MAX_READS: usize = 3;
     const MAX_WRITES: usize = 7;
 
-    assert_eq!(std::mem::size_of::<Resource>(), 32);
+    assert_eq!(std::mem::size_of::<Resource>(), 48);
     assert_eq!(std::mem::size_of::<Footprint>(), 48);
 
     for kind in kinds(0.5) {

@@ -671,7 +671,7 @@ mod tests {
     /// that layer and nothing of any other.
     #[test]
     fn a_whole_layer_claim_meets_every_finer_claim_on_it() {
-        let (a, b) = (LayerId(4), LayerId(9));
+        let (a, b) = (LayerId::solo(4), LayerId::solo(9));
         let whole = Resource::Layer(a);
         let finer = [
             Resource::Existence(a),
@@ -712,11 +712,14 @@ mod tests {
     /// than the spelling: what must hold is that each of the nine still conflicts.
     #[test]
     fn a_duplicate_conflicts_with_every_edit_inside_what_it_copies() {
-        let inner = LayerId(3);
+        let inner = LayerId::solo(3);
         let dup = act(
             1,
             ActionKind::DuplicateLayer {
-                ids: vec![(LayerId(2), LayerId(20)), (inner, LayerId(30))],
+                ids: vec![
+                    (LayerId::solo(2), LayerId::solo(20)),
+                    (inner, LayerId::solo(30)),
+                ],
             },
         );
         let edits = [
@@ -744,44 +747,53 @@ mod tests {
         let paint = stroke(2, inner, Vec2::ZERO, Vec2::splat(40.0), 8.0);
         assert!(!commutes(&dup, &paint));
         // …and a layer it does not copy is still free.
-        let elsewhere = stroke(2, LayerId(99), Vec2::ZERO, Vec2::splat(40.0), 8.0);
+        let elsewhere = stroke(2, LayerId::solo(99), Vec2::ZERO, Vec2::splat(40.0), 8.0);
         assert!(commutes(&dup, &elsewhere));
     }
 
     #[test]
     fn strokes_on_different_layers_commute() {
-        let a = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(100.0), 16.0);
-        let b = stroke(2, LayerId(1), Vec2::ZERO, Vec2::splat(100.0), 16.0);
+        let a = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(100.0), 16.0);
+        let b = stroke(2, LayerId::solo(1), Vec2::ZERO, Vec2::splat(100.0), 16.0);
         assert!(commutes(&a, &b));
     }
 
     #[test]
     fn distant_strokes_on_one_layer_commute_and_near_ones_conflict() {
-        let a = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(60.0), 16.0);
+        let a = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(60.0), 16.0);
         let far = stroke(
             2,
-            LayerId(0),
+            LayerId::ROOT,
             Vec2::splat(2000.0),
             Vec2::splat(2100.0),
             16.0,
         );
-        let near = stroke(2, LayerId(0), Vec2::splat(80.0), Vec2::splat(300.0), 16.0);
+        let near = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(80.0),
+            Vec2::splat(300.0),
+            16.0,
+        );
         assert!(commutes(&a, &far));
         assert!(!commutes(&a, &near));
     }
 
     #[test]
     fn rename_commutes_with_strokes_but_not_with_removal() {
-        let name = act(1, ActionKind::SetLayerName(LayerId(0), Some("wash".into())));
-        let paint = stroke(2, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let name = act(
+            1,
+            ActionKind::SetLayerName(LayerId::ROOT, Some("wash".into())),
+        );
+        let paint = stroke(2, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
         let remove = act(
             2,
             ActionKind::RemoveLayer {
-                id: LayerId(0),
+                id: LayerId::ROOT,
                 carried: Vec::new(),
             },
         );
-        let other_name = act(2, ActionKind::SetLayerName(LayerId(0), None));
+        let other_name = act(2, ActionKind::SetLayerName(LayerId::ROOT, None));
         assert!(commutes(&name, &paint));
         assert!(!commutes(&name, &remove));
         assert!(!commutes(&name, &other_name));
@@ -790,8 +802,14 @@ mod tests {
     #[test]
     fn selection_gates_only_its_author() {
         let select = act(1, ActionKind::InvertSelection);
-        let own = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 8.0);
-        let other = stroke(2, LayerId(0), Vec2::splat(500.0), Vec2::splat(600.0), 8.0);
+        let own = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let other = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(500.0),
+            Vec2::splat(600.0),
+            8.0,
+        );
         assert!(!commutes(&select, &own));
         assert!(commutes(&select, &other));
     }
@@ -808,8 +826,14 @@ mod tests {
     /// shared document state, so it gates every author's paint at once.
     #[test]
     fn a_stroke_does_not_commute_with_the_substrate_under_it() {
-        let own = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 8.0);
-        let theirs = stroke(2, LayerId(1), Vec2::splat(500.0), Vec2::splat(600.0), 8.0);
+        let own = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let theirs = stroke(
+            2,
+            LayerId::solo(1),
+            Vec2::splat(500.0),
+            Vec2::splat(600.0),
+            8.0,
+        );
         for substrate in [
             act(1, ActionKind::SetSubstrate(crate::SubstrateId::Flat)),
             act(
@@ -832,7 +856,7 @@ mod tests {
         let add = act(
             1,
             ActionKind::AddLayer {
-                id: LayerId(7),
+                id: LayerId::solo(7),
                 carrier: None,
                 above: None,
             },
@@ -840,7 +864,7 @@ mod tests {
         let mv = act(
             2,
             ActionKind::MoveLayer {
-                id: LayerId(3),
+                id: LayerId::solo(3),
                 carrier: None,
                 at: Place::Top,
             },
@@ -853,13 +877,13 @@ mod tests {
     /// (§14.8) — while two clip toggles on one layer do not.
     #[test]
     fn clip_commutes_with_blend_but_not_with_itself() {
-        let clip = act(1, ActionKind::SetLayerClip(LayerId(0), true));
+        let clip = act(1, ActionKind::SetLayerClip(LayerId::ROOT, true));
         let blend = act(
             2,
-            ActionKind::SetLayerBlend(LayerId(0), crate::document::BlendMode::Multiply),
+            ActionKind::SetLayerBlend(LayerId::ROOT, crate::document::BlendMode::Multiply),
         );
-        let unclip = act(2, ActionKind::SetLayerClip(LayerId(0), false));
-        let elsewhere = act(2, ActionKind::SetLayerClip(LayerId(1), true));
+        let unclip = act(2, ActionKind::SetLayerClip(LayerId::ROOT, false));
+        let elsewhere = act(2, ActionKind::SetLayerClip(LayerId::solo(1), true));
         assert!(commutes(&clip, &blend));
         assert!(commutes(&clip, &elsewhere));
         assert!(!commutes(&clip, &unclip));
@@ -905,7 +929,7 @@ mod tests {
                 time: 0.0,
             };
             stroke_rect(&StrokeRecord {
-                layer: LayerId(0),
+                layer: LayerId::ROOT,
                 brush: BrushParams {
                     size: 40.0,
                     stretch,
@@ -932,7 +956,13 @@ mod tests {
     /// path would splice on a lie, and no pixel could show it.
     #[test]
     fn an_unboundable_stroke_claims_the_layer_rather_than_the_origin() {
-        let elsewhere = stroke(2, LayerId(0), Vec2::splat(9000.0), Vec2::splat(9100.0), 8.0);
+        let elsewhere = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(9000.0),
+            Vec2::splat(9100.0),
+            8.0,
+        );
         let claims_all = |a: &Action| match &compute_footprint(a).writes[..] {
             [Resource::Paint(_, rect)] => *rect == TileRect::ALL,
             _ => false,
@@ -940,23 +970,35 @@ mod tests {
 
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             // A radius that cannot be padded with.
-            let mut a = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), bad);
+            let mut a = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), bad);
             assert!(claims_all(&a), "radius {bad} must claim the layer");
             assert!(!commutes(&a, &elsewhere));
 
             // A path point that cannot be bounded. `f32::min` would have stepped
             // over it and left the other point's box looking exact.
-            a = stroke(1, LayerId(0), Vec2::new(bad, 0.0), Vec2::splat(50.0), 8.0);
+            a = stroke(
+                1,
+                LayerId::ROOT,
+                Vec2::new(bad, 0.0),
+                Vec2::splat(50.0),
+                8.0,
+            );
             assert!(claims_all(&a), "path point {bad} must claim the layer");
             assert!(!commutes(&a, &elsewhere));
         }
 
         // Finite, but past what an `i32` tile index can address: clamping inward
         // (what the old `clamp(-1e9, 1e9)` did) would shrink the claim.
-        let far = stroke(1, LayerId(0), Vec2::splat(1.0e30), Vec2::splat(1.1e30), 8.0);
+        let far = stroke(
+            1,
+            LayerId::ROOT,
+            Vec2::splat(1.0e30),
+            Vec2::splat(1.1e30),
+            8.0,
+        );
         assert!(claims_all(&far));
         // …and an ordinary stroke still claims an ordinary box.
-        let ordinary = stroke(1, LayerId(0), Vec2::ZERO, Vec2::splat(50.0), 16.0);
+        let ordinary = stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 16.0);
         assert!(!claims_all(&ordinary));
         assert!(commutes(&ordinary, &elsewhere));
     }
@@ -969,16 +1011,16 @@ mod tests {
         let a_onto_b = act(
             1,
             ActionKind::MoveLayer {
-                id: LayerId(0),
-                carrier: Some(LayerId(1)),
+                id: LayerId::ROOT,
+                carrier: Some(LayerId::solo(1)),
                 at: Place::Top,
             },
         );
         let b_onto_a = act(
             2,
             ActionKind::MoveLayer {
-                id: LayerId(1),
-                carrier: Some(LayerId(0)),
+                id: LayerId::solo(1),
+                carrier: Some(LayerId::ROOT),
                 at: Place::Top,
             },
         );

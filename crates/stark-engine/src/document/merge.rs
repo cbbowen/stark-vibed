@@ -400,10 +400,10 @@ mod tests {
         BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, Place,
     };
 
-    const A: LayerId = LayerId(0);
-    const B: LayerId = LayerId(1);
-    const C: LayerId = LayerId(2);
-    const D: LayerId = LayerId(3);
+    const A: LayerId = LayerId::ROOT;
+    const B: LayerId = LayerId::solo(1);
+    const C: LayerId = LayerId::solo(2);
+    const D: LayerId = LayerId::solo(3);
 
     const MODES: [BlendMode; 3] = [
         BlendMode::Reinhard,

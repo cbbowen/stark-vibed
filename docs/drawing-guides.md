@@ -351,11 +351,14 @@ the log's total-order key `(lamport, actor)`, so it is already globally unique:
 two actions cannot share one, therefore two guides cannot. That makes "no two
 guides carry the same id" a property of the representation rather than a rule a
 call site could forget (§1), and it means there is no per-actor counter to
-partition and nothing for `resync_counters` to resume past — the whole apparatus
-§17.9 needs for layers. It works here and not for layers because of a difference
-in the vocabularies rather than a preference: one `AddGuide` mints exactly one
-guide, where `DuplicateLayer` mints one id per layer of a subtree and so has to
-carry a map of them in its payload. An action id can name one thing.
+partition and nothing for `resync_counters` to resume past.
+
+**Layers followed** (§17.9). What kept them from doing so at first was a
+difference in the vocabularies rather than a preference: one `AddGuide` mints
+exactly one guide, where `DuplicateLayer` mints one id per layer of a subtree, and
+an action id can name one thing. A `LayerId` therefore carries a `k` beside the
+action id — which of that action's layers this is — and a guide, minting one, has
+no use for it.
 
 The engine therefore mints nothing when a guide is added, and the frontend
 learns the new id by reading the roster back off the projection — which is why

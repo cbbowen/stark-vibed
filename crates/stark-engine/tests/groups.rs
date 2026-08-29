@@ -29,7 +29,7 @@ use stark_model::Srgb;
 use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 
-const ROOT: LayerId = LayerId(0);
+const ROOT: LayerId = LayerId::ROOT;
 
 const WARM: [f32; 3] = [0.90, 0.35, 0.10];
 const COOL: [f32; 3] = [0.10, 0.30, 0.85];

@@ -337,7 +337,7 @@ mod tests {
     /// about the tree, and nothing here reads one.
     fn paint(id: u64, revision: u64) -> LayerInfo {
         LayerInfo {
-            id: LayerId(id),
+            id: LayerId::solo(id),
             blend: BlendMode::Normal,
             clip: false,
             opacity: 1.0,
@@ -357,7 +357,7 @@ mod tests {
 
     fn thumb(id: u64, revision: u64) -> Thumb {
         Thumb {
-            layer: LayerId(id),
+            layer: LayerId::solo(id),
             revision,
             url: format!("data:image/png;base64,r{revision}"),
         }
@@ -371,7 +371,7 @@ mod tests {
     fn a_commit_does_not_take_the_row_s_picture_away() {
         let cache = [thumb(1, 7)];
         assert_eq!(
-            held(&cache, LayerId(1)).map(|t| t.url.as_str()),
+            held(&cache, LayerId::solo(1)).map(|t| t.url.as_str()),
             Some("data:image/png;base64,r7")
         );
     }
@@ -382,7 +382,7 @@ mod tests {
     fn but_it_is_still_the_row_to_render_next() {
         assert_eq!(
             first_stale(&[paint(1, 8)], &[thumb(1, 7)]),
-            Some((LayerId(1), 8))
+            Some((LayerId::solo(1), 8))
         );
         assert_eq!(first_stale(&[paint(1, 8)], &[thumb(1, 8)]), None);
     }
@@ -397,6 +397,6 @@ mod tests {
             ..paint(1, 8)
         };
         assert_eq!(first_stale(&[hidden], &[thumb(1, 7)]), None);
-        assert!(held(&[thumb(1, 7)], LayerId(1)).is_some());
+        assert!(held(&[thumb(1, 7)], LayerId::solo(1)).is_some());
     }
 }

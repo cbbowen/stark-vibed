@@ -146,11 +146,12 @@ pub struct StrokeRecord {
 ///    reads and writes nothing and commutes with everything.
 ///
 /// **Keep any field that is load-bearing outside the fold**, which is the trap here
-/// rather than the payload's size. An `Add…` variant's `id` is one:
-/// [`minted_layers`](Self::minted_layers) reports the ordinals a client's counter has
-/// to resume past (§17.9), and a tombstone that dropped its `id` would let a reload
-/// mint that layer id a second time — two layers under one id, the convergence
-/// failure per-client identity exists to rule out.
+/// rather than the payload's size. An `Add…` variant's `id` is one: every later
+/// reference to that layer — every stroke on it, every move of it, every merge into
+/// it — is resolved against it, so a tombstone that dropped its `id` would leave the
+/// rest of the log naming a layer nothing had introduced (§17.9). It is also what
+/// [`minted_layers`](Self::minted_layers) reads, and so what the mint door checks
+/// itself against.
 ///
 /// **A tombstone is a wire change, not only a file change.** Two peers where one
 /// still applies the action and the other ignores it diverge silently, and pixels
@@ -585,16 +586,20 @@ pub enum ActionKind {
 
 impl ActionKind {
     /// Every layer id this action **mints** — the ids a client's counter has to
-    /// resume past when it picks a log back up (§17.9).
+    /// mints, which the engine's mint door checks are its own (§17.9).
+    ///
+    /// **The check it exists for**: a `LayerId` is the id of the action that minted
+    /// it, and `Engine::commit_minting` is where that is arranged — it draws the
+    /// action id, hands it to the closure that builds the kind, and then asks this
+    /// which layers the kind claims to mint and whether they all name that id. What
+    /// the door can enforce, the shape need not be trusted about.
     ///
     /// Lives here, beside the variants, because it is a fact about *them*: minting
-    /// is what an `Add…` action does, and an engine that keeps its own list of which
-    /// ones do has a list that a new variant does not appear in.
-    /// The engine's `resync_counters` kept exactly such a list, `AddFilter` was
-    /// added after it, and a document whose highest id came from a filter reloaded
-    /// with a counter that would mint that id a second time — two layers with one
-    /// id, which is the convergence failure §17.9 says per-client identity rules
-    /// out.
+    /// is what an `Add…` action does, and a caller that keeps its own list of which
+    /// ones do has a list a new variant does not appear in. The engine kept exactly
+    /// such a list once, `AddFilter` was added after it, and a document whose highest
+    /// id came from a filter reloaded with a counter that would mint that id a second
+    /// time — two layers under one id, the convergence failure §17.9 is about.
     ///
     /// **Exhaustive, with no `_` arm, and that is the whole point of it.** A variant
     /// added to the enum stops this function compiling, three lines from the doc
@@ -602,9 +607,9 @@ impl ActionKind {
     /// uses, for the same reason and after the same variant escaped it.
     ///
     /// Note it reports what the action *names as minted*, not what applying it
-    /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and its
-    /// ordinal is still spent — which is the answer the counter wants, since
-    /// re-minting it would collide with a peer who accepted the same action.
+    /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and the id it
+    /// named belongs to it regardless — which is the honest answer, since the same
+    /// action accepted by a peer does insert under exactly that id.
     pub fn minted_layers(&self) -> impl Iterator<Item = LayerId> + '_ {
         // One id, or a map of them — the two shapes minting comes in. Named as a
         // pair so the match below decides nothing else.
@@ -948,7 +953,7 @@ mod tests {
         let bad = f32::NAN;
 
         let stroke = ActionKind::CommitStroke(StrokeRecord {
-            layer: LayerId(0),
+            layer: LayerId::ROOT,
             brush: BrushParams {
                 size: bad,
                 tooth: crate::document::brush::ToothParams {
@@ -983,7 +988,7 @@ mod tests {
         );
         assert_eq!((op.feather(), op.opacity()), (0.0, 1.0), "held at the door");
         let fill = ActionKind::Fill {
-            layer: LayerId(0),
+            layer: LayerId::ROOT,
             op: op.clone(),
         }
         .sanitized();
@@ -1002,7 +1007,7 @@ mod tests {
 
         // A layer's opacity is a coverage weight the compositor multiplies by.
         let ActionKind::SetLayerOpacity(_, a) =
-            ActionKind::SetLayerOpacity(LayerId(0), bad).sanitized()
+            ActionKind::SetLayerOpacity(LayerId::ROOT, bad).sanitized()
         else {
             panic!()
         };

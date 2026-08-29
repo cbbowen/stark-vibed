@@ -13,8 +13,19 @@ use stark_model::geom::{Extent2, Vec2};
 const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
-const ROOT: LayerId = LayerId(0);
-const TOP: LayerId = LayerId(1);
+const ROOT: LayerId = LayerId::ROOT;
+
+/// The layer the most recent `AddLayer` created — the second of [`two_layers`]'.
+///
+/// **Read back rather than predicted.** A `LayerId` is the id of the action that
+/// minted it (§17.9), so what it is depends on how many actions this test has already
+/// committed, which is exactly the sort of thing a test should not be counting. A
+/// fresh layer is armed for painting (§14.8), so the active one is the new one — the
+/// assertion in `two_layers` is what says so, and every use below is of a document
+/// that has not moved the brush since.
+fn top(engine: &Engine) -> LayerId {
+    engine.observe().active_layer
+}
 
 const H_STROKE: &[Vec2] = &[Vec2::new(-25.0, 0.0), Vec2::new(25.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -25.0), Vec2::new(0.0, 25.0)];
@@ -31,10 +42,9 @@ fn two_layers(engine: &mut Engine) {
         carrier: None,
         above: None,
     });
-    // AddLayer makes the new layer active.
-    assert_eq!(
+    assert_ne!(
         engine.observe().active_layer,
-        TOP,
+        ROOT,
         "AddLayer makes the new layer active"
     );
     paint(engine, GREEN, 40.0, V_STROKE);
@@ -61,13 +71,13 @@ fn hiding_a_layer_removes_its_contribution() {
     };
     two_layers(&mut engine);
 
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     assert!(
         red_dominant(center(&engine.render_to_image())),
         "hiding the green top layer reveals red beneath"
     );
 
-    engine.process(DocCommand::SetLayerVisible(TOP, true));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), true));
     assert!(green_dominant(center(&engine.render_to_image())));
 }
 
@@ -78,7 +88,7 @@ fn zero_opacity_layer_is_invisible() {
     };
     two_layers(&mut engine);
 
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.0));
     assert!(red_dominant(center(&engine.render_to_image())));
 
     // Undo the opacity change → green returns (layer ops are historized).
@@ -97,7 +107,7 @@ fn reordering_changes_which_layer_wins() {
     engine.process(DocCommand::MoveLayer {
         carrier: None,
         id: ROOT,
-        at: Place::Above(TOP),
+        at: Place::Above(top(&engine)),
     });
     assert!(
         red_dominant(center(&engine.render_to_image())),
@@ -124,20 +134,23 @@ fn duplicating_a_layer_copies_it_above_itself() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    // Bound before the duplicate, which arms the *copy*: past that point the active
+    // layer is no longer the source, and this test is about telling them apart.
+    let source = top(&engine);
+    engine.process(DocCommand::SetLayerName(source, Some("Sky".into())));
     let before = engine.render_to_image();
 
-    engine.process(DocCommand::DuplicateLayer(TOP));
+    engine.process(DocCommand::DuplicateLayer(source));
     let obs = engine.observe();
     let copy = obs.active_layer;
     assert_eq!(obs.layers.len(), 3, "root, the layer, and its copy");
     assert_ne!(
-        copy, TOP,
+        copy, source,
         "the copy is armed for the next stroke, not the source"
     );
     assert_eq!(
         obs.layers.iter().map(|l| l.id).collect::<Vec<_>>(),
-        vec![ROOT, TOP, copy],
+        vec![ROOT, source, copy],
         "the copy sits directly above the layer it was copied from"
     );
     // The author's own word travels with the copy rather than being decorated into
@@ -164,7 +177,7 @@ fn painting_on_a_copy_leaves_its_source_alone() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::DuplicateLayer(TOP));
+    engine.process(DocCommand::DuplicateLayer(top(&engine)));
     let copy = engine.observe().active_layer;
 
     // A red stroke over the copy's green, then hide the copy. The source must still
@@ -190,7 +203,7 @@ fn a_duplicates_ids_are_not_reused_after_a_reload() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::DuplicateLayer(TOP));
+    engine.process(DocCommand::DuplicateLayer(top(&engine)));
     let bytes = engine.save_bytes().expect("serialize");
 
     let mut loaded = engine_or_skip_blue().expect("adapter");
@@ -226,7 +239,7 @@ fn undoing_an_add_leaves_the_brush_somewhere_it_can_paint() {
     });
     assert_eq!(
         engine.observe().active_layer,
-        TOP,
+        top(&engine),
         "the add armed its layer"
     );
 
@@ -262,23 +275,27 @@ fn renaming_a_layer_is_undoable() {
         return;
     };
     two_layers(&mut engine);
-    assert_eq!(name_of(&engine, TOP), None, "a new layer starts unnamed");
+    assert_eq!(
+        name_of(&engine, top(&engine)),
+        None,
+        "a new layer starts unnamed"
+    );
 
-    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
-    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+    engine.process(DocCommand::SetLayerName(top(&engine), Some("Sky".into())));
+    assert_eq!(name_of(&engine, top(&engine)), Some("Sky".to_string()));
 
     // A name is part of the document, so taking one back is an undo step — which is
     // what makes a mistyped rename recoverable the way a mis-set opacity is.
     engine.process(DocCommand::Undo);
-    assert_eq!(name_of(&engine, TOP), None);
+    assert_eq!(name_of(&engine, top(&engine)), None);
     engine.process(DocCommand::Redo);
-    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+    assert_eq!(name_of(&engine, top(&engine)), Some("Sky".to_string()));
 
     // Clearing it is its own step rather than an undo of the rename.
-    engine.process(DocCommand::SetLayerName(TOP, None));
-    assert_eq!(name_of(&engine, TOP), None);
+    engine.process(DocCommand::SetLayerName(top(&engine), None));
+    assert_eq!(name_of(&engine, top(&engine)), None);
     engine.process(DocCommand::Undo);
-    assert_eq!(name_of(&engine, TOP), Some("Sky".to_string()));
+    assert_eq!(name_of(&engine, top(&engine)), Some("Sky".to_string()));
 }
 
 #[test]
@@ -288,23 +305,26 @@ fn a_name_is_either_absent_or_readable() {
     };
     two_layers(&mut engine);
 
-    engine.process(DocCommand::SetLayerName(TOP, Some("  Sky  ".into())));
+    engine.process(DocCommand::SetLayerName(
+        top(&engine),
+        Some("  Sky  ".into()),
+    ));
     assert_eq!(
-        name_of(&engine, TOP),
+        name_of(&engine, top(&engine)),
         Some("Sky".to_string()),
         "surrounding whitespace is not part of the name"
     );
 
     // A field emptied out clears the name rather than setting a blank one, so the
     // row goes back to being described by its place in the stack.
-    engine.process(DocCommand::SetLayerName(TOP, Some("   ".into())));
-    assert_eq!(name_of(&engine, TOP), None);
+    engine.process(DocCommand::SetLayerName(top(&engine), Some("   ".into())));
+    assert_eq!(name_of(&engine, top(&engine)), None);
 
     // A name is replicated and saved, so its length is bounded — by `char`s, so the
     // cut can never land inside one.
     let long = "\u{1F308}".repeat(200);
-    engine.process(DocCommand::SetLayerName(TOP, Some(long)));
-    let stored = name_of(&engine, TOP).expect("named");
+    engine.process(DocCommand::SetLayerName(top(&engine), Some(long)));
+    let stored = name_of(&engine, top(&engine)).expect("named");
     assert_eq!(stored.chars().count(), 64);
     assert!(stored.chars().all(|c| c == '\u{1F308}'));
 }
@@ -315,16 +335,16 @@ fn renaming_to_the_same_name_is_not_an_edit() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    engine.process(DocCommand::SetLayerName(top(&engine), Some("Sky".into())));
 
     // Commit-on-blur means the frontend re-sends the current name whenever a field
     // is left untouched. That must cost nothing: an undo step that appears to do
     // nothing when reached is worse than no step at all.
-    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
-    engine.process(DocCommand::SetLayerName(TOP, Some(" Sky ".into())));
+    engine.process(DocCommand::SetLayerName(top(&engine), Some("Sky".into())));
+    engine.process(DocCommand::SetLayerName(top(&engine), Some(" Sky ".into())));
     engine.process(DocCommand::Undo);
     assert_eq!(
-        name_of(&engine, TOP),
+        name_of(&engine, top(&engine)),
         None,
         "one undo passes the whole rename, so only one step was logged"
     );
@@ -348,17 +368,17 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
-    engine.process(DocCommand::SetLayerClip(TOP, true));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
+    engine.process(DocCommand::SetLayerClip(top(&engine), true));
 
     let logged = |e: &Engine| e.scrub_range().expect("solo history").0;
     let before = logged(&engine);
     let picture = engine.render_to_image();
 
     // Each of these is the value the document already reads.
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
-    engine.process(DocCommand::SetLayerClip(TOP, true));
-    engine.process(DocCommand::SetLayerOpacity(TOP, 1.0));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
+    engine.process(DocCommand::SetLayerClip(top(&engine), true));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 1.0));
     engine.process(DocCommand::SetSubstrateColor(Srgb::new([
         BG.r as f32,
         BG.g as f32,
@@ -374,7 +394,7 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
     assert!(images_match(&picture, &engine.render_to_image(), 0));
 
     // The rule is not "never log": a real change still does.
-    engine.process(DocCommand::SetLayerVisible(TOP, true));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), true));
     assert_eq!(logged(&engine), before + 1);
 }
 
@@ -393,14 +413,14 @@ fn a_commit_supersedes_a_drag_it_knows_nothing_about() {
     };
     two_layers(&mut engine);
     // Only the root layer's red will be left once the top layer is gone.
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     let without_top = engine.render_to_image();
-    engine.process(DocCommand::SetLayerVisible(TOP, true));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), true));
 
     // A drag in flight on the root layer, never released.
     engine.process(ViewCommand::PreviewLayerOpacity(Some((ROOT, 0.0))));
     // An unrelated commit lands mid-drag.
-    engine.process(DocCommand::RemoveLayer(TOP));
+    engine.process(DocCommand::RemoveLayer(top(&engine)));
     assert!(
         images_match(&without_top, &engine.render_to_image(), 2),
         "the drag preview outlived the commit and is still fading the root layer",
@@ -418,12 +438,12 @@ fn layer_names_survive_save_load() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerName(TOP, Some("Sky".into())));
+    engine.process(DocCommand::SetLayerName(top(&engine), Some("Sky".into())));
     let bytes = engine.save_bytes().expect("serialize");
 
     let mut loaded = engine_or_skip_blue().expect("adapter");
     loaded.load_bytes(&bytes).expect("load");
-    assert_eq!(name_of(&loaded, TOP), Some("Sky".to_string()));
+    assert_eq!(name_of(&loaded, top(&engine)), Some("Sky".to_string()));
     assert_eq!(name_of(&loaded, ROOT), None);
 }
 
@@ -466,7 +486,7 @@ fn dragging_layer_opacity_previews_without_logging() {
 
     // Three "pointer moves" of a drag towards transparent.
     for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
     }
     assert!(
         red_dominant(center(&engine.render_to_image())),
@@ -474,7 +494,7 @@ fn dragging_layer_opacity_previews_without_logging() {
     );
     // `observe` reports the previewed opacity, so the slider's own track agrees with
     // the canvas it controls instead of trailing a commit behind it.
-    assert_eq!(opacity_of(&engine, TOP), Some(0.0));
+    assert_eq!(opacity_of(&engine, top(&engine)), Some(0.0));
 
     // Undoing now must reach the *stroke*, not a drag step, and drop the preview with
     // it — so undo-then-redo lands exactly back on the opaque document, which nothing
@@ -488,10 +508,10 @@ fn dragging_layer_opacity_previews_without_logging() {
 
     // Release: one commit, which supersedes the preview it matches.
     for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
     }
     let dragging = engine.render_to_image();
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.0));
     assert!(
         images_match(&dragging, &engine.render_to_image(), 2),
         "the committed opacity should match what the drag previewed"
@@ -517,9 +537,9 @@ fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
     let opaque = engine.render_to_image();
 
     for v in [0.6f32, 0.3, 1.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, v))));
+        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
     }
-    engine.process(DocCommand::SetLayerOpacity(TOP, 1.0));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 1.0));
     assert!(
         images_match(&opaque, &engine.render_to_image(), 2),
         "the settled drag should leave the document as it found it, preview and all"
@@ -543,13 +563,13 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
     let rest = engine.render_to_image();
 
     // Three "pointer moves" of a drag towards the hot end.
     for k in [1.0f32, 2.0, 4.0] {
         engine.process(ViewCommand::PreviewLayerBlend(Some((
-            TOP,
+            top(&engine),
             BlendMode::Drago { k },
         ))));
     }
@@ -559,10 +579,16 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         "the preview should reach the canvas"
     );
     // `observe` reports the previewed mode, so the track agrees with the canvas.
-    assert_eq!(blend_of(&engine, TOP), Some(BlendMode::Drago { k: 4.0 }));
+    assert_eq!(
+        blend_of(&engine, top(&engine)),
+        Some(BlendMode::Drago { k: 4.0 })
+    );
 
     // Release: one commit, which supersedes the preview it matches.
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Drago { k: 4.0 }));
+    engine.process(DocCommand::SetLayerBlend(
+        top(&engine),
+        BlendMode::Drago { k: 4.0 },
+    ));
     assert!(
         images_match(&dragging, &engine.render_to_image(), 2),
         "the committed bend should match what the drag previewed"
@@ -576,18 +602,18 @@ fn dragging_a_blend_parameter_previews_without_logging() {
     // …and a drag that travels out and comes back is not an edit at all.
     for k in [1.0f32, 2.0, DRAGO_K] {
         engine.process(ViewCommand::PreviewLayerBlend(Some((
-            TOP,
+            top(&engine),
             BlendMode::Drago { k },
         ))));
     }
-    engine.process(DocCommand::SetLayerBlend(TOP, RADIANCE));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
     assert!(
         images_match(&rest, &engine.render_to_image(), 2),
         "the settled drag should leave the document as it found it, preview and all"
     );
     engine.process(DocCommand::Undo);
     assert_eq!(
-        blend_of(&engine, TOP),
+        blend_of(&engine, top(&engine)),
         Some(BlendMode::Normal),
         "one undo should reach the mode itself, so the settled drag logged no step",
     );
@@ -599,7 +625,7 @@ fn layer_state_survives_save_load() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.4));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.4));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -664,14 +690,17 @@ fn a_moved_document_projects_a_fresh_layer_list() {
 
     // A commit: the opacity really changes, so the list must too.
     let before = engine.observe().layers;
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.5));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.5));
     let committed = engine.observe().layers;
     assert_ne!(before, committed, "a commit must project the new opacity");
 
     // A preview: nothing is logged, `doc_revision` stands, and the projection
     // still has to report what is on screen (§14.6).
     let revision = engine.observe().doc_revision;
-    engine.process(ViewCommand::PreviewLayerOpacity(Some((TOP, 0.125))));
+    engine.process(ViewCommand::PreviewLayerOpacity(Some((
+        top(&engine),
+        0.125,
+    ))));
     let previewed = engine.observe();
     assert_eq!(
         previewed.doc_revision, revision,
@@ -680,7 +709,7 @@ fn a_moved_document_projects_a_fresh_layer_list() {
     let shown = previewed
         .layers
         .iter()
-        .find(|l| l.id == TOP)
+        .find(|l| l.id == top(&engine))
         .expect("the top layer")
         .opacity;
     assert!(
@@ -728,9 +757,10 @@ fn a_layer_renders_alone() {
         return;
     };
     two_layers(&mut engine);
+    let top = top(&engine);
 
     assert!(
-        green_dominant(center(&render_only(&mut engine, Some(TOP)))),
+        green_dominant(center(&render_only(&mut engine, Some(top)))),
         "the top layer alone must be its own green"
     );
     assert!(
@@ -758,28 +788,29 @@ fn a_layers_own_picture_ignores_its_surroundings() {
         return;
     };
     two_layers(&mut engine);
-    let alone = render_only(&mut engine, Some(TOP));
+    let top = top(&engine);
+    let alone = render_only(&mut engine, Some(top));
 
     for (label, command) in [
-        ("faded", DocCommand::SetLayerOpacity(TOP, 0.25)),
+        ("faded", DocCommand::SetLayerOpacity(top, 0.25)),
         (
             "multiplied",
-            DocCommand::SetLayerBlend(TOP, BlendMode::Multiply),
+            DocCommand::SetLayerBlend(top, BlendMode::Multiply),
         ),
-        ("clipped", DocCommand::SetLayerClip(TOP, true)),
+        ("clipped", DocCommand::SetLayerClip(top, true)),
     ] {
         engine.process(command);
         assert!(
-            images_match(&alone, &render_only(&mut engine, Some(TOP)), 0),
+            images_match(&alone, &render_only(&mut engine, Some(top)), 0),
             "a {label} layer must render the same paint on its own"
         );
     }
 
     // The exception, and the one place the picture is allowed to go: switched
     // off entirely, the layer has nothing to show.
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.0));
+    engine.process(DocCommand::SetLayerOpacity(top, 0.0));
     assert_eq!(
-        center(&render_only(&mut engine, Some(TOP)))[3],
+        center(&render_only(&mut engine, Some(top)))[3],
         0,
         "a layer at zero opacity draws nothing at all"
     );
@@ -808,13 +839,17 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
             .content_revision
     };
 
-    let before = key(&engine, TOP);
+    let before = key(&engine, top(&engine));
     assert!(before.is_some(), "a paint layer has a content revision");
 
     // Painting moves it, and moves only the painted layer's.
     let root_before = key(&engine, ROOT);
     paint(&mut engine, GREEN, 10.0, H_STROKE);
-    assert_ne!(before, key(&engine, TOP), "paint must move the key");
+    assert_ne!(
+        before,
+        key(&engine, top(&engine)),
+        "paint must move the key"
+    );
     assert_eq!(
         root_before,
         key(&engine, ROOT),
@@ -823,13 +858,13 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
 
     // Presentation properties do not: they change how the document shows the
     // layer, never what its own paint is. Three commands, so three undos below.
-    let painted = key(&engine, TOP);
-    engine.process(DocCommand::SetLayerOpacity(TOP, 0.5));
-    engine.process(DocCommand::SetLayerBlend(TOP, BlendMode::Multiply));
-    engine.process(DocCommand::SetLayerVisible(TOP, false));
+    let painted = key(&engine, top(&engine));
+    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.5));
+    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+    engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     assert_eq!(
         painted,
-        key(&engine, TOP),
+        key(&engine, top(&engine)),
         "opacity, blend and visibility must leave the key alone"
     );
 
@@ -841,7 +876,7 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
     }
     assert_eq!(
         painted,
-        key(&engine, TOP),
+        key(&engine, top(&engine)),
         "undoing a property is not a repaint"
     );
 
@@ -852,7 +887,7 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
     engine.process(DocCommand::Undo);
     assert_ne!(
         painted,
-        key(&engine, TOP),
+        key(&engine, top(&engine)),
         "undoing a stroke must move the key off the picture it painted"
     );
 }
