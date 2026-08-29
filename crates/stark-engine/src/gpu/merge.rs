@@ -24,10 +24,11 @@ use wgpu::util::DeviceExt;
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels, Targets};
 use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Zeroes};
+use crate::gpu::desc;
 use crate::gpu::scratch::{ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::uniforms::UniformSlots;

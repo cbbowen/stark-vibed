@@ -22,6 +22,7 @@
 //! carried, so a trio cannot be built half-residual.
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TexHandle, TilePairHandle, TilePool};
 
@@ -232,5 +233,67 @@ impl<'a> Targets<'a> {
     /// How many of [`Self::attachments`] are real — 2 without a residual, 3 with.
     pub(crate) fn count(&self) -> usize {
         2 + usize::from(self.resid.is_some())
+    }
+}
+
+/// Moved here from `desc`, whose header says "nothing here decides anything. Every
+/// function is one shape of descriptor" — true again now that the one type in it that
+/// *owned three textures* has gone. This is a [`Targets`] that is not there, so it
+/// belongs beside the trio it stands in for, where the residual's `Option` for the
+/// stand-in sits next to the residual's `Option` for the real thing.
+/// The 1×1 stand-ins a pass binds where a tile does not exist — one per persistent
+/// tile channel.
+///
+/// **"There is no tile here" is one question, and this is its one answer.** The fill,
+/// the transform's combine and the stroke's integrate all bind these and read them
+/// through clamped loads, so the same shader code reads a real tile and a hole
+/// (§6.8's pattern). Built once and cloned into each renderer — a `TextureView` is an
+/// `Arc` handle, so a clone is a bump.
+///
+/// They were built twice before this, once inside `FillRenderer` and once inside
+/// `TransformRenderer`, for the same two formats at the same moment in `build_gpu`;
+/// and the stroke integrate answered the question a third way, by acquiring a whole
+/// pooled tile and clearing it on every pointer move.
+#[derive(Clone)]
+pub(crate) struct Zeroes {
+    pub(crate) color: wgpu::TextureView,
+    pub(crate) aux: wgpu::TextureView,
+    /// The residual channel's stand-in, in a space that has one (§6.7). Bare canvas
+    /// has no residual for the same reason it has no color, and this is what the
+    /// clamped loads read there.
+    pub(crate) resid: Option<wgpu::TextureView>,
+}
+
+impl Zeroes {
+    /// The stand-ins as a trio a pass binds.
+    pub(crate) fn targets(&self) -> Targets<'_> {
+        Targets {
+            color: &self.color,
+            aux: &self.aux,
+            resid: self.resid.as_ref(),
+        }
+    }
+
+    /// `targets`, or these stand-ins where there are none — **the one answer to "a
+    /// tile, or the 1×1 zeroes"** (§6.8's pattern).
+    ///
+    /// It was four: the merge's `views_of`, the fill's base, and the transform's base
+    /// and parcel, each unpacking the `Option` a field at a time and each having to
+    /// remember on its own that a space with no residual has no zero for it either.
+    /// Whether a trio exists is one question, so it has one answer, and the residual's
+    /// presence rides along with the other two rather than being decided again
+    /// (§6.7).
+    pub(crate) fn or<'a>(&'a self, targets: Option<Targets<'a>>) -> Targets<'a> {
+        targets.unwrap_or_else(|| self.targets())
+    }
+
+    pub(crate) fn new(ctx: &GpuContext, formats: ChannelFormats) -> Self {
+        Self {
+            color: desc::zero_texture(ctx, formats.color, "stark zero color"),
+            aux: desc::zero_texture(ctx, formats.aux, "stark zero aux"),
+            resid: formats
+                .resid
+                .map(|f| desc::zero_texture(ctx, f, "stark zero resid")),
+        }
     }
 }

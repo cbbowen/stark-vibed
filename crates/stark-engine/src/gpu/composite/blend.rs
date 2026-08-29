@@ -6,6 +6,7 @@
 //! the accumulator and writes the result, and a texture cannot be both, the
 //! accumulator ping-pongs between the caller's pair and this module's `swap`.
 
+use super::attachment::Trio;
 use std::sync::OnceLock;
 
 use crate::colorspace::ColorSpace;
@@ -267,42 +268,6 @@ impl Bounce<'_> {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bg, &[offset]);
         pass.draw(0..3, 0..1);
-    }
-}
-
-/// One set of channel targets — color, aux, and (in a space that has one) the
-/// residual — owned rather than borrowed, as [`Targets`] is the borrowed view of.
-struct Trio {
-    color: super::Attachment,
-    aux: super::Attachment,
-    resid: Option<super::Attachment>,
-}
-
-impl Trio {
-    fn new(
-        device: &wgpu::Device,
-        size: Extent2,
-        labels: (&str, &str, &str),
-        formats: ChannelFormats,
-    ) -> Self {
-        let make = |format, label| super::Attachment::new(device, size, format, label);
-        Self {
-            color: make(formats.color, labels.0),
-            aux: make(formats.aux, labels.1),
-            // A pigment document isolates its residual alongside its concentrations:
-            // the blend reads both to work out what light the layer carried
-            // (§6.7), so a level that isolated only the color would hand the pass
-            // a mixture and none of the correction that makes it a color.
-            resid: formats.resid.map(|f| make(f, labels.2)),
-        }
-    }
-
-    fn targets(&self) -> Targets<'_> {
-        Targets {
-            color: self.color.view(),
-            aux: self.aux.view(),
-            resid: self.resid.as_ref().map(super::Attachment::view),
-        }
     }
 }
 

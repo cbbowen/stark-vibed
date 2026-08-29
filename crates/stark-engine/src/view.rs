@@ -20,7 +20,7 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use stark_model::geom::{Extent2, Mat2, Vec2};
+use stark_model::geom::{Extent2, Mat2, TileRect, Vec2};
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
 /// substrate (§6.4). This is session state and is never historized.
@@ -410,11 +410,36 @@ impl ViewTransform {
 
     const MIN_ZOOM: f32 = 0.05;
     const MAX_ZOOM: f32 = 64.0;
+
+    /// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).
+    ///
+    /// Pass A places a tile as the quad `[origin, origin + TILE_SIZE]` and lets the
+    /// rasterizer clip it, so a tile outside this rect covers no pixel of a
+    /// viewport-sized target and building a draw for it produces nothing. Skipping it
+    /// is therefore a pure subtraction: same pixels, less work.
+    ///
+    /// The bound is conservative twice over, which is the direction that cannot crop a
+    /// picture. [`Self::visible_bounds`] is the AABB of the *rotated* viewport,
+    /// so it covers more canvas than is really on screen; and [`TileRect::covering`]
+    /// then floors to whole tiles. A supersampled render sees the same rect —
+    /// [`Self::supersampled`] scales zoom and viewport together, leaving the
+    /// canvas region fixed — so culling against the caller's view is consistent with
+    /// the draw's.
+    ///
+    /// `None` when the box cannot be measured (a non-finite view, or one so far out
+    /// that whole tiles fall off the `i32` grid). That is the "claim everything" answer
+    /// [`TileRect::covering`] leaves to its callers: culling is an optimization, and an
+    /// optimization that cannot measure its input must do nothing rather than guess.
+    pub fn visible_tiles(self) -> Option<TileRect> {
+        let (lo, hi) = self.visible_bounds();
+        TileRect::covering(lo, hi, 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::geom::{TILE_SIZE, TileCoord};
 
     /// An upright, unmirrored view of `size` at `zoom`, centred on `center`.
     fn view(center: Vec2, zoom: f32, size: Extent2) -> ViewTransform {
@@ -850,5 +875,119 @@ mod tests {
         let mut bad = turned;
         bad.show_rect(max, min, 0.05);
         assert_eq!(bad, turned, "an inverted rect should be refused whole");
+    }
+
+    /// The tile a canvas point falls in.
+    fn tile_at(c: Vec2) -> TileCoord {
+        TileCoord::new(
+            (c.x / TILE_SIZE as f32).floor() as i32,
+            (c.y / TILE_SIZE as f32).floor() as i32,
+        )
+    }
+
+    /// **The cull must never crop**, which is the whole risk it carries: it runs on
+    /// the export path as well as the screen, so a bound one tile too tight would
+    /// silently drop the edge of a saved image rather than fail.
+    ///
+    /// Asked the way the renderer asks it — walk the pixels the viewport actually
+    /// shows, map each back to canvas space, and require its tile to be in the draw
+    /// list — rather than by re-deriving the bound, which would only restate the
+    /// implementation. That is also what makes it meaningful under rotation and
+    /// mirroring, where the visible region is not the box `visible_bounds` returns.
+    fn every_pixel_on_screen_keeps_its_tile(v: ViewTransform) {
+        let rect = v.visible_tiles().expect("an ordinary view is measurable");
+        let (w, h) = (v.viewport.width as f32, v.viewport.height as f32);
+        for sy in 0..=32 {
+            for sx in 0..=32 {
+                let screen = Vec2::new(sx as f32 / 32.0 * w, sy as f32 / 32.0 * h);
+                let canvas = v.screen_to_canvas(screen);
+                let tile = tile_at(canvas);
+                assert!(
+                    rect.contains(tile),
+                    "screen {screen:?} shows canvas {canvas:?}, in {tile:?}, which                      the cull dropped",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cull_keeps_every_tile_the_viewport_shows() {
+        let ts = TILE_SIZE as f32;
+        let centre = Vec2::new(ts * 1.5, ts * 0.5);
+        for size in [
+            Extent2::new(64, 64),
+            Extent2::new(3 * ts as u32, ts as u32), // wide: worst case under a turn
+            Extent2::new(1920, 1080),
+        ] {
+            for zoom in [0.05, 0.5, 1.0, 8.0] {
+                let upright = view(centre, zoom, size);
+                every_pixel_on_screen_keeps_its_tile(upright);
+                for rotation in [0.3, std::f32::consts::FRAC_PI_4, 2.1, -1.0] {
+                    every_pixel_on_screen_keeps_its_tile(ViewTransform {
+                        rotation,
+                        ..upright
+                    });
+                }
+                every_pixel_on_screen_keeps_its_tile(ViewTransform {
+                    flip_h: true,
+                    ..upright
+                });
+            }
+        }
+    }
+
+    /// And it does cull — otherwise the test above would pass a `visible_tiles` that
+    /// simply answered [`TileRect::ALL`].
+    #[test]
+    fn the_cull_drops_what_the_viewport_cannot_reach() {
+        let ts = TILE_SIZE as f32;
+        // Strictly inside tile (0, 0): a viewport two px shy of a tile, centred on
+        // it, so no edge lands on a tile boundary.
+        let v = view(
+            Vec2::new(ts * 0.5, ts * 0.5),
+            1.0,
+            Extent2::new(ts as u32 - 2, ts as u32 - 2),
+        );
+        let rect = v.visible_tiles().expect("measurable");
+        assert!(rect.contains(TileCoord::new(0, 0)));
+        for c in [
+            TileCoord::new(-1, 0),
+            TileCoord::new(1, 0),
+            TileCoord::new(0, -1),
+            TileCoord::new(0, 1),
+            TileCoord::new(7, 7),
+        ] {
+            assert!(!rect.contains(c), "{c:?} is nowhere near the viewport");
+        }
+    }
+
+    /// Supersampling scales zoom and viewport together, so it must name the same
+    /// tiles — the draw list is built against the caller's view and drawn against
+    /// the supersampled one, and a disagreement would crop only when zoomed out.
+    #[test]
+    fn supersampling_does_not_move_the_cull() {
+        let ts = TILE_SIZE as f32;
+        let v = view(Vec2::new(ts * 2.0, ts * 2.0), 0.4, Extent2::new(700, 500));
+        let plain = v.visible_tiles().expect("measurable");
+        for n in [2, 3, 4] {
+            assert_eq!(
+                v.supersampled(n).visible_tiles(),
+                Some(plain),
+                "{n}x supersampling changed which tiles are visible",
+            );
+        }
+    }
+
+    /// A view the bound cannot measure culls **nothing** rather than guessing. An
+    /// optimization that cannot see its input has to do no harm, and the harm here
+    /// would be an empty picture.
+    #[test]
+    fn an_unmeasurable_view_culls_nothing() {
+        let size = Extent2::new(800, 600);
+        for bad in [f32::NAN, f32::INFINITY, -f32::INFINITY] {
+            assert_eq!(view(Vec2::new(bad, 0.0), 1.0, size).visible_tiles(), None);
+        }
+        // Far enough out that whole tiles stop fitting an i32 index.
+        assert_eq!(view(Vec2::splat(1e30), 1.0, size).visible_tiles(), None);
     }
 }

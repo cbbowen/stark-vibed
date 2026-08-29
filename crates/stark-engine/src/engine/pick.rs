@@ -15,7 +15,6 @@
 //! single buffer map, because the map is the latency.
 
 use super::Engine;
-use super::render::visible_tiles;
 use crate::gpu::channels::Targets;
 use crate::view::ViewTransform;
 use stark_model::document::LayerId;
@@ -195,14 +194,14 @@ fn patch_view(at: stark_model::geom::Vec2, size: Extent2) -> ViewTransform {
 /// batch, so the draw list is built once instead of per point.
 ///
 /// `None` — cull nothing — the moment any single patch is unmeasurable, which is
-/// [`visible_tiles`]'s own contract carried across the batch rather than re-derived:
+/// [`ViewTransform::visible_tiles`]'s own contract carried across the batch rather than re-derived:
 /// an optimization that cannot see one of its inputs has to do nothing about all of
 /// them. Folding the *bounds* instead would have let a non-finite point vanish into
 /// a `min`/`max` and quietly shrink the answer.
 fn patch_cull(points: &[stark_model::geom::Vec2], size: Extent2) -> Option<TileRect> {
     let mut union: Option<TileRect> = None;
     for &at in points {
-        let rect = visible_tiles(patch_view(at, size))?;
+        let rect = patch_view(at, size).visible_tiles()?;
         union = Some(match union {
             Some(u) => u.union(rect),
             None => rect,
@@ -330,7 +329,7 @@ impl Engine {
         // walk per sample to build a hundred-odd copies of one answer. The union is a
         // *wider* cull than any single patch's, which is sound in the only direction
         // that matters — a cull may name tiles a pass then draws nothing for, never
-        // omit one it needed (see [`visible_tiles`]) — and the trace is bounded, so
+        // omit one it needed (see `ViewTransform::visible_tiles`) — and the trace is bounded, so
         // the extra tiles are the ones between the samples, which the trace crosses
         // anyway.
         //
@@ -575,7 +574,7 @@ impl Engine {
         // optimization declining to help ([`patch_cull`]'s stance): it is the
         // point itself being unaddressable — non-finite, or past the far edge of
         // the tile grid — and there is no paint out there to point at.
-        let lists: Vec<(LayerId, Vec<crate::gpu::CompositeGroup>)> = match visible_tiles(view) {
+        let lists: Vec<(LayerId, Vec<crate::gpu::CompositeGroup>)> = match view.visible_tiles() {
             None => Vec::new(),
             Some(cull) => {
                 let doc = self.presented();

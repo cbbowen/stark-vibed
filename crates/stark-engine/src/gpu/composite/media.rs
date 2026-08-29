@@ -5,6 +5,7 @@
 //! paint film's gloss, converts the working channels to display, and composites
 //! over the substrate into the target. This is the "old masters" payoff.
 
+use super::attachment::Trio;
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
@@ -290,11 +291,11 @@ pub(super) struct OffscreenDesc<'a> {
 
 /// The offscreen targets pass A writes and the media bind group that reads them.
 pub(super) struct Offscreen {
-    pub(super) color: super::Attachment,
-    pub(super) aux: super::Attachment,
-    /// The residual accumulator, present exactly when the space has a residual — and
-    /// then it is pass A's third attachment as well as the media pass's binding 7.
-    pub(super) resid: Option<super::Attachment>,
+    /// The accumulator itself — the same owned trio a scratch level holds
+    /// ([`Trio`](super::attachment::Trio)), including its residual, which is present
+    /// exactly when the space has one and is then pass A's third attachment as well as
+    /// the media pass's binding 7.
+    pub(super) channels: Trio,
     pub(super) bg: wgpu::BindGroup,
 }
 
@@ -322,20 +323,14 @@ impl Offscreen {
             media_buf,
             substrate,
             environment,
-            &self.color,
-            &self.aux,
-            self.resid.as_ref(),
+            &self.channels,
         );
     }
 
     /// The trio as pass A attaches it (§6.7) — the same three views the media bind
     /// group above reads, which is the invariant this type exists to hold together.
     pub(super) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
-        crate::gpu::channels::Targets {
-            color: self.color.view(),
-            aux: self.aux.view(),
-            resid: self.resid.as_ref().map(super::Attachment::view),
-        }
+        self.channels.targets()
     }
 }
 
@@ -350,28 +345,14 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         substrate,
         environment,
     } = d;
-    let color = super::Attachment::new(device, size, formats.color, "stark comp color");
-    let aux = super::Attachment::new(device, size, formats.aux, "stark comp aux");
-    let resid = formats
-        .resid
-        .map(|f| super::Attachment::new(device, size, f, "stark comp resid"));
-
-    let bg = media_bind_group(
+    let channels = Trio::new(
         device,
-        media,
-        media_buf,
-        substrate,
-        environment,
-        &color,
-        &aux,
-        resid.as_ref(),
+        size,
+        ("stark comp color", "stark comp aux", "stark comp resid"),
+        formats,
     );
-    Offscreen {
-        color,
-        aux,
-        resid,
-        bg,
-    }
+    let bg = media_bind_group(device, media, media_buf, substrate, environment, &channels);
+    Offscreen { channels, bg }
 }
 
 /// The media pass's bind group over one accumulator, its uniform, the canvas
@@ -382,20 +363,15 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
 /// formats, neither of which a swap touches. `Offscreen::rebind` is what that split
 /// buys — see [`Compositor::ensure_targets`](super::Compositor), where rebuilding
 /// the trio for a swap used to cost a viewport of memory.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the arguments are the bind group's own bindings; each is a distinct type"
-)]
 fn media_bind_group(
     device: &wgpu::Device,
     media: &MediaPass,
     media_buf: &wgpu::Buffer,
     substrate: &SubstrateMap,
     environment: &Environment,
-    color: &super::Attachment,
-    aux: &super::Attachment,
-    resid: Option<&super::Attachment>,
+    channels: &Trio,
 ) -> wgpu::BindGroup {
+    let (color, aux, resid) = (&channels.color, &channels.aux, channels.resid.as_ref());
     desc::bind_group_for(
         device,
         "stark media bg",

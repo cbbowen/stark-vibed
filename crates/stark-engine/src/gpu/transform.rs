@@ -40,10 +40,11 @@ use crate::document::transform::{
     FragMap, GatedKind, SourceUnit, gated_geometry, plan_gated_mask, plan_gated_paint, plan_mask,
     plan_paint,
 };
+use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::desc::Slot;
-use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::scratch::{ScratchPool, SubmitScope};
 use crate::gpu::selection::{SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
