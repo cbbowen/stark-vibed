@@ -16,6 +16,16 @@
 //! version check that used to *refuse* older files — and the thirteen numbered
 //! layouts behind it (§8.1) — is gone with the encoding that needed it.
 //!
+//! **What it cannot absorb is a type changing shape.** Reconciliation is by name over
+//! a *given* type: a scalar that became a struct is not a field to default or a name
+//! to alias, so a file written against the old one does not open, and says so as a
+//! decode failure rather than as a named refusal. That has happened once —
+//! `LayerId` became the id of the action that minted it (§17.9) — under §19's
+//! unclaimed beta rung, which is the permission such a change is taken with and the
+//! reason it is a decision rather than an accident. A build that has claimed that rung
+//! has no such permission, and a change of this kind then needs the type's old shape
+//! kept beside the new one.
+//!
 //! The schema is built at **compile time** (`#[derive(carbonite::Schema)]` on every
 //! type the log names), so writing a file discovers nothing at runtime. That is not a
 //! speed choice: a schema can also be found by *tracing* a type's `Deserialize` impl,

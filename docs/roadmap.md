@@ -1186,6 +1186,13 @@ What alpha still means, then, is narrower and more honest than it was:
   rather than the one action. An action is retired by tombstoning it instead: the
   variant stays, its payload is hollowed out to what is still read, and it folds to
   nothing (§8).
+- **A type may still change shape, and that is what alpha is for.** Reconciliation is
+  by name over a *given* type; a scalar that became a struct is neither a field to
+  default nor a name to alias, so files written against the old shape do not open at
+  all. It has happened once — `LayerId` became the id of the action that minted it, to
+  close a collision the old shape could only make unlikely (§17.9) — and doing it after
+  beta would mean carrying the old shape beside the new one, which is the cost the rung
+  buys and the reason to spend such changes before claiming it.
 - **Content caps only rise.** `MAX_SHAPE_DIM`, `MAX_SUBSTRATE_DIM` and `MAX_PICTURE_DIM`
   are enforced on the way in, so lowering one refuses content a bundle already carries
   — and a document whose content will not decode does not open at all.

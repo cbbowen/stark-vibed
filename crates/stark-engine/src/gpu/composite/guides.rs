@@ -142,13 +142,20 @@ impl GuidePass {
         }
         let packed: Vec<GuideUniform> = scenes.iter().map(|s| pack_guides(s, view)).collect();
         slots.write(&ctx.device, &ctx.queue, &packed);
-        // Per render rather than kept: it has to follow the buffer through
-        // reallocation, and a bind group over one small uniform is cheap beside
-        // everything else in the frame.
-        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stark guides bg"),
-            layout: &self.bgl,
-            entries: &[slots.binding(0)],
+        // Kept, and dropped by the write that replaced the buffer under it
+        // (`UniformSlots::group`) — which is the whole of what made it a per-render
+        // build before: it has to follow the buffer through reallocation, and that is
+        // now the buffer's own business rather than a rule stated here.
+        let layout = &self.bgl;
+        let bg = slots.group(|slot| {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("stark guides bg"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: slot,
+                }],
+            })
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark guides pass"),
@@ -157,7 +164,7 @@ impl GuidePass {
         });
         pass.set_pipeline(&self.pipeline);
         for i in 0..scenes.len() as u32 {
-            pass.set_bind_group(0, &bg, &[UniformSlots::<GuideUniform>::offset(i)]);
+            pass.set_bind_group(0, bg, &[UniformSlots::<GuideUniform>::offset(i)]);
             pass.draw(0..3, 0..1);
         }
     }

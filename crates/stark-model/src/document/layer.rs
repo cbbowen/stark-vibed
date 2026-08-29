@@ -30,11 +30,13 @@ use crate::geom::Vec2;
 /// It replaced a counter partitioned by a **32-bit fold of the actor**, which was the
 /// same guarantee made statistically: two actors whose folds coincided minted
 /// colliding ids, and nothing anywhere said so. [`GuideId`](super::GuideId) took this
-/// answer from the start and its doc explains why layers could not — one `AddGuide`
-/// mints exactly one guide, where `DuplicateLayer` mints one per layer of a subtree.
-/// `k` is what closes that gap: the subtree position, assigned in the order
-/// `copy_subtree` walks, which is a function of the document the action is applied to
-/// and so the same on every peer.
+/// answer from the start, and needs no `k` because one `AddGuide` mints exactly one
+/// guide — where `DuplicateLayer` mints one per layer of a subtree. `k` is which of
+/// the action's layers this is, assigned by the author in the order `Layer::visit`
+/// walks and **carried** in that action's own map. Carried rather than re-derived at
+/// each peer: every peer then reads the same `k` off the log whatever its own tree
+/// looks like, which is the stronger guarantee and the one `DuplicateLayer`'s doc
+/// insists on.
 ///
 /// [`ROOT`](Self::ROOT) is the one id no action mints, and it has to be: every peer
 /// must agree on the root layer, which predates every action.
@@ -64,9 +66,16 @@ impl LayerId {
     ///
     /// **A reserved `k`, not a reserved action.** The lamport clock starts at zero, so
     /// `ActionId { lamport: 0, actor: SOLO }` is a perfectly ordinary first action of a
-    /// solo document and cannot be spent on a sentinel. `u32::MAX` is the `k` no mint
-    /// produces: the four single-layer kinds pass `0`, and a duplicate's is a subtree
-    /// position bounded by `MAX_LAYERS` several orders below it.
+    /// solo document and cannot be spent on a sentinel.
+    ///
+    /// `u32::MAX` is the `k` no mint produces. The four single-layer kinds pass `0`;
+    /// a duplicate's is a position in the subtree it copies, and a subtree of `2³² − 1`
+    /// layers is not a bound anybody imposed but a document larger than the address
+    /// space — a `Layer` is a persistent map of tile handles and several presentation
+    /// fields, so four billion of them is terabytes of them. The check that matters is
+    /// the one at the door (`Engine::commit_minting`), which asserts the ids an action
+    /// mints are distinct and its own; this sentinel only has to sit outside what a
+    /// document can reach, and it does by nine orders.
     pub const ROOT: LayerId = LayerId {
         action: ActionId {
             lamport: 0,

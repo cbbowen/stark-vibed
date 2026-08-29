@@ -532,6 +532,18 @@ pub enum ActionKind {
     /// artist's own word for it, and spelling that as two actions would put one
     /// gesture two undo steps deep with a nameless guide in between.
     AddGuide {
+        /// The id this guide gets — **the id of this very action**, minted through
+        /// the same door every layer id is (`Engine::commit_minting`, §17.9).
+        ///
+        /// Carried rather than derived inside the fold, which is where it was. A
+        /// derived id is not part of the action, so `start_collaboration`'s rewrite of
+        /// solo-authored `ActionId`s moved it while every `RemoveGuide`,
+        /// `SetGuide`, `SetGuideName` and `MoveGuide` in the same log went on naming
+        /// the old one — and each of those no-ops on an id it cannot find. Sharing a
+        /// document therefore reverted every guide edit made before it and brought
+        /// back every deleted guide. A payload the rewrite does not touch cannot do
+        /// that, which is what `LayerId` had all along.
+        id: GuideId,
         guide: PerspectiveGuide,
         /// The guide this one lands directly after, or the head of the roster
         /// when `None`.
@@ -718,7 +730,13 @@ impl ActionKind {
             // A guide's every number reaches the guide pass's uniform, and now
             // the saved log as well — `PerspectiveGuide::sanitized` is where what
             // each of them may hold is written down (§20.5).
-            ActionKind::AddGuide { guide, after, name } => ActionKind::AddGuide {
+            ActionKind::AddGuide {
+                id,
+                guide,
+                after,
+                name,
+            } => ActionKind::AddGuide {
+                id,
                 guide: guide.sanitized(),
                 after,
                 name,

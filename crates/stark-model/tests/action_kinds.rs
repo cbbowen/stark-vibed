@@ -218,6 +218,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             image: AssetId([4; 32]),
         },
         ActionKind::AddGuide {
+            id: guide,
             guide: poisoned_guide(n),
             after: None,
             name: Some("two-point".into()),

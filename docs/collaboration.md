@@ -660,13 +660,25 @@ dirty flag, because a comparison cannot be forgotten at a call site.
 
 ### 17.8 Save format and compatibility
 
-Unchanged — nothing about the on-disk container moved, and no `format_version`
-bump was needed. **Presence** is never serialized; it is not in `DocState`, so it
-*cannot* be (`presence_never_enters_the_snapshot` pins the transport half,
-`presence_never_reaches_the_save_file` the engine half).
-**`ActionKind::Select`** keeps its exact encoding; only the key it applies under
-changes. **`LayerId`** keeps its type and encoding (a `u64`); only the *values*
-newly minted ids take changed, and only for actors other than `SOLO`.
+The container is unchanged and no `format_version` bump was needed. **Presence** is
+never serialized; it is not in `DocState`, so it *cannot* be
+(`presence_never_enters_the_snapshot` pins the transport half,
+`presence_never_reaches_the_save_file` the engine half). **`ActionKind::Select`**
+keeps its exact encoding; only the key it applies under changes.
+
+**`LayerId` did not.** It was a `u64` when this section was written, and the
+per-client identity §17.9 describes changed only the *values* it took. Closing that
+finding properly changed the type: a layer's id is now the action that minted it,
+`{ action: ActionId, k: u32 }`, and a struct where a scalar was is the one reshaping
+carbonite's name-based reconciliation cannot absorb (§8). **Files written before it
+do not open**, and they report as a decode failure rather than as a named refusal.
+§19's beta rung is unclaimed, which is the permission this was taken under and the
+only thing that makes it a decision rather than a mistake — but it is a decision, and
+this is where a reader asking "does this break my files" is told so. `AddGuide` moved
+its id into the payload in the same pass (§20.5's `GuideId` was *derived* from the
+action id, which `start_collaboration`'s rewrite then moved out from under every
+later `SetGuide` and `RemoveGuide` naming it), which is a shape change on the same
+terms.
 
 ### 17.9 Two latent defects this fixed on the way past
 

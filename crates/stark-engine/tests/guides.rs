@@ -85,6 +85,52 @@ fn add_and_show(e: &mut Engine, guide: PerspectiveGuide, name: Option<&str>) -> 
     id
 }
 
+/// **Sharing a document does not disturb the guides it already had.**
+///
+/// `start_collaboration` rewrites every solo-authored action's `ActorId` to the
+/// sharer's, once, before any peer has seen them (§12.3). A `GuideId` used to be
+/// *derived* from the action id inside the fold rather than carried in the action, so
+/// that rewrite moved it — while every `RemoveGuide`, `SetGuide`, `SetGuideName` and
+/// `MoveGuide` in the same log went on naming the old one, and each of those no-ops on
+/// an id it cannot find. Pressing Share therefore reverted every guide edit made
+/// before it, brought back every deleted guide, and closed every open eye — because
+/// `visible_guides` is a set of ids too.
+///
+/// Every other test in this file shares *first* and adds guides after, which is why
+/// none of them saw it. This one is deliberately the other order.
+#[test]
+fn guides_survive_the_moment_a_document_is_shared() {
+    let Some(mut e) = engine_or_skip() else {
+        return;
+    };
+
+    // A guide that is edited, one that is deleted, and one that is merely renamed —
+    // the three later actions that name a guide by id.
+    let edited = add_and_show(&mut e, PerspectiveGuide::default(), Some("the ground"));
+    e.process(DocCommand::SetGuide(edited, distinctive()));
+    let doomed = add(&mut e, PerspectiveGuide::default(), Some("a mistake"));
+    e.process(DocCommand::RemoveGuide(doomed));
+    let renamed = add(&mut e, PerspectiveGuide::default(), None);
+    e.process(DocCommand::SetGuideName(renamed, Some("the wall".into())));
+
+    let before = roster(&e);
+    let eyes = visible_guides(&e);
+    assert_eq!(before.len(), 2, "one guide was removed before sharing");
+
+    e.start_collaboration(ActorId(1));
+
+    assert_eq!(
+        roster(&e),
+        before,
+        "sharing changed the guides: an id the later actions name moved under them",
+    );
+    assert_eq!(
+        visible_guides(&e),
+        eyes,
+        "sharing closed an eye, which is a set of ids and not of guides",
+    );
+}
+
 /// **Saved.** A guide survives the round trip through the file, camera, name and
 /// arrangement alike — because it is in the log, which *is* the save format (§8).
 #[test]

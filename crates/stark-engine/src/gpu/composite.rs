@@ -797,19 +797,36 @@ impl Compositor {
             .collect();
 
         self.instances.write(device, queue, &plan.instances);
-        let matte_ramp_bg = if plan.mattes.is_empty() {
-            None
-        } else {
+        if !plan.mattes.is_empty() {
             self.matte_instances.write(device, queue, &plan.mattes);
+            // Written first, then the group — which is kept across frames and dropped
+            // by the write that replaced the buffer under it (`UniformSlots::group`).
+            // The ordering still matters and now it is the only thing that does: a
+            // group asked for before the write would be built over the old buffer and
+            // then kept.
             self.matte_ramps.write(device, queue, &plan.ramps);
-            // Built after the write, so it names the buffer the write may have just
-            // grown — the same reason the guide pass builds its own per render.
-            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stark matte ramp bg"),
-                layout: &p.tiles.ramp_bgl,
-                entries: &[self.matte_ramps.binding(0)],
-            }))
-        };
+            let layout = &p.tiles.ramp_bgl;
+            self.matte_ramps.group(|slot| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("stark matte ramp bg"),
+                    layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: slot,
+                    }],
+                })
+            });
+        }
+        // `None` when the frame has no matte, which is also when nothing above built
+        // one — a group kept from an earlier frame is still valid, and a frame with no
+        // matte simply never binds it.
+        //
+        // Cloned rather than borrowed, because the borrow would be of `self` and the
+        // encode below needs `self` too. A `BindGroup` is a refcounted handle, so what
+        // this costs is an atomic where the creation it replaces was a wgpu object.
+        let matte_ramp_bg = (!plan.mattes.is_empty())
+            .then(|| self.matte_ramps.built_group().cloned())
+            .flatten();
 
         // One uniform slot per merge and one per filter layer, all written before the
         // single submit — see [`UniformSlots`] for why they cannot share one. The

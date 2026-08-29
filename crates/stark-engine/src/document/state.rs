@@ -615,6 +615,18 @@ impl DocState {
     }
 
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Place) -> Self {
+        // **An id the document already holds is refused rather than doubled.** It
+        // cannot arise from an action this engine mints — a `LayerId` *is* an action's
+        // id and an action is applied once (§17.9) — but the tree is a `Vector` rather
+        // than a map, so nothing about the representation says so, and the ids arrive
+        // in the payload of an action that may have come off a file or a wire. Two
+        // layers under one id is the state §17.9 is about: `locate`, `map_in`,
+        // `remove_in` and `Layer::find` would each answer with whichever comes first,
+        // which is the quiet kind of divergence. The same refusal `insert_guide`
+        // makes, for the same reason and against the same shape.
+        if self.contains_layer(layer.id) {
+            return self.clone();
+        }
         // A filter never carries (§21.2): what a group carries composites *over*
         // its base, so a filter base could reach none of it — declined here, in
         // state, so replay and peers agree and no path can build the arrangement.
@@ -657,6 +669,22 @@ impl DocState {
         let Some((source, _)) = ids.first() else {
             return self.clone();
         };
+        // **Every copy id has to be new and distinct.** `copy_subtree` below looks
+        // each source up and takes the id it is paired with; it has no way to notice
+        // that two sources were paired with one id, or that a copy names a layer the
+        // document already holds. An action this engine mints cannot say either —
+        // `commit_minting` draws them from its own action id at distinct `k` — but
+        // this one arrived in a payload, off a file or a wire, and two layers under
+        // one id is exactly what §17.9 is about. Declined deterministically, so peers
+        // agree about the refusal, which is the bargain every other decline here makes.
+        let copies: Vec<LayerId> = ids.iter().map(|(_, copy)| *copy).collect();
+        let fresh = copies
+            .iter()
+            .enumerate()
+            .all(|(i, c)| !self.contains_layer(*c) && !copies[..i].contains(c));
+        if !fresh {
+            return self.clone();
+        }
         // The record to copy and the stack to copy it into, from one search.
         let Some((layer, site)) = self.locate(*source) else {
             return self.clone();

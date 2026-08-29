@@ -1385,15 +1385,18 @@ impl Engine {
                 self.commit(ActionKind::MoveLayer { id, carrier, at })
             }
 
-            // The drawing guides (§20.5). No id is minted for an add: a guide's
-            // identity is the id of the action that adds it, which the fold reads
-            // off `action.id` — so there is no counter here and nothing for
-            // `resync_counters` to resume past (`GuideId`).
-            DocCommand::AddGuide { guide, after, name } => self.commit(ActionKind::AddGuide {
-                guide,
-                after,
-                name: normalize_name(name),
-            }),
+            // The drawing guides (§20.5). A guide's identity is the id of the action
+            // that adds it, minted through the same door a layer's is — so there is
+            // no counter here and nothing for `resync_counters` to resume past
+            // (`GuideId`, §17.9).
+            DocCommand::AddGuide { guide, after, name } => {
+                self.commit_minting(|a| ActionKind::AddGuide {
+                    id: GuideId(a),
+                    guide,
+                    after,
+                    name: normalize_name(name),
+                });
+            }
             DocCommand::RemoveGuide(id) => self.commit(ActionKind::RemoveGuide(id)),
             // `settle` rather than `commit`, like every other control that is
             // dragged: a gesture released on the pose it was pressed on must not
@@ -2286,9 +2289,22 @@ impl Engine {
         // list of what an action claims to mint, so a variant that grew a layer and
         // forgot to derive its id from `id` is caught here and not by two peers
         // disagreeing about which layer a stroke landed on.
+        //
+        // **Both halves of the id**, since `k` is the half that does the work for a
+        // duplicate: sharing an action id is what makes the ids this action's, and
+        // differing in `k` is what makes them each other's.
+        let minted: Vec<LayerId> = kind.minted_layers().collect();
         debug_assert!(
-            kind.minted_layers().all(|layer| layer.action == id),
+            minted.iter().all(|layer| layer.action == id),
             "{} mints a layer id that is not this action's",
+            kind.label(),
+        );
+        debug_assert!(
+            minted
+                .iter()
+                .enumerate()
+                .all(|(i, l)| !minted[..i].contains(l)),
+            "{} mints one layer id twice",
             kind.label(),
         );
         self.commit_with_id(id, kind);

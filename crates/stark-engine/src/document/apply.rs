@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
 use stark_model::document::ActorId;
-use stark_model::document::{Action, ActionKind, Footprint, GuideId, Materialize};
+use stark_model::document::{Action, ActionKind, Footprint, Materialize};
 
 use super::layer::{Layer, LayerContent};
 use super::state::DocState;
@@ -559,16 +559,17 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // applying one moves a roster and nothing else — which is also why none
         // of these touches `ctx`.
         //
-        // **The id is the action's own** (`GuideId`), which is what an add mints
-        // by being applied at all. Everything else names one that was minted
-        // earlier and no-ops when it is not there, the way every action naming an
-        // absent layer does.
-        ActionKind::AddGuide { guide, after, name } => state.insert_guide(
-            GuideId(action.id),
-            *guide,
-            *after,
-            name.as_deref().map(Arc::from),
-        ),
+        // **The id is the adding action's own** (`GuideId`), and the action carries
+        // it rather than the fold deriving it: an id derived here is not part of the
+        // action, and `start_collaboration` rewrites solo-authored `ActionId`s
+        // (§17.9). Everything else names one that was minted earlier and no-ops when
+        // it is not there, the way every action naming an absent layer does.
+        ActionKind::AddGuide {
+            id,
+            guide,
+            after,
+            name,
+        } => state.insert_guide(*id, *guide, *after, name.as_deref().map(Arc::from)),
         ActionKind::RemoveGuide(id) => state.remove_guide(*id),
         ActionKind::SetGuide(id, guide) => state.set_guide(*id, *guide),
         ActionKind::SetGuideName(id, name) => {

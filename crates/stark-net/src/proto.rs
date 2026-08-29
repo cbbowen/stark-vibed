@@ -86,8 +86,13 @@ use crate::mirror::{Mirror, Served};
 /// names a layer carries, and a meaning change besides: two peers whose folds
 /// coincided used to mint colliding ids, which is what the shape now rules out. A
 /// build that sent the old shape would have its layer ids read as an action id and a
-/// `k` cut out of the middle of one.
-pub(crate) const ALPN: &[u8] = b"stark/collab/16";
+/// `k` cut out of the middle of one;
+/// 17: `AddGuide` carries its `GuideId` where the fold used to derive it from
+/// `action.id` (§20.5, §17.9) — a field added to a variant every guide gossips, and
+/// the fix for a defect the derivation had: `start_collaboration` rewrites
+/// solo-authored `ActionId`s, which moved a derived guide id out from under every
+/// later action naming it.
+pub(crate) const ALPN: &[u8] = b"stark/collab/17";
 
 /// The first byte of every response.
 ///

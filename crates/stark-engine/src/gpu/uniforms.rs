@@ -65,6 +65,19 @@ pub(crate) struct UniformSlots<T> {
     buf: wgpu::Buffer,
     slots: usize,
     label: &'static str,
+    /// A bind group over [`buf`](Self::buf), built on first ask and **dropped by the
+    /// write that replaces the buffer** ([`Self::write`]).
+    ///
+    /// Here rather than beside each consumer because the invalidation is the whole of
+    /// the difficulty: growing does not resize a buffer, it replaces one, and a group
+    /// over the old allocation names a buffer too small for the offsets it is about to
+    /// be given. Two consumers answered that by rebuilding per frame and saying so in a
+    /// comment — correct, and a way to be wrong that no longer exists now the type
+    /// that *does* the replacing is the one that clears the cache.
+    ///
+    /// `None` for the consumers that keep no group: a bind group answers to a layout,
+    /// and several of these are bound as part of a larger group somebody else builds.
+    group: Option<wgpu::BindGroup>,
     _uniform: std::marker::PhantomData<T>,
 }
 
@@ -78,8 +91,38 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
             buf: Self::alloc(device, label, count),
             slots: count.max(1),
             label,
+            group: None,
             _uniform: std::marker::PhantomData,
         }
+    }
+
+    /// A bind group over these slots, built by `make` on first ask after each growth.
+    ///
+    /// `make` is handed the slot as a [`BindingResource`](wgpu::BindingResource) —
+    /// offset 0, one uniform wide — which each draw then displaces by its own
+    /// [`offset`](Self::offset). It is not handed `self`, and that is the point: what
+    /// it may name is the thing whose replacement invalidates the group.
+    pub(crate) fn group(
+        &mut self,
+        make: impl FnOnce(wgpu::BindingResource<'_>) -> wgpu::BindGroup,
+    ) -> &wgpu::BindGroup {
+        let Self { buf, group, .. } = self;
+        group.get_or_insert_with(|| {
+            make(wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: buf,
+                offset: 0,
+                size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
+            }))
+        })
+    }
+
+    /// The group [`group`](Self::group) built, for a reader that cannot take `&mut`.
+    ///
+    /// `None` before the first `group` call after a growth — which is why the two are
+    /// separate: a caller ensures the group while it has the buffer to hand, and reads
+    /// it back later while it does not.
+    pub(crate) fn built_group(&self) -> Option<&wgpu::BindGroup> {
+        self.group.as_ref()
     }
 
     /// Write one uniform per slot, growing the buffer first if this frame has more
@@ -89,9 +132,10 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     /// **Returns whether the buffer moved.** Growing does not resize a buffer, it
     /// *replaces* one — so any bind group built over the old one is now naming a
     /// buffer too small for the offsets it is about to be given, which is a
-    /// validation error rather than a wrong pixel. A caller that keeps such a bind
-    /// group has to drop it when this says `true`; one that rebuilds per frame can
-    /// ignore the answer, which is why this is a plain `bool` and not `#[must_use]`.
+    /// validation error rather than a wrong pixel. The group this type keeps
+    /// ([`Self::group`]) is dropped here; the answer is for a caller holding one of
+    /// its *own*, over a layout this type knows nothing about. Not `#[must_use]`,
+    /// because most callers now have nothing to do with it.
     pub(crate) fn write(
         &mut self,
         device: &wgpu::Device,
@@ -105,6 +149,9 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         if moved {
             self.buf = Self::alloc(device, self.label, uniforms.len());
             self.slots = uniforms.len();
+            // The group named the buffer that is now gone. Dropped here rather than
+            // left to a caller to notice, which is what makes keeping one safe.
+            self.group = None;
         }
         for (i, uniform) in uniforms.iter().enumerate() {
             queue.write_buffer(
@@ -119,15 +166,6 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     /// The dynamic offset slot `slot` binds at.
     pub(crate) fn offset(slot: u32) -> u32 {
         slot * Self::STRIDE as u32
-    }
-
-    /// This buffer as a dynamic-offset bind-group entry — one slot, at offset 0,
-    /// which each draw then displaces by its own [`Self::offset`].
-    pub(crate) fn binding(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry {
-            binding,
-            resource: self.resource(),
-        }
     }
 
     /// The same slot as a bare resource, for a group built from a shader-declared slot
