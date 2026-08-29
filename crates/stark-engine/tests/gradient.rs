@@ -38,7 +38,7 @@ fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
 /// that forgot the residual would hand back a ramp through `#383838` (§6.7).
 #[test]
 fn a_trace_across_two_paints_ends_on_each() {
-    for space in stark_engine::colorspace::all_available() {
+    for space in stark_engine::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };

@@ -45,39 +45,45 @@
 //! one: two public paths to a type are two ways to spell an import and no way to
 //! tell which one the crate meant to offer.
 //!
-//! So the modules a caller genuinely navigates (`document`, `command`, `geom`,
-//! `path`, …) are `pub` and curate their own substrate, while the ones that exist to
-//! *serve* them are `pub(crate)` with their public types re-exported at the root:
-//! `error`, `image` and `content` were reached only that way already, and `assist`,
-//! `noise`, `spline` and `tow` were reached from outside the crate for a grand
-//! total of two names — both of which the re-export list already carried.
+//! So the modules a caller genuinely navigates — `command`, `document`, `filters`,
+//! `path`, `timing` — are `pub` and curate their own surface, while the ones that
+//! exist to *serve* them are `pub(crate)` with their public types re-exported here.
 //!
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
+//! **Eight modules used to be both**, which is what the rule forbids and what it was
+//! written about — `stark_engine::InputSample` and `stark_engine::command::InputSample`
+//! were live in the same file of `stark-ui`. They are settled the way the traffic
+//! decided: `command` and `document` are navigated (132 and 4 module-path uses
+//! outside the crate), so they keep the module and lose their root re-exports;
+//! `assets`, `colorspace`, `engine`, `gpu`, `peer`, `pictures`, `session` and `view`
+//! are not, so they lose the module and the root list absorbs the handful of names
+//! that were only reachable through it.
+//!
 //! Build status lives in §13, not here — one checklist, so there is nothing to drift.
 
-pub mod assets;
+pub(crate) mod assets;
 pub(crate) mod assist;
-pub mod colorspace;
+pub(crate) mod colorspace;
 pub mod command;
 pub mod document;
-pub mod engine;
+pub(crate) mod engine;
 pub(crate) mod error;
 pub mod filters;
-pub mod gpu;
+pub(crate) mod gpu;
 pub(crate) mod image;
 pub(crate) mod noise;
 pub mod path;
-pub mod peer;
-pub mod pictures;
+pub(crate) mod peer;
+pub(crate) mod pictures;
 mod presence;
-pub mod session;
+pub(crate) mod session;
 pub(crate) mod spline;
 pub mod timing;
 pub(crate) mod tow;
 /// The canvas view: pan, zoom, rotation and the mirror (§18.1.2). Session
 /// state, which is why it is here and not in the document crate.
-pub mod view;
+pub(crate) mod view;
 
 /// Take a lock whose only contents are a **cache, a free list or a tally**, poisoned
 /// or not.
@@ -121,21 +127,22 @@ pub mod testing;
 
 pub use assets::AssetStore;
 pub use assist::Assisted;
-pub use colorspace::ColorSpace;
-pub use command::{InputCommand, InputSample};
-pub use document::Selection;
+// `available`/`all_available` were reachable only as `colorspace::…`; a frontend asks
+// them to decide which spaces to offer.
+pub use colorspace::{ColorSpace, all_available, available};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
-    PickSource, PresenceTick, Projected, Rendered,
+    PickSource, PresenceTick, Projected, Rendered, headless_engine,
 };
 pub use error::{EngineError, ExportError, Produces, Result};
 pub use gpu::{
-    Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
-    GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool, max_stretch,
-    max_tip_reach,
+    AllocSource, Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind,
+    GpuContext, GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool,
+    max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
-pub use peer::{LiveGesture, Peer, Peers};
+pub use peer::{GestureView, Identity, LiveGesture, Peer, Peers};
+pub use session::Session;
 pub use tow::TowString;
 pub use view::ViewTransform;

@@ -50,7 +50,7 @@ use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion
 
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::engine::headless_engine;
+use stark_engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
 use stark_model::document::BrushParams;

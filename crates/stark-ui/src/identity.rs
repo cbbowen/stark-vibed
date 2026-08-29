@@ -58,7 +58,7 @@ impl Record for Stored {
 #[derive(Clone)]
 pub struct ClientIdentity {
     pub secret: SecretKey,
-    /// Which run of this identity the process is; see [`stark_engine::peer::Identity`].
+    /// Which run of this identity the process is; see [`stark_engine::Identity`].
     pub boot: u64,
 }
 

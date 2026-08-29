@@ -1,5 +1,5 @@
 //! Pointer and keyboard input: turning DOM events into
-//! [`InputCommand`](stark_engine::InputCommand)s
+//! [`InputCommand`](stark_engine::command::InputCommand)s
 //! (§4).
 //!
 //! # A file per gesture, and this one for what they share
@@ -44,8 +44,8 @@ use crate::slots::{self, Grip};
 use crate::state::{
     AppState, BrushRing, Dwell, FlowBar, PickScope, TowUi, TuneReadout, dispatch, update_brush,
 };
-use stark_engine::InputSample;
 use stark_engine::ViewTransform;
+use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
 use stark_model::document::{LayerId, ShapeAction, TransformMap};

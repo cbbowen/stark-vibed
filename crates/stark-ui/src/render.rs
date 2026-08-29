@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::platform::Canvas;
 use stark_engine::ViewTransform;
 use stark_engine::command::ViewCommand;
-use stark_engine::{Engine, EnvironmentId, GpuContext, InputCommand, InputSample, ObservableState};
+use stark_engine::command::{InputCommand, InputSample};
+use stark_engine::{Engine, EnvironmentId, GpuContext, ObservableState};
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::SubstrateId;
@@ -544,7 +545,7 @@ impl Renderer {
     // session glue in `collab.rs`. ---
 
     /// Convert the current document into a shared one, authored as `identity`.
-    pub fn start_collaboration(&mut self, identity: impl Into<stark_engine::peer::Identity>) {
+    pub fn start_collaboration(&mut self, identity: impl Into<stark_engine::Identity>) {
         self.engine.start_collaboration(identity);
     }
 
@@ -554,7 +555,7 @@ impl Renderer {
     pub fn join_collaboration(
         &mut self,
         file: &stark_model::DocumentFile,
-        identity: impl Into<stark_engine::peer::Identity>,
+        identity: impl Into<stark_engine::Identity>,
     ) -> stark_engine::Result<()> {
         self.engine.join_collaboration(file, identity)
     }

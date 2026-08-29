@@ -45,10 +45,9 @@ use stark_engine::command::Tool;
 use stark_model::Srgb;
 
 use stark_engine::ViewTransform;
+use stark_engine::command::InputSample;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_engine::{
-    Background, Engine, EnvironmentId, InputSample, MediaParams, Offscreen, Rendered,
-};
+use stark_engine::{Background, Engine, EnvironmentId, MediaParams, Offscreen, Rendered};
 use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};

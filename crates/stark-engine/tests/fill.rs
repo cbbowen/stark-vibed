@@ -810,7 +810,7 @@ fn the_gradient_preview_does_not_accumulate() {
 /// (§6.7). Read back through the eyedropper, which answers in sRGB.
 #[test]
 fn the_ramp_ends_are_the_stops_in_both_spaces() {
-    for space in stark_engine::colorspace::all_available() {
+    for space in stark_engine::all_available() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };

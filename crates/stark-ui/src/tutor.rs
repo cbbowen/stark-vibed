@@ -115,7 +115,7 @@ use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel
 use crate::platform::{self, ElementBox};
 use crate::state::{AppState, root_signal};
 use crate::storage::Store;
-use stark_engine::InputCommand;
+use stark_engine::command::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_model::document::BrushParams;
 

@@ -21,7 +21,7 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 ///
 /// The tool chips **arm** a tool rather than selecting a mode to stay in: one of
 /// them is lit only while a shape gesture is pending, and drawing a selection
-/// disarms it ([`Session::end_shape`](stark_engine::session::Session::end_shape)).
+/// disarms it ([`Session::end_shape`](stark_engine::Session::end_shape)).
 /// Clicking the lit one disarms it too, so the escape hatch from an armed tool is the
 /// same control that armed it. Painting is therefore the resting state and needs no
 /// chip of its own — no chip lit *is* the brush.

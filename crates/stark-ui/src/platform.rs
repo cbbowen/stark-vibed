@@ -500,7 +500,7 @@ pub fn raw_pointer(e: &Event<PointerData>) -> Option<RawPointer> {
 
 /// A pointer event's own timestamp in seconds — `performance.now()`'s clock,
 /// monotonic and shared by every event on the page, which is what
-/// [`InputSample::time`](stark_engine::InputSample::time) needs.
+/// [`InputSample::time`](stark_engine::command::InputSample::time) needs.
 ///
 /// Zero when the raw event is out of reach (off wasm), matching the field's
 /// default. The fitter keys its time channel to the first sample it sees, so only

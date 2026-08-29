@@ -32,7 +32,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 
-use stark_engine::InputSample;
+use stark_engine::command::InputSample;
 use stark_model::ColorSpaceId;
 use stark_model::SubstrateId;
 use stark_model::document::{

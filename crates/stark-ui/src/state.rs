@@ -21,8 +21,9 @@ use crate::collab;
 use crate::commands::VisibilityToggle;
 use crate::prefs::Prefs;
 use crate::render::Renderer;
+use stark_engine::ObservableState;
+use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
-use stark_engine::{InputCommand, ObservableState};
 use stark_model::document::{GuideId, LayerId};
 use stark_model::geom::Vec2;
 

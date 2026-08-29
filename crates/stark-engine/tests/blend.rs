@@ -449,7 +449,7 @@ fn black_is_the_identity_through_the_round_trip() {
     // statement about the *spaces* rather than about the feature set.
     for (space, color, tol) in cases
         .into_iter()
-        .filter(|(s, _, _)| stark_engine::colorspace::available(*s))
+        .filter(|(s, _, _)| stark_engine::available(*s))
     {
         for mode in [BlendMode::Reinhard, RADIANCE] {
             let Some(mut engine) = engine_or_skip_with(space) else {
@@ -509,7 +509,7 @@ fn white_is_the_identity_through_the_round_trip() {
     ];
     for (space, color, tol) in cases
         .into_iter()
-        .filter(|(s, _, _)| stark_engine::colorspace::available(*s))
+        .filter(|(s, _, _)| stark_engine::available(*s))
     {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;

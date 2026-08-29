@@ -32,23 +32,28 @@ pub(crate) mod tile;
 pub(crate) mod transform;
 pub(crate) mod uniforms;
 
+// `gpu` is `pub(crate)` (see `lib.rs`), so this list is what the *crate* reaches
+// across module boundaries, not a public surface. Four names left it when that
+// changed — `GroupContent`, `MergeSide`, `Resource` and `MaskHandle` were re-exported
+// for a public path nobody outside took and nothing inside used, which only became
+// visible once the compiler could see they had no reader at all.
 pub(crate) use composite::{BlendPass, FilterPass};
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
-    GroupContent, MatteDraw, MediaParams, Offscreen, SelectionOutline,
+    MatteDraw, MediaParams, Offscreen, SelectionOutline,
 };
 pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use environment::{Environment, EnvironmentId};
 pub use fill::FillRenderer;
-pub use merge::{MergeRenderer, MergeSide};
+pub use merge::MergeRenderer;
 pub use place::PlaceRenderer;
-pub use registry::{Registry, Resource};
+pub use registry::Registry;
 pub use selection::SelectionRenderer;
 pub(crate) use stroke::StrokeSpans;
 pub use stroke::{StrokeRenderer, max_stretch, max_tip_reach};
 pub use substrate::{Substrate, SubstrateMap};
 pub use tile::{
-    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TileChannels,
-    TilePairHandle, TilePool, mask_tex_origin,
+    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TileChannels, TilePairHandle,
+    TilePool, mask_tex_origin,
 };
 pub use transform::TransformRenderer;

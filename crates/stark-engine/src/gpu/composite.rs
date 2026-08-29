@@ -172,7 +172,7 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
     }
 }
 
-pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
+pub use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use plan::{blend_uniform, filter_uniform};

@@ -15,11 +15,11 @@
 
 use glam::Quat;
 use stark_engine::Assisted;
+use stark_engine::Session;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::Tool;
 use stark_engine::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
-use stark_engine::session::Session;
 use stark_model::document::{LayerId, PerspectiveGuide, Scaffold};
 use stark_model::geom::{Ellipse, Extent2, Vec2};
 
