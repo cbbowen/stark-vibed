@@ -169,7 +169,7 @@ impl<const KEEP_TIMING: bool, S> Filter<S> for TimingFilter<KEEP_TIMING> {
 
 /// Open a timing span for the rest of the enclosing block.
 ///
-/// ```ignore
+/// ```text
 /// fn flush_live(&mut self) {
 ///     crate::timing::span!("live.fold");
 ///     // ...measured until this function's block ends.
@@ -325,7 +325,7 @@ where
 /// Compose it into a subscriber stack; the frontend puts the console layer beside
 /// it, a benchmark uses it alone:
 ///
-/// ```ignore
+/// ```no_run
 /// use tracing_subscriber::layer::SubscriberExt;
 /// use tracing_subscriber::registry::Registry;
 ///

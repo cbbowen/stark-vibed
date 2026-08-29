@@ -594,7 +594,7 @@ impl Engine {
     /// because the action log survives what the device does not and a caller told
     /// this can still save the file.
     ///
-    /// ```ignore
+    /// ```text
     /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
     /// let image = readback.await?;
     /// ```

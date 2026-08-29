@@ -52,8 +52,17 @@ pub use selection::SelectionRenderer;
 pub(crate) use stroke::StrokeSpans;
 pub use stroke::{StrokeRenderer, max_stretch, max_tip_reach};
 pub use substrate::{Substrate, SubstrateMap};
+/// Gated to match what it is *for*. `TileChannels` is what a tile reads back as, and
+/// both ends of that — [`TilePairHandle::read_channels`] which mints one and
+/// `Engine::tile_channels` which hands it to the suite — are
+/// `#[cfg(not(target_arch = "wasm32"))]`, because a readback blocks and the browser
+/// has no thread to block. Re-exported unconditionally, this was a name the wasm
+/// build imported and could not use: the shape CLAUDE.md warns about, a `#[cfg]` that
+/// drifted off the `use` it guarded.
+#[cfg(not(target_arch = "wasm32"))]
+pub use tile::TileChannels;
 pub use tile::{
-    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TileChannels, TilePairHandle,
-    TilePool, mask_tex_origin,
+    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TilePairHandle, TilePool,
+    mask_tex_origin,
 };
 pub use transform::TransformRenderer;

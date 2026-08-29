@@ -246,13 +246,17 @@ uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
   its own process, which is what lets `.config/nextest.toml` cap how many of them
   ask the driver for a device at once. That cap is the fix for the
   `BufferAsyncError` flake, and it is also ~13% faster on a large box. Two commands
-  because nextest cannot run doctests at all. `--doc` is the second, and today it
-  executes **nothing**: the three doc examples in `stark-engine` are all
-  ` ```ignore ` blocks (`engine::render`, `timing` ×2), so they are counted and
-  skipped. Keep the command anyway — it is what makes the first *real* doctest
-  somebody writes actually run, instead of being collected by nobody. That is the
-  same reason `STARK_ALLOW_NO_GPU` is left unset: a test nothing runs still
-  reports `ok`.
+  because nextest cannot run doctests at all. `--doc` is the second, and it compiles
+  exactly one thing: `timing::layer`'s example, which is ` ```no_run ` because it
+  installs a *global* subscriber — compiling it is what catches the rot, running it
+  would only prove a process can do that once. The other two blocks
+  (`engine::export`, `timing::span!`) are ` ```text `, because neither is a program:
+  one has no bindings and a `?` outside a function, the other a method outside an
+  impl. All three used to be ` ```ignore `, which claims a block is Rust that we are
+  choosing not to run — so the command was collected by nobody and reported `ok`
+  having compiled nothing. Prefer `no_run` over `ignore` for anything that is real
+  code, and `text` for anything that is not: a test nothing runs still reports `ok`,
+  which is the same reason `STARK_ALLOW_NO_GPU` is left unset.
 - **Cite sections, not line numbers**, when referring to the docs from code
   (`§6.4`).
 - **When a model is wrong, fix the model and re-bless the goldens.** No
