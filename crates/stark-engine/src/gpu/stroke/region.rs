@@ -371,6 +371,17 @@ pub(super) struct RegionRect {
     pub(super) lo: Vec2,
     /// The region rectangle's top-left in canvas px: [`lo`](Self::lo) less one
     /// apron — what every slot's coordinates are measured from.
+    ///
+    /// **Whole texels, by construction.** [`lo`](Self::lo) is a `min` over
+    /// [`TileCoord::origin`] values, which are integral multiples of `TILE_SIZE`, and
+    /// the apron subtracted from it is an integer. That is what the cell grid's anchor
+    /// rests on — `plan::cell_geometry` takes `origin.rem_euclid(cell)` to place the
+    /// grid, so a fractional origin would put every cell boundary off the canvas texel
+    /// grid, which is a seam (§6.4) and not something a picture announces.
+    ///
+    /// `cell_geometry` carries a `debug_assert` for it. That assert is a restatement of
+    /// this sentence rather than the thing holding the line: the property is
+    /// established here, where the value is made.
     pub(super) origin: Vec2,
     /// The rectangle's extent in texels.
     pub(super) w: u32,

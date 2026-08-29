@@ -550,6 +550,9 @@ fn cell_geometry(
         region_origin.x.fract() == 0.0 && region_origin.y.fract() == 0.0,
         "a region origin must sit on a canvas texel for the cell grid to anchor to it",
     );
+    // Restating `RegionRect::origin`'s own guarantee rather than establishing it — see
+    // there for why a fractional origin cannot arrive, and why it would be a seam if
+    // one did.
     let anchor = Vec2::new(
         (region_origin.x as i32).rem_euclid(c) as f32,
         (region_origin.y as i32).rem_euclid(c) as f32,

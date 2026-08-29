@@ -305,7 +305,6 @@ impl StrokeRenderer {
         // not a pair of `drop`s placed after the submit and defended by a comment.
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
-        let device = &self.ctx.device;
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]).
@@ -392,42 +391,15 @@ impl StrokeRenderer {
             // (§6.8's pattern), where acquiring a real pooled pair would mean
             // allocating and clearing one on every pointer move whether or not the
             // stroke reached anything unpainted.
-            let (base_color, base_aux) = match base.get(coord) {
-                Some(tile) => (tile.color_view(), tile.aux_view()),
-                None => (&self.zeroes.color, &self.zeroes.aux),
-            };
-            // The resident residual, or the 1×1 zero on bare canvas — the same pairing
-            // the color above makes, since the two are one color (§6.7).
-            let base_resid = self
-                .zeroes
-                .resid
-                .as_ref()
-                .map(|zero| base.get(coord).and_then(|t| t.resid_view()).unwrap_or(zero));
+            // The pristine paint under this tile, or the 1×1 zeroes where the layer has
+            // none — the accumulator's own derivation (`accum::base_targets`), which
+            // this loop open-coded a third time.
+            let base_t = super::accum::base_targets(self, base.get(coord));
             // The coverage alone: the mask's opacity is in `k.opacity` already
             // (`stroke_constants`), which the integrate multiplies this by.
             let mask_view = self.selection.mask_for(selection, *coord);
-            let integrate_bg = desc::bind_group_for(
-                device,
-                "stark integrate bg",
-                &self.swept.integrate_bgl,
-                INTEGRATE_SLOTS,
-                base_resid.is_some() && scratch.resid.is_some(),
-                |b| match b {
-                    ib::BASE_COLOR => wgpu::BindingResource::TextureView(base_color),
-                    ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
-                    ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(&scratch.color),
-                    ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(&scratch.aux),
-                    ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
-                    ib::IG => opacity_buf.as_entire_binding(),
-                    ib::BASE_RESID => wgpu::BindingResource::TextureView(
-                        base_resid.expect("a residual build has one"),
-                    ),
-                    ib::SCRATCH_RESID => wgpu::BindingResource::TextureView(
-                        scratch.resid.as_ref().expect("a residual build has one"),
-                    ),
-                    other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
-                },
-            );
+            let integrate_bg =
+                integrate_bind_group(self, base_t, scratch.targets(), &mask_view, &opacity_buf);
             {
                 let int_targets = dst.targets();
                 let int_att = int_targets.attachments(desc::CLEAR);
@@ -489,7 +461,6 @@ impl StrokeRenderer {
         // base it reads pristine paint out of is too.
         let StrokeScene { substrate, .. } = scene;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
-        let device = &self.ctx.device;
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
         let opacity_buf = opacity_uniform(&mut scope, k.opacity);
@@ -531,34 +502,14 @@ impl StrokeRenderer {
                 pipeline: &self.swept.integrate_pipeline,
             },
             |l: &Landing<'_>| {
-                desc::bind_group_for(
-                    device,
-                    "stark integrate bg",
-                    &self.swept.integrate_bgl,
-                    INTEGRATE_SLOTS,
-                    // One predicate for both halves, which is what makes the
-                    // `RESID` lane below safe to name: the base's residual, the
-                    // zero standing in for it and the parcel's third lane are all
-                    // present exactly when the space has a residual (§6.7).
-                    l.base.resid.is_some(),
-                    |b| match b {
-                        ib::BASE_COLOR => wgpu::BindingResource::TextureView(l.base.color),
-                        ib::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),
-                        ib::SCRATCH_COLOR => {
-                            wgpu::BindingResource::TextureView(l.parcel.lane(COLOR))
-                        }
-                        ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(l.parcel.lane(AUX)),
-                        ib::SELECTION => wgpu::BindingResource::TextureView(l.mask),
-                        ib::IG => opacity_buf.as_entire_binding(),
-                        ib::BASE_RESID => wgpu::BindingResource::TextureView(
-                            l.base.resid.expect("a residual build has one"),
-                        ),
-                        ib::SCRATCH_RESID => {
-                            wgpu::BindingResource::TextureView(l.parcel.lane(RESID))
-                        }
-                        other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
-                    },
-                )
+                // The parcel's lanes as the trio they are, so this and the unscaled
+                // loop ask `integrate_bind_group` the same question.
+                let parcel = Targets {
+                    color: l.parcel.lane(COLOR),
+                    aux: l.parcel.lane(AUX),
+                    resid: l.base.resid.is_some().then(|| l.parcel.lane(RESID)),
+                };
+                integrate_bind_group(self, l.base, parcel, l.mask, &opacity_buf)
             },
         );
 
@@ -613,6 +564,9 @@ impl RingSlot {
         }
     }
 
+    /// The slot's three views as the trio every consumer wants — the same shape a
+    /// parcel's lanes make, which is what lets one `integrate_bind_group` serve the
+    /// unscaled loop and the accumulator alike.
     fn targets(&self) -> Targets<'_> {
         Targets {
             color: &self.color,
@@ -894,4 +848,51 @@ pub(super) fn build_integrate_pipeline(
         &crate::gpu::channels::ChannelFormats::of(color_space).targets(),
     );
     (pipeline, bgl)
+}
+
+/// The integrate pass's bind group: the pristine paint under a tile, the parcel the
+/// stroke laid over it, the selection coverage and the stroke's opacity ceiling.
+///
+/// **One derivation for both swept paths.** The unscaled loop and the scaled
+/// accumulator each spelled these eight slots out — the same list, the same
+/// `unreachable!`, the same two `expect`s on the residual lanes — differing only in
+/// where the six views came from: a resident tile and a ring slot on one side, a
+/// `Targets` and a parcel's lanes on the other. Both of those *are* trios, so the
+/// difference disappears once they are asked for as trios, and what is left is the one
+/// thing that was genuinely shared: what the integrate reads. Two spellings of that
+/// was a place for the two paths to disagree about it.
+///
+/// The residual predicate is `base && parcel` because both must be bound for the
+/// `_resid` build to be legal. On the scaled path the two are the same question — the
+/// base's residual, the zero standing in for it and the parcel's third lane are all
+/// present exactly when the space has one (§6.7) — so requiring both costs it nothing.
+fn integrate_bind_group(
+    r: &StrokeRenderer,
+    base: Targets<'_>,
+    parcel: Targets<'_>,
+    mask: &wgpu::TextureView,
+    opacity: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    desc::bind_group_for(
+        &r.ctx.device,
+        "stark integrate bg",
+        &r.swept.integrate_bgl,
+        INTEGRATE_SLOTS,
+        base.resid.is_some() && parcel.resid.is_some(),
+        |b| match b {
+            ib::BASE_COLOR => wgpu::BindingResource::TextureView(base.color),
+            ib::BASE_AUX => wgpu::BindingResource::TextureView(base.aux),
+            ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(parcel.color),
+            ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(parcel.aux),
+            ib::SELECTION => wgpu::BindingResource::TextureView(mask),
+            ib::IG => opacity.as_entire_binding(),
+            ib::BASE_RESID => {
+                wgpu::BindingResource::TextureView(base.resid.expect("a residual build has one"))
+            }
+            ib::SCRATCH_RESID => {
+                wgpu::BindingResource::TextureView(parcel.resid.expect("a residual build has one"))
+            }
+            other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
+        },
+    )
 }

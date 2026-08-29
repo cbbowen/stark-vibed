@@ -450,7 +450,10 @@ impl<'a> IncrementalTileAccumulator<'a> {
 /// shaders clamp their loads, so bare canvas costs no tile at all, where acquiring a
 /// real pooled trio would mean allocating and clearing one on every pointer move
 /// whether or not the stroke reached anything unpainted.
-fn base_targets<'a>(r: &'a StrokeRenderer, pristine: Option<&'a TilePairHandle>) -> Targets<'a> {
+pub(super) fn base_targets<'a>(
+    r: &'a StrokeRenderer,
+    pristine: Option<&'a TilePairHandle>,
+) -> Targets<'a> {
     Targets {
         color: pristine.map_or(&r.zeroes.color, TilePairHandle::color_view),
         aux: pristine.map_or(&r.zeroes.aux, TilePairHandle::aux_view),
