@@ -113,6 +113,11 @@ pub(crate) fn unpoisoned<'a, T>(
     lock.unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The suite's and the benchmarks' own harness, and the diagnostic methods only they
+/// call — see the module (§9).
+#[doc(hidden)]
+pub mod testing;
+
 pub use assets::AssetStore;
 pub use assist::Assisted;
 pub use colorspace::ColorSpace;

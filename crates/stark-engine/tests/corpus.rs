@@ -126,6 +126,8 @@ fn run(name: &str) {
     check_refinement(case, brush, &committed, &mut report);
     check_lift_off(case, brush, &mut report);
     check_translation(case, brush, &committed, &mut report);
+    check_slow_commit(case, brush, &rendered, &mut report);
+    check_towed(case, brush, &committed, &mut report);
 
     report.finish();
 
@@ -404,6 +406,89 @@ fn check_lift_off(case: &Case, brush: BrushParams, report: &mut Report) {
         ));
     }
 }
+
+/// **The commit that renders instead of taking the preview draws the replay's
+/// pixels, exactly** (`DEFAULT_FAST_COMMIT`, §6.2).
+///
+/// With the setting cleared the commit is offered nothing, so it folds the action the
+/// one way a replay, a file, an undo and a collaborator all fold it — and *exactly*
+/// that way, which is why the bound here is zero where the seam checks' is not. What
+/// it guards is the fallback: fast commit is an optimisation the engine may decline
+/// (a contested layer, a scrubbed playhead, a peer's stroke), and a fallback nothing
+/// exercises is a path that rots.
+///
+/// Asked of every case rather than of one brush, which is what this is here for.
+/// `stroke.rs` has covered the switch itself since it was written; what it covers it
+/// with is a single swept stroke, so the sequential loop, the erase, the opacity
+/// ceiling and the tooth all reached their commit through the fast path only.
+///
+/// Skipped under `debug-unfrozen`, where the previewed tail is deliberately tinted and
+/// the two renders are meant to differ.
+fn check_slow_commit(case: &Case, brush: BrushParams, rendered: &RgbaImage, report: &mut Report) {
+    if cfg!(feature = "debug-unfrozen") {
+        return;
+    }
+    let Some((mut slow, _)) = case.open() else {
+        return;
+    };
+    slow.process(ViewCommand::SetFastCommit(false));
+    case.paint(&mut slow, brush, DEFAULT_TOLERANCE);
+    if slow.strokes_reused() != 0 {
+        report.note("the commit took the preview's tiles with fast commit switched off");
+    }
+    report.check(
+        "committed with fast commit off vs the stroke rendered whole",
+        rendered,
+        &slow.render_to_image(),
+        0,
+    );
+}
+
+/// **The towed tip is a different gesture, and still one the preview and the commit
+/// agree about** (§6.11).
+///
+/// A rope puts a `Tow` between the reports and the fitter: the mark follows a string
+/// dragged behind the pointer, so the samples that reach the fit are neither the ones
+/// delivered nor as many of them. Nothing else in the suite ever passes a non-zero
+/// `rope`, which left the frontend's stroke-smoothing slider — a control every user of
+/// it has on — covered by no end-to-end test at all.
+///
+/// What is asserted is not the mark. A towed stroke is *meant* to differ from an
+/// untowed one, and by how much is the feature; there is nothing to compare it to that
+/// would say anything. What must still hold is the invariant everything else here
+/// rests on: the picture the live preview built out of a frozen head and a tail is the
+/// picture a replay makes of the same committed action. The tow feeds the fitter and
+/// the fitter alone, so this ought to be free — and "ought to be free" is exactly the
+/// claim worth having a test for, since the tow emits *several* samples per report and
+/// the freezing boundary is counted in fitted spans.
+fn check_towed(case: &Case, brush: BrushParams, untowed: &RgbaImage, report: &mut Report) {
+    if cfg!(feature = "debug-unfrozen") {
+        return;
+    }
+    let Some((mut engine, _)) = case.open() else {
+        return;
+    };
+    case.paint_towed(&mut engine, brush, DEFAULT_TOLERANCE, TOW_ROPE);
+    let committed = engine.render_to_image();
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    report.check(
+        "a towed stroke: what committed vs the stroke rendered whole on redo",
+        &committed,
+        &engine.render_to_image(),
+        case.tol.seam,
+    );
+    let moved = frac_exceeding(untowed, &committed, VISIBLE_LEVELS) * 100.0;
+    eprintln!("TOWDIAG {} moved {moved:.3}%", case.name);
+}
+
+/// The smoothing rope [`check_towed`] draws through, in canvas px.
+///
+/// Long enough that the string is genuinely slack for part of every case — a rope
+/// shorter than the gap between two reports never goes taut and the tow is a no-op
+/// (`tow::bend_reach`) — and short enough that the mark still lands inside a viewport
+/// sized for the untowed one.
+const TOW_ROPE: f32 = 6.0;
 
 /// **Where the tile grid falls under a mark must not change the mark.**
 ///

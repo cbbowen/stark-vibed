@@ -320,10 +320,10 @@ pub(super) struct ScratchLevel {
     /// bind group pointing at one too small for the offset it is about to be given.
     /// That is a validation error, not a wrong pixel, and no single-render test can
     /// reach it: a fresh compositor sizes its buffer before it builds anything over
-    /// it. [`Compositor::upload`] calls [`ScratchTargets::invalidate_bind_groups`]
+    /// it. [`Compositor::upload_streams`] calls [`ScratchTargets::invalidate_bind_groups`]
     /// when the buffer moves, which is the whole of the second half.
     ///
-    /// [`Compositor::upload`]: super::Compositor
+    /// [`Compositor::upload_streams`]: super::Compositor
     blend_bg: [OnceLock<wgpu::BindGroup>; 2],
     filter_bg: [OnceLock<wgpu::BindGroup>; 2],
 }

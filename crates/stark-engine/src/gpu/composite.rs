@@ -163,14 +163,24 @@ pub(crate) fn tile_bind_group<'a>(
         )
     })
 }
-use view::{View, ViewBindings};
+use view::{View, ViewBindings, ViewGroups};
+
+/// The three shared things a view group is built from, off the pipeline that owns
+/// them. One function so the pairing cannot be written two ways.
+fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
+    ViewGroups {
+        sampler: &p.view.sampler,
+        tiles: &p.tiles.view_bgl,
+        overlay: &p.overlay.view_bgl,
+    }
+}
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
 pub(crate) use view::view_uniform;
 
-/// What [`Compositor::upload`] hands the encoder: the per-tile bind groups, and the
+/// What [`Compositor::upload_streams`] hands the encoder: the per-tile bind groups, and the
 /// per-matte ramp bind group beside them. One value because they are one
 /// preparation, gathered from one plan and indexed by its `Draw`s.
 ///
@@ -284,16 +294,20 @@ pub struct CompositorPasses {
     target_format: wgpu::TextureFormat,
 }
 
-/// One point of an eyedropper's sample: the view that frames it, which of the written
-/// view slots that view was laid in, and the draw list to composite through it.
+/// One pick's draws, prepared once and recorded from many times
+/// ([`Compositor::prepare_pick`]).
 ///
-/// The slot and the view travel together because they are two halves of one fact — a
-/// caller that wrote its views in one order and bound them in another would sample the
-/// right document at the wrong place, which is a colour and not an error (§18.0.2).
-pub(crate) struct PickPatch<'a> {
-    pub(crate) view: ViewTransform,
-    pub(crate) slot: usize,
-    pub(crate) groups: &'a [CompositeGroup],
+/// **Holding it is what keeps a trace correct**, in two ways a caller could not
+/// arrange for itself. The uploads inside it target buffers this `Compositor` owns one
+/// of, so preparing per patch would leave every patch drawing the last one's records;
+/// and the blend scratch destroys its textures on drop, so dropping it before the
+/// submit would fail the submit and lose the whole trace. Both are answered by the
+/// value living from before the first patch is recorded until after the submit, which
+/// is what an owned value in the caller's frame makes hard to get wrong.
+pub(crate) struct PreparedPick<'a> {
+    plan: Plan<'a>,
+    streams: PreparedStreams<'a>,
+    scratch: Option<ScratchTargets>,
 }
 
 /// Everything about compositing that does not depend on *what is being drawn into*:
@@ -652,12 +666,7 @@ impl Compositor {
         let device = &pipeline.ctx.device;
         Self {
             size: Extent2::new(0, 0),
-            view: ViewBindings::new(
-                device,
-                &pipeline.view,
-                &pipeline.tiles.view_bgl,
-                &pipeline.overlay.view_bgl,
-            ),
+            view: ViewBindings::new(device, view_groups(pipeline)),
             media_buf: media::uniform_buffer(device),
             accum: None,
             generation: pipeline.generation,
@@ -1000,77 +1009,119 @@ impl Compositor {
         true
     }
 
-    /// Composite `items` into caller-supplied targets and **stop there** — pass A
-    /// alone, with no media pass over it.
-    ///
-    /// This is the eyedropper's sampling path (§18.0.2). What lands in
-    /// `color` is the paint's own channels in the document's working space, which is
-    /// what a picker has to read: the lit result has been through image-based
-    /// lighting, a tonemap and an sRGB encode, so picking *that* would hand back a
-    /// color the palette never mixed — and in a Mixbox document (§6.7) a
-    /// pigment mixture that cannot be picked back up, which is the point of mixing
-    /// in pigment space at all.
-    ///
-    /// `into` must carry the formats [`CompositorPipeline::channel_formats`] reports
-    /// and be `view.viewport` in size. It is the caller's, not this compositor's: a
-    /// sample is taken through the compositor that belongs to the screen, so it must
-    /// leave the screen's own attachments — a few hundred texels wide against the
-    /// window's millions — exactly where they were. That is why this does not go
-    /// through [`Self::ensure_targets`], and why the blend scratch below is its own
-    /// too.
-    ///
-    /// A [`Targets`] rather than three views, which is how the residual stops being a
-    /// caller's decision. A pigment document's pass A **writes three attachments**,
-    /// so a caller offering two is missing one — a validation error the Oklab half of
-    /// the suite cannot see, guarded here by a `debug_assert` that only debug builds
-    /// ran. `ChannelFormats` exists to make "all three or none of them" unsayable
-    /// (§6.7); taking the trio it produces is what lets this path inherit that
-    /// instead of re-checking it.
-    /// Lay down one view slot per patch, in `views`' order — what a
-    /// [`composite_channels`](Self::composite_channels) trace binds against by index.
+    /// Lay down one view slot per patch, in `views`' order — what the patches of a
+    /// [`prepare_pick`](Self::prepare_pick) trace bind against by index.
     ///
     /// Separate from the recording because the whole point is that it happens *once*
     /// for a trace: the slots have to be written before any of the passes that read
     /// them are submitted, and there is one submit.
     pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
-        self.view.write(&p.ctx.device, &p.ctx.queue, views);
+        self.view
+            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), views);
     }
 
-    /// **One encoder for the whole trace, and the caller's.** A gradient capture
-    /// samples up to [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points
-    /// (§22.2) and every one of them is a patch of this same document; recording them
-    /// together is the difference between one round trip to the queue and a hundred.
-    /// What used to force the submit was the view uniform: one buffer, rewritten per
-    /// patch, and `write_buffer` being a queue operation meant a submit was the only
-    /// thing that could order two writes. The views are slots now
-    /// ([`ViewBindings`](view::ViewBindings)), so `patch` is which of them this call
-    /// draws through and the ordering is the offset rather than the queue.
+    /// Plan and upload one pick's draws — **once for a whole trace**, before any of
+    /// its patches are recorded.
     ///
-    /// The caller writes every view before the first of these and submits after the
-    /// last; nothing here submits.
-    pub(crate) fn composite_channels(
+    /// This is not merely an optimization, it is what makes a multi-patch trace
+    /// correct at all. What the streams write into — the instance buffer, the matte
+    /// instances and ramps, the blend and filter uniforms — are one buffer apiece on
+    /// this `Compositor`, and `write_buffer` is a queue operation: N uploads before one
+    /// submit leave every patch drawing the last one's records (`gpu::uniforms`).
+    /// Preparing once and recording N times is what stops that being a rule a caller
+    /// has to remember, and it spares a trace N plan builds and N gathers of the same
+    /// tile groups besides.
+    ///
+    /// `view` is any of the patches'. The only thing the streams read it for is the
+    /// chromatic filter's dispersion (§21.10), which is `view.linear()` — zoom,
+    /// rotation and flip — and a trace's patches differ in position alone
+    /// (`pick::patch_view`). A pick whose patches varied the *shape* of their view
+    /// would have to prepare per patch, and would then have to submit per patch too.
+    pub(crate) fn prepare_pick<'a>(
         &mut self,
+        p: &CompositorPipeline,
+        view: ViewTransform,
+        groups: &'a [CompositeGroup],
+    ) -> PreparedPick<'a> {
+        let plan = Plan::build(groups);
+        let streams = self.upload_streams(p, view, &plan);
+        // Its own scratch, and the trace's rather than the patch's. A pick viewport is
+        // `2r+1` square, so this is a few kilobytes; sharing the render path's cache
+        // would trade that for reallocating the *window* twice a frame (see
+        // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
+        // eyedropper would report a color the screen never showed.
+        //
+        // One for every patch is sound because the patches are recorded into one
+        // encoder and commands in an encoder run in order: each patch's bounces clear
+        // and rewrite the scratch before reading it, so patch `i + 1` finds nothing of
+        // patch `i` in it. What it must outlive is the *submit*, which is why it is
+        // here and not in the recording call — `Attachment`'s drop `destroy()`s the
+        // texture, and a recorded encoder is not in-flight work.
+        let scratch = (!plan.scratch.is_empty())
+            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
+        PreparedPick {
+            plan,
+            streams,
+            scratch,
+        }
+    }
+
+    /// Record one patch of a prepared pick into the caller's encoder: pass A alone,
+    /// into caller-supplied targets, with no media pass over it.
+    ///
+    /// This is the eyedropper's sampling path (§18.0.2). What lands in `color` is the
+    /// paint's own channels in the document's working space, which is what a picker
+    /// has to read: the lit result has been through image-based lighting, a tonemap
+    /// and an sRGB encode, so picking *that* would hand back a color the palette never
+    /// mixed — and in a Mixbox document (§6.7) a pigment mixture that cannot be picked
+    /// back up, which is the point of mixing in pigment space at all.
+    ///
+    /// `into` must carry the formats [`CompositorPipeline::channel_formats`] reports
+    /// and be the patch view's viewport in size. It is the caller's, not this
+    /// compositor's: a sample is taken through the compositor that belongs to the
+    /// screen, so it must leave the screen's own attachments — a few hundred texels
+    /// wide against the window's millions — exactly where they were. That is why this
+    /// does not go through [`Self::ensure_targets`].
+    ///
+    /// A [`Targets`] rather than three views, which is how the residual stops being a
+    /// caller's decision. A pigment document's pass A **writes three attachments**, so
+    /// a caller offering two is missing one — a validation error the Oklab half of the
+    /// suite cannot see, guarded here by a `debug_assert` that only debug builds ran.
+    /// `ChannelFormats` exists to make "all three or none of them" unsayable (§6.7);
+    /// taking the trio it produces is what lets this path inherit that instead of
+    /// re-checking it.
+    ///
+    /// **Nothing here submits.** A gradient capture samples up to
+    /// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points (§22.2) and every
+    /// one of them is a patch of this same document, so recording them together is the
+    /// difference between one round trip to the queue and a hundred. What used to
+    /// force a submit between patches was the view uniform: one buffer, rewritten per
+    /// patch. The views are slots now ([`ViewBindings`](view::ViewBindings)), so
+    /// `slot` is which of them this patch draws through and the ordering is the offset
+    /// rather than the queue. The caller writes every view, records every patch, and
+    /// submits once — keeping `prepared` alive until it has.
+    pub(crate) fn composite_channels(
+        &self,
         p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
-        patch: PickPatch<'_>,
+        prepared: &PreparedPick<'_>,
+        slot: usize,
     ) {
         debug_assert_eq!(
             into.count(),
             p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
-        let PickPatch { view, slot, groups } = patch;
-        let plan = Plan::build(groups);
-        let streams = self.upload_streams(p, view, &plan);
-        // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
-        // square, so this is a few kilobytes; sharing the render path's cache would
-        // trade that for reallocating the *window* twice a frame (see
-        // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
-        // eyedropper would report a color the screen never showed.
-        let scratch = (!plan.scratch.is_empty())
-            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
-        self.encode_plan(p, encoder, into, &plan, &streams, scratch.as_ref(), slot);
+        self.encode_plan(
+            p,
+            encoder,
+            into,
+            &prepared.plan,
+            &prepared.streams,
+            prepared.scratch.as_ref(),
+            slot,
+        );
     }
 
     /// Composite `scene`'s layers, light the result into `target` under `view`, and
@@ -1108,7 +1159,7 @@ impl Compositor {
         //
         // Deliberately free of the view, which is why it can be built here at all:
         // the one view-dependent number in pass A is a filter's dispersion, and that
-        // is filled in at `upload` once `ss` has settled (§21.10).
+        // is filled in at `upload_streams` once `ss` has settled (§21.10).
         let plan = Plan::build(groups);
         let ss = supersample(
             view.viewport,
@@ -1128,7 +1179,8 @@ impl Compositor {
         let view = view.supersampled(ss);
         // The frame's one view, in slot 0 — the only slot anything on this path
         // binds (`ViewBindings`).
-        self.view.write(&p.ctx.device, &p.ctx.queue, &[view]);
+        self.view
+            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), &[view]);
         let streams = self.upload_streams(p, view, &plan);
         let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
         // Bound after everything that needs `&mut self`.

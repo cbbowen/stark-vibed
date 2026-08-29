@@ -230,6 +230,10 @@ impl Engine {
     /// How the timeline has serviced materializations (§12.6): the
     /// commutation fast paths versus rewind-and-replay. Zeros when solo. For
     /// tests and diagnostics — pixels can't tell the paths apart, by design.
+    /// **`pub` for the suite and nothing else** — an integration test is a separate
+    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
+    /// docs to say so.
+    #[doc(hidden)]
     pub fn timeline_stats(&self) -> TimelineStats {
         self.timeline.stats()
     }
@@ -245,6 +249,10 @@ impl Engine {
     /// `&mut`, because the fold it counts within is rebuilt lazily: the count is
     /// only meaningful of a serviced fold, so this flushes first — the same
     /// picture the next paint would build.
+    /// **`pub` for the suite and nothing else** — an integration test is a separate
+    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
+    /// docs to say so.
+    #[doc(hidden)]
     pub fn live_head_count(&mut self) -> usize {
         self.flush_live();
         self.preview.head_count()
@@ -258,6 +266,10 @@ impl Engine {
     /// design, so only a count can say which one ran — and a commit that quietly
     /// fell back to the whole render is the hitch this path exists to remove,
     /// reported by nothing else.
+    /// **`pub` for the suite and nothing else** — an integration test is a separate
+    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
+    /// docs to say so.
+    #[doc(hidden)]
     pub fn strokes_reused(&self) -> u64 {
         self.strokes_reused
     }
@@ -273,6 +285,10 @@ impl Engine {
     /// the picture is right while the rule that keeps it right has been broken. It only
     /// becomes visible for a preview that does move tiles, by which point the cause is
     /// several commands behind.
+    /// **`pub` for the suite and nothing else** — an integration test is a separate
+    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
+    /// docs to say so.
+    #[doc(hidden)]
     pub fn preview_epoch(&self) -> u64 {
         self.preview.epoch()
     }

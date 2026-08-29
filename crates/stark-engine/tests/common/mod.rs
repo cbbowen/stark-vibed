@@ -46,13 +46,6 @@ pub const PAPER: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Set to `1` to allow GPU tests to skip when no adapter is available. **Unset by
-/// default, and deliberately so**: a skipped GPU test still reports `ok`, so a
-/// machine (or a CI runner) with no adapter would take the entire golden / seam /
-/// dynamics / selection suite green having rendered nothing at all. Skipping has
-/// to be asked for.
-const ALLOW_NO_GPU: &str = "STARK_ALLOW_NO_GPU";
-
 /// Set to `1` to run the golden tests but not *compare* their output — see
 /// [`assert_golden`]. For adapters other than the one the goldens were blessed on.
 const SKIP_GOLDEN: &str = "STARK_SKIP_GOLDEN";
@@ -91,21 +84,20 @@ fn env_flag(name: &str) -> bool {
 /// GPU — no test does, and one that wants to should build its own context.
 fn shared_context() -> Option<&'static stark_engine::GpuContext> {
     static CTX: std::sync::OnceLock<Option<stark_engine::GpuContext>> = std::sync::OnceLock::new();
-    CTX.get_or_init(
-        || match pollster::block_on(stark_engine::GpuContext::headless()) {
-            Ok(ctx) => Some(ctx),
-            Err(e) if env_flag(ALLOW_NO_GPU) => {
-                eprintln!("skipping GPU tests ({ALLOW_NO_GPU}=1): {e}");
-                None
-            }
-            Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip GPU tests"),
-        },
-    )
+    CTX.get_or_init(|| {
+        // The decision — skip or fail — is `stark_engine::testing`'s, so this harness,
+        // `tests/tile_pool.rs` and `benches/stroke.rs` cannot come to disagree about
+        // what a missing adapter means. The blocking and the caching stay here.
+        stark_engine::testing::or_skip(
+            pollster::block_on(stark_engine::GpuContext::headless()),
+            "GPU tests",
+        )
+    })
     .as_ref()
 }
 
 /// An engine of `size` in `space`, on this binary's shared device — or `None` where
-/// there is no adapter and [`ALLOW_NO_GPU`] permits the skip.
+/// there is no adapter and `stark_engine::testing::ALLOW_NO_GPU` permits the skip.
 ///
 /// The one constructor every helper below funnels through, so what "a test engine is"
 /// is stated once. The engine comes back on whatever environment it booted with — the
@@ -305,9 +297,9 @@ pub fn red_dominant(c: [u8; 4]) -> bool {
 /// The fraction of pixels that differ **at all**, and the worst per-channel
 /// difference anywhere — in that order.
 ///
-/// The two answer different questions and both callers want both: the fraction
-/// separates a contiguous seam from a speck, the worst says how far the seam
-/// went. [`frac_exceeding`] is the same fraction taken above a threshold.
+/// The two answer different questions and most callers want both: the fraction
+/// separates a contiguous seam from a speck, the worst says how far the seam went.
+/// [`frac_exceeding`] is the same fraction taken above a threshold.
 pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
     assert_eq!(
         (a.width, a.height),

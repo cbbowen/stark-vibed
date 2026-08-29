@@ -68,10 +68,6 @@ const VIEWPORT: Extent2 = Extent2 {
 /// measurement window.
 const N: usize = 240;
 
-/// Same as `tests/common`: a missing adapter is a failure by default, because a
-/// benchmark that silently measures nothing is worse than one that does not run.
-const ALLOW_NO_GPU: &str = "STARK_ALLOW_NO_GPU";
-
 fn wait_idle(engine: &Engine) {
     engine
         .gpu()
@@ -111,16 +107,13 @@ fn phase_table(label: &str) {
     timing::reset();
 }
 
-/// `None` only when this machine has no usable adapter *and* the skip is permitted.
+/// `None` only when this machine has no usable adapter *and* the skip is permitted —
+/// `stark_engine::testing`'s decision, the same one the test harness makes.
 fn engine() -> Option<Engine> {
-    match pollster::block_on(headless_engine(TARGET, VIEWPORT)) {
-        Ok(e) => Some(e),
-        Err(e) if std::env::var(ALLOW_NO_GPU).is_ok_and(|v| v == "1") => {
-            eprintln!("skipping GPU benchmarks ({ALLOW_NO_GPU}=1): {e}");
-            None
-        }
-        Err(e) => panic!("no usable GPU adapter: {e}\nset {ALLOW_NO_GPU}=1 to skip"),
-    }
+    stark_engine::testing::or_skip(
+        pollster::block_on(headless_engine(TARGET, VIEWPORT)),
+        "GPU benchmarks",
+    )
 }
 
 /// A brush that runs the sequential stamp loop: non-zero `lift`/`deposit` means it

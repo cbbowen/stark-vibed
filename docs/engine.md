@@ -492,11 +492,17 @@ assert_golden!("oil_blend_01", png, tolerance);
   failure: so the first real one somebody writes is run rather than collected by
   nobody.
 
-The suite files, roughly by subject: `golden`, `seam`, `stroke`, `dynamics`,
-`path`, `selection`, `fill`, `matte`, `groups`, `blend`, `composite`,
-`reference`, `transform`, `export`, `pick`, `view`, `layers`, `save_load`,
-`replay`, `collab`, `commute`, `peer_state`, `assets`, `color_dynamics`,
-`tile_pool`; and in `stark-net`: `sync`, `presence`, `handoff`.
+The suite files, by subject. **Drawing:** `stroke`, `dynamics`, `corpus`, `erase`,
+`opacity`, `modulation`, `color_dynamics`, `tooth`, `assist`, `hover`, `guides`.
+**Compositing:** `golden`, `seam`, `composite`, `blend`, `filter`, `merge`, `matte`,
+`groups`, `layers`, `minify`, `reference`, `gradient`. **Editing:** `selection`,
+`fill`, `transform`, `place`, `pick`, `view`, `export`. **The log:** `footprint`,
+`commute`, `commute_pairs`, `save_load`, `replay`, `retention`. **Collaboration:**
+`collab`, `peer_state`, `sharing`. **Content and pools:** `assets`, `tile_pool`. In
+`stark-model`: `action_kinds`; in `stark-net`: `sync`, `presence`, `handoff`.
+
+`benches/stroke.rs` and `examples/stroke_bench.rs` are not among them: they measure
+rather than assert, and CLAUDE.md's Commands section says which question each answers.
 
 ## 10. Extensibility map
 

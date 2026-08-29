@@ -408,6 +408,10 @@ impl Engine {
     /// this shape cannot work on the web (see `gpu::readback`). The frontend uses
     /// [`export`](Self::export), which awaits the map.
     #[cfg(not(target_arch = "wasm32"))]
+    /// **`pub` for the suite and nothing else** — an integration test is a separate
+    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
+    /// docs to say so.
+    #[doc(hidden)]
     pub fn render_to_image(&mut self) -> RgbaImage {
         // One render per call, so nothing is kept: the attachments are allocated here
         // and dropped with this `Offscreen`.

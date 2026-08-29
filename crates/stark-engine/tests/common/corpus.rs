@@ -61,7 +61,7 @@ pub struct Tol {
     /// changing width — so the two are directly comparable and the corpus reads as one
     /// table of *how much of this stroke the hand coming off it moves*.
     ///
-    /// **Thirteen of the fourteen are 0, exactly, and that is the claim.** A release
+    /// **Fifteen of the sixteen are 0, exactly, and that is the claim.** A release
     /// carries no arc length, so by §6.2 it deposits nothing — the swept integral is a
     /// definite integral over travel, and `generate_segments_in` drops any edge shorter
     /// than `1e-5` before the question reaches a shader at all.
@@ -161,13 +161,35 @@ impl Case {
         tolerance: f32,
         samples: &[InputSample],
     ) {
+        self.paint_with(engine, b, tolerance, samples, 0.0);
+    }
+
+    /// [`paint_input`](Self::paint_input) with the **towed tip** engaged (§6.11): the
+    /// mark follows a string of `rope` canvas px behind the pointer instead of the
+    /// pointer itself, which is the frontend's stroke-smoothing slider.
+    ///
+    /// Its own entry point rather than a fifth argument on the two above, because
+    /// every other caller wants a rope of zero and the corpus's whole shape is that a
+    /// check states what it varies.
+    pub fn paint_towed(&self, engine: &mut Engine, b: BrushParams, tolerance: f32, rope: f32) {
+        self.paint_with(engine, b, tolerance, &self.samples(), rope);
+    }
+
+    fn paint_with(
+        &self,
+        engine: &mut Engine,
+        b: BrushParams,
+        tolerance: f32,
+        samples: &[InputSample],
+        rope: f32,
+    ) {
         engine.process(ViewCommand::set_brush(b));
         let (first, rest) = samples.split_first().expect("a case draws something");
         engine.process(GestureCommand::Start {
             tool: Tool::Brush,
             sample: *first,
             tolerance,
-            rope: 0.0,
+            rope,
         });
         for s in rest {
             engine.process(GestureCommand::To { sample: *s });

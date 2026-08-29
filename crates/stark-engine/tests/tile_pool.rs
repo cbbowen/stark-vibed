@@ -11,17 +11,13 @@ const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Acquire a context, or `None` if the machine has no usable adapter *and*
 /// `STARK_ALLOW_NO_GPU=1` permits the skip. Panics otherwise — a skipped GPU test
-/// still reports `ok`, so a missing adapter must not pass silently (see
-/// `tests/common/mod.rs`, which does the same for the engine harness).
+/// still reports `ok`, so a missing adapter must not pass silently. The decision is
+/// `stark_engine::testing`'s, the same one the engine harness makes.
+///
+/// Uncached, unlike that harness's: these tests watch a pool's free list, so each
+/// wants a device nothing else has drawn on.
 fn context_or_skip() -> Option<GpuContext> {
-    match pollster::block_on(GpuContext::headless()) {
-        Ok(ctx) => Some(ctx),
-        Err(e) if std::env::var("STARK_ALLOW_NO_GPU").is_ok_and(|v| v == "1") => {
-            eprintln!("skipping GPU test (STARK_ALLOW_NO_GPU=1): {e}");
-            None
-        }
-        Err(e) => panic!("no usable GPU adapter: {e}\nset STARK_ALLOW_NO_GPU=1 to skip GPU tests"),
-    }
+    stark_engine::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
 }
 
 #[test]

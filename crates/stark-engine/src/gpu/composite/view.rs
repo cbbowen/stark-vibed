@@ -96,12 +96,6 @@ impl View {
 /// hundred round trips to the queue instead of one.
 pub(super) struct ViewBindings {
     slots: UniformSlots<ViewUniform>,
-    /// The layouts the groups below answer to, kept so growing the buffer can rebuild
-    /// them: growth *replaces* the allocation, and a group over the old one names a
-    /// buffer too small for the offsets it is about to be given.
-    tile_bgl: wgpu::BindGroupLayout,
-    overlay_bgl: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
     /// Pass A's group 0 — the uniform vertex-only, plus the tile sampler.
     pub(super) tiles: wgpu::BindGroup,
     /// Pass C's group 0. Its own because the outline's fragment stage reads the
@@ -110,25 +104,28 @@ pub(super) struct ViewBindings {
     pub(super) overlay: wgpu::BindGroup,
 }
 
+/// The three never-changing things a view group is built from — all owned by the
+/// shared [`CompositorPasses`](super::CompositorPasses).
+///
+/// **Handed in at every build rather than kept**, which is what stops a
+/// [`ViewBindings`] outliving the layouts it answers to: a color-space rebuild
+/// replaces the passes, and a consumer holding copies of the old layouts would go on
+/// building groups against them with nothing to say so (§6.7).
+pub(super) struct ViewGroups<'a> {
+    pub(super) sampler: &'a wgpu::Sampler,
+    pub(super) tiles: &'a wgpu::BindGroupLayout,
+    pub(super) overlay: &'a wgpu::BindGroupLayout,
+}
+
 impl ViewBindings {
-    pub(super) fn new(
-        device: &wgpu::Device,
-        view: &View,
-        tile_view_bgl: &wgpu::BindGroupLayout,
-        overlay_view_bgl: &wgpu::BindGroupLayout,
-    ) -> Self {
-        let mut this = Self {
-            slots: UniformSlots::new(device, "stark composite view", 1),
-            tile_bgl: tile_view_bgl.clone(),
-            overlay_bgl: overlay_view_bgl.clone(),
-            sampler: view.sampler.clone(),
-            // Replaced by `rebuild` on the next line, which is the one place these are
-            // described — a second description here would be the one that drifts.
-            tiles: placeholder(device),
-            overlay: placeholder(device),
-        };
-        this.rebuild(device);
-        this
+    pub(super) fn new(device: &wgpu::Device, parts: ViewGroups<'_>) -> Self {
+        let slots = UniformSlots::new(device, "stark composite view", 1);
+        let (tiles, overlay) = groups(device, &slots, parts);
+        Self {
+            slots,
+            tiles,
+            overlay,
+        }
     }
 
     /// The dynamic offset that selects view `i` of the last [`write`](Self::write).
@@ -136,45 +133,20 @@ impl ViewBindings {
         UniformSlots::<ViewUniform>::offset(i as u32)
     }
 
-    /// Build the two group-0 bind groups over the current slot buffer.
-    fn rebuild(&mut self, device: &wgpu::Device) {
-        // Pass A's view group and the overlay's hold the same two things against two
-        // layouts, so one closure answers for both — but each names its *own* shader's
-        // declarations (§6.10), because "`composite.wesl` and `overlay.wesl` happen to
-        // number these alike" is exactly the kind of agreement this stops asserting by
-        // hand.
-        let slots = &self.slots;
-        let sampler = &self.sampler;
-        let group = |label, layout, list| {
-            crate::gpu::desc::bind_group_for(device, label, layout, list, false, |i| match i {
-                cb::VIEW => slots.resource(),
-                cb::SAMP => wgpu::BindingResource::Sampler(sampler),
-                other => unreachable!("a view group lists no binding {other}"),
-            })
-        };
-        let tiles = group(
-            "stark composite view bg",
-            &self.tile_bgl,
-            super::tiles::VIEW_SLOTS,
-        );
-        let overlay = group(
-            "stark overlay view bg",
-            &self.overlay_bgl,
-            super::overlay::VIEW_SLOTS,
-        );
-        self.tiles = tiles;
-        self.overlay = overlay;
-    }
-
     /// Write one slot per view, in order — every pass of the submit that follows binds
     /// its own by [`offset`](Self::offset).
     ///
     /// One call rather than one per pass: passes sharing a view share a slot, and a
     /// second write of the same slot before the submit would only overwrite the first.
+    ///
+    /// Growing the buffer **replaces** it, so the groups are rebuilt when it moves: one
+    /// built over the old allocation names a buffer too small for the offsets it is
+    /// about to be given, which is a validation error rather than a wrong pixel.
     pub(super) fn write(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        parts: ViewGroups<'_>,
         views: &[ViewTransform],
     ) {
         let uniforms: Vec<ViewUniform> = views
@@ -187,25 +159,41 @@ impl ViewBindings {
             })
             .collect();
         if self.slots.write(device, queue, &uniforms) {
-            self.rebuild(device);
+            let (tiles, overlay) = groups(device, &self.slots, parts);
+            self.tiles = tiles;
+            self.overlay = overlay;
         }
     }
 }
 
-/// A bind group standing in until [`ViewBindings::rebuild`] replaces it, which the
-/// constructor does before returning.
+/// The two group-0 bind groups over `slots` — pass A's and the outline's.
 ///
-/// An empty group over an empty layout: `BindGroup` has no `Default`, and the
-/// alternative — `Option` fields unwrapped at every draw — would put a question at
-/// every call site to answer one at construction.
-fn placeholder(device: &wgpu::Device) -> wgpu::BindGroup {
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stark view placeholder bgl"),
-        entries: &[],
-    });
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("stark view placeholder bg"),
-        layout: &layout,
-        entries: &[],
-    })
+/// Pass A's view group and the overlay's hold the same two things against two
+/// layouts, so one closure answers for both — but each names its *own* shader's
+/// declarations (§6.10), because "`composite.wesl` and `overlay.wesl` happen to number
+/// these alike" is exactly the kind of agreement this stops asserting by hand.
+fn groups(
+    device: &wgpu::Device,
+    slots: &UniformSlots<ViewUniform>,
+    parts: ViewGroups<'_>,
+) -> (wgpu::BindGroup, wgpu::BindGroup) {
+    let group = |label, layout, list| {
+        crate::gpu::desc::bind_group_for(device, label, layout, list, false, |i| match i {
+            cb::VIEW => slots.resource(),
+            cb::SAMP => wgpu::BindingResource::Sampler(parts.sampler),
+            other => unreachable!("a view group lists no binding {other}"),
+        })
+    };
+    (
+        group(
+            "stark composite view bg",
+            parts.tiles,
+            super::tiles::VIEW_SLOTS,
+        ),
+        group(
+            "stark overlay view bg",
+            parts.overlay,
+            super::overlay::VIEW_SLOTS,
+        ),
+    )
 }

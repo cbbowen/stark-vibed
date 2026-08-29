@@ -353,6 +353,17 @@ impl Engine {
             points.iter().map(|&at| patch_view(at, size)).collect();
         self.compositor
             .write_views(&self.compositor_pipeline, &views);
+        // The draws, once for the trace. Every patch is the same document under the
+        // same cull — `pick_groups` took the union of them above — so this is one
+        // plan, and it has to be one *upload*: what the streams write into is one
+        // buffer apiece on the compositor (`Compositor::prepare_pick`). Kept across
+        // the loop and past the submit, which is the other half of what it is for.
+        //
+        // `None` only for an empty trace, where the loop below draws nothing either.
+        let prepared = views.first().map(|&first| {
+            self.compositor
+                .prepare_pick(&self.compositor_pipeline, first, &groups)
+        });
 
         let mut encoder =
             self.shared
@@ -363,7 +374,7 @@ impl Engine {
                 });
         let mut colors = Vec::with_capacity(points.len());
         let mut resids = Vec::with_capacity(points.len());
-        for (slot, &view) in views.iter().enumerate() {
+        for slot in 0..views.len() {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT |
              // Used by some filters.
              wgpu::TextureUsages::TEXTURE_BINDING;
@@ -390,6 +401,7 @@ impl Engine {
             let default = wgpu::TextureViewDescriptor::default();
             let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
             let resid_view = resid.as_ref().map(|t| t.create_view(&default));
+            let prepared = prepared.as_ref().expect("a non-empty trace prepared above");
             self.compositor.composite_channels(
                 &self.compositor_pipeline,
                 &mut encoder,
@@ -398,16 +410,16 @@ impl Engine {
                     aux: &aux_view,
                     resid: resid_view.as_ref(),
                 },
-                crate::gpu::composite::PickPatch {
-                    view,
-                    slot,
-                    groups: &groups,
-                },
+                prepared,
+                slot,
             );
             colors.push(color);
             resids.push(resid);
         }
         self.shared.gpu.queue.submit([encoder.finish()]);
+        // After the submit, never before: the blend scratch inside destroys its
+        // textures on drop, and a recorded encoder is not in-flight work.
+        drop(prepared);
 
         // Captured, not read through `self`: the future deliberately does not borrow
         // the engine (see `export`). The color space is an `Arc`, so carrying the
@@ -586,17 +598,16 @@ impl Engine {
         // `read_many_rgba16f` pins.
         let formats = self.compositor_pipeline.channel_formats();
         // **One view for every candidate**, since a hit test asks the same patch of
-        // every layer in turn — so one slot, and one encoder for the lot of them
-        // rather than a submit per layer (`Compositor::composite_channels`).
+        // every layer in turn — so one slot, written once.
+        //
+        // A submit per candidate all the same, unlike the eyedropper's trace. Each
+        // candidate has its *own* draw list, so each needs its own upload, and the
+        // streams an upload writes are one buffer apiece on the compositor: two
+        // uploads before one submit would leave both candidates drawing the second's
+        // tile origins (`Compositor::prepare_pick`). What the eyedropper batches is
+        // many patches of *one* list, which is the case that can be.
         self.compositor
             .write_views(&self.compositor_pipeline, &[view]);
-        let mut encoder =
-            self.shared
-                .gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("stark hit encoder"),
-                });
         let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
         for (id, groups) in &lists {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -614,6 +625,16 @@ impl Engine {
             let default = wgpu::TextureViewDescriptor::default();
             let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
             let resid_view = resid.as_ref().map(|t| t.create_view(&default));
+            let prepared = self
+                .compositor
+                .prepare_pick(&self.compositor_pipeline, view, groups);
+            let mut encoder =
+                self.shared
+                    .gpu
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("stark hit encoder"),
+                    });
             self.compositor.composite_channels(
                 &self.compositor_pipeline,
                 &mut encoder,
@@ -622,15 +643,14 @@ impl Engine {
                     aux: &aux_view,
                     resid: resid_view.as_ref(),
                 },
-                crate::gpu::composite::PickPatch {
-                    view,
-                    slot: 0,
-                    groups,
-                },
+                &prepared,
+                0,
             );
+            self.shared.gpu.queue.submit([encoder.finish()]);
+            // After the submit: the scratch inside destroys its textures on drop.
+            drop(prepared);
             hits.push((*id, color));
         }
-        self.shared.gpu.queue.submit([encoder.finish()]);
 
         let gpu = self.shared.gpu.clone();
         async move {

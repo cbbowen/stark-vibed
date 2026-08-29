@@ -26,7 +26,7 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
 use stark_model::Srgb;
-use stark_model::document::{LayerId, Place};
+use stark_model::document::{BlendMode, LayerId, Place};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.12, 0.1];
@@ -276,6 +276,58 @@ fn one_layer_ignores_the_layers_over_it() {
         ),
         None,
         "a layer that is not there holds nothing"
+    );
+}
+
+/// **A pick over a blended stack builds a scratch, and the scratch has to outlive the
+/// submit.**
+///
+/// A blend mode is not `Normal` "over", so pass A cannot draw the stack in one run:
+/// `Plan::build` isolates the blended layer into a scratch level and bounces the two
+/// halves together (§6.5). That scratch is the pick's own — a few kilobytes at a
+/// patch's size, rather than the render path's window-sized cache — and its
+/// attachments `destroy()` themselves on drop, which is right for a texture whose last
+/// use has been *submitted* and fatal for one whose commands are only recorded. A
+/// gradient trace records every patch into one encoder and submits once, so "recorded"
+/// and "in flight" are a hundred patches apart.
+///
+/// Nothing else here reaches that plan. Every other test in this file paints into a
+/// plain stack, where `plan.scratch` is empty and no scratch is built at all — so the
+/// whole class was covered by the arithmetic of the picked colour and nothing else.
+/// What this asserts is only that the pick still answers, because a submit that fails
+/// validation loses the entire command buffer and the readback comes back `None`.
+#[test]
+fn a_pick_over_a_blended_stack_still_answers() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 24.0, BAR);
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let over = engine.observe().active_layer;
+    paint(&mut engine, BLUE, 24.0, BAR);
+    engine.process(DocCommand::SetLayerBlend(over, BlendMode::Multiply));
+
+    // A single point first, which is the one-patch case and would survive a lost
+    // submit only by accident.
+    assert!(
+        pick_point(&mut engine, Vec2::ZERO).is_some(),
+        "a blended stack under the point and nothing came back",
+    );
+
+    // Then a trace, which is the shape the batching is for: one prepared plan, many
+    // patches, one submit. Along the bar, so every patch has paint under it — and a
+    // gradient comes back only if the whole command buffer landed, since a failed
+    // submit leaves every patch's target unwritten and every sample answering `None`.
+    let traced = pollster::block_on(engine.pick_gradient(
+        &[Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0)],
+        PickOptions::default(),
+    ));
+    assert!(
+        traced.is_some(),
+        "the trace over a blended stack found no paint at all — its submit was lost",
     );
 }
 
