@@ -428,6 +428,14 @@ impl<'a> IncrementalTileAccumulator<'a> {
         // carry out first would let a caller drop it ahead of one. Consuming `self`
         // is what says so — there is no accumulator left to hand anything out of
         // until this has happened.
+        //
+        // `finish` submits only when the scope has something recorded, so what the
+        // sentence above rests on is that a lease worth protecting implies a recording:
+        // every `Kept` this call can put into the carry came from a `Parcel::take` past
+        // the `BareCanvas::Skip` arm, and every one of those is then named by a copy, a
+        // sweep pass and a landing pass — all through `scope.encoder()`, which opens the
+        // piece. A carry with nothing recorded behind it holds only `Arc` clones of the
+        // *previous* carry's parcels, whose commands an earlier run already submitted.
         self.scope.finish();
         Landed {
             map: self.map,

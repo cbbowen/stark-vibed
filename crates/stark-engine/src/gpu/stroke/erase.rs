@@ -200,20 +200,25 @@ impl StrokeRenderer {
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, &k);
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
 
-        // The stroke's ceiling, once per piece — `StrokeConstants` resolved it with
+        // The stroke's ceiling, once per *call* — `StrokeConstants` resolved it with
         // the color, the mask's opacity folded in, so this path cannot disagree
         // with the others about what the dial said (`BrushEffect::opacity`, §6.8).
+        //
+        // Run tier, like the two `sweep_draws` builds above it and like the swept
+        // path's identical uniform: every tile of `accum::run` binds this one buffer,
+        // so its lifetime is the whole call and not the tile being recorded.
+        // `accum::run` does not flush today, which would make the piece tier correct —
+        // and that is exactly the argument `swept.rs` writes out as the reason the ring
+        // had to leave it. Correct because a loop happens not to flush is not correct.
         let opacity = stark_shaders::mirror::erase::Erase {
             params: [k.opacity, 0.0, 0.0, 0.0],
         };
-        let opacity_buf = scope.take_piece_buffer(BufKey {
+        let opacity_buf = scope.take_run_buffer(BufKey {
             size: std::mem::size_of_val(&opacity) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: "stark erase opacity",
         });
-        self.ctx
-            .queue
-            .write_buffer(&opacity_buf, 0, bytemuck::bytes_of(&opacity));
+        scope.write_lease(&opacity_buf, bytemuck::bytes_of(&opacity));
 
         // The shared procedure (§6.12, `accum`): resume everything the pieces
         // before this one accumulated, extend it over this piece's tiles, and turn

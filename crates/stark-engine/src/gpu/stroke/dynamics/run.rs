@@ -755,9 +755,7 @@ impl<'a> DynamicsRun<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: "stark dynamics region view",
         });
-        r.ctx
-            .queue
-            .write_buffer(&view_buf, 0, bytemuck::bytes_of(&view));
+        self.scope.write_lease(&view_buf, bytemuck::bytes_of(&view));
         let view_bg = desc::bind_group_for(
             device,
             "stark dynamics region view bg",
@@ -802,7 +800,7 @@ impl<'a> DynamicsRun<'a> {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 label: "stark dynamics region tile instances",
             });
-            r.ctx.queue.write_buffer(&buf, 0, bytes);
+            self.scope.write_lease(&buf, bytes);
             buf
         });
         {
@@ -962,7 +960,6 @@ impl<'a> DynamicsRun<'a> {
     /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
     /// this one used.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
-        let r = self.r;
         let mut data = vec![0u8; plan.len() * STAMP_STRIDE as usize];
         for (i, d) in plan.iter().enumerate() {
             let at = i * STAMP_STRIDE as usize;
@@ -973,7 +970,7 @@ impl<'a> DynamicsRun<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: "stark dynamics stamps",
         });
-        r.ctx.queue.write_buffer(&buf, 0, &data);
+        self.scope.write_lease(&buf, &data);
         buf
     }
 

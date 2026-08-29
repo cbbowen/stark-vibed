@@ -525,6 +525,14 @@ impl SubmitScope {
     /// For the buffers that cannot be pooled because they are written at creation.
     /// Everything else takes [`take_piece_buffer`](Self::take_piece_buffer), where the
     /// rate is not merely bounded but gone.
+    ///
+    /// Opens the piece where the checkouts do not, and **conservatively rather than
+    /// necessarily**: a map-at-creation buffer stages nothing on the queue, so an
+    /// unrecorded scope naming one has nothing pending and could destroy it outright.
+    /// The flag is kept because what this registers is arbitrary and its only cost is
+    /// an empty command buffer in a case no caller has — where getting it wrong is a
+    /// resource freed ahead of the work naming it. [`write_lease`](Self::write_lease)
+    /// is where the distinction is load-bearing and is drawn exactly.
     pub(crate) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
         self.piece_open = true;
         self.piece_scoped.buffer(buf)
@@ -599,8 +607,11 @@ impl SubmitScope {
     /// Check out a pooled buffer that carries **across** pieces — released only at
     /// [`finish`](Self::finish), exactly as [`take_run`](Self::take_run) is.
     ///
-    /// Note it does **not** open the piece: a buffer taken before the first tile is
-    /// recorded is not by itself something to submit.
+    ///
+    /// Taking does **not** open the piece; [`write_lease`](Self::write_lease) does, and
+    /// the distinction is the point — a lease nobody wrote and nobody recorded against
+    /// has nothing pending, and submitting for it is the empty command buffer
+    /// [`finish`](Self::finish) exists to skip.
     pub(crate) fn take_run_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
         let lease = self.pool.take_buf(&self.ctx.device, key);
         let out = lease.buf.clone();
@@ -611,19 +622,46 @@ impl SubmitScope {
     /// Check out a pooled buffer for the piece being recorded — released at the
     /// piece's own submit, exactly as [`take_piece`](Self::take_piece) is.
     ///
+    /// Like [`take_run_buffer`](Self::take_run_buffer), taking does not open the piece
+    /// — [`write_lease`](Self::write_lease) does.
+    ///
     /// **At least `key.size` bytes, and possibly more** ([`BufKey::bucket`]): a
     /// caller writes its own prefix and draws its own range, so slack past the end is
     /// unread. Contents are not zeroed, on the pool's general contract.
     pub(crate) fn take_piece_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
-        self.piece_open = true;
         let lease = self.pool.take_buf(&self.ctx.device, key);
         let out = lease.buf.clone();
         self.piece_buf_leases.push(lease);
         out
     }
 
+    /// Stage `bytes` into a **leased** buffer, opening the piece.
+    ///
+    /// **The one way to write a lease, and the reason it is a method here.**
+    /// `queue.write_buffer` does not write anything: it stages the bytes and hands them
+    /// over at the next submit. So a leased buffer with a pending write must not reach
+    /// the free list before one — and the moment that becomes true is the *write*, not
+    /// the checkout. Routing it through the scope makes the write and the flag one
+    /// operation; a caller reaching past this to `ctx.queue` is the hazard spelled out
+    /// by hand, which is what this module exists not to rely on.
+    ///
+    /// This was found the other way round. `take_run_buffer` was added without setting
+    /// the flag, on the reasoning that a buffer taken before anything is recorded is not
+    /// yet something to submit — true of the checkout, false the instant the caller
+    /// writes, which all three of its callers did on the next line. It was unreachable
+    /// only because an unrelated `hold` in `sweep_binds` opened the piece first.
+    pub(crate) fn write_lease(&mut self, buf: &wgpu::Buffer, bytes: &[u8]) {
+        self.piece_open = true;
+        self.ctx.queue.write_buffer(buf, 0, bytes);
+    }
+
     /// Keep `thing` alive past the submit, dropping it just after — for resources
     /// whose drop *is* their release to some other pool.
+    ///
+    /// Opens the piece on [`buffer`](Self::buffer)'s terms: unrecorded, nothing names
+    /// what is held and dropping it at once would be right, but `thing` is
+    /// `dyn Any` — this call cannot know what its drop releases, so it assumes the
+    /// worst for the price of one empty command buffer.
     pub(crate) fn hold(&mut self, thing: impl std::any::Any) {
         self.piece_open = true;
         self.piece_held.push(Box::new(thing));

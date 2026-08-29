@@ -401,12 +401,6 @@ impl Engine {
         }
     }
 
-    /// Render the current canvas to a CPU-side image at the viewport size
-    /// (§9). The backbone of golden tests. The target uses the engine's
-    /// configured format, so it matches on-screen rendering.
-    /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so
-    /// this shape cannot work on the web (see `gpu::readback`). The frontend uses
-    /// [`export`](Self::export), which awaits the map.
     /// One committed tile's channels, straight off the GPU — **height and alpha
     /// without the lit composite in between** (§6.1).
     ///
@@ -414,12 +408,12 @@ impl Engine {
     /// layer that is not paint at all. Reads the *committed* document, so a caller
     /// mid-gesture is asking about the state before the live tail.
     ///
-    /// **`pub` for the suite and nothing else.** Every conservation, opacity and erase
-    /// claim in the suite was a proxy through tonemapping before this: the assertions
-    /// read image darkness and said so in a comment, because there was no way to ask a
-    /// tile what it held. A proxy through the media pass, the blend and the tonemap
-    /// cannot separate "height was not conserved" from "the light changed", and §6.1 is
-    /// a claim about the first.
+    /// **`pub` for the suite and nothing else**, on [`render_to_image`](Self::render_to_image)'s
+    /// terms. Every conservation, opacity and erase claim in the suite was a proxy
+    /// through tonemapping before this: the assertions read image darkness and said so
+    /// in a comment, because there was no way to ask a tile what it held. A proxy
+    /// through the media pass, the blend and the tonemap cannot separate "height was
+    /// not conserved" from "the light changed", and §6.1 is a claim about the first.
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn tile_channels(
@@ -436,10 +430,18 @@ impl Engine {
         )
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Render the current canvas to a CPU-side image at the viewport size (§9). The
+    /// backbone of golden tests. The target uses the engine's configured format, so it
+    /// matches on-screen rendering.
+    ///
+    /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so this
+    /// shape cannot work on the web (see `gpu::readback`). The frontend uses
+    /// [`export`](Self::export), which awaits the map.
+    ///
     /// **`pub` for the suite and nothing else** — an integration test is a separate
     /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
     /// docs to say so.
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn render_to_image(&mut self) -> RgbaImage {
         // One render per call, so nothing is kept: the attachments are allocated here

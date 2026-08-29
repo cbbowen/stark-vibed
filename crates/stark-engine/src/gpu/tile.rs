@@ -497,23 +497,39 @@ impl TilePairHandle {
     /// the whole design: `readback` reads `wgpu::Texture`s and a tile does not hand one
     /// out — [`TexHandle`] offers a view alone, at length, because `Texture::destroy`
     /// takes `&self`, so a borrow is enough to leave the pool's free list holding a
-    /// view onto nothing. So the texture never leaves this module; what leaves is the
-    /// decoded texels. `readback` keeps the row-padding arithmetic, which is the half
-    /// that is genuinely its.
+    /// view onto nothing. What leaves *this call* is the decoded texels; the borrow
+    /// `readback::begin_read` is handed does cross the module line, so the guarantee is
+    /// "that one function does not destroy it" and not "it cannot be reached".
+    /// `readback` keeps the row-padding arithmetic, which is the half genuinely its.
     ///
     /// The whole `TILE_TEX` block, apron included, in the tile's own texel order — the
     /// apron is exactly what a §6.4 seam claim is about, so trimming it here would take
     /// the interesting half away.
     ///
-    /// One map per channel rather than one batched read: the aux is narrower than the
-    /// color, and [`begin_read`](crate::gpu::readback) takes the slot stride from the
-    /// first texture, so a second of a different texel size would be copied at the
-    /// wrong pitch.
+    /// One map per channel rather than one batched read, and only the **aux** forces
+    /// it: [`begin_read`](crate::gpu::readback) takes the slot stride from the first
+    /// texture, and the aux is `R16Float` where the color is `Rgba16Float`, so batching
+    /// the two would copy at the wrong pitch. Color and residual share a format and
+    /// could go in one read; they do not, because three reads spelled one way is worth
+    /// more here than two spelled two ways in a path that runs only under a test.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
         use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
         let block = stark_model::geom::Extent2::new(TILE_TEX, TILE_TEX);
-        let read = |tex: &wgpu::Texture| {
+        let read = |tex: &wgpu::Texture, lanes: u32| {
+            // The formats named, not their byte sizes: the decode is `f16` pairs, and
+            // a size check would take `Rg32Float` for four halves. Asserted on the
+            // *texture* rather than on the length that comes out, because that is what
+            // the claim is about — `read_many_rgba16f` states it the same way — and
+            // because a `debug_assert` is a check a release build drops. A space that
+            // widens its aux lands here instead of handing a caller every fourth texel
+            // as though it were a height.
+            use wgpu::TextureFormat::{R16Float, Rgba16Float};
+            assert!(
+                matches!((tex.format(), lanes), (R16Float, 1) | (Rgba16Float, 4)),
+                "this readback decodes f16 lanes; {:?} is not {lanes} of them",
+                tex.format(),
+            );
             let (buffer, rows) = begin_read(ctx, &[tex], block);
             map_blocking(ctx, &buffer);
             decode_rgba16f(
@@ -528,19 +544,11 @@ impl TilePairHandle {
                 .expect("a live handle holds its texture")
                 .clone()
         };
-        let out = TileChannels {
-            color: read(&tex(&self.0.color)),
-            height: read(&tex(&self.0.aux)),
-            resid: self.0.resid.as_ref().map(|r| read(&tex(r))),
-        };
-        let texels = (TILE_TEX * TILE_TEX) as usize;
-        debug_assert_eq!(out.color.len(), texels * 4, "the color is four lanes");
-        debug_assert_eq!(
-            out.height.len(),
-            texels,
-            "the aux is one lane — a space that widened it has to say so here, or a              caller reading `height[i]` would be reading every fourth texel",
-        );
-        out
+        TileChannels {
+            color: read(&tex(&self.0.color), 4),
+            height: read(&tex(&self.0.aux), 1),
+            resid: self.0.resid.as_ref().map(|r| read(&tex(r), 4)),
+        }
     }
 
     /// Encode the write-back's slice of this tile out of region-sized channel

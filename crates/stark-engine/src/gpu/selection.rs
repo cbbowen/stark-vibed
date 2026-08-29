@@ -428,9 +428,7 @@ impl SelectionRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: "stark selection region uniform",
         });
-        self.ctx
-            .queue
-            .write_buffer(&ubuf, 0, bytemuck::bytes_of(&u));
+        scope.write_lease(&ubuf, bytemuck::bytes_of(&u));
         let view_bg = desc::bind_group_for(
             device,
             "stark selection region view bg",
@@ -466,7 +464,7 @@ impl SelectionRenderer {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 label: "stark selection region instances",
             });
-            self.ctx.queue.write_buffer(&buf, 0, bytes);
+            scope.write_lease(&buf, bytes);
             buf
         });
 

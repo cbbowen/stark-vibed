@@ -59,11 +59,18 @@ because they are what the findings were *for*:
   the scale it is laid at, and `PatchOp::Substrate` carried only the id — so undoing
   a `SetSubstrateScale` through the commuting splice left the scale where the undone
   action had set it. Closed with A in `6313c00`.
-- **A build-cache hazard on this machine**, twice: a `rustc`
+- **A build-cache hazard on this machine**, three times: a `rustc`
   `STATUS_STACK_BUFFER_OVERRUN` poisons `target/debug/incremental`, and every unit
   after it fails with "only metadata stub found for `std`" or "can't find crate for
   `stark_engine`". It is not a code failure and no amount of reading the diff finds
   it — `rm -rf target/debug/incremental` and re-run.
+
+  The third time came with a trigger worth knowing: **chaining the suite, the
+  no-default-features clippy and the wasm check into one command**. Three `rustc`
+  fleets against one paging file, and the first thing to fail was an LTO `mmap`
+  ("the paging file is too small", os error 1455) — which poisons the cache exactly
+  as the stack overrun does. Run the three gates one after another, not in one
+  command line.
 - **Sharing a document reverted every guide edit made before it**, found by the review
   of [E](#e-layerid-is-a-32-bit-fold-of-the-actor) and not by any test: a `GuideId` was
   *derived* from the action id inside the fold, `start_collaboration` rewrites
@@ -108,6 +115,32 @@ because they are what the findings were *for*:
   survive. A run tier for buffers, and the four moved onto it. Recorded here because
   the lesson generalizes: **merging two types merges their reachable methods**, and an
   invariant that held by one caller's omission is not an invariant.
+- **A run tier that opted out of the guarantee it was made of**, found by the review
+  of `f33b2f1` — the fix for the ring, one turn later. `take_run_buffer` did not set
+  `piece_open`, on the reasoning that "a buffer taken before the first tile is recorded
+  is not by itself something to submit". That is false for a *buffer*: every caller
+  writes it with `queue.write_buffer` immediately, which stages the bytes on the queue
+  and hands them over at the next submit — so a scope that took one, wrote it and
+  recorded nothing would skip its submit at the newly-gated `finish`, return the lease
+  with the write still staged, and let `trim` destroy a buffer the queue still names.
+  Not reachable, and only by accident: all three callers sit behind `sweep_binds`'
+  `scope.hold`, which opens the piece for an unrelated reason. Two lessons, both
+  general: **a fix that adds a tier has to re-ask the flag question for that tier**, and
+  an invariant carried by a line whose stated purpose is something else is not carried.
+
+  Fixed by moving the flag off the *checkout* and onto the **write**, which is where
+  the pending work actually appears: `SubmitScope::write_lease` is now the only way to
+  write a lease, and all nine sites go through it. Setting it at checkout would have
+  closed the reported case and left the contrived one — take, flush, write, finish —
+  and would have cost an empty command buffer for a lease nobody wrote. Precise is also
+  structural here: a caller cannot spell the hazard without reaching past the type.
+  The erase path's opacity uniform was the same class one file over — piece tier, run
+  lifetime, correct only because `accum::run` happens not to flush, which is verbatim
+  the argument the ring's own comment makes against itself.
+- **The thirteenth copy**, in the same review: `peer_state.rs::is_painted` still spelled
+  the dominance predicate by hand while `is_green` — whose doc calls itself *that
+  one's* mirror — had been converted. A count taken by grepping for one spelling finds
+  the copies that use it.
 - **132 broken links in the generated shader mirror**, found by running `cargo doc`
   for the first time in this pass. `stark-shaders/build.rs` emitted `[`binding::X`]`
   from inside `decl`, where `binding` is a *sibling* module — so every one of the 132

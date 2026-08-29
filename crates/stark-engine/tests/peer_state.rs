@@ -57,16 +57,23 @@ fn select_left(engine: &mut Engine) {
 
 /// Whether the pixel at a canvas point reads as paint rather than bare paper. The
 /// substrate is a neutral near-white, so a strongly red-dominant pixel is paint.
+///
+/// The thirteenth copy of the suite's dominance predicate, and the last: it read
+/// `r - g > 40 && r - b > 40` by hand while [`is_green`] — whose doc calls itself this
+/// one's mirror — had already been converted, so the two were a mirror only until
+/// somebody moved the margin.
 fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
+    leads(texel_of(img, canvas), Lead::Red, MARGIN_FLAT)
+}
+
+/// The RGB at a canvas point of an image centred on **its own** size.
+///
+/// `common::texel` for a render that is not [`SIZE`](common::SIZE)-square, which every
+/// render in this file is not: a peer's viewport is what sizes them.
+fn texel_of(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
     let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
     let p = canvas + half;
-    let i = ((p.y as u32 * img.width + p.x as u32) * 4) as usize;
-    let (r, g, b) = (
-        img.pixels[i] as i32,
-        img.pixels[i + 1] as i32,
-        img.pixels[i + 2] as i32,
-    );
-    r - g > 40 && r - b > 40
+    rgb(img.pixel(p.x as u32, p.y as u32))
 }
 
 /// **The defect this design exists to fix.** One collaborator's selection must not
@@ -627,15 +634,7 @@ const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 /// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
 /// [`is_painted`] for the other actor's color.
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
-    // Its own centring rather than `common::texel`'s: these renders are sized by the
-    // peer's viewport, not by `SIZE`.
-    let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
-    let p = canvas + half;
-    leads(
-        rgb(img.pixel(p.x as u32, p.y as u32)),
-        Lead::Green,
-        MARGIN_FLAT,
-    )
+    leads(texel_of(img, canvas), Lead::Green, MARGIN_FLAT)
 }
 
 /// Draw this client's live stroke along `points`, and leave the pointer down.

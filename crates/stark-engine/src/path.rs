@@ -1476,8 +1476,22 @@ pub fn span_count(control_points: usize) -> usize {
 /// answer without the fitter that produced it: a peer knows which of its control
 /// points are settled (everything the sender has stopped resending,
 /// §17.5) and needs the same incremental repaint from them.
+///
+/// **Strictly fewer than [`span_count`]`(total)`, for every `frozen <= total`**, and
+/// something downstream depends on it. A frozen head's range ends here, and the stroke
+/// renderer captures cross-piece brush state only for a range that does *not* reach the
+/// end of the stroke (`gpu::stroke::Resume`) — so a head range that could equal the
+/// span count would silently stop carrying the brush forward, and the tail would resume
+/// from a state one range stale. The bound holds because `frozen - 1 <= total - 1` and
+/// `span_count(total) = total + 1` for a curve: the `min` is never the term that binds.
+/// For `total < 2` there is no curve, `span_count` is 0, and no head range exists.
 pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
-    frozen.saturating_sub(1).min(span_count(total))
+    let out = frozen.saturating_sub(1).min(span_count(total));
+    debug_assert!(
+        out < span_count(total) || span_count(total) == 0,
+        "a frozen head reaching the stroke's end would stop carrying the brush",
+    );
+    out
 }
 
 /// The curve point at the **end** of span `k` — where span `k + 1` picks up. `k`
@@ -1757,7 +1771,8 @@ impl Span {
 ///
 /// The clamp at the two ends is not a special case here but a consequence of the
 /// control sequence [`CubicBSpline`] fits against, in which each end control point
-/// appears `degree` times ([`knot_row`]). Repeating `Q0` collapses `b0`, `b1` and
+/// appears `degree` times ([`SplineIndex`](crate::spline::SplineIndex)'s knot view).
+/// Repeating `Q0` collapses `b0`, `b1` and
 /// `b2` onto it, which is exactly what pins the curve to the first control point
 /// and starts it heading down the first leg.
 ///
@@ -1765,8 +1780,17 @@ impl Span {
 /// parameterization ([`PathFitter::fit_channels`]), so the identical conversion
 /// carries them: one `blend` per Bézier point does position and attributes at once.
 fn span(knots: &[ControlPoint], k: usize) -> Span {
-    let m = knots.len();
-    let q: [ControlPoint; 4] = std::array::from_fn(|a| knots[knot_row(k + a, m)]);
+    // The clamped knot view, asked once for the four rows rather than four times. It is
+    // `crate::spline`'s and not a copy of it: this file evaluates a *stored* path
+    // without the fitter that produced it, which is a reason to have the evaluator here
+    // and never was a reason to spell the degree twice.
+    //
+    // The `expect` is unreachable from every caller. `span_count` is 0 below two
+    // control points, and each of `span_end`, `point_at` and `flatten_spans_from`
+    // returns on that before it asks for a span at all.
+    let view = crate::spline::SplineIndex::new(knots.len())
+        .expect("a span implies at least two control points");
+    let q: [ControlPoint; 4] = std::array::from_fn(|a| knots[view.knot_row(k + a)]);
     const SIXTH: f32 = 1.0 / 6.0;
     const THIRD: f32 = 1.0 / 3.0;
     Span {
@@ -1777,24 +1801,6 @@ fn span(knots: &[ControlPoint], k: usize) -> Span {
             blend(&q, [0.0, SIXTH, 4.0 * SIXTH, SIXTH]),
         ],
     }
-}
-
-/// The control point backing index `i` of the conceptual clamped sequence, in which
-/// the first and last each appear `degree` (= 3) times.
-///
-/// [`crate::spline`]'s knot view, **asked** rather than reproduced: it was written out
-/// here so a stored path could be evaluated without a fitter, which is a reason to
-/// evaluate without one and not a reason to spell the arithmetic twice. The degree
-/// lives in one place now, so a change to it cannot leave a second copy behind.
-///
-/// # Panics
-///
-/// Fewer than two control points is not a curve, which every caller of this has
-/// already established — [`span_count`] answers 0 there, so no span exists to evaluate.
-fn knot_row(i: usize, m: usize) -> usize {
-    crate::spline::SplineIndex::new(m)
-        .expect("a span implies at least two control points")
-        .knot_row(i)
 }
 
 /// A weighted combination of four control points, applied to every field alike.

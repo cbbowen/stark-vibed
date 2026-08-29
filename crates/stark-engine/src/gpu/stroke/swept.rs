@@ -318,7 +318,7 @@ impl StrokeRenderer {
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was.
-        let opacity_buf = opacity_uniform(self, &mut scope, 1.0);
+        let opacity_buf = opacity_uniform(&mut scope, 1.0);
         let SweepDraws {
             coords,
             runs,
@@ -493,7 +493,7 @@ impl StrokeRenderer {
         let device = &self.ctx.device;
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, assets, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments);
-        let opacity_buf = opacity_uniform(self, &mut scope, k.opacity);
+        let opacity_buf = opacity_uniform(&mut scope, k.opacity);
 
         // The carried parcel's lanes, in the order `stamp.wesl`'s deposit declares
         // its targets — the same three channels at the same formats the unscaled
@@ -680,7 +680,6 @@ pub(super) fn sweep_binds(
 /// (`stroke_constants`) — or exactly 1, the shader's identity branch, on the
 /// unscaled path, which binds it because the layout names it either way.
 pub(super) fn opacity_uniform(
-    r: &StrokeRenderer,
     scope: &mut crate::gpu::scratch::SubmitScope,
     opacity: f32,
 ) -> wgpu::Buffer {
@@ -692,7 +691,7 @@ pub(super) fn opacity_uniform(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         label: "stark integrate opacity",
     });
-    r.ctx.queue.write_buffer(&buf, 0, bytemuck::bytes_of(&u));
+    scope.write_lease(&buf, bytemuck::bytes_of(&u));
     buf
 }
 
@@ -776,19 +775,20 @@ pub(super) fn sweep_draws(
         }));
         runs.push(from..instances.len() as u32);
     }
-    // Leased and written via `write_buffer`, never `create_buffer_init`: that maps at
-    // creation, and Chrome/Dawn caps map-at-creation buffers well below the normal
-    // `maxBufferSize`, so a long stroke would panic in `createBuffer`. Leasing is the
-    // other half of the same problem — this is the largest buffer the stroke path
-    // builds and it was built afresh on every pointer move, where the pool hands back
-    // the one the previous move used (`scratch::BufKey`).
+    // Leased and written through the scope (`SubmitScope::write_lease`), never
+    // `create_buffer_init`: that maps at creation, and Chrome/Dawn caps
+    // map-at-creation buffers well below the normal `maxBufferSize`, so a long stroke
+    // would panic in `createBuffer`. Leasing is the other half of the same problem —
+    // this is the largest buffer the stroke path builds and it was built afresh on
+    // every pointer move, where the pool hands back the one the previous move used
+    // (`scratch::BufKey`).
     let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
     let instance_buf = scope.take_run_buffer(BufKey {
         size: instance_bytes.len() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         label: "stark sweep instances",
     });
-    r.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
+    scope.write_lease(&instance_buf, instance_bytes);
 
     // Per-tile sweep transforms, one [`XFORM_STRIDE`] slot each in a single
     // buffer the draws select with a dynamic offset. The texture top-left is
@@ -835,7 +835,7 @@ pub(super) fn sweep_draws(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         label: "stark sweep xforms",
     });
-    r.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
+    scope.write_lease(&xform_buf, &xform_data);
     // Through the slot list the layout was built from, like every other group in the
     // crate — a hand-written `binding: 0` is the shader's own number transcribed onto
     // the host, which is the drift §6.10 exists to remove. The window is the
