@@ -15,30 +15,36 @@
 //! would compound at every cut a live stroke makes (§6.2's two composable forms).
 //! Instead the mass keeps summing — additively, so re-cutting the path changes
 //! nothing — and every piece re-derives its tiles from pristine paint under the
-//! total. The accumulators and the pristine handles ride the stroke's carry
-//! ([`EraseCarry`]), the way the stamp loop's reservoir does; a piece copies the
-//! accumulator it resumes rather than writing it, which is what lets the live
-//! tail re-render every frame from the same frozen head.
-
-use std::collections::BTreeMap;
-use std::sync::Arc;
+//! total. The accumulators and the pristine handles ride the stroke's carry, the
+//! way the stamp loop's reservoir does; a piece copies the accumulator it resumes
+//! rather than writing it, which is what lets the live tail re-render every frame
+//! from the same frozen head.
+//!
+//! That last paragraph is not this pass's alone — it is the law any effect outside
+//! §6.2's two composable forms obeys, and the swept deposit obeys it too below full
+//! opacity. So the bookkeeping it describes lives in
+//! [`accum`](super::accum) and is run from here rather than written here: what
+//! stays in this file is `erase.wesl`'s own slots, its pipelines, and the one
+//! decision that is genuinely this pass's — a tile the layer does not have is
+//! nothing to erase ([`BareCanvas::Skip`]).
 
 use stark_model::document::StrokeRecord;
-use stark_model::geom::{TILE_TEX, TileCoord};
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
-use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
-use crate::gpu::tile::{AllocSource, TileMap};
+use crate::gpu::tile::TileMap;
 
-use super::incremental::{Carried, EraseCarry, EraseTile};
+use super::accum::{
+    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
+};
+use super::incremental::Carried;
 use super::scratch::Key;
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
-use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE};
+use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
 /// accumulated mass, the selection, and the opacity uniform.
@@ -58,28 +64,17 @@ const ERASE_SLOTS: &[Slot] = &[
 /// `exp(−m)` has long since reached zero.
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 
-/// The accumulator's pool key: a full tile texture (interior + apron), renderable
-/// (the sweep accumulates into it), bindable (the integrate reads it), and
-/// copyable both ways (a resuming piece copies the carried total into its working
-/// texture).
-fn accum_key() -> Key {
-    Key {
-        size: (TILE_TEX, TILE_TEX),
-        format: ACCUM_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST,
-        label: "stark erase accum",
-    }
-}
+/// The accumulator is the parcel's only lane: this pass rasterizes one number per
+/// texel, where the deposit rasterizes the channel trio. Named beside the key it is
+/// taken with, so the attach order and the bind order are one list
+/// ([`Parcel`](super::accum::Parcel)).
+const MASS: usize = 0;
 
-/// One whole accumulator, as a copy extent.
-const ACCUM_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
-    width: TILE_TEX,
-    height: TILE_TEX,
-    depth_or_array_layers: 1,
-};
+/// The accumulator's pool key — [`lane_key`]'s usages, at this pass's own format
+/// and label.
+fn accum_key() -> Key {
+    lane_key(ACCUM_FORMAT, "stark erase accum")
+}
 
 /// The erase pass's GPU objects, built once beside the two paths' kits.
 ///
@@ -178,12 +173,13 @@ impl StrokeRenderer {
         tol: crate::path::FlattenTolerance,
     ) -> (TileMap, StrokeCarry) {
         crate::timing::span!("stroke.erase");
+        // The pool and the selection are the accumulator's — it is what acquires
+        // the copy-on-write destinations and gates each one by its mask (§6.8).
         let StrokeScene {
-            pool,
             assets,
             base,
-            selection,
             substrate,
+            ..
         } = scene;
         let k = self.stroke_constants(rec, substrate, scene.selection);
         let (segments, end_dist) = generate_segments_in(rec, tol, spans);
@@ -223,140 +219,59 @@ impl StrokeRenderer {
             .queue
             .write_buffer(&opacity_buf, 0, bytemuck::bytes_of(&opacity));
 
-        // The carry this piece hands on: everything the pieces before it
-        // accumulated — shared, never rewritten — with this piece's tiles
-        // replacing theirs below.
-        let mut tiles: BTreeMap<TileCoord, EraseTile> = match tool.map(ToolState::erased) {
-            Some(prior) => prior
-                .tiles
-                .iter()
-                .map(|(c, t)| {
-                    (
-                        *c,
-                        EraseTile {
-                            pristine: t.pristine.clone(),
-                            accum: Arc::clone(&t.accum),
-                        },
-                    )
-                })
-                .collect(),
-            None => BTreeMap::new(),
-        };
+        // The shared procedure (§6.12, `accum`): resume everything the pieces
+        // before this one accumulated, extend it over this piece's tiles, and turn
+        // the total on the pristine paint. A tile the layer does not have is
+        // nothing to erase — no output, no accumulator, no entry in the carry — so
+        // a stroke over bare canvas mints no tiles at all, which is the whole of
+        // what this pass says about the shape.
+        let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
+            self,
+            scene,
+            scope,
+            &[accum_key()],
+            BareCanvas::Skip,
+            tool.map(ToolState::erased),
+        )
+        .run(
+            &Sweep {
+                label: "stark erase sweep pass",
+                pipeline: &self.erase.sweep,
+                draws: &draws,
+                prefix: &prefix_bg,
+                noise: &noise_bg,
+            },
+            &Land {
+                label: "stark erase integrate",
+                pipeline: &self.erase.integrate,
+            },
+            |l: &Landing<'_>| {
+                desc::bind_group_for(
+                    device,
+                    "stark erase bg",
+                    &self.erase.integrate_bgl,
+                    ERASE_SLOTS,
+                    l.base.resid.is_some(),
+                    |b| match b {
+                        eb::BASE_COLOR => wgpu::BindingResource::TextureView(l.base.color),
+                        eb::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),
+                        eb::ACCUM => wgpu::BindingResource::TextureView(l.parcel.lane(MASS)),
+                        eb::SELECTION => wgpu::BindingResource::TextureView(l.mask),
+                        eb::E => opacity_buf.as_entire_binding(),
+                        eb::BASE_RESID => wgpu::BindingResource::TextureView(
+                            l.base.resid.expect("a residual build has one"),
+                        ),
+                        other => unreachable!("`ERASE_SLOTS` lists no binding {other}"),
+                    },
+                )
+            },
+        );
 
-        let mut new_map = base.clone();
-        let mut dirty = Vec::new();
-        for (i, coord) in draws.coords.iter().enumerate() {
-            // The paint the stroke found under this tile: what an earlier piece
-            // recorded, or — for a tile this stroke reaches for the first time —
-            // the base itself, which no earlier piece can have rewritten. A tile
-            // the layer does not have is nothing to erase: no output, no
-            // accumulator, and no entry in the carry, so a stroke over bare
-            // canvas mints no tiles at all.
-            let Some(pristine) = tiles
-                .get(coord)
-                .map(|t| t.pristine.clone())
-                .or_else(|| base.get(coord).cloned())
-            else {
-                continue;
-            };
-
-            // This piece's working accumulator: the carried total copied in, or a
-            // clear for a first touch — either way every texel is written before
-            // the integrate reads it, the pool's no-zero-init contract
-            // (`scratch`). The carried texture itself is only ever read: the live
-            // tail resumes the same frozen carry on every pointer move.
-            let work = self.scratch.keep(device, accum_key());
-            let resumed = tiles.get(coord).map(|t| Arc::clone(&t.accum));
-            if let Some(old) = &resumed {
-                scope.encoder().copy_texture_to_texture(
-                    old.tex().as_image_copy(),
-                    work.tex().as_image_copy(),
-                    ACCUM_EXTENT,
-                );
-            }
-            {
-                let ops = if resumed.is_some() {
-                    desc::LOAD
-                } else {
-                    desc::CLEAR
-                };
-                let att = [Some(desc::attach(work.view(), ops))];
-                let mut pass = scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark erase sweep pass"),
-                        color_attachments: &att,
-                        ..Default::default()
-                    });
-                pass.set_pipeline(&self.erase.sweep);
-                pass.set_bind_group(0, &draws.xforms, &[(i * UNIFORM_STRIDE) as u32]);
-                pass.set_bind_group(1, &prefix_bg, &[]);
-                pass.set_bind_group(2, &noise_bg, &[]);
-                pass.set_vertex_buffer(0, draws.instances.slice(..));
-                pass.draw(0..SWEEP_VERTS, draws.runs[i].clone());
-            }
-
-            // The whole stroke's extent so far, turned on the pristine paint —
-            // never on the base in hand, which for a resumed tile is an earlier
-            // piece's output and would compound the erase per piece.
-            let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
-            // The coverage alone: the mask's opacity is in `k.opacity` already,
-            // which the erase multiplies this by.
-            let mask_view = self.selection.mask_for(selection, *coord);
-            let has_resid = pristine.resid_view().is_some();
-            let bg = desc::bind_group_for(
-                device,
-                "stark erase bg",
-                &self.erase.integrate_bgl,
-                ERASE_SLOTS,
-                has_resid,
-                |b| match b {
-                    eb::BASE_COLOR => wgpu::BindingResource::TextureView(pristine.color_view()),
-                    eb::BASE_AUX => wgpu::BindingResource::TextureView(pristine.aux_view()),
-                    eb::ACCUM => wgpu::BindingResource::TextureView(work.view()),
-                    eb::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
-                    eb::E => opacity_buf.as_entire_binding(),
-                    eb::BASE_RESID => wgpu::BindingResource::TextureView(
-                        pristine.resid_view().expect("a residual build has one"),
-                    ),
-                    other => unreachable!("`ERASE_SLOTS` lists no binding {other}"),
-                },
-            );
-            {
-                let int_targets = dst.targets();
-                let int_att = int_targets.attachments(desc::CLEAR);
-                let mut pass = scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark erase integrate"),
-                        color_attachments: &int_att[..int_targets.count()],
-                        ..Default::default()
-                    });
-                pass.set_pipeline(&self.erase.integrate);
-                pass.set_bind_group(0, &bg, &[]);
-                pass.draw(0..3, 0..1);
-            }
-
-            new_map = new_map.insert(*coord, dst);
-            dirty.push(*coord);
-            tiles.insert(
-                *coord,
-                EraseTile {
-                    pristine,
-                    accum: Arc::new(work),
-                },
-            );
-        }
-
-        // Submit before the carry leaves this call: a `Kept` may reach the pool's
-        // free list only behind the submit of the commands naming it, and handing
-        // the carry out first would let a caller drop it ahead of one.
-        scope.finish();
         (
-            new_map,
+            map,
             StrokeCarry {
                 dist: end_dist,
-                tool: Some(ToolState(Carried::Erase(EraseCarry { tiles }))),
+                tool: Some(ToolState(Carried::Erase(carry))),
                 dirty,
             },
         )

@@ -1004,9 +1004,12 @@ effect's.
 of the two piece-composable forms above, so the path takes the erase pass's
 shape (§6.12): the parcel — color, wide aux, residual — keeps accumulating
 across the pieces of a live stroke, and every piece's integrate re-derives its
-tiles from **pristine** paint under the whole of it (`SweepCarry`, beside the
-reservoir and the erase carry in `ToolState`; `render_swept_scaled`). Same
-copy-on-resume contract, same no-seam result; what it costs is a persistent
+tiles from **pristine** paint under the whole of it (`ParcelCarry`, beside the
+reservoir in `ToolState`; `render_swept_scaled`). Same copy-on-resume contract,
+same no-seam result — literally the same, since the two effects that obey this
+law run one procedure (`accum::IncrementalTileAccumulator`) and differ only in
+what they rasterize, how many lanes their parcel has, what their landing pass
+computes, and what bare canvas means. What it costs is a persistent
 scratch pair per touched tile for the stroke's lifetime and the scratch ring's
 overlap — which is why the branch is on the brush, and the full-opacity path
 never pays it.
@@ -1966,9 +1969,14 @@ and the **integrate** (`erase.wesl`) applies the non-composable law exactly
 once per tile per render, always from the **pristine** base: the tile as the
 stroke first found it, never an earlier piece's output.
 
-Both ride the stroke's carry (`EraseCarry`, beside the stamp loop's reservoir
+Both ride the stroke's carry (`ParcelCarry`, beside the stamp loop's reservoir
 in `ToolState`): per touched tile, the pristine handle (an `Arc` bump, tiles
-being copy-on-write) and the accumulator lease. A resuming piece **copies** the
+being copy-on-write) and the accumulator lease. That carry, and the whole of the
+bookkeeping around it, is shared with the scaled swept deposit — the other
+effect whose law is outside §6.2's two forms — in
+`accum::IncrementalTileAccumulator`; this pass is the `Skip` half of its
+bare-canvas decision, and `stamp.wesl::fs_erase` plus `erase.wesl` are what it
+contributes. A resuming piece **copies** the
 carried accumulator into a working texture and extends the copy — the carried
 one is only ever read — which is what lets the live tail re-render from the
 same frozen head every pointer move, and makes `preview == committed` hold with

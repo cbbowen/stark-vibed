@@ -18,8 +18,8 @@ use std::sync::Arc;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::TileCoord;
 
+use super::accum::ParcelCarry;
 use super::scratch::Kept;
-use crate::gpu::tile::TilePairHandle;
 
 /// A stroke's carried state at a cut point (§6.2) — what its path threads
 /// between pieces that does not already live on the canvas. Which of the two kinds
@@ -43,13 +43,18 @@ pub(super) enum Carried {
     /// every fold.
     Loop(Box<LoopCarry>),
     /// The erase pass's accumulated extent (§6.12).
-    Erase(EraseCarry),
+    Erase(ParcelCarry),
     /// The swept deposit's accumulated parcel (§6.2), carried only below
     /// full opacity — the one setting under which that path stops being
-    /// stateless, because a scaled parcel is not composable per piece
-    /// ([`SweepCarry`]).
-    Sweep(SweepCarry),
+    /// stateless, because a scaled parcel is not composable per piece.
+    Sweep(ParcelCarry),
 }
+
+// The two above hold the *same* payload, and one variant each is still worth
+// having: the lane count of a `ParcelCarry`'s parcels is the effect's — one
+// transparency mass against the channel trio — so a carry crossing between them
+// would bind the wrong number of textures. The accessors below are where that is
+// said, and they are the only reason the distinction is kept.
 
 impl ToolState {
     /// The loop's carried state, on a carry the loop captured.
@@ -71,7 +76,7 @@ impl ToolState {
 
     /// The erase pass's accumulation, on a carry it captured — [`looped`](Self::looped)'s
     /// argument, from the other side.
-    pub(super) fn erased(&self) -> &EraseCarry {
+    pub(super) fn erased(&self) -> &ParcelCarry {
         match &self.0 {
             Carried::Erase(e) => e,
             Carried::Loop(_) | Carried::Sweep(_) => {
@@ -86,7 +91,7 @@ impl ToolState {
     /// [`looped`](Self::looped)'s argument, from the third side. The
     /// opacity is part of the brush, so whether the swept path carries at all is
     /// as much a pure function of it as which path runs.
-    pub(super) fn swept(&self) -> &SweepCarry {
+    pub(super) fn swept(&self) -> &ParcelCarry {
         match &self.0 {
             Carried::Sweep(s) => s,
             Carried::Loop(_) | Carried::Erase(_) => {
@@ -110,13 +115,19 @@ pub(super) struct LoopCarry {
     /// never read: the identity ceiling needs no budget, and the common case
     /// carries and copies nothing.
     ///
-    /// [`EraseTile::accum`]'s sharing contract: a piece never writes a tile it
-    /// resumed from — it seeds its region by *copying* these in and extracts
-    /// fresh leases out — so the tiles a piece does not touch ride forward as
-    /// clones of the same lease, and the live tail re-renders from the same
-    /// frozen totals every pointer move. No pristine handle beside them, unlike
-    /// the erase and sweep carries: the loop does not re-derive from pristine
-    /// paint — the budget is running state, exactly like the reservoir.
+    /// [`ParcelTile::accum`](super::accum::ParcelTile)'s sharing contract: a piece
+    /// never writes a tile it resumed from — it seeds its region by *copying*
+    /// these in and extracts fresh leases out — so the tiles a piece does not
+    /// touch ride forward as clones of the same lease, and the live tail
+    /// re-renders from the same frozen totals every pointer move.
+    ///
+    /// That contract is all these share with the two parcel carries, which is why
+    /// they are not one type: no pristine handle beside them (the loop does not
+    /// re-derive from pristine paint — the budget is running state, exactly like
+    /// the reservoir), no pass ever binds one, they are seeded into a shared
+    /// region at a per-tile offset rather than into a working texture per tile,
+    /// and the tiles they end up in come from the region write-back rather than
+    /// from a landing pass.
     pub(super) fresh: BTreeMap<TileCoord, Arc<Kept>>,
 }
 
@@ -147,73 +158,14 @@ pub(super) struct Reservoir {
     pub(super) resid: Option<Kept>,
 }
 
-/// The erase pass's carried state (§6.12): per touched tile, the stroke's
-/// accumulated extent and the tile it is measured against.
-///
-/// Where the reservoir is brush-local, this is **canvas-local** — the accumulated
-/// transparency mass is a field over the tiles the stroke has reached — and that
-/// is what it exists to be: the pass turns the *whole* stroke's extent on the
-/// pristine paint at once (`erase.wesl`), so a piece needs everything the pieces
-/// before it accumulated, per texel, where the loop needs only what the tip
-/// carries.
-pub(super) struct EraseCarry {
-    pub(super) tiles: BTreeMap<TileCoord, EraseTile>,
-}
-
-/// One tile's share of an [`EraseCarry`].
-pub(super) struct EraseTile {
-    /// The layer's tile as the stroke found it — the paint every piece's rewrite
-    /// is derived from. A piece rendered later must not read the *output* of an
-    /// earlier one (the base it is handed holds exactly that), or the erase would
-    /// compound per piece instead of per stroke. An `Arc`'d pool handle, so
-    /// keeping it is a refcount, not a copy.
-    pub(super) pristine: TilePairHandle,
-    /// The stroke's transparency mass over this tile, summed so far
-    /// (`stamp.wesl::fs_erase`). Shared between successive carries rather than
-    /// copied: a piece never writes the accumulator it resumed from — it copies
-    /// into a fresh working texture and extends that — so the tiles a piece does
-    /// not touch ride forward as clones of the same lease.
-    pub(super) accum: Arc<Kept>,
-}
-
-/// The swept deposit's carried state below full opacity (§6.2): per touched
-/// tile, the stroke's accumulated **parcel** and the tile it will land on.
-///
-/// [`EraseCarry`]'s design at the other end of the same theorem. The opacity
-/// scales the parcel's finished coverage, and a scaled coverage is neither
-/// additive in `τ` nor `1 − exp(−k·τ)` — so it cannot be applied per piece, and
-/// the parcel has to keep accumulating across the pieces of a live stroke with
-/// every piece re-deriving its tiles from pristine paint under the whole of it
-/// (`integrate.wesl`). At opacity 1 the integrate is the identity on the parcel,
-/// pieces compose by plain stacking, and the path carries nothing — which is why
-/// this exists only below it.
-pub(super) struct SweepCarry {
-    pub(super) tiles: BTreeMap<TileCoord, SweepTile>,
-}
-
-/// One tile's share of a [`SweepCarry`].
-pub(super) struct SweepTile {
-    /// The layer's tile as the stroke found it — [`EraseTile::pristine`]'s
-    /// contract exactly. `None` is bare canvas: unlike an erase, a deposit onto
-    /// nothing mints a tile, so the pass keeps painting and binds the 1×1 zeroes
-    /// as the base it re-derives from.
-    pub(super) pristine: Option<TilePairHandle>,
-    /// The stroke's parcel over this tile so far — the same scratch pair a
-    /// single-piece sweep accumulates, kept alive across pieces. Shared, never
-    /// rewritten: a resuming piece copies it into fresh working textures and
-    /// extends those ([`EraseTile::accum`]'s contract).
-    pub(super) accum: Arc<SweepAccum>,
-}
-
-/// The textures of one carried parcel tile: the over-blended premultiplied
-/// color, the additive wide aux (height, optical mass), and the residual in a
-/// space that has one — the same three targets `stamp.wesl`'s deposit writes,
-/// because this *is* that scratch, surviving its piece.
-pub(super) struct SweepAccum {
-    pub(super) color: Kept,
-    pub(super) aux: Kept,
-    pub(super) resid: Option<Kept>,
-}
+// The other two kinds of carried state — the erase pass's accumulated extent
+// (§6.12) and the swept deposit's accumulated parcel below full opacity (§6.2) —
+// are one type, [`ParcelCarry`] in `accum`, because they are one *procedure*: an
+// effect whose law is neither of §6.2's two composable forms has to keep the
+// composable half summing across pieces and apply the law once per render from
+// pristine paint, and there is no second way to do that. Where the reservoir above
+// is brush-local, both of those are **canvas-local** — a field over the tiles the
+// stroke has reached — which is why they are addressed by tile and it is not.
 
 /// What a range render leaves behind for the range that resumes after it.
 pub(crate) struct StrokeCarry {

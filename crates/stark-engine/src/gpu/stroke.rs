@@ -36,6 +36,7 @@ use crate::unpoisoned;
 use stark_model::Srgb;
 use stark_model::document::StrokeRecord;
 
+mod accum;
 mod budget;
 mod dynamics;
 mod erase;

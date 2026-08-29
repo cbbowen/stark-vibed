@@ -109,7 +109,6 @@ present.
 | [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | |
 | [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | |
 | [J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image) | The Mixbox LUT runs twice per colour, per texel on a placed image | performance | `a9edfbf` |
-| [K](#k-the-log-is-cloned-whole-on-every-save) | The log is cloned whole on every save | performance | |
 | [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba` (3 of 14) |
 | [M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl) | `Engine` is one type with ~25 fields and ~6.5k lines of `impl` | architecture | |
 | [N](#n-boxdyn-timeline-is-a-two-mode-enum-with-silent-defaults) | `Box<dyn Timeline>` is a two-mode enum with silent defaults | architecture | |
@@ -585,20 +584,6 @@ fourth lane is `1.0` in both implementations and no caller reads it.
 
 **Fix.** One `fn rgb_to_latent(&self, rgb: Srgb) -> Latent { lat: [f32; 3], res: [f32; 3] }`
 — the shader side already has exactly this type (`lib/latent.wesl`).
-
-## K. The log is cloned whole on every save
-
-`Timeline::clone_actions` copies every `Action` — each `CommitStroke`'s
-control-point list, the largest thing in the log — on every `save_bytes`,
-`document_file` and `start_collaboration` (`engine/file.rs:47`).
-`ReplicatedTimeline` stores each action twice (`log` and `history.actions`,
-`timeline.rs:656`) plus a third clone for the broadcast (`engine.rs:2100`).
-`DocumentFile::new` takes a `Vec<Action>` by value, so the shape is forced from the
-model side too.
-
-**Fix.** `Arc<Action>` in the log (the history entry and the outbox share it), or
-an iterator into the serializer. Autosave then costs the serialization and nothing
-else.
 
 ## L. Smaller measurable costs
 
