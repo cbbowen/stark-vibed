@@ -302,20 +302,39 @@ impl Engine {
         // dropped frame. Braced, because a timing span runs to the end of the block
         // it is opened in and what is being timed is this call rather than the rest
         // of the render (`timing::span!`).
-        {
+        //
+        // **A single-layer list is built and dropped, never cached.** The slot holds
+        // one list, and a thumbnail pass renders one layer at a time with a sleep
+        // between rows while the canvas keeps painting frames — so each thumbnail
+        // evicted the screen's list and the next screen frame rebuilt it from nothing,
+        // N times over for N layers, which is exactly the ~10⁵ handle clones this
+        // cache exists to stop paying. Such a key can never be hit twice anyway: every
+        // row names a different `only`.
+        //
+        // Deliberately *not* a second slot keyed on `only`: the navigator refreshes
+        // per commit, and at that instant `doc_revision` has already invalidated the
+        // screen's list, so its eviction costs nothing.
+        let transient: Vec<CompositeGroup>;
+        let key = DrawKey {
+            doc_revision: self.doc_revision,
+            epoch: self.preview.epoch(),
+            fold: self.preview.fold(),
+            content,
+            only,
+            visible: view.visible_tiles(),
+        };
+        let groups: &[CompositeGroup] = {
             crate::timing::span!("render.drawlist");
-            self.refresh_draw_cache(
-                DrawKey {
-                    doc_revision: self.doc_revision,
-                    epoch: self.preview.epoch(),
-                    fold: self.preview.fold(),
-                    content,
-                    only,
-                    visible: view.visible_tiles(),
-                },
-                &doc,
-            );
-        }
+            if key.only.is_some() {
+                transient = self.composite_groups(&doc, key.only, key.visible);
+                &transient
+            } else {
+                self.refresh_draw_cache(key, &doc);
+                self.draw_cache
+                    .as_ref()
+                    .map_or(&[], |c| c.groups.as_slice())
+            }
+        };
 
         // The substrate is document state now (§15.5), so the substrate a
         // piece was painted on travels with it instead of living in whichever
@@ -364,10 +383,7 @@ impl Engine {
         // Rust splits disjoint fields and not method calls, which is the whole of why
         // this is written out — and the whole of what the "own the masks so the borrow
         // of `self` ends" dance here used to be working around.
-        let groups: &[CompositeGroup] = self
-            .draw_cache
-            .as_ref()
-            .map_or(&[], |c| c.groups.as_slice());
+
         let scene = CompositeScene {
             substrate_color: bg_channels,
             substrate_resid: bg_resid,
@@ -924,20 +940,13 @@ impl Engine {
         // (§21.2), so the filter branch cannot arise here.
         let own = self.layer_items(ancestor, visible);
         let carried = self.stack_below(&ancestor.carries, &path[1..], visible, !own.is_empty());
-        if own.is_empty() && carried.is_empty() {
+        let Some(group) = group_of(ancestor.composite, own, carried) else {
             return groups;
-        }
-        let group = if carried.is_empty() {
-            CompositeGroup::leaf(ancestor.composite, own)
-        } else {
-            let mut members = Vec::with_capacity(carried.len() + 1);
-            if !own.is_empty() {
-                members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
-            }
-            members.extend(carried);
-            CompositeGroup::stack(ancestor.composite, members)
         };
-        groups.push(group);
+        // Through the same merge the draw list uses. This pushed unmerged before,
+        // which is pixel-identical — more direct runs, same picture — but it meant the
+        // two walks could disagree about the shape of what they built.
+        push_merging(&mut groups, group);
         groups
     }
 
@@ -1002,59 +1011,10 @@ impl Engine {
             // keeps a stack of empty glow layers free. A layer that carries
             // something visible is not empty, whatever its own content.
             //
-            // **The cull can empty a layer that has paint**, so this now fires for
-            // a document scrolled away from as well as for one not yet painted on.
-            // That is sound on the identity above rather than on the two cases
-            // happening to coincide: `blend_common.wesl::merge` with a transparent
-            // source is `cb` exactly — `cs.a` is 0, so both source terms vanish and
-            // the aux sum adds nothing — for every mode and both clip states.
-            if own.is_empty() && carried.is_empty() {
+            let Some(group) = group_of(layer.composite, own, carried) else {
                 continue;
-            }
-            // **Where the layer's composite params go**, and the only place the
-            // question is asked (§14.4.3, §14.7):
-            //
-            // - A **leaf** is the whole of what it draws, so its params are its run's.
-            // - A **group's base** is a *member* of the group, not the group. Its own
-            //   content composites with `IDENTITY` and the layer's params are applied
-            //   once, to the composited whole. Every one of the three would be wrong
-            //   applied twice: a blend mode would combine the base with itself, a clip
-            //   would clip the base to its own coverage, and an opacity would fade it
-            //   to `a²` — which is what happened for as long as the three were carried
-            //   separately and the item builder tagged them with one of them.
-            let mut group = if carried.is_empty() {
-                CompositeGroup::leaf(layer.composite, own)
-            } else {
-                let mut members = Vec::with_capacity(carried.len() + 1);
-                if !own.is_empty() {
-                    members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
-                }
-                members.extend(carried);
-                CompositeGroup::stack(layer.composite, members)
             };
-            // Merge into the run below when neither side needs isolating — the
-            // fast path, and the reason an ordinary document is one group.
-            //
-            // `as_direct_run_mut` is the test and the run in one, which is what makes
-            // this total. Asking `is_direct` of both sides and then re-matching the
-            // two `GroupContent`s behind an `if let` with no else leaves a gap: a
-            // group answering "direct" while holding something other than a `Run`
-            // would be counted as merged and then silently dropped.
-            let merged = match (
-                groups
-                    .last_mut()
-                    .and_then(CompositeGroup::as_direct_run_mut),
-                group.as_direct_run_mut(),
-            ) {
-                (Some(items), Some(more)) => {
-                    items.append(more);
-                    true
-                }
-                _ => false,
-            };
-            if !merged {
-                groups.push(group);
-            }
+            push_merging(&mut groups, group);
         }
         groups
     }
@@ -1352,6 +1312,76 @@ pub(super) struct DrawCache {
     groups: Vec<CompositeGroup>,
 }
 
+/// **Where a layer's composite params go** (§14.4.3, §14.7) — the one statement of
+/// the rule, and `None` for a layer that draws nothing at all.
+///
+/// - A **leaf** is the whole of what it draws, so its params are its run's.
+/// - A **group's base** is a *member* of the group, not the group. Its own content
+///   composites with `IDENTITY` and the layer's params are applied once, to the
+///   composited whole. Every one of the three would be wrong applied twice: a blend
+///   mode would combine the base with itself, a clip would clip the base to its own
+///   coverage, and an opacity would fade it to `a²` — which is what happened for as
+///   long as the three were carried separately and the item builder tagged them with
+///   one of them.
+///
+/// The empty case answers `None` rather than an empty group because **the cull can
+/// empty a layer that has paint**, so it fires for a document scrolled away from as
+/// well as one not yet painted on. That is sound on the identity above rather than on
+/// the two cases coinciding: `blend_common.wesl::merge` with a transparent source is
+/// `cb` exactly — `cs.a` is 0, so both source terms vanish and the aux sum adds
+/// nothing — for every mode and both clip states.
+///
+/// Asked in two walks, which is why it is a function: `composite_stack` builds the
+/// draw list, and `stack_below` builds the restriction of it a `PickSource::Below`
+/// sample comes off. The comment here used to say this was "the only place the
+/// question is asked"; it was asked in both, and the second would have kept the old
+/// rule if the first changed.
+fn group_of(
+    params: CompositeParams,
+    own: Vec<CompositeItem>,
+    carried: Vec<CompositeGroup>,
+) -> Option<CompositeGroup> {
+    if own.is_empty() && carried.is_empty() {
+        return None;
+    }
+    Some(if carried.is_empty() {
+        CompositeGroup::leaf(params, own)
+    } else {
+        let mut members = Vec::with_capacity(carried.len() + 1);
+        if !own.is_empty() {
+            members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
+        }
+        members.extend(carried);
+        CompositeGroup::stack(params, members)
+    })
+}
+
+/// Push `group`, merging it into the run below when neither side needs isolating —
+/// the fast path, and the reason an ordinary document is one group.
+///
+/// `as_direct_run_mut` is the test and the run in one, which is what makes this
+/// total. Asking `is_direct` of both sides and then re-matching the two
+/// `GroupContent`s behind an `if let` with no else leaves a gap: a group answering
+/// "direct" while holding something other than a `Run` would be counted as merged and
+/// then silently dropped.
+fn push_merging(groups: &mut Vec<CompositeGroup>, mut group: CompositeGroup) {
+    let merged = match (
+        groups
+            .last_mut()
+            .and_then(CompositeGroup::as_direct_run_mut),
+        group.as_direct_run_mut(),
+    ) {
+        (Some(items), Some(more)) => {
+            items.append(more);
+            true
+        }
+        _ => false,
+    };
+    if !merged {
+        groups.push(group);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1448,8 +1478,13 @@ mod tests {
     /// *performance* claim rather than a correctness one (C8).
     ///
     /// Asked of the grouping rule directly rather than through an `Engine`, so it
-    /// needs no GPU: what decides a run boundary is `CompositeGroup::leaf` plus the
-    /// merge in `composite_stack`, and both are functions of `CompositeParams`.
+    /// needs no GPU: what decides a run boundary is [`group_of`] plus [`push_merging`],
+    /// and both are functions of `CompositeParams`.
+    ///
+    /// Through those two rather than a copy of them. This test used to re-implement
+    /// the merge — the same `as_direct_run_mut` pair, written out again — so it pinned
+    /// a transcription of the rule and would have gone on passing if the rule itself
+    /// changed underneath it.
     #[test]
     fn plain_layers_merge_into_one_run() {
         use crate::document::CompositeParams;
@@ -1469,25 +1504,11 @@ mod tests {
         };
         let plain = CompositeParams::IDENTITY;
 
-        // Six ordinary layers, merged pairwise the way `composite_stack` does.
+        // Six ordinary layers, through the very walk `composite_stack` runs.
         let mut groups: Vec<CompositeGroup> = Vec::new();
         for _ in 0..6 {
-            let mut g = CompositeGroup::leaf(plain, items());
-            let merged = match (
-                groups
-                    .last_mut()
-                    .and_then(CompositeGroup::as_direct_run_mut),
-                g.as_direct_run_mut(),
-            ) {
-                (Some(into), Some(more)) => {
-                    into.append(more);
-                    true
-                }
-                _ => false,
-            };
-            if !merged {
-                groups.push(g);
-            }
+            let g = group_of(plain, items(), Vec::new()).expect("a layer with an item draws");
+            push_merging(&mut groups, g);
         }
         assert_eq!(
             groups.len(),
@@ -1502,10 +1523,22 @@ mod tests {
             blend: BlendMode::Multiply,
             ..plain
         };
-        let mut g = CompositeGroup::leaf(isolating, items());
-        assert!(
-            g.as_direct_run_mut().is_none(),
-            "a blended layer offered itself for merging into the run below",
+        push_merging(
+            &mut groups,
+            group_of(isolating, items(), Vec::new()).expect("a layer with an item draws"),
         );
+        assert_eq!(
+            groups.len(),
+            2,
+            "a blended layer merged into the run below instead of breaking it",
+        );
+    }
+
+    /// A layer that draws nothing produces no group at all — the empty-skip both
+    /// walks make, which is what lets a culled-away document cost nothing.
+    #[test]
+    fn a_layer_with_nothing_to_draw_makes_no_group() {
+        use crate::document::CompositeParams;
+        assert!(group_of(CompositeParams::IDENTITY, Vec::new(), Vec::new()).is_none());
     }
 }

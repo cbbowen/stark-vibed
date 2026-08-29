@@ -210,6 +210,14 @@ impl Preview {
         // The paint every gesture already folded in has claimed, so a stroke can tell
         // whether the tiles it is about to overlay still hold nothing but the base.
         let mut claimed: Vec<(LayerId, TileRect)> = Vec::new();
+        // Which layers any earlier gesture has written at all — a coarser question
+        // than `claimed`, and a different one. `claimed` asks whether an earlier
+        // gesture *overlaps* this stroke, which decides whether the head can be
+        // cached; this asks whether `out`'s tile map for the layer is still the
+        // base's, which decides whether the overlay has anything to do. A
+        // non-intersecting earlier claim on the same layer answers no to the first
+        // and yes to the second.
+        let mut touched: BTreeSet<LayerId> = BTreeSet::new();
         for GestureView {
             actor,
             gesture,
@@ -236,6 +244,7 @@ impl Preview {
                     // Already chained: it reads `out`, not `base`, and replaces the
                     // layer's whole tile map rather than copying tiles across.
                     claimed.push((layer, stark_model::document::fill_rect(&op)));
+                    touched.insert(layer);
                     if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
                         let gate = base.selection_of(actor);
                         if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
@@ -274,7 +283,26 @@ impl Preview {
                         &rec,
                         head,
                     );
-                    out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
+                    // **The first stroke on a layer swaps the map instead of copying
+                    // it tile by tile.** `head.dirty` is the union of every tile the
+                    // stroke has *ever* touched, so walking it is work that grows with
+                    // the stroke — which is exactly what `FrozenHead` exists to stop
+                    // ("work per move then follows the tail rather than the stroke").
+                    // Where nothing earlier in this fold has written the layer, `out`'s
+                    // map for it is still the base's, so the tail state's map already
+                    // *is* the overlay and one `map_layer` replaces hundreds of
+                    // persistent-map inserts.
+                    //
+                    // `overlay_tiles` stays for the genuinely contested case, which is
+                    // the only one it was written for: two peers painting one layer.
+                    out = if touched.insert(rec.layer) {
+                        match tail_state.layer(rec.layer).and_then(|l| l.tiles()).cloned() {
+                            Some(tiles) => out.map_layer(rec.layer, |l| l.with_tiles(tiles)),
+                            None => out,
+                        }
+                    } else {
+                        overlay_tiles(&out, rec.layer, &tail_state, &head.dirty)
+                    };
                     heads.insert(actor, head);
                     // The tail state is the committed document with this stroke on
                     // it — the document its commit will produce, provided it is this

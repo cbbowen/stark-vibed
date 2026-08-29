@@ -51,6 +51,36 @@ pub const MASK_TEX: u32 = TILE_TEX;
 
 /// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
 /// px (the interior origin, shifted out by the apron — §6.4).
+///
+/// # Precision
+///
+/// **Exact while `|coord| < 2^16`** — a canvas within about ±16.7 Mpx of the origin,
+/// which is every document anyone has painted. Past that, `f32` counts in steps
+/// larger than one pixel and the apron subtraction is absorbed: the value stops being
+/// the texel grid's and starts being the nearest representable thing to it.
+///
+/// That matters because every caller feeds this straight into a uniform a tile writer
+/// reads, and §6.4 requires each pass to be a pure function of canvas position — the
+/// property that makes a tile's apron bit-identical to its neighbour's interior with
+/// no copy pass. Adjacent tiles round consistently within a binade, so no seam has
+/// been demonstrated; the bound is stated because nothing else states it, and because
+/// [`gpu::place::offset`](crate::gpu::place) exists next door deriving the same kind
+/// of quantity in integers *precisely* to avoid this, with a test that asserts the
+/// `f32` form is already wrong around coord 300 000.
+///
+/// **Not asserted**, deliberately. `place`'s own
+/// `a_distant_tile_addresses_the_image_exactly` calls this at coord 300 000 precisely
+/// to prove the hazard is real rather than imagined, so a `debug_assert` on the bound
+/// would fail the test that documents it — and, worse, would turn "approximate out
+/// here" into "crashes out here" for an artist who panned a long way from the origin,
+/// which is a stronger claim than anything measured supports.
+///
+/// A caller needing an exact offset between two large canvas positions must derive it
+/// in integers, as `place` does. Making this one integral — `TileCoord::tex_origin()
+/// -> IVec2`, with the `as f32` pushed down to the uniform packing where the
+/// precision is actually lost and a reader can see it — would change what canvas
+/// position a tile writer computes far out on the canvas, so it is a change with a
+/// golden re-bless attached rather than a cleanup.
 pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
     coord.origin() - Vec2::splat(TILE_APRON as f32)
 }

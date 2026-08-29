@@ -1,11 +1,13 @@
-//! The timeline abstraction (§5, §12).
+//! The timeline (§5, §12).
 //!
-//! `Session`/`Engine` only ever see the [`Timeline`] trait, so the storage
-//! strategy can change without touching them. [`LinearTimeline`] is the
-//! single-user implementation (a thin wrapper over `history::History`);
-//! [`ReplicatedTimeline`] is the multi-peer one — a totally-ordered, grow-only
-//! action log (a replicated-log CRDT) materialized through the very same
-//! `history::History` as a snapshot cache.
+//! [`Timeline`] is an **enum** over the two storage strategies, not a trait: an
+//! operation a shared log must refuse is an arm with the refusal written beside it,
+//! where a trait default would let a new operation come to do nothing in one mode
+//! without anyone deciding it should. [`LinearTimeline`] is the single-user body (a
+//! thin wrapper over `history::History`); [`ReplicatedTimeline`] is the multi-peer
+//! one — a totally-ordered, grow-only action log (a replicated-log CRDT)
+//! materialized through the very same `history::History` as a snapshot cache. Both
+//! are the enum's variant bodies and neither is named by `Engine`.
 
 use std::collections::{HashMap, HashSet};
 
