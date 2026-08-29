@@ -20,5 +20,8 @@
       "Bash(git --no-pager log *)",
       "Bash(git --no-pager grep *)"
     ]
+  },
+  "worktree": {
+    "baseRef": "head"
   }
 }
