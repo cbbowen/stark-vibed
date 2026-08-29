@@ -65,12 +65,6 @@ fn place(engine: &mut Engine) {
     });
 }
 
-/// Whether a pixel reads as green paint — [`red_dominant`]'s counterpart, and needed
-/// here because the swatch's two halves are what say the image did not arrive mirrored.
-fn green_dominant(c: [u8; 4]) -> bool {
-    c[1] as i32 > c[0] as i32 + 30 && c[1] as i32 > c[2] as i32 + 30
-}
-
 /// **The pixels land where they were put, and stay the way round they were.**
 ///
 /// Placement is in whole canvas pixels precisely so nothing is resampled (§23), so this

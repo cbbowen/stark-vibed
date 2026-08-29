@@ -312,7 +312,7 @@ impl Engine {
     /// write to the signal the engine lives in, which would mark it dirty and
     /// re-render every component that reads it.
     ///
-    /// Conservative in the same direction as [`Session::publish_due`]: it may say
+    /// Conservative in the same direction as [`Session::publish_due`](crate::session::Session::publish_due): it may say
     /// yes where the drain then finds nothing, never the reverse.
     pub fn presence_due(&self, now: f64) -> bool {
         self.peers.expiry_due(now) || (self.is_shared() && self.session.publish_due(now))

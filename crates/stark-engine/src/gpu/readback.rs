@@ -42,7 +42,7 @@ fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
 /// reads as a picture skewing progressively sideways. [`begin_read`] returns this and
 /// [`take_rows`] takes nothing else, so the layout that was written and the layout
 /// that is read are the same value and cannot be given different arguments.
-struct Rows {
+pub(super) struct Rows {
     /// A row's real bytes.
     unpadded: u32,
     /// A row's bytes in the staging buffer, rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT`.
@@ -80,7 +80,7 @@ impl Rows {
 /// apiece would be a map per texel of latency. Every texture must carry `COPY_SRC`,
 /// share `size`, and share a format — the slot stride is taken from the first, and a
 /// second texture of a different texel size would be copied at the wrong pitch.
-fn begin_read(
+pub(super) fn begin_read(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
     size: Extent2,
@@ -131,7 +131,7 @@ fn begin_read(
 /// leaving that to a collector is how the tab OOMs. Safe here for the same reason it
 /// is there: the copy that filled it has already been submitted *and* waited on, so
 /// nothing is in flight against it.
-fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
+pub(super) fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
     let data = buffer
         .slice(..)
         .get_mapped_range()
@@ -242,18 +242,29 @@ pub async fn read_rgba8(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
     let (buffer, rows) = begin_read(ctx, &[texture], size);
+    map_blocking(ctx, &buffer);
+    take_rows(buffer, &rows)
+        .pop()
+        .expect("one texture in, one string out")
+}
+
+/// Map `buffer` and block until it is, panicking on either failure.
+///
+/// The native half of [`wait_mapped`] with the async machinery taken off, and
+/// `expect` rather than `Result` for the same reason its caller has: this path is
+/// reached only from tests and goldens, where a device that cannot be read is the
+/// finding and not something to route around.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn map_blocking(ctx: &GpuContext, buffer: &wgpu::Buffer) {
     buffer
         .slice(..)
         .map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
-    take_rows(buffer, &rows)
-        .pop()
-        .expect("one texture in, one string out")
 }
 
-fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
+pub(super) fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
     bytes
         .as_chunks::<2>()
         .0

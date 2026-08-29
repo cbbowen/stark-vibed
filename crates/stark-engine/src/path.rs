@@ -101,7 +101,7 @@ pub const DEFAULT_TOLERANCE: f32 = 1.0;
 ///
 /// Zero (or negative) would make a control point free and every sample worth one.
 /// The ceiling is 64 canvas px per input px — past the most zoomed-out view
-/// [`ViewTransform`](stark_model::geom::ViewTransform) allows — and is what keeps the
+/// [`ViewTransform`](crate::view::ViewTransform) allows — and is what keeps the
 /// window advancing, and so the per-sample work bounded, rather than letting a
 /// stroke never grow a control point at all.
 /// `pub` so the benchmark can name the bound rather than restate it: the tolerance
@@ -275,7 +275,7 @@ const MAX_SUBDIVISION_DEPTH: u32 = 10;
 ///   re-solving under the pointer on every report.
 /// * **The system being solved is a constant size.** It is
 ///   `FREE_CONTROL_POINTS × 2` unknowns however long the stroke is, and only the
-///   samples that can reach those rows take part. `spline::m_step` assembles the
+///   samples that can reach those rows take part. `spline::solve_window` assembles the
 ///   normal equations over that window too, so the *arithmetic* per report does not
 ///   grow with the stroke.
 ///
@@ -849,11 +849,24 @@ impl PathFitter {
         if idx.is_empty() {
             return 0.0;
         }
-        // Scored at exactly the parameters the solve minimizes at. If the two use
-        // different maps the growth rule reads one quantity while the solve improves
-        // another, and it stops firing where the fit is actually poor — measured at
-        // 4-15px on recorded strokes against 0.6-1.6px when they agree. Consistency
-        // between the two matters more than accuracy in either.
+        // The same *rule* as the solve's parameters, off a later curve — and the gap is
+        // real, so it is written down rather than claimed away. `solve` builds its
+        // profile from the polygon as it stands *before* `fit_into` writes back
+        // (`index`, above), where this builds one from the spline that came out. Both
+        // are `arc_profile` over the same settled prefix, so they agree about what a
+        // parameter means and disagree only about which curve it is measured on — a
+        // difference of one solve's movement, which is small precisely where the growth
+        // rule is deciding not to fire.
+        //
+        // What the two must not do is use different *maps*: then the growth rule reads
+        // one quantity while the solve improves another, and it stops firing where the
+        // fit is actually poor — measured at 4-15px on recorded strokes against
+        // 0.6-1.6px when they agree. Consistency matters more than accuracy in either.
+        //
+        // Taking `fit.profile` instead would close the gap outright and drop two of the
+        // four curve walks a report costs. It is not done here because `KNOT_COST` was
+        // tuned against what this does today, so the change is a re-tune and wants a
+        // sitting of its own (`ENGINE_CLEANUP.md`, F3).
         let profile = arc_profile(&spline, &self.settled_profile);
         // Weighted exactly as the solve weights them ([`arc_weights`]), which is the
         // same argument as the paragraph above carried one step further: the two must
@@ -982,7 +995,7 @@ impl PathFitter {
 /// it has, however light. What closes that is holding the attribute endpoint — see
 /// [`PathFitter::solve`].
 ///
-/// Normalized to average one so that the two knobs `m_step` scales by the weight sum —
+/// Normalized to average one so that the two knobs `solve_window` scales by the weight sum —
 /// the smoothing's data pull and the ridge's floor — keep the meanings they were tuned
 /// with. Input with no arc at all comes back all ones, which is the unweighted fit
 /// exactly.
@@ -1447,10 +1460,12 @@ fn point_arc_distance(p: Vec2, start: Vec2, arc: &Arc) -> f32 {
 /// leg that the clamp bends through. Fewer than two control points is not a curve:
 /// one is a click, zero is nothing.
 pub fn span_count(control_points: usize) -> usize {
-    match control_points {
-        0 | 1 => 0,
-        m => m + 1,
-    }
+    // Asked of the knot view rather than restated as `m + 1`. The two agreed, and
+    // `span_form_matches_the_fitted_spline` is what said so — a test comparing two
+    // spellings of one number, which is the shape that only ever *reports* a drift
+    // (§13). `SplineIndex::new` is the same "fewer than two is not a curve" this arm
+    // used to spell for itself.
+    crate::spline::SplineIndex::new(control_points).map_or(0, |ix| ix.num_spans())
 }
 
 /// How many spans `frozen` frozen control points settle, out of a path of `total`.
@@ -1765,10 +1780,21 @@ fn span(knots: &[ControlPoint], k: usize) -> Span {
 }
 
 /// The control point backing index `i` of the conceptual clamped sequence, in which
-/// the first and last each appear `degree` (= 3) times. This is [`crate::spline`]'s knot
-/// view, reproduced here so a stored path can be evaluated without a fitter.
+/// the first and last each appear `degree` (= 3) times.
+///
+/// [`crate::spline`]'s knot view, **asked** rather than reproduced: it was written out
+/// here so a stored path could be evaluated without a fitter, which is a reason to
+/// evaluate without one and not a reason to spell the arithmetic twice. The degree
+/// lives in one place now, so a change to it cannot leave a second copy behind.
+///
+/// # Panics
+///
+/// Fewer than two control points is not a curve, which every caller of this has
+/// already established — [`span_count`] answers 0 there, so no span exists to evaluate.
 fn knot_row(i: usize, m: usize) -> usize {
-    i.saturating_sub(2).min(m - 1)
+    crate::spline::SplineIndex::new(m)
+        .expect("a span implies at least two control points")
+        .knot_row(i)
 }
 
 /// A weighted combination of four control points, applied to every field alike.
@@ -1960,7 +1986,7 @@ mod tests {
     ///
     /// The panic this rules out was real and three subsystems downstream: `arc`
     /// accumulates the step to the bad sample, every curve parameter is derived from
-    /// `arc`, so `m_step`'s normal equations go NaN — and they are then singular at
+    /// `arc`, so `solve_window`'s normal equations go NaN — and they are then singular at
     /// every ridge, which its solve reports with `unreachable!` because for
     /// *admissible* input it genuinely cannot happen.
     ///
@@ -2082,6 +2108,12 @@ mod tests {
                 });
             let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
 
+            // Not a second spelling of the count any more — `span_count` asks
+            // `SplineIndex` — so this line is a tautology kept for one thing it still
+            // says: that `reference`, built from a matrix rather than from `m`, has the
+            // `m` this loop thinks it has. What the loop below checks is the part that
+            // was never arithmetic: that the Bézier conversion evaluates to the same
+            // curve.
             assert_eq!(
                 span_count(m),
                 reference.num_spans(),

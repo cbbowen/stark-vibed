@@ -16,7 +16,6 @@
 mod common;
 
 use common::*;
-use stark_engine::RgbaImage;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
 use stark_model::document::{BrushParams, FillOp, SelectionShape};
@@ -49,24 +48,6 @@ fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32)
             opacity,
         ),
     });
-}
-
-/// A pixel's screen position for a canvas point, under the tests' identity view.
-fn screen_of(canvas: Vec2) -> (u32, u32) {
-    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
-    let p = canvas + half;
-    (p.x as u32, p.y as u32)
-}
-
-fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let (x, y) = screen_of(canvas);
-    let c = img.pixel(x, y);
-    [c[0] as i32, c[1] as i32, c[2] as i32]
-}
-
-/// The worst per-channel distance between two texels.
-fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
 }
 
 /// **The dial is quoted in visible coverage** — the claim the knob exists for

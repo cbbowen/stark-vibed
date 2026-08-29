@@ -488,7 +488,7 @@ pub const CASES: &[Case] = &[
             // with the tolerance. 0.8 before the weights existed, 1.36 measured after.
             //
             // 2.50 measured once `SMOOTHING` went to 0.05, and this bound was raised
-            // to admit it. The ridge is weighted `SMOOTHING × n/m` (`spline::m_step`),
+            // to admit it. The ridge is weighted `SMOOTHING × n/m` (`spline::solve_window`),
             // so the control-point count is *in* the penalty — refitting 4× finer
             // moves m, moves the weight, and moves the curve. That is a second way
             // for this stroke to answer to its tolerance, on top of the windowing

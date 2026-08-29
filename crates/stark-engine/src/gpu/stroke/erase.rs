@@ -40,7 +40,7 @@ use crate::gpu::tile::TileMap;
 use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
 };
-use super::incremental::Carried;
+use super::incremental::{Carried, Resume};
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
@@ -166,7 +166,7 @@ impl StrokeRenderer {
         scene: StrokeScene<'_>,
         rec: &StrokeRecord,
         spans: StrokeSpans,
-        tool: Option<&ToolState>,
+        resume: Resume<'_>,
         tol: crate::path::FlattenTolerance,
     ) -> (TileMap, StrokeCarry) {
         crate::timing::span!("stroke.erase");
@@ -227,7 +227,7 @@ impl StrokeRenderer {
             scope,
             &[accum_key()],
             BareCanvas::Skip,
-            tool.map(ToolState::erased),
+            resume.prior.map(ToolState::erased),
         )
         .run(
             &Sweep {
@@ -267,7 +267,7 @@ impl StrokeRenderer {
             map,
             StrokeCarry {
                 dist: end_dist,
-                tool: Some(ToolState(Carried::Erase(carry))),
+                tool: resume.capture.then(|| ToolState(Carried::Erase(carry))),
                 dirty,
             },
         )

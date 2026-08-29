@@ -27,23 +27,6 @@ use stark_model::geom::Vec2;
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
-/// A pixel's screen position for a canvas point, under the tests' identity view.
-fn screen_of(canvas: Vec2) -> (u32, u32) {
-    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
-    let p = canvas + half;
-    (p.x as u32, p.y as u32)
-}
-
-fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let (x, y) = screen_of(canvas);
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.pixels[i] as i32,
-        img.pixels[i + 1] as i32,
-        img.pixels[i + 2] as i32,
-    ]
-}
-
 /// Whether the pixel at a canvas point reads as red paint rather than bare paper.
 /// Whether two texels show the same paint. "The same" is within one code per
 /// channel: the display encode dithers each pixel's rounding independently
@@ -54,13 +37,11 @@ fn same_paint(a: [i32; 3], b: [i32; 3]) -> bool {
 }
 
 fn is_red(img: &RgbaImage, canvas: Vec2) -> bool {
-    let [r, g, b] = texel(img, canvas);
-    r - g > 40 && r - b > 40
+    painted(img, canvas)
 }
 
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
-    let [r, g, b] = texel(img, canvas);
-    g - r > 40 && g - b > 40
+    leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
 }
 
 fn select_rect(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2, feather: f32) {
@@ -630,8 +611,7 @@ fn red_blue() -> Gradient {
 }
 
 fn is_blue(img: &RgbaImage, canvas: Vec2) -> bool {
-    let [r, g, b] = texel(img, canvas);
-    b - r > 40 && b - g > 40
+    leads(texel(img, canvas), Lead::Blue, MARGIN_FLAT)
 }
 
 /// Commit a gradient fill of the rect `min..max`, through the direct command path.

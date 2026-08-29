@@ -19,7 +19,6 @@
 use rpds::HashTrieMap;
 use stark_model::document::SelectionMode;
 use std::sync::{Arc, OnceLock};
-use wgpu::util::DeviceExt;
 
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
@@ -88,7 +87,7 @@ const RASTERIZE_SLOTS: &[Slot] = &[
 /// sits, and one mask tile drawn into it.
 const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
 const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
-use crate::gpu::scratch::ScratchPool;
+use crate::gpu::scratch::{BufKey, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -124,11 +123,15 @@ pub struct SelectionRenderer {
     constants: Arc<[OnceLock<wgpu::TextureView>; 256]>,
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
-    /// The scratch every recording here opens its scope on — **the one the stroke
-    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
-    /// named, and a shared pool is what makes those releases feed each other: a
-    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
-    /// warm set serves both.
+    /// The scratch this renderer opens its scope on — **the one the stroke path uses
+    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
+    /// the two paths draw from one free list.
+    ///
+    /// Today it is used for the scope alone. This renderer's own working textures
+    /// still come from `TilePool` through `Channels::scratch`, so its lease lists stay
+    /// empty and nothing is yet shared but the type — what the pool buys here is the
+    /// submit-then-release ordering the scope enforces, which is the half that was
+    /// duplicated (§7).
     scratch: ScratchPool,
 }
 
@@ -403,9 +406,9 @@ impl SelectionRenderer {
     /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
     /// already carries the mask's opacity (`Stamp::opacity`), and a mask that
     /// carried it too would gate the plane at its square.
-    pub fn region_mask(
+    pub(crate) fn region_mask(
         &self,
-        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut SubmitScope,
         into: &wgpu::TextureView,
         selection: &Selection,
         tiles: &[TileCoord],
@@ -414,13 +417,20 @@ impl SelectionRenderer {
         let (region_origin, size) = region;
         let (w, h) = (size.width, size.height);
         let device = &self.ctx.device;
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark selection region uniform"),
-            contents: bytemuck::bytes_of(&RegionUniform {
-                a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
-            }),
-            usage: wgpu::BufferUsages::UNIFORM,
+        // Leased for the same reason the target above it is: a live stroke re-gathers
+        // this per piece per pointer move, and these two were the last things on the
+        // path still created and thrown away every time.
+        let u = RegionUniform {
+            a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
+        };
+        let ubuf = scope.take_piece_buffer(BufKey {
+            size: std::mem::size_of_val(&u) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label: "stark selection region uniform",
         });
+        self.ctx
+            .queue
+            .write_buffer(&ubuf, 0, bytemuck::bytes_of(&u));
         let view_bg = desc::bind_group_for(
             device,
             "stark selection region view bg",
@@ -450,22 +460,27 @@ impl SelectionRenderer {
             ));
         }
         let instances = (!origins.is_empty()).then(|| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("stark selection region instances"),
-                contents: bytemuck::cast_slice(&origins),
-                usage: wgpu::BufferUsages::VERTEX,
-            })
+            let bytes: &[u8] = bytemuck::cast_slice(&origins);
+            let buf = scope.take_piece_buffer(BufKey {
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                label: "stark selection region instances",
+            });
+            self.ctx.queue.write_buffer(&buf, 0, bytes);
+            buf
         });
 
         {
             // Everything the selection has no tile for takes the constant coverage
             // that reigns there.
             let outside = outside_clear(selection);
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark selection region gather"),
-                color_attachments: &[Some(desc::attach(into, outside))],
-                ..Default::default()
-            });
+            let mut pass = scope
+                .encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("stark selection region gather"),
+                    color_attachments: &[Some(desc::attach(into, outside))],
+                    ..Default::default()
+                });
             if let Some(inst) = &instances {
                 pass.set_pipeline(&self.region_pipeline);
                 pass.set_bind_group(0, &view_bg, &[]);

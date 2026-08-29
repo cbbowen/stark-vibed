@@ -475,6 +475,21 @@ assert_golden!("oil_blend_01", png, tolerance);
   those details.
 - **When a model is wrong, fix the model and re-bless.** No compensating fudge
   constants to keep an old golden green.
+- **A tile can be read, and not everything should be read through a render.** Most
+  of this suite asserts on pixels, which is right: pixels are what a painter sees.
+  But §6.1's law is about *height*, and height only reaches a pixel while the paint
+  is short of opaque — so a conservation claim measured as image darkness goes
+  quiet exactly where impasto makes it interesting, and cannot tell "height was not
+  conserved" from "the light changed". `Engine::tile_channels` answers with the
+  tile's own channels: four lanes of color whose fourth is the per-unit **opacity**,
+  one lane of **height**, and the residual where the space has one (§6.7).
+
+  The reader lives in `gpu/tile.rs` rather than in `gpu/readback.rs` or in the test
+  harness, and that placement is the design. `readback` reads `wgpu::Texture`s;
+  a tile does not hand one out, because `Texture::destroy` takes `&self`, so a
+  borrow is enough to leave the pool's free list holding a view onto nothing. The
+  texture never leaves `tile.rs`; what leaves is the decoded texels, and `readback`
+  keeps the row-padding arithmetic, which is the half that is genuinely its.
 - **The runner is `cargo nextest run`, and the GPU is a test group.** nextest
   gives every test its own process, so `tests/common`'s shared device — a
   `OnceLock`, one per binary under `cargo test` — becomes one per *test*: ~340 ms

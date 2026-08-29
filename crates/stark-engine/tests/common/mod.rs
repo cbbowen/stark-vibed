@@ -19,8 +19,9 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
+use stark_model::document::LayerId;
 use stark_model::document::{BrushParams, BrushShape};
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::{Extent2, TILE_APRON, TILE_SIZE, TILE_TEX, Vec2};
 
 pub const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -278,20 +279,162 @@ pub fn whole_render(engine: &mut Engine) -> RgbaImage {
 /// commit against a replay.
 pub const SEAM_LEVELS: u8 = 4;
 
+/// The total **height** on `layer` — the channel §6.1 says is conserved, summed off
+/// the tiles themselves rather than inferred from how dark the render came out.
+///
+/// **Interiors only.** Every tile's apron is a bit-identical copy of its neighbour's
+/// edge (§6.4), so summing whole blocks counts the seams twice — which is invisible on
+/// a one-tile stroke and grows with the tile count, exactly the way a conservation
+/// drift would.
+///
+/// The committed document, so a caller mid-gesture is asking about the state before
+/// the live tail.
+pub fn total_height(engine: &Engine, layer: LayerId) -> f64 {
+    let Some(coords) = engine
+        .document()
+        .layer(layer)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect::<Vec<_>>())
+    else {
+        return 0.0;
+    };
+    let lo = TILE_APRON as usize;
+    let hi = lo + TILE_SIZE as usize;
+    coords
+        .iter()
+        .filter_map(|c| engine.tile_channels(layer, *c))
+        .map(|ch| {
+            (lo..hi)
+                .flat_map(|y| (lo..hi).map(move |x| y * TILE_TEX as usize + x))
+                .map(|i| ch.height[i] as f64)
+                .sum::<f64>()
+        })
+        .sum()
+}
+
+/// The **height** and per-unit **opacity** at one canvas point on `layer` — §6.1's two
+/// channels, read off the tile rather than inferred from the pixel they produced.
+///
+/// `None` where the layer holds no tile there, which *is* the answer for bare canvas:
+/// a tile that was never minted is not a tile of zeroes.
+///
+/// The interior, never the apron: a point maps to exactly one tile's interior texel,
+/// and the copy of it in a neighbour's apron is the same value by §6.4 — so taking the
+/// interior is a choice about which of two identical readings to name, and naming the
+/// owner is the one that stays right if the seam rule ever breaks.
+pub fn paint_at(engine: &Engine, layer: LayerId, canvas: Vec2) -> Option<(f32, f32)> {
+    let tile = |v: f32| (v / TILE_SIZE as f32).floor() as i32;
+    let coord = stark_model::geom::TileCoord::new(tile(canvas.x), tile(canvas.y));
+    let local = canvas - coord.origin();
+    let (x, y) = (
+        local.x as usize + TILE_APRON as usize,
+        local.y as usize + TILE_APRON as usize,
+    );
+    let ch = engine.tile_channels(layer, coord)?;
+    let i = y * TILE_TEX as usize + x;
+    Some((ch.height[i], ch.color[i * 4 + 3]))
+}
+
 /// The centre pixel — where the suites' standard stroke crosses.
 pub fn center(img: &RgbaImage) -> [u8; 4] {
     img.pixel(img.width / 2, img.height / 2)
 }
 
-/// Whether a pixel reads as (red) paint rather than bare canvas: the red channel
-/// clear of both others by a margin no substrate or light in the suite produces
-/// (see [`PAPER`] and the `Neutral` reference light in [`engine_or_skip`]).
+/// Where canvas point `canvas` lands on a [`SIZE`] screen, at the default 1:1 view
+/// centred on the origin.
+pub fn screen_of(canvas: Vec2) -> (u32, u32) {
+    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
+    let p = canvas + half;
+    (p.x as u32, p.y as u32)
+}
+
+/// The RGB at canvas point `canvas`, as signed channels a difference can be taken in.
+pub fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
+    let (x, y) = screen_of(canvas);
+    rgb(img.pixel(x, y))
+}
+
+/// A pixel's three color channels, signed — what [`leads`] and [`apart`] both compare.
+pub fn rgb(c: [u8; 4]) -> [i32; 3] {
+    [c[0] as i32, c[1] as i32, c[2] as i32]
+}
+
+/// The worst per-channel distance between two texels.
+pub fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
+}
+
+/// Which channel a probe is asking about.
 ///
-/// One copy with one margin, shared by every suite that asks "is there paint
-/// here?" — so a render change that shifts channel separation moves every test the
-/// same distance instead of being patched file by file.
+/// An enum rather than an index because half the files that probe also declare a
+/// brush color named `RED`, and the two would collide on import.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lead {
+    Red,
+    Green,
+    Blue,
+}
+
+/// Whether channel `lead` of `c` exceeds **both** the others by at least `margin`.
+///
+/// **The one predicate under every "is there paint here?" in the suite.** It was
+/// written out twelve times across nine test files, under four names — `is_red`,
+/// `is_painted`, `red_dominant`, and the same three for the other channels — varying
+/// along two axes the copies did not separate: which channel leads, and by how much.
+/// The margins that resulted — 30, 40 and 60 — were not a considered range but the
+/// order the files were written in, and no copy said which number was a threshold and
+/// which was a leftover.
+///
+/// The margin stays a parameter, because it is not a formatting detail: about half
+/// the call sites read `!`, so raising it weakens an assertion in one file and
+/// strengthens it in the next. [`MARGIN`], [`MARGIN_FLAT`] and [`MARGIN_LIT`] are the
+/// three the suite distinguishes; a file wanting a fourth should say why in a `const`
+/// of its own rather than in a literal.
+///
+/// A *margin* rather than a level, because the canvas is not black: what separates
+/// paint from paper is the hue, and a level would need re-tuning for every substrate
+/// the suite paints on.
+pub fn leads(c: [i32; 3], lead: Lead, margin: i32) -> bool {
+    let i = lead as usize;
+    (0..3).all(|k| k == i || c[i] > c[k] + margin)
+}
+
+/// The separation the compositor guarantees between the suite's paint and its paper.
+pub const MARGIN: i32 = 30;
+
+/// The separation asked for by the files that probe **flat** paint at a point.
+///
+/// Above [`MARGIN`] not because those renders are noisier but because their negative
+/// assertions are the load-bearing ones: a fill test's job is largely to show paint
+/// did *not* reach somewhere, and a gradient's far stop is a blend of two of these
+/// colors that has to fail the test for the other one.
+pub const MARGIN_FLAT: i32 = 40;
+
+/// The separation needed where **lit bare paper reads warm on its own**.
+///
+/// The media/lighting pass (§6.5) tints the substrate towards the light, which is
+/// enough to carry unpainted paper past [`MARGIN`] on red — `dynamics.rs` asserts
+/// exactly that as its own precondition. It is a property of the render, not of the
+/// tests, so the numbers are both right and the suite needs both.
+pub const MARGIN_LIT: i32 = 60;
+
+/// Whether a pixel reads as the suite's red paint rather than as canvas, at [`MARGIN`].
+///
+/// One copy with one margin, shared by every suite that asks "is there paint here?" —
+/// so a render change that shifts channel separation moves every test the same
+/// distance instead of being patched file by file.
 pub fn red_dominant(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 30 && c[0] as i32 > c[2] as i32 + 30
+    leads(rgb(c), Lead::Red, MARGIN)
+}
+
+/// [`red_dominant`] for the other color the suite paints in.
+pub fn green_dominant(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Green, MARGIN)
+}
+
+/// [`red_dominant`] asked of a **canvas point** on a [`SIZE`] render, at [`MARGIN_FLAT`].
+pub fn painted(img: &RgbaImage, canvas: Vec2) -> bool {
+    leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
 
 /// The fraction of pixels that differ **at all**, and the worst per-channel

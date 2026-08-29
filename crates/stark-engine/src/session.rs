@@ -422,7 +422,7 @@ impl Session {
 
     /// Set the display name the user chose. **Sticky**: hosting or joining a session
     /// mints this client a new actor id, and
-    /// [`adopt_default_name`](Self::adopt_default_name) will not overwrite a name set
+    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
     /// here. Setting it empty gives the choice back, and peers resume showing the
     /// id-derived default.
     pub fn set_name(&mut self, name: String) {
@@ -782,7 +782,7 @@ impl Session {
     /// rest of the gesture.
     ///
     /// [`PathFitter::push`]: crate::path::PathFitter::push
-    /// [`Assist::steer`]: crate::assist::Assist::steer
+    /// [`Assist::steer`]: crate::assist::AssistShape::adjust
     pub fn stroke_to(&mut self, sample: InputSample) {
         if !sample.is_admissible() {
             return;

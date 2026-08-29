@@ -54,10 +54,10 @@ fn paint_stroke(engine: &mut Engine) {
 // warm tint alone can push a neutral substrate to ~33 levels of false dominance.
 // Tests below self-check this.
 fn is_red(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
+    leads(rgb(c), Lead::Red, MARGIN_LIT)
 }
 fn is_blue(c: [u8; 4]) -> bool {
-    c[2] as i32 > c[0] as i32 + 60 && c[2] as i32 > c[1] as i32 + 60
+    leads(rgb(c), Lead::Blue, MARGIN_LIT)
 }
 // Every test that reads the live preview's *color* — either directly, or by holding
 // it against what commits — is gated off under `debug-unfrozen`, which repaints the

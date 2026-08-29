@@ -34,6 +34,42 @@ use crate::gpu::scratch::Kept;
 /// own submit (see [`Kept`]).
 pub(crate) struct ToolState(pub(super) Carried);
 
+/// The two halves of resuming a stroke across ranges: what the range before this one
+/// left, and whether a range after it will want what this one leaves.
+///
+/// One value because they are one question asked from both ends, and because the
+/// second half was being derived three times — once in each path that has cross-piece
+/// state — from `spans` and `rec`, which every path had for its own reasons. Two of
+/// the three then ignored the answer and captured unconditionally, which is the kind
+/// of drift a shared derivation does not have.
+#[derive(Clone, Copy)]
+pub(super) struct Resume<'a> {
+    /// What the previous range left, if this is not the first.
+    pub(super) prior: Option<&'a ToolState>,
+    /// Whether a later range will resume this stroke.
+    ///
+    /// **False is the common case**, and that is the point: the live tail is exactly
+    /// the range that reaches the end of the stroke, and it re-renders on every
+    /// pointer move. Capturing there builds state with no reader and holds the
+    /// parcel's working lanes — or the loop's reservoir — out of the pool for the
+    /// length of the fold that discards them.
+    pub(super) capture: bool,
+}
+
+impl<'a> Resume<'a> {
+    /// Read off the range in hand against the whole path.
+    pub(super) fn of(
+        rec: &stark_model::document::StrokeRecord,
+        spans: &super::StrokeSpans,
+        prior: Option<&'a ToolState>,
+    ) -> Self {
+        Self {
+            prior,
+            capture: spans.range.end < crate::path::span_count(rec.path.len()),
+        }
+    }
+}
+
 /// The kinds of cross-piece stroke state, one per path that has any — the
 /// swept deposit at full opacity carries nothing at all.
 pub(super) enum Carried {

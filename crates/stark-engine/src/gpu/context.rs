@@ -300,19 +300,9 @@ mod tests {
     use super::*;
 
     /// A context, or `None` where the machine has no adapter *and*
-    /// `STARK_ALLOW_NO_GPU=1` permits the skip — `gpu::submit`'s guard, for the same
-    /// reason: a skipped GPU test still reports `ok`.
+    /// [`ALLOW_NO_GPU`](crate::testing::ALLOW_NO_GPU) permits the skip.
     fn context_or_skip() -> Option<GpuContext> {
-        match pollster::block_on(GpuContext::headless()) {
-            Ok(ctx) => Some(ctx),
-            Err(e) if std::env::var("STARK_ALLOW_NO_GPU").is_ok_and(|v| v == "1") => {
-                eprintln!("skipping GPU test (STARK_ALLOW_NO_GPU=1): {e}");
-                None
-            }
-            Err(e) => {
-                panic!("no usable GPU adapter: {e}\nset STARK_ALLOW_NO_GPU=1 to skip GPU tests")
-            }
-        }
+        crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
     }
 
     /// **A GPU error reaches the health cell instead of the default panic.**

@@ -219,8 +219,8 @@ impl FillOp {
 /// [`fill_rect`](super::footprint::fill_rect) turns it into the tiles the action
 /// declares, and those must be the same tiles: a footprint naming fewer than the
 /// plan writes is the §12.6 under-claim, which diverges peers through the
-/// commutation gate and — because `patch::paint_rect` deliberately bounds the undo
-/// diff by the very rect the action declared — leaves behind on undo exactly the
+/// commutation gate and — because `stark-engine`'s `document::patch::tile_diff`
+/// deliberately bounds the undo diff by the very rect the action declared — leaves behind on undo exactly the
 /// tiles it failed to name.
 ///
 /// They were two boxes until they weren't. `plan` padded by the apron (through

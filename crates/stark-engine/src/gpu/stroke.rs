@@ -250,6 +250,10 @@ impl StrokeRenderer {
             );
         };
         let plan = dynamics_setup(&rec.brush);
+        // Both halves of "is this range resuming, and will it be resumed" — read once
+        // here, where `spans` and the record are both in hand, rather than in each of
+        // the three paths that has cross-piece state (`Resume`).
+        let resume = incremental::Resume::of(rec, &spans, tool);
         match plan.path {
             StrokePath::Loop => {
                 // The fit was bought with shorter segments (`budget::fit_len`) —
@@ -269,10 +273,10 @@ impl StrokeRenderer {
                         s.wanted / s.got,
                     );
                 }
-                self.render_dynamic(scene, rec, spans, tool, plan.tol)
+                self.render_dynamic(scene, rec, spans, resume, plan.tol)
             }
-            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, tool),
-            StrokePath::Erase => self.render_erase(scene, rec, spans, tool, plan.tol),
+            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, resume),
+            StrokePath::Erase => self.render_erase(scene, rec, spans, resume, plan.tol),
             StrokePath::TipTooLarge => {
                 // An error, not a warning: what lands is not a rougher version of the
                 // stroke that was asked for but a different brush — the swept deposit
@@ -301,7 +305,7 @@ impl StrokeRenderer {
                          nothing",
                     );
                 }
-                self.render_swept(scene, rec, spans, plan.tol, tool)
+                self.render_swept(scene, rec, spans, plan.tol, resume)
             }
         }
     }

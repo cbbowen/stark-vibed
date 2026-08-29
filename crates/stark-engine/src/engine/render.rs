@@ -407,6 +407,35 @@ impl Engine {
     /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so
     /// this shape cannot work on the web (see `gpu::readback`). The frontend uses
     /// [`export`](Self::export), which awaits the map.
+    /// One committed tile's channels, straight off the GPU — **height and alpha
+    /// without the lit composite in between** (§6.1).
+    ///
+    /// `None` if that layer has no paint tile at that coordinate, which includes every
+    /// layer that is not paint at all. Reads the *committed* document, so a caller
+    /// mid-gesture is asking about the state before the live tail.
+    ///
+    /// **`pub` for the suite and nothing else.** Every conservation, opacity and erase
+    /// claim in the suite was a proxy through tonemapping before this: the assertions
+    /// read image darkness and said so in a comment, because there was no way to ask a
+    /// tile what it held. A proxy through the media pass, the blend and the tonemap
+    /// cannot separate "height was not conserved" from "the light changed", and §6.1 is
+    /// a claim about the first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub fn tile_channels(
+        &self,
+        layer: stark_model::document::LayerId,
+        coord: stark_model::geom::TileCoord,
+    ) -> Option<crate::gpu::TileChannels> {
+        Some(
+            self.document()
+                .layer(layer)?
+                .tiles()?
+                .get(&coord)?
+                .read_channels(&self.shared.gpu),
+        )
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     /// **`pub` for the suite and nothing else** — an integration test is a separate
     /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the

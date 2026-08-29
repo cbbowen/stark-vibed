@@ -79,6 +79,42 @@ because they are what the findings were *for*:
   *uploading* per patch before one submit is the same defect the view uniform had.
   A pick prepares once and records many times; the hit test, whose candidates each
   have their own draw list, submits per candidate and says why.
+- **The ring was leased for the wrong lifetime**, found by the review of
+  [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need)'s own merge. Merging the
+  two scope types made one method — `tile_done`, and the `flush` behind it — reachable
+  from a loop that had never had it, and the swept path's ring, instance buffer,
+  transform slots and opacity ceiling were all on the **piece** tier while their real
+  lifetime is the whole call. Nothing was wrong today; what was wrong is that its
+  being right depended on `render_swept` never flushing, which no type says and every
+  other tile-writing loop in the crate already does. The failure mode is not wrong
+  pixels but a dangling view — `ScratchPool::trim` destroys what is on the free list —
+  so this is exactly the class the pooling work exists to rule out rather than to
+  survive. A run tier for buffers, and the four moved onto it. Recorded here because
+  the lesson generalizes: **merging two types merges their reachable methods**, and an
+  invariant that held by one caller's omission is not an invariant.
+- **132 broken links in the generated shader mirror**, found by running `cargo doc`
+  for the first time in this pass. `stark-shaders/build.rs` emitted `[`binding::X`]`
+  from inside `decl`, where `binding` is a *sibling* module — so every one of the 132
+  declared bindings carried a link that resolved from nowhere. CI runs fmt, clippy,
+  the suite and the wasm build; none of them look at a doc link, and a generated doc
+  is the one kind nobody reads in the source. Fixed at the generator (one `super::`).
+  A further seven in `stark-engine` were ordinary rot — four naming items that had
+  been renamed or never existed (`adopt_default_name`, `Assist::steer`,
+  `BrushParams::tooth_softness`), two naming the wrong crate, one naming a type across
+  a dependency edge that points the other way. `stark-ui` still has ~50, untouched:
+  they are that crate's, and this ledger is not.
+- **Two notions of "is there paint here", and it was twelve copies, not four.** The
+  [Y](#y-suite-infrastructure) row said `is_red` ×4 at margin 60 against
+  `common::red_dominant` at 30. Counting properly: **twelve** copies across nine test
+  files under four names — `is_red`, `is_painted`, `red_dominant` and the green and
+  blue of each — at **three** margins, 30, 40 and 60, and nothing in any copy said
+  which number was a threshold and which was a leftover. The margin could not simply
+  be unified, because about half the call sites read `!`: raising it weakens an
+  assertion in one file and strengthens it in the next. One `leads(c, lead, margin)`
+  with the three margins named for what distinguishes them — the middle one is where
+  the *negative* assertions carry the test, the high one is where lit paper reads warm
+  enough to pass the default on red, which `dynamics.rs` asserts as its own
+  precondition. Every margin is byte-identical to the one it replaced.
 - **Master was red on three counts before any of this**: two clippy warnings under
   `-D warnings` and a `rustfmt` diff, from commits after the ledger was written.
 - **What the golden hatch was hiding**, measured rather than guessed: six goldens
@@ -148,22 +184,23 @@ present.
 | [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | `719a78f` |
 | [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp) | `plan::Slot` is a hand-maintained twin of the generated `Stamp` | maintainability | |
 | [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
-| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | |
+| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `HEAD` |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05` (module splits open) |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
-| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | `2efbf05` (height readback open) |
-| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | `2efbf05` (helpers, proptests open) |
+| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | `2efbf05`, `HEAD` |
+| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | `2efbf05`, `HEAD` (proptests open) |
 
 ## What is left open on purpose
 
 - **The nightly toolchain** ([T](#t-files-and-apis-that-carry-more-than-they-should)):
   the fix is upstream in `history`, not here.
-- **F3** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
+- **F3's re-tune** ([F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)):
   `mean_error`'s map cannot be changed without re-tuning `KNOT_COST`, so it wants a
-  sitting rather than a patch. **F1 is dropped** — see there.
+  sitting rather than a patch. Its *comment* — the disagreement the finding is named
+  for — is closed. **F1 is dropped** — see there.
 - **The eyedropper's `(N·size)` strip** ([I](#i-the-eyedropper-submits-once-per-sample-point)):
   the submits are gone without it, and what the strip saves beyond that is texture
   *count* at the cost of folding the readback's per-texture results into sub-rects.
@@ -506,6 +543,15 @@ the `ts` of the *pre-solve* profile (line 739) while `mean_error` recomputes
 re-tune. Either fix the comment or use `fit.profile` — which also drops two of the
 four curve walks per pointer report.
 
+**The comment half is closed in the batch below**, which is the half this finding is
+titled after. Confirmed at the source: `solve` builds its profile from the polygon as
+it stands *before* `fit_into` writes back, `mean_error` builds one from the spline that
+came out, and the comment claimed they were the same parameters. They are the same
+`arc_profile` rule over the same settled prefix on two curves one solve apart — which
+is a smaller gap than "different maps" and still not what was written. The comment now
+says which curve each is measured on, what the two must not differ in, and that
+`fit.profile` closes it at the price of a re-tune. The re-tune stays open.
+
 ### Smaller correctness notes — **all six closed in `b323e97`**
 
 Each turned out to be a check standing in the wrong place, and each moved rather than
@@ -705,10 +751,10 @@ into the save format's own types.
 |---|---|---|
 | ~~`document/patch.rs:340`~~ | *Closed in `078c4ba`.* `tile_diff` walks the whole layer's tile map per `inverse` per cached state; undoing a stroke over a 5,000-tile layer costs tens of thousands of lookups per cached state to find a handful of tiles. | Iterate `rect.coords()` when bounded; fall back to the walk for `TileRect::ALL`. |
 | `engine/collab.rs:68` | `start_collaboration` re-renders the whole document from empty (`ReplicatedTimeline::from_log`); `end_collaboration` adopts for free (`unshare`). The rewrite changes ids, not order; what blocks adoption is that `History` cannot re-key its `Logged` footprints. | `History::map_actions` + `ReplicatedTimeline::from_history`, the counterpart of `unshare`. |
-| `gpu/registry.rs:86, 168` | Substrate builds (PNG decode, two Gaussian passes, a 16-direction histogram) and environment builds (HDR decode + CPU mip chain) run under the registry mutex; sibling engines block in `current()`. **Half closed in `b323e97`**: the decode is now paid once at registration and kept (`Resource::Decoded`), so the *per-scale* rebuild no longer re-decodes — the substrate row below was the same fact from the other end. The bakes still run under the lock. | Check under the lock, build outside, insert under the lock — the pool's own pattern. |
+| `gpu/registry.rs:86, 168` | Substrate builds (PNG decode, two Gaussian passes, a 16-direction histogram) and environment builds (HDR decode + CPU mip chain) run under the registry mutex; sibling engines block in `current()`. **Half closed in `b323e97`**: the decode is now paid once at registration and kept (`Resource::Decoded`), so the *per-scale* rebuild no longer re-decodes — the substrate row below was the same fact from the other end. The bakes still run under the lock. | Check under the lock, build outside, insert under the lock — **plus a generation on `Store::bytes`**, which the row did not say and which is the whole of why this is design rather than substitution. `register` inserts bytes, `retain`-drops every build of them and rebuilds, all under one lock, and that atomicity is load-bearing: a bake moved outside can finish *after* a newer `register` for the same content and cache an object built from superseded bytes — and a substrate is what a replayed stroke deposits against (§6.4), so that is wrong pixels and not a wasted build. The build also has to stop borrowing out of the map, so `Entry` becomes an `Arc` the checker clones out. Reachable only between *sibling* engines sharing one store, which is why nothing has hit it. |
 | ~~`assets.rs:147`~~ | *Closed in `b323e97`.* The pen-orientation bake allocates two 64 MiB buffers and runs 16 M `ln` calls inside the store lock on the first pen-oriented stroke. No `asset.*` timing row exists (verified), so the Timing Stats table cannot see it. Cost estimated, not measured. | Add `timing::span!("asset.pen_bake")` first; then a τ LUT for the u8 follow layer, per-layer baking, or bake at import. |
 | `session.rs:601, 885` | `as_finished()` — a full extra solve — runs twice per frame from the same fitter state (`gesture_source` and `gesture_view` both reach `fitted`). | Memoize in the fitter, invalidated by `push`/`finish`. |
-| `path.rs:477-545` | Per pointer report: two `solve`s and two `mean_error`s, ~25 heap allocations and four curve walks, times up to ~30 tow emissions per report; `grown` is fully built and dropped whenever `as_is` wins; `basis_matrix()` recomputed per `m_step`. *Reported.* | Persistent candidate buffers solved into in place; scratch `Vec`s; `basis_matrix` as a `const`. |
+| `path.rs:477-545` | Per pointer report: two `solve`s and two `mean_error`s, ~25 heap allocations and four curve walks, times up to ~30 tow emissions per report; `grown` is fully built and dropped whenever `as_is` wins; `basis_matrix()` recomputed per `solve_window`. *Reported.* | Persistent candidate buffers solved into in place; scratch `Vec`s; `basis_matrix` as a `const`. |
 | `session.rs:87` → `assist.rs:671` | Steering an ellipse solves a dense 101×101 Cholesky (bandwidth 4) twice per pointer move. *Reported.* | A banded solve, or first a `timing::span!("assist.steer")` to see if it matters. |
 | ~~`document/apply.rs:253`~~ | *Closed in `078c4ba`.* A neutral-filter merge returns `lower` unchanged but still goes through `with_tiles`, minting a fresh `PaintTiles::revision` for identical tiles — every thumbnail keyed on it re-renders. Same for a `Stack` merge whose `rewritten` set is empty. | Return the layer untouched when nothing was rewritten. |
 | ~~`gpu/tile.rs:751`~~ | *Closed in `b323e97`.* `format_pools: HashMap<TextureFormat, _>` hashed on the hottest path in the crate (~4 acquires per tile per pointer move). | A fixed array indexed by a channel enum. |
@@ -924,6 +970,25 @@ cadence, so the ordering rule lives once. Then `Key` gains a `Buffer` variant an
 the buffers of [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it)
 lease through the same pool.
 
+**Done in `d8c0691`, `5104e9e` and the batch below.** All of it: the ring leases,
+`TileScope` is gone, `Key` grew a buffer half, and the two `encoder()`s agree. Review
+of the merge then found the ring was leased on the **piece** tier — correct only for
+as long as `render_swept` never flushed, which is a property no type stated and every
+other tile-writing loop in the crate already violates. `SubmitScope` gained a run tier
+for buffers (`take_run_buffer`) and the four run-lifetime resources — the ring, the
+sweep instances, the per-tile transform slots and the opacity ceiling — moved onto it,
+so the loop is now flushable by construction rather than by nobody having tried.
+Also from that review: `flush` reset its tile tally *below* the early return, so a run
+of tiles that recorded nothing would make the next real tile submit on its own;
+`finish` submitted unconditionally against a doc claiming it did not, costing an empty
+command buffer — a wasm boundary crossing — on every lopsided merge and empty-plan
+transform; and `region_mask`'s last two `create_buffer_init` calls now lease like the
+target above them. The `StrokeCarry::tool` asymmetry named above is closed with them. Closing it turned up
+that all three stroke paths derived "will a later range resume this" for themselves and
+two of the three then ignored the answer, so the two halves of resuming — what the
+previous range left and whether the next one wants what this one leaves — are one
+`Resume` value read once in `render_range`.
+
 ## S. Four copies of the paint-edit gate, and uneven minted-layer claims
 
 `document/apply.rs`: `CommitStroke` (359), `Fill` (568), `transform_apply` (184)
@@ -951,8 +1016,10 @@ half-open interval; `RgbaImage::new`'s `u32` overflow; `timing`'s frozen-clock c
 and the public API's test hooks, which are `#[doc(hidden)]` beside a `testing` module
 that holds the harness's own shared piece.
 
-**Open:** the module splits (`path.rs`, `assist.rs`), `spline.rs`'s `m_step` naming,
-and the nightly toolchain, whose fix is upstream.
+**Open:** the module splits (`path.rs`, `assist.rs`) and the nightly toolchain, whose
+fix is upstream. `spline.rs`'s naming is closed in the batch below: `m_step` is
+`solve_window`, and `prior` is `control` with a doc for both halves — the rows it
+arrives holding are the ridge's target, the window it leaves holding is the solution.
 
 - **Public API inflated by test hooks.** 377 `pub fn`. `flush_live`,
   `live_head_count`, `strokes_reused`, `preview_epoch`, `timeline_stats`,
@@ -966,15 +1033,17 @@ and the nightly toolchain, whose fix is upstream.
   and ~900 lines of tests; **`assist.rs`** (1,891) is recognition, adjustment,
   realization and the pen profile, and its own header names "three separable
   pieces". `path/{fit,arc,flatten}.rs`, `assist/{recognize,shape,realize}.rs`.
-  `path.rs` also duplicates `SplineIndex`'s knot arithmetic (`span_count`,
-  `knot_row`, `span`), pinned only by `span_form_matches_the_fitted_spline`.
+  ~~`path.rs` also duplicates `SplineIndex`'s knot arithmetic (`span_count`,
+  `knot_row`, `span`), pinned only by `span_form_matches_the_fitted_spline`.~~ —
+  *closed in the batch below.* `span_count` and `knot_row` ask `SplineIndex` now, so
+  the degree lives in one place and the test that compared two spellings of one
+  number has nothing left to compare; what it still checks — that the Bézier
+  conversion evaluates to the same curve — was never arithmetic.
 - **Stringly errors.** `EngineError::Export(String)` conflates "the request makes no
   sense" (`render.rs:468-612`) with "the PNG encoder failed" (`image.rs:77, 80`);
   `Io` has no producer in `src/`; `DocError::Asset(String)` is the same shape.
   `Export(ExportError)` with `TooSmall`, `OverLimit { size, limit }`,
   `UnusableView`, `Encode(png::EncodingError)`.
-- **`spline.rs`** still names `m_step` after deleting the EM it came from, and its
-  `prior` parameter is both the prior and the output.
 - Pressure and tilt clamps at three sites (`path.rs:596`, `path.rs:1128`,
   `assist.rs:735`) → `ControlPoint::clamped` in the model.
 - `live.rs::render_live_stroke` has eight arguments under an `#[expect]`;
@@ -1006,12 +1075,18 @@ archaeology is what goes stale. Confirmed-stale, each a trap for the next reader
   ([H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it)).
 - `assets.rs:3` — says ids are the BLAKE3 hash of the bytes; they hash the decoded,
   capped coverage, as `import`/`load` say and §19 depends on.
-- `document/fill.rs:122` and the model's `fill.rs:222` cite `patch::paint_rect`,
+- ~~`document/fill.rs:122` and the model's `fill.rs:222` cite `patch::paint_rect`,
   which does not exist (`tile_diff`); `apply.rs:26, 63` cite `history::Action::apply`
   (`Materialize::fold`); `budget.rs:38` cites `DynamicsRun::flush`; `kit.rs:29`
   links `StrokeRenderer::round_tip` (`TipCache::round_tip`); `run.rs:195`,
   `incremental.rs:236`, `region.rs:453`, `segments.rs:1681` cite `region_of`/
-  `affected_tiles`; `segments.rs:1212` cites `MAX_RADIUS_RAMP`. None exist.
+  `affected_tiles`; `segments.rs:1212` cites `MAX_RADIUS_RAMP`. None exist.~~ — *closed in `dbf4dad`, and two survived it*: the model's
+  `fill.rs:222` still cited `patch::paint_rect` and `dynamics.rs:1850` still cited
+  `affected_tiles`, both inside sentences a grep-first reader would chase. They are now
+  `document::patch::tile_diff` and `region::cover`. Nothing checks a plain-comment
+  citation — `cargo doc` sees only `[bracketed]` links — so the way to keep this closed
+  is to write them as intra-doc links wherever the crate boundary allows it, which is
+  what the *cross*-crate ones here cannot do.
 - `path.rs:1124` — a doc comment on the wrong item (`Fit` is undocumented,
   `control_points` carries its sentence); `path.rs:984` describes a signature
   `arc_weights` no longer has; `tips.rs:203` — the `RoundTip` doc starts
@@ -1092,6 +1167,8 @@ and modulated strokes are uncovered.
 assert on height and alpha directly; run the corpus battery once with
 `SetFastCommit(false)`; one tow case in the corpus.
 
+**Done in `2efbf05` and the batch below** — all three.
+
 **The last two are done (`2efbf05`)**, as battery *checks* rather than as cases: every
 corpus stroke now commits once with fast commit off and must land the replay's pixels
 exactly, and every one draws again towed. The tow moves fifteen of the sixteen cases by
@@ -1101,14 +1178,24 @@ towed stroke is *meant* to differ — but that preview still equals committed wi
 a golden and sixteen field edits and covers one configuration, where a check covers all
 sixteen.
 
-**What the first half will run into (2026-08-25).** `read_many_rgba16f` reads
-*textures*, and a tile does not hand one out: `TexHandle` deliberately offers only a
-view, at length, because a consumer holding the texture could `destroy()` it and leave
-the pool's free list with a view onto nothing. So asserting on a tile's height and
-alpha needs a new engine-side reader — a `copy_texture_to_buffer` inside `tile.rs`,
-beside `copy_into` and for its stated reason — rather than a test helper. That is a
-small piece of design, not a test change, and it is why this one has not been taken
-here. The other two halves (fast-commit off, a tow case) are ordinary test work.
+**The first half is done too**, in the batch below, and it went where the note
+predicted. `read_many_rgba16f` reads *textures*, and a tile does not hand one out:
+`TexHandle` offers only a view, at length, because `Texture::destroy` takes `&self` —
+so a borrow is enough to leave the pool's free list holding a view onto nothing. The
+reader therefore lives in `tile.rs` and the texture never leaves it; `readback` keeps
+the row-padding arithmetic, which is the half that is genuinely its.
+`TilePairHandle::read_channels` hands back a `TileChannels`, and `Engine::tile_channels`
+is the door the suite reaches it through.
+
+Two things worth recording from doing it. **The lane counts differ and the type has to
+say so**: a tile's aux is `R16Float` in every space, so height is one lane where color
+is four, and a first cut that assumed quads read every fourth texel and indexed past
+the end — hence `height` as its own field with the assert that pins it. And **the
+proxy was hiding more than it was measuring**: `a_half_erase_is_the_half_covered_fill`
+argues in its own doc about per-unit opacity and height, and checked neither; a
+height-scaling defect injected into `erase.wesl` is caught by the new probe on its own,
+with the pixel assertion disabled. The conservation claim in `dynamics.rs` now measures
+height rather than image darkness, and a minting fudge takes it from 6150 to 19258.
 
 ## Y. Suite infrastructure
 
@@ -1118,14 +1205,14 @@ the judgement shared, the blocking and the caching left with each caller, since
 fourteen" for sixteen cases, and `docs/engine.md` §9's file list, which named
 twenty-five tests where there are thirty-nine and listed the benchmark among them.
 
-**Open:** the 21 helpers defined in two to five files each, the property-based tests
-(there are still none), and the written-to-pass shapes.
+**Open:** the property-based tests (there are still none) and the written-to-pass
+shapes. The duplicated helpers are closed in the batch below — see the entry there,
+which found the count was higher and the disagreement sharper than this said.
 
-- Device acquire-or-skip logic exists in four copies (`common/mod.rs:92`,
-  `tile_pool.rs:16`, `benches/stroke.rs:115`, `stroke.rs:646` ungated).
-- 21 helpers are defined in 2–5 files each (`screen_of` ×5, `texel` ×4, `apart` ×4,
-  `is_red` ×4, …); two notions of "is there paint here" coexist with different
-  margins (`common::red_dominant` 30 vs `is_red` 60).
+- ~~Device acquire-or-skip logic exists in four copies~~ — *closed.* Six, in the end:
+  the four listed plus `gpu/context.rs` and `gpu/scratch.rs`'s own `mod tests`, which
+  this ledger did not see because they are `#[cfg(test)]` inside `src/`.
+- ~~21 helpers are defined in 2–5 files each~~ — *closed.* See the batch entry.
 - ~97% of integration tests need a GPU; the 310 unit tests in `src/` need one in
   four places. There are no property-based tests anywhere. Where they pay most, all
   GPU-free: a counting `Materialize` (`Ctx = ()`) over random logs of

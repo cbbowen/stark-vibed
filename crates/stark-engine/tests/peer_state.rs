@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{engine_or_skip, images_match, paint};
+use common::{Lead, MARGIN_FLAT, engine_or_skip, images_match, leads, paint, rgb};
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
@@ -627,15 +627,15 @@ const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 /// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
 /// [`is_painted`] for the other actor's color.
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
+    // Its own centring rather than `common::texel`'s: these renders are sized by the
+    // peer's viewport, not by `SIZE`.
     let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
     let p = canvas + half;
-    let i = ((p.y as u32 * img.width + p.x as u32) * 4) as usize;
-    let (r, g, b) = (
-        img.pixels[i] as i32,
-        img.pixels[i + 1] as i32,
-        img.pixels[i + 2] as i32,
-    );
-    g - r > 40 && g - b > 40
+    leads(
+        rgb(img.pixel(p.x as u32, p.y as u32)),
+        Lead::Green,
+        MARGIN_FLAT,
+    )
 }
 
 /// Draw this client's live stroke along `points`, and leave the pointer down.

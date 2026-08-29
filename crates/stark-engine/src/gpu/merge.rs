@@ -143,11 +143,15 @@ pub struct MergeRenderer {
     /// Bound for whichever side has no tile at a coordinate the other does — the
     /// §6.8 pattern, so a one-sided tile runs the same shader as a two-sided one.
     zeroes: Zeroes,
-    /// The scratch every recording here opens its scope on — **the one the stroke
-    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
-    /// named, and a shared pool is what makes those releases feed each other: a
-    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
-    /// warm set serves both.
+    /// The scratch this renderer opens its scope on — **the one the stroke path uses
+    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
+    /// the two paths draw from one free list.
+    ///
+    /// Today it is used for the scope alone. This renderer's own working textures
+    /// still come from `TilePool` through `Channels::scratch`, so its lease lists stay
+    /// empty and nothing is yet shared but the type — what the pool buys here is the
+    /// submit-then-release ordering the scope enforces, which is the half that was
+    /// duplicated (§7).
     scratch: ScratchPool,
 }
 

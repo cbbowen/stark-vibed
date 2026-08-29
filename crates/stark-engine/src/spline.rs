@@ -73,7 +73,7 @@ pub struct Observations<'a, const E: usize> {
     pub ts: &'a [f32],
     pub values: &'a [[f32; E]],
     /// **How much of the thing being fitted each value stands for** — see
-    /// `CubicBSpline::m_step` for why a fit over sampled values needs one at all.
+    /// `CubicBSpline::solve_window` for why a fit over sampled values needs one at all.
     ///
     /// Empty means one each, which is the plain sum-over-values fit and what a caller
     /// whose values are already an even sampling of its subject wants. Otherwise the
@@ -116,7 +116,7 @@ impl SplineIndex {
     /// Row backing index `i` of the conceptual clamped control sequence, in which the
     /// first and last rows each appear `DEGREE` times. This view simulates the
     /// endpoint duplicates instead of storing them.
-    fn knot_row(self, i: usize) -> usize {
+    pub(crate) fn knot_row(self, i: usize) -> usize {
         i.saturating_sub(DEGREE - 1).min(self.m - 1)
     }
 
@@ -193,7 +193,7 @@ impl SplineIndex {
     ///
     /// The first `frozen` rows and the last `tail` rows of `prior` come back
     /// unchanged; only the window between them is solved for. `smoothing` charges the
-    /// control polygon for curvature (see `Self::m_step`).
+    /// control polygon for curvature (see `Self::solve_window`).
     ///
     /// `prior` may be **shorter** than the control polygon — the usual case for an
     /// incremental caller whose geometry has just grown and whose channels have not.
@@ -242,7 +242,7 @@ impl SplineIndex {
     /// returned result — and the fitter does four of them per pointer report, so the
     /// copying was `O(stroke length)` per report on the interactive drawing path
     /// while the system being solved stayed at `FREE_CONTROL_POINTS` unknowns. The
-    /// windowing inside `m_step` had already made the *arithmetic* constant; this is
+    /// windowing inside `solve_window` had already made the *arithmetic* constant; this is
     /// the plumbing around it catching up.
     ///
     /// **In-place is sound rather than merely convenient.** The rows the solve writes
@@ -283,11 +283,24 @@ impl SplineIndex {
             obs.weights.len(),
             obs.values.len()
         );
-        self.m_step(obs, values, frozen, tail, smoothing);
+        self.solve_window(obs, values, frozen, tail, smoothing);
     }
 
     /// The least-squares solve itself: normal equations over the free window, ridge-
-    /// regularized towards `prior`, solved by Cholesky.
+    /// regularized towards the values `control` arrives holding, solved by Cholesky.
+    ///
+    /// **`control` is read and then written**, and both halves matter: the rows it
+    /// arrives with are the ridge's target — where each free control point is pulled
+    /// back towards when the data does not determine it — and the window
+    /// `frozen..m - tail` is overwritten with the solution. Naming it for either half
+    /// alone would be half a description; it was called `prior`, which is the half a
+    /// reader would not expect a `&mut` to be.
+    ///
+    /// `solve_window`, not `m_step`. The M-step was the maximization half of an EM
+    /// loop whose E-step — re-estimating each sample's curve parameter — was deleted
+    /// when the parameterization became arc length (§6.2), and a name for one half of
+    /// an algorithm that no longer has the other half is a name that sends a reader
+    /// looking for it.
     ///
     /// **Every value carries a weight, and one each is a claim rather than a neutral
     /// default.** A plain sum minimizes the error *per value supplied*, which is the
@@ -298,10 +311,10 @@ impl SplineIndex {
     /// `path::arc_weights` for the case that forced it — and `n`
     /// becomes their sum, so the two knobs scaled by it below (the smoothing's average
     /// data pull, the ridge's floor) go on meaning what they meant.
-    fn m_step<const E: usize>(
+    fn solve_window<const E: usize>(
         self,
         obs: Observations<'_, E>,
-        prior: &mut OMatrix<f32, Dyn, Const<E>>,
+        control: &mut OMatrix<f32, Dyn, Const<E>>,
         frozen: usize,
         tail: usize,
         smoothing: f32,
@@ -312,7 +325,7 @@ impl SplineIndex {
             weights,
         } = obs;
         let basis = Self::basis_matrix();
-        let m = prior.nrows();
+        let m = control.nrows();
         // The weight the system carries, which is the point count exactly when the
         // weights are the implicit ones.
         let n: f32 = if weights.is_empty() {
@@ -322,7 +335,7 @@ impl SplineIndex {
         };
         if frozen + tail >= m || points.is_empty() {
             // Nothing left to solve for, or nothing to solve against. With no points
-            // the normal equations are all ridge, whose solution is `prior` exactly —
+            // the normal equations are all ridge, whose solution is `control` exactly —
             // so in place there is literally nothing to do, where returning an owned
             // result had to copy the whole polygon to say so. Taking this branch also
             // keeps `lambda` (scaled by `n`) off zero, which it could never escalate
@@ -398,15 +411,15 @@ impl SplineIndex {
             let mut lhs = btb.view((f0, f0), (free, free)).into_owned();
             let mut rhs = btp.rows(f0, free).into_owned();
             if f0 > 0 {
-                rhs -= btb.view((f0, 0), (free, f0)) * prior.rows(base, f0);
+                rhs -= btb.view((f0, 0), (free, f0)) * control.rows(base, f0);
             }
             if tail > 0 {
-                rhs -= btb.view((f0, w - tail), (free, tail)) * prior.rows(m - tail, tail);
+                rhs -= btb.view((f0, w - tail), (free, tail)) * control.rows(m - tail, tail);
             }
             for j in 0..free {
                 lhs[(j, j)] += lambda;
                 for d in 0..E {
-                    rhs[(j, d)] += prior[(frozen + j, d)] * lambda;
+                    rhs[(j, d)] += control[(frozen + j, d)] * lambda;
                 }
             }
             if let Some(chol) = Cholesky::new(lhs) {
@@ -415,7 +428,7 @@ impl SplineIndex {
                 // from the same buffer: every row outside `frozen..frozen + free` is
                 // left exactly as it was, and every row inside it was read into `rhs`
                 // before this point.
-                prior.rows_mut(frozen, free).copy_from(&solved);
+                control.rows_mut(frozen, free).copy_from(&solved);
                 return;
             }
             lambda *= 10.0;
@@ -589,7 +602,7 @@ mod tests {
     /// sample it, fit the samples, get the control values back.
     ///
     /// To ~1%, not to rounding. The proximal ridge is `n · √ε`, and `√ε` is 3.4e-4 in
-    /// f32 against 1.5e-8 in f64 — some 2300× more pull towards `prior` (zero here)
+    /// f32 against 1.5e-8 in f64 — some 2300× more pull towards `control` (zero here)
     /// for the same data. That bias, not the quality of the fit, sets this bound. It
     /// is measured in f32 because that is what the engine solves in; an f64 test would
     /// hold the solver to a tolerance no caller ever sees.
@@ -622,21 +635,21 @@ mod tests {
 
     /// With nothing left to fit against — every point retired into the frozen prefix,
     /// which the incremental fitter reaches routinely — the solve is all ridge, and
-    /// must hand the prior straight back rather than divide by a `lambda` that `n = 0`
+    /// must hand the control straight back rather than divide by a `lambda` that `n = 0`
     /// pinned to zero.
     #[test]
-    fn a_solve_with_no_points_returns_the_prior() {
+    fn a_solve_with_no_points_returns_the_control() {
         let c = wiggle_pts();
         let s = index_of(&c);
         let m = c.nrows();
-        let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j * 2 + d) as f32
         });
-        let got = s.fit_channels(Observations::even(&[], &[]), 0, 0, &prior, 0.0);
-        assert_eq!(got, prior);
+        let got = s.fit_channels(Observations::even(&[], &[]), 0, 0, &control, 0.0);
+        assert_eq!(got, control);
     }
 
-    /// The frozen prefix comes back untouched, and a prior shorter than the
+    /// The frozen prefix comes back untouched, and a control shorter than the
     /// (since-grown) control polygon is accepted rather than required.
     #[test]
     fn frozen_channel_rows_come_back_untouched() {
@@ -648,7 +661,7 @@ mod tests {
             .map(|i| [i as f32 / ts.len() as f32, (i as f32 * 0.3).cos()])
             .collect();
 
-        // A prior two rows short of the polygon: the tail is seeded, not required.
+        // A control two rows short of the polygon: the tail is seeded, not required.
         let short =
             OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m - 2), Const::<2>, |j, d| {
                 (j + d) as f32 * 0.25
@@ -675,13 +688,13 @@ mod tests {
         let m = c.nrows();
         let ts = spread(s, 30);
         let values: Vec<[f32; 2]> = ts.iter().map(|&t| [t, -t]).collect();
-        let prior = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j + d) as f32
         });
-        let got = s.fit_channels(Observations::even(&ts, &values), 1, 1, &prior, 0.0);
+        let got = s.fit_channels(Observations::even(&ts, &values), 1, 1, &control, 0.0);
         for d in 0..2 {
-            assert_eq!(got[(0, d)], prior[(0, d)], "frozen head moved");
-            assert_eq!(got[(m - 1, d)], prior[(m - 1, d)], "held tail moved");
+            assert_eq!(got[(0, d)], control[(0, d)], "frozen head moved");
+            assert_eq!(got[(m - 1, d)], control[(m - 1, d)], "held tail moved");
         }
     }
 

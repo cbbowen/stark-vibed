@@ -30,10 +30,6 @@ fn top(engine: &Engine) -> LayerId {
 const H_STROKE: &[Vec2] = &[Vec2::new(-25.0, 0.0), Vec2::new(25.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -25.0), Vec2::new(0.0, 25.0)];
 
-fn green_dominant(c: [u8; 4]) -> bool {
-    c[1] as i32 > c[0] as i32 + 30 && c[1] as i32 > c[2] as i32 + 30
-}
-
 /// Paint red on the root layer, then add a layer and paint green on it. Both
 /// strokes cross the canvas origin (screen center), green on top.
 fn two_layers(engine: &mut Engine) {

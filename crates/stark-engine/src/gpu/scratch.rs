@@ -27,14 +27,13 @@
 //! A scope dropped on an unwind returns nothing to the pool, which is also sound:
 //! its commands were never submitted, so nothing pending names its leases.
 //!
-//! [`TileScope`](crate::gpu::submit::TileScope) is this type's sibling, carrying the
-//! identical rule for the renderers that rewrite whole tiles — the transform, the
-//! merge, the fill, the selection. The two are separate only because they hold
-//! different things: this one holds [`ScratchPool`] leases, whose release must be
-//! unforgeable and is therefore private to this module, while that one holds
-//! ordinary pooled handles whose release is their `Drop`. Neither collapses into the
-//! other without weakening one of them, and a change to the ordering rule belongs in
-//! both.
+//! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
+//! through — the transform, the merge, the fill, the selection. It was two types for
+//! as long as this one's leases had to stay private to the stroke path and those four
+//! had nothing to lease, and the split cost two copies of one flush cadence and two
+//! statements of one ordering rule that had already drifted apart. Those four still
+//! take their working tiles from [`TilePool`](crate::gpu::TilePool) rather than from
+//! here; what they get from this type is the ordering, which was the duplicated half.
 //!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the
 //! zero-initialization a fresh texture gets. That is an audited property of every
@@ -252,6 +251,7 @@ impl ScratchPool {
             label,
             run_leases: Vec::new(),
             piece_leases: Vec::new(),
+            run_buf_leases: Vec::new(),
             piece_buf_leases: Vec::new(),
             piece_held: Vec::new(),
             piece_scoped: crate::gpu::submit::ScopedResources::default(),
@@ -480,10 +480,13 @@ pub(crate) struct SubmitScope {
     label: &'static str,
     run_leases: Vec<Lease>,
     piece_leases: Vec<Lease>,
-    /// The buffer leases. Only the piece lifetime, because no buffer here carries
-    /// across pieces: a plan, an instance run and a ceiling are each written afresh
-    /// for the piece that draws with them, where the textures that *do* carry (the
-    /// reservoir ping-pong, the bake pair) are the loop's running state.
+    /// The buffer leases, on the same two lifetimes and for the same reason. A plan
+    /// or a snapshot's staging is written afresh for the piece that draws with it;
+    /// the sweep's instance run, its per-tile transform slots and its opacity ceiling
+    /// are built once and drawn from by **every** tile of the stroke, which is the
+    /// run lifetime exactly.
+    run_buf_leases: Vec<BufLease>,
+    /// See [`run_buf_leases`](Self::run_buf_leases).
     piece_buf_leases: Vec<BufLease>,
     /// Arbitrary resources whose *drop* must trail the submit — a pooled tile handle,
     /// whose early drop puts it back on `TilePool`'s free list while this encoder
@@ -593,6 +596,18 @@ impl SubmitScope {
         out
     }
 
+    /// Check out a pooled buffer that carries **across** pieces — released only at
+    /// [`finish`](Self::finish), exactly as [`take_run`](Self::take_run) is.
+    ///
+    /// Note it does **not** open the piece: a buffer taken before the first tile is
+    /// recorded is not by itself something to submit.
+    pub(crate) fn take_run_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
+        let lease = self.pool.take_buf(&self.ctx.device, key);
+        let out = lease.buf.clone();
+        self.run_buf_leases.push(lease);
+        out
+    }
+
     /// Check out a pooled buffer for the piece being recorded — released at the
     /// piece's own submit, exactly as [`take_piece`](Self::take_piece) is.
     ///
@@ -620,11 +635,15 @@ impl SubmitScope {
     /// however long the stroke, and a stroke that fits one region never records a
     /// second submit.
     pub(crate) fn flush(&mut self) {
+        // Above the early return, not below it: `tile_done` counts unconditionally, so
+        // a tile that recorded nothing still counts, and leaving the tally standing
+        // through a no-op flush would make the *next* tile — the first with anything in
+        // it — submit on its own instead of at the cadence.
+        self.since_flush = 0;
         if !self.piece_open {
             return;
         }
         self.piece_open = false;
-        self.since_flush = 0;
         let done = std::mem::replace(&mut self.encoder, fresh_encoder(&self.ctx, self.label));
         self.ctx.queue.submit([done.finish()]);
         drop(std::mem::take(&mut self.piece_scoped));
@@ -640,13 +659,23 @@ impl SubmitScope {
     /// Close the scope: submit what is still recorded, then release everything —
     /// the piece's resources and the run leases both, behind that same submit.
     pub(crate) fn finish(mut self) {
-        self.ctx.queue.submit([self.encoder.finish()]);
+        // Only if there is something to submit. An empty command buffer is a wasm
+        // boundary crossing for nothing, and the operations that reach here having
+        // recorded nothing are ordinary: a lopsided merge passes every tile by handle,
+        // `apply_filter` may find an empty map, a transform may have empty plans.
+        if self.piece_open {
+            self.ctx.queue.submit([self.encoder.finish()]);
+        }
         drop(self.piece_scoped);
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..).chain(self.run_leases.drain(..)) {
             self.pool.give(lease);
         }
-        for lease in self.piece_buf_leases.drain(..) {
+        for lease in self
+            .piece_buf_leases
+            .drain(..)
+            .chain(self.run_buf_leases.drain(..))
+        {
             self.pool.give_buf(lease);
         }
     }
@@ -661,19 +690,9 @@ mod tests {
     const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
     /// A context, or `None` where the machine has no adapter *and*
-    /// `STARK_ALLOW_NO_GPU=1` permits the skip — `tests/tile_pool.rs`'s guard, for
-    /// the same reason: a skipped GPU test still reports `ok`.
+    /// [`ALLOW_NO_GPU`](crate::testing::ALLOW_NO_GPU) permits the skip.
     fn context_or_skip() -> Option<GpuContext> {
-        match pollster::block_on(GpuContext::headless()) {
-            Ok(ctx) => Some(ctx),
-            Err(e) if std::env::var("STARK_ALLOW_NO_GPU").is_ok_and(|v| v == "1") => {
-                eprintln!("skipping GPU test (STARK_ALLOW_NO_GPU=1): {e}");
-                None
-            }
-            Err(e) => {
-                panic!("no usable GPU adapter: {e}\nset STARK_ALLOW_NO_GPU=1 to skip GPU tests")
-            }
-        }
+        crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
     }
 
     /// **The cadence is what bounds peak memory**, which is the whole reason

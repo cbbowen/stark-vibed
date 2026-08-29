@@ -88,11 +88,15 @@ pub struct FillRenderer {
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
     /// runs the same shader as a fill onto paint.
     zeroes: Zeroes,
-    /// The scratch every recording here opens its scope on — **the one the stroke
-    /// path uses too** (`gpu::scratch`). A scope is how a recording releases what it
-    /// named, and a shared pool is what makes those releases feed each other: a
-    /// transform's parcel and a stroke's ring are textures of the same shapes, and one
-    /// warm set serves both.
+    /// The scratch this renderer opens its scope on — **the one the stroke path uses
+    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
+    /// the two paths draw from one free list.
+    ///
+    /// Today it is used for the scope alone. This renderer's own working textures
+    /// still come from `TilePool` through `Channels::scratch`, so its lease lists stay
+    /// empty and nothing is yet shared but the type — what the pool buys here is the
+    /// submit-then-release ordering the scope enforces, which is the half that was
+    /// duplicated (§7).
     scratch: ScratchPool,
     /// Borrowed for the coverage rasterize and for the 0/1 constants bound where a
     /// mask has no tile.

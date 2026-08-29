@@ -554,8 +554,14 @@ fn emit_bindings(m: &Module) -> TokenStream {
             Attribute::If(e) => src[e.span().range()].trim() == "resid",
             _ => false,
         });
-        let decl_doc =
-            format!(" `@group({group}) @binding({index}) var {member}` — see [`binding::{name}`].");
+        // `super::`, because `binding` is `decl`'s sibling inside the shader's module,
+        // not its child — the bare path resolved from nowhere and every one of these
+        // (132 of them, one per declared binding) was a broken intra-doc link. Nothing
+        // in CI ran `cargo doc`, and a generated doc is exactly the kind nobody reads
+        // in the source, so the whole set stayed broken silently.
+        let decl_doc = format!(
+            " `@group({group}) @binding({index}) var {member}` — see [`super::binding::{name}`]."
+        );
         decls.push(quote! {
             #[doc = #decl_doc]
             pub const #ident: Binding = Binding {

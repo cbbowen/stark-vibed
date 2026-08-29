@@ -12,10 +12,11 @@
 mod common;
 
 use common::*;
-use stark_engine::RgbaImage;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
-use stark_model::document::{BrushEffect, BrushParams, EraseEffect, FillOp, SelectionShape};
+use stark_model::document::{
+    BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, SelectionShape,
+};
 use stark_model::geom::Vec2;
 
 /// The bed every test erases from: a full-canvas red fill. A fill rather than a
@@ -52,24 +53,6 @@ fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32)
             opacity,
         ),
     });
-}
-
-/// A pixel's screen position for a canvas point, under the tests' identity view.
-fn screen_of(canvas: Vec2) -> (u32, u32) {
-    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
-    let p = canvas + half;
-    (p.x as u32, p.y as u32)
-}
-
-fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let (x, y) = screen_of(canvas);
-    let c = img.pixel(x, y);
-    [c[0] as i32, c[1] as i32, c[2] as i32]
-}
-
-/// The worst per-channel distance between two texels.
-fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
 }
 
 /// A full-strength eraser returns the canvas to bare — the very pixels it showed
@@ -210,18 +193,30 @@ fn a_half_erase_is_the_half_covered_fill() {
         eraser(0.5, 24.0),
         &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)],
     );
-    let erased = erased.render_to_image();
+    let erased_img = erased.render_to_image();
 
     let mut asked = engine_or_skip().expect("the adapter answered once already");
     fill_canvas(&mut asked, RED, 0.5);
-    let asked = asked.render_to_image();
+    let asked_img = asked.render_to_image();
 
     for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
-        let (e, a) = (texel(&erased, p), texel(&asked, p));
+        let (e, a) = (texel(&erased_img, p), texel(&asked_img, p));
         assert!(
             apart(e, a) <= 2,
-            "at {p:?} the half-erased bed {e:?} must be the half-covered fill \
-             {a:?} — the dial is not landing in the coverage domain"
+            "at {p:?} the half-erased bed {e:?} must be the half-covered fill              {a:?} — the dial is not landing in the coverage domain"
+        );
+        let (eh, eo) = paint_at(&erased, LayerId::ROOT, p).expect("the erased bed has a tile here");
+        let (ah, ao) = paint_at(&asked, LayerId::ROOT, p).expect("the filled bed has a tile here");
+        assert!(
+            (eo - ao).abs() <= 0.01,
+            "at {p:?} the half-erased bed's per-unit opacity {eo} must be the              half-covered fill's {ao} — the dial left the coverage domain, which a              render at this height cannot show"
+        );
+        // Loose against the two, because the claim is `exp(−OPAQUE_MASS)` and not
+        // equality: what the eraser leaves is a bed thin enough to be transparent at
+        // that opacity, not the same slab.
+        assert!(
+            (eh - ah).abs() <= 0.05 * ah.max(1.0),
+            "at {p:?} the half-erased height {eh} is nowhere near the half-covered              fill's {ah}"
         );
     }
 }

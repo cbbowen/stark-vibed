@@ -475,8 +475,9 @@ impl Engine {
     /// A **request**, not a command (§4): it has to answer with the id, because the
     /// action that references it cannot be built until the id exists. That ordering is
     /// also what a shared session depends on — see
-    /// [`CollabSession::add_content`](stark_net::CollabSession), which must be told
-    /// about the bytes before the commit that names them goes out.
+    /// `CollabSession::add_content` (`stark-net`), which must be told about the bytes
+    /// before the commit that names them goes out. Not a link: the dependency points
+    /// the other way (§2), so this crate cannot name that type.
     pub fn import_picture(&self, png_bytes: &[u8]) -> Result<AssetId> {
         self.shared.apply.pictures.import(png_bytes)
     }

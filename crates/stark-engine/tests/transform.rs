@@ -27,25 +27,6 @@ use stark_model::geom::{Affine2, Vec2};
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
-/// A pixel's screen position for a canvas point, under the tests' identity view.
-fn screen_of(canvas: Vec2) -> (u32, u32) {
-    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
-    let p = canvas + half;
-    (p.x as u32, p.y as u32)
-}
-
-/// Whether the pixel at a canvas point reads as red paint rather than bare paper.
-fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
-    let (x, y) = screen_of(canvas);
-    let i = ((y * img.width + x) * 4) as usize;
-    let (r, g, b) = (
-        img.pixels[i] as i32,
-        img.pixels[i + 1] as i32,
-        img.pixels[i + 2] as i32,
-    );
-    r - g > 40 && r - b > 40
-}
-
 /// A compact red blob centred at `c` — two short crossing strokes, so it has
 /// height variation for the lighting to bite on.
 fn blob(engine: &mut stark_engine::Engine, c: Vec2) {
@@ -258,7 +239,7 @@ fn translate_there_and_back_is_identity() {
     );
     let away = engine.render_to_image();
     assert!(
-        !is_painted(&away, Vec2::new(-30.0, 10.0)),
+        !painted(&away, Vec2::new(-30.0, 10.0)),
         "the painting should have left the viewport"
     );
     transform(
@@ -283,11 +264,11 @@ fn flip_twice_is_identity() {
     transform(&mut engine, flip);
     let flipped = engine.render_to_image();
     assert!(
-        is_painted(&flipped, Vec2::new(45.0, 5.0)),
+        painted(&flipped, Vec2::new(45.0, 5.0)),
         "flip moved the blob"
     );
     assert!(
-        !is_painted(&flipped, Vec2::new(-45.0, 5.0)),
+        !painted(&flipped, Vec2::new(-45.0, 5.0)),
         "flip cleared the source"
     );
     transform(&mut engine, flip);
@@ -314,14 +295,8 @@ fn transform_cuts_the_source_and_lands_at_the_destination() {
         Affine2::from_translation(Vec2::new(100.0, 0.0)),
     );
     let img = engine.render_to_image();
-    assert!(
-        is_painted(&img, Vec2::new(50.0, 0.0)),
-        "paint should arrive"
-    );
-    assert!(
-        !is_painted(&img, Vec2::new(-50.0, 0.0)),
-        "paint should leave"
-    );
+    assert!(painted(&img, Vec2::new(50.0, 0.0)), "paint should arrive");
+    assert!(!painted(&img, Vec2::new(-50.0, 0.0)), "paint should leave");
 }
 
 #[test]
@@ -349,7 +324,7 @@ fn moved_paint_stacks_over_what_it_lands_on() {
     );
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, Vec2::new(50.0, 0.0)),
+        painted(&img, Vec2::new(50.0, 0.0)),
         "thick red paint should cover the green it lands on"
     );
 }
@@ -379,11 +354,11 @@ fn selection_follows_the_transform() {
     );
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, Vec2::new(40.0, 0.0)),
+        painted(&img, Vec2::new(40.0, 0.0)),
         "the moved selection should admit paint"
     );
     assert!(
-        !is_painted(&img, Vec2::new(-40.0, 0.0)),
+        !painted(&img, Vec2::new(-40.0, 0.0)),
         "the old selection region must no longer admit paint"
     );
 }
@@ -653,10 +628,10 @@ fn perspective_carries_paint_where_the_corners_point() {
     transform_map(&mut engine, TransformMap::Perspective(map));
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, expected),
+        painted(&img, expected),
         "paint should arrive at the homography's image {expected:?}"
     );
-    assert!(!is_painted(&img, c), "paint should leave the source");
+    assert!(!painted(&img, c), "paint should leave the source");
 }
 
 /// A warp with a dragged control point: the paint under the substrate lands where
@@ -683,7 +658,7 @@ fn warp_carries_paint_with_its_surface() {
     transform_map(&mut engine, TransformMap::Warp(map));
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, expected),
+        painted(&img, expected),
         "paint should arrive at the substrate's image {expected:?}"
     );
     // A smooth warp *refills* a gently-grabbed spot from upstream paint, so
@@ -708,7 +683,7 @@ fn paint_outside_the_rect_is_untouched() {
     map.points[5] += Vec2::new(35.0, -20.0);
     transform_map(&mut engine, TransformMap::Warp(map));
     let after = engine.render_to_image();
-    assert!(is_painted(&after, bystander), "the bystander stays painted");
+    assert!(painted(&after, bystander), "the bystander stays painted");
     // Byte-exact over the bystander's own corner of the frame (the warp's
     // image stays far from it).
     let (w, x0, y0) = (before.width, 190u32, 150u32);
@@ -784,11 +759,11 @@ fn selection_follows_a_perspective() {
     );
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, Vec2::new(40.0, 0.0)),
+        painted(&img, Vec2::new(40.0, 0.0)),
         "the moved selection should admit paint"
     );
     assert!(
-        !is_painted(&img, Vec2::new(-40.0, 0.0)),
+        !painted(&img, Vec2::new(-40.0, 0.0)),
         "the old selection region must no longer admit paint"
     );
 }

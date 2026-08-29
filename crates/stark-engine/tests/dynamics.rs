@@ -9,7 +9,9 @@ use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
+use stark_model::document::{
+    BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, PaintEffect,
+};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -25,11 +27,14 @@ fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushPara
 
 // Channel-dominance predicates — see tests/stroke.rs for why dominance (not
 // saturation) and why the 60-level margin.
+/// Lit bare paper reads warm enough to pass the suite's default margin, so this
+/// file's "is there paint here?" is asked at [`MARGIN_LIT`] — see
+/// `dynamics_wet_field_stays_paper`, which asserts that precondition directly.
 fn is_red(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
+    leads(rgb(c), Lead::Red, MARGIN_LIT)
 }
 fn is_green(c: [u8; 4]) -> bool {
-    c[1] as i32 > c[0] as i32 + 60 && c[1] as i32 > c[2] as i32 + 60
+    leads(rgb(c), Lead::Green, MARGIN_LIT)
 }
 #[test]
 fn conservative_smear_preserves_uniform_field() {
@@ -615,9 +620,12 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
 /// measuring the same segment there is nothing for it to cover, and a 0.75 fails this
 /// by ~6%.
 ///
-/// Measured as image darkness rather than height, since there is no height readback:
-/// the field is deliberately faint, because height only reaches the render while the
-/// paint is still short of opaque.
+/// Measured on **height itself** (`common::total_height`), which is the channel the
+/// law is about (§6.1). It read image darkness for as long as a tile could not be
+/// asked what it held — a proxy through the media pass, the blend and the tonemap,
+/// which cannot separate "height was not conserved" from "the light changed", and
+/// which only registers at all while the paint is short of opaque. The field is still
+/// laid faint, so the two readings can be compared.
 #[test]
 fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
     let Some(mut engine) = engine_or_skip() else {
@@ -634,7 +642,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
     );
 
-    let before = total_ink(&engine.render_to_image());
+    let before = total_height(&engine, LayerId::ROOT);
 
     // `add = 0`, so the tool can only move what is already there. Zig-zagging keeps
     // the tip inside the field for the whole gesture.
@@ -662,7 +670,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         });
     }
     engine.process(GestureCommand::End);
-    let after = total_ink(&engine.render_to_image());
+    let after = total_height(&engine, LayerId::ROOT);
 
     // Conserved, the tool ends the stroke still holding some of what it lifted, so
     // the canvas can only come out level or slightly lighter. Minting shows up as the
@@ -670,7 +678,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
     let growth = after / before;
     assert!(
         growth <= 1.0,
-        "a conservative smear left {:.1}% more ink on the canvas than it found          — the tool is minting paint",
+        "a conservative smear left {:.1}% more height on the canvas than it found          — the tool is minting paint",
         (growth - 1.0) * 100.0
     );
 }
@@ -1839,7 +1847,8 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
 /// *before* the segment it fires after (`plan::bleed_fires`) — so for the first
 /// segment of a live-tail range it can write substrate behind everything the range's
 /// segments cover. Until 2026-08-11 the windows were absent from the region/tile
-/// accounting (`affected_tiles` and `chunk_segments` walked only the segments,
+/// accounting (the tile walk now spelled `region::cover`, and `chunk_segments`,
+/// walked only the segments,
 /// while `snapshot_size` did take the fires), and flux written there was silently
 /// clipped by the region's bounds check — where the commit, whose windows never
 /// reach before arc 0, clips only at its own piece boundaries. The accounting now

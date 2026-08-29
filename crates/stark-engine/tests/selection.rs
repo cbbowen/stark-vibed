@@ -31,26 +31,6 @@ const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const BOX_MIN: Vec2 = Vec2::new(-40.0, -40.0);
 const BOX_MAX: Vec2 = Vec2::new(0.0, 40.0);
 
-/// A pixel's screen position for a canvas point, under the tests' identity view.
-fn screen_of(canvas: Vec2) -> (u32, u32) {
-    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
-    let p = canvas + half;
-    (p.x as u32, p.y as u32)
-}
-
-/// Whether the pixel at a canvas point reads as paint rather than bare paper. The
-/// substrate is neutral near-white, so any strongly red-dominant pixel is paint.
-fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
-    let (x, y) = screen_of(canvas);
-    let i = ((y * img.width + x) * 4) as usize;
-    let (r, g, b) = (
-        img.pixels[i] as i32,
-        img.pixels[i + 1] as i32,
-        img.pixels[i + 2] as i32,
-    );
-    r - g > 40 && r - b > 40
-}
-
 fn select(engine: &mut stark_engine::Engine, mode: SelectionMode, shape: SelectionShape) {
     engine.process(DocCommand::Select(SelectionOp::new(mode, shape, 0.0)));
 }
@@ -91,18 +71,6 @@ fn washed(opacity: f32, deposit: f32) -> BrushParams {
     b
 }
 
-/// The three channels of the pixel at a canvas point.
-fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let (x, y) = screen_of(canvas);
-    let c = img.pixel(x, y);
-    [c[0] as i32, c[1] as i32, c[2] as i32]
-}
-
-/// The worst per-channel distance between two texels.
-fn apart(a: [i32; 3], b: [i32; 3]) -> i32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).max().unwrap()
-}
-
 /// A horizontal stroke that crosses the selection boundary at x = 0, so the same
 /// gesture has a masked half and an unmasked half.
 fn crossing_stroke(engine: &mut stark_engine::Engine) {
@@ -128,11 +96,11 @@ fn selection_clips_the_brush() {
     let img = engine.render_to_image();
 
     assert!(
-        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        painted(&img, Vec2::new(-20.0, 0.0)),
         "the selected half of the stroke should be painted"
     );
     assert!(
-        !is_painted(&img, Vec2::new(20.0, 0.0)),
+        !painted(&img, Vec2::new(20.0, 0.0)),
         "the deselected half of the stroke must not reach the canvas"
     );
 }
@@ -144,8 +112,8 @@ fn no_selection_paints_everywhere() {
     };
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)));
-    assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
+    assert!(painted(&img, Vec2::new(-20.0, 0.0)));
+    assert!(painted(&img, Vec2::new(20.0, 0.0)));
 }
 
 #[test]
@@ -163,7 +131,7 @@ fn deselecting_restores_the_whole_canvas() {
 
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
+    assert!(painted(&img, Vec2::new(20.0, 0.0)));
 }
 
 #[test]
@@ -177,11 +145,11 @@ fn inverting_swaps_which_half_paints() {
     let img = engine.render_to_image();
 
     assert!(
-        !is_painted(&img, Vec2::new(-20.0, 0.0)),
+        !painted(&img, Vec2::new(-20.0, 0.0)),
         "inverted: left is now masked out"
     );
     assert!(
-        is_painted(&img, Vec2::new(20.0, 0.0)),
+        painted(&img, Vec2::new(20.0, 0.0)),
         "inverted: right now paints"
     );
 }
@@ -207,18 +175,15 @@ fn union_extends_and_subtract_cuts() {
     let img = engine.render_to_image();
 
     assert!(
-        is_painted(&img, Vec2::new(-8.0, 0.0)),
+        painted(&img, Vec2::new(-8.0, 0.0)),
         "original selection, uncut"
     );
-    assert!(is_painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
+    assert!(painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
     assert!(
-        !is_painted(&img, Vec2::new(-20.0, 0.0)),
+        !painted(&img, Vec2::new(-20.0, 0.0)),
         "removed by the subtract"
     );
-    assert!(
-        !is_painted(&img, Vec2::new(5.0, 0.0)),
-        "never selected at all"
-    );
+    assert!(!painted(&img, Vec2::new(5.0, 0.0)), "never selected at all");
 }
 
 #[test]
@@ -235,15 +200,9 @@ fn intersect_keeps_only_the_overlap() {
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
 
-    assert!(is_painted(&img, Vec2::new(-10.0, 0.0)), "in both");
-    assert!(
-        !is_painted(&img, Vec2::new(-30.0, 0.0)),
-        "only in the first"
-    );
-    assert!(
-        !is_painted(&img, Vec2::new(20.0, 0.0)),
-        "only in the second"
-    );
+    assert!(painted(&img, Vec2::new(-10.0, 0.0)), "in both");
+    assert!(!painted(&img, Vec2::new(-30.0, 0.0)), "only in the first");
+    assert!(!painted(&img, Vec2::new(20.0, 0.0)), "only in the second");
 }
 
 #[test]
@@ -263,13 +222,10 @@ fn lasso_masks_its_interior() {
 
     // Probed within the stroke's body, not out at its cap, so this measures the mask
     // rather than the brush's falloff.
-    assert!(
-        is_painted(&img, Vec2::new(-20.0, 0.0)),
-        "inside the triangle"
-    );
-    assert!(!is_painted(&img, Vec2::new(20.0, 0.0)), "outside it");
+    assert!(painted(&img, Vec2::new(-20.0, 0.0)), "inside the triangle");
+    assert!(!painted(&img, Vec2::new(20.0, 0.0)), "outside it");
     // Just past the apex on the stroke's line, still outside the polygon.
-    assert!(!is_painted(&img, Vec2::new(2.0, 0.0)), "beyond the apex");
+    assert!(!painted(&img, Vec2::new(2.0, 0.0)), "beyond the apex");
 }
 
 #[test]
@@ -307,11 +263,11 @@ fn selection_gates_the_brush_dynamics_path() {
     let img = engine.render_to_image();
 
     assert!(
-        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        painted(&img, Vec2::new(-20.0, 0.0)),
         "smearing brush paints inside"
     );
     assert!(
-        !is_painted(&img, Vec2::new(20.0, 0.0)),
+        !painted(&img, Vec2::new(20.0, 0.0)),
         "smearing brush must not touch the canvas outside the selection"
     );
 }
@@ -355,7 +311,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     let img = engine.render_to_image();
 
     assert!(
-        !is_painted(&img, Vec2::new(-25.0, 0.0)),
+        !painted(&img, Vec2::new(-25.0, 0.0)),
         "no paint may be smeared in from outside the selection"
     );
 }
@@ -402,7 +358,7 @@ fn undoing_the_selection_unmasks_later_strokes() {
     // gated by the selection *in force at its point in the log*, which is none.
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(20.0, 0.0)));
+    assert!(painted(&img, Vec2::new(20.0, 0.0)));
 }
 
 #[test]
@@ -455,8 +411,8 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
 
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)));
-    assert!(!is_painted(&img, Vec2::new(20.0, 0.0)));
+    assert!(painted(&img, Vec2::new(-20.0, 0.0)));
+    assert!(!painted(&img, Vec2::new(20.0, 0.0)));
 }
 
 /// **Add, with nothing selected, selects the region** (§6.8) — the one place the
@@ -489,8 +445,8 @@ fn adding_to_an_empty_selection_selects_only_the_region() {
 
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
-    assert!(is_painted(&img, Vec2::new(-20.0, 0.0)), "inside the region");
-    assert!(!is_painted(&img, Vec2::new(20.0, 0.0)), "outside it");
+    assert!(painted(&img, Vec2::new(-20.0, 0.0)), "inside the region");
+    assert!(!painted(&img, Vec2::new(20.0, 0.0)), "outside it");
 }
 
 /// …and with a selection in force, Add is still Add: the rule reaches exactly the
@@ -516,12 +472,12 @@ fn adding_to_a_selection_still_extends_it() {
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
     assert!(
-        is_painted(&img, Vec2::new(-20.0, 0.0)),
+        painted(&img, Vec2::new(-20.0, 0.0)),
         "the first region survived the second gesture"
     );
-    assert!(is_painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
+    assert!(painted(&img, Vec2::new(25.0, 0.0)), "added by the union");
     assert!(
-        !is_painted(&img, Vec2::new(5.0, 0.0)),
+        !painted(&img, Vec2::new(5.0, 0.0)),
         "the gap between them was never selected"
     );
 }
@@ -633,12 +589,9 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
         engine.observe().has_selection,
         "the selection is still in force"
     );
+    assert!(painted(&img, Vec2::new(-20.0, 0.0)), "the gesture painted");
     assert!(
-        is_painted(&img, Vec2::new(-20.0, 0.0)),
-        "the gesture painted"
-    );
-    assert!(
-        !is_painted(&img, Vec2::new(20.0, 0.0)),
+        !painted(&img, Vec2::new(20.0, 0.0)),
         "and was gated by the selection it followed"
     );
 }

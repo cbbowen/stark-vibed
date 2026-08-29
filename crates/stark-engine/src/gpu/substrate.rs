@@ -120,8 +120,8 @@ impl SubstrateMap {
     }
 
     /// The **bearing fraction** at a given tooth — the tip's give and the width of its
-    /// contact transition ([`BrushParams::tooth_give`](stark_model::document::BrushParams::tooth_give),
-    /// [`tooth_softness`](stark_model::document::BrushParams::tooth_softness)) — and
+    /// contact transition ([`ToothParams::give`](stark_model::document::ToothParams::give),
+    /// [`ToothParams::softness`](stark_model::document::ToothParams::softness)) — and
     /// direction of travel (§6.4).
     ///
     /// [`Bearing::at`], with the one thing that is the *substrate's* business rather

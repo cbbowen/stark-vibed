@@ -395,6 +395,26 @@ struct TilePair {
 /// The sparsity *is* the infinite canvas.
 pub type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandle>;
 
+/// One tile's channels, decoded to `f32` — what [`TilePairHandle::read_channels`]
+/// hands back. `TILE_TEX`² texels each, apron included, row-major.
+///
+/// **Lane counts differ per channel and that is the point**: the color is four lanes
+/// and the height is one, because a tile's aux is `R16Float` in every space this
+/// engine has (`ColorSpace::aux_format`) — the amount of paint is one number, and the
+/// color's fourth lane is a per-unit opacity rather than an amount (§6.1). The two are
+/// separate fields rather than a lane index into one buffer so that a caller cannot
+/// read the second as though it were the first, which is the confusion §6.1 exists to
+/// name.
+pub struct TileChannels {
+    /// Four lanes per texel: three of paint, and in `.3` the per-unit **opacity** —
+    /// a material property, never the amount of paint (§6.1).
+    pub color: Vec<f32>,
+    /// One lane per texel: the **height**, the channel that is conserved (§6.1).
+    pub height: Vec<f32>,
+    /// Four lanes per texel in a space that has a residual, `None` otherwise (§6.7).
+    pub resid: Option<Vec<f32>>,
+}
+
 /// A selection's coverage tiles, in the very same sparse map the paint lives in —
 /// which is what lets a mask be feathered, unbounded, and free to snapshot (§6.8).
 pub type MaskMap = rpds::HashTrieMap<stark_model::geom::TileCoord, MaskHandle>;
@@ -465,6 +485,62 @@ impl TilePairHandle {
     /// once, for every tile it ever makes.
     pub fn resid_view(&self) -> Option<&wgpu::TextureView> {
         self.0.resid.as_ref().map(TexHandle::view)
+    }
+
+    /// This tile's channels read straight off the GPU (§9) — **the one way to observe
+    /// a tile's height and alpha without going through the lit composite**.
+    ///
+    /// `None` where the machine could not be read; every other failure panics, since
+    /// the only caller is a test and a device that cannot be read is the finding.
+    ///
+    /// The reader is *here* rather than in `readback` or in a test helper, and that is
+    /// the whole design: `readback` reads `wgpu::Texture`s and a tile does not hand one
+    /// out — [`TexHandle`] offers a view alone, at length, because `Texture::destroy`
+    /// takes `&self`, so a borrow is enough to leave the pool's free list holding a
+    /// view onto nothing. So the texture never leaves this module; what leaves is the
+    /// decoded texels. `readback` keeps the row-padding arithmetic, which is the half
+    /// that is genuinely its.
+    ///
+    /// The whole `TILE_TEX` block, apron included, in the tile's own texel order — the
+    /// apron is exactly what a §6.4 seam claim is about, so trimming it here would take
+    /// the interesting half away.
+    ///
+    /// One map per channel rather than one batched read: the aux is narrower than the
+    /// color, and [`begin_read`](crate::gpu::readback) takes the slot stride from the
+    /// first texture, so a second of a different texel size would be copied at the
+    /// wrong pitch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
+        use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
+        let block = stark_model::geom::Extent2::new(TILE_TEX, TILE_TEX);
+        let read = |tex: &wgpu::Texture| {
+            let (buffer, rows) = begin_read(ctx, &[tex], block);
+            map_blocking(ctx, &buffer);
+            decode_rgba16f(
+                &take_rows(buffer, &rows)
+                    .pop()
+                    .expect("one texture in, one string out"),
+            )
+        };
+        let tex = |h: &TexHandle| {
+            h.0.tex
+                .as_ref()
+                .expect("a live handle holds its texture")
+                .clone()
+        };
+        let out = TileChannels {
+            color: read(&tex(&self.0.color)),
+            height: read(&tex(&self.0.aux)),
+            resid: self.0.resid.as_ref().map(|r| read(&tex(r))),
+        };
+        let texels = (TILE_TEX * TILE_TEX) as usize;
+        debug_assert_eq!(out.color.len(), texels * 4, "the color is four lanes");
+        debug_assert_eq!(
+            out.height.len(),
+            texels,
+            "the aux is one lane — a space that widened it has to say so here, or a              caller reading `height[i]` would be reading every fourth texel",
+        );
+        out
     }
 
     /// Encode the write-back's slice of this tile out of region-sized channel
@@ -632,7 +708,7 @@ impl PoolInner {
     /// drops while an unsubmitted encoder still names its view reaches this free list
     /// early — and reuse alone makes that wrong pixels, which is bad but recoverable
     /// and is what the consumers' submit scopes exist to prevent
-    /// ([`TileScope`](crate::gpu::submit::TileScope)). `destroy()` makes the same
+    /// ([`SubmitScope`](crate::gpu::scratch::SubmitScope)). `destroy()` makes the same
     /// mistake a *dangling view*, handed to the next bind group: a device error, from
     /// a pool that cannot see which of its consumers was careful.
     ///

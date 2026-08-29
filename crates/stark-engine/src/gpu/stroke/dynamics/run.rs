@@ -24,7 +24,7 @@ fn paint_effect(rec: &StrokeRecord) -> &PaintEffect {
 }
 use stark_shaders::mirror::composite::binding as cb;
 
-use super::super::incremental::{Carried, LoopCarry, Reservoir};
+use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
@@ -110,7 +110,7 @@ impl StrokeRenderer {
         scene: StrokeScene<'_>,
         rec: &StrokeRecord,
         spans: StrokeSpans,
-        tool: Option<&ToolState>,
+        resume: Resume<'_>,
         tol: crate::path::FlattenTolerance,
     ) -> (TileMap, StrokeCarry) {
         // The sequential stamp loop end to end. Everything below it — `stroke.piece`
@@ -119,10 +119,7 @@ impl StrokeRenderer {
         // have a denominator, and a phase that is missing from the sum is a phase
         // nobody has instrumented yet.
         crate::timing::span!("stroke.dynamics");
-        // Nothing follows the range that reaches the end of the stroke, so there is no
-        // reason to snapshot a reservoir for it — which is the common case, since the
-        // live tail is exactly that range and it re-renders every pointer move.
-        let capture = spans.range.end < crate::path::span_count(rec.path.len());
+        let capture = resume.capture;
         // Fitting outweighs flattening by ~350:1 on the CPU side, which is a claim
         // about *this* call against `input.fit` — and one that has to stay checkable,
         // because the flattener is the thing that looks worth optimizing and is not.
@@ -144,7 +141,7 @@ impl StrokeRenderer {
             );
         }
 
-        let mut run = DynamicsRun::new(self, scene, rec, tol, tool);
+        let mut run = DynamicsRun::new(self, scene, rec, tol, resume.prior);
         let mut map = scene.base.clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece rather than re-derived inside each: the chunker must
@@ -857,7 +854,7 @@ impl<'a> DynamicsRun<'a> {
                 label: "stark selection region mask",
             });
             r.selection.region_mask(
-                self.scope.encoder(),
+                &mut self.scope,
                 &view,
                 self.scene.selection,
                 halo,

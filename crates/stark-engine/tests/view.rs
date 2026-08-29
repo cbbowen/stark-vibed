@@ -24,7 +24,7 @@ const RED: [f32; 3] = [1.0, 0.0, 0.0];
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
 fn is_red(c: [u8; 4]) -> bool {
-    c[0] as i32 > c[1] as i32 + 60 && c[0] as i32 > c[2] as i32 + 60
+    leads(rgb(c), Lead::Red, MARGIN_LIT)
 }
 
 /// The four probes around the centre of a `SIZE`-square render, at `d` px out.

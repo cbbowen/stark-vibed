@@ -48,7 +48,7 @@ pub(crate) use stroke::StrokeSpans;
 pub use stroke::{StrokeRenderer, max_stretch, max_tip_reach};
 pub use substrate::{Substrate, SubstrateMap};
 pub use tile::{
-    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TilePairHandle,
-    TilePool, mask_tex_origin,
+    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, MaskHandle, TileChannels,
+    TilePairHandle, TilePool, mask_tex_origin,
 };
 pub use transform::TransformRenderer;

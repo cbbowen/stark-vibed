@@ -68,7 +68,7 @@ use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
 };
-use super::incremental::Carried;
+use super::incremental::{Carried, Resume};
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance, generate_segments_in};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
@@ -260,7 +260,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tol: crate::path::FlattenTolerance,
-        tool: Option<&ToolState>,
+        resume: Resume<'_>,
     ) -> (TileMap, StrokeCarry) {
         // The control every dynamics row is read against: the same geometry, the
         // same tiles, one instanced draw instead of a dispatch chain per segment.
@@ -301,7 +301,7 @@ impl StrokeRenderer {
         // does. A ring of stateless pieces there would cap each piece on its own
         // and let a stroke crossing itself outrun the mask.
         if k.opacity < 1.0 || selection.is_active() {
-            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, tool);
+            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume);
         }
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
@@ -348,11 +348,13 @@ impl StrokeRenderer {
         // stroke touching fewer tiles than the ring takes only as many as it has.
         //
         // The first reason is gone with the pool it borrowed from. These are
-        // `ScratchPool` leases now, taken through the scope, and a lease reaches the
-        // free list only through a submit — so "released while this command buffer
-        // still names them" is not a hazard to defuse with a `hold`, it is a state the
-        // types do not have (`scratch`). They are the very keys the scaled path's
-        // parcel lanes take, so the two share one warm set.
+        // `ScratchPool` leases now, taken through the scope, and they are taken on the
+        // **run** tier: the ring is the loop's running state, not the current tile's,
+        // and `take_run` is what says so. That matters beyond tidiness — the piece tier
+        // is released at every `flush`, so a ring held there would be correct only for
+        // as long as this loop never flushed, which nothing here states and every other
+        // tile-writing loop in the crate already does not honour. They are the very
+        // keys the scaled path's parcel lanes take, so the two share one warm set.
         let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(coords.len()))
             .map(|_| RingSlot::take(self, &mut scope))
             .collect();
@@ -480,7 +482,7 @@ impl StrokeRenderer {
         k: &super::StrokeConstants,
         segments: &[Segment],
         end_dist: f32,
-        tool: Option<&ToolState>,
+        resume: Resume<'_>,
     ) -> (TileMap, StrokeCarry) {
         // The pool and the selection are the accumulator's, as in `erase.rs`; the
         // base it reads pristine paint out of is too.
@@ -515,7 +517,7 @@ impl StrokeRenderer {
             scope,
             &keys,
             BareCanvas::Mint,
-            tool.map(ToolState::swept),
+            resume.prior.map(ToolState::swept),
         )
         .run(
             &Sweep {
@@ -565,7 +567,7 @@ impl StrokeRenderer {
             map,
             StrokeCarry {
                 dist: end_dist,
-                tool: Some(ToolState(Carried::Sweep(carry))),
+                tool: resume.capture.then(|| ToolState(Carried::Sweep(carry))),
                 dirty,
             },
         )
@@ -603,7 +605,7 @@ impl RingSlot {
     /// and residual beside it — the same trio a parcel lane carries, at the same keys,
     /// which is what lets the two paths draw from one free list.
     fn take(r: &StrokeRenderer, scope: &mut crate::gpu::scratch::SubmitScope) -> Self {
-        let mut view = |format| scope.take_piece(parcel_key(format)).1;
+        let mut view = |format| scope.take_run(parcel_key(format)).1;
         Self {
             color: view(r.color_space.color_format()),
             aux: view(crate::gpu::tile::SCRATCH_AUX_FORMAT),
@@ -685,7 +687,7 @@ pub(super) fn opacity_uniform(
     let u = stark_shaders::mirror::integrate::Integrate {
         params: [opacity, 0.0, 0.0, 0.0],
     };
-    let buf = scope.take_piece_buffer(BufKey {
+    let buf = scope.take_run_buffer(BufKey {
         size: std::mem::size_of_val(&u) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         label: "stark integrate opacity",
@@ -781,7 +783,7 @@ pub(super) fn sweep_draws(
     // builds and it was built afresh on every pointer move, where the pool hands back
     // the one the previous move used (`scratch::BufKey`).
     let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
-    let instance_buf = scope.take_piece_buffer(BufKey {
+    let instance_buf = scope.take_run_buffer(BufKey {
         size: instance_bytes.len() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         label: "stark sweep instances",
@@ -828,7 +830,7 @@ pub(super) fn sweep_draws(
         let at = i * XFORM_STRIDE as usize;
         xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
     }
-    let xform_buf = scope.take_piece_buffer(BufKey {
+    let xform_buf = scope.take_run_buffer(BufKey {
         size: xform_data.len() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         label: "stark sweep xforms",
