@@ -342,10 +342,28 @@ impl Engine {
             self.pick_groups(doc, options.source, patch_cull(points, size))
         };
 
+        // **Every point's view first, then every point's draws, then one submit.**
+        // Each patch is its own view of the same document, and the view uniform is a
+        // queue write — so with one uniform the only thing that could order two
+        // patches was a submit between them, and a gradient trace of
+        // `gradient::MAX_SAMPLES` points was that many round trips. The views are
+        // slots now (`composite::ViewBindings`), so what orders them is the offset a
+        // patch binds and the whole trace is one encoder.
+        let views: Vec<crate::view::ViewTransform> =
+            points.iter().map(|&at| patch_view(at, size)).collect();
+        self.compositor
+            .write_views(&self.compositor_pipeline, &views);
+
+        let mut encoder =
+            self.shared
+                .gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("stark pick encoder"),
+                });
         let mut colors = Vec::with_capacity(points.len());
         let mut resids = Vec::with_capacity(points.len());
-        for &at in points {
-            let view = patch_view(at, size);
+        for (slot, &view) in views.iter().enumerate() {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT |
              // Used by some filters.
              wgpu::TextureUsages::TEXTURE_BINDING;
@@ -374,17 +392,22 @@ impl Engine {
             let resid_view = resid.as_ref().map(|t| t.create_view(&default));
             self.compositor.composite_channels(
                 &self.compositor_pipeline,
+                &mut encoder,
                 Targets {
                     color: &color_view,
                     aux: &aux_view,
                     resid: resid_view.as_ref(),
                 },
-                view,
-                &groups,
+                crate::gpu::composite::PickPatch {
+                    view,
+                    slot,
+                    groups: &groups,
+                },
             );
             colors.push(color);
             resids.push(resid);
         }
+        self.shared.gpu.queue.submit([encoder.finish()]);
 
         // Captured, not read through `self`: the future deliberately does not borrow
         // the engine (see `export`). The color space is an `Arc`, so carrying the
@@ -562,6 +585,18 @@ impl Engine {
         // Only the color target's alpha is read, at the stride
         // `read_many_rgba16f` pins.
         let formats = self.compositor_pipeline.channel_formats();
+        // **One view for every candidate**, since a hit test asks the same patch of
+        // every layer in turn — so one slot, and one encoder for the lot of them
+        // rather than a submit per layer (`Compositor::composite_channels`).
+        self.compositor
+            .write_views(&self.compositor_pipeline, &[view]);
+        let mut encoder =
+            self.shared
+                .gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("stark hit encoder"),
+                });
         let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
         for (id, groups) in &lists {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -581,16 +616,21 @@ impl Engine {
             let resid_view = resid.as_ref().map(|t| t.create_view(&default));
             self.compositor.composite_channels(
                 &self.compositor_pipeline,
+                &mut encoder,
                 Targets {
                     color: &color_view,
                     aux: &aux_view,
                     resid: resid_view.as_ref(),
                 },
-                view,
-                groups,
+                crate::gpu::composite::PickPatch {
+                    view,
+                    slot: 0,
+                    groups,
+                },
             );
             hits.push((*id, color));
         }
+        self.shared.gpu.queue.submit([encoder.finish()]);
 
         let gpu = self.shared.gpu.clone();
         async move {

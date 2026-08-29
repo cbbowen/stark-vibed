@@ -9,6 +9,7 @@
 //! never-changing half (the sampler) and [`ViewBindings`] the per-target half (the
 //! buffer holding *what this render is looking at*, and the groups over it).
 
+use crate::gpu::uniforms::UniformSlots;
 use crate::gpu::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::view::ViewTransform;
 use stark_model::geom::TILE_SIZE;
@@ -82,11 +83,25 @@ impl View {
 /// render. Here the question cannot be asked.
 ///
 /// The passes keep their layouts and their pipelines, which is the expensive half and
-/// genuinely never changes; what a consumer now owns is a 48-byte buffer and two bind
-/// groups, built once with the `Compositor` and never rebuilt (nothing they name is
-/// sized by the target).
+/// genuinely never changes; what a consumer owns is a slot buffer and two bind groups
+/// over it.
+///
+/// **A slot per view, not one uniform**, for the reason `gpu::uniforms` gives at
+/// length: `write_buffer` is a queue operation, so N rewrites before a single submit
+/// leave every pass reading the last value written. A frame has one view and never
+/// noticed. The eyedropper has up to
+/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) of them — a gradient trace
+/// samples a line through the painting (§22.2) — and with one uniform the only thing
+/// ordering them was a *submit* between each pair, which is what made a pick cost a
+/// hundred round trips to the queue instead of one.
 pub(super) struct ViewBindings {
-    buf: wgpu::Buffer,
+    slots: UniformSlots<ViewUniform>,
+    /// The layouts the groups below answer to, kept so growing the buffer can rebuild
+    /// them: growth *replaces* the allocation, and a group over the old one names a
+    /// buffer too small for the offsets it is about to be given.
+    tile_bgl: wgpu::BindGroupLayout,
+    overlay_bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     /// Pass A's group 0 — the uniform vertex-only, plus the tile sampler.
     pub(super) tiles: wgpu::BindGroup,
     /// Pass C's group 0. Its own because the outline's fragment stage reads the
@@ -102,55 +117,95 @@ impl ViewBindings {
         tile_view_bgl: &wgpu::BindGroupLayout,
         overlay_view_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark composite view"),
-            size: std::mem::size_of::<ViewUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let mut this = Self {
+            slots: UniformSlots::new(device, "stark composite view", 1),
+            tile_bgl: tile_view_bgl.clone(),
+            overlay_bgl: overlay_view_bgl.clone(),
+            sampler: view.sampler.clone(),
+            // Replaced by `rebuild` on the next line, which is the one place these are
+            // described — a second description here would be the one that drifts.
+            tiles: placeholder(device),
+            overlay: placeholder(device),
+        };
+        this.rebuild(device);
+        this
+    }
+
+    /// The dynamic offset that selects view `i` of the last [`write`](Self::write).
+    pub(super) fn offset(i: usize) -> u32 {
+        UniformSlots::<ViewUniform>::offset(i as u32)
+    }
+
+    /// Build the two group-0 bind groups over the current slot buffer.
+    fn rebuild(&mut self, device: &wgpu::Device) {
         // Pass A's view group and the overlay's hold the same two things against two
         // layouts, so one closure answers for both — but each names its *own* shader's
         // declarations (§6.10), because "`composite.wesl` and `overlay.wesl` happen to
         // number these alike" is exactly the kind of agreement this stops asserting by
         // hand.
-        let group = |label, layout, slots| {
-            crate::gpu::desc::bind_group_for(device, label, layout, slots, false, |i| match i {
-                cb::VIEW => buf.as_entire_binding(),
-                cb::SAMP => wgpu::BindingResource::Sampler(&view.sampler),
+        let slots = &self.slots;
+        let sampler = &self.sampler;
+        let group = |label, layout, list| {
+            crate::gpu::desc::bind_group_for(device, label, layout, list, false, |i| match i {
+                cb::VIEW => slots.resource(),
+                cb::SAMP => wgpu::BindingResource::Sampler(sampler),
                 other => unreachable!("a view group lists no binding {other}"),
             })
         };
         let tiles = group(
             "stark composite view bg",
-            tile_view_bgl,
+            &self.tile_bgl,
             super::tiles::VIEW_SLOTS,
         );
         let overlay = group(
             "stark overlay view bg",
-            overlay_view_bgl,
+            &self.overlay_bgl,
             super::overlay::VIEW_SLOTS,
         );
-        Self {
-            buf,
-            tiles,
-            overlay,
-        }
+        self.tiles = tiles;
+        self.overlay = overlay;
     }
 
-    /// Write `view`'s canvas px → NDC mapping, for every pass in the frame.
+    /// Write one slot per view, in order — every pass of the submit that follows binds
+    /// its own by [`offset`](Self::offset).
     ///
-    /// One write rather than one per pass: they all read the same buffer, and a
-    /// render is a single submit, so a second write would only overwrite the first
-    /// (`write_buffer` is a queue operation — the reason the *blend* uniform needs
-    /// a slot per group rather than a rewrite per pass).
-    pub(super) fn write(&self, queue: &wgpu::Queue, view: ViewTransform) {
-        let (m, translate) = view.canvas_to_ndc();
-        // `zoom` rides in `misc.w` for the outline pass, which measures its width in
-        // screen px from a canvas-space distance (§6.8).
-        queue.write_buffer(
-            &self.buf,
-            0,
-            bytemuck::bytes_of(&view_uniform(m.to_cols_array(), translate, view.zoom)),
-        );
+    /// One call rather than one per pass: passes sharing a view share a slot, and a
+    /// second write of the same slot before the submit would only overwrite the first.
+    pub(super) fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        views: &[ViewTransform],
+    ) {
+        let uniforms: Vec<ViewUniform> = views
+            .iter()
+            .map(|view| {
+                let (m, translate) = view.canvas_to_ndc();
+                // `zoom` rides in `misc.w` for the outline pass, which measures its
+                // width in screen px from a canvas-space distance (§6.8).
+                view_uniform(m.to_cols_array(), translate, view.zoom)
+            })
+            .collect();
+        if self.slots.write(device, queue, &uniforms) {
+            self.rebuild(device);
+        }
     }
+}
+
+/// A bind group standing in until [`ViewBindings::rebuild`] replaces it, which the
+/// constructor does before returning.
+///
+/// An empty group over an empty layout: `BindGroup` has no `Default`, and the
+/// alternative — `Option` fields unwrapped at every draw — would put a question at
+/// every call site to answer one at construction.
+fn placeholder(device: &wgpu::Device) -> wgpu::BindGroup {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stark view placeholder bgl"),
+        entries: &[],
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("stark view placeholder bg"),
+        layout: &layout,
+        entries: &[],
+    })
 }

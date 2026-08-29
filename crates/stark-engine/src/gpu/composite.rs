@@ -284,6 +284,18 @@ pub struct CompositorPasses {
     target_format: wgpu::TextureFormat,
 }
 
+/// One point of an eyedropper's sample: the view that frames it, which of the written
+/// view slots that view was laid in, and the draw list to composite through it.
+///
+/// The slot and the view travel together because they are two halves of one fact — a
+/// caller that wrote its views in one order and bound them in another would sample the
+/// right document at the wrong place, which is a colour and not an error (§18.0.2).
+pub(crate) struct PickPatch<'a> {
+    pub(crate) view: ViewTransform,
+    pub(crate) slot: usize,
+    pub(crate) groups: &'a [CompositeGroup],
+}
+
 /// Everything about compositing that does not depend on *what is being drawn into*:
 /// the passes ([`CompositorPasses`], reached through `Deref`) and the view settings
 /// the media pass reads.
@@ -741,19 +753,27 @@ impl Compositor {
             .expect("the branch above builds it when it is absent")
     }
 
-    /// Write the view uniform and upload everything `plan` decided, returning the
-    /// per-tile bind groups pass A draws with — and, beside them, the per-matte ramp
-    /// bind group (`None` when the frame has no matte at all; §22.4).
+    /// Upload everything `plan` decided, returning the per-tile bind groups pass A
+    /// draws with — and, beside them, the per-matte ramp bind group (`None` when the
+    /// frame has no matte at all; §22.4).
     ///
     /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
     /// pass A rather than a second copy of it: what the eyedropper reports and what
     /// the screen shows then cannot drift, which is the whole reason for sampling
     /// through the compositor at all.
     ///
+    /// **The view's own slot is not among what this writes**, because the two callers
+    /// lay theirs down differently: a frame writes one before its single submit, and a
+    /// pick writes every point's before recording any of them
+    /// ([`ViewBindings::write`](view::ViewBindings::write)). What a plan reads is the
+    /// slot, and `encode_plan` takes that. `view` is still needed here for the one
+    /// uniform that is a function of it — the chromatic filter's dispersion, which is
+    /// measured in screen px (§21.10).
+    ///
     /// No walk of its own. Everything here is a loop over what [`Plan::build`]
     /// already ordered, which is what makes "slot `n` is the `n`th merge the encoder
     /// reaches" true by construction rather than by two recursions agreeing.
-    fn upload<'a>(
+    fn upload_streams<'a>(
         &mut self,
         p: &CompositorPipeline,
         view: ViewTransform,
@@ -761,7 +781,6 @@ impl Compositor {
     ) -> PreparedStreams<'a> {
         let device = &p.ctx.device;
         let queue = &p.ctx.queue;
-        self.view.write(queue, view);
 
         // Built once per tile and kept on it, not once per tile per frame — see
         // [`TilePairHandle::composite_bg`] for why a tile's immutability makes that
@@ -832,6 +851,14 @@ impl Compositor {
     /// **No recursion, no cursors, no parity.** All three were decided in
     /// [`Plan::build`] and are read back off the steps here; what is left is a
     /// `match` that resolves three slot names against real targets.
+    /// `view_slot` is which of the views the last
+    /// [`ViewBindings::write`](view::ViewBindings::write) laid down this plan draws
+    /// through — 0 for a frame, which has one, and the point's own index for the
+    /// eyedropper, whose whole trace is recorded into one encoder.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every argument is a distinct piece of what one encode names"
+    )]
     fn encode_plan(
         &self,
         p: &CompositorPipeline,
@@ -840,6 +867,7 @@ impl Compositor {
         plan: &Plan<'_>,
         streams: &PreparedStreams<'_>,
         scratch: Option<&ScratchTargets>,
+        view_slot: usize,
     ) {
         // The parity claim, checked where it is relied on: whatever the plan did, the
         // accumulator ends in the caller's own targets. That is what lets the media
@@ -881,6 +909,7 @@ impl Compositor {
         };
         let tiles = TileStreams {
             view_bg: &self.view.tiles,
+            view_offset: view::ViewBindings::offset(view_slot),
             instances: &self.instances,
             mattes: &self.matte_instances,
             tile_bgs: &streams.tile_bgs,
@@ -997,20 +1026,43 @@ impl Compositor {
     /// ran. `ChannelFormats` exists to make "all three or none of them" unsayable
     /// (§6.7); taking the trio it produces is what lets this path inherit that
     /// instead of re-checking it.
+    /// Lay down one view slot per patch, in `views`' order — what a
+    /// [`composite_channels`](Self::composite_channels) trace binds against by index.
+    ///
+    /// Separate from the recording because the whole point is that it happens *once*
+    /// for a trace: the slots have to be written before any of the passes that read
+    /// them are submitted, and there is one submit.
+    pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
+        self.view.write(&p.ctx.device, &p.ctx.queue, views);
+    }
+
+    /// **One encoder for the whole trace, and the caller's.** A gradient capture
+    /// samples up to [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points
+    /// (§22.2) and every one of them is a patch of this same document; recording them
+    /// together is the difference between one round trip to the queue and a hundred.
+    /// What used to force the submit was the view uniform: one buffer, rewritten per
+    /// patch, and `write_buffer` being a queue operation meant a submit was the only
+    /// thing that could order two writes. The views are slots now
+    /// ([`ViewBindings`](view::ViewBindings)), so `patch` is which of them this call
+    /// draws through and the ordering is the offset rather than the queue.
+    ///
+    /// The caller writes every view before the first of these and submits after the
+    /// last; nothing here submits.
     pub(crate) fn composite_channels(
         &mut self,
         p: &CompositorPipeline,
+        encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
-        view: ViewTransform,
-        groups: &[CompositeGroup],
+        patch: PickPatch<'_>,
     ) {
         debug_assert_eq!(
             into.count(),
             p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
+        let PickPatch { view, slot, groups } = patch;
         let plan = Plan::build(groups);
-        let streams = self.upload(p, view, &plan);
+        let streams = self.upload_streams(p, view, &plan);
         // Its own scratch, thrown away with the call. A pick viewport is `2r+1`
         // square, so this is a few kilobytes; sharing the render path's cache would
         // trade that for reallocating the *window* twice a frame (see
@@ -1018,14 +1070,7 @@ impl Compositor {
         // eyedropper would report a color the screen never showed.
         let scratch = (!plan.scratch.is_empty())
             .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
-        let mut encoder = p
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("stark pick encoder"),
-            });
-        self.encode_plan(p, &mut encoder, into, &plan, &streams, scratch.as_ref());
-        p.ctx.queue.submit([encoder.finish()]);
+        self.encode_plan(p, encoder, into, &plan, &streams, scratch.as_ref(), slot);
     }
 
     /// Composite `scene`'s layers, light the result into `target` under `view`, and
@@ -1081,7 +1126,10 @@ impl Compositor {
         // thing that still knows the real size — which is exactly the split the
         // resolve at the bottom closes.
         let view = view.supersampled(ss);
-        let streams = self.upload(p, view, &plan);
+        // The frame's one view, in slot 0 — the only slot anything on this path
+        // binds (`ViewBindings`).
+        self.view.write(&p.ctx.device, &p.ctx.queue, &[view]);
+        let streams = self.upload_streams(p, view, &plan);
         let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
         // Bound after everything that needs `&mut self`.
         let scratch = if want_scratch {
@@ -1119,7 +1167,15 @@ impl Compositor {
         // Pass A: every step of the plan into the offscreen channels. Its parity
         // guarantees the result lands in these very views however many bounces ran,
         // so the media bind group below never has to be rebuilt.
-        self.encode_plan(p, &mut encoder, accum.targets(), &plan, &streams, scratch);
+        self.encode_plan(
+            p,
+            &mut encoder,
+            accum.targets(),
+            &plan,
+            &streams,
+            scratch,
+            0,
+        );
 
         // Pass B: normals off the height field, lit, tonemapped, over the substrate.
         p.media_pass.encode(
@@ -1148,6 +1204,7 @@ impl Compositor {
             overlay::OverlayScene {
                 outlines,
                 view_bg: &self.view.overlay,
+                view_offset: view::ViewBindings::offset(0),
                 target: draw_target,
                 visible: crate::engine::render::visible_tiles(view),
             },

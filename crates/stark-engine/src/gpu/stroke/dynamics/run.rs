@@ -832,7 +832,10 @@ impl<'a> DynamicsRun<'a> {
             // An empty region (no base tiles) just stays cleared → "no paint".
             if let Some(inst) = &tile_inst {
                 pass.set_pipeline(&kit.composite_pipeline);
-                pass.set_bind_group(0, &view_bg, &[]);
+                // Offset 0: the slot list this group answers to is pass A's, whose
+                // view is dynamic for the eyedropper's sake (`composite::ViewBindings`).
+                // This loop composites one region through one view and has one slot.
+                pass.set_bind_group(0, &view_bg, &[0]);
                 pass.set_vertex_buffer(0, inst.slice(..));
                 for (i, bg) in tile_bgs.iter().enumerate() {
                     let idx = i as u32;

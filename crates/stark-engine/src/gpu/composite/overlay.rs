@@ -17,7 +17,7 @@ use stark_shaders::mirror::overlay::decl as od;
 /// reads the view here too, to convert a canvas-space dash length into screen px with
 /// the zoom.
 pub(super) const VIEW_SLOTS: &[Slot] = &[
-    Slot::at(od::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
+    Slot::dynamic(od::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
     Slot::at(od::SAMP),
 ];
 
@@ -162,7 +162,7 @@ impl OverlayPass {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, scene.view_bg, &[]);
+        pass.set_bind_group(0, scene.view_bg, &[scene.view_offset]);
         pass.set_vertex_buffer(0, instances.slice());
         for i in 0..mask_tiles.len() as u32 {
             pass.set_bind_group(1, mask_tiles[i as usize], &[]);
@@ -177,6 +177,10 @@ pub(super) struct OverlayScene<'a> {
     /// The renderer's group 0 — the canvas → NDC mapping, bound to both stages here
     /// (§6.8).
     pub(super) view_bg: &'a wgpu::BindGroup,
+    /// Which view slot to draw through. The outline only ever runs on the screen
+    /// path, which has one view, so this is 0 — stated rather than assumed, since the
+    /// group it binds is slotted for pass A's sake.
+    pub(super) view_offset: u32,
     /// The lit image to draw over: the supersampled target when there is one, so the
     /// ants go through the same resolve as the paint and come out antialiased.
     pub(super) target: &'a wgpu::TextureView,

@@ -19,7 +19,7 @@ use stark_shaders::mirror::matte::decl as md;
 /// vertex stage places the quad from `view`, the fragment stage samples through `samp`,
 /// and neither wants the other's.
 pub(crate) const VIEW_SLOTS: &[Slot] = &[
-    Slot::at(cd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
+    Slot::dynamic(cd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
     Slot::at(cd::SAMP),
 ];
 
@@ -194,7 +194,7 @@ impl TilePass {
             color_attachments: &attachments[..into.count()],
             ..Default::default()
         });
-        pass.set_bind_group(0, s.view_bg, &[]);
+        pass.set_bind_group(0, s.view_bg, &[s.view_offset]);
         let mut pipeline_is_matte = None;
         for draw in draws {
             match *draw {
@@ -231,6 +231,11 @@ impl TilePass {
 pub(super) struct TileStreams<'a> {
     /// Group 0: the canvas → NDC mapping, vertex-only here.
     pub(super) view_bg: &'a wgpu::BindGroup,
+    /// Which view slot this run draws through
+    /// ([`ViewBindings::offset`](super::view::ViewBindings::offset)). A frame has one
+    /// and passes 0; the eyedropper's trace has one per sampled point, all in the
+    /// same submit.
+    pub(super) view_offset: u32,
     pub(super) instances: &'a InstanceStream<Instance>,
     pub(super) mattes: &'a InstanceStream<MatteInstance>,
     /// One per tile instance, at the same index — each borrowed from the tile itself.
