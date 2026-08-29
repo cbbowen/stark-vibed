@@ -16,7 +16,7 @@
 
 use stark_model::document::BrushParams;
 
-use super::budget::{MIN_SEGMENT_LEN, dynamics_len, fit_len, flatten_tolerance};
+use super::budget::{MIN_SEGMENT_LEN, dynamics_len, fit_len, flatten_tolerance, manipulates_paint};
 
 mod bleed;
 mod kit;
@@ -124,7 +124,7 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
         }
         stark_model::document::BrushEffect::Paint(p) => p.dynamics,
     };
-    if d.lift <= 0.0 && d.deposit <= 0.0 && d.charge <= 0.0 && d.bleed <= 0.0 {
+    if !manipulates_paint(&d) {
         return StrokePlan {
             path: StrokePath::Swept,
             tol,

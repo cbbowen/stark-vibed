@@ -125,12 +125,34 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// flattening problem.
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.5;
 
-/// The margin [`fit_len`] holds over a segment's `max_len` when it prices the
-/// travel: the chord is what `path::within` caps, and the arc over it is longer and
-/// bows a sagitta out of its own box. Both are bounded by the turn a segment may
-/// bend through (`path::MAX_HALF_TURN_SIN`) — under 2% and under 5% of the chord —
-/// so a single margin covers the pair with room to spare.
-const ARC_MARGIN: f32 = 1.1;
+/// The margin [`fit_len`] holds over a segment's `max_len` when it prices the travel:
+/// the **sagitta**, which `coverage_bounds` adds to *both* sides of the chord's box
+/// before a region is measured, and which `max_len` says nothing about.
+///
+/// Nothing else. `max_len` caps the segment's arc length (`path::FlattenTolerance`), so
+/// the chord under it is already paid for — it is shorter. What is left is the bow, and
+/// it is bounded by the turn one segment may bend through
+/// (`path::MAX_HALF_TURN_SIN` = 0.2, the sine of the half-turn). Writing `u` for that
+/// sine, an edge of arc length `L` has chord `L·u/asin u` and sagitta
+/// `L·(1 − √(1 − u²))/(2·asin u)`, so the box the region must hold is
+///
+/// ```text
+/// (chord + 2·sagitta) / L  =  (u + 1 − √(1 − u²)) / asin u  ≤  1.09360  at u = 0.2
+/// ```
+///
+/// rising monotonically to that worst case and tending to 1 as the edge straightens.
+/// 1.095 rounds it up.
+///
+/// It read 1.1 while `max_len` capped the *chord*, and that number was covering two
+/// terms rather than one: the arc over the chord (0.68% at the same backstop) as well
+/// as the bow. The first was never the region's to pay — it was a flattener that
+/// measured `dist` along chords while everything downstream walked arcs, and 1.1 was
+/// the compensating constant. With the flattener fixed the term is gone; what stayed
+/// is the half that was always real. Against the chord the same pair needed
+/// `1 + 2·sagitta/chord = 1.10102`, so 1.1 was in fact a hair *short* of it — nobody
+/// saw that, because reaching the backstop takes a segment bending ~23° when
+/// `FLATTEN_TOLERANCE.angle` admits 5.7°.
+const ARC_MARGIN: f32 = 1.095;
 
 /// The longest `max_len` one segment of `b` can flatten at and still fit a
 /// [`MAX_REGION_DIM`]-bounded region (§6.2) — negative when the tip's own extent
@@ -212,6 +234,22 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
         },
         |p| p.dynamics,
     )
+}
+
+/// Does a brush settled like this reach for paint that is *already on the canvas* —
+/// the question that sends a stroke down the stamp loop rather than the swept deposit
+/// (§6.2)?
+///
+/// **One spelling, asked from both sides.** [`flatten_tolerance`] buys the loop's
+/// length cap for exactly the brushes
+/// [`dynamics_setup`](super::dynamics::dynamics_setup) hands to the loop, so these are
+/// not two tests that ought to agree — they are one question with two callers. Spelled
+/// out in both places they were four `> 0.0` here against four `<= 0.0` there, and over
+/// floats that is not a complement: a NaN axis satisfies neither, so the pair would have
+/// flattened a brush for the swept path and then drawn it down the loop, at a segment
+/// length the loop's own error bound never priced.
+pub(super) fn manipulates_paint(d: &BrushDynamics) -> bool {
+    d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0
 }
 
 /// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
@@ -360,7 +398,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
     let d = axes(b);
-    if d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0 {
+    if manipulates_paint(&d) {
         tol.max_len = tol.max_len.min(dynamics_len(b));
         // The region floor's price (§6.2): a tip so wide that a full-length
         // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments

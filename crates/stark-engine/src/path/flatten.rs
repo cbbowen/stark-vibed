@@ -23,9 +23,15 @@ pub struct IntermediateSample {
     pub pressure: f32,
     pub tilt: Vec2,
     pub time: f32,
-    /// Arc length from the stroke start (canvas px), measured along the emitted
-    /// polyline — the distance axis that the load drain, the color-dynamics
-    /// noise, and the tool reservoir are parameterized by (§6.2).
+    /// Arc length from the stroke start (canvas px), measured along the **arcs** the
+    /// emitted edges stand for ([`fit_arc`]) — the distance axis that the load drain,
+    /// the color-dynamics noise, and the tool reservoir are parameterized by (§6.2).
+    ///
+    /// Along the arcs and not along the chords between them, because the arc is what
+    /// gets swept: the segment builder steps a piece of one out to `dist + length`
+    /// and the next edge has to pick up exactly there, or the taper's radius has a
+    /// step at every curved joint and a bleed firing's window is scanned twice
+    /// (§6.2).
     pub dist: f32,
 }
 
@@ -49,10 +55,17 @@ pub struct FlattenTolerance {
     /// across one segment. Attributes are constant *within* a swept segment, so
     /// this is what keeps a pressure ramp from becoming a staircase of radii.
     pub attribute: f32,
-    /// Max segment length (canvas px); `INFINITY` for "no opinion". The renderer
-    /// sets this from quantities that vary with distance travelled but are applied
-    /// per segment rather than per fragment — the `drain` falloff, the dynamics
+    /// Max **arc** length of one segment (canvas px); `INFINITY` for "no opinion". The
+    /// renderer sets this from quantities that vary with distance travelled but are
+    /// applied per segment rather than per fragment — the `drain` falloff, the dynamics
     /// loop's reservoir cadence (see `gpu::stroke::flatten_tolerance`).
+    ///
+    /// The arc rather than the chord under it, for the same reason the positional
+    /// budget is spent on the arc: that is the primitive the caller will sweep, and a
+    /// cap on the chord under-prices the travel the renderer then has to fit in a
+    /// region. Unlike the error bounds this is a hard requirement, so it is met by
+    /// construction and not merely aimed at — [`flatten`] cuts each span into enough
+    /// pieces that the error-driven subdivision inside one can always reach it.
     pub max_len: f32,
     /// Tightest arc the caller can actually sweep (1/canvas px); `INFINITY` for "no
     /// opinion". Also a renderer-supplied cap rather than an error bound: the shaders
@@ -100,9 +113,63 @@ impl Default for FlattenTolerance {
     }
 }
 
-/// Max bisections of a single control span: 2^10 segments, the ceiling on what any
-/// one span can cost however pathological its knots.
+/// Max bisections of a single span piece: 2^10 edges, the ceiling on what any one
+/// piece can cost however pathological its knots.
+///
+/// **A backstop on the *error* bounds, which is what it was for.** `position`, `angle`
+/// and `attribute` are allowances a pathological span can ask unboundedly much of, so
+/// their pursuit has to stop somewhere and a picture drawn a shade off budget is the
+/// right thing to hand back. [`FlattenTolerance::max_len`] is not one of those: it is a
+/// requirement the caller states, and it used to be silently overridden here whenever a
+/// span wanted more than 1,024 edges of it. [`span_pieces`] is what keeps the two
+/// apart — the requirement decides how many pieces a span is cut into, this decides
+/// how hard the error bounds are chased inside one.
 const MAX_SUBDIVISION_DEPTH: u32 = 10;
+
+/// Edges one exhausted piece costs — what [`MAX_SUBDIVISION_DEPTH`] affords.
+const EDGES_PER_PIECE: f32 = (1u32 << MAX_SUBDIVISION_DEPTH) as f32;
+
+/// Ceiling on the pre-split of one span, so a `max_len` no renderer budget can produce
+/// cannot ask for an unbounded polyline. 64 pieces is 65,536 edges, which at the
+/// renderer's own floor (`gpu::stroke::MIN_SEGMENT_LEN`, 0.5 px) is a 32,768 px span —
+/// past anything a fitted stroke holds, and the only reason it is a number at all is
+/// that [`flatten`] is reachable with a tolerance nobody's budget built.
+const MAX_SPAN_PIECES: u32 = 64;
+
+/// How many uniform parametric pieces a span is cut into *before* the error-driven
+/// subdivision runs inside each — the depth floor [`FlattenTolerance::max_len`]'s hard
+/// requirement needs, priced so that it costs nothing where there is no requirement.
+///
+/// **1 whenever [`MAX_SUBDIVISION_DEPTH`] can already reach the cap unaided**, so every
+/// stroke the flattener was already cutting correctly comes out bit for bit: the
+/// pre-split engages in exactly the regime that was quietly missing the cap and nowhere
+/// else.
+///
+/// The count is taken from a bound on the span's *speed* rather than from its chord,
+/// which is what makes the cap met rather than aimed at. The Bernstein weights of a
+/// cubic's derivative sum to 1, so `|B′| ≤ 3·max leg` everywhere on the span; a piece
+/// of parametric width `h` therefore travels at most `3·max leg·h`, and
+/// [`MAX_SUBDIVISION_DEPTH`] halvings inside it leave every edge under `max_len`
+/// whatever the parameterization does with the arc length. The subdivision still stops
+/// the moment an edge is within budget, so a piece that did not need the depth does not
+/// spend it.
+fn span_pieces(sp: &Span, max_len: f32) -> u32 {
+    let speed = 3.0
+        * sp.b
+            .windows(2)
+            .map(|w| (w[1].pos - w[0].pos).length())
+            .fold(0.0, f32::max);
+    let afforded = max_len * EDGES_PER_PIECE;
+    if speed > afforded {
+        ((speed / afforded).ceil() as u32).clamp(1, MAX_SPAN_PIECES)
+    } else {
+        // `INFINITY` (no opinion), a non-positive cap, and a NaN in either term all
+        // land here, which is why the comparison is spelled the way round that lets
+        // them: there is no requirement to build a floor under, and the span keeps the
+        // arithmetic the error bounds alone give it.
+        1
+    }
+}
 
 /// The curve point at the **end** of span `k` — where span `k + 1` picks up. `k`
 /// past the last span gives the stroke's own end point.
@@ -140,7 +207,9 @@ pub fn point_at(knots: &[ControlPoint], t: f32) -> Vec2 {
 }
 
 /// Expand `knots` into a polyline, subdividing only where the error budget
-/// requires it (§6.2).
+/// requires it (§6.2) — and, where [`FlattenTolerance::max_len`] asks a span for more
+/// edges than chasing the error bounds inside one can afford, cutting that span into
+/// as many pieces as the requirement takes ([`span_pieces`]).
 pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<IntermediateSample> {
     flatten_spans(knots, 0..span_count(knots.len()), 0.0, tol)
 }
@@ -250,14 +319,29 @@ pub fn flatten_spans_from(
         // *this* span's derivative, so the error test compares like with like.
         let mut a = sp.eval(u);
         a.dist = out.last().expect("start sample").dist;
-        let ends = (
-            End { u, s: a },
-            End {
-                u: 1.0,
-                s: sp.eval(1.0),
-            },
-        );
-        subdivide(&sp, ends.0, ends.1, MAX_SUBDIVISION_DEPTH, tol, &mut out);
+        let pieces = span_pieces(&sp, tol.max_len);
+        let mut lo = End { u, s: a };
+        for p in 1..=pieces {
+            // The last piece ends at `1.0` exactly — and a single piece *is* the span,
+            // so a span with no requirement to build a floor under takes the very
+            // arithmetic it always took, ends and all.
+            let hu = if p == pieces {
+                1.0
+            } else {
+                u + (1.0 - u) * (p as f32 / pieces as f32)
+            };
+            let hi = End {
+                u: hu,
+                s: sp.eval(hu),
+            };
+            subdivide(&sp, lo, hi, MAX_SUBDIVISION_DEPTH, tol, &mut out);
+            // The next piece picks up from what was emitted, not from `hi` — the two
+            // are the same sample but for the accumulator, which only `emit` fills in.
+            lo = End {
+                u: hu,
+                s: *out.last().expect("a piece emits its own far end"),
+            };
+        }
     }
     out
 }
@@ -285,17 +369,27 @@ fn subdivide(
         s: sp.eval(0.5 * (a.u + b.u)),
     };
     if depth == 0 || within(&a.s, &m.s, &b.s, tol) {
-        emit(out, b.s);
+        emit(out, b.s, tol);
         return;
     }
     subdivide(sp, a, m, depth - 1, tol, out);
     subdivide(sp, m, b, depth - 1, tol, out);
 }
 
-/// Append `s`, giving it the arc length accumulated along the polyline.
-fn emit(out: &mut Vec<IntermediateSample>, mut s: IntermediateSample) {
+/// Append `s`, giving it the arc length accumulated along the edges emitted so far.
+///
+/// The edge's length is [`fit_arc`]'s, from the **same call** the segment builder
+/// makes for that edge — the previous sample's own derivative, this sample's position,
+/// the caller's curvature cap. Not a second expression that ought to agree with it:
+/// `dist` is what the renderer steps *along* the arc from, so the two would be
+/// measuring the same edge with different rulers, and the disagreement — the arc over
+/// the chord, up to 0.7% — lands as a step in the taper's radius at every curved joint
+/// and as a sliver of path two consecutive segments both scan for bleed firings
+/// (§6.2).
+fn emit(out: &mut Vec<IntermediateSample>, mut s: IntermediateSample, tol: FlattenTolerance) {
     let prev = *out.last().expect("the start sample is emitted first");
-    s.dist = prev.dist + (s.pos - prev.pos).length();
+    let arc = fit_arc(prev.vel, s.pos - prev.pos, tol.max_arc_curvature);
+    s.dist = prev.dist + arc.length;
     out.push(s);
 }
 
@@ -308,6 +402,11 @@ fn emit(out: &mut Vec<IntermediateSample>, mut s: IntermediateSample) {
 /// segment and the curve it replaces". It is the budget finally being spent on the
 /// geometry that gets drawn: an arc's error is second order in the turn where a
 /// chord's is first order, so the same allowance buys a substantially longer edge.
+///
+/// The **length** cap is priced on that same arc, for the plainer reason that it is
+/// the length the renderer will travel: a chord under the cap can carry an arc over
+/// it, and every consumer of the cap — the reservoir cadence, the region fit — is
+/// asking about the travel and not about the shortcut across it (§6.2).
 ///
 /// The `angle` bound is deliberately left where it was, and with the positional test
 /// no longer binding on gentle curves it is usually what does bind now. It earns that:
@@ -323,10 +422,10 @@ fn within(
     tol: FlattenTolerance,
 ) -> bool {
     let v = s1.pos - s0.pos;
-    if v.length() > tol.max_len {
+    let arc = fit_arc(s0.vel, v, tol.max_arc_curvature);
+    if arc.length > tol.max_len {
         return false;
     }
-    let arc = fit_arc(s0.vel, v, tol.max_arc_curvature);
     if point_arc_distance(sm.pos, s0.pos, &arc) > tol.position {
         return false;
     }
@@ -589,6 +688,35 @@ mod tests {
         }
     }
 
+    /// The length cap is a **requirement**, and one span's error-driven subdivision
+    /// ceiling ([`MAX_SUBDIVISION_DEPTH`]) is not allowed to quietly override it
+    /// (§6.2).
+    ///
+    /// Two knots is a ~1000 px middle span; at 0.05 px that is ~13,000 edges of a span
+    /// halving alone can afford 1,024. The regime is not exotic — the renderer's own
+    /// floor is `MIN_SEGMENT_LEN` = 0.5 px, which the same span overruns at 512 px —
+    /// so the cap has to be met by construction rather than aimed at, which is what
+    /// the pre-split in [`flatten_spans_from`] is for.
+    #[test]
+    fn flatten_honours_a_cap_finer_than_one_spans_subdivision_ceiling() {
+        let knots = [knot(0.0, 0.0), knot(1000.0, 0.0)];
+        let tol = FlattenTolerance {
+            max_len: 0.05,
+            ..FLATTEN_TOLERANCE
+        };
+        let poly = flatten(&knots, tol);
+        let worst = poly
+            .windows(2)
+            .map(|w| w[1].dist - w[0].dist)
+            .fold(0.0, f32::max);
+        assert!(
+            worst <= tol.max_len + 1e-4,
+            "the longest of {} edges travelled {worst}px against a {}px cap",
+            poly.len() - 1,
+            tol.max_len,
+        );
+    }
+
     #[test]
     fn flatten_splits_on_a_pressure_ramp() {
         // A dead-straight stroke whose pressure sweeps 0 → 1: geometry alone would
@@ -667,15 +795,83 @@ mod tests {
         );
     }
 
+    /// **The accumulator is the arcs**, edge for edge (§6.2): `dist` advances by
+    /// exactly what [`fit_arc`] reports for the edge — the same call, with the same
+    /// three arguments, that the segment builder makes for it — and never goes
+    /// backwards.
+    ///
+    /// Stated over a family and not on one curve, because a *chord* accumulator
+    /// satisfies every check a straight stroke can pose and most of what a gentle one
+    /// can. What separates the two is a curved edge, so the family varies the bend, the
+    /// pen ramp and both caps — including a curvature cap tight enough to send edges
+    /// back to being chords, where the two agree again and have to.
+    ///
+    /// Equality is exact rather than toleranced, and that is the claim: this is not two
+    /// derivations of one number that ought to land near each other, it is the same
+    /// expression evaluated in the same order.
     #[test]
-    fn arc_length_accumulates_along_the_polyline() {
-        let knots = [knot(0.0, 0.0), knot(40.0, 40.0), knot(80.0, 0.0)];
-        let poly = flatten(&knots, FLATTEN_TOLERANCE);
-        assert_eq!(poly[0].dist, 0.0);
-        for w in poly.windows(2) {
-            let step = (w[1].pos - w[0].pos).length();
-            assert!((w[1].dist - w[0].dist - step).abs() < 1e-3);
+    fn dist_accumulates_the_arcs_the_edges_stand_for() {
+        let mut bent = 0usize;
+        let mut over_chord = 0usize;
+        for bend in [0.0f32, 3.0, 20.0, 90.0, 260.0] {
+            for tol in [
+                FLATTEN_TOLERANCE,
+                FLATTEN_TOLERANCE.relaxed(6.0),
+                FlattenTolerance {
+                    max_len: 7.0,
+                    ..FLATTEN_TOLERANCE
+                },
+                FlattenTolerance {
+                    max_arc_curvature: 0.004,
+                    ..FLATTEN_TOLERANCE
+                },
+                FlattenTolerance {
+                    max_len: 0.4,
+                    ..FLATTEN_TOLERANCE.relaxed(3.0)
+                },
+            ] {
+                let knots: Vec<ControlPoint> = (0..6)
+                    .map(|i| {
+                        let t = i as f32;
+                        ControlPoint {
+                            pressure: t / 5.0,
+                            ..knot(t * 47.0, (t * 0.9).sin() * bend)
+                        }
+                    })
+                    .collect();
+                let poly = flatten(&knots, tol);
+                assert_eq!(poly[0].dist, 0.0, "the accumulator starts at dist0");
+                let (mut arcs, mut chords) = (0.0f32, 0.0f32);
+                for w in poly.windows(2) {
+                    let arc = fit_arc(w[0].vel, w[1].pos - w[0].pos, tol.max_arc_curvature);
+                    arcs += arc.length;
+                    chords += (w[1].pos - w[0].pos).length();
+                    bent += usize::from(arc.curvature != 0.0);
+                    assert_eq!(
+                        w[1].dist,
+                        w[0].dist + arc.length,
+                        "bend {bend}: an edge advanced dist by something other than its arc",
+                    );
+                    assert!(
+                        w[1].dist >= w[0].dist,
+                        "bend {bend}: dist went backwards across an edge",
+                    );
+                }
+                assert_eq!(
+                    poly.last().expect("a polyline").dist,
+                    arcs,
+                    "bend {bend}: the final dist is not the sum of the emitted arcs",
+                );
+                over_chord += usize::from(arcs > chords);
+            }
         }
+        // The premise. Without a bent edge somewhere the family would be satisfied by
+        // the chord accumulator this replaced, and would have stopped testing anything.
+        assert!(bent > 0, "no configuration produced a curved edge");
+        assert!(
+            over_chord > 0,
+            "no configuration measured longer along the arcs than along the chords",
+        );
     }
 
     #[test]
