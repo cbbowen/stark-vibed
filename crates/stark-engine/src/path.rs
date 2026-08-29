@@ -52,6 +52,7 @@
 //! The cost is three small builders written twice.
 
 mod arc;
+mod arclen;
 mod fit;
 mod flatten;
 
@@ -67,7 +68,8 @@ pub use fit::{
 };
 // The pen-channel layout and its two conversions, for `assist::realize` — which fits
 // the same four channels onto the same control polygon and had its own copy of both.
-pub(crate) use fit::{CHANNELS, arc_profile, control_point_from, param_at};
+pub(crate) use arclen::{arc_profile, param_at};
+pub(crate) use fit::{CHANNELS, control_point_from};
 pub use flatten::{
     FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans,
     flatten_spans_from, point_at, span_end,
