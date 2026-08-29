@@ -225,23 +225,49 @@ fn paint_edit(
         &DocState,
         &crate::gpu::tile::TileMap,
         &super::selection::Selection,
-    ) -> Option<(
-        crate::gpu::tile::TileMap,
-        Option<super::selection::Selection>,
-    )>,
+    ) -> Option<crate::gpu::tile::TileMap>,
 ) -> DocState {
     let Some(base) = paint_base(&state, layer) else {
         return state;
     };
     let selection = state.selection_of(actor);
     match edit(&state, &base, &selection) {
-        Some((tiles, moved)) => {
-            let next = state.map_layer(layer, |l| l.with_tiles(tiles));
-            match moved {
-                Some(mask) => next.with_selection(actor, mask),
-                None => next,
-            }
+        Some(tiles) => state.map_layer(layer, |l| l.with_tiles(tiles)),
+        None => {
+            tracing::warn!("{refused}");
+            state
         }
+    }
+}
+
+/// [`paint_edit`] for the one family that also **moves the author's mask**: the three
+/// transforms, which cut the selected paint out and restack it under the map, and
+/// carry the mask with it (§16).
+///
+/// A second function rather than an `Option<Selection>` in the first's return. That
+/// sentinel was `Some` in exactly one of three callers and `None` hard-coded in the
+/// other two, and the `&DocState` beside it was bound by exactly one — the opposite
+/// one — so a reader had to check all three call sites to learn which half of the
+/// signature was live at each. Each helper's parameters are now what its callers
+/// actually use.
+fn paint_and_mask_edit(
+    state: DocState,
+    layer: LayerId,
+    actor: ActorId,
+    refused: &'static str,
+    edit: impl FnOnce(
+        &crate::gpu::tile::TileMap,
+        &super::selection::Selection,
+    ) -> Option<(crate::gpu::tile::TileMap, super::selection::Selection)>,
+) -> DocState {
+    let Some(base) = paint_base(&state, layer) else {
+        return state;
+    };
+    let selection = state.selection_of(actor);
+    match edit(&base, &selection) {
+        Some((tiles, moved)) => state
+            .map_layer(layer, |l| l.with_tiles(tiles))
+            .with_selection(actor, moved),
         None => {
             tracing::warn!("{refused}");
             state
@@ -256,17 +282,14 @@ fn transform_apply(
     layer: LayerId,
     map: &stark_model::document::TransformMap,
 ) -> DocState {
-    paint_edit(
+    // The mask travels with the paint it gated (§16), which is what the second
+    // helper is for.
+    paint_and_mask_edit(
         state,
         layer,
         actor,
         "transform rejected (unusable map or too many tiles); ignored",
-        |_, base, selection| {
-            ctx.transform
-                .apply(&ctx.pool, base, selection, map)
-                // The mask travels with the paint it gated (§16).
-                .map(|(tiles, moved)| (tiles, Some(moved)))
-        },
+        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map),
     )
 }
 
@@ -486,7 +509,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                         )
                     }
                 };
-                Some((tiles, None))
+                // A stroke lays paint through the author's mask and never moves it.
+                Some(tiles)
             },
         ),
         ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
@@ -690,12 +714,9 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             *layer,
             action.id.actor,
             "fill rejected (unbounded region or too many tiles); ignored",
-            |_, base, selection| {
-                ctx.fill
-                    .apply(&ctx.pool, base, selection, op)
-                    // A fill lays paint through a mask and never moves it.
-                    .map(|tiles| (tiles, None))
-            },
+            // A fill lays paint through a mask and never moves it, which is now what
+            // taking `paint_edit` says rather than a `None` it has to pass.
+            |_, base, selection| ctx.fill.apply(&ctx.pool, base, selection, op),
         ),
     }
 }
