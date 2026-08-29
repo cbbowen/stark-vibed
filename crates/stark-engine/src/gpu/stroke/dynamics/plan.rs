@@ -35,7 +35,7 @@ use super::bleed::{BLEED_TRAVEL_QUANTUM, MAX_BLEED_FIRES_PER_SEGMENT, bleed_sten
 //
 // Every slot is a pure function of the `StrokeRecord` and the piece's own geometry,
 // computed in plain CPU float math, so replay is deterministic (§12.1).
-use stark_shaders::mirror::dynamics::Stamp;
+use stark_shaders::mirror::dynamics::{Stamp, TILE_WG};
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
 /// declares — both of which have to be `Stamp`'s own size, so they are taken from it
@@ -465,10 +465,19 @@ struct Rect {
 }
 
 impl Rect {
-    /// Workgroup counts covering it, at the shaders' 8×8.
+    /// Workgroup counts covering it, at the shaders' own tile size (§6.10).
     fn groups(&self) -> (u32, u32) {
-        (self.w.div_ceil(8), self.h.div_ceil(8))
+        (groups_for(self.w), groups_for(self.h))
     }
+}
+
+/// Workgroups covering `texels` along one axis, at the tile kernels' declared side.
+///
+/// `TILE_WG` is generated from `dynamics.wesl`'s own `const` — the side that decides
+/// it — rather than transcribed here (§6.10). Every host expression that turns texels
+/// into groups, or groups back into texels, goes through this constant.
+pub(super) fn groups_for(texels: u32) -> u32 {
+    texels.div_ceil(TILE_WG)
 }
 
 /// The snapshot scratch's square for a piece: **the largest rect the piece will
@@ -485,7 +494,7 @@ fn snapshot_square(rects: &[Rect]) -> u32 {
     // at least one segment — still names a texture the device will create.
     rects
         .iter()
-        .fold(8, |m, r| m.max(r.w).max(r.h))
+        .fold(TILE_WG, |m, r| m.max(r.w).max(r.h))
         .next_multiple_of(SNAPSHOT_QUANTUM)
 }
 
@@ -547,7 +556,11 @@ fn cell_geometry(
     );
     let groups = rect.groups();
     let cells = |origin: f32, a: f32, groups: u32| -> u32 {
-        cell_span(origin as i32 + a as i32, (groups * 8).min(dsize) as i32, c)
+        cell_span(
+            origin as i32 + a as i32,
+            (groups * TILE_WG).min(dsize) as i32,
+            c,
+        )
     };
     let cx = cells(rect.origin.x, anchor.x, groups.0);
     let cy = cells(rect.origin.y, anchor.y, groups.1);
@@ -562,7 +575,7 @@ fn cell_geometry(
         cx <= fit && cy <= fit,
         "a {cx}x{cy}-cell hoist overruns the {fit}-cell scratch",
     );
-    (anchor, Some((cx.div_ceil(8), cy.div_ceil(8))))
+    (anchor, Some((groups_for(cx), groups_for(cy))))
 }
 
 /// What one slot of the plan is built from, and — because the walk that produces these
@@ -1438,7 +1451,7 @@ mod tests {
                     let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER as i32;
                     // The texels the deposit scans: its rect as rounded to whole
                     // workgroups, clamped to the snapshot square — what `cells` counts.
-                    let span = (rect.groups().0 * 8).min(dsize) as i32;
+                    let span = (rect.groups().0 * TILE_WG).min(dsize) as i32;
                     let count = cell_span(rect_origin as i32 + a, span, c) as i32;
                     for t in 0..span {
                         let rt = rect_origin as i32 + t;

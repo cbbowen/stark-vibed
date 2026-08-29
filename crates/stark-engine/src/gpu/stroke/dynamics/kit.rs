@@ -8,6 +8,7 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::slice::decl as sld;
 
 /// The prefix-τ volume at group 1 — **the fast path's own list** (`stroke::swept`),
@@ -106,12 +107,18 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     composite_tile_bgl: wgpu::BindGroupLayout,
 ) -> DynamicsKit {
     let device = &ctx.device;
-    // The loop's storage-texture declarations are `rgba16float`; both color
-    // spaces use that tile color format (§6.7), so the region can hold either.
+    // The loop stores a tile's color through `region_color_w`, and copies the region
+    // back into tiles texel-for-texel — which is legal only where the space's tile
+    // format *is* the format that slot declares. Both spaces use `rgba16float` (§6.7),
+    // so either can hold the region.
+    //
+    // Compared against the declaration rather than a literal: the literal was a second
+    // copy of what `dynamics.wesl` already says (§6.10), so this assertion could only
+    // ever catch the color space drifting, never the pair drifting apart.
     debug_assert_eq!(
         color_space.color_format(),
-        wgpu::TextureFormat::Rgba16Float,
-        "the loop declares rgba16float storage; this space's tiles are not that"
+        d::REGION_COLOR_W.storage_format(),
+        "the loop stores tile color through `region_color_w`; this space's tiles are not that format",
     );
     let frag = wgpu::ShaderStages::FRAGMENT;
     // Whether this space carries a **residual** (§6.7). It selects the `_resid` build
@@ -316,7 +323,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // stand-in pattern): such a slot carries `lambda_bleed = 0` and never reads it.
     let bleed_placeholder = desc::zero_texture(
         ctx,
-        wgpu::TextureFormat::R32Float,
+        d::BLEED_W_W.storage_format(),
         "stark dynamics bleed w 1x1",
     );
 

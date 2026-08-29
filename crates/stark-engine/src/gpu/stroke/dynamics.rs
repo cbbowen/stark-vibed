@@ -27,12 +27,6 @@ mod slots;
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
 
-/// fp32, for the same reason the prefix-τ volume is: every fragment reads the baked
-/// swept prefix as a *difference* of two prefix sums (§6.2), so f16 would band exactly
-/// where the difference is smallest. Shared by the layout that declares the storage
-/// texture ([`kit`]) and the run that allocates it ([`run`]).
-const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
-
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
 /// The two swept answers are kept apart because they are not the same event: one is

@@ -743,6 +743,18 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // Must equal the host's BAKE_RES (the bake textures' side).
 const BAKE_RES: u32 = 128u;
 
+// The tile kernels' workgroup side: every entry point below that walks a rectangle of
+// region texels is dispatched over `ceil(extent / TILE_WG)` groups per axis.
+//
+// Declared here so the host reads it from the mirror rather than transcribing it
+// (§6.10), which is what `BAKE_RES` above already does for the scan's width. It was
+// the literal `8` in seven `@workgroup_size` attributes and six host expressions;
+// changing it for a tuning experiment meant finding all six by hand, and missing the
+// one that turns groups back into texels (`cell_geometry`) under-counts the cells the
+// hoist writes — which `deposit_coarse` then reads as the previous segment's
+// leftovers. A wrong picture, not a validation error.
+const TILE_WG: u32 = 8u;
+
 var<workgroup> ws_e: array<f32, BAKE_RES>;
 var<workgroup> ws_load: array<vec4<f32>, BAKE_RES>;
 // The mass-weighted color, both halves in one lane (§6.7, `lib::latent`). The residual
@@ -938,7 +950,7 @@ fn snapshot_at(gx: u32, gy: u32) {
 
 // The standalone pass, which only the pen-up now dispatches: the `settle` reads the
 // snapshot, so unlike the segment case it cannot share a dispatch with its producer.
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn snapshot(@builtin(global_invocation_id) gid: vec3<u32>) {
     snapshot_at(gid.x, gid.y);
 }
@@ -1061,7 +1073,7 @@ fn tip_at(f: f32) -> vec4<f32> {
 // re-based onto its own grid. The grid's y extent is whatever the taller of the two
 // needs, so a few groups fall outside both and return on the bounds checks — a handful
 // of early-out threads against one fewer serialized dispatch per segment, out of five.
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn exchange(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
@@ -1375,7 +1387,7 @@ const BLEED_OFFS = array<vec2<i32>, 4>(
 // antisymmetry outright: the two threads of a pair sit over different substrate. Computing
 // it once, here, is what enforces that, where the deposit's own `w_t` used to be free to
 // pick up a tooth its neighbour's `w_n` never had.
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn bleed_weight(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dim = textureDimensions(bleed_w_w);
     if gid.x >= dim.x || gid.y >= dim.y {
@@ -1674,7 +1686,7 @@ fn lay_parcel(
     @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, 0.0)));
 }
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
     if gid.x >= udim.x || gid.y >= udim.y {
@@ -1944,7 +1956,7 @@ fn cell_base() -> vec2<i32> {
 // and stored for `deposit_coarse` to read back. Threads past the cells the host
 // counted for this rect evaluate a real (unused) cell or store out of bounds, which
 // WGSL defines as a no-op — the dispatch rounding needs no guard of its own.
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ci = vec2<i32>(gid.xy);
     let c = st.cell_px;
@@ -2034,7 +2046,7 @@ fn cell_lerp(tex: texture_2d<f32>, tap: CellTap) -> vec4<f32> {
 // line for line the same, and must stay so: the two kernels are one model at two
 // resolutions, and a divergence between them is a `preview == committed` bug waiting
 // for the radius that flips the host's choice.
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
     if gid.x >= udim.x || gid.y >= udim.y {
@@ -2180,7 +2192,7 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
 // crease has none on the other.
 const SETTLE_BOUND_SHARPNESS: f32 = 4.0;
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(TILE_WG, TILE_WG)
 fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let udim = textureDimensions(under_color);
     if gid.x >= udim.x || gid.y >= udim.y {

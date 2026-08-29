@@ -28,7 +28,6 @@ use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
-use super::BAKE_FORMAT;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, bleed_fires, cell_scratch_size,
     dynamics_plan,
@@ -44,11 +43,14 @@ const BRUSH_RES: u32 = 64;
 // (`dynamics.wesl::bake`), and the workgroup width of the scan that builds it —
 // generated from the shader, which is the side that decides it (§6.10). A mismatch
 // scanned the wrong width and rendered subtly wrong without crashing.
-use stark_shaders::mirror::dynamics::BAKE_RES;
+use stark_shaders::mirror::dynamics::{BAKE_RES, TILE_WG};
 // The `@binding` indices, generated from `dynamics.wesl`'s own declarations (§6.10):
 // the bind groups here and the layouts in [`kit`](super::kit) both name the
 // shader's numbering rather than keeping copies of it.
 use stark_shaders::mirror::dynamics::binding as b;
+// The storage-texture *formats*, taken from the same declarations the indices come
+// from (§6.10): a slot names its own format, so the host asks rather than repeats.
+use stark_shaders::mirror::dynamics::decl as d;
 
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
@@ -81,7 +83,7 @@ const fn fresh_key() -> Key {
 ///
 /// A constant, not per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever the
 /// segment does, and the two slot kinds that do not run an exchange never read it.
-const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(8), BRUSH_RES.div_ceil(8));
+const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(TILE_WG), BRUSH_RES.div_ceil(TILE_WG));
 
 impl StrokeRenderer {
     /// Render `spans` of a paint-manipulating stroke via the **sequential
@@ -247,7 +249,8 @@ struct DynamicsRun<'a> {
     brush_resid: Option<[wgpu::TextureView; 2]>,
     cur: usize,
     /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
-    /// keeps its precision — see [`BAKE_FORMAT`]). Rebuilt per segment, so a single
+    /// keeps its precision — `bake_load_w` is declared `rgba32float`). Rebuilt per
+    /// segment, so a single
     /// pair serves the whole stroke: nothing reads the last segment's bake.
     bake_load: wgpu::TextureView,
     bake_latm: wgpu::TextureView,
@@ -321,7 +324,7 @@ impl<'a> DynamicsRun<'a> {
             let pair = labels.map(|label| {
                 scope.take_run(Key {
                     size: (BRUSH_RES, BRUSH_RES),
-                    format: wgpu::TextureFormat::Rgba16Float,
+                    format: d::BRUSH_DST_COLOR_W.storage_format(),
                     usage: brush_usage,
                     label,
                 })
@@ -438,7 +441,7 @@ impl<'a> DynamicsRun<'a> {
             scope
                 .take_run(Key {
                     size: (BAKE_RES, BAKE_RES),
-                    format: BAKE_FORMAT,
+                    format: d::BAKE_LOAD_W.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
@@ -712,7 +715,7 @@ impl<'a> DynamicsRun<'a> {
         let mut region_tex = |label: &'static str| {
             self.scope.take_piece(Key {
                 size: (w, h),
-                format: wgpu::TextureFormat::Rgba16Float,
+                format: d::REGION_COLOR_W.storage_format(),
                 usage: region_usage,
                 label,
             })
@@ -877,7 +880,7 @@ impl<'a> DynamicsRun<'a> {
             self.scope
                 .take_piece(Key {
                     size: (size, size),
-                    format: wgpu::TextureFormat::Rgba16Float,
+                    format: d::REGION_COLOR_W.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
@@ -905,7 +908,7 @@ impl<'a> DynamicsRun<'a> {
         self.scope
             .take_piece(Key {
                 size: (dsize, dsize),
-                format: wgpu::TextureFormat::R32Float,
+                format: d::BLEED_W_W.storage_format(),
                 usage: LOOP_USAGE,
                 label: "stark dynamics bleed w",
             })
@@ -924,7 +927,7 @@ impl<'a> DynamicsRun<'a> {
             self.scope
                 .take_piece(Key {
                     size: (size, size),
-                    format: BAKE_FORMAT,
+                    format: d::BAKE_LOAD_W.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
@@ -1207,7 +1210,7 @@ impl<'a> DynamicsRun<'a> {
         let prefix_bg = &self.prefix_bg;
         // The mobility pass covers the snapshot square, where every other dispatch
         // covers its own slot's rect — see the note at its `set_pipeline` below.
-        let square_groups = dsize.div_ceil(8);
+        let square_groups = super::plan::groups_for(dsize);
         let mut cpass = self
             .scope
             .encoder()
@@ -1432,7 +1435,7 @@ impl<'a> DynamicsRun<'a> {
                 &r.ctx.device,
                 Key {
                     size: (BRUSH_RES, BRUSH_RES),
-                    format: wgpu::TextureFormat::Rgba16Float,
+                    format: d::REGION_COLOR_W.storage_format(),
                     usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                     label,
                 },

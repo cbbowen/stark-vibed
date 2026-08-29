@@ -119,6 +119,27 @@ pub struct Binding {
     pub resid: bool,
 }
 
+impl Binding {
+    /// The format this storage slot is declared at — what a texture bound here must
+    /// be created as.
+    ///
+    /// The point of asking rather than writing it down: a `texture_storage_2d<f, _>`
+    /// names its own format, so a host constant repeating it is the second copy §6.10
+    /// exists to forbid. `create_texture` would reject a mismatch loudly, which makes
+    /// this the cheap kind of drift — but only after somebody found the six literals.
+    ///
+    /// # Panics
+    /// If this declaration is not a storage texture. That is a mis-*named* slot rather
+    /// than a mismatched value, so it cannot be a runtime condition worth handling:
+    /// the caller wrote the wrong constant, and the constants are generated.
+    pub const fn storage_format(&self) -> wgpu::TextureFormat {
+        match self.kind {
+            BindKind::Storage { format, .. } => format,
+            _ => panic!("`storage_format` asked of a slot that is not a storage texture"),
+        }
+    }
+}
+
 /// Rust mirrors of what the WESL declares — the uniform structs the host fills in,
 /// the constants both sides compute with, the `@binding` declarations, and the
 /// per-instance vertex records — generated from the shader sources at build time
