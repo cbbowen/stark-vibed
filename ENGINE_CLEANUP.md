@@ -13,9 +13,9 @@ was removed when it was settled, and an anchor into a deleted file reads as a wo
 reference until somebody clicks it.
 
 Closed: A, B, C, D, E, G, I, J, N, O, Q, R, S, U, V, W, X, and — since — F's smaller
-correctness notes and its F3 comment, H, and most of T and Y. **Every finding marked
-*correctness* is closed.** Four things are left, and they are the four that want a
-sitting rather than a patch:
+correctness notes and its F3 comment, H, T bar the nightly toolchain, and most of Y.
+**Every finding marked *correctness* is closed.** Three things are left, and they are
+the three that want a sitting rather than a patch:
 
 - **[M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl)** — the two-type
   extraction. Its bounded sub-items are done (`arm_active`); what remains is the
@@ -25,9 +25,6 @@ sitting rather than a patch:
 - **[P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp)** — downgraded
   by its own revision note: the §6.10 hazard is already gone and what is left is one
   struct declared twice.
-- **The module splits in [T](#t-files-and-apis-that-carry-more-than-they-should)** —
-  `path.rs` and `assist.rs`. Mechanical, large, and best taken alone so the diff is
-  readable as a move.
 - **Five rows of [L](#l-smaller-measurable-costs)** and
   **[Y](#y-suite-infrastructure)'s property tests.** Each row's note now says what
   design it needs; the registry's says what the row itself did not (a generation on
@@ -38,8 +35,8 @@ and the nightly toolchain, both parked deliberately — see
 [below](#what-is-left-open-on-purpose).
 
 Every batch was verified with the full suite (`cargo nextest run --workspace`, 1188
-green), clippy at `-D warnings` on the default *and* the no-default-features configuration,
-the wasm build on both, and the `cargo tree` licence claim — **and reviewed**, which
+green), clippy at `-D warnings` on the default *and* the no-default-features
+configuration, the wasm build on both, and the `cargo tree` licence claim — **and reviewed**, which
 is where most of what follows came from.
 
 **The two findings that paid for the rest were the guards, not the fixes.** Tightening
@@ -237,7 +234,7 @@ present.
 | [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
 | [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `f33b2f1`, `891b164` |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
-| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1` (module splits open) |
+| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1`, `993896d` |
 | [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad`, `f33b2f1` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
@@ -1067,8 +1064,9 @@ half-open interval; `RgbaImage::new`'s `u32` overflow; `timing`'s frozen-clock c
 and the public API's test hooks, which are `#[doc(hidden)]` beside a `testing` module
 that holds the harness's own shared piece.
 
-**Open:** the module splits (`path.rs`, `assist.rs`) and the nightly toolchain, whose
-fix is upstream. `spline.rs`'s naming is closed in `f33b2f1`: `m_step` is
+**Open:** the nightly toolchain, whose fix is upstream. The module splits are done —
+both files already carried banners naming their own pieces, and both partition without
+a remainder. `spline.rs`'s naming is closed in `f33b2f1`: `m_step` is
 `solve_window`, and `prior` is `control` with a doc for both halves — the rows it
 arrives holding are the ridge's target, the window it leaves holding is the solution.
 
@@ -1080,10 +1078,30 @@ arrives holding are the ridge's target, the window it leaves holding is the solu
   (`rust-toolchain.toml`) because the `history` git dependency uses
   `#![feature(associated_type_defaults)]`. Upstream can drop the defaults with no
   loss — Stark writes `type Ctx` explicitly anyway.
-- **`path.rs`** (2,693 lines) is a streaming fitter, an arc primitive, a flattener
+- ~~**`path.rs`** (2,693 lines) is a streaming fitter, an arc primitive, a flattener
   and ~900 lines of tests; **`assist.rs`** (1,891) is recognition, adjustment,
   realization and the pen profile, and its own header names "three separable
-  pieces". `path/{fit,arc,flatten}.rs`, `assist/{recognize,shape,realize}.rs`.
+  pieces".~~ — *closed.* `path/{fit,arc,flatten}.rs` and
+  `assist/{recognize,adjust,realize}.rs` — **adjust**, not `shape`, because that is
+  the word `assist.rs`'s own header uses for the piece.
+
+  Both files told you where to cut: each already carried `// ---` banners with the
+  three names on them, and the partitions came out clean — in `assist` every one of
+  the nineteen constants belongs to exactly one piece (twelve, six, one) and no helper
+  is called from two; in `path` every type belongs to one (`PathFitter` and `Accepted`
+  to the fit, `Arc` to the arcs, `FlattenTolerance` and `IntermediateSample` to the
+  flattener), and only three helpers cross a line. The public names are re-exported
+  from each root, so no call site outside changed.
+
+  Two things worth recording. **The tests stayed in the roots**, both times: they are
+  tests of the *feature* and of the *pipeline* — an assist test draws, recognizes,
+  steers and reads the path out; a path test fits and then flattens what came out — and
+  they share one set of builders apiece. Splitting them would have put a copy of those
+  builders in each file, which is the duplication [Y](#y-suite-infrastructure) had just
+  finished removing. What that cost is a handful of `pub(super)` items the tests reach
+  for, each carrying a note saying so. And **the split broke seven intra-doc links**,
+  every one of them a relative path that stopped resolving a directory down — caught
+  only because `cargo doc` had been run for the first time earlier in this same pass.
   ~~`path.rs` also duplicates `SplineIndex`'s knot arithmetic (`span_count`,
   `knot_row`, `span`), pinned only by `span_form_matches_the_fitted_spline`.~~ —
   *closed in `f33b2f1`.* `span_count` and `knot_row` ask `SplineIndex` now, so
