@@ -89,7 +89,6 @@ pub enum AllocSource {
     #[default]
     Unknown,
     IntegrateDestination,
-    StrokeScratch,
     DynamicsWriteback,
     SelectionMask,
     /// The transform's moved-parcel scratch pair (§16.5).
@@ -117,10 +116,9 @@ impl AllocSource {
     /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
     /// A variant that slipped past both would go uncounted rather than out of
     /// bounds — telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 11] = [
         Self::Unknown,
         Self::IntegrateDestination,
-        Self::StrokeScratch,
         Self::DynamicsWriteback,
         Self::SelectionMask,
         Self::TransformScratch,
@@ -136,7 +134,6 @@ impl AllocSource {
         match self {
             Self::Unknown => "unknown",
             Self::IntegrateDestination => "integrate destination",
-            Self::StrokeScratch => "stroke scratch",
             Self::DynamicsWriteback => "dynamics writeback",
             Self::SelectionMask => "selection mask",
             Self::TransformScratch => "transform scratch",
@@ -979,11 +976,11 @@ mod tests {
     #[test]
     fn the_census_names_only_live_sources() {
         let mut census = Census::default();
-        census.add(AllocSource::StrokeScratch);
-        census.add(AllocSource::StrokeScratch);
+        census.add(AllocSource::MergeScratch);
+        census.add(AllocSource::MergeScratch);
         census.add(AllocSource::FillDestination);
         let live = format!("{census:?}");
-        assert!(live.contains("stroke scratch"), "{live}");
+        assert!(live.contains("merge scratch"), "{live}");
         assert!(live.contains("fill destination"), "{live}");
         assert!(
             !live.contains("unknown"),
@@ -993,7 +990,7 @@ mod tests {
         census.remove(AllocSource::FillDestination);
         let live = format!("{census:?}");
         assert!(!live.contains("fill destination"), "{live}");
-        assert!(live.contains("stroke scratch"), "{live}");
+        assert!(live.contains("merge scratch"), "{live}");
     }
 
     /// **A trim may never take a texture the epoch needed**, which is the one way

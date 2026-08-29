@@ -6,6 +6,7 @@
 //! a range needs nothing from its predecessor but the arc length.
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::Targets;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use stark_model::document::StrokeRecord;
@@ -336,31 +337,24 @@ impl StrokeRenderer {
         // with the latent premultiplied by it, the aux accumulates its height and
         // optical mass additively). The scratch aux is the wide format.
         //
-        // **A ring, held to the submit — not one pair, and not one per tile.** Two
-        // separate rules meet here:
+        // **A ring, not one pair and not one per tile**, and the only reason left is
+        // the second of the two this used to give. Sharing *one* pair across every
+        // tile is sound — each sweep pass clears both targets, so no tile can see what
+        // the tile before it left — but it serializes the path: tile `n+1`'s sweep
+        // writes the very texture tile `n`'s integrate reads, a write-after-read the
+        // driver has to order, so the `2N` passes ran strictly back to back. A ring of
+        // [`SCRATCH_RING`] lets that many tiles' work be in flight before the
+        // dependency comes round again, for a few MB against the pool's budget — and a
+        // stroke touching fewer tiles than the ring takes only as many as it has.
         //
-        // * Every scratch must outlive the submit of the passes naming it. A pair
-        //   acquired per tile and dropped at the end of its iteration goes back on the
-        //   pool's free list while those passes are still only recorded — and the free
-        //   list is where `TilePool::trim` takes from, tail first, on any `acquire_tex`
-        //   that happens to end an epoch. Destroying a texture this command buffer names
-        //   fails the submit, so every destination tile in it keeps whatever paint the
-        //   pool last had there: one frame of other tiles' work, gone on the next
-        //   render. Same rule as `transform::Recording`. Hence `scope.hold` below.
-        //
-        // * Sharing **one** pair across every tile is sound — each sweep pass clears
-        //   both targets, so no tile can see what the tile before it left — but it
-        //   serializes the path. Tile n+1's sweep writes the very texture tile n's
-        //   integrate reads, which is a write-after-read the driver has to order, so
-        //   the `2N` passes ran strictly back to back with no overlap at all.
-        //
-        // A ring satisfies the first and drops the second: `SCRATCH_RING` tiles' worth
-        // of work can be in flight before the dependency comes round again. At
-        // `TILE_TEX = 256` a target is 512 KB, so the whole ring is a few MB against
-        // `ScratchPool`'s 256 MB budget — and a stroke touching fewer tiles than the
-        // ring takes only as many pairs as it has tiles.
-        let ring: Vec<_> = (0..SCRATCH_RING.min(coords.len()))
-            .map(|_| self.acquire_scratch(pool, AllocSource::StrokeScratch))
+        // The first reason is gone with the pool it borrowed from. These are
+        // `ScratchPool` leases now, taken through the scope, and a lease reaches the
+        // free list only through a submit — so "released while this command buffer
+        // still names them" is not a hazard to defuse with a `hold`, it is a state the
+        // types do not have (`scratch`). They are the very keys the scaled path's
+        // parcel lanes take, so the two share one warm set.
+        let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(coords.len()))
+            .map(|_| RingSlot::take(self, &mut scope))
             .collect();
 
         let mut new_map = base.clone();
@@ -419,19 +413,19 @@ impl StrokeRenderer {
                 "stark integrate bg",
                 &self.swept.integrate_bgl,
                 INTEGRATE_SLOTS,
-                base_resid.is_some() && scratch.resid_view().is_some(),
+                base_resid.is_some() && scratch.resid.is_some(),
                 |b| match b {
                     ib::BASE_COLOR => wgpu::BindingResource::TextureView(base_color),
                     ib::BASE_AUX => wgpu::BindingResource::TextureView(base_aux),
-                    ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(scratch.color_view()),
-                    ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(scratch.aux_view()),
+                    ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(&scratch.color),
+                    ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(&scratch.aux),
                     ib::SELECTION => wgpu::BindingResource::TextureView(&mask_view),
                     ib::IG => opacity_buf.as_entire_binding(),
                     ib::BASE_RESID => wgpu::BindingResource::TextureView(
                         base_resid.expect("a residual build has one"),
                     ),
                     ib::SCRATCH_RESID => wgpu::BindingResource::TextureView(
-                        scratch.resid_view().expect("a residual build has one"),
+                        scratch.resid.as_ref().expect("a residual build has one"),
                     ),
                     other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
                 },
@@ -453,13 +447,9 @@ impl StrokeRenderer {
             new_map = new_map.insert(*coord, dst);
         }
 
-        // The scratch ring rides the scope past the submit, for the reason given
-        // where it is acquired: released any earlier these are *pooled* textures this
-        // command buffer still names, free to be handed out — or destroyed — before
-        // the submit. `finish` then submits and releases everything behind that
-        // submit: the tile pairs back to their pool by drop, the per-stroke buffers by
-        // `destroy()` (left to JS GC they pile up and OOM the tab, §6.2).
-        scope.hold(ring);
+        // `finish` submits and releases everything behind that submit: the ring's
+        // leases back to the scratch pool, the destination tiles to theirs by drop, the
+        // per-stroke buffers by lease as well (`scratch::SubmitScope`).
         scope.finish();
         (new_map, carry)
     }
@@ -595,6 +585,39 @@ const RESID: usize = 2;
 /// give each its own line in the pool's free list (`scratch::Key`).
 fn parcel_key(format: wgpu::TextureFormat) -> Key {
     lane_key(format, "stark sweep parcel")
+}
+
+/// One slot of the sweep's scratch ring: the three working textures a tile's sweep
+/// writes and its integrate reads, leased for the piece.
+///
+/// Views only — the pass attaches and binds them, and nothing here copies — where the
+/// leases themselves live in the scope until the submit that releases them.
+pub(super) struct RingSlot {
+    color: wgpu::TextureView,
+    aux: wgpu::TextureView,
+    resid: Option<wgpu::TextureView>,
+}
+
+impl RingSlot {
+    /// Check one out. The **wide** scratch aux (§6.2), and the color space's own color
+    /// and residual beside it — the same trio a parcel lane carries, at the same keys,
+    /// which is what lets the two paths draw from one free list.
+    fn take(r: &StrokeRenderer, scope: &mut super::scratch::SubmitScope) -> Self {
+        let mut view = |format| scope.take_piece(parcel_key(format)).1;
+        Self {
+            color: view(r.color_space.color_format()),
+            aux: view(crate::gpu::tile::SCRATCH_AUX_FORMAT),
+            resid: r.color_space.resid_format().map(&mut view),
+        }
+    }
+
+    fn targets(&self) -> Targets<'_> {
+        Targets {
+            color: &self.color,
+            aux: &self.aux,
+            resid: self.resid.as_ref(),
+        }
+    }
 }
 
 /// The sweep's brush-resolved bind groups — the prefix-τ volume at group 1, the

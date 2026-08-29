@@ -30,7 +30,7 @@ use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Zeroes;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle, TilePool};
+use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
 use stark_model::Srgb;
@@ -333,21 +333,6 @@ impl StrokeRenderer {
         TilePairHandle::new(
             pool.acquire_tex(self.color_space.color_format(), source),
             pool.acquire_tex(self.color_space.aux_format(), source),
-            self.color_space
-                .resid_format()
-                .map(|f| pool.acquire_tex(f, source)),
-        )
-    }
-
-    /// Acquire a brush-dynamics *scratch* tile: the same color channel, but a wider
-    /// [`SCRATCH_AUX_FORMAT`] aux (an extra channel the deposit/integrate use
-    /// internally, §6.2).
-    fn acquire_scratch(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
-        TilePairHandle::new(
-            pool.acquire_tex(self.color_space.color_format(), source),
-            pool.acquire_tex(SCRATCH_AUX_FORMAT, source),
-            // The scratch carries the stroke's parcel, and a parcel has a residual for
-            // exactly the same reason resident paint does.
             self.color_space
                 .resid_format()
                 .map(|f| pool.acquire_tex(f, source)),
