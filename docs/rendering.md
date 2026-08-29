@@ -311,9 +311,12 @@ texture-filtering problem:
 
 So a zoomed-out render runs passes A–D at `ss` samples per axis and a box filter
 resolves it into the target (`resolve.wesl`, pass E). `ss` is the minification
-ratio `⌈1/zoom⌉`, capped by `MAX_SUPERSAMPLE` (4), by a total-pixel budget
-(`MAX_SUPERSAMPLED_PX`, since *every* offscreen attachment scales with it), and by
-the device's texture limit. It is **1 at 1:1 and closer**, so magnifying costs
+ratio `⌈1/zoom⌉`, capped by `MAX_SUPERSAMPLE` (4), by a memory budget
+(`MAX_SUPERSAMPLED_BYTES`, since *every* offscreen attachment scales with it), and
+by the device's texture limit. Bytes rather than pixels deliberately: what an
+attachment set costs depends on how many channels the colour space carries and
+whether a residual rides along, so at 16 Mpx the real figures spread by a factor of
+seven — a spread a megapixel ceiling cannot see. It is **1 at 1:1 and closer**, so magnifying costs
 nothing and every golden — all blessed at zoom 1 — is bit-identical.
 
 `ViewTransform::supersampled(n)` scales the viewport and the zoom *together*,

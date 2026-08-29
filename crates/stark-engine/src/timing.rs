@@ -73,9 +73,9 @@
 //!
 //! # What it costs, and why it is always on
 //!
-//! Opening a span stamps a `u64` into storage the span registry already allocated;
-//! closing one takes a lock, hashes a `&'static str` and records a sample. Measured
-//! at **234 ns a span** end to end, and **1.4 ns** with no subscriber installed —
+//! Opening a span takes the registry's per-span write lock and boxes a `u64` into
+//! that span's extensions; closing one takes the histogram lock, hashes a
+//! `&'static str` and records a sample. Measured at **234 ns a span** end to end, and **1.4 ns** with no subscriber installed —
 //! `cargo test`, or an embedding that never calls [`layer`] — where the macro is an
 //! atomic load and a disabled span. At the granularity above that is a few
 //! microseconds a frame against a 16 ms budget, and 0.07–0.2% of the stroke
@@ -244,9 +244,13 @@ struct Opened(u64);
 /// browser build has one thread. So what is kept is the part that was doing the work
 /// (`hdrhistogram`, whose quantiles are the point) and what is dropped is the
 /// cross-thread machinery that only ever cost us: `hdrhistogram`'s `sync` feature
-/// goes, taking `crossbeam-channel` out of the wasm binary, and there is no lock on
-/// span *creation* at all — `tracing-timing` takes a write lock there, and this
-/// stamps a `u64` into storage the registry had already allocated.
+/// goes, taking `crossbeam-channel` out of the wasm binary, and span *creation*
+/// touches no lock of this layer's own — `tracing-timing` takes one there, where
+/// this leaves the stamp in the registry's own per-span extensions. Not free:
+/// `extensions_mut` is that span's write lock and the `u64` is boxed. Uncontended in
+/// a single-threaded build, and counted in the 234 ns above rather than argued away —
+/// the number is what justifies shipping this, so the mechanism behind it should be
+/// re-derivable by whoever next wants to add a `span!` to a tighter loop.
 struct PhaseLayer {
     clock: quanta::Clock,
     /// One histogram per [`span!`] name. Keyed by the `&'static str` the callsite

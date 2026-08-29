@@ -507,26 +507,23 @@ impl history::Action for Action {
 }
 ```
 
-The document does **not** call `history` directly; it goes through a `Timeline`
-trait so the storage strategy can change without touching `Session`, `Engine` or
-the GPU code:
+The document does **not** call `history` directly; it goes through a `Timeline` so
+the storage strategy can change without touching `Session`, `Engine` or the GPU
+code. An **enum**, not a trait, and that is load-bearing rather than incidental:
 
 ```rust
-pub trait Timeline {
-    fn push(&mut self, action: Action, ctx: &mut ApplyCtx);
-    fn current(&self) -> &DocState;
-    fn undo(&mut self, ctx: &mut ApplyCtx) -> bool;   // navigation (solo)
-    fn redo(&mut self, ctx: &mut ApplyCtx) -> bool;
-    fn clone_actions(&self) -> Vec<Action>;           // the save payload (§8)
-    fn seek(&mut self, n: usize, ctx: &mut ApplyCtx); // timelapse scrubbing (§18.2.4)
-    // Shared-mode hooks, defaulted so LinearTimeline ignores them (§12):
-    fn undo_as_action(&self) -> Option<ActionId> { None }
-    fn redo_as_action(&self) -> Option<ActionId> { None }
-    fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool { false }
-    // …and the way back out, which no impl may leave unanswered (§12.3):
-    fn unshare(self: Box<Self>) -> Box<dyn Timeline>;
+pub enum Timeline {
+    Linear(LinearTimeline),
+    Replicated(ReplicatedTimeline),
 }
 ```
+
+Every operation is a `match`, and every refusal is written out as an arm — a
+solo timeline saying no to a merge, a replicated one saying no to a seek. A trait
+would have spelled those as defaulted methods, and a default is how a new
+operation comes to do nothing in one mode without anyone deciding it should. Two
+variants is also the whole of the space: the split is solo versus shared, and a
+third storage strategy would be a different question rather than a third impl.
 
 - **`LinearTimeline`** — the solo impl, a thin wrapper over `history::History`.
 - **`ReplicatedTimeline`** — the multi-peer impl (§12): a totally-ordered set of
