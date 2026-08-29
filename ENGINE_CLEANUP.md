@@ -10,19 +10,33 @@ is fixed and the goldens re-blessed.
 finding that turns out to be wrong is struck through and kept, as
 [N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
 
-Closed: A, B, C, D, E, G, J, N, O, Q, S, U, V, W, and — since — F's smaller
-correctness notes, H, I, and most of T, X and Y. **Every finding marked *correctness*
-is closed.** What is left open is
-[F3](#f-three-places-where-the-code-and-the-claim-beside-it-disagree),
-[M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl),
-[P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp),
-[R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need), the module splits in
-[T](#t-files-and-apis-that-carry-more-than-they-should), five rows of
-[L](#l-smaller-measurable-costs), the height-readback half of
-[X](#x-what-the-suite-observes-only-through-the-lit-composite), and
-[Y](#y-suite-infrastructure)'s duplicated helpers and absent property tests. Every
-batch was verified with the full suite (`cargo nextest run --workspace`, 1188 green),
-clippy at `-D warnings` on the default *and* the no-default-features configuration,
+Closed: A, B, C, D, E, G, I, J, N, O, Q, R, S, U, V, W, X, and — since — F's smaller
+correctness notes and its F3 comment, H, and most of T and Y. **Every finding marked
+*correctness* is closed.** Four things are left, and they are the four that want a
+sitting rather than a patch:
+
+- **[M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl)** — the two-type
+  extraction. Its bounded sub-items are done (`arm_active`); what remains is the
+  split itself, and the `observe(&mut self)` half of it touches 254 call sites for
+  the sake of two `RefCell`s, so it is worth doing *with* the extraction and not
+  before it.
+- **[P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp)** — downgraded
+  by its own revision note: the §6.10 hazard is already gone and what is left is one
+  struct declared twice.
+- **The module splits in [T](#t-files-and-apis-that-carry-more-than-they-should)** —
+  `path.rs` and `assist.rs`. Mechanical, large, and best taken alone so the diff is
+  readable as a move.
+- **Five rows of [L](#l-smaller-measurable-costs)** and
+  **[Y](#y-suite-infrastructure)'s property tests.** Each row's note now says what
+  design it needs; the registry's says what the row itself did not (a generation on
+  the byte map, or a slow bake caches an object built from superseded bytes).
+
+Plus [F3](#f-three-places-where-the-code-and-the-claim-beside-it-disagree)'s re-tune
+and the nightly toolchain, both parked deliberately — see
+[below](#what-is-left-open-on-purpose).
+
+Every batch was verified with the full suite (`cargo nextest run --workspace`, 1188
+green), clippy at `-D warnings` on the default *and* the no-default-features configuration,
 the wasm build on both, and the `cargo tree` licence claim — **and reviewed**, which
 is where most of what follows came from.
 
@@ -173,7 +187,7 @@ present.
 | [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | `31a9993` |
 | [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | `3974f8f` |
 | [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | `b4f088e`, `c61d862` |
-| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+, the smaller notes in `b323e97` |
+| [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+, the smaller notes in `b323e97`, F3's comment in `f33b2f1` |
 | [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | `a9edfbf` |
 | [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | `28c9fd2`, `35e60ff` |
 | [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | `76c606d`, `2efbf05` |
@@ -184,14 +198,14 @@ present.
 | [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | `719a78f` |
 | [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp) | `plan::Slot` is a hand-maintained twin of the generated `Stamp` | maintainability | |
 | [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
-| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `HEAD` |
+| [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | `d8c0691`, `5104e9e`, `f33b2f1` |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
-| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05` (module splits open) |
-| [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad` |
+| [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05`, `f33b2f1` (module splits open) |
+| [U](#u-comments-that-narrate-history-or-describe-code-that-is-gone) | Comments that narrate history, or describe code that is gone | maintainability | `dbf4dad`, `f33b2f1` |
 | [V](#v-footprint-reads-are-checked-over-a-hand-picked-vocabulary) | Footprint *reads* are checked over a hand-picked vocabulary | tests | `6313c00`, `3974f8f` |
 | [W](#w-64-translation-invariance-is-guarded-for-strokes-only) | §6.4 translation invariance is guarded for strokes only | tests | `4fb2e71` |
-| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | `2efbf05`, `HEAD` |
-| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | `2efbf05`, `HEAD` (proptests open) |
+| [X](#x-what-the-suite-observes-only-through-the-lit-composite) | What the suite observes only through the lit composite | tests | `2efbf05`, `f33b2f1` |
+| [Y](#y-suite-infrastructure) | Suite infrastructure | tests | `2efbf05`, `f33b2f1` (proptests open) |
 
 ## What is left open on purpose
 
@@ -543,7 +557,7 @@ the `ts` of the *pre-solve* profile (line 739) while `mean_error` recomputes
 re-tune. Either fix the comment or use `fit.profile` — which also drops two of the
 four curve walks per pointer report.
 
-**The comment half is closed in the batch below**, which is the half this finding is
+**The comment half is closed in `f33b2f1`**, which is the half this finding is
 titled after. Confirmed at the source: `solve` builds its profile from the polygon as
 it stands *before* `fit_into` writes back, `mean_error` builds one from the spline that
 came out, and the comment claimed they were the same parameters. They are the same
@@ -970,7 +984,7 @@ cadence, so the ordering rule lives once. Then `Key` gains a `Buffer` variant an
 the buffers of [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it)
 lease through the same pool.
 
-**Done in `d8c0691`, `5104e9e` and the batch below.** All of it: the ring leases,
+**Done in `d8c0691`, `5104e9e` and `f33b2f1`.** All of it: the ring leases,
 `TileScope` is gone, `Key` grew a buffer half, and the two `encoder()`s agree. Review
 of the merge then found the ring was leased on the **piece** tier — correct only for
 as long as `render_swept` never flushed, which is a property no type stated and every
@@ -1017,7 +1031,7 @@ and the public API's test hooks, which are `#[doc(hidden)]` beside a `testing` m
 that holds the harness's own shared piece.
 
 **Open:** the module splits (`path.rs`, `assist.rs`) and the nightly toolchain, whose
-fix is upstream. `spline.rs`'s naming is closed in the batch below: `m_step` is
+fix is upstream. `spline.rs`'s naming is closed in `f33b2f1`: `m_step` is
 `solve_window`, and `prior` is `control` with a doc for both halves — the rows it
 arrives holding are the ridge's target, the window it leaves holding is the solution.
 
@@ -1035,7 +1049,7 @@ arrives holding are the ridge's target, the window it leaves holding is the solu
   pieces". `path/{fit,arc,flatten}.rs`, `assist/{recognize,shape,realize}.rs`.
   ~~`path.rs` also duplicates `SplineIndex`'s knot arithmetic (`span_count`,
   `knot_row`, `span`), pinned only by `span_form_matches_the_fitted_spline`.~~ —
-  *closed in the batch below.* `span_count` and `knot_row` ask `SplineIndex` now, so
+  *closed in `f33b2f1`.* `span_count` and `knot_row` ask `SplineIndex` now, so
   the degree lives in one place and the test that compared two spellings of one
   number has nothing left to compare; what it still checks — that the Bézier
   conversion evaluates to the same curve — was never arithmetic.
@@ -1167,7 +1181,7 @@ and modulated strokes are uncovered.
 assert on height and alpha directly; run the corpus battery once with
 `SetFastCommit(false)`; one tow case in the corpus.
 
-**Done in `2efbf05` and the batch below** — all three.
+**Done in `2efbf05` and `f33b2f1`** — all three.
 
 **The last two are done (`2efbf05`)**, as battery *checks* rather than as cases: every
 corpus stroke now commits once with fast commit off and must land the replay's pixels
@@ -1178,7 +1192,7 @@ towed stroke is *meant* to differ — but that preview still equals committed wi
 a golden and sixteen field edits and covers one configuration, where a check covers all
 sixteen.
 
-**The first half is done too**, in the batch below, and it went where the note
+**The first half is done too**, in `f33b2f1`, and it went where the note
 predicted. `read_many_rgba16f` reads *textures*, and a tile does not hand one out:
 `TexHandle` offers only a view, at length, because `Texture::destroy` takes `&self` —
 so a borrow is enough to leave the pool's free list holding a view onto nothing. The
@@ -1206,8 +1220,9 @@ fourteen" for sixteen cases, and `docs/engine.md` §9's file list, which named
 twenty-five tests where there are thirty-nine and listed the benchmark among them.
 
 **Open:** the property-based tests (there are still none) and the written-to-pass
-shapes. The duplicated helpers are closed in the batch below — see the entry there,
-which found the count was higher and the disagreement sharper than this said.
+shapes. The duplicated helpers are closed in `f33b2f1`, whose entry in
+§ "what the work turned up" has the count (twelve, not four) and the reason the
+margin could not simply be unified.
 
 - ~~Device acquire-or-skip logic exists in four copies~~ — *closed.* Six, in the end:
   the four listed plus `gpu/context.rs` and `gpu/scratch.rs`'s own `mod tests`, which
