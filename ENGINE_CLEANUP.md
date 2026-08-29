@@ -10,18 +10,21 @@ is fixed and the goldens re-blessed.
 finding that turns out to be wrong is struck through and kept, as
 [N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
 
-Closed: A, B, C, D, G, J, N, O, S, U, V, W, and — since — F's smaller correctness
-notes, H, I, Q, and most of T, X and Y. What is left open is [E](#e-layerid-is-a-32-bit-fold-of-the-actor),
+Closed: A, B, C, D, E, G, J, N, O, Q, S, U, V, W, and — since — F's smaller
+correctness notes, H, I, and most of T, X and Y. **Every finding marked *correctness*
+is closed.** What is left open is
 [F3](#f-three-places-where-the-code-and-the-claim-beside-it-disagree),
 [M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl),
 [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp),
 [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need), the module splits in
-[T](#t-files-and-apis-that-carry-more-than-they-should), seven rows of
-[L](#l-smaller-measurable-costs), and the height-readback half of
-[X](#x-what-the-suite-observes-only-through-the-lit-composite). Every batch was
-verified with the full suite (`cargo nextest run --workspace`, 1187 green), clippy at
-`-D warnings` on the default *and* the no-default-features configuration, the wasm
-build on both, and the `cargo tree` licence claim.
+[T](#t-files-and-apis-that-carry-more-than-they-should), five rows of
+[L](#l-smaller-measurable-costs), the height-readback half of
+[X](#x-what-the-suite-observes-only-through-the-lit-composite), and
+[Y](#y-suite-infrastructure)'s duplicated helpers and absent property tests. Every
+batch was verified with the full suite (`cargo nextest run --workspace`, 1188 green),
+clippy at `-D warnings` on the default *and* the no-default-features configuration,
+the wasm build on both, and the `cargo tree` licence claim — **and reviewed**, which
+is where most of what follows came from.
 
 **The two findings that paid for the rest were the guards, not the fixes.** Tightening
 the golden comparator ([C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu))
@@ -45,6 +48,21 @@ because they are what the findings were *for*:
   after it fails with "only metadata stub found for `std`" or "can't find crate for
   `stark_engine`". It is not a code failure and no amount of reading the diff finds
   it — `rm -rf target/debug/incremental` and re-run.
+- **Sharing a document reverted every guide edit made before it**, found by the review
+  of [E](#e-layerid-is-a-32-bit-fold-of-the-actor) and not by any test: a `GuideId` was
+  *derived* from the action id inside the fold, `start_collaboration` rewrites
+  solo-authored `ActorId`s, and every `RemoveGuide` / `SetGuide` / `SetGuideName` /
+  `MoveGuide` in the same log carried the old id as a payload. Deleted guides came
+  back, renames and re-poses were dropped, and every open eye closed. It predates this
+  pass by the whole of §20.5, and every collaborative test in `guides.rs` shares
+  *before* adding a guide, which is why none of them saw it. `AddGuide` carries its id
+  now — the answer `LayerId` had all along and the reason the rewrite was safe for
+  layers. Closed with E's review in `c61d862`, with a test that fails against the
+  derivation.
+- **Two places a layer id could still double**, both reachable only from a file or a
+  wire: `DocState::insert` spliced unconditionally where `insert_guide` refuses an id
+  already in the roster, and `duplicate_layer` could not notice a map pairing two
+  sources with one copy. Same review, same commit.
 - **Two lease-lifetime defects the pooling work surfaced**, both found by review
   rather than by a test, and both of one shape: a resource returned to its pool while
   a *recorded but unsubmitted* encoder still names it. The stamp loop's mint budget
@@ -118,18 +136,18 @@ present.
 | [B](#b-three-panics-reachable-from-outside-the-process) | Three panics reachable from outside the process | **correctness** | `ae27cb5` |
 | [C](#c-the-golden-comparator-and-a-test-that-passes-without-a-gpu) | The golden comparator and a test that passes without a GPU | **correctness** | `31a9993` |
 | [D](#d-footprint--apply-correspondence-is-held-by-discipline) | Footprint ↔ apply correspondence is held by discipline | **correctness** | `3974f8f` |
-| [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | |
+| [E](#e-layerid-is-a-32-bit-fold-of-the-actor) | `LayerId` is a 32-bit fold of the actor | correctness | `b4f088e`, `c61d862` |
 | [F](#f-three-places-where-the-code-and-the-claim-beside-it-disagree) | Three places where the code and the claim beside it disagree | correctness | F2 in `e8d2e78`+, the smaller notes in `b323e97` |
 | [G](#g-the-compositors-generation-conflates-two-invalidations) | The compositor's `generation` conflates two invalidations | **performance** | `a9edfbf` |
 | [H](#h-the-stroke-hot-path-does-not-use-the-plumbing-built-for-it) | The stroke hot path does not use the plumbing built for it | **performance** | `28c9fd2`, `35e60ff` |
 | [I](#i-the-eyedropper-submits-once-per-sample-point) | The eyedropper submits once per sample point | performance | `76c606d`, `2efbf05` |
 | [J](#j-the-mixbox-lut-runs-twice-per-colour-per-texel-on-a-placed-image) | The Mixbox LUT runs twice per colour, per texel on a placed image | performance | `a9edfbf` |
-| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba`, `b323e97` (7 of 14) |
+| [L](#l-smaller-measurable-costs) | Smaller measurable costs | performance | `078c4ba`, `b323e97`, `c61d862` (9 of 15) |
 | [M](#m-engine-is-one-type-with-25-fields-and-65k-lines-of-impl) | `Engine` is one type with ~25 fields and ~6.5k lines of `impl` | architecture | |
 | [N](#n-boxdyn-timeline-is-a-two-mode-enum-with-silent-defaults) | `Box<dyn Timeline>` is a two-mode enum with silent defaults | architecture | `6896e02` |
 | [O](#o-the-accumulated-extent-render-loop-is-written-three-times) | The accumulated-extent render loop is written three times | maintainability | `719a78f` |
 | [P](#p-planslot-is-a-hand-maintained-twin-of-the-generated-stamp) | `plan::Slot` is a hand-maintained twin of the generated `Stamp` | maintainability | |
-| [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae` |
+| [Q](#q-the-descriptor-boilerplate-descrs-was-written-to-end) | The descriptor boilerplate `desc.rs` was written to end | maintainability | `bdbe46c`, `2c581ae`, `ec7090b` |
 | [R](#r-two-scratch-pools-and-two-submit-scopes-for-one-need) | Two scratch pools and two submit scopes for one need | maintainability | |
 | [S](#s-four-copies-of-the-paint-edit-gate-and-uneven-minted-layer-claims) | Four copies of the paint-edit gate, and uneven minted-layer claims | maintainability | `2c6303b` |
 | [T](#t-files-and-apis-that-carry-more-than-they-should) | Files and APIs that carry more than they should | maintainability | `35e60ff`, `2efbf05` (module splits open) |
@@ -405,6 +423,22 @@ reserved sentinel. Deletes the counter machinery and the collision class; costs 
 wider id per `StrokeRecord` (small beside the path) and a format change, which is
 free now.
 
+**Done in `b4f088e`**, as written, with `k` carried in `DuplicateLayer`'s map rather
+than re-derived per peer — the map is in the log, which is the stronger guarantee and
+the one that action's doc insists on. `commit_minting` is the door: it draws the
+action id and hands it to the closure that builds the kind, so a kind naming a layer
+it mints cannot be built without the id it will be committed under, and it then asks
+`minted_layers` whether the ids are its own and distinct. `ROOT` is a reserved `k`
+(`u32::MAX`) rather than a reserved action, since the Lamport clock starts at zero.
+
+**Two costs the finding does not mention**, both paid rather than avoided: a
+`Resource` grew from 32 bytes to 48 (a `LayerId` is 24 where it was 8), and an unnamed
+layer's label is now *when* it was minted rather than a per-actor count — gappy where
+the old one was dense, and neither unique across authors. The file format breaks
+outright: a scalar that became a struct is the one reshaping carbonite cannot absorb,
+which §17.8, `io.rs` and the roadmap had each promised did not happen and now say
+plainly. ALPN 16, then 17 when `AddGuide` followed.
+
 ## F. Three places where the code and the claim beside it disagree
 
 ### F1. ~~Libm-free flattening, undone by an `atan2`~~ — **dropped**
@@ -661,7 +695,7 @@ fourth lane is `1.0` in both implementations and no caller reads it.
 
 ## L. Smaller measurable costs
 
-Eight of the fifteen rows are struck below and one is half closed. What stands is what
+Nine of the fifteen rows are struck below and one is half closed. What stands is what
 needs a piece of design rather than a substitution: a `History::map_actions` upstream,
 a memoization with an invalidation rule, a banded solve, a bind-group cache keyed on a
 `moved` flag, building outside the registry's lock, and an `Arc<[u8]>` that reaches
@@ -678,7 +712,7 @@ into the save format's own types.
 | `session.rs:87` → `assist.rs:671` | Steering an ellipse solves a dense 101×101 Cholesky (bandwidth 4) twice per pointer move. *Reported.* | A banded solve, or first a `timing::span!("assist.steer")` to see if it matters. |
 | ~~`document/apply.rs:253`~~ | *Closed in `078c4ba`.* A neutral-filter merge returns `lower` unchanged but still goes through `with_tiles`, minting a fresh `PaintTiles::revision` for identical tiles — every thumbnail keyed on it re-renders. Same for a `Stack` merge whose `rewritten` set is empty. | Return the layer untouched when nothing was rewritten. |
 | ~~`gpu/tile.rs:751`~~ | *Closed in `b323e97`.* `format_pools: HashMap<TextureFormat, _>` hashed on the hottest path in the crate (~4 acquires per tile per pointer move). | A fixed array indexed by a channel enum. |
-| `gpu/composite.rs:642`, `guides.rs:148` | Matte-ramp and guide bind groups rebuilt every frame. | Cache on `UniformSlots::write`'s `moved`, as `ScratchLevel` does. |
+| ~~`gpu/composite.rs:642`, `guides.rs:148`~~ | *Closed in `c61d862`.* Matte-ramp and guide bind groups rebuilt every frame. | Cache on `UniformSlots::write`'s `moved`, as `ScratchLevel` does. |
 | ~~`gpu/composite/overlay.rs:120`~~ | *Closed in `078c4ba`.* The selection overlay draws every mask tile of every visible selection, uncullled, while pass A is culled. | Cull by the same `TileRect`. |
 | ~~`gpu/selection.rs:245`~~ | *Closed in `b323e97`.* `SelectionRenderer::constant` allocates and uploads a texture per call for partial coverage; `mask_for` calls it once per tile of every fill, transform and stroke over an inverted-partial selection. | An `Arc<Mutex<..>>` cache, as `Registry` already uses. |
 | ~~`gpu/scratch.rs:70`~~ | *Closed in `b323e97`.* `Key.label` is part of the pool key, so identical `Rgba16Float` squares under different labels cannot serve one another, doubling the warm set the 256 MB budget holds. *Reported.* | Drop the label from the key. |
