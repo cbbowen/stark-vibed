@@ -33,21 +33,54 @@ fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
         .expect("readback of an uncompressed texture")
 }
 
-/// Copy a texture into a mappable buffer, and return it with the row padding the
-/// copy required. Shared by the async and blocking paths, which differ only in
-/// how they wait.
+/// One texture→buffer copy's geometry: how wide a row really is, how wide the copy
+/// has to make it, and how far apart the textures sit in the staging buffer.
+///
+/// Three numbers rather than three arguments threaded separately, because a mismatch
+/// between any two of them does not fail — it hands back rows shifted by the
+/// difference, which reads as a picture skewing progressively sideways.
+struct Rows {
+    /// A row's real bytes.
+    unpadded: u32,
+    /// A row's bytes in the staging buffer, rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT`.
+    padded: u32,
+    /// One texture's whole span in the staging buffer.
+    slot: u64,
+}
+
+impl Rows {
+    fn of(texture: &wgpu::Texture, size: Extent2) -> Self {
+        let unpadded = size.width * bytes_per_texel(texture);
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = unpadded.div_ceil(align) * align;
+        Self {
+            unpadded,
+            padded,
+            slot: u64::from(padded) * u64::from(size.height),
+        }
+    }
+}
+
+/// Copy `textures` into **one** mappable buffer, one slot each, and submit. Returns
+/// the buffer and the geometry [`take_rows`] undoes.
+///
+/// One buffer however many textures, which is what a batched read *is*: a map is a
+/// round trip to the queue and a gradient capture reads up to
+/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches (§22.2), so a map
+/// apiece would be a map per texel of latency. Every texture must carry `COPY_SRC`,
+/// share `size`, and share a format — the slot stride is taken from the first, and a
+/// second texture of a different texel size would be copied at the wrong pitch.
 fn begin_read(
     ctx: &GpuContext,
-    texture: &wgpu::Texture,
+    textures: &[&wgpu::Texture],
     size: Extent2,
-) -> (wgpu::Buffer, u32, u32) {
-    let unpadded = size.width * bytes_per_texel(texture);
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = unpadded.div_ceil(align) * align;
+) -> (wgpu::Buffer, Rows) {
+    let first = textures.first().expect("a read of no textures");
+    let rows = Rows::of(first, size);
 
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("stark readback"),
-        size: (padded * size.height) as u64,
+        size: rows.slot * textures.len() as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -57,28 +90,30 @@ fn begin_read(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stark readback encoder"),
         });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(size.height),
+    for (i, texture) in textures.iter().enumerate() {
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: rows.slot * i as u64,
+                    bytes_per_row: Some(rows.padded),
+                    rows_per_image: Some(size.height),
+                },
             },
-        },
-        wgpu::Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-    );
+            wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     ctx.queue.submit([encoder.finish()]);
-    (buffer, unpadded, padded)
+    (buffer, rows)
 }
 
-/// Strip the row padding a texture→buffer copy required, leaving tightly-packed
-/// bytes. Consumes the buffer: unmaps it, then **destroys** it.
+/// Strip the row padding a texture→buffer copy required, leaving one tightly-packed
+/// byte string per texture. Consumes the buffer: unmaps it, then **destroys** it.
 ///
 /// Destroyed rather than dropped, for `ScopedResources`' reason (§6.2): on the web a
 /// dropped buffer only releases its JS handle and waits for GC. A readback buffer is
@@ -86,54 +121,54 @@ fn begin_read(
 /// leaving that to a collector is how the tab OOMs. Safe here for the same reason it
 /// is there: the copy that filled it has already been submitted *and* waited on, so
 /// nothing is in flight against it.
-fn take_rows(buffer: wgpu::Buffer, size: Extent2, unpadded: u32, padded: u32) -> Vec<u8> {
+fn take_rows(buffer: wgpu::Buffer, count: usize, size: Extent2, rows: &Rows) -> Vec<Vec<u8>> {
     let data = buffer
         .slice(..)
         .get_mapped_range()
         .expect("readback buffer is mapped");
-    let mut out = Vec::with_capacity((unpadded * size.height) as usize);
-    for row in 0..size.height {
-        let start = (row * padded) as usize;
-        out.extend_from_slice(&data[start..start + unpadded as usize]);
-    }
+    let out = (0..count)
+        .map(|i| {
+            let base = (rows.slot * i as u64) as usize;
+            let mut bytes = Vec::with_capacity((rows.unpadded * size.height) as usize);
+            for row in 0..size.height {
+                let start = base + (row * rows.padded) as usize;
+                bytes.extend_from_slice(&data[start..start + rows.unpadded as usize]);
+            }
+            bytes
+        })
+        .collect();
     drop(data);
     buffer.unmap();
     buffer.destroy();
     out
 }
 
-/// Read any texture back to tightly-packed bytes, awaiting the map.
+/// Await the map of `buffer`, driving it the way this target needs.
 ///
-/// **Reports rather than panics**, unlike its blocking sibling, because this is the
-/// path a *shipping* build takes: a failed map here is a lost device or an
+/// How the map callback actually gets driven is the one thing that genuinely differs
+/// between the two targets, and getting it wrong deadlocks rather than failing loudly:
+///
+///  · Native — nothing polls the device on its own, and the executor awaiting this
+///    future is very likely blocking the only thread (`pollster`). So block *here*,
+///    before awaiting: `Wait` drains the queue and fires the callback, and the await
+///    below then resolves immediately. A non-blocking `Poll` hangs forever — the
+///    thread parks and no one ever polls again.
+///  · Web — there is no blocking poll; `mapAsync` is a promise that the browser's
+///    event loop settles while this future is suspended. Calling poll would do
+///    nothing, so awaiting *is* the wait.
+///
+/// **Reports rather than panics**, unlike the blocking sibling below, because this is
+/// the path a *shipping* build takes: a failed map here is a lost device or an
 /// exhausted one, and turning that into an `expect` was an abort — on the web, with
 /// the painting unsaved (§5). The action log is untouched by any of it, so a caller
 /// told the readback failed can still save the document; that is the whole point of
 /// there being an error to tell it with.
-async fn read_texture_bytes(
-    ctx: &GpuContext,
-    texture: &wgpu::Texture,
-    size: Extent2,
-) -> Result<Vec<u8>> {
-    let (buffer, unpadded, padded) = begin_read(ctx, texture, size);
-
+async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
     let (tx, rx) = futures_channel::oneshot::channel();
     buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
 
-    // How the map callback actually gets driven is the one thing that genuinely
-    // differs between the two targets, and getting it wrong deadlocks rather than
-    // failing loudly:
-    //
-    //  · Native — nothing polls the device on its own, and the executor awaiting
-    //    this future is very likely blocking the only thread (`pollster`). So
-    //    block *here*, before awaiting: `Wait` drains the queue and fires the
-    //    callback, and the await below then resolves immediately. A non-blocking
-    //    `Poll` hangs forever — the thread parks and no one ever polls again.
-    //  · Web — there is no blocking poll; `mapAsync` is a promise that the
-    //    browser's event loop settles while this future is suspended. Calling
-    //    poll would do nothing, so awaiting *is* the wait.
     #[cfg(not(target_arch = "wasm32"))]
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -142,8 +177,7 @@ async fn read_texture_bytes(
     rx.await
         .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
         .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
-
-    Ok(take_rows(buffer, size, unpadded, padded))
+    Ok(())
 }
 
 /// The error a failed readback reports, preferring what the **device** said over
@@ -166,7 +200,11 @@ pub async fn read_rgba8(
     texture: &wgpu::Texture,
     size: Extent2,
 ) -> Result<Vec<u8>> {
-    read_texture_bytes(ctx, texture, size).await
+    let (buffer, rows) = begin_read(ctx, &[texture], size);
+    wait_mapped(ctx, &buffer).await?;
+    Ok(take_rows(buffer, 1, size, &rows)
+        .pop()
+        .expect("one texture in, one string out"))
 }
 
 /// Blocking readback, for native callers only — the golden tests, which are
@@ -177,14 +215,16 @@ pub async fn read_rgba8(
 /// the frontend a compile error rather than a runtime `OperationError`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
-    let (buffer, unpadded, padded) = begin_read(ctx, texture, size);
+    let (buffer, rows) = begin_read(ctx, &[texture], size);
     buffer
         .slice(..)
         .map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
-    take_rows(buffer, size, unpadded, padded)
+    take_rows(buffer, 1, size, &rows)
+        .pop()
+        .expect("one texture in, one string out")
 }
 
 fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
@@ -198,27 +238,27 @@ fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 
 /// Read many same-sized `Rgba16Float` textures back in **one** buffer map — the
 /// gradient capture's readback (§22.2), where a trace is up to
-/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches and a map per patch
-/// would be a map per texel of latency. Every texture must carry `COPY_SRC` and
-/// share `size`; results come back in argument order, 4 `f32` per texel.
+/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches. Every texture must
+/// carry `COPY_SRC` and share `size`; results come back in argument order, 4 `f32`
+/// per texel.
 ///
 /// **The format is checked here rather than by the caller**, and unconditionally.
-/// The decode below is four halves a texel, which is a claim about the texture and
-/// not about the reader — so the reader is where it belongs, and the two callers
-/// that each carried their own `debug_assert` were two copies of one fact that a
-/// release build did not hold at all. A color space whose `color_format` is
-/// something else (§6.7 leaves that open) would otherwise hand back a picture
-/// decoded at the wrong stride: not an error, a wrong colour. The formats come from
-/// this build's own pipeline, never from a file or a peer, so an assert is the right
-/// shape — there is no outside input to refuse (§5).
+/// The decode is four halves a texel, which is a claim about the texture and not
+/// about the reader — so the reader is where it belongs, and the two callers that
+/// each carried their own `debug_assert` were two copies of one fact that a release
+/// build did not hold at all. A color space whose `color_format` is something else
+/// (§6.7 leaves that open) would otherwise hand back a picture decoded at the wrong
+/// stride: not an error, a wrong colour. The formats come from this build's own
+/// pipeline, never from a file or a peer, so an assert is the right shape — there is
+/// no outside input to refuse (§5).
 pub async fn read_many_rgba16f(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
     size: Extent2,
 ) -> Result<Vec<Vec<f32>>> {
-    let Some(first) = textures.first() else {
+    if textures.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     for texture in textures {
         assert_eq!(
             texture.format(),
@@ -226,75 +266,10 @@ pub async fn read_many_rgba16f(
             "this readback decodes four halves per texel"
         );
     }
-    let unpadded = size.width * bytes_per_texel(first);
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = unpadded.div_ceil(align) * align;
-    let slot = (padded * size.height) as u64;
-
-    let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark readback many"),
-        size: slot * textures.len() as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("stark readback many encoder"),
-        });
-    for (i, texture) in textures.iter().enumerate() {
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: slot * i as u64,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(size.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-    ctx.queue.submit([encoder.finish()]);
-
-    let (tx, rx) = futures_channel::oneshot::channel();
-    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    // The same native/web split as `read_texture_bytes`, for the same reasons —
-    // and the same reporting, for the reason set out there.
-    #[cfg(not(target_arch = "wasm32"))]
-    ctx.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| readback_failed(ctx, format!("poll: {e}")))?;
-    rx.await
-        .map_err(|_| readback_failed(ctx, "the map callback was dropped".into()))?
-        .map_err(|e| readback_failed(ctx, format!("map: {e}")))?;
-
-    let data = buffer
-        .slice(..)
-        .get_mapped_range()
-        .expect("readback buffer is mapped");
-    let out = (0..textures.len())
-        .map(|i| {
-            let base = (slot * i as u64) as usize;
-            let mut bytes = Vec::with_capacity((unpadded * size.height) as usize);
-            for row in 0..size.height {
-                let start = base + (row * padded) as usize;
-                bytes.extend_from_slice(&data[start..start + unpadded as usize]);
-            }
-            decode_rgba16f(&bytes)
-        })
-        .collect::<Vec<_>>();
-    drop(data);
-    buffer.unmap();
-    // The same argument as `take_rows`: a gradient trace's staging buffer is
-    // MAX_SAMPLES patches wide and has already been waited on.
-    buffer.destroy();
-    Ok(out)
+    let (buffer, rows) = begin_read(ctx, textures, size);
+    wait_mapped(ctx, &buffer).await?;
+    Ok(take_rows(buffer, textures.len(), size, &rows)
+        .iter()
+        .map(|bytes| decode_rgba16f(bytes))
+        .collect())
 }

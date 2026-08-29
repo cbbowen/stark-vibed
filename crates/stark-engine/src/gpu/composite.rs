@@ -64,7 +64,7 @@ use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 use crate::view::ViewTransform;
 use stark_model::geom::Extent2;
 
-pub(crate) use blend::{BlendPass, BlendUniform, blend_code};
+pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchTargets};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use guides::{GuidePass, GuideUniform};
@@ -75,11 +75,6 @@ use resolve::{ResolvePass, Supersampled, supersample};
 use stark_shaders::mirror::composite::binding as cb;
 use tiles::{Instance, MatteInstance, Ramp, TilePass, TileStreams};
 
-/// The blend and filter passes' slot lists, re-exported for the **merge**, which runs
-/// those very pipelines on tile-sized targets (§14.11) — so it must bind the very
-/// groups, not a second description of them.
-pub(crate) use blend::BLEND_SLOTS;
-pub(crate) use filter::FILTER_SLOTS;
 /// Pass A's two slot lists, re-exported for the **stamp loop**, which composites its
 /// working region through the very same `composite.wesl` (§6.3, §6.10). One list, so
 /// the two callers cannot disagree about the group they both build.
@@ -178,6 +173,7 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
+pub(crate) use plan::{blend_uniform, filter_uniform};
 pub(crate) use view::view_uniform;
 
 /// What [`Compositor::upload_streams`] hands the encoder: the per-tile bind groups, and the

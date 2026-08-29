@@ -15,6 +15,7 @@
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
 //! `Clone` and rides in the `Action::Context` (§5).
 
+use crate::gpu::tile::TilePairHandle;
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
@@ -230,17 +231,9 @@ impl FillRenderer {
 
         let mut tiles = base.clone();
         for (i, coord) in coords.iter().enumerate() {
-            let (base_color, base_aux) = match base.get(coord) {
-                Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
-                None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
-            };
-            // Bare canvas reads the 1×1 zero here exactly as it does for the color.
-            let base_resid = self.zeroes.resid.as_ref().map(|zero| {
-                base.get(coord)
-                    .and_then(|t| t.resid_view())
-                    .unwrap_or(zero)
-                    .clone()
-            });
+            // Bare canvas reads the 1×1 zeroes, all three at once, through the one
+            // answer to that question (`Zeroes::or`, §6.8's pattern).
+            let under = self.zeroes.or(base.get(coord).map(TilePairHandle::targets));
             let region_mask = self.selection.mask_for(&region, *coord);
             // As a gate: the coverage and the opacity it is read at, which the
             // uniform above already carries (`SelectionRenderer::gate_for`).
@@ -254,14 +247,12 @@ impl FillRenderer {
                 self.formats.has_resid(),
                 |b| match b {
                     f::F => ubuf.as_entire_binding(),
-                    f::BASE_COLOR => wgpu::BindingResource::TextureView(&base_color),
-                    f::BASE_AUX => wgpu::BindingResource::TextureView(&base_aux),
+                    f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
+                    f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
                     f::REGION => wgpu::BindingResource::TextureView(&region_mask),
                     f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
                     f::BASE_RESID => wgpu::BindingResource::TextureView(
-                        base_resid
-                            .as_ref()
-                            .expect("a residual build has a base residual"),
+                        under.resid.expect("a residual build has a base residual"),
                     ),
                     f::TILE => tile_slots.resource(),
                     other => unreachable!("`FILL_SLOTS` lists no binding {other}"),

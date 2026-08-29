@@ -85,7 +85,7 @@ pub(crate) fn blend_code(mode: BlendMode) -> u32 {
 /// document.
 pub(crate) struct BlendPass {
     pub(crate) pipeline: wgpu::RenderPipeline,
-    pub(crate) bgl: wgpu::BindGroupLayout,
+    bgl: wgpu::BindGroupLayout,
     pub(crate) pigment: PigmentLut,
 }
 
@@ -152,6 +152,56 @@ impl BlendPass {
 
     /// Encode one merge: the isolated layer `src` into the accumulator `b.back`,
     /// through blend slot `b.slot`, writing `b.out` (§18.0.4).
+    /// **The one description of `blend_common.wesl`'s group** — the screen's and the
+    /// merge's alike.
+    ///
+    /// `gpu::merge` runs this very pipeline on tile-sized targets to merge a layer
+    /// down through its mode (§14.11), which is the whole argument for merging through
+    /// the pass rather than restating its algebra. It had its own copy of this match,
+    /// arm for arm, and to allow it this type exposed its layout and its pigment LUT —
+    /// so the guarantee "the merge cannot drift from the screen" rested on two lists
+    /// staying identical, where the `unreachable!` arm would have caught a missing
+    /// binding only at run time, on an adapter, in the Mixbox half CI does not render.
+    ///
+    /// The uniform arrives as a resource because that is the one thing the two callers
+    /// genuinely differ in: the screen binds a slot of a buffer holding every merge in
+    /// the frame, the merge binds the first slot of a buffer holding one.
+    pub(crate) fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        uniform: wgpu::BindingResource<'_>,
+        back: Targets<'_>,
+        src: Targets<'_>,
+    ) -> wgpu::BindGroup {
+        // Both residuals or neither: `back`, `src` and `out` are all targets of the
+        // same document, so the space that gave one a residual gave all three one —
+        // which is why one `resid` answers for the pair.
+        let resid = back.resid.is_some() && src.resid.is_some();
+        desc::bind_group_for(
+            device,
+            "stark blend bg",
+            &self.bgl,
+            BLEND_SLOTS,
+            resid,
+            |i| match i {
+                bc::B => uniform.clone(),
+                bc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+                bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+                bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
+                bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
+                ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&self.pigment.view),
+                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.pigment.sampler),
+                bm::BACK_RESID => wgpu::BindingResource::TextureView(
+                    back.resid.expect("a residual build has one"),
+                ),
+                bm::SRC_RESID => {
+                    wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
+                }
+                other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
+            },
+        )
+    }
+
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
@@ -164,33 +214,7 @@ impl BlendPass {
         // fixed by the phase, and the whole scratch is dropped when they change (see
         // [`ScratchLevel::blend_bg`]).
         let bg = b.here.blend_bg(b.phase.back_is_swap, || {
-            // Both residuals or neither: `back`, `src` and `out` are all targets of
-            // the same document, so the space that gave one a residual gave all three
-            // one — which is why one `resid` answers for the pair.
-            let resid = b.back.resid.is_some() && src.resid.is_some();
-            desc::bind_group_for(
-                &ctx.device,
-                "stark blend bg",
-                &self.bgl,
-                BLEND_SLOTS,
-                resid,
-                |i| match i {
-                    bc::B => slots.resource(),
-                    bc::BACK_COLOR => wgpu::BindingResource::TextureView(b.back.color),
-                    bc::BACK_AUX => wgpu::BindingResource::TextureView(b.back.aux),
-                    bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
-                    bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
-                    ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&self.pigment.view),
-                    ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.pigment.sampler),
-                    bm::BACK_RESID => wgpu::BindingResource::TextureView(
-                        b.back.resid.expect("a residual build has one"),
-                    ),
-                    bm::SRC_RESID => wgpu::BindingResource::TextureView(
-                        src.resid.expect("a residual build has one"),
-                    ),
-                    other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
-                },
-            )
+            self.bind_group(&ctx.device, slots.resource(), b.back, src)
         });
         b.pass(
             encoder,

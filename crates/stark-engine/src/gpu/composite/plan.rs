@@ -28,6 +28,7 @@ use std::ops::Range;
 
 use crate::gpu::tile::TilePairHandle;
 use crate::view::ViewTransform;
+use stark_model::document::BlendMode;
 
 use super::blend::{self, BlendUniform};
 use super::filter::FilterUniform;
@@ -266,12 +267,11 @@ impl<'a> Plan<'a> {
                 GroupContent::Filter(_) => unreachable!("handled above"),
             }
             let slot = self.blends.len() as u32;
-            self.blends.push(BlendUniform {
-                mode: blend::blend_code(member.params.blend),
-                k: member.params.blend.drago_k(),
-                clip: u32::from(member.params.clip),
-                opacity: member.params.opacity,
-            });
+            self.blends.push(blend_uniform(
+                member.params.blend,
+                member.params.clip,
+                member.params.opacity,
+            ));
             self.steps.push(Step::Blend {
                 back: cur,
                 src: iso,
@@ -334,11 +334,30 @@ impl<'a> Plan<'a> {
     }
 }
 
+/// The blend pass's uniform for one merge (§18.0.4).
+///
+/// **The one place it is assembled**, screen and merge alike. `gpu::merge` runs this
+/// very pipeline on tile-sized targets (§14.11) and built its own, which is a lane at
+/// a time and so a lane away from being different — and `..Default::default()` fills
+/// one missed in either with a zero rather than failing.
+///
+/// `opacity` is the caller's because the two mean different things by it: the screen
+/// folds the group's slider in here, where a merge has already folded the source
+/// layer's into its expansion and has nothing left to fade.
+pub(crate) fn blend_uniform(mode: BlendMode, clip: bool, opacity: f32) -> BlendUniform {
+    BlendUniform {
+        mode: blend::blend_code(mode),
+        k: mode.drago_k(),
+        clip: u32::from(clip),
+        opacity,
+    }
+}
+
 /// The filter pass's uniform for `f`, under this frame's `view` (§21).
 ///
 /// Here rather than on [`FilterDraw`] for the reason [`Plan::filters`] gives: one of
 /// its lanes is a fact about the view, which the draw deliberately has none of.
-pub(super) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUniform {
+pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUniform {
     FilterUniform {
         kind: f.kind,
         strength: f.strength,

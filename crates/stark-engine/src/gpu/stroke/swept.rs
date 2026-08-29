@@ -152,6 +152,12 @@ pub(super) struct SweptKit {
     /// and the stamp loop's `deposit` uses.
     pub(super) integrate_pipeline: wgpu::RenderPipeline,
     pub(super) integrate_bgl: wgpu::BindGroupLayout,
+    /// The compiled `stamp.wesl`, kept because the **erase** kit builds its own
+    /// pipeline over the very same module (§6.12): only the fragment entry point and
+    /// the target list differ, so a second `create_shader_module` was a second parse
+    /// and a second translation of the same source — startup cost, on the web, of a
+    /// shader whose text is already in hand.
+    pub(super) shader: wgpu::ShaderModule,
 }
 
 /// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
@@ -226,6 +232,7 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
         noise_bgl,
         integrate_pipeline,
         integrate_bgl,
+        shader,
     }
 }
 

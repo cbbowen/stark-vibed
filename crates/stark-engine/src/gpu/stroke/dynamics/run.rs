@@ -55,30 +55,24 @@ use stark_shaders::mirror::dynamics::binding as b;
 // here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
-/// One mint-budget tile (`LoopCarry::fresh`), as a copy extent: the full
-/// `TILE_TEX` block — interior plus apron — cut from and seeded into the region
-/// aux exactly as the write-back cuts paint tiles, so the two address the region
-/// with one rule. Adjacent blocks overlap by the apron; the overlaps are cut
-/// from one region, so seeding them back is writing identical texels twice.
-const FRESH_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
-    width: stark_model::geom::TILE_TEX,
-    height: stark_model::geom::TILE_TEX,
-    depth_or_array_layers: 1,
-};
-
-/// The mint-budget tile's pool key: copies both ways, nothing else — no pass
-/// ever binds one, they exist purely to ferry the region aux's `.yz` lanes
-/// across pieces. The whole aux texel rides along (the `.x` height is the very
-/// value the write-back sliced into the base tile, so seeding it back over the
-/// freshly composited region is bit-identical), because a copy cannot address
-/// two lanes of a texel and a pass that could would cost more than the lanes.
-fn fresh_key() -> Key {
-    Key {
-        size: (stark_model::geom::TILE_TEX, stark_model::geom::TILE_TEX),
-        format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
-        label: "stark dynamics fresh",
-    }
+/// The mint-budget tile's pool key (`LoopCarry::fresh`): copies both ways, nothing
+/// else — no pass ever binds one, they exist purely to ferry the region aux's `.yz`
+/// lanes across pieces. The whole aux texel rides along (the `.x` height is the very
+/// value the write-back sliced into the base tile, so seeding it back over the freshly
+/// composited region is bit-identical), because a copy cannot address two lanes of a
+/// texel and a pass that could would cost more than the lanes.
+///
+/// A whole `TILE_TEX` block — interior plus apron — cut from and seeded into the region
+/// aux exactly as the write-back cuts paint tiles, so the two address the region with
+/// one rule. Adjacent blocks overlap by the apron; the overlaps are cut from one
+/// region, so seeding them back writes identical texels twice. The copies take their
+/// extent from this key ([`Key::extent`]).
+const fn fresh_key() -> Key {
+    Key::tile(
+        wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST),
+        "stark dynamics fresh",
+    )
 }
 
 /// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
@@ -584,7 +578,7 @@ impl<'a> DynamicsRun<'a> {
                         },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    FRESH_EXTENT,
+                    fresh_key().extent(),
                 );
             }
         }
@@ -671,7 +665,7 @@ impl<'a> DynamicsRun<'a> {
                         aspect: wgpu::TextureAspect::All,
                     },
                     kept.tex().as_image_copy(),
-                    FRESH_EXTENT,
+                    fresh_key().extent(),
                 );
                 // Held, not dropped. The lease this displaces is the *previous*
                 // piece's, and the seed copy that read it (above) is recorded into

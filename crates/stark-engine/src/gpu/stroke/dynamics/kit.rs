@@ -9,11 +9,15 @@ use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use stark_shaders::mirror::slice::decl as sld;
-use stark_shaders::mirror::stamp_common::decl as scd;
 
-/// The prefix-τ volume at group 1, compute-visible — the same slot the fast path binds
-/// at fragment visibility (`stroke::swept`), from the same declaration (§6.6).
-pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(scd::PREFIX_TEX)];
+/// The prefix-τ volume at group 1 — **the fast path's own list** (`stroke::swept`),
+/// which is what it always said it was: one slot from one declaration (§6.6), written
+/// out twice with a comment on each saying it matched the other.
+///
+/// What genuinely differs is the *stage* the two layouts declare it at — compute here,
+/// fragment there — and that is `desc::layout_for`'s argument rather than the list's,
+/// so there was never anything for a second list to carry.
+pub(super) use crate::gpu::stroke::swept::PREFIX_SLOTS;
 
 /// The write-back's aux narrowing (`slice.wesl`, §6.2/§6.4): the wide region aux in,
 /// the tile's one channel out.

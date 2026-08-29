@@ -27,6 +27,7 @@
 //! immutable GPU objects, so it is cheap to `Clone` and rides in the
 //! `Action::Context` (§5).
 
+use crate::gpu::tile::TilePairHandle;
 use std::collections::BTreeMap;
 
 use bytemuck::Zeroable;
@@ -929,55 +930,34 @@ impl TransformRenderer {
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
         );
-        let (base_color, base_aux) = match from.base.get(&dest) {
-            Some(tile) => (tile.color_view().clone(), tile.aux_view().clone()),
-            None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
-        };
+        // A virgin destination and a cut-only tile read the 1×1 zeroes — all three at
+        // once, through the one answer to that question (`Zeroes::or`), so the combine
+        // is one shader whatever exists (§6.8's pattern).
+        let under = self
+            .zeroes
+            .or(from.base.get(&dest).map(TilePairHandle::targets));
+        let carried = self.zeroes.or(parcel.map(Channels::targets));
         // A gating read: the base is cut by `coverage · opacity`, the identical
         // factor the parcel side took at the source (`combine_uniform` above).
         let base_mask = self.selection.gate_for(from.selection, dest);
-        let (parcel_color, parcel_aux) = match parcel {
-            Some(p) => (p.color.view().clone(), p.aux.view().clone()),
-            None => (self.zeroes.color.clone(), self.zeroes.aux.clone()),
-        };
-        // A virgin destination and a cut-only tile read the 1×1 zero for the residual
-        // exactly as they do for the color — the combine is one shader whatever
-        // exists (§6.8's pattern).
-        let (base_resid, parcel_resid) = match &self.zeroes.resid {
-            Some(zero) => (
-                Some(
-                    from.base
-                        .get(&dest)
-                        .and_then(|t| t.resid_view())
-                        .unwrap_or(zero)
-                        .clone(),
-                ),
-                Some(
-                    parcel
-                        .and_then(|p| p.resid.as_ref())
-                        .map_or_else(|| zero.clone(), |r| r.view().clone()),
-                ),
-            ),
-            None => (None, None),
-        };
         let bg = desc::bind_group_for(
             device,
             "stark transform combine bg",
             &self.combine_bgl,
             COMBINE_SLOTS,
-            base_resid.is_some() && parcel_resid.is_some(),
+            under.resid.is_some() && carried.resid.is_some(),
             |i| match i {
-                t::BASE_COLOR => wgpu::BindingResource::TextureView(&base_color),
-                t::BASE_AUX => wgpu::BindingResource::TextureView(&base_aux),
+                t::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
+                t::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
                 t::BASE_MASK => wgpu::BindingResource::TextureView(base_mask.view()),
-                t::PARCEL_COLOR => wgpu::BindingResource::TextureView(&parcel_color),
-                t::PARCEL_AUX => wgpu::BindingResource::TextureView(&parcel_aux),
+                t::PARCEL_COLOR => wgpu::BindingResource::TextureView(carried.color),
+                t::PARCEL_AUX => wgpu::BindingResource::TextureView(carried.aux),
                 t::QC => ubuf.as_entire_binding(),
                 t::BASE_RESID => wgpu::BindingResource::TextureView(
-                    base_resid.as_ref().expect("a residual build has one"),
+                    under.resid.expect("a residual build has one"),
                 ),
                 t::PARCEL_RESID => wgpu::BindingResource::TextureView(
-                    parcel_resid.as_ref().expect("a residual build has one"),
+                    carried.resid.expect("a residual build has one"),
                 ),
                 other => unreachable!("`COMBINE_SLOTS` lists no binding {other}"),
             },

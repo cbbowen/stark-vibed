@@ -46,7 +46,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use stark_model::geom::{TILE_TEX, TileCoord};
+use stark_model::geom::TileCoord;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 
 use crate::gpu::channels::Targets;
@@ -62,30 +62,25 @@ use super::{StrokeRenderer, StrokeScene};
 /// of the same range.
 const MAX_LANES: usize = 3;
 
-/// One whole parcel lane, as a copy extent — the full tile texture, interior plus
-/// apron, since the apron is rasterized with the interior and a piece that resumed
-/// only the interior would seam (§6.4).
-const LANE_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
-    width: TILE_TEX,
-    height: TILE_TEX,
-    depth_or_array_layers: 1,
-};
-
 /// One parcel lane's pool key: a full tile texture (interior + apron), renderable
 /// (the sweep accumulates into it), bindable (the landing pass reads it), and
 /// copyable both ways (a resuming piece copies the carried total into its working
 /// lane). Only the format and the label are the effect's — what a missing usage
 /// would cost is the same on both paths, so it is stated once.
+///
+/// The whole texture, apron included, because the apron is rasterized with the
+/// interior and a piece that resumed only the interior would seam (§6.4). The resume
+/// copy takes its extent from this key ([`Key::extent`]) rather than from a constant
+/// beside it, so the two cannot name different blocks.
 pub(super) fn lane_key(format: wgpu::TextureFormat, label: &'static str) -> Key {
-    Key {
-        size: (TILE_TEX, TILE_TEX),
+    Key::tile(
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            .union(wgpu::TextureUsages::TEXTURE_BINDING)
+            .union(wgpu::TextureUsages::COPY_SRC)
+            .union(wgpu::TextureUsages::COPY_DST),
         label,
-    }
+    )
 }
 
 /// The stroke's accumulated parcel over one tile: the working textures the sweep
@@ -348,11 +343,11 @@ impl<'a> IncrementalTileAccumulator<'a> {
             let work = Parcel::take(self.r, self.keys);
             let resumed = self.tiles.get(coord).map(|t| Arc::clone(&t.accum));
             if let Some(old) = &resumed {
-                for (src, dst) in old.lanes.iter().zip(&work.lanes) {
+                for ((src, dst), key) in old.lanes.iter().zip(&work.lanes).zip(self.keys) {
                     self.scope.encoder().copy_texture_to_texture(
                         src.tex().as_image_copy(),
                         dst.tex().as_image_copy(),
-                        LANE_EXTENT,
+                        key.extent(),
                     );
                 }
             }

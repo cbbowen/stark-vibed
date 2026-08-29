@@ -52,6 +52,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::gpu::context::GpuContext;
+use stark_model::geom::TILE_TEX;
 
 use crate::unpoisoned;
 
@@ -85,6 +86,41 @@ pub(super) struct Key {
 }
 
 impl Key {
+    /// A key for one **whole tile texture** — interior plus apron, the size every
+    /// scratch that stands in for a tile is.
+    ///
+    /// A constructor rather than three call sites repeating `(TILE_TEX, TILE_TEX)`,
+    /// because that pair is not a size somebody chose: it is what a tile *is* (§6.4),
+    /// and a scratch that got it wrong would be one the write-back cut the wrong block
+    /// out of.
+    pub(super) const fn tile(
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            size: (TILE_TEX, TILE_TEX),
+            format,
+            usage,
+            label,
+        }
+    }
+
+    /// A copy extent covering the whole of a texture this key describes.
+    ///
+    /// Asked of the key rather than written beside it, which is what the three
+    /// `Extent3d` constants in this module's callers each were: a copy whose extent
+    /// disagreed with the allocation it addresses does not fail, it moves the wrong
+    /// block — and there is nothing in a bare `Extent3d` to compare against the key
+    /// that made the texture.
+    pub(super) const fn extent(&self) -> wgpu::Extent3d {
+        wgpu::Extent3d {
+            width: self.size.0,
+            height: self.size.1,
+            depth_or_array_layers: 1,
+        }
+    }
+
     /// Whether a texture created for `self` can serve a checkout of `other` — every
     /// field of the descriptor, and nothing else. See the type's note on the label.
     fn interchangeable(&self, other: &Key) -> bool {

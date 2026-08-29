@@ -25,14 +25,13 @@ use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Channels, Targets};
-use crate::gpu::composite::{
-    BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform, blend_code,
-};
+use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Zeroes};
 use crate::gpu::submit::TileScope;
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
-use crate::gpu::uniforms::UNIFORM_SLOT;
+use crate::gpu::uniforms::UniformSlots;
+use crate::view::ViewTransform;
 use stark_model::document::BlendMode;
 
 // Generated from the shaders' own declarations (§6.10).
@@ -74,25 +73,6 @@ const SLAB_SLOTS: &[desc::Slot] = &[
 fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
     wgpu::BindingResource::TextureView(v)
 }
-
-/// The first dynamic-offset slot of `buffer`, sized by the struct that occupies it.
-///
-/// The two passes a merge borrows (§14.11) vary their uniform across a *frame* on the
-/// screen and are handed a one-slot buffer here, so the offset is always zero — but the
-/// layout is the screen's, and it declares a dynamic offset.
-fn slot_of<T>(buffer: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-        buffer,
-        offset: 0,
-        size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
-    })
-}
-
-use stark_shaders::mirror::blend_common::binding as bc;
-use stark_shaders::mirror::blend_mixbox::binding as bm;
-use stark_shaders::mirror::filter_common::binding as fc;
-use stark_shaders::mirror::filter_mixbox::binding as fm;
-use stark_shaders::mirror::mixbox_lut::binding as ml;
 
 /// One side of a merge: a layer's tiles and the opacity slider that scales them.
 ///
@@ -255,9 +235,9 @@ impl MergeRenderer {
         // `store` folds no slider — it writes tiles at opacity 1 and leaves the fade to
         // the surviving layer — so its slot is the identity.
         let store_uniform = self.uniform("stark slab store", &slab_uniform(1.0));
-        // The blend pass reads a **dynamic-offset** slot (`UNIFORM_SLOT`), so its
-        // buffer is a slot wide and this merge binds the first one. The layer's own
-        // opacity is already inside the expansion, so the merge itself runs at 1.
+        // The blend pass reads a **dynamic-offset** slot, so its buffer is one slot
+        // wide and this merge binds the first. The layer's own opacity is already
+        // inside the expansion, so the merge itself runs at 1.
         let blend_uniform = self.blend_uniform(blend, clip);
 
         // The five uniforms above are per *merge* and outlive every flush below,
@@ -357,32 +337,22 @@ impl MergeRenderer {
     fn encode_filter(
         &self,
         scope: &mut TileScope,
-        uniform: &wgpu::Buffer,
+        uniform: &UniformSlots<FilterUniform>,
         tile: &TilePairHandle,
         out: &Channels,
     ) {
-        // The filter pass's own slot list (§21), against its own layout: a merged
-        // filter runs the very pipeline the screen would (§14.11.7), so it binds the
-        // very group.
-        let bg = desc::bind_group_for(
+        // **The filter pass's own group**, built by the filter pass: a merged filter
+        // runs the very pipeline the screen would (§14.11.7), so it binds the very
+        // group rather than a second description of one.
+        let bg = self.filter.bind_group(
             &self.ctx.device,
-            "stark merge filter bg",
-            &self.filter.bgl,
-            crate::gpu::composite::FILTER_SLOTS,
-            self.formats.has_resid(),
-            |i| match i {
-                fc::F => slot_of::<FilterUniform>(uniform),
-                fc::BACK_COLOR => view(tile.color_view()),
-                fc::BACK_AUX => view(tile.aux_view()),
-                fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.filter.sampler),
-                ml::PIGMENT_LUT => view(&self.blend.pigment.view),
-                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.blend.pigment.sampler),
-                fm::BACK_RESID => view(
-                    tile.resid_view()
-                        .expect("a residual space's tile has one (§6.7)"),
-                ),
-                other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
+            uniform.resource(),
+            Targets {
+                color: tile.color_view(),
+                aux: tile.aux_view(),
+                resid: tile.resid_view().filter(|_| self.formats.has_resid()),
             },
+            &self.blend.pigment,
         );
         pass(
             scope,
@@ -401,29 +371,20 @@ impl MergeRenderer {
     /// buffer is sized to the struct rather than to `UNIFORM_SLOT`. The `disp` lane is
     /// zero and stays zero — it is the *view's* number, and the only kind that reads
     /// it is the one this merge refuses.
-    fn filter_uniform(&self, draw: &FilterDraw) -> wgpu::Buffer {
-        let size = std::mem::size_of::<FilterUniform>() as u64;
-        let buf = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark merge filter uniform"),
-            size: size.max(UNIFORM_SLOT),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.ctx.queue.write_buffer(
-            &buf,
-            0,
-            bytemuck::bytes_of(&FilterUniform {
-                kind: draw.kind,
-                strength: draw.strength,
-                clip: u32::from(draw.clip),
-                disp: [0.0; 2],
-                params: draw.params,
-                params2: draw.params2,
-                stops: draw.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
-                ..Default::default()
-            }),
-        );
-        buf
+    fn filter_uniform(&self, draw: &FilterDraw) -> UniformSlots<FilterUniform> {
+        // The compositor's own assembly, at the identity view. The one lane that is a
+        // fact about the *view* is the chromatic gather's dispersion — measured in
+        // screen px (§21.10) — and a merge has no view: `merge::plan` refuses the
+        // chromatic filter outright, since a filter baked into a tile cannot depend on
+        // how the tile is being looked at (§14.11.7). So a view that disperses by
+        // nothing is not a stand-in here, it is the only one that means anything.
+        self.slot(
+            "stark merge filter uniform",
+            &crate::gpu::composite::filter_uniform(
+                draw,
+                ViewTransform::identity(stark_model::geom::Extent2::new(1, 1)),
+            ),
+        )
     }
 
     /// The direct tile-space law: one pass, `merge.wesl` (§14.11).
@@ -435,6 +396,14 @@ impl MergeRenderer {
         src: Option<&TilePairHandle>,
         out: &Channels,
     ) {
+        // Both sides through the one "a tile, or the 1×1 zeroes" answer
+        // (`Zeroes::or`): a layer that has no tile at this coord reads the stand-in,
+        // which is what lets `merge.wesl` be one shader whatever exists (§6.8).
+        let (lower, upper) = (self.views_of(dst), self.views_of(src));
+        fn resid<'a>(t: Targets<'a>) -> &'a wgpu::TextureView {
+            t.resid
+                .expect("a residual is asked for only in a space that has one")
+        }
         let bg = desc::bind_group_for(
             &self.ctx.device,
             "stark merge bg",
@@ -443,12 +412,12 @@ impl MergeRenderer {
             self.formats.has_resid(),
             |b| match b {
                 m::M => uniform.as_entire_binding(),
-                m::LOWER_COLOR => view(self.color_of(dst)),
-                m::LOWER_AUX => view(self.aux_of(dst)),
-                m::UPPER_COLOR => view(self.color_of(src)),
-                m::UPPER_AUX => view(self.aux_of(src)),
-                m::LOWER_RESID => view(self.resid_of(dst)),
-                m::UPPER_RESID => view(self.resid_of(src)),
+                m::LOWER_COLOR => view(lower.color),
+                m::LOWER_AUX => view(lower.aux),
+                m::UPPER_COLOR => view(upper.color),
+                m::UPPER_AUX => view(upper.aux),
+                m::LOWER_RESID => view(resid(lower)),
+                m::UPPER_RESID => view(resid(upper)),
                 other => unreachable!("`MERGE_SLOTS` lists no binding {other}"),
             },
         );
@@ -517,37 +486,20 @@ impl MergeRenderer {
     fn encode_blend(
         &self,
         scope: &mut TileScope,
-        uniform: &wgpu::Buffer,
+        uniform: &UniformSlots<BlendUniform>,
         back: &Channels,
         src: &Channels,
         out: &Channels,
     ) {
-        // The compositor's own blend group (§18.0.4), on tile-sized targets — which is
+        // **The compositor's own group**, built by the compositor (§18.0.4) — which is
         // the whole argument for merging through this pass rather than restating its
-        // algebra (§14.11).
-        let bg = desc::bind_group_for(
+        // algebra (§14.11), and was not true while this file spelled the group out
+        // arm for arm beside it.
+        let bg = self.blend.bind_group(
             &self.ctx.device,
-            "stark merge blend bg",
-            &self.blend.bgl,
-            crate::gpu::composite::BLEND_SLOTS,
-            back.resid.is_some() && src.resid.is_some(),
-            |i| match i {
-                bc::B => slot_of::<BlendUniform>(uniform),
-                bc::BACK_COLOR => view(back.color.view()),
-                bc::BACK_AUX => view(back.aux.view()),
-                bc::SRC_COLOR => view(src.color.view()),
-                bc::SRC_AUX => view(src.aux.view()),
-                ml::PIGMENT_LUT => view(&self.blend.pigment.view),
-                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.blend.pigment.sampler),
-                bm::BACK_RESID => view(
-                    back.resid
-                        .as_ref()
-                        .expect("a residual build has one")
-                        .view(),
-                ),
-                bm::SRC_RESID => view(src.resid.as_ref().expect("a residual build has one").view()),
-                other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
-            },
+            uniform.resource(),
+            back.targets(),
+            src.targets(),
         );
         pass(
             scope,
@@ -561,30 +513,7 @@ impl MergeRenderer {
 
     /// A tile's three channel textures, or the 1×1 zeroes where the layer has none.
     fn views_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> Targets<'a> {
-        Targets {
-            color: self.color_of(tile),
-            aux: self.aux_of(tile),
-            resid: self.formats.has_resid().then(|| self.resid_of(tile)),
-        }
-    }
-
-    fn color_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> &'a wgpu::TextureView {
-        tile.map_or(&self.zeroes.color, TilePairHandle::color_view)
-    }
-
-    fn aux_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> &'a wgpu::TextureView {
-        tile.map_or(&self.zeroes.aux, TilePairHandle::aux_view)
-    }
-
-    /// The residual, in a space that has one. Bare canvas reads the 1×1 zero here
-    /// exactly as it does for the color (§6.8's pattern).
-    fn resid_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> &'a wgpu::TextureView {
-        let zero = self
-            .zeroes
-            .resid
-            .as_ref()
-            .expect("a residual is asked for only in a space that has one");
-        tile.and_then(TilePairHandle::resid_view).unwrap_or(zero)
+        self.zeroes.or(tile.map(TilePairHandle::targets))
     }
 
     fn acquire(&self, pool: &TilePool, source: AllocSource) -> Channels {
@@ -608,27 +537,33 @@ impl MergeRenderer {
     }
 
     /// The blend pass's uniform, in a buffer wide enough for its dynamic-offset slot.
-    fn blend_uniform(&self, blend: BlendMode, clip: bool) -> wgpu::Buffer {
-        let buf = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark merge blend uniform"),
-            size: UNIFORM_SLOT,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.ctx.queue.write_buffer(
-            &buf,
-            0,
-            bytemuck::bytes_of(&BlendUniform {
-                mode: blend_code(blend),
-                k: blend.drago_k(),
-                clip: u32::from(clip),
-                // The source layer's own opacity is folded in by its expansion, which
-                // is what pass A would have done to its tiles — so the merge itself
-                // has nothing left to fade.
-                opacity: 1.0,
-            }),
+    fn blend_uniform(&self, blend: BlendMode, clip: bool) -> UniformSlots<BlendUniform> {
+        // The compositor's own assembly. The source layer's own opacity is folded in
+        // by its expansion, which is what pass A would have done to its tiles — so the
+        // merge itself has nothing left to fade.
+        self.slot(
+            "stark merge blend uniform",
+            &crate::gpu::composite::blend_uniform(blend, clip, 1.0),
+        )
+    }
+
+    /// One uniform in a buffer of exactly one slot.
+    ///
+    /// [`UniformSlots`] rather than a hand-rolled buffer of [`UNIFORM_SLOT`] bytes,
+    /// which is what this was: the layouts a merge borrows are the screen's and
+    /// declare a dynamic offset, since several merges share one buffer in a frame —
+    /// and the type that answers "what is a dynamic-offset slot" already exists, gets
+    /// the stride from the uniform rather than from a constant, and is what the screen
+    /// side binds. A merge has one merge in flight, so the count is one and the offset
+    /// is always the first.
+    fn slot<T: bytemuck::Pod>(&self, label: &'static str, uniform: &T) -> UniformSlots<T> {
+        let mut slots = UniformSlots::new(&self.ctx.device, label, 1);
+        slots.write(
+            &self.ctx.device,
+            &self.ctx.queue,
+            std::slice::from_ref(uniform),
         );
-        buf
+        slots
     }
 
     /// The coordinates a pass has to be encoded for: everything both sides touch,
@@ -696,7 +631,7 @@ struct Uniforms<'a> {
     /// The two expansions', lower then upper — the one place the two sides differ.
     expand: (&'a wgpu::Buffer, &'a wgpu::Buffer),
     store: &'a wgpu::Buffer,
-    blend: &'a wgpu::Buffer,
+    blend: &'a UniformSlots<BlendUniform>,
 }
 
 fn slab_uniform(opacity: f32) -> SlabUniform {

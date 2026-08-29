@@ -585,6 +585,31 @@ pub(crate) struct Zeroes {
 }
 
 impl Zeroes {
+    /// The stand-ins as a trio a pass binds.
+    pub(crate) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
+        crate::gpu::channels::Targets {
+            color: &self.color,
+            aux: &self.aux,
+            resid: self.resid.as_ref(),
+        }
+    }
+
+    /// `targets`, or these stand-ins where there are none — **the one answer to "a
+    /// tile, or the 1×1 zeroes"** (§6.8's pattern).
+    ///
+    /// It was four: the merge's `views_of`, the fill's base, and the transform's base
+    /// and parcel, each unpacking the `Option` a field at a time and each having to
+    /// remember on its own that a space with no residual has no zero for it either.
+    /// Whether a trio exists is one question, so it has one answer, and the residual's
+    /// presence rides along with the other two rather than being decided again
+    /// (§6.7).
+    pub(crate) fn or<'a>(
+        &'a self,
+        targets: Option<crate::gpu::channels::Targets<'a>>,
+    ) -> crate::gpu::channels::Targets<'a> {
+        targets.unwrap_or_else(|| self.targets())
+    }
+
     pub(crate) fn new(ctx: &GpuContext, formats: crate::gpu::channels::ChannelFormats) -> Self {
         Self {
             color: zero_texture(ctx, formats.color, "stark zero color"),

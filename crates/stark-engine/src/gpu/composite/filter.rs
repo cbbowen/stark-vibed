@@ -13,6 +13,7 @@
 //! [`UniformSlots`]: crate::gpu::uniforms::UniformSlots
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
 use crate::gpu::uniforms::UniformSlots;
@@ -74,7 +75,7 @@ pub(crate) struct FilterPass {
     /// LUT. What differs is what the alpha lane *means* (per-unit opacity rather than
     /// coverage), which is a fact about the caller rather than about the binding.
     pub(crate) tile: wgpu::RenderPipeline,
-    pub(crate) bgl: wgpu::BindGroupLayout,
+    bgl: wgpu::BindGroupLayout,
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
     /// rim rather than wrapping the far side of the picture into a fringe. The
@@ -82,7 +83,7 @@ pub(crate) struct FilterPass {
     ///
     /// Bound by the tile pass too, which never reads it: a bind group has to satisfy
     /// the whole layout, and one layout for two pipelines is the trade that buys.
-    pub(crate) sampler: wgpu::Sampler,
+    sampler: wgpu::Sampler,
 }
 
 impl FilterPass {
@@ -172,6 +173,43 @@ impl FilterPass {
     /// ask it the same question and an Oklab document binds the same 1×1 stand-in, so
     /// there is one table per space rather than one per pass — a coupling that now
     /// shows in this signature instead of only in a comment.
+    /// **The one description of `filter_common.wesl`'s group** — the screen's and the
+    /// merge's alike, on [`BlendPass::bind_group`](super::blend::BlendPass::bind_group)'s
+    /// argument: merging a filter layer into the paint beneath it runs this module's
+    /// tile-space entry point (§14.11.7), so the merged tile comes out of the shader
+    /// the screen runs and must bind the very group rather than a second description
+    /// of it.
+    ///
+    /// The sampler at `BACK_SAMP` is bound by the tile pass and never read — `fs_tile`
+    /// takes no taps — because a bind group answers to the whole layout.
+    pub(crate) fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        uniform: wgpu::BindingResource<'_>,
+        back: Targets<'_>,
+        pigment: &crate::gpu::pigment::PigmentLut,
+    ) -> wgpu::BindGroup {
+        desc::bind_group_for(
+            device,
+            "stark filter bg",
+            &self.bgl,
+            FILTER_SLOTS,
+            back.resid.is_some(),
+            |i| match i {
+                fc::F => uniform.clone(),
+                fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+                fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+                fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+                ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&pigment.view),
+                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&pigment.sampler),
+                fm::BACK_RESID => wgpu::BindingResource::TextureView(
+                    back.resid.expect("a residual build has one"),
+                ),
+                other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
+            },
+        )
+    }
+
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
@@ -181,25 +219,7 @@ impl FilterPass {
         pigment: &crate::gpu::pigment::PigmentLut,
     ) {
         let bg = b.here.filter_bg(b.phase.back_is_swap, || {
-            desc::bind_group_for(
-                &ctx.device,
-                "stark filter bg",
-                &self.bgl,
-                FILTER_SLOTS,
-                b.back.resid.is_some(),
-                |i| match i {
-                    fc::F => slots.resource(),
-                    fc::BACK_COLOR => wgpu::BindingResource::TextureView(b.back.color),
-                    fc::BACK_AUX => wgpu::BindingResource::TextureView(b.back.aux),
-                    fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
-                    ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&pigment.view),
-                    ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&pigment.sampler),
-                    fm::BACK_RESID => wgpu::BindingResource::TextureView(
-                        b.back.resid.expect("a residual build has one"),
-                    ),
-                    other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
-                },
-            )
+            self.bind_group(&ctx.device, slots.resource(), b.back, pigment)
         });
         b.pass(
             encoder,
