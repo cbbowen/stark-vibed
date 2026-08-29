@@ -27,6 +27,7 @@
 
 pub(crate) mod action;
 pub(crate) mod brush;
+pub(crate) mod effect;
 pub(crate) mod fill;
 pub(crate) mod filter;
 pub(crate) mod fold;
@@ -47,6 +48,11 @@ pub use brush::{
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use filter::{ChromaticAberration, ColorAdjust, Filter};
+// The undo algebra (§12.3): which actions in a log are effective. The helpers behind
+// these — the revival keys, the two target searches — stay inside the module.
+pub use effect::{
+    Targets, effective_actions, effective_indices, targets, undo_target_of, undone_ids,
+};
 pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.

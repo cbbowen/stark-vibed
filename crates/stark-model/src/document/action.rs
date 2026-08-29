@@ -234,9 +234,9 @@ pub enum ActionKind {
     /// undo stays pure timeline navigation and never logs one.
     ///
     /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the
-    /// whole log, not just the prior state, so the timeline layer resolves
-    /// which actions are *effective* (see `stark-engine`'s `document::effective_actions`)
-    /// and only ever materializes those.
+    /// whole log, not just the prior state, so which actions are *effective* is
+    /// resolved separately ([`effective_actions`](crate::document::effective_actions))
+    /// and a timeline only ever materializes those.
     Undo(ActionId),
 
     /// Switch the canvas substrate (§6.4).

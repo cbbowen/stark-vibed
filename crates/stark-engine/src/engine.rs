@@ -1571,8 +1571,14 @@ impl Engine {
     /// each frame's moves), pointless across a replay where nothing is presented
     /// in between. This renders the stroke exactly once, at commit. Used by the
     /// brush editor's test-stroke replay.
-    pub fn replay_stroke(&mut self, tool: Tool, samples: &[crate::command::InputSample]) {
-        self.replay_stroke_seeded(tool, samples, self.authoring.clock, 0.0);
+    /// Answers the id of the action it committed, or `None` where the samples held no
+    /// stroke — empty, or a hand that never left the first point.
+    pub fn replay_stroke(
+        &mut self,
+        tool: Tool,
+        samples: &[crate::command::InputSample],
+    ) -> Option<ActionId> {
+        self.replay_stroke_seeded(tool, samples, self.authoring.clock, 0.0)
     }
 
     /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
@@ -1585,15 +1591,26 @@ impl Engine {
     /// [`Engine::replay_stroke`] pins it to zero — because the brush editor's
     /// preview replays a *recorded hand* (the user's own test stroke) and has to
     /// show what the smoothing slider beside it would do to that hand.
+    /// **Answers what it committed**, which is §4's requirement of anything that
+    /// mutates and is not a command: this is a batch of inputs ending in a logged,
+    /// replicated action — the most command-like thing on the facade — and it reported
+    /// nothing at all, so a caller could not tell a committed stroke from a refused
+    /// one. `None` is "these samples held no stroke": none at all, or a hand that never
+    /// left its first point.
+    ///
+    /// Not routed through `GestureCommand` instead, deliberately. The command tier's
+    /// payloads are values a frontend builds per event; this takes a borrowed slice a
+    /// bench replays in a loop, and making it a command would mean an `Arc<[_]>` per
+    /// call to say the same thing. Answering is what §4 actually asks for.
     pub fn replay_stroke_seeded(
         &mut self,
         tool: Tool,
         samples: &[crate::command::InputSample],
         seed: u64,
         rope: f32,
-    ) {
+    ) -> Option<ActionId> {
         let mut it = samples.iter();
-        let Some(first) = it.next() else { return };
+        let first = it.next()?;
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device tolerance to declare.
         self.session
@@ -1601,10 +1618,13 @@ impl Engine {
         for s in it {
             self.session.stroke_to(*s);
         }
-        if let Some(rec) = self.session.end_stroke() {
-            self.commit(ActionKind::CommitStroke(rec));
-        }
+        let committed = self.session.end_stroke().map(|rec| {
+            let id = self.next_action_id();
+            self.commit_with_id(id, ActionKind::CommitStroke(rec));
+            id
+        });
         self.mark_live_stale();
+        committed
     }
 
     /// The in-flight tow, for the frontend's string overlay (§6.11) — a named
