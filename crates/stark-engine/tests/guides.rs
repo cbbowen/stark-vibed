@@ -378,3 +378,46 @@ fn concurrent_adds_cannot_collide() {
     assert_ne!(ids[0], ids[1], "two guides minted the same id");
     assert_eq!(roster(&a), roster(&b), "the two peers did not converge");
 }
+
+/// **An eye does not outlive the document it was opened on.**
+///
+/// `Engine::reset_document` replaces the timeline and keeps the `Session`, so every
+/// piece of session state keyed on something the *document* mints has to go with the
+/// document. A [`GuideId`] is an `ActionId`, and a reset puts the client back to
+/// `Authoring::solo()` — so the first guide of the file being loaded is minted at the
+/// same `{ lamport, actor }` the last document's first guide had. An open eye
+/// therefore reopened itself on a guide nobody on this client had ever seen, which is
+/// the one thing §20.5 says a scaffold must not do.
+///
+/// Every other load in this file goes into a **fresh** engine, which is why none of
+/// them could see it: the set they check was empty before the load. This one loads
+/// into an engine that has been worked in.
+#[test]
+fn an_eye_does_not_outlive_its_document() {
+    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+
+    // One document, one guide, eye open — a client in the middle of working.
+    let first = add_and_show(&mut a, distinctive(), Some("first"));
+    assert_eq!(visible_guides(&a), vec![true], "the eye this client opened");
+
+    // A different document, with a guide of its own that this client has never seen.
+    // Minted by the same door in the same order, so it lands on the same id.
+    let second = add(&mut b, distinctive(), Some("second"));
+    assert_eq!(
+        first, second,
+        "the premise of this test: two documents' first guides collide on one id, \
+         because a reset hands the ids back",
+    );
+
+    a.load_bytes(&b.save_bytes().expect("save")).expect("load");
+
+    assert_eq!(roster(&a).len(), 1, "the loaded document's guide");
+    assert_eq!(
+        visible_guides(&a),
+        vec![false],
+        "a guide from a freshly opened file drew itself, because its id matched one \
+         the client had opened in the document before it",
+    );
+}

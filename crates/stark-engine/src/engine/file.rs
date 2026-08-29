@@ -705,7 +705,9 @@ impl Engine {
         // what a fresh engine starts with, which is the same statement the two
         // constructors make rather than a fourth list of fields to keep level.
         self.authoring = Authoring::solo();
-        self.session.cancel_stroke();
+        // Not `cancel_stroke`: a guide's open eye is keyed on an id this reset makes
+        // mintable again, so it has to go with the document too (§20.5).
+        self.session.forget_document();
         self.session.active_layer = ROOT_LAYER;
     }
 
