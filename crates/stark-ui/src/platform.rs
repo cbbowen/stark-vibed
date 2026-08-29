@@ -1492,7 +1492,7 @@ pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String
     // deep trench around a canvas that has none. White, not black, because an
     // unpainted substrate reads as its own top surface.
     for p in px.as_chunks_mut::<4>().0 {
-        let lum = ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u32;
+        let lum = (77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8;
         let a = p[3] as u32;
         let over = (lum * a + 255 * (255 - a)) / 255;
         let g = over as u8;

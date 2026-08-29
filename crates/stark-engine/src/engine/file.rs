@@ -448,12 +448,16 @@ impl Engine {
     /// If it is the substrate in use, it is rebuilt so the bytes take effect at once.
     pub fn import_substrate(&mut self, png_bytes: &[u8]) -> Result<SubstrateId> {
         let (id, canonical) = crate::gpu::substrate::canonicalize(png_bytes)?;
-        if self
+        // `canonicalize` produced these bytes by encoding a field it decoded, so the
+        // registry's own decode of them cannot fail; it is the same door the accepting
+        // path goes through and there is nothing here to report differently.
+        let rebuilt = self
             .shared
             .apply
             .substrates
             .register(&self.shared.gpu, id, canonical)
-        {
+            .map_err(|e| DocError::Asset(format!("canvas substrate: {e}")))?;
+        if rebuilt {
             self.apply_substrate();
         }
         Ok(id)
@@ -523,12 +527,13 @@ impl Engine {
             ))
             .into());
         }
-        if self
+        let rebuilt = self
             .shared
             .apply
             .substrates
             .register(&self.shared.gpu, actual, png_bytes.to_vec())
-        {
+            .map_err(|e| DocError::Asset(format!("canvas substrate: {e}")))?;
+        if rebuilt {
             self.apply_substrate();
         }
         Ok(actual)
@@ -584,26 +589,29 @@ impl Engine {
     /// Provide (frontend-fetched) HDR bytes for an environment. If it's the one in
     /// use, it's rebuilt so the bytes take effect immediately.
     ///
-    /// **The bytes are decoded here, before they are stored** — the shape
-    /// [`accept_substrate`](Self::accept_substrate) already takes, and for its reason.
-    /// An environment is fetched over the network and handed straight in, so this is
-    /// the boundary between bytes somebody else wrote and a value the engine treats
-    /// as its own: a truncated download or a file that is not an `.hdr` is refused
-    /// here, where the caller can say so and the canvas keeps the light it has.
-    /// Without this the first *use* of the id met a decoder panic on the render
+    /// **The bytes are decoded before they are stored**, by
+    /// [`Registry::register`](crate::gpu::registry::Registry::register) — which is
+    /// where both resources' door now is, rather than a check each caller had to
+    /// remember. An environment is fetched over the network and handed straight in,
+    /// so this is the boundary between bytes somebody else wrote and a value the
+    /// engine treats as its own: a truncated download or a file that is not an
+    /// `.hdr` is refused, the caller can say so, and the canvas keeps the light it
+    /// has. Without it the first *use* of the id met a decoder panic on the render
     /// thread — an abort on the web, with the painting unsaved.
     ///
-    /// The decode is paid twice on the accepting path (once here, once in the build),
-    /// and that is the honest price of validating at the door: an HDR is registered a
-    /// handful of times in a session, where the build behind it is a mip chain.
+    /// The decode is paid twice on the accepting path (once at the door, once in the
+    /// build), and that is the honest price of validating before storing: an HDR is
+    /// registered a handful of times in a session, where the build behind it is a mip
+    /// chain. Keeping the first decode instead would be several megabytes of float
+    /// image held for a build that has already happened — see
+    /// [`EnvironmentId::Decoded`](crate::gpu::registry::Resource::Decoded).
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) -> Result<()> {
-        crate::gpu::Environment::decodes(&hdr_bytes)
-            .map_err(|e| DocError::Asset(format!("lighting environment: {e}")))?;
-        if self
+        let rebuilt = self
             .shared
             .environment
             .register(&self.shared.gpu, id, hdr_bytes)
-        {
+            .map_err(|e| DocError::Asset(format!("lighting environment: {e}")))?;
+        if rebuilt {
             self.apply_environment();
         }
         Ok(())

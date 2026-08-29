@@ -54,6 +54,26 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// `SubstrateId`, so every scale it may be laid at shares one registration.
     type Content: Copy + Eq + Hash + std::fmt::Debug;
 
+    /// **Whatever decoding the bytes once produces that every build from them can
+    /// share**, kept beside them by [`Registered`].
+    ///
+    /// Which resources want one is decided by the ratio the module note sets up: the
+    /// canvas substrate registers one height map and bakes a `SubstrateMap` per scale
+    /// it is laid at (§6.4), so the decode is paid once and the bakes read it. The
+    /// lighting environment builds once per registration and its decode is a
+    /// multi-megabyte float image only the mip chain ever reads, so it keeps `()` and
+    /// decodes inside [`build`](Self::build) — the memory is the reason, and it is a
+    /// per-resource answer rather than one this trait should pick.
+    type Decoded;
+
+    /// Decode registered bytes, or say what the decoder made of them.
+    ///
+    /// **This is the door.** It runs in [`Registry::register`] before anything is
+    /// stored, so bytes that will not decode are refused where a caller can report
+    /// it rather than at the first *use*, which for both of today's resources is on
+    /// the render path — an abort on the web with the painting unsaved (§5).
+    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, String>;
+
     /// The registered bytes this id builds from.
     fn content(self) -> Self::Content;
 
@@ -61,14 +81,34 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// also what an id with missing bytes falls back to.
     fn is_builtin(self) -> bool;
 
-    /// Build the GPU object. `bytes` is `None` for a builtin id, and also when a
+    /// Build the GPU object. `registered` is `None` for a builtin id, and also when a
     /// non-builtin id's bytes have not been registered yet.
-    fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Self::Gpu;
+    fn build(self, gpu: &GpuContext, registered: Option<Registered<'_, Self>>) -> Self::Gpu;
+}
+
+/// What a build is given for a registered id: the bytes, and the decode of them
+/// [`Registry::register`] already paid for.
+///
+/// Both, because which one a build reads is the resource's business — see
+/// [`Resource::Decoded`].
+pub struct Registered<'a, R: Resource> {
+    pub bytes: &'a [u8],
+    pub decoded: &'a R::Decoded,
+}
+
+/// One registration: the bytes as they arrived, and their decode.
+///
+/// The bytes are kept verbatim because they are what a save file bundles and what a
+/// peer is served (§8, §12.4) — a re-encode would be a different byte string under
+/// the same content id.
+struct Entry<R: Resource> {
+    bytes: Vec<u8>,
+    decoded: R::Decoded,
 }
 
 /// The shared half: registered bytes and the objects built from them, one map each.
 struct Store<R: Resource> {
-    bytes: HashMap<R::Content, Vec<u8>>,
+    bytes: HashMap<R::Content, Entry<R>>,
     /// Everything built, keyed by id; the id in use is always present.
     ///
     /// A **cache**, not a set of live resources, and it exists for the canvas
@@ -89,11 +129,17 @@ impl<R: Resource> Store<R> {
         if let Some(built) = self.built.get(&id) {
             return built.clone();
         }
-        let bytes = self.bytes.get(&id.content());
-        if bytes.is_none() && !id.is_builtin() {
+        let entry = self.bytes.get(&id.content());
+        if entry.is_none() && !id.is_builtin() {
             tracing::warn!(id = ?id, "no registered bytes; falling back to the builtin");
         }
-        let obj = id.build(gpu, bytes.map(|b| b.as_slice()));
+        let obj = id.build(
+            gpu,
+            entry.map(|e| Registered {
+                bytes: &e.bytes,
+                decoded: &e.decoded,
+            }),
+        );
         self.built.insert(id, obj.clone());
         obj
     }
@@ -179,19 +225,32 @@ impl<R: Resource> Registry<R> {
     /// a peer is served (§8, §12.4). `None` for a builtin, which has none by
     /// definition, and for content whose image has not arrived.
     pub fn bytes(&self, content: R::Content) -> Option<Vec<u8>> {
-        self.store().bytes.get(&content).cloned()
+        self.store().bytes.get(&content).map(|e| e.bytes.clone())
     }
 
-    /// Provide bytes for `content`. Returns `true` if the live object was rebuilt,
-    /// which happens exactly when the id in use is built from that content — the
-    /// caller then has to rebind it wherever it is sampled.
+    /// Provide bytes for `content`, **decoding them here** ([`Resource::decode`]).
+    /// `Err` is bytes this resource cannot read, and nothing is stored for them.
+    /// `Ok(true)` means the live object was rebuilt, which happens exactly when the id
+    /// in use is built from that content — the caller then has to rebind it wherever
+    /// it is sampled.
+    ///
+    /// The decode is done before the store is touched so that a refusal changes
+    /// nothing: a half-registered content id whose bytes will not decode is the state
+    /// that turns a bad download into a fallback nobody asked for, silently, one
+    /// render later.
     ///
     /// A sibling standing on the same content keeps its stale binding until it next
     /// rebinds — exactly the exposure two independent registries had, since neither
     /// saw the other's bytes arrive at all.
-    pub fn register(&self, gpu: &GpuContext, content: R::Content, bytes: Vec<u8>) -> bool {
+    pub fn register(
+        &self,
+        gpu: &GpuContext,
+        content: R::Content,
+        bytes: Vec<u8>,
+    ) -> std::result::Result<bool, String> {
+        let decoded = R::decode(&bytes)?;
         let mut store = self.store();
-        store.bytes.insert(content, bytes);
+        store.bytes.insert(content, Entry { bytes, decoded });
         // Whatever was built from this content was built from the *old* bytes —
         // usually the builtin fallback, standing in while the fetch was in flight.
         // Dropping it is what makes `get` return the real thing from now on. Every
@@ -200,11 +259,11 @@ impl<R: Resource> Registry<R> {
         // the objects are another.
         store.built.retain(|id, _| id.content() != content);
         if self.id.content() != content {
-            return false;
+            return Ok(false);
         }
         let id = self.id;
         store.get(gpu, id);
-        true
+        Ok(true)
     }
 
     /// Switch to `id`. Returns `true` if it changed (and so was rebuilt); switching

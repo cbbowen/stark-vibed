@@ -102,8 +102,8 @@ impl InputSample {
         }
     }
 
-    /// Whether every number here is finite — the gate a report has to pass before
-    /// anything stateful is allowed to remember it.
+    /// Whether this sample may be remembered — the gate a report has to pass
+    /// before anything stateful is allowed to keep it.
     ///
     /// **A sample arrives from outside and one NaN in it is a panic**, which is why
     /// this is a property of the sample rather than a check at each consumer. A
@@ -113,20 +113,49 @@ impl InputSample {
     /// refuse to store one). Downstream, `PathFitter` parameterizes its samples by
     /// arc length, a NaN spreads from `arc` into every curve parameter, and the
     /// normal equations it builds are then unsolvable at *any* ridge — which
-    /// `spline`'s solve reports by panicking, because for finite input it genuinely
-    /// cannot happen.
+    /// `spline`'s solve reports by panicking, because for admissible input it
+    /// genuinely cannot happen.
     ///
     /// Every channel, not just the position. `time` seeds the fitter's epoch, so a
     /// NaN there makes every later report's relative time NaN; `pressure` and `tilt`
     /// ride the same least-squares solve the geometry does and reach it through the
     /// same matrix.
-    pub fn is_finite(&self) -> bool {
+    ///
+    /// **Finite is not enough, which is why this is not `is_finite`.** Arc length is
+    /// a *difference* of two positions, and two finite reports a whole `f32` range
+    /// apart differ by infinity — from which `arc` divides `inf / inf` and hands the
+    /// solve the NaN it was written to refuse. So the position is bounded as well as
+    /// finite, by [`COORD_LIMIT`], and the class closes for the cost of one
+    /// comparison per axis rather than a `debug_assert` at the far end of it.
+    pub fn is_admissible(&self) -> bool {
         self.pos.is_finite()
+            && self.pos.abs().max_element() < COORD_LIMIT
             && self.pressure.is_finite()
             && self.tilt.is_finite()
             && self.time.is_finite()
     }
 }
+
+/// How far from the origin, in canvas px on either axis, a sample may report and
+/// still be [admissible](InputSample::is_admissible) — **exclusive**, since this is
+/// the first coordinate the tile grid cannot address rather than the last one it can.
+///
+/// **The canvas's own edge, not a number picked to be large.** Tiles are addressed
+/// by an `i32` [`TileCoord`](stark_model::geom::TileCoord), and this is `2³¹` of them
+/// (`i32::MAX as f32` rounds up to `2³¹`, and `2³¹ · 254` is exact in an `f32`), so
+/// [`TileRect::covering`](stark_model::geom::TileRect::covering) refuses this value
+/// and everything beyond it. A stroke out there has no tile to deposit into and would
+/// be dropped a layer down with nothing said.
+///
+/// It is a **ceiling, not the exact reach**: every consumer pads before it quantizes
+/// — an apron, a tip's reach, a whole ring — so `covering` starts refusing somewhat
+/// inside this on both sides, and what it does then is claim
+/// [`TileRect::ALL`](stark_model::geom::TileRect::ALL), which is the safe direction
+/// (§12.6). What this bound is *for* is the other end: two admissible samples are
+/// under `2 · COORD_LIMIT` ≈ 10¹² apart, so no difference of two positions is
+/// infinite, and the normal equations square that to ~10²⁴ where an `f32` still has
+/// fourteen orders of magnitude in hand.
+pub const COORD_LIMIT: f32 = i32::MAX as f32 * stark_model::geom::TILE_SIZE as f32;
 
 impl Default for InputSample {
     fn default() -> Self {

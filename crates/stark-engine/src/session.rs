@@ -760,7 +760,7 @@ impl Session {
             // untowed rather than towed from nowhere. The fitter drops the same
             // report on its own account, so the stroke is the one its finite reports
             // describe either way.
-            tow: (rope.is_finite() && rope > 0.0 && sample.is_finite())
+            tow: (rope.is_finite() && rope > 0.0 && sample.is_admissible())
                 .then(|| Tow::new(rope, tolerance, sample)),
         });
     }
@@ -784,7 +784,7 @@ impl Session {
     /// [`PathFitter::push`]: crate::path::PathFitter::push
     /// [`Assist::steer`]: crate::assist::Assist::steer
     pub fn stroke_to(&mut self, sample: InputSample) {
-        if !sample.is_finite() {
+        if !sample.is_admissible() {
             return;
         }
         if let Some(b) = self.in_flight.as_mut() {
@@ -1020,7 +1020,7 @@ impl Session {
     /// changed, so a caller can skip the refold for a report that changed
     /// nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
-        if !sample.is_finite() || !reach.is_finite() {
+        if !sample.is_admissible() || !reach.is_finite() {
             return false;
         }
         if let Some(h) = self.hover.as_ref()

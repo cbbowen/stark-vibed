@@ -434,7 +434,11 @@ impl PathFitter {
         if !self.pts.is_empty() || self.finished {
             return;
         }
-        self.runup = samples.iter().copied().filter(|s| s.is_finite()).collect();
+        self.runup = samples
+            .iter()
+            .copied()
+            .filter(|s| s.is_admissible())
+            .collect();
     }
 
     /// Adopt the pending run-up against the stroke's first sample: its reports
@@ -461,21 +465,21 @@ impl PathFitter {
     }
 
     /// Feed one pointer report. Ignored once the stroke is [`finish`](Self::finish)ed,
-    /// and ignored if any of its numbers is non-finite
-    /// ([`InputSample::is_finite`]) — the same "this report carries nothing" answer
-    /// the zero-length step below gives, for a report that carries nothing usable.
+    /// and ignored if it is not [admissible](InputSample::is_admissible) — the same
+    /// "this report carries nothing" answer the zero-length step below gives, for a
+    /// report that carries nothing usable.
     ///
     /// **Dropping it is the only total answer.** A NaN position spreads into `arc`,
     /// out of `arc` into every sample's curve parameter, and from there into the
     /// normal equations, which are then singular at every ridge — a state
-    /// [`spline`](crate::spline)'s solve reports by panicking, because for finite
+    /// [`spline`](crate::spline)'s solve reports by panicking, because for admissible
     /// input it cannot arise. Repairing the sample instead would mean inventing a
     /// position the hand never visited; refusing it means the stroke is exactly the
-    /// stroke the finite reports describe.
+    /// stroke the admissible reports describe.
     ///
-    /// [`InputSample::is_finite`]: crate::command::InputSample::is_finite
+    /// [`InputSample::is_admissible`]: crate::command::InputSample::is_admissible
     pub fn push(&mut self, s: InputSample) {
-        if self.finished || !s.is_finite() {
+        if self.finished || !s.is_admissible() {
             return;
         }
         if self.pts.is_empty() {
@@ -1966,10 +1970,16 @@ mod tests {
     /// The panic this rules out was real and three subsystems downstream: `arc`
     /// accumulates the step to the bad sample, every curve parameter is derived from
     /// `arc`, so `m_step`'s normal equations go NaN — and they are then singular at
-    /// every ridge, which its solve reports with `unreachable!` because for finite
-    /// input it genuinely cannot happen.
+    /// every ridge, which its solve reports with `unreachable!` because for
+    /// *admissible* input it genuinely cannot happen.
+    ///
+    /// **Finite is not admissible**, which is why the last two rows are finite. A
+    /// position a whole `f32` range from its neighbour makes `arc` accumulate an
+    /// infinite step and every parameter after it a NaN, by subtraction rather than
+    /// by anything the report itself carries — so a gate that asked only
+    /// `is_finite` let the same panic through the same door.
     #[test]
-    fn a_non_finite_report_is_dropped_rather_than_fitted() {
+    fn an_inadmissible_report_is_dropped_rather_than_fitted() {
         let clean: Vec<InputSample> = (0..24)
             .map(|i| {
                 let t = i as f32;
@@ -1982,9 +1992,21 @@ mod tests {
         type Poison = (&'static str, fn(InputSample) -> InputSample);
 
         // Every channel a report has, and every way one can be unusable.
-        let poisons: [Poison; 5] = [
+        let poisons: [Poison; 7] = [
             ("pos.x", |mut s| {
                 s.pos.x = f32::NAN;
+                s
+            }),
+            // Finite, and past the last tile an `i32` can address — the difference
+            // between this gate and a plain `is_finite`.
+            ("pos.x beyond the grid", |mut s| {
+                s.pos.x = 1.0e30;
+                s
+            }),
+            // The boundary itself, which `TileRect::covering` refuses: `COORD_LIMIT`
+            // is `2³¹` tiles out, and `2³¹` is one past `i32::MAX`.
+            ("pos.y at the limit", |mut s| {
+                s.pos.y = crate::command::COORD_LIMIT;
                 s
             }),
             ("pos.y", |mut s| {

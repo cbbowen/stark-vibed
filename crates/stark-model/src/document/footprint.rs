@@ -78,6 +78,16 @@ impl Prop {
 }
 
 /// One addressable piece of document state.
+///
+/// **The vocabulary is closed over the log, with one exception.** Every resource
+/// here names something an action carries or something the fold built from actions
+/// before it, so two peers holding the same log agree about all of it. `PlaceImage`
+/// is the exception: its tiles are built from a picture held in an out-of-log store
+/// under the id the action carries (§23.2), so a peer that has not received the
+/// picture folds the same action into an empty layer. There is no resource to name
+/// for it — the divergence is not between two orders of the same actions but between
+/// two peers' stores, which is a transport contract (§12.4) — and it is said here
+/// because this list is where a reader comes to ask what determinism rests on.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Resource {
     /// A layer's painted tiles within a tile rect.
@@ -85,6 +95,20 @@ pub enum Resource {
     /// A layer's presence in the document at all. Every action that targets a
     /// layer reads this (they all no-op on an absent layer, and that no-op is
     /// order-dependent against add/remove).
+    ///
+    /// **It stands for the layer's *minted* kind as well** — paint, matte, filter —
+    /// which several arms read while declaring nothing else: `cannot_carry` refuses a
+    /// filter as a carrier (§21.2), `set_layer_blend` refuses a filter. That is sound
+    /// only because those kinds are fixed when the layer is minted and no action
+    /// changes them, so reading one is reading the same fact this resource already
+    /// covers. An action that *converted* a layer between them would break it and
+    /// needs a resource of its own: it would be a write no reader of this one sees.
+    ///
+    /// **Whether a layer is a *group* is not one of them** and must not be read this
+    /// way. Carrying is structure, not kind — a leaf becomes a group the moment
+    /// `MoveLayer` puts something under it — so what covers it is
+    /// [`StackOrder`](Self::StackOrder), which is what `MergeLayerDown` writes before
+    /// it asks.
     Existence(LayerId),
     /// One presentation property of a layer.
     Prop(LayerId, Prop),

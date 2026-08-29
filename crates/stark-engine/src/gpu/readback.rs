@@ -201,6 +201,16 @@ fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 /// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches and a map per patch
 /// would be a map per texel of latency. Every texture must carry `COPY_SRC` and
 /// share `size`; results come back in argument order, 4 `f32` per texel.
+///
+/// **The format is checked here rather than by the caller**, and unconditionally.
+/// The decode below is four halves a texel, which is a claim about the texture and
+/// not about the reader — so the reader is where it belongs, and the two callers
+/// that each carried their own `debug_assert` were two copies of one fact that a
+/// release build did not hold at all. A color space whose `color_format` is
+/// something else (§6.7 leaves that open) would otherwise hand back a picture
+/// decoded at the wrong stride: not an error, a wrong colour. The formats come from
+/// this build's own pipeline, never from a file or a peer, so an assert is the right
+/// shape — there is no outside input to refuse (§5).
 pub async fn read_many_rgba16f(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
@@ -209,6 +219,13 @@ pub async fn read_many_rgba16f(
     let Some(first) = textures.first() else {
         return Ok(Vec::new());
     };
+    for texture in textures {
+        assert_eq!(
+            texture.format(),
+            wgpu::TextureFormat::Rgba16Float,
+            "this readback decodes four halves per texel"
+        );
+    }
     let unpadded = size.width * bytes_per_texel(first);
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;

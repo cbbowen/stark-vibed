@@ -60,6 +60,38 @@ struct Mask {
     coverage_view: wgpu::TextureView,
 }
 
+impl Mask {
+    /// The prefix-τ volume this orientation source reads, baking the pen one on first
+    /// ask (§6.6). The one place that bake happens, so it is also the one place it is
+    /// measured.
+    ///
+    /// **`asset.pen_bake` is the row to read it by.** The bake rotates the mask into
+    /// `orientation_layers` slices and integrates each — up to
+    /// [`PREFIX_BUDGET_BYTES`] of `f32` and a `ln` per texel of it — inside the store
+    /// lock, on whichever stroke first asks. It is the largest single piece of work
+    /// the store does and it happens mid-gesture, so a Timing Stats table that could
+    /// not see it was a table that could not explain the hitch it causes.
+    fn prefix(
+        &mut self,
+        ctx: &GpuContext,
+        orientation: stark_model::document::OrientationSource,
+    ) -> wgpu::TextureView {
+        if orientation == stark_model::document::OrientationSource::FollowStroke {
+            return self.follow.clone();
+        }
+        self.pen
+            .get_or_insert_with(|| {
+                crate::timing::span!("asset.pen_bake");
+                let (w, h) = (self.width, self.height);
+                let cov: Vec<f32> = self.coverage.iter().map(|&b| b as f32 / 255.0).collect();
+                let layers = orientation_layers(w, h);
+                let rotated = rotate_layers(&cov, w, h, layers);
+                build_prefix_tau(ctx, w, h, layers, &rotated)
+            })
+            .clone()
+    }
+}
+
 /// The two GPU readings of one loaded brush mask, resolved under one store lock.
 pub(crate) struct MaskViews {
     pub(crate) prefix: wgpu::TextureView,
@@ -164,17 +196,7 @@ impl AssetStore {
     ) -> Option<wgpu::TextureView> {
         let mut inner = unpoisoned(self.inner.lock());
         let mask = inner.masks.get_mut(&id)?;
-        if orientation == stark_model::document::OrientationSource::FollowStroke {
-            return Some(mask.follow.clone());
-        }
-        if mask.pen.is_none() {
-            let (w, h) = (mask.width, mask.height);
-            let cov: Vec<f32> = mask.coverage.iter().map(|&b| b as f32 / 255.0).collect();
-            let layers = orientation_layers(w, h);
-            let rotated = rotate_layers(&cov, w, h, layers);
-            mask.pen = Some(build_prefix_tau(&self.ctx, w, h, layers, &rotated));
-        }
-        mask.pen.clone()
+        Some(mask.prefix(&self.ctx, orientation))
     }
 
     /// A clonable view of the brush's plain coverage mask for `id`, if loaded —
@@ -199,20 +221,8 @@ impl AssetStore {
     ) -> Option<MaskViews> {
         let mut inner = unpoisoned(self.inner.lock());
         let mask = inner.masks.get_mut(&id)?;
-        let prefix = if orientation == stark_model::document::OrientationSource::FollowStroke {
-            mask.follow.clone()
-        } else {
-            if mask.pen.is_none() {
-                let (w, h) = (mask.width, mask.height);
-                let cov: Vec<f32> = mask.coverage.iter().map(|&b| b as f32 / 255.0).collect();
-                let layers = orientation_layers(w, h);
-                let rotated = rotate_layers(&cov, w, h, layers);
-                mask.pen = Some(build_prefix_tau(&self.ctx, w, h, layers, &rotated));
-            }
-            mask.pen.clone().expect("a pen prefix was built above")
-        };
         Some(MaskViews {
-            prefix,
+            prefix: mask.prefix(&self.ctx, orientation),
             coverage: mask.coverage_view.clone(),
         })
     }

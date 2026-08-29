@@ -420,10 +420,12 @@ impl SplineIndex {
             }
             lambda *= 10.0;
         }
-        // Genuinely unreachable for finite input — a ridge-regularized normal matrix
-        // is positive definite, and `lambda` escalates until it dominates. Non-finite
-        // input is what used to reach it, and is now refused at the two doors a
-        // sample can arrive by (`InputSample::is_finite`, C2).
+        // Genuinely unreachable for admissible input — a ridge-regularized normal
+        // matrix is positive definite, and `lambda` escalates until it dominates.
+        // What reaches it is a non-finite entry, and the two doors a sample can
+        // arrive by refuse one: `InputSample::is_admissible` bounds the position as
+        // well as requiring it finite, so no difference of two samples is infinite
+        // either (C2).
         unreachable!("ridge-regularized normal equations are positive definite")
     }
 }

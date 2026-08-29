@@ -82,30 +82,19 @@ impl Environment {
     ///
     /// **Fallible because the bytes come from outside**: an environment is fetched at
     /// runtime and handed straight in, so a truncated download or a file that is not
-    /// an `.hdr` at all reaches here. It used to `expect`, which on the web is an
-    /// abort and takes the painting with it — the class §5 exists to remove, and one
+    /// an `.hdr` at all reaches here — the class §5 exists to remove, and one
     /// [`hdr`](super::environment::hdr)'s own header says this path has to be
-    /// defensive about. [`Engine::register_environment`] is where a caller learns;
+    /// defensive about. [`Resource::decode`] is the door a caller learns at;
     /// [`Resource::build`] is where a byte string that got past it anyway degrades to
     /// the procedural light rather than killing the renderer.
+    ///
+    /// [`Resource::decode`]: crate::gpu::registry::Resource::decode
     ///
     /// [`Engine::register_environment`]: crate::Engine::register_environment
     /// [`Resource::build`]: crate::gpu::registry::Resource::build
     pub fn load(ctx: &GpuContext, hdr_bytes: &[u8]) -> Result<Self, String> {
         let (px, w, h) = decode_hdr(hdr_bytes)?;
         Ok(Self::from_equirect(ctx, &px, w, h))
-    }
-
-    /// Whether these bytes are an HDR this build can read, without building anything
-    /// from them — what [`Engine::register_environment`] asks at the door.
-    ///
-    /// Separate from [`Self::load`] because the two questions have different costs:
-    /// this is a decode, that is a decode plus a texture and a CPU mip chain. A
-    /// caller validating bytes it is about to store wants only the first.
-    ///
-    /// [`Engine::register_environment`]: crate::Engine::register_environment
-    pub fn decodes(hdr_bytes: &[u8]) -> Result<(), String> {
-        decode_hdr(hdr_bytes).map(|_| ())
     }
 
     /// Upload a linear-RGB equirect image as a mipped `Rgba16Float` texture, the
@@ -331,24 +320,39 @@ impl crate::gpu::registry::Resource for EnvironmentId {
         self == EnvironmentId::Neutral
     }
 
+    /// **Nothing**, deliberately, where the substrate keeps its decoded height field.
+    /// An environment is built exactly once per registration — its `Gpu` is the mip
+    /// chain, and no second thing is derived from the same bytes — so keeping the
+    /// decode would be several megabytes of float image held for a build that already
+    /// happened. The decode still runs at the door, in
+    /// [`decode`](crate::gpu::registry::Resource::decode); what is not kept is its
+    /// result.
+    type Decoded = ();
+
+    fn decode(bytes: &[u8]) -> std::result::Result<(), String> {
+        decode_hdr(bytes).map(|_| ())
+    }
+
     /// Every light is normalized by its own `flat_irradiance` and shown at no exposure
     /// beyond that (§6.3), so building one is a decode and a mip chain and nothing else.
-    fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> Environment {
-        match bytes {
+    fn build(
+        self,
+        gpu: &GpuContext,
+        registered: Option<crate::gpu::registry::Registered<'_, Self>>,
+    ) -> Environment {
+        match registered {
             // Bytes that will not decode fall back to the procedural light, exactly as
             // bytes that never arrived do — the canvas stays lit and says so, where a
-            // panic here would take the document with it. `register_environment`
-            // normally catches this at the boundary; reaching it means bytes were
-            // registered by some other path.
-            Some(bytes) if !self.is_builtin() => {
-                Environment::load(gpu, bytes).unwrap_or_else(|e| {
-                    tracing::warn!(
-                        ?self,
-                        "environment will not decode, lighting neutrally: {e}"
-                    );
-                    Environment::neutral(gpu)
-                })
-            }
+            // panic here would take the document with it. `Registry::register` refuses
+            // them at the door; reaching this arm means bytes were registered by some
+            // other path.
+            Some(r) if !self.is_builtin() => Environment::load(gpu, r.bytes).unwrap_or_else(|e| {
+                tracing::warn!(
+                    ?self,
+                    "environment will not decode, lighting neutrally: {e}"
+                );
+                Environment::neutral(gpu)
+            }),
             _ => Environment::neutral(gpu),
         }
     }

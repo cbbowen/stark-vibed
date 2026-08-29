@@ -60,6 +60,15 @@ impl Engine {
     /// log. Solo-authored actions ([`ActorId::SOLO`]) are rewritten to `actor`
     /// — done once, before any peer has seen them — so the sharer can still
     /// undo their pre-share strokes (undo targets *my* actions, §12.3).
+    ///
+    /// **A scrubbed-away future does not survive the share**, and cannot: what is
+    /// shared is [`clone_actions`](Timeline::clone_actions), which is the log up to
+    /// the playhead, and the withheld suffix a `LinearTimeline` is holding for redo
+    /// is not part of it. That is the same document `save_bytes` would write and the
+    /// same one a joiner will see, so it is consistent rather than lossy in any sense
+    /// the log knows about — but it is the moment the redo stack stops existing, and
+    /// `can_redo` goes false straight after with nothing else said. A frontend that
+    /// wants to warn has to ask before calling.
     pub fn start_collaboration(&mut self, identity: impl Into<Identity>) {
         if self.is_shared() {
             return;

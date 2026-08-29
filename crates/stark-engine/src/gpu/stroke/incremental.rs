@@ -279,11 +279,7 @@ impl StrokeSpans {
     /// A checked cut through `rec`, carrying the arc distance already consumed by
     /// its predecessor. Keeping construction here means a caller cannot resume a
     /// stroke from an inverted/out-of-bounds span range or a non-finite distance.
-    pub(crate) fn from_parts(
-        rec: &StrokeRecord,
-        range: std::ops::Range<usize>,
-        dist: f32,
-    ) -> Self {
+    pub(crate) fn from_parts(rec: &StrokeRecord, range: std::ops::Range<usize>, dist: f32) -> Self {
         let last = crate::path::span_count(rec.path.len());
         assert!(
             range.start <= range.end && range.end <= last,

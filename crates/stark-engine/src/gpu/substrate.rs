@@ -134,15 +134,6 @@ impl SubstrateMap {
         self.bearing.at(give, softness, dir)
     }
 
-    /// Build from a height-map PNG. The bytes reached the registry through
-    /// [`canonicalize`] or [`identify`], which decoded them once already, so a
-    /// failure here is a broken invariant rather than bad input — hence the
-    /// `expect` rather than a `Result` the caller would have nothing to do with.
-    pub fn load(ctx: &GpuContext, substrate: Substrate, png_bytes: &[u8]) -> Self {
-        let f = canonical_height(png_bytes).expect("substrate: registered bytes decode");
-        Self::from_height(ctx, substrate, &f.texels, f.width, f.height)
-    }
-
     /// Upload a height field as the `Rgba8Unorm` **substrate** texture — height in `R`,
     /// the rise ahead in `GB` ([`pack_substrate`]) — and tabulate the bearing
     /// curve it implies.
@@ -217,9 +208,25 @@ impl crate::gpu::registry::Resource for Substrate {
         matches!(self.id, SubstrateId::Flat)
     }
 
-    fn build(self, gpu: &GpuContext, bytes: Option<&[u8]>) -> SubstrateMap {
-        match bytes {
-            Some(bytes) if !self.is_builtin() => SubstrateMap::load(gpu, self, bytes),
+    /// The decoded height field, kept by the registry so the **bake per scale** this
+    /// substrate is laid at reads it instead of re-decoding the PNG (§6.4). One
+    /// height map, one decode, however many sizes the document lays it at.
+    type Decoded = stark_assetid::Canonical;
+
+    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, String> {
+        canonical_height(bytes).map_err(|e| e.to_string())
+    }
+
+    fn build(
+        self,
+        gpu: &GpuContext,
+        registered: Option<crate::gpu::registry::Registered<'_, Self>>,
+    ) -> SubstrateMap {
+        match registered {
+            Some(r) if !self.is_builtin() => {
+                let f = r.decoded;
+                SubstrateMap::from_height(gpu, self, &f.texels, f.width, f.height)
+            }
             _ => SubstrateMap::flat(gpu, self),
         }
     }

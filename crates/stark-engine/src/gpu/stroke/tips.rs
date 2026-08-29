@@ -46,19 +46,27 @@ const ROUND_TIPS_KEPT: usize = 4;
 /// one (`submit.rs`).
 const NOISE_TILES_KEPT: usize = 4;
 
+/// One of [`TipCache`]'s two least-recently-used lists: newest last, shared across
+/// the renderer's clones, and bounded by the `*_KEPT` constant beside the field.
+///
+/// A `Vec` rather than a map because the bound is four: a linear scan of four keys
+/// is cheaper than a hash, and the order *is* the recency, which a map would have to
+/// carry separately.
+type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
+
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
     /// The round tips' baked textures, keyed by `hardness.to_bits()` (§6.6): an LRU
     /// of [`ROUND_TIPS_KEPT`], newest last.
-    round_tip: Arc<Mutex<Vec<(u32, RoundTip)>>>,
+    round_tip: Lru<u32, RoundTip>,
     /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1 zero tile
     /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
     /// of [`NOISE_TILES_KEPT`] keyed by (kind, stroke seed), newest last.
     pub(super) noise_sampler: wgpu::Sampler,
     dummy_noise: Arc<NoiseTile>,
-    noise_tiles: Arc<Mutex<Vec<(NoiseKey, Arc<NoiseTile>)>>>,
+    noise_tiles: Lru<NoiseKey, Arc<NoiseTile>>,
 }
 
 impl TipCache {
@@ -95,16 +103,16 @@ impl TipCache {
     /// follow-stroke reads a single identity layer, pen a stack of them. A round
     /// tip is rotation-invariant and answers both with the same one slice, which is why
     /// it is asked only for its hardness.
-    pub(super) fn resolve(
-        &self,
-        assets: &AssetStore,
-        brush: &BrushParams,
-    ) -> Option<ResolvedTip> {
+    pub(super) fn resolve(&self, assets: &AssetStore, brush: &BrushParams) -> Option<ResolvedTip> {
         match brush.shape {
-            BrushShape::Stamp(id) => assets.mask_views(id, brush.orientation).map(|views| ResolvedTip {
-                prefix: views.prefix,
-                coverage: views.coverage,
-            }),
+            BrushShape::Stamp(id) => {
+                assets
+                    .mask_views(id, brush.orientation)
+                    .map(|views| ResolvedTip {
+                        prefix: views.prefix,
+                        coverage: views.coverage,
+                    })
+            }
             BrushShape::Round { hardness } => {
                 let tip = self.round_tip(hardness);
                 Some(ResolvedTip {

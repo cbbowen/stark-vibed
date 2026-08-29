@@ -18,6 +18,7 @@
 
 use rpds::HashTrieMap;
 use stark_model::document::SelectionMode;
+use std::sync::{Arc, OnceLock};
 use wgpu::util::DeviceExt;
 
 use crate::document::selection::Selection;
@@ -114,9 +115,13 @@ pub struct SelectionRenderer {
     region_pipeline: wgpu::RenderPipeline,
     region_view_bgl: wgpu::BindGroupLayout,
     region_tile_bgl: wgpu::BindGroupLayout,
-    /// 1×1 masks holding exactly 0 and 1 — the two coverages a selection has
-    /// outside its own tiles unless it is a partial one (see [`Self::constant`]).
-    constants: [wgpu::TextureView; 2],
+    /// The 1×1 constant masks, one slot per quantized coverage byte, built on first
+    /// ask (see [`Self::constant`]).
+    ///
+    /// Shared across clones and lock-free after the first write, which is what lets
+    /// it be a cache at all: a `SelectionRenderer` is cloned into every action's
+    /// context, so a per-instance cache would be re-filled by each of them.
+    constants: Arc<[OnceLock<wgpu::TextureView>; 256]>,
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
 }
@@ -212,10 +217,8 @@ impl SelectionRenderer {
 
         // The 1×1 stand-ins: the coverage that reigns where the selection has no
         // tile, and the edge list every analytic shape binds but never reads.
-        let constants = [
-            desc::constant_texture(ctx, MASK_FORMAT, &[0], "stark selection constant mask"),
-            desc::constant_texture(ctx, MASK_FORMAT, &[255], "stark selection constant mask"),
-        ];
+        let constants: Arc<[OnceLock<wgpu::TextureView>; 256]> =
+            Arc::new(std::array::from_fn(|_| OnceLock::new()));
         let dummy_edges = desc::constant_texture(
             ctx,
             wgpu::TextureFormat::Rgba32Float,
@@ -242,23 +245,25 @@ impl SelectionRenderer {
     /// Quantized to a byte, which is not a loss: [`MASK_FORMAT`] is `R8Unorm`, so
     /// this is the same rounding the mask tiles themselves took, and a texel of the
     /// constant has to answer as one of theirs would.
+    /// **Cached per byte, built on first ask.** 0 and 255 are what nearly every
+    /// selection asks for, but a *partially* selected plane — reachable by inverting
+    /// a partial selection, and only that way (§6.8) — asks for a byte in between,
+    /// and [`mask_for`](Self::mask_for) asks once per tile of every fill, transform
+    /// and stroke under one. Creating and uploading a texture per tile for a value
+    /// that never changes is the shape of cost this whole module is arranged to
+    /// avoid; the cache is 256 slots of one texel.
     pub fn constant(&self, coverage: f32) -> wgpu::TextureView {
         let byte = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
-        match byte {
-            0 => self.constants[0].clone(),
-            255 => self.constants[1].clone(),
-            // A *partially* selected plane — reachable by inverting a partial
-            // selection, and only that way (§6.8). Built on the spot rather than
-            // cached: it is one texel, and a cache keyed by the byte would have to
-            // be interior-mutable inside a type that is cloned into every action's
-            // context.
-            _ => desc::constant_texture(
-                &self.ctx,
-                MASK_FORMAT,
-                &[byte],
-                "stark selection constant mask",
-            ),
-        }
+        self.constants[byte as usize]
+            .get_or_init(|| {
+                desc::constant_texture(
+                    &self.ctx,
+                    MASK_FORMAT,
+                    &[byte],
+                    "stark selection constant mask",
+                )
+            })
+            .clone()
     }
 
     /// The mask bound for `coord`: the selection's own tile, or the constant that

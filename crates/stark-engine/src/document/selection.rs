@@ -337,7 +337,19 @@ impl Selection {
     /// 0.4 is its outside selected at 0.4 rather than at full strength. The two agree
     /// for any selection built at full strength, where `level == 1`.
     pub(crate) fn plan_invert(&self) -> SelectionPlan {
-        let rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
+        // Sorted, because the map is an `rpds::HashTrieMap` under a `RandomState`
+        // and so hands its keys out in an order that differs run to run. No pixel
+        // depends on it — each tile is an independent clear-and-draw, and the hull
+        // below is a fold that does not care — but every other planner names its
+        // tiles in the row-major order `TileRect::coords` walks, and an invariant
+        // that holds everywhere is worth more than the sort costs on a set bounded
+        // by `MAX_SELECTION_TILES`.
+        //
+        // By `(y, x)` rather than `TileCoord`'s own `Ord`, which orders by x first:
+        // the point is to name the same order the covering planners do, and that one
+        // is y-outer.
+        let mut rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
+        rasterize.sort_unstable_by_key(|c| (c.y, c.x));
         let outside = self.level - self.outside;
         let hull = (outside <= 0.0)
             .then(|| {

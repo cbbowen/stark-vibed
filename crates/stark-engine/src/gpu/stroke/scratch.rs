@@ -64,18 +64,33 @@ use crate::unpoisoned;
 /// same reason `ScopedResources` destroys rather than waiting on GC (§6.2).
 const POOL_BUDGET: u64 = 256 << 20;
 
-/// What makes two scratch textures interchangeable: the exact descriptor a checkout
-/// would otherwise create with. Exact size on purpose — the dynamics shaders read
-/// `textureDimensions` of the snapshot and region, so an oversized stand-in would
-/// change what they compute, not just what it costs. The label is part of the key,
-/// which both keeps a debug capture truthful and gives each purpose its own line in
-/// the free list.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// What a checkout asks for: the exact descriptor it would otherwise create with,
+/// plus the label a fresh creation is given. Exact size on purpose — the dynamics
+/// shaders read `textureDimensions` of the snapshot and region, so an oversized
+/// stand-in would change what they compute, not just what it costs.
+///
+/// **The label is not part of what makes two textures interchangeable**, which is
+/// why there is no derived `Eq` here to say otherwise. A checkout wants a texture of
+/// a shape, and the shape is the descriptor; a name for it is a debug affordance,
+/// and letting one into the match meant the piece target and the bleed target — the
+/// same square, the same format, the same usage — kept separate free lists and the
+/// [`POOL_BUDGET`] held half as many useful textures as it could. What it costs is
+/// that a capture may show a reused texture under the name it was first created
+/// with, which is a label being stale rather than a picture being wrong.
+#[derive(Clone, Copy)]
 pub(super) struct Key {
     pub(super) size: (u32, u32),
     pub(super) format: wgpu::TextureFormat,
     pub(super) usage: wgpu::TextureUsages,
     pub(super) label: &'static str,
+}
+
+impl Key {
+    /// Whether a texture created for `self` can serve a checkout of `other` — every
+    /// field of the descriptor, and nothing else. See the type's note on the label.
+    fn interchangeable(&self, other: &Key) -> bool {
+        self.size == other.size && self.format == other.format && self.usage == other.usage
+    }
 }
 
 /// One checked-out scratch texture and the view onto it, pooled together for the
@@ -147,7 +162,7 @@ impl ScratchPool {
             inner.tick += 1;
             // Newest match first: the piece that just gave these back is the likeliest
             // shape of the piece about to take them.
-            if let Some(i) = inner.free.iter().rposition(|e| e.key == key) {
+            if let Some(i) = inner.free.iter().rposition(|e| e.key.interchangeable(&key)) {
                 let e = inner.free.swap_remove(i);
                 inner.bytes -= e.bytes;
                 return Lease {

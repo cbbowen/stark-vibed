@@ -22,7 +22,6 @@
 //!   channel: gloss is a uniform property of paint (§6.3), not something a stroke
 //!   stores per texel.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::gpu::context::GpuContext;
@@ -748,7 +747,19 @@ fn texture_bytes(format: wgpu::TextureFormat) -> u64 {
 #[derive(Clone)]
 pub struct TilePool {
     ctx: GpuContext,
-    format_pools: HashMap<wgpu::TextureFormat, Arc<Mutex<PoolInner>>>,
+    /// The per-format free lists, **scanned rather than hashed**.
+    ///
+    /// There are four of them at most (see [`new`](Self::new)), and the lookup is on
+    /// the hottest path in the crate — a stroke asks ~4 times per affected tile per
+    /// pointer move — where hashing a `TextureFormat` costs more than comparing it to
+    /// three others. Distinct formats stay distinct and equal ones stay shared, which
+    /// is the property that matters and the reason this is keyed by the format itself
+    /// rather than by a channel enum: `SCRATCH_AUX_FORMAT` equals both colour spaces'
+    /// `color_format` today, and a slot per *purpose* would give the same textures two
+    /// free lists that could not serve one another.
+    ///
+    /// `Arc<[_]>` so the clone every action context takes is a refcount bump.
+    format_pools: Arc<[(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)]>,
 }
 
 impl TilePool {
@@ -766,12 +777,34 @@ impl TilePool {
     ///
     /// [`StrokeRenderer::acquire_tile`]: crate::gpu::StrokeRenderer
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
-        let format_pools = formats
-            .into_iter()
-            .chain([MASK_FORMAT, SCRATCH_AUX_FORMAT])
-            .map(|f| (f, Arc::default()))
-            .collect();
-        Self { ctx, format_pools }
+        let mut format_pools: Vec<(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)> = Vec::new();
+        for f in formats.into_iter().chain([MASK_FORMAT, SCRATCH_AUX_FORMAT]) {
+            // Deduplicated here rather than by a map's keys, which is what the `Vec`
+            // costs and all it costs: two formats that are equal must share one free
+            // list, or the sharing the type doc promises is a promise about nothing.
+            if !format_pools.iter().any(|(g, _)| *g == f) {
+                format_pools.push((f, Arc::default()));
+            }
+        }
+        Self {
+            ctx,
+            format_pools: format_pools.into(),
+        }
+    }
+
+    /// The free list for `format`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `format` was not among those the pool was built with — the same
+    /// refusal a missing map key was, and for the same reason: a pool that quietly
+    /// grew a list for an unexpected format would be one nothing had sized.
+    fn pool(&self, format: wgpu::TextureFormat) -> &Arc<Mutex<PoolInner>> {
+        self.format_pools
+            .iter()
+            .find(|(f, _)| *f == format)
+            .map(|(_, p)| p)
+            .expect("unsupported format")
     }
 
     /// Acquire a selection mask tile ([`MASK_FORMAT`], §6.8). Contents are
@@ -806,7 +839,7 @@ impl TilePool {
     ///
     /// Panics if `format` was not among those the pool was built with.
     pub fn acquire_tex(&self, format: wgpu::TextureFormat, source: AllocSource) -> TexHandle {
-        let pool = self.format_pools.get(&format).expect("unsupported format");
+        let pool = self.pool(format);
         // Phase one, under the lock: take a recycled slot if there is one, and book
         // the acquire against the epoch either way.
         let recycled = {
@@ -870,14 +903,7 @@ impl TilePool {
     /// lists are *per format*, so an answer that assumed `Rgba16Float` would quietly
     /// tell a caller asking about the aux or the mask list about the color one.
     pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
-        unpoisoned(
-            self.format_pools
-                .get(&format)
-                .expect("unsupported format")
-                .lock(),
-        )
-        .free
-        .len()
+        unpoisoned(self.pool(format).lock()).free.len()
     }
 
     /// A fresh texture and the view onto it — the only path that talks to the
