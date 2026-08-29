@@ -22,6 +22,7 @@ use crate::image::RgbaImage;
 use crate::view::ViewTransform;
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
 use stark_model::geom::{Extent2, TileRect};
+use std::sync::Arc;
 
 /// What sits under the paint when rendering (§15.6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -302,19 +303,6 @@ impl Engine {
         // dropped frame. Braced, because a timing span runs to the end of the block
         // it is opened in and what is being timed is this call rather than the rest
         // of the render (`timing::span!`).
-        //
-        // **A single-layer list is built and dropped, never cached.** The slot holds
-        // one list, and a thumbnail pass renders one layer at a time with a sleep
-        // between rows while the canvas keeps painting frames — so each thumbnail
-        // evicted the screen's list and the next screen frame rebuilt it from nothing,
-        // N times over for N layers, which is exactly the ~10⁵ handle clones this
-        // cache exists to stop paying. Such a key can never be hit twice anyway: every
-        // row names a different `only`.
-        //
-        // Deliberately *not* a second slot keyed on `only`: the navigator refreshes
-        // per commit, and at that instant `doc_revision` has already invalidated the
-        // screen's list, so its eviction costs nothing.
-        let transient: Vec<CompositeGroup>;
         let key = DrawKey {
             doc_revision: self.doc_revision,
             epoch: self.preview.epoch(),
@@ -323,17 +311,14 @@ impl Engine {
             only,
             visible: view.visible_tiles(),
         };
-        let groups: &[CompositeGroup] = {
+        // Held as an owned handle rather than borrowed out of the memo, which is what
+        // lets the compositor be borrowed mutably at the end without the list having
+        // to be copied out of the way first — the same bargain the outlines and the
+        // guide scenes below strike, and the reason [`Engine::draw_list`] hands back
+        // a share instead of a reference.
+        let groups = {
             crate::timing::span!("render.drawlist");
-            if key.only.is_some() {
-                transient = self.composite_groups(&doc, key.only, key.visible);
-                &transient
-            } else {
-                self.refresh_draw_cache(key, &doc);
-                self.draw_cache
-                    .as_ref()
-                    .map_or(&[], |c| c.groups.as_slice())
-            }
+            self.draw_list(key, &doc)
         };
 
         // The substrate is document state now (§15.5), so the substrate a
@@ -390,7 +375,7 @@ impl Engine {
             // Off `doc`, which is the *previewed* document when one is up — so an
             // unlogged scale drag re-lights the substrate at pointer rate (§6.4).
             substrate_uv_scale: doc.substrate().uv_scale(),
-            groups,
+            groups: &groups,
             outlines: &outlines,
             transparent: background == Background::Transparent,
             guides: &guide_scenes,
@@ -699,6 +684,41 @@ impl Engine {
         })
     }
 
+    /// [`composite_groups`](Self::composite_groups), **memoized**: the draw list for
+    /// `key`, built afresh or taken from [`Engine::draw_cache`] (C4).
+    ///
+    /// **Why this is worth a cache at all.** Building the list clones a
+    /// `TilePairHandle` per visible tile, per layer — an atomic increment in and a
+    /// decrement out — plus a `Vec` per layer. The visible tile count scales as
+    /// 1/zoom², so a zoomed-out multi-layer document was paying ~10⁵ of those every
+    /// frame to produce a list identical to the last one. A canvas nobody is editing
+    /// or panning now pays nothing.
+    ///
+    /// **A single-layer list is never cached.** The memo holds one list, and a
+    /// thumbnail pass renders one layer at a time with a sleep between rows while the
+    /// canvas keeps painting frames — so each thumbnail evicted the screen's list and
+    /// the next screen frame rebuilt it from nothing, N times over for N layers, which
+    /// is exactly the ~10⁵ handle clones the cache exists to stop paying. Such a key
+    /// can never be hit twice anyway: every row names a different `only`. Deliberately
+    /// *not* a second slot keyed on `only` either — the navigator refreshes per commit,
+    /// and at that instant `doc_revision` has already moved the screen's key, so the
+    /// eviction that slot would prevent costs nothing.
+    ///
+    /// Takes the key rather than deriving it so the caller can compute it while it
+    /// still holds `doc` — and takes `doc` borrowed for the same reason. The list comes
+    /// back as an `Arc` rather than a reference into the memo so that holding it does
+    /// not hold a borrow of the engine: the compositor is borrowed mutably a few lines
+    /// after the call, and the whole of what the `RefCell` bought would go back out
+    /// through a `Ref` guard that had to be kept alive to read the slice.
+    pub(super) fn draw_list(&self, key: DrawKey, doc: &DocState) -> Arc<[CompositeGroup]> {
+        if key.only.is_some() {
+            return self.composite_groups(doc, key.only, key.visible).into();
+        }
+        self.draw_cache.get_or_build(key, || {
+            self.composite_groups(doc, key.only, key.visible).into()
+        })
+    }
+
     /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
     /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
     /// (§18.0.4, §14.7).
@@ -732,28 +752,6 @@ impl Engine {
     /// `visible` is the view-AABB cull (§6.3): only tiles it names are built into
     /// the draw list. `None` culls nothing — see [`ViewTransform::visible_tiles`].
     ///
-    /// Bring [`Engine::draw_cache`] level with `key`, rebuilding the list only if
-    /// something it is a function of has moved (C4).
-    ///
-    /// **Why this is worth a cache at all.** Building the list clones a
-    /// `TilePairHandle` per visible tile, per layer — an atomic increment in and a
-    /// decrement out — plus a `Vec` per layer. The visible tile count scales as
-    /// 1/zoom², so a zoomed-out multi-layer document was paying ~10⁵ of those every
-    /// frame to produce a list identical to the last one. A canvas nobody is editing
-    /// or panning now pays nothing.
-    ///
-    /// Takes the key rather than deriving it so the caller can compute it while it
-    /// still holds `doc` — and takes `doc` by value for the same reason. A `DocState`
-    /// is a handful of `Arc` bumps (§5.1), which buys the borrow of `self` back and
-    /// is what lets the built list live in a field instead of being returned.
-    pub(super) fn refresh_draw_cache(&mut self, key: DrawKey, doc: &DocState) {
-        if self.draw_cache.as_ref().is_some_and(|c| c.key == key) {
-            return;
-        }
-        let groups = self.composite_groups(doc, key.only, key.visible);
-        self.draw_cache = Some(DrawCache { key, groups });
-    }
-
     pub(super) fn composite_groups(
         &self,
         doc: &DocState,
@@ -1271,21 +1269,27 @@ fn culled<V>(
 }
 
 /// What a built draw list is a function of — the whole of it, which is what makes
-/// caching one sound (§6.3, C4).
+/// caching one sound (§6.3, C4). See [`Memo`](super::Memo) for the rule this is one
+/// of three keys under.
 ///
 /// Every term is already counted for another reason, and that is the point: nothing
 /// here is a new notion of "has it changed", only the existing ones read together.
 ///
 /// - `doc_revision` moves on every **committed** change — a commit, an undo, a
 ///   merged remote action, a load (`Engine::committed_changed`).
-/// - `epoch` moves on everything that replaces what is *shown* without committing:
-///   the unlogged drag preview, and every in-flight gesture's fold
-///   (`Preview::invalidate`). It is strictly wider than `doc_revision`, which is why
-///   both are here and neither is enough alone.
-/// - `fold` moves whenever the live fold is *rebuilt* — a stroke in flight commits
-///   nothing and replaces no document, so neither counter above stirs while one is
-///   being drawn, and a list keyed without this would hold the frame at the moment
-///   the pen went down.
+/// - `epoch` moves whenever the document the previews are drawn over is *replaced*:
+///   the unlogged drag preview being installed or dropped (`Preview::set_doc`, the
+///   only way to move that slot, which invalidates) — and a commit, which invalidates
+///   too. So it is *wider* than `doc_revision` rather than a second, narrower term.
+///   Both are named because a key names the terms its value depends on, not the
+///   smallest set that happens to cover them: reading the wide one alone would make
+///   this key rest on `committed_changed`'s implementation rather than on its promise.
+/// - `fold` moves whenever the live fold is *rebuilt* (`Preview::rebuild`) — a stroke
+///   in flight commits nothing and replaces no document, so neither counter above
+///   stirs while one is being drawn, and a list keyed without this would hold the
+///   frame at the moment the pen went down. This is the term the two roster keys do
+///   not have and do not need: they project what is *shown*, and the fold is not that
+///   (`super::ShownKey`).
 /// - `content` is which document is being drawn at all. `Live` and `Committed`
 ///   differ by exactly the in-flight gesture, so at one instant they are two
 ///   different lists — and the navigator's miniature asks for the second while the
@@ -1304,12 +1308,6 @@ pub(super) struct DrawKey {
     content: Rendered,
     only: Option<LayerId>,
     visible: Option<TileRect>,
-}
-
-/// A built draw list and what it was built from.
-pub(super) struct DrawCache {
-    key: DrawKey,
-    groups: Vec<CompositeGroup>,
 }
 
 /// **Where a layer's composite params go** (§14.4.3, §14.7) — the one statement of

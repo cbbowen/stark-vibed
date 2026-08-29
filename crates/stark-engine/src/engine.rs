@@ -251,12 +251,117 @@ impl<T: PartialEq> PartialEq for Projected<T> {
 /// it is a type.
 pub type Layers = Projected<LayerInfo>;
 
-/// What [`Engine::projected_guides`] memoizes, and the three counters it is a
-/// function of: the committed document, the preview, and this client's own guides.
-type GuideCache = ((u64, u64, u64), Guides);
-
 /// The drawing-guide roster, shared on exactly [`Layers`]' argument (§20.5).
 pub type Guides = Projected<GuideInfo>;
+
+/// A **one-slot cache**: a value beside the key it was built from, rebuilt only when
+/// the key moves (C4). The engine keeps three of these — the layer roster, the guide
+/// roster and the compositor's draw list — and this type is the whole of what they
+/// have in common.
+///
+/// **The rule, stated here rather than three times over.** A key must name every term
+/// its value is a function of. One term too few and the memo hands back a stale answer
+/// that nothing downstream can notice; one too many and it rebuilds for a change the
+/// value cannot see, which is only a cost. So where a key cannot be exact it errs
+/// *wide*, and each of the three below says where it does.
+///
+/// **Nothing here counts anything of its own**, and that is what makes a memo sound
+/// rather than merely plausible. Every term of every key is a counter something else
+/// already maintains for its own reasons — [`Engine::doc_revision`], `Preview::epoch`,
+/// `Preview::fold`, [`Engine::guide_epoch`]. There is no invalidation call anywhere,
+/// because the key *is* the invalidation; a memo that had to be told it was stale
+/// would be one a new mutation path could forget to tell (§1).
+///
+/// `RefCell` because [`Engine::observe`] takes `&self`: a projection is a *read*, and
+/// making it `&mut` to let it memoize would put a mutable borrow of the whole engine
+/// on the path every panel takes to draw itself. The draw list is held the same way
+/// for a second reason — see [`Engine::draw_list`].
+struct Memo<K, V> {
+    slot: std::cell::RefCell<Option<(K, V)>>,
+}
+
+/// Empty, whatever it holds. Deliberately not derived: a derived impl would demand a
+/// `Default` of the key and the value, which neither has and neither needs.
+impl<K, V> Default for Memo<K, V> {
+    fn default() -> Self {
+        Self {
+            slot: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl<K: PartialEq, V: Clone> Memo<K, V> {
+    /// What was built from `key`, or `build`'s answer stored against it.
+    ///
+    /// **The borrow is released before `build` runs**, which is the half of this that
+    /// had to be a function rather than three comparisons written out. A build is
+    /// arbitrary engine code — the layer walk asks
+    /// [`merge::plan_at`](crate::document::merge::plan_at) per row, the draw list
+    /// walks every visible tile of every layer — so one that ever read the memo it
+    /// was filling would panic, at run time, on whichever path a test did not take.
+    /// Two of the three held the borrow across exactly that call.
+    ///
+    /// `V: Clone`, and cheaply so at all three call sites: the two rosters hand back
+    /// an `Arc` bump ([`Projected`]) and the draw list an `Arc<[CompositeGroup]>`. A
+    /// memo whose value is expensive to hand out gives back what it saved.
+    ///
+    /// [`CompositeGroup`]: crate::gpu::CompositeGroup
+    fn get_or_build(&self, key: K, build: impl FnOnce() -> V) -> V {
+        if let Some(hit) = self.hit(&key) {
+            return hit;
+        }
+        let value = build();
+        *self.slot.borrow_mut() = Some((key, value.clone()));
+        value
+    }
+
+    /// What is held, if it was built from `key`. Its own function so the borrow ends
+    /// where the compiler says it does rather than where a reader hopes it does.
+    fn hit(&self, key: &K) -> Option<V> {
+        let slot = self.slot.borrow();
+        let (cached, value) = slot.as_ref()?;
+        (cached == key).then(|| value.clone())
+    }
+}
+
+/// What a projection off the **shown** document is a function of: the committed state,
+/// and the unlogged edit standing in for it (§17.6).
+///
+/// - `doc_revision` advances whenever the committed document does
+///   ([`Engine::committed_changed`]).
+/// - `preview` is `Preview::epoch`, which advances whenever the stand-in document is
+///   installed, replaced or dropped — `Preview::set_doc` is the only way to move that
+///   slot, and it invalidates.
+///
+/// Neither is new: [`render::DrawKey`] keys the compositor's draw list on these same
+/// two, and every golden in the suite depends on that key being complete. A document
+/// that could move without moving them would be rendering the wrong picture long
+/// before it projected a stale roster.
+///
+/// **The live fold is absent because `shown` is not the fold.** [`Engine::observe`]
+/// reads `Preview::doc` — the unlogged drag slot — and falls back to the committed
+/// document; the fold is `Preview::presented`'s business and the renderer's. A stroke
+/// in flight bumps `Preview::fold` and neither term here, so a stroke's samples
+/// reproject nothing at all. `DrawKey` is where the fold has to be named, and it names
+/// it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ShownKey {
+    doc_revision: u64,
+    preview: u64,
+}
+
+/// [`ShownKey`] and the one term a guide roster has that no document does: whether
+/// **this client** draws each guide (§20.5).
+///
+/// Shutting an eye changes what the roster answers while changing nothing about the
+/// document at all, so a key built from the document alone would go on handing back a
+/// roster whose guides are wrong. See [`Engine::guide_epoch`], which is the exact
+/// complement of the revision beside it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GuideKey {
+    shown: ShownKey,
+    guide_epoch: u64,
+}
 
 /// One row of the drawing-guide roster, **as this client sees it** (§20.5).
 ///
@@ -372,9 +477,24 @@ pub struct LayerInfo {
     /// describes the tree, which a stroke leaves alone, so the layer list used to
     /// compare equal across a commit that only painted. It no longer does, and that is
     /// the feature: a thumbnail that did not notice paint landing on its layer would be
-    /// a wrong picture. The cost is one comparison and one `Vec<Row>` rebuild per
-    /// *commit* — never per pointer sample, which is the line that matters — and the
-    /// rows whose own `Row` is unchanged still do not re-render.
+    /// a wrong picture.
+    ///
+    /// **A stroke costs one rebuild, at the commit.** Not because the field is cheap
+    /// but because a stroke is not in `shown` at all: the live fold is the renderer's
+    /// document, this row is projected off the drag slot or the committed state, and
+    /// neither term of [`ShownKey`] moves while a pen is down. So the roster is not
+    /// even rebuilt between pen-down and pen-up, let alone compared unequal.
+    ///
+    /// **An unlogged drag that rewrites tiles is the case where it does cost a
+    /// sample.** `PreviewTransform` and `PreviewFill` install a fresh `DocState` per
+    /// pointer sample, and a fresh [`PaintTiles`] carries a revision it has never
+    /// carried before — so this row moves per sample where the tree beside it does
+    /// not, and the roster that would otherwise have compared equal does not. That is
+    /// the price of reading the field off `shown`, which is what makes a thumbnail
+    /// track the drag rather than the state behind it; the alternative is a thumbnail
+    /// that is wrong for as long as the hand is down.
+    ///
+    /// [`PaintTiles`]: crate::document::PaintTiles
     ///
     /// [`Layer::content_revision`]: crate::document::Layer::content_revision
     pub content_revision: Option<u64>,
@@ -699,24 +819,15 @@ pub struct Engine {
     /// the pointer comes up. A peer receives the stroke as an action either way and
     /// renders it whole, so nothing here reaches anybody else's picture.
     fast_commit: bool,
-    /// The compositor's draw list and what it was built from (C4) — rebuilt only
-    /// when something it is a function of has moved ([`render::DrawKey`]).
-    ///
-    /// A cache with no invalidation call anywhere: the key *is* the invalidation, and
-    /// every term in it is a counter something else already maintains. A cache that
-    /// had to be told would be one a new mutation path could forget to tell.
-    draw_cache: Option<render::DrawCache>,
-    /// The layer projection and the counters it was built from — the same bargain
-    /// as `draw_cache` above, for the same reason and against the same terms (see
-    /// [`Engine::projected_layers`]).
-    ///
-    /// `RefCell` because [`Engine::observe`] takes `&self`: a projection is a
-    /// *read*, and making it `&mut` to let it memoize would put a mutable borrow of
-    /// the whole engine on the path every panel takes to draw itself.
-    layer_cache: std::cell::RefCell<Option<((u64, u64), Layers)>>,
-    /// The guide projection and the counters it was built from —
-    /// [`Engine::projected_guides`], on `layer_cache`'s terms plus one.
-    guide_cache: std::cell::RefCell<Option<GuideCache>>,
+    /// The compositor's draw list and the key it was built from — the largest of the
+    /// three memos, and the only one whose value is not a projection
+    /// ([`Engine::draw_list`]).
+    draw_cache: Memo<render::DrawKey, std::sync::Arc<[crate::gpu::CompositeGroup]>>,
+    /// The layer roster and the key it was built from ([`Engine::projected_layers`]).
+    layer_cache: Memo<ShownKey, Layers>,
+    /// The guide roster this client sees, on the roster above's terms plus one
+    /// ([`Engine::projected_guides`]).
+    guide_cache: Memo<GuideKey, Guides>,
     /// Bumped whenever this client opens or shuts a **guide's eye** (§20.5).
     ///
     /// Its own counter beside `doc_revision` because it is the exact complement of
@@ -1000,9 +1111,9 @@ impl Engine {
             preview: Default::default(),
             doc_revision: 0,
             doc_origin: 0,
-            draw_cache: None,
-            layer_cache: std::cell::RefCell::new(None),
-            guide_cache: std::cell::RefCell::new(None),
+            draw_cache: Memo::default(),
+            layer_cache: Memo::default(),
+            guide_cache: Memo::default(),
             guide_epoch: 0,
             history_budget: DEFAULT_HISTORY_BUDGET,
             fast_commit: DEFAULT_FAST_COMMIT,
@@ -1664,70 +1775,39 @@ impl Engine {
         self.session.assisted()
     }
 
-    /// A snapshot of UI-facing state (§7).
-    /// The layer list for `shown`, **rebuilt only when the document it describes
-    /// has moved**.
-    ///
-    /// The walk below is a pure function of `shown`, and `shown` is the previewed
-    /// document if one is in flight and the committed document otherwise. So the
-    /// two counters that key it are the two that already say those moved:
-    ///
-    /// - `doc_revision` advances whenever the committed document does
-    ///   ([`Engine::committed_changed`]);
-    /// - the preview's `epoch` advances whenever the stand-in document is
-    ///   installed, replaced or dropped — `Preview::set_doc` is the only way to
-    ///   move that slot, and it invalidates.
-    ///
-    /// **Nothing new is being counted**, which is what makes this sound rather than
-    /// merely plausible: `render::DrawKey` already keys the compositor's draw list
-    /// on the same two terms, and every golden in the suite depends on that key
-    /// being complete. A document that could move without moving them would be
-    /// rendering the wrong picture long before it projected a stale layer list.
-    ///
-    /// The epoch is *wider* than this needs — an in-flight gesture's fold bumps it
-    /// too, and a stroke is not in `shown` — so a stroke's samples rebuild a list
-    /// that has not changed. Wider is the safe direction, and the frontend absorbs
-    /// it: the rebuilt list compares equal, so nothing re-renders ([`Layers`]).
-    fn projected_layers(&self, build: impl FnOnce() -> Vec<LayerInfo>) -> Layers {
-        let key = (self.doc_revision, self.preview.epoch());
-        let mut cache = self.layer_cache.borrow_mut();
-        if let Some((cached, layers)) = cache.as_ref()
-            && *cached == key
-        {
-            return layers.clone();
+    /// What every projection off `shown` is keyed on, read in one place so the two
+    /// below cannot come to disagree about which counters say `shown` moved — see
+    /// [`ShownKey`] for what the two terms are.
+    fn shown_key(&self) -> ShownKey {
+        ShownKey {
+            doc_revision: self.doc_revision,
+            preview: self.preview.epoch(),
         }
-        let layers = Layers::from(build());
-        *cache = Some((key, layers.clone()));
-        layers
     }
 
-    /// The drawing-guide roster this client sees, memoized against the terms it
-    /// is a function of — [`projected_layers`](Self::projected_layers)' bargain,
-    /// and it is here for the property rather than for the cost (§20.5).
+    /// The layer roster for `shown`, **rebuilt only when the document it describes
+    /// has moved** — the walk in [`observe`](Self::observe) is a pure function of
+    /// `shown`, and [`ShownKey`] names exactly what `shown` is a function of.
+    fn projected_layers(&self, build: impl FnOnce() -> Vec<LayerInfo>) -> Layers {
+        self.layer_cache
+            .get_or_build(self.shown_key(), || build().into())
+    }
+
+    /// The drawing-guide roster this client sees, keyed on [`GuideKey`] — and it is
+    /// here for the property rather than for the cost (§20.5).
     ///
     /// Building the roster is cheap: a handful of rows, a `Copy` camera and an
-    /// `Arc` bump apiece. What the cache buys is that an *unchanged* roster hands
+    /// `Arc` bump apiece. What the memo buys is that an *unchanged* roster hands
     /// back the same `Arc`, so the frontend's "did this move?" stays the pointer
     /// comparison [`Projected`] exists for. Rebuilt fresh per observation it would
     /// be a new allocation every time, and every memo over the roster would fall
     /// through to comparing rows — which is exactly the state this type replaced.
-    ///
-    /// **Three terms, not two.** The document's two are the layer projection's,
-    /// and for its reasons. The third is `guide_epoch`, and it is what a
-    /// per-client eye costs: shutting one changes what this answers while changing
-    /// nothing about the document at all, so a key built from the document alone
-    /// would keep handing back a roster whose guides are wrong.
     fn projected_guides(&self, build: impl FnOnce() -> Vec<GuideInfo>) -> Guides {
-        let key = (self.doc_revision, self.preview.epoch(), self.guide_epoch);
-        let mut cache = self.guide_cache.borrow_mut();
-        if let Some((cached, guides)) = cache.as_ref()
-            && *cached == key
-        {
-            return guides.clone();
-        }
-        let guides = Guides::from(build());
-        *cache = Some((key, guides.clone()));
-        guides
+        let key = GuideKey {
+            shown: self.shown_key(),
+            guide_epoch: self.guide_epoch,
+        };
+        self.guide_cache.get_or_build(key, || build().into())
     }
 
     /// What the guide overlay draws and what a snapped stroke is held to, for the
@@ -1741,6 +1821,7 @@ impl Engine {
         Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
     }
 
+    /// A snapshot of UI-facing state (§7).
     pub fn observe(&self) -> ObservableState {
         /// Whether the compositor would draw anything at all for `l` — the same
         /// culls `render.rs` applies, asked of the document rather than of a
