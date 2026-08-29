@@ -1424,7 +1424,7 @@ impl Engine {
     ///
     /// `None` clears the preview, which is what the release of a drag that changed
     /// nothing sends. The sanitize and the fold both happen inside
-    /// [`document::apply::preview_of`], which is the point: an arm cannot forget a
+    /// [`crate::document::apply::preview_of`], which is the point: an arm cannot forget a
     /// step it does not perform. See that function for the two arms that had.
     fn preview_setter(&mut self, kind: Option<ActionKind>) {
         let actor = self.actor();

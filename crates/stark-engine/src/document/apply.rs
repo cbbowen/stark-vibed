@@ -702,7 +702,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// tree is one step ahead is not, and a log that omits it would be a different
 /// log on the two clients (§12.1).
 ///
-/// **Exhaustive, with no `_` arm**, for [`minted_layers`](Self::minted_layers)'s
+/// **Exhaustive, with no `_` arm**, for [`minted_layers`](ActionKind::minted_layers)'s
 /// reason: a variant added later must be made to answer rather than defaulted
 /// into the safe answer and forgotten.
 /// The document as committing `kind` would leave it, **without logging it** — the
