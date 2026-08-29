@@ -90,13 +90,12 @@ impl FilterPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
-        let (color_format, aux_format) = (formats.color, formats.aux);
         let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark filter"),
             source: wgpu::ShaderSource::Wgsl(color_space.filter_shader().into()),
         });
-        let resid_format = color_space.resid_format();
+        let resid_format = formats.resid;
         // The binding numbers are the blend pass's, gaps and all: `filter_common`
         // owns 0–3 where `blend_common` owns 0–4, and `mixbox_lut.wesl` hard-codes
         // the LUT at 5–6 for whoever imports it (see the note in that file). Slot 3
@@ -110,12 +109,6 @@ impl FilterPass {
         // `Rgba16Float`/`R16Float` are everywhere this runs — including WebGPU's
         // core feature set — and costs the point filters nothing: a sampled
         // declaration still serves their exact `textureLoad`s.
-        if let Some(f) = resid_format {
-            debug_assert_eq!(
-                f, color_format,
-                "the filter pass loads the residual target with the color's decode",
-            );
-        }
         let bgl = desc::layout_for(
             device,
             "stark filter bgl",
@@ -127,10 +120,7 @@ impl FilterPass {
         // No fixed-function blend: the pass computes the whole texel — including the
         // height it copies straight across — and *replaces* what it writes. That is
         // what the ping-pong is for.
-        let mut targets = vec![desc::target(color_format), desc::target(aux_format)];
-        if let Some(f) = resid_format {
-            targets.push(desc::target(f));
-        }
+        let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark filter pipeline",

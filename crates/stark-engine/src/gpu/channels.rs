@@ -43,11 +43,22 @@ pub(crate) struct ChannelFormats {
 
 impl ChannelFormats {
     pub(crate) fn of(space: &dyn ColorSpace) -> Self {
-        Self {
+        let formats = Self {
             color: space.color_format(),
             aux: space.aux_format(),
             resid: space.resid_format(),
-        }
+        };
+        // A residual target carries the **color's** format, because every pass that
+        // has one loads it with the color's decode — it is the rest of the same color
+        // (§6.7). Asked here, where every trio in the engine is built, rather than in
+        // the two passes that happened to ask it and the three that did not.
+        debug_assert!(
+            formats.resid.is_none_or(|f| f == formats.color),
+            "a residual target must carry the color's format; this space declares {:?} against {:?}",
+            formats.resid,
+            formats.color,
+        );
+        formats
     }
 
     /// Whether this space carries a residual (§6.7).

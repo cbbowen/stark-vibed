@@ -92,7 +92,6 @@ pub(crate) struct BlendPass {
 impl BlendPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
-        let color_format = ChannelFormats::of(color_space).color;
         let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blend"),
@@ -104,12 +103,6 @@ impl BlendPass {
         // (`mixbox_lut.wesl`).
         let formats = ChannelFormats::of(color_space);
         let resid = formats.has_resid();
-        if let Some(f) = formats.resid {
-            debug_assert_eq!(
-                f, color_format,
-                "the blend pass loads both residual targets with the color's decode",
-            );
-        }
         let bgl = desc::layout_for(device, "stark blend bgl", BLEND_SLOTS, frag, resid);
         let layout = desc::pipeline_layout(device, "stark blend layout", &[Some(&bgl)]);
         // No fixed-function blend on either target: the pass computes the whole
