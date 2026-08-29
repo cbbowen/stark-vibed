@@ -64,6 +64,7 @@ pub(in crate::gpu::stroke) struct LoopBrush<'a> {
     pub(in crate::gpu::stroke) tip: &'a ResolvedTip,
     pub(in crate::gpu::stroke) dynamics: stark_model::document::BrushDynamics,
 }
+use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
 /// The mint-budget tile's pool key (`LoopCarry::fresh`): copies both ways, nothing
@@ -1243,7 +1244,12 @@ impl<'a> DynamicsRun<'a> {
         // differs invalidates the groups above it, and every consumer is reached only
         // across such a switch.
         for (i, d) in plan.iter().enumerate() {
-            let off = (i as u64 * STAMP_STRIDE) as u32;
+            // Asked of `UniformSlots`, like the swept path's `xform_offset`, so the
+            // stride the slots were *written* at and the stride they are *bound* at
+            // are one expression rather than two that agree. This was
+            // `(i as u64 * STAMP_STRIDE) as u32` — the same number, arrived at
+            // independently.
+            let off = UniformSlots::<stark_shaders::mirror::dynamics::Stamp>::offset(i as u32);
             match d.kind {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The

@@ -710,12 +710,12 @@ impl Compositor {
     /// of by a second condition that could disagree with this one. It costs one
     /// reallocation on the next blended render, and only a document with a
     /// non-`Normal` layer has one at all.
-    fn ensure_targets(
-        &mut self,
-        p: &CompositorPipeline,
-        target_size: Extent2,
-        ss: u32,
-    ) -> &media::Offscreen {
+    /// Returns nothing, and that is the honest signature. It handed back the
+    /// accumulator "so that 'the accumulator exists' is a consequence of having called
+    /// this", and its only caller discarded that — the borrow collides with the
+    /// `&mut self` calls that must follow. A promise the borrow checker cannot let
+    /// anyone keep is not one worth making.
+    fn ensure_targets(&mut self, p: &CompositorPipeline, target_size: Extent2, ss: u32) {
         let size = Extent2::new(target_size.width * ss, target_size.height * ss);
         let current = self.accum.is_some()
             && size == self.size
@@ -755,9 +755,6 @@ impl Compositor {
             self.ss_target = (ss > 1)
                 .then(|| Supersampled::new(&p.ctx.device, size, p.target_format, &p.resolve));
         }
-        self.accum
-            .as_ref()
-            .expect("the branch above builds it when it is absent")
     }
 
     /// Upload everything `plan` decided, returning the per-tile bind groups pass A
@@ -1198,7 +1195,12 @@ impl Compositor {
             .write(&p.ctx.device, &p.ctx.queue, view_groups(p), &[view]);
         let streams = self.upload_streams(p, view, &plan);
         let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
-        // Bound after everything that needs `&mut self`.
+        // Bound after everything that needs `&mut self` — and bound **per field**,
+        // which is what keeps them from being one `Frame<'_>` taken from a `&self`
+        // helper. Passes C and D below take `&mut self.overlay_instances` and
+        // `&mut self.guide_uniforms` while these are alive; three disjoint field
+        // borrows allow that and one whole-`self` borrow does not. The `expect` under
+        // it is the price of that, not an oversight.
         let scratch = if want_scratch {
             self.scratch.as_ref()
         } else {
