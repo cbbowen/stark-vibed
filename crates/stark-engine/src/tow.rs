@@ -124,11 +124,24 @@ impl Tow {
     /// [`bend_reach`] takes it to one emission a report, which is that same
     /// rate.
     ///
+    /// # Panics
+    ///
+    /// In debug, on a `rope` that is not positive and finite. It is the caller's
+    /// gate and not a repair here, because the two answers are different tools: a
+    /// zero rope means *do not build one of these*, where silently substituting some
+    /// positive rope would put a smoothing the artist switched off back into the
+    /// stroke. Stated as an assertion so a caller that forgets the gate finds out at
+    /// the door rather than in [`bend_reach`]'s arithmetic.
+    ///
     /// `tolerance` is the caller's declared input resolution — the one thing the tow
     /// cannot work out for itself, and the same number the fitter is built with —
     /// so it is held to the same bounds by the same function, rather than by a
     /// second copy of them here.
     pub fn new(rope: f32, tolerance: f32, first: InputSample) -> Self {
+        debug_assert!(
+            rope.is_finite() && rope > 0.0,
+            "a tow of {rope} is not a tow; the caller gates on rope > 0"
+        );
         Self {
             rope,
             tolerance: crate::path::clamp_tolerance(tolerance),

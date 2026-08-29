@@ -41,7 +41,7 @@ use std::f32::consts::TAU;
 
 use nalgebra::{Const, Dyn, OMatrix};
 
-use crate::path::{FLATTEN_TOLERANCE, arc_profile, clamp_tilt, flatten, param_at};
+use crate::path::{FLATTEN_TOLERANCE, arc_profile, flatten, param_at};
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
@@ -713,15 +713,16 @@ fn realize(
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
     let attr = index.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
 
+    // Through `clamped`, the same door the streaming fitter's own solved channels go
+    // through — this is a least-squares solve too, and overshoots the same way.
     (0..m)
-        .map(|j| ControlPoint {
-            pos: Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-            // The same clamps the fitter applies to its own solved channels: a control
-            // value the data barely holds can overshoot the range a pen can report, and
-            // pressure is a radius the renderer multiplies by without a ceiling.
-            pressure: attr[(j, 0)].clamp(0.0, 1.0),
-            tilt: clamp_tilt(Vec2::new(attr[(j, 1)], attr[(j, 2)])),
-            time: attr[(j, 3)],
+        .map(|j| {
+            ControlPoint::clamped(
+                Vec2::new(geom[(j, 0)], geom[(j, 1)]),
+                attr[(j, 0)],
+                Vec2::new(attr[(j, 1)], attr[(j, 2)]),
+                attr[(j, 3)],
+            )
         })
         .collect()
 }

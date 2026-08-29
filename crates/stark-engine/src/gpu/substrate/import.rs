@@ -38,6 +38,14 @@ pub fn identify(png_bytes: &[u8]) -> Result<SubstrateId> {
 }
 
 /// Decode a height-map PNG to the canonical field the upload path reads.
-pub(super) fn canonical_height(png_bytes: &[u8]) -> Result<Canonical> {
+///
+/// A [`DocError`](stark_model::DocError) rather than the engine's, because this is
+/// the registry's door ([`Resource::decode`](crate::gpu::registry::Resource::decode))
+/// and what fails here is a fact about the *bytes*: `AssetError` is the format's own
+/// identity contract (§19, §2), and widening it to the renderer's error at this depth
+/// would only be narrowed again by every caller.
+pub(super) fn canonical_height(
+    png_bytes: &[u8],
+) -> std::result::Result<Canonical, stark_model::DocError> {
     Ok(stark_assetid::height(png_bytes)?)
 }

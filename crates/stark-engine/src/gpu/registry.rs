@@ -41,6 +41,7 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use crate::gpu::context::GpuContext;
+use stark_model::DocError;
 
 /// A resource the frontend supplies bytes for.
 pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
@@ -66,13 +67,18 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// per-resource answer rather than one this trait should pick.
     type Decoded;
 
-    /// Decode registered bytes, or say what the decoder made of them.
+    /// Decode registered bytes, or say why not.
     ///
     /// **This is the door.** It runs in [`Registry::register`] before anything is
     /// stored, so bytes that will not decode are refused where a caller can report
     /// it rather than at the first *use*, which for both of today's resources is on
     /// the render path — an abort on the web with the painting unsaved (§5).
-    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, String>;
+    ///
+    /// A [`DocError`] rather than a string, so a resource whose decoder already has a
+    /// typed refusal keeps it: a substrate's is `AssetError`, the format's own
+    /// identity contract (§19), and flattening that to a sentence at the door only to
+    /// have the caller wrap it again lost the one arm anybody would match on.
+    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, DocError>;
 
     /// The registered bytes this id builds from.
     fn content(self) -> Self::Content;
@@ -247,7 +253,7 @@ impl<R: Resource> Registry<R> {
         gpu: &GpuContext,
         content: R::Content,
         bytes: Vec<u8>,
-    ) -> std::result::Result<bool, String> {
+    ) -> std::result::Result<bool, DocError> {
         let decoded = R::decode(&bytes)?;
         let mut store = self.store();
         store.bytes.insert(content, Entry { bytes, decoded });

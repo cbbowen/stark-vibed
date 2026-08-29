@@ -39,4 +39,35 @@ impl ControlPoint {
             time: 0.0,
         }
     }
+
+    /// A control point with its channels **held to what a pen can report** —
+    /// pressure in `[0, 1]`, tilt inside the unit disc.
+    ///
+    /// **Every fitted point is built this way**, and the reason is that a fit is a
+    /// least-squares solve rather than an interpolation: a control point the data
+    /// barely reaches is held only by the ridge, so it can overshoot the values it
+    /// was fitted from. Pressure is a radius the renderer multiplies the brush by
+    /// with no ceiling of its own, and tilt steers the footprint.
+    ///
+    /// Clamping the *control* values bounds the whole curve and not just the control
+    /// polygon: B-spline bases are non-negative and sum to one, so every evaluated
+    /// value is a convex combination of them.
+    ///
+    /// It lives here rather than beside any one fitter because there are three —
+    /// the streaming fit, its finished form, and the shape assist's realization
+    /// (§6.9) — and a fourth is what the next tool that produces a path will be.
+    /// Three copies of a clamp is three places for one of them to be forgotten, and
+    /// what a forgotten one costs is a stroke whose radius the log does not bound.
+    pub fn clamped(pos: Vec2, pressure: f32, tilt: Vec2, time: f32) -> Self {
+        // Scaled rather than component-clamped: the pen reports a direction and a
+        // lean, and clipping the components alone would turn a diagonal overshoot
+        // into a different direction.
+        let len = tilt.length();
+        Self {
+            pos,
+            pressure: pressure.clamp(0.0, 1.0),
+            tilt: if len > 1.0 { tilt / len } else { tilt },
+            time,
+        }
+    }
 }

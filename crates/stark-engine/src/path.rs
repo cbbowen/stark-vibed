@@ -595,11 +595,13 @@ impl PathFitter {
             return self
                 .pts
                 .first()
-                .map(|s| ControlPoint {
-                    pos: s.pos,
-                    pressure: s.channels[0].clamp(0.0, 1.0),
-                    tilt: clamp_tilt(Vec2::new(s.channels[1], s.channels[2])),
-                    time: s.channels[3],
+                .map(|s| {
+                    ControlPoint::clamped(
+                        s.pos,
+                        s.channels[0],
+                        Vec2::new(s.channels[1], s.channels[2]),
+                        s.channels[3],
+                    )
                 })
                 .into_iter()
                 .collect();
@@ -1129,20 +1131,17 @@ fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
 /// [`PathFitter::path`] and [`PathFitter::path_as_finished`], so the two cannot
 /// disagree about anything but which solve they read.
 fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
+    // Through `clamped`, which is where the range a pen can report is stated for
+    // every fitter (`ControlPoint::clamped`) — the channels are solved the same way
+    // the geometry is, so a point the data barely holds can overshoot them.
     (0..geom.nrows())
-        .map(|j| ControlPoint {
-            pos: Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-            // Clamped to the range a pen can report. The channels are solved the
-            // same way the geometry is, and a control point the data barely
-            // reaches is held only by the ridge, so it can overshoot the values
-            // it was fitted from. For pressure that is a radius, which
-            // `generate_segments` multiplies the brush by with no upper bound.
-            // Clamping the control values bounds the *curve* and not just the
-            // polygon: B-spline bases are non-negative and sum to one, so every
-            // evaluated value is a convex combination of them.
-            pressure: attr[(j, 0)].clamp(0.0, 1.0),
-            tilt: clamp_tilt(Vec2::new(attr[(j, 1)], attr[(j, 2)])),
-            time: attr[(j, 3)],
+        .map(|j| {
+            ControlPoint::clamped(
+                Vec2::new(geom[(j, 0)], geom[(j, 1)]),
+                attr[(j, 0)],
+                Vec2::new(attr[(j, 1)], attr[(j, 2)]),
+                attr[(j, 3)],
+            )
         })
         .collect()
 }
@@ -1233,14 +1232,6 @@ pub(crate) fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
     let (a, b) = (profile[i - 1], profile[i]);
     let u = if b > a { (want - a) / (b - a) } else { 0.0 };
     (((i - 1) as f32 + u) / ARC_SAMPLES_PER_SPAN as f32).min(spans)
-}
-
-/// Tilt clamped to the unit disc a pen reports in — the same overshoot guard as the
-/// pressure clamp in [`PathFitter::path`], for the channel that steers the footprint
-/// rather than sizing it.
-pub(crate) fn clamp_tilt(t: Vec2) -> Vec2 {
-    let len = t.length();
-    if len > 1.0 { t / len } else { t }
 }
 
 /// Fit a whole sample sequence in one call at [`DEFAULT_TOLERANCE`] — the batch form

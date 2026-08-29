@@ -55,8 +55,8 @@ use crate::gpu::context::GpuContext;
 
 use crate::unpoisoned;
 
-/// How many bytes of free textures the pool will hold before it starts destroying
-/// the least-recently-used. One wide-tip piece's working set — region, narrow,
+/// How many bytes of free textures **and buffers** the pool will hold before it
+/// starts destroying the least-recently-used. One wide-tip piece's working set — region, narrow,
 /// snapshot and cells, three channels each in a pigment space — is on the order of
 /// 120 MB, so this keeps roughly one generation warm plus headroom for the sizes to
 /// drift across a tile boundary; anything beyond that is destroyed eagerly, for the
@@ -190,7 +190,6 @@ impl ScratchPool {
             label,
             run_leases: Vec::new(),
             piece_leases: Vec::new(),
-            run_buf_leases: Vec::new(),
             piece_buf_leases: Vec::new(),
             piece_held: Vec::new(),
             piece_open: false,
@@ -404,10 +403,10 @@ impl Drop for Kept {
     }
 }
 
-/// GPU work being recorded, and everything whose reuse or destruction must wait
-/// behind its submit: the pooled leases the commands name, the per-stroke
-/// buffers/textures destroyed once they land, and any other resource whose drop
-/// must trail the submit (the swept path's tile-pool scratch pair).
+/// GPU work being recorded, and everything whose reuse must wait behind its submit:
+/// the pooled leases the commands name — textures and buffers alike — and any other
+/// resource whose drop must trail the submit (the swept path's tile-pool scratch
+/// pair, the stamp loop's carried mint budget).
 ///
 /// Two lease lifetimes, because a dynamics stroke has two: **run** leases carry
 /// state across pieces (the reservoir ping-pong, the bake pair) and go back only at
@@ -421,10 +420,10 @@ pub(super) struct SubmitScope {
     label: &'static str,
     run_leases: Vec<Lease>,
     piece_leases: Vec<Lease>,
-    /// The buffer leases. Only the piece lifetime is taken today — nothing in
-    /// either path holds a buffer across pieces — but the release is written for both
-    /// so `finish` cannot come to disagree with `flush` about which lists it drains.
-    run_buf_leases: Vec<BufLease>,
+    /// The buffer leases. Only the piece lifetime, because no buffer here carries
+    /// across pieces: a plan, an instance run and a ceiling are each written afresh
+    /// for the piece that draws with them, where the textures that *do* carry (the
+    /// reservoir ping-pong, the bake pair) are the loop's running state.
     piece_buf_leases: Vec<BufLease>,
     /// Arbitrary resources whose *drop* must trail the submit — the swept path's
     /// pooled tile pair, whose early drop puts it back on the tile pool's free list
@@ -515,11 +514,7 @@ impl SubmitScope {
         for lease in self.piece_leases.drain(..).chain(self.run_leases.drain(..)) {
             self.pool.give(lease);
         }
-        for lease in self
-            .piece_buf_leases
-            .drain(..)
-            .chain(self.run_buf_leases.drain(..))
-        {
+        for lease in self.piece_buf_leases.drain(..) {
             self.pool.give_buf(lease);
         }
     }

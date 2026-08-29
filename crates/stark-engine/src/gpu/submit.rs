@@ -95,8 +95,7 @@ impl Drop for ScopedResources {
 const FLUSH_TILES: usize = 256;
 
 /// GPU work being recorded, and everything whose release must trail its submit:
-/// the pooled handles the commands name, and the unpooled buffers and textures
-/// they read.
+/// the pooled handles the commands name, and the unpooled buffers they read.
 ///
 /// **A held resource can reach its pool only through a submit**, and the type is what
 /// says so rather than a `drop` each call site has to place after the submit by hand.

@@ -329,8 +329,10 @@ impl crate::gpu::registry::Resource for EnvironmentId {
     /// result.
     type Decoded = ();
 
-    fn decode(bytes: &[u8]) -> std::result::Result<(), String> {
-        decode_hdr(bytes).map(|_| ())
+    fn decode(bytes: &[u8]) -> std::result::Result<(), stark_model::DocError> {
+        decode_hdr(bytes)
+            .map(|_| ())
+            .map_err(|e| stark_model::DocError::Asset(format!("lighting environment: {e}")))
     }
 
     /// Every light is normalized by its own `flat_irradiance` and shown at no exposure

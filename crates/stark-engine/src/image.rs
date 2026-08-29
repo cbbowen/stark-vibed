@@ -12,9 +12,13 @@ pub struct RgbaImage {
 
 impl RgbaImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        // In `u64` and not `u32`: an 8192² export is 268 MB and a caller may ask for
+        // more, where `width * height * 4` wraps at 4 GB — so the check that exists to
+        // catch a mis-sized buffer would pass on one, or panic in the multiply with
+        // the wrong message.
         debug_assert_eq!(
-            pixels.len(),
-            (width * height * 4) as usize,
+            pixels.len() as u64,
+            u64::from(width) * u64::from(height) * 4,
             "an RgbaImage is row-major with no padding: {width}x{height} needs four bytes a texel"
         );
         Self {
@@ -74,10 +78,10 @@ impl RgbaImage {
             encoder.set_depth(png::BitDepth::Eight);
             let mut writer = encoder
                 .write_header()
-                .map_err(|e| crate::EngineError::Export(e.to_string()))?;
+                .map_err(crate::error::ExportError::Encode)?;
             writer
                 .write_image_data(&self.pixels)
-                .map_err(|e| crate::EngineError::Export(e.to_string()))?;
+                .map_err(crate::error::ExportError::Encode)?;
         }
         Ok(out)
     }

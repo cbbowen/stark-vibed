@@ -538,8 +538,15 @@ impl PhaseLayer {
         // Five attempts, because the *first* step after an arbitrary moment can
         // straddle a boundary and read short; the smallest of several is the quantum.
         const ATTEMPTS: usize = 5;
-        // Enough reads to cross a millisecond quantum even on a slow wasm build, and
-        // few enough that a frozen clock costs microseconds rather than a hang.
+        // Enough reads to cross a millisecond quantum even on a slow wasm build: at a
+        // browser's ~50 ns per `performance.now()` this is fifty times what a
+        // millisecond needs.
+        //
+        // **What a frozen clock costs is that margin times `ATTEMPTS`** — on the order
+        // of a tenth of a second, once, the first time anything asks for the quantum.
+        // Stated rather than bounded further because the alternative is worse in both
+        // directions: a shorter spin reports a coarser quantum than the clock really
+        // has on a slow build, and there is no second clock to time the loop against.
         const MAX_SPINS: usize = 1 << 20;
         let mut best = u64::MAX;
         for _ in 0..ATTEMPTS {

@@ -213,8 +213,8 @@ impl crate::gpu::registry::Resource for Substrate {
     /// height map, one decode, however many sizes the document lays it at.
     type Decoded = stark_assetid::Canonical;
 
-    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, String> {
-        canonical_height(bytes).map_err(|e| e.to_string())
+    fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, stark_model::DocError> {
+        canonical_height(bytes)
     }
 
     fn build(

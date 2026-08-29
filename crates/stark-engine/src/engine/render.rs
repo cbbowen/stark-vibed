@@ -11,14 +11,15 @@
 //! instead of taking one.
 
 use super::Engine;
+use crate::Result;
 use crate::document::{CompositeParams, DocState, Layer, LayerContent};
+use crate::error::{ExportError, Produces};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
     SelectionOutline,
 };
 use crate::image::RgbaImage;
 use crate::view::ViewTransform;
-use crate::{EngineError, Result};
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
 use stark_model::geom::{Extent2, TileRect};
 
@@ -465,9 +466,11 @@ impl Engine {
         let (min, max) = self.export_rect(frame);
         let (w, h) = (max.x - min.x, max.y - min.y);
         if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
-            return Err(EngineError::Export(format!(
-                "frame is too small to export ({w:.0} × {h:.0} canvas px)"
-            )));
+            return Err(ExportError::TooSmall {
+                width: w,
+                height: h,
+            }
+            .into());
         }
         let zoom = match scale {
             ExportScale::Factor(f) => f,
@@ -475,7 +478,7 @@ impl Engine {
             ExportScale::Fit(into) => (into.width as f32 / w).min(into.height as f32 / h),
         };
         if !(zoom.is_finite() && zoom > 0.0) {
-            return Err(EngineError::Export("export scale must be positive".into()));
+            return Err(ExportError::BadScale.into());
         }
         // Round rather than truncate, so a 1× export of a 100.5-px frame is 101
         // rather than silently dropping most of a pixel off two edges.
@@ -485,10 +488,12 @@ impl Engine {
         );
         let limit = max_export_dim(&self.shared.gpu);
         if size.width > limit || size.height > limit {
-            return Err(EngineError::Export(format!(
-                "export is {} × {} px; this device's limit is {limit}",
-                size.width, size.height
-            )));
+            return Err(ExportError::OverLimit {
+                what: Produces::Export,
+                size,
+                limit,
+            }
+            .into());
         }
         Ok(ExportPlan {
             min,
@@ -604,15 +609,17 @@ impl Engine {
         // caller-supplied view has not passed through them, so it is asked once, at
         // the door it comes in by.
         if !view.usable() {
-            return Err(EngineError::Export("view must be finite".into()));
+            return Err(ExportError::UnusableView.into());
         }
         let size = view.viewport;
         let limit = max_export_dim(&self.shared.gpu);
         if size.width == 0 || size.height == 0 || size.width > limit || size.height > limit {
-            return Err(EngineError::Export(format!(
-                "render is {} × {} px; this device's limit is {limit}",
-                size.width, size.height
-            )));
+            return Err(ExportError::OverLimit {
+                what: Produces::Render,
+                size,
+                limit,
+            }
+            .into());
         }
         // No chrome: a selection outline or any other on-canvas affordance is a
         // thing to draw *with*, never a thing to ship. The hover mark (§18.1.10)

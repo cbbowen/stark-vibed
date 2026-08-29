@@ -331,7 +331,7 @@ impl MergeRenderer {
         let mut tiles = dest.clone();
         for (coord, handle) in dest.iter() {
             let out = self.acquire(pool, AllocSource::MergeDestination);
-            self.encode_filter(&mut scope, &uniform, Some(handle), &out);
+            self.encode_filter(&mut scope, &uniform, handle, &out);
             tiles = tiles.insert(*coord, out.into_tile());
             scope.tile_done();
         }
@@ -349,11 +349,16 @@ impl MergeRenderer {
     /// bind group answers to the whole layout.
     ///
     /// [`Compositor::encode_filter`]: crate::gpu::composite
+    /// The tile is not an `Option` where the merge's other encoders take one: a
+    /// filter layer is *defined* as a function of the paint beneath it (§21), so a
+    /// tile the lower layer does not have is a tile this merge never plans — the
+    /// caller walks the lower map's own coords. Bare canvas is a real case for the
+    /// blend and has no meaning here.
     fn encode_filter(
         &self,
         scope: &mut TileScope,
         uniform: &wgpu::Buffer,
-        tile: Option<&TilePairHandle>,
+        tile: &TilePairHandle,
         out: &Channels,
     ) {
         // The filter pass's own slot list (§21), against its own layout: a merged
@@ -367,12 +372,15 @@ impl MergeRenderer {
             self.formats.has_resid(),
             |i| match i {
                 fc::F => slot_of::<FilterUniform>(uniform),
-                fc::BACK_COLOR => view(self.color_of(tile)),
-                fc::BACK_AUX => view(self.aux_of(tile)),
+                fc::BACK_COLOR => view(tile.color_view()),
+                fc::BACK_AUX => view(tile.aux_view()),
                 fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.filter.sampler),
                 ml::PIGMENT_LUT => view(&self.blend.pigment.view),
                 ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.blend.pigment.sampler),
-                fm::BACK_RESID => view(self.resid_of(tile)),
+                fm::BACK_RESID => view(
+                    tile.resid_view()
+                        .expect("a residual space's tile has one (§6.7)"),
+                ),
                 other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
             },
         );

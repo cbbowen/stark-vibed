@@ -455,8 +455,7 @@ impl Engine {
             .shared
             .apply
             .substrates
-            .register(&self.shared.gpu, id, canonical)
-            .map_err(|e| DocError::Asset(format!("canvas substrate: {e}")))?;
+            .register(&self.shared.gpu, id, canonical)?;
         if rebuilt {
             self.apply_substrate();
         }
@@ -494,9 +493,10 @@ impl Engine {
     pub fn accept_picture(&self, expected: AssetId, png_bytes: &[u8]) -> Result<()> {
         let actual = self.shared.apply.pictures.insert_bytes(png_bytes)?;
         if actual != expected {
-            return Err(DocError::Asset(format!(
-                "picture {expected:?} arrived as {actual:?}; refusing to install it"
-            ))
+            return Err(DocError::Misnamed {
+                expected: AssetNeed::Picture(expected),
+                actual: AssetNeed::Picture(actual),
+            }
             .into());
         }
         Ok(())
@@ -522,17 +522,26 @@ impl Engine {
     ) -> Result<SubstrateId> {
         let actual = crate::gpu::substrate::identify(png_bytes)?;
         if actual != expected {
-            return Err(DocError::Asset(format!(
-                "substrate {expected:?} arrived as {actual:?}; refusing to install it"
-            ))
+            // Named through `for_substrate`, the one place a substrate's procedural
+            // `Flat` case is answered. `identify` always derives an image, so only
+            // `expected` can be `Flat` — and a caller naming it has brought bytes for
+            // a substrate that has none, which is the same refusal said properly.
+            return Err(match (
+                AssetNeed::for_substrate(expected),
+                AssetNeed::for_substrate(actual),
+            ) {
+                (Some(expected), Some(actual)) => DocError::Misnamed { expected, actual },
+                _ => DocError::Asset(
+                    "the flat substrate is procedural and has no bytes to install".into(),
+                ),
+            }
             .into());
         }
-        let rebuilt = self
-            .shared
-            .apply
-            .substrates
-            .register(&self.shared.gpu, actual, png_bytes.to_vec())
-            .map_err(|e| DocError::Asset(format!("canvas substrate: {e}")))?;
+        let rebuilt =
+            self.shared
+                .apply
+                .substrates
+                .register(&self.shared.gpu, actual, png_bytes.to_vec())?;
         if rebuilt {
             self.apply_substrate();
         }
@@ -609,8 +618,7 @@ impl Engine {
         let rebuilt = self
             .shared
             .environment
-            .register(&self.shared.gpu, id, hdr_bytes)
-            .map_err(|e| DocError::Asset(format!("lighting environment: {e}")))?;
+            .register(&self.shared.gpu, id, hdr_bytes)?;
         if rebuilt {
             self.apply_environment();
         }

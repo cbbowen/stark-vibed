@@ -794,18 +794,25 @@ pub(super) fn sweep_draws(
         label: "stark sweep xforms",
     });
     r.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
-    let xforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("stark sweep bg"),
-        layout: &r.swept.uniform_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+    // Through the slot list the layout was built from, like every other group in the
+    // crate — a hand-written `binding: 0` is the shader's own number transcribed onto
+    // the host, which is the drift §6.10 exists to remove. The window is the
+    // uniform's size and the offset is the draw's, so the entry names a slot rather
+    // than the whole buffer.
+    let xforms = desc::bind_group_for(
+        device,
+        "stark sweep bg",
+        &r.swept.uniform_bgl,
+        XFORM_SLOTS,
+        false,
+        |_| {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: &xform_buf,
                 offset: 0,
                 size: wgpu::BufferSize::new(XFORM_SLOT),
-            }),
-        }],
-    });
+            })
+        },
+    );
 
     SweepDraws {
         coords,

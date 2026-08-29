@@ -257,8 +257,15 @@ fn pcg4d(mut v: [u32; 4]) -> [u32; 4] {
 }
 
 /// u32 → uniform f32 in [0, 1).
+///
+/// **The top 24 bits, not all 32**, because that is what an `f32` can hold: `h /
+/// 2^32` rounds to nearest, so the 128 largest `h` round *up* to exactly 1.0 and the
+/// interval is not the half-open one this promises. Taking 24 bits makes every step
+/// exact and the bound true by construction. What it gives up is entropy this has no
+/// use for — the values are cell offsets and gradient picks, and 2²⁴ of them is more
+/// than any period here has cells.
 fn unit(h: u32) -> f32 {
-    h as f32 * 2.328_306_4e-10 // h / 2^32
+    (h >> 8) as f32 * 5.960_464_5e-8 // (h >> 8) / 2^24
 }
 
 /// The 12 cube-edge gradients of classic simplex/Perlin noise.

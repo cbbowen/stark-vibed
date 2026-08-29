@@ -123,7 +123,7 @@ pub use engine::{
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
     PickSource, PresenceTick, Projected, Rendered,
 };
-pub use error::{EngineError, Result};
+pub use error::{EngineError, ExportError, Produces, Result};
 pub use gpu::{
     Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind, GpuContext,
     GpuHealth, MediaParams, Offscreen, StrokeRenderer, TilePairHandle, TilePool, max_stretch,

@@ -229,11 +229,11 @@ struct DynamicsRun<'a> {
     tol: crate::path::FlattenTolerance,
     scene: StrokeScene<'a>,
     /// The encoder this run records into, and every resource whose release must
-    /// trail a submit — the run-scoped leases (reservoir ping-pong, bake pair), the
-    /// piece-scoped leases (region, snapshot, cells), and the piece's unpooled
-    /// buffers and textures. The scope releases each tier only in the call that
-    /// submits the commands naming it ([`SubmitScope`]), so the ordering is the type's
-    /// rather than three fields and a flag holding it by convention.
+    /// trail a submit — the run-scoped leases (reservoir ping-pong, bake pair) and the
+    /// piece-scoped ones (region, snapshot, cells, the selection mask, and every
+    /// buffer). The scope releases each tier only in the call that submits the
+    /// commands naming it ([`SubmitScope`]), so the ordering is the type's rather than
+    /// three fields and a flag holding it by convention.
     scope: SubmitScope,
     /// Every tile the run has rewritten, accumulated as each piece enumerates its own.
     /// The pieces partition the range's segments, so this ends up the set a second
@@ -605,9 +605,9 @@ impl<'a> DynamicsRun<'a> {
         //
         // **The block ends the scratch handles' scope, and that is sound** — worth
         // stating outright in this file, where an early release is the standing
-        // hazard (`scratch::SubmitScope`). `take_piece` and `scope.buffer` register
-        // the *lease* with the scope and hand back refcounted `wgpu` clones, so what
-        // drops here is a handle and never a claim on the pool: the leases are
+        // hazard (`scratch::SubmitScope`). `take_piece` and `take_piece_buffer`
+        // register the *lease* with the scope and hand back refcounted `wgpu` clones,
+        // so what drops here is a handle and never a claim on the pool: the leases are
         // released by the flush that submits the commands naming them, which is the
         // next piece's or `finish`'s. The bind groups outlive the block because they
         // are what the loop below is recorded against, and a `BindGroup` holds its
@@ -673,7 +673,19 @@ impl<'a> DynamicsRun<'a> {
                     kept.tex().as_image_copy(),
                     FRESH_EXTENT,
                 );
-                self.fresh.insert(*coord, Arc::new(kept));
+                // Held, not dropped. The lease this displaces is the *previous*
+                // piece's, and the seed copy that read it (above) is recorded into
+                // an encoder this call does not submit — so dropping it here returns
+                // a texture to the free list while pending commands still name it,
+                // which is `scope.hold(base.clone())`'s hazard one level down and
+                // the ordinary case for the same reason: consecutive pieces share
+                // the tiles around their cut. Reuse happens to be harmless (commands
+                // in one encoder run in recorded order, and the seed was recorded
+                // first), but `trim`'s `destroy` is not, and neither is an argument
+                // that rests on statement order.
+                if let Some(displaced) = self.fresh.insert(*coord, Arc::new(kept)) {
+                    self.scope.hold(displaced);
+                }
             }
         }
 
@@ -948,11 +960,13 @@ impl<'a> DynamicsRun<'a> {
     /// uniform offsets being the standard way to vary a uniform across dispatches
     /// within one pass.
     ///
-    /// Registered on the *piece*, like the region it works on and for the same reason:
+    /// Leased on the *piece*, like the region it works on and for the same reason:
     /// nothing past this piece's own submission reads it, so holding it for the whole
     /// run would make a long stroke's peak cost scale with the number of pieces —
     /// which is what [`MAX_REGION_DIM`](super::MAX_REGION_DIM) exists to prevent.
-    /// The scope destroys it behind the piece's own submit ([`SubmitScope::flush`]).
+    /// The scope returns it to the pool behind the piece's own submit
+    /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
+    /// this one used.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
         let r = self.r;
         let mut data = vec![0u8; plan.len() * STAMP_STRIDE as usize];
@@ -1469,8 +1483,17 @@ impl<'a> DynamicsRun<'a> {
     /// everything behind that submit ([`SubmitScope::finish`]). What
     /// [`Self::capture_tool`] handed back is deliberately not among it: a `Kept`
     /// lease outlives this call by design.
-    fn submit(self) {
-        let Self { scope, .. } = self;
+    ///
+    /// **The mint budget is handed to the scope rather than left to drop.** Whatever
+    /// `capture_tool` did not take is still named by the last piece's extract copies,
+    /// which this call is about to submit. Dropping it would be sound — un-bound
+    /// fields of a destructured value drop at the end of the function, after
+    /// `finish` — but only by a rule about drop timing, where every other release
+    /// here stands on the scope. One footing is better than two.
+    fn submit(mut self) {
+        let fresh = std::mem::take(&mut self.fresh);
+        let Self { mut scope, .. } = self;
+        scope.hold(fresh);
         scope.finish();
     }
 }

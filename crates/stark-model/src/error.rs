@@ -88,6 +88,23 @@ pub enum DocError {
     )]
     UnsupportedColorSpace(ColorSpaceId),
 
+    /// Content arrived under an id its own bytes do not hash to.
+    ///
+    /// **The one way a content-addressed store could still hold the wrong thing**
+    /// (§19), and so a refusal rather than a repair: `import_*` derives the id from
+    /// the bytes and has nothing to disagree with, but `accept_*` is handed both, off
+    /// a save file's bundle or a peer's transfer (§8, §12.4). What installing them
+    /// anyway would cost differs by kind and is never nothing — a substrate deposits
+    /// the wrong tooth into tiles no later arrival un-bakes (§6.4), a picture is
+    /// simply a different photograph — so the check is the same at every door.
+    #[error("{expected:?} arrived as {actual:?}; refusing to install it")]
+    Misnamed {
+        expected: crate::AssetNeed,
+        actual: crate::AssetNeed,
+    },
+
+    /// Registered bytes a store could not read. The detail is whatever the decoder
+    /// said, which is the one thing here that genuinely is a sentence.
     #[error("asset decode failed: {0}")]
     Asset(String),
 

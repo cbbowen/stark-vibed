@@ -18,7 +18,7 @@ pub enum EngineError {
     RequestAdapter(#[from] wgpu::RequestAdapterError),
 
     #[error("cannot export: {0}")]
-    Export(String),
+    Export(#[from] ExportError),
 
     /// The GPU failed underneath an operation — a lost device, an exhausted one, or
     /// an error no scope caught (§5).
@@ -36,9 +36,6 @@ pub enum EngineError {
     #[error("{0}")]
     Gpu(String),
 
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-
     /// Something went wrong with the *document* rather than with the renderer — a
     /// file that will not decode, a space this build lacks, content it was never
     /// given (§2). Folded in so a caller holding the engine still catches everything
@@ -46,6 +43,65 @@ pub enum EngineError {
     /// [`DocError`](stark_model::DocError) alone and never see `NoAdapter`.
     #[error(transparent)]
     Document(#[from] stark_model::DocError),
+}
+
+/// Why a render or an export could not be produced — a **request** that does not
+/// make sense, or the encoder refusing what it was handed.
+///
+/// A type rather than a `String` because the two halves want different answers.
+/// [`TooSmall`](Self::TooSmall), [`OverLimit`](Self::OverLimit) and
+/// [`UnusableView`](Self::UnusableView) are all "ask for something else", and a
+/// frontend that wants to *say* what else — clamp the scale, offer the device's
+/// limit — needs the numbers rather than a sentence containing them.
+/// [`Encode`](Self::Encode) is not answerable by asking differently at all, and is
+/// the one arm carrying somebody else's error.
+#[derive(Debug, Error)]
+pub enum ExportError {
+    /// The frame has no area to render: an empty or non-finite bound (§15.6).
+    #[error("frame is too small to export ({width:.0} × {height:.0} canvas px)")]
+    TooSmall { width: f32, height: f32 },
+
+    /// The scale asked for is not a positive, finite factor.
+    #[error("export scale must be positive")]
+    BadScale,
+
+    /// The target is larger than this device will allocate a texture for. Both
+    /// numbers are here because the useful reply is "then ask for `limit`".
+    #[error("{} is {} × {} px; this device's limit is {limit}", what.noun(), size.width, size.height)]
+    OverLimit {
+        what: Produces,
+        size: stark_model::geom::Extent2,
+        limit: u32,
+    },
+
+    /// The view handed in is not one anything can be rendered through
+    /// ([`ViewTransform::usable`](crate::view::ViewTransform::usable)).
+    #[error("view must be finite")]
+    UnusableView,
+
+    /// The PNG encoder refused the image — the one arm that is not about the
+    /// request.
+    #[error("PNG encoding failed: {0}")]
+    Encode(#[from] png::EncodingError),
+}
+
+/// Which of the two things a size limit was measured against, so
+/// [`ExportError::OverLimit`] reads as the caller's own question.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Produces {
+    /// A framed export at a chosen scale (§15.6).
+    Export,
+    /// A render of the current view to an image.
+    Render,
+}
+
+impl Produces {
+    fn noun(self) -> &'static str {
+        match self {
+            Produces::Export => "export",
+            Produces::Render => "render",
+        }
+    }
 }
 
 /// `?` on a content-id failure, in one hop.

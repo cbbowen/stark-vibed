@@ -263,7 +263,16 @@ impl Preview {
                     });
                     let root = if contested { &out } else { &base };
                     let (head, tail_state) = self.render_live_stroke(
-                        ctx, actor, root, &rec, frozen, head, ordinal, contested,
+                        ctx,
+                        LiveTail {
+                            author: actor,
+                            gesture: ordinal,
+                            frozen,
+                            contested,
+                        },
+                        root,
+                        &rec,
+                        head,
                     );
                     out = overlay_tiles(&out, rec.layer, &tail_state, &head.dirty);
                     heads.insert(actor, head);
@@ -299,21 +308,20 @@ impl Preview {
     ///
     /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
     /// the live preview and the `Action::apply` that replaces it draw the same pixels.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the arguments are the live tail's state; each is a distinct type"
-    )]
     fn render_live_stroke(
         &self,
         ctx: &ApplyCtx,
-        author: ActorId,
+        tail: LiveTail,
         base: &DocState,
         rec: &StrokeRecord,
-        frozen: usize,
         head: Option<FrozenHead>,
-        ordinal: u64,
-        contested: bool,
     ) -> (FrozenHead, DocState) {
+        let LiveTail {
+            author,
+            gesture,
+            frozen,
+            contested,
+        } = tail;
         // A stroke cannot freeze a span whose pixels are still measured against a
         // length the stroke has not reached — the taper, from the *ends* of the
         // whole stroke, which are still under the pointer. Held back here rather
@@ -330,7 +338,7 @@ impl Preview {
             dist: 0.0,
             tool: None,
             state: base.clone(),
-            gesture: ordinal,
+            gesture,
             epoch: self.epoch,
             contested,
             dirty: BTreeSet::new(),
@@ -368,6 +376,29 @@ impl Preview {
         head.dirty.extend(carry.dirty);
         (head, state)
     }
+}
+
+/// **Which** in-flight stroke a render is of, and how much of it has settled — as
+/// against what it draws with (the context, the base and the record), which is the
+/// other half of [`render_live_stroke`](Preview::render_live_stroke)'s arguments.
+///
+/// A value rather than four parameters because the four travel together and three of
+/// them are the identity a cached [`FrozenHead`] is matched against: a head is kept
+/// only if it belongs to this author's *this* gesture, at this contest state, and has
+/// not run past what is frozen. Passed as one thing, the match and the seed cannot
+/// come to be written against different subsets of it.
+struct LiveTail {
+    /// The peer authoring the stroke, whose selection the render reads (§17.3).
+    author: ActorId,
+    /// The gesture's ordinal, which is what distinguishes this stroke from the next
+    /// one by the same author.
+    gesture: u64,
+    /// How many leading spans the fitter has frozen — an upper bound on what the
+    /// head may absorb, and clamped again by `safe_frozen` before it is used.
+    frozen: usize,
+    /// Whether another peer is painting the same layer, which decides whether the
+    /// tail is drawn over the committed document or over the overlay so far (§17.6).
+    contested: bool,
 }
 
 /// Color the live tail is drawn in under the `debug-unfrozen` feature.
