@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{BrushParams, FillOp, LayerId, SelectionOp};
 use crate::geom::Vec2;
 use crate::path::ControlPoint;
+use crate::{MAX_NAME, at_least_zero};
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several
@@ -110,6 +111,56 @@ impl GestureFrame {
             Self::Stroke { id, .. } | Self::Selection { id, .. } | Self::Fill { id, .. } => *id,
         }
     }
+
+    /// [`PeerFrame::sanitized`]'s gesture half — private, and that is the point: a
+    /// gesture is gated because the frame carrying it was, so a receiver cannot end
+    /// up holding one that did not come through the door.
+    ///
+    /// **Exhaustive, with no `_` arm**, for
+    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s reason: a
+    /// fourth shape of gesture stops this compiling until it says whether it carries
+    /// a number, where a wildcard would answer "nothing to hold" on its behalf and
+    /// be right until the day it was not.
+    fn sanitized(self) -> Self {
+        match self {
+            Self::Stroke {
+                id,
+                head,
+                from,
+                points,
+                start,
+            } => Self::Stroke {
+                id,
+                // A committed stroke's brush is held to exactly this by
+                // `ActionKind::sanitized`. A live one is drawn by the same renderer
+                // and never becomes an action on the way, so nothing else would.
+                head: head.map(|head| StrokeHead {
+                    layer: head.layer,
+                    brush: head.brush.sanitized(),
+                    seed: head.seed,
+                }),
+                from,
+                // Gated already, and by the same device as the ops below: a
+                // `ControlPoint` is `#[serde(from)]` through `ControlPoint::clamped`,
+                // so pressure and tilt cannot arrive outside their ranges. The one
+                // channel `clamped` leaves alone is `pos`, which `stroke_rect`
+                // answers by claiming the whole layer on a non-finite point. Nothing
+                // for a walk here to find, and a walk would cost per point at
+                // pointer rate.
+                points,
+                // The marker's ceiling is the path's span count, which is the
+                // flattening's to know. What a frame can state on its own is what
+                // the committed twin states: a number, and not before the curve it
+                // marks a point on.
+                start: at_least_zero(start, 0.0),
+            },
+            // Gated already, and structurally rather than by a call: neither op can
+            // be deserialized except through `SelectionOp::at` or
+            // `FillOp::with_paint` (`#[serde(from)]`), so there is nothing left here
+            // for a second pass to find.
+            Self::Selection { .. } | Self::Fill { .. } => self,
+        }
+    }
 }
 
 /// One published frame of a client's presence — the publishable half of a
@@ -136,4 +187,153 @@ pub struct PeerFrame {
     /// This peer is leaving. Everything else in the frame is ignored.
     #[serde(default)]
     pub leaving: bool,
+}
+
+impl PeerFrame {
+    /// The same frame with every free-form payload finite and in range — **the one
+    /// funnel a frame passes through on its way into a roster** (§21.5), and
+    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s twin for
+    /// the half of the wire that is not the log.
+    ///
+    /// A frame is never an action, so it never meets that funnel — and what it carries
+    /// that no type of its own bounds is more than one thing: a name, republished to
+    /// everyone; a cursor, which is `screen_to_canvas`'s output; a stroke's `start`;
+    /// and the brush on its head, whose radius sizes a dispatch and whose rates reach
+    /// the dynamics loop exactly as the author's do. Each was answered on its own,
+    /// which meant most of them were not answered at all and the brush's answer sat in
+    /// the engine's gesture receiver, one branch deep, where only a stroke could reach
+    /// it. §1 prefers ruling out the class: one call, at the door, and no place left
+    /// to forget. The count is deliberately not written down here — a field added to
+    /// the frame is a field this function must visit, and the compiler says so below.
+    ///
+    /// **Every field written out, no `..self`**, which is the whole point of writing
+    /// it this way: a field added to the frame later stops this compiling until it
+    /// says whether it is a number, where the update syntax would answer "nothing to
+    /// hold" on its behalf. Same device as `GestureFrame::sanitized`'s missing
+    /// `_` arm.
+    ///
+    /// **Idempotent**, so the door may hold it without first establishing that no
+    /// other gate already did.
+    #[must_use]
+    pub fn sanitized(self) -> Self {
+        Self {
+            boot: self.boot,
+            seq: self.seq,
+            name: self
+                .name
+                .map(|mut name| {
+                    // In place and by `char`: the cut cannot land inside one, and a
+                    // name that was already short keeps the buffer it arrived in.
+                    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME) {
+                        name.truncate(cut);
+                    }
+                    name
+                })
+                // An empty name is *no* name, which is what `None` already means on
+                // this field. Idempotent with the sender, which filters the empty
+                // case out before it ever builds a frame (`Session::publish`) — so
+                // this changes nothing an honest peer can send, and closes what an
+                // inhonest one could: `Peer::apply` overwrites the id-derived
+                // `default_name` unconditionally, so a `Some("")` would blank that
+                // peer's row for the rest of the session with nothing to restore it.
+                .filter(|name| !name.is_empty()),
+            active_layer: self.active_layer,
+            // The sender filters this too, and says why (`Session::set_cursor`) —
+            // but the sender is not the end facing the wire.
+            cursor: self.cursor.filter(|p| p.is_finite()),
+            gesture: self.gesture.map(GestureFrame::sanitized),
+            leaving: self.leaving,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{BrushDynamics, BrushEffect, BrushParams, LayerId};
+    use crate::path::ControlPoint;
+
+    /// A frame carrying every shape of bad number this funnel is for.
+    fn hostile() -> PeerFrame {
+        PeerFrame {
+            boot: 1,
+            seq: 1,
+            name: Some("€".repeat(MAX_NAME * 2)),
+            active_layer: LayerId::ROOT,
+            cursor: Some(Vec2::new(f32::NAN, 3.0)),
+            gesture: Some(GestureFrame::Stroke {
+                id: 1,
+                head: Some(StrokeHead {
+                    layer: LayerId::ROOT,
+                    brush: BrushParams {
+                        size: f32::NAN,
+                        effect: BrushEffect::paint_with(
+                            [0.0; 3],
+                            BrushDynamics {
+                                lift: f32::INFINITY,
+                                ..Default::default()
+                            },
+                        ),
+                        ..BrushParams::default()
+                    },
+                    seed: 0,
+                }),
+                from: 0,
+                points: vec![ControlPoint::at(Vec2::ZERO)],
+                start: f32::NAN,
+            }),
+            leaving: false,
+        }
+    }
+
+    /// The gate holds, stated beside the code that declares it rather than only in
+    /// the crate downstream that calls it — `stark-model` is where the funnel lives,
+    /// so this is where a change to it is answered.
+    #[test]
+    fn a_frame_arrives_finite_and_in_range() {
+        let f = hostile().sanitized();
+        assert_eq!(
+            f.name.as_deref().map(str::chars).map(Iterator::count),
+            Some(MAX_NAME),
+            "a name is cut to the bound, and cut by `char`",
+        );
+        assert_eq!(f.cursor, None, "a NaN cursor is not a place on the canvas");
+        let Some(GestureFrame::Stroke { head, start, .. }) = f.gesture else {
+            panic!("the gesture kept its shape");
+        };
+        assert_eq!(
+            start, 0.0,
+            "a marker is a place on the curve, not before it"
+        );
+        let brush = head.expect("the head survives").brush;
+        assert!(brush.size.is_finite(), "a radius sizes a dispatch");
+    }
+
+    /// [`PeerFrame::sanitized`] claims to be idempotent, which is what lets the door
+    /// hold it without first establishing that nothing else already did.
+    ///
+    /// Asserted rather than argued, for
+    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s reason —
+    /// its own twin is held to this by `action_kinds.rs`, and a stated property no
+    /// test checks is the shape this crate is least willing to leave lying around.
+    #[test]
+    fn sanitizing_a_frame_twice_does_not_move_it_again() {
+        let once = hostile().sanitized();
+        let twice = once.clone().sanitized();
+        assert_eq!(format!("{once:?}"), format!("{twice:?}"));
+    }
+
+    /// An empty name is *no* name: `None` is what this field already spells for
+    /// "unchanged", and `Peer::apply` overwrites the id-derived default
+    /// unconditionally — so a `Some("")` would blank that peer's row for the rest of
+    /// the session with nothing left to restore it.
+    #[test]
+    fn an_empty_name_is_no_name() {
+        let f = PeerFrame {
+            name: Some(String::new()),
+            ..hostile()
+        }
+        .sanitized();
+        assert_eq!(f.name, None);
+    }
 }

@@ -90,6 +90,23 @@ pub use substrate::{SubstrateId, SubstrateScale};
 /// newtype holds there what this holds here (see
 /// [`Gradient::new`](gradient::Gradient::new)). That is the shape to prefer where a
 /// type can carry the bound — this is for the knobs that are bare `f32`s.
+/// Longest name that travels, in `char`s.
+///
+/// Not a taste limit but a bound on what one client can make every other client
+/// hold. Two different names travel and the argument is the same for both: a layer's
+/// or a guide's is replicated to every peer and saved with the document, and a
+/// presence frame's display name is republished to the whole session — and nothing
+/// about a text field stops a paste from being a megabyte. Counted in `char`s and not
+/// bytes because it is user text, so the cut can never land inside one.
+///
+/// Here rather than in [`peer`], which is only the presence half: `stark-engine`'s
+/// `normalize_name` caps a *layer* name to this, and a layer name borrowing the
+/// presence protocol's limit would read as a coincidence. Here rather than in the
+/// engine for the reason [`clamp01`] is here — the model cannot depend on the engine
+/// (§2), and this is the side both can reach. One definition, so the two cannot agree
+/// at 64 by having been written twice.
+pub const MAX_NAME: usize = 64;
+
 pub(crate) const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }

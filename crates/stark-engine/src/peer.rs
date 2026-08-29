@@ -280,6 +280,11 @@ impl Peers {
     /// `actor` comes from the transport's authenticated origin, never from the
     /// frame: a peer can publish its own presence and nobody else's, which is the
     /// same guarantee `Action` gets from its id (§17.7).
+    ///
+    /// **The door.** This is the one way a frame becomes state anyone reads, so it is
+    /// where [`PeerFrame::sanitized`] is held: every arm below reads a filtered value,
+    /// including the one that builds a peer from the frame and the restart that begins
+    /// a run again.
     pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         let change = self.merge_inner(actor, frame, now);
         self.revision += u64::from(change.roster);
@@ -287,6 +292,10 @@ impl Peers {
     }
 
     fn merge_inner(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
+        // **The gate, on the one door** (§21.5) — the argument is on
+        // `PeerFrame::sanitized`. Here rather than in `Peer::apply` because this is
+        // where a frame *arrives*, so every arm below reads the filtered value.
+        let frame = frame.sanitized();
         if frame.leaving {
             // A departure takes the peer's gesture — and its selection outline — off
             // the canvas with it.

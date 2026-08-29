@@ -127,11 +127,15 @@ pub const DEFAULT_FAST_COMMIT: bool = true;
 /// than an unbounded march to zero.
 const MIN_UNDO_DEPTH: usize = 10;
 
-/// Longest name that will be recorded, in `char`s. Not a taste limit but a bound
-/// on the log: a layer's name is replicated to every peer and saved with the
-/// document, and nothing about a text field stops a paste from being a megabyte.
-/// Truncated by `char` rather than by byte so the cut can never land inside one.
-const MAX_NAME: usize = 64;
+/// Longest name that will be recorded, in `char`s — the wire's bound, reached for
+/// rather than restated.
+///
+/// The argument is one argument: a name travels, so it is bounded, and nothing about
+/// a text field stops a paste from being a megabyte. It is stated where the *wire*
+/// can also reach it ([`stark_model::MAX_NAME`]), because a presence frame's
+/// name is capped by the same number and the model cannot depend on this crate (§2).
+/// Two constants agreeing at 64 would be two things to keep level.
+use stark_model::MAX_NAME;
 
 /// The name to record, given what a frontend collected: surrounding whitespace
 /// trimmed, length capped, and anything that comes out empty treated as *no name*

@@ -306,25 +306,13 @@ impl GestureRx {
                         Some(s) if s.id == id => s.frozen,
                         _ => 0,
                     };
-                    // **The presence wire's half of the funnel** (§21.5). A committed
-                    // stroke's brush is sanitized by `ActionKind::sanitized`, which a
-                    // presence frame never passes through — so this was the one
-                    // payload in a gesture arriving with numbers and no gate. Its two
-                    // neighbours already had one: a `Selection` and a `Fill` carry ops
-                    // whose *deserialization* funnels through `SelectionOp::at` and
-                    // `FillOp::with_paint`, and a stroke's head carries a plain
-                    // `BrushParams`, whose `Deserialize` is derived.
-                    //
-                    // What rides on it is the live preview: a peer's radius sizes a
-                    // dispatch and its rates reach the dynamics loop, exactly as the
-                    // author's do. Held here rather than at the decode, because this
-                    // is the one door a frame comes through and because `StrokeHead`
-                    // is `stark-model`'s — the wire form, with no opinion about what a
-                    // renderer can use (§2).
-                    let head = StrokeHead {
-                        brush: head.brush.sanitized(),
-                        ..head
-                    };
+                    // The head arrives sanitized. `PeerFrame::sanitized` holds a
+                    // frame's brush to the bounds `ActionKind::sanitized` holds a
+                    // committed one to (§21.5), and `Peers::merge` calls it on the
+                    // door every frame comes through. It used to be done here
+                    // instead, which gated one of the frame's three free-form
+                    // payloads — the one a *stroke* carries — and left the name and
+                    // the cursor to arrive as they were.
                     self.stroke = Some(StrokeAssembly {
                         id,
                         head,
@@ -399,21 +387,29 @@ impl GestureRx {
 mod tests {
     use super::*;
 
-    /// **A peer's live brush passes the same funnel its committed twin does.**
+    /// **Everything free-form in a frame passes the same funnel a committed
+    /// action's payloads do.**
     ///
-    /// A `CommitStroke` is sanitized by `ActionKind::sanitized` on its way into any
-    /// state — local, replayed or merged. A *presence* frame reaches the renderer
-    /// without ever being an action, and `StrokeHead` carries a plain `BrushParams`
-    /// whose `Deserialize` is derived, so the gesture's two other shapes were
-    /// guarded (a `SelectionOp` and a `FillOp` funnel through their constructors on
-    /// decode) and this one was not.
+    /// An `ActionKind` is sanitized on its way into any state — local, replayed or
+    /// merged. A presence frame never becomes an action, and it carries three things
+    /// that are neither an id nor a counter: a name, a cursor, and the brush on a
+    /// stroke head. The brush was gated, one branch inside this module; the other two
+    /// went into the roster exactly as they arrived.
     ///
-    /// What it costs is the live preview: a radius sizes a dispatch, and the pickup
-    /// rates reach the dynamics loop, at the peer's numbers rather than the
-    /// author's.
+    /// What each is worth is small enough to say plainly. A non-finite cursor reaches
+    /// the frontend as `left: NaNpx`, which CSS ignores, so the marker parks at the
+    /// container's origin; an uncapped name is bounded by gossip's message ceiling
+    /// rather than by anything Stark says. The brush is the one with teeth — a radius
+    /// sizes a dispatch and the pickup rates reach the dynamics loop, at the peer's
+    /// numbers rather than the author's. The argument is none of those, though: it is
+    /// that a door with a gate on one of its three payloads claims a property it does
+    /// not have.
+    ///
+    /// Driven through [`Peers::merge`] rather than [`GestureRx::apply`], because the
+    /// door is what is under test — the restart arm included, since a frame filtered
+    /// at the entry is filtered for every arm rather than for the one that remembered.
     #[test]
-    fn a_peers_live_brush_is_sanitized_before_it_is_drawn() {
-        let mut rx = GestureRx::default();
+    fn every_free_payload_in_a_frame_is_gated_at_the_one_door() {
         let hostile = BrushParams {
             size: f32::NAN,
             tooth: stark_model::document::ToothParams {
@@ -429,8 +425,18 @@ mod tests {
             ),
             ..BrushParams::default()
         };
-        rx.apply(
-            GestureFrame::Stroke {
+        // Three bytes to the `char`, chosen so that byte `MAX_NAME` lands strictly
+        // inside one (64 mod 3 = 1). A cap counted in bytes would not merely keep the
+        // wrong number of them — `String::truncate` panics on an index inside a char.
+        // A two-byte char would not show that: every even offset is a boundary.
+        let long_name = "€".repeat(MAX_NAME * 2);
+        let hostile_frame = |boot: u64| PeerFrame {
+            boot,
+            seq: 1,
+            name: Some(long_name.clone()),
+            active_layer: LayerId::ROOT,
+            cursor: Some(Vec2::new(f32::NAN, 3.0)),
+            gesture: Some(GestureFrame::Stroke {
                 id: 1,
                 head: Some(StrokeHead {
                     layer: LayerId::ROOT,
@@ -438,71 +444,107 @@ mod tests {
                     seed: 0,
                 }),
                 from: 0,
-                points: vec![ControlPoint::at(stark_model::geom::Vec2::ZERO)],
-                start: 0.0,
-            },
-            1,
-            LayerId::ROOT,
-        );
-        let brush = rx
-            .stroke
-            .as_ref()
-            .expect("the head starts an assembly")
-            .head
-            .brush;
-        assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
-        assert_eq!(
-            brush.tooth.give, 0.0,
-            "the tooth's give is quoted in [0, 1]"
-        );
-        assert_eq!(
-            brush.tooth.softness,
-            stark_model::document::ToothParams::DEFAULT_SOFTNESS,
-            "a contact transition of minus infinity is no width the shader can divide by",
-        );
-        // An *infinite* lift falls back to the field's own default rather than to
-        // the clamp's ceiling — `finite_or` runs before `clamp01`, on the argument
-        // that a value which is not a number says nothing about which end was meant
-        // (`crate::clamp01`'s neighbours). The give above is clamped because −3.0 is
-        // a number, just not one in range — and it is poisoned at *that* end because
-        // the knob's other end is its default, where a clamp would prove nothing.
-        assert_eq!(
-            brush.paint().expect("a paint brush").dynamics.lift,
-            BrushParams::default()
-                .paint()
-                .expect("a paint brush")
-                .dynamics
-                .lift
-        );
-        // …and an ordinary brush is untouched, so a peer's stroke still draws as the
-        // peer drew it.
+                points: vec![ControlPoint::at(Vec2::ZERO)],
+                start: f32::NAN,
+            }),
+            leaving: false,
+        };
+
+        fn assert_gated(peer: &Peer) {
+            assert_eq!(
+                peer.cursor, None,
+                "a NaN cursor is not a place on the canvas"
+            );
+            assert_eq!(
+                peer.name.chars().count(),
+                MAX_NAME,
+                "a name off the wire is bounded by what this crate says, not by what \
+                 the transport happens to refuse",
+            );
+            let stroke = peer.live_stroke().expect("the head starts a stroke");
+            assert_eq!(
+                stroke.start, 0.0,
+                "the marker is a place on the curve, and not one before it",
+            );
+            let brush = stroke.brush;
+            assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
+            assert_eq!(
+                brush.tooth.give, 0.0,
+                "the tooth's give is quoted in [0, 1]"
+            );
+            assert_eq!(
+                brush.tooth.softness,
+                stark_model::document::ToothParams::DEFAULT_SOFTNESS,
+                "a contact transition of minus infinity is no width the shader can divide by",
+            );
+            // An *infinite* lift falls back to the field's own default rather than to
+            // the clamp's ceiling — `finite_or` runs before `clamp01`, on the argument
+            // that a value which is not a number says nothing about which end was meant
+            // (`crate::clamp01`'s neighbours). The give above is clamped because −3.0 is
+            // a number, just not one in range — and it is poisoned at *that* end because
+            // the knob's other end is its default, where a clamp would prove nothing.
+            assert_eq!(
+                brush.paint().expect("a paint brush").dynamics.lift,
+                BrushParams::default()
+                    .paint()
+                    .expect("a paint brush")
+                    .dynamics
+                    .lift
+            );
+        }
+
+        let actor = ActorId(1);
+        let mut peers = Peers::new();
+        peers.merge(actor, hostile_frame(0), 0.0);
+        assert_gated(peers.get(actor).expect("an arrival admits the peer"));
+        // The other arm that keeps a payload: a new `boot` is a client that reloaded,
+        // so the receiver is cleared and the run starts over.
+        peers.merge(actor, hostile_frame(1), 0.0);
+        assert_gated(peers.get(actor).expect("a restart keeps the peer"));
+
+        // …and an ordinary frame is untouched, so a peer's stroke still draws as the
+        // peer drew it, under the name and at the cursor the peer published.
         let ordinary = BrushParams {
             size: 24.0,
             ..BrushParams::default()
         };
-        rx.apply(
-            GestureFrame::Stroke {
-                id: 2,
-                head: Some(StrokeHead {
-                    layer: LayerId::ROOT,
-                    brush: ordinary,
-                    seed: 0,
+        peers.merge(
+            actor,
+            PeerFrame {
+                boot: 1,
+                seq: 2,
+                name: Some("ada".to_owned()),
+                active_layer: LayerId::ROOT,
+                cursor: Some(Vec2::new(2.0, 3.0)),
+                gesture: Some(GestureFrame::Stroke {
+                    id: 2,
+                    head: Some(StrokeHead {
+                        layer: LayerId::ROOT,
+                        brush: ordinary,
+                        seed: 0,
+                    }),
+                    from: 0,
+                    points: vec![ControlPoint::at(Vec2::ZERO)],
+                    start: 0.25,
                 }),
-                from: 0,
-                points: Vec::new(),
-                start: 0.0,
+                leaving: false,
             },
-            2,
-            LayerId::ROOT,
+            0.0,
         );
-        assert_eq!(rx.stroke.as_ref().unwrap().head.brush, ordinary);
+        let peer = peers.get(actor).expect("the peer is still here");
+        assert_eq!(peer.name, "ada");
+        assert_eq!(peer.cursor, Some(Vec2::new(2.0, 3.0)));
+        let stroke = peer.live_stroke().expect("the head starts a stroke");
+        assert_eq!(stroke.brush, ordinary);
+        assert_eq!(stroke.start, 0.25);
     }
 
     use crate::command::{InputSample, Tool};
     use crate::path::DEFAULT_TOLERANCE;
-    use crate::peer::Peers;
+    use crate::peer::{Peer, Peers};
     use crate::session::Session;
     use crate::view::ViewTransform;
+    use stark_model::MAX_NAME;
     use stark_model::document::{ActorId, BrushParams, LayerId};
     use stark_model::geom::{Extent2, Vec2};
     use stark_model::peer::PeerFrame;
