@@ -1033,52 +1033,10 @@ mod tests {
     use super::*;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_tolerance;
+    use crate::gpu::stroke::segments::Stretch;
     use crate::gpu::stroke::segments::generate_segments_in;
-    use crate::gpu::stroke::segments::{Paint, Stretch, Sweep};
+    use crate::gpu::stroke::segments::testing::{record, run, seg, smearing};
     use stark_model::geom::Vec2;
-
-    /// A straight sweep of `length` from `start` along `dir`, at arc length `dist`.
-    fn sweep(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Sweep {
-        Sweep {
-            start,
-            dir,
-            curvature: 0.0,
-            radius,
-            // A tip that holds still, so the frame the shader unrolls is the one
-            // these builders are being measured against and nothing else.
-            ramp: 0.0,
-            // A tip that reaches its own radius: the plan builders are being
-            // measured here, not the width of any one shape.
-            reach: radius,
-            length,
-            orient: 0.0,
-            // An unstretched tip — the plan builders are being measured here.
-            stretch: Stretch::NONE,
-            dist,
-        }
-    }
-
-    /// The same, as a whole segment. The plan builders read the frame, the radius and
-    /// the arc clock; the paint rates are left at [`Paint::default`]'s zero except
-    /// where a test sets one, so a value that mattered would have to be given
-    /// deliberately.
-    fn seg(start: Vec2, dir: Vec2, length: f32, radius: f32, dist: f32) -> Segment {
-        Segment {
-            sweep: sweep(start, dir, length, radius, dist),
-            paint: Paint::default(),
-        }
-    }
-
-    /// `n` straight segments of `len` each, running +x from the origin — a stroke cut
-    /// the way the flattener would cut a steady drag.
-    fn run(n: usize, len: f32, radius: f32) -> Vec<Segment> {
-        (0..n)
-            .map(|i| {
-                let d = i as f32 * len;
-                seg(Vec2::new(d, 0.0), Vec2::new(1.0, 0.0), len, radius, d)
-            })
-            .collect()
-    }
 
     // --- the slot's lane packing -------------------------------------------
 
@@ -1313,39 +1271,7 @@ mod tests {
         }
     }
 
-    // --- the bleed cadence -------------------------------------------------
-
     // --- the pen-up frame --------------------------------------------------
-
-    /// A brush that manipulates paint, so a stroke of it settles at all.
-    fn smearing(radius: f32) -> stark_model::document::BrushParams {
-        stark_model::document::BrushParams {
-            size: radius,
-            effect: stark_model::document::BrushEffect::paint_with(
-                [0.0; 3],
-                stark_model::document::BrushDynamics {
-                    lift: 0.8,
-                    deposit: 0.8,
-                    ..stark_model::document::BrushDynamics::default()
-                },
-            ),
-            ..stark_model::document::BrushParams::default()
-        }
-    }
-
-    /// A stroke through `pts` with `brush`, as plain full-pressure knots.
-    fn record(brush: stark_model::document::BrushParams, pts: &[Vec2]) -> StrokeRecord {
-        StrokeRecord {
-            layer: stark_model::document::LayerId::ROOT,
-            brush,
-            path: pts
-                .iter()
-                .map(|p| stark_model::path::ControlPoint::at(*p))
-                .collect(),
-            seed: 0,
-            start: 0.0,
-        }
-    }
 
     /// The segments of `range` of `rec`, at the budget the loop would flatten it with.
     fn segments_of(rec: &StrokeRecord, range: std::ops::Range<usize>) -> Vec<Segment> {

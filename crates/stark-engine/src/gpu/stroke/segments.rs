@@ -1,14 +1,23 @@
-//! Turning a fitted path into swept segments, and the region measurements that decide
-//! where the stamp loop cuts one into pieces (§6.2).
+//! The vocabulary a stroke is carried in — a [`Sweep`], the [`Paint`] rates over it,
+//! the [`Segment`] that is both, a [`BleedFire`]'s window — and the one funnel a
+//! record becomes those through (§6.2).
 //!
-//! Both render paths flatten through here, so both see the same segments for the
-//! same record — which is what lets a live tail and the commit that replaces it
-//! agree pixel for pixel.
+//! Both render paths flatten through [`generate_segments_in`], so both see the same
+//! segments for the same record — which is what lets a live tail and the commit that
+//! replaces it agree pixel for pixel. Everything downstream of it reads these types
+//! and never the record: what the tiles a piece touches are measured from
+//! ([`region`](super::region)), what the dynamics loop dispatches over
+//! ([`dynamics`](super::dynamics)), and what the sweep shader is instanced with.
 
 use stark_model::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use stark_model::geom::Vec2;
 
 use super::StrokeSpans;
+
+/// The fixtures every suite in [`stroke`](super) builds its sweeps with — here because
+/// this is the module that owns the type they build (see the module's own docs).
+#[cfg(test)]
+pub(super) mod testing;
 
 /// **Where a tip goes, and how wide it is** — everything the shaders need to unroll
 /// one sweep, and nothing about what the tip is doing while it travels.
@@ -935,10 +944,9 @@ mod tests {
     use super::super::budget::{MAX_TIP_TURN, flatten_tolerance};
     use super::super::region::{coverage_bounds, segment_end};
     use super::super::safe_frozen;
+    use super::testing::{record, smearing};
     use super::*;
     use stark_model::document::BrushShape;
-
-    // --- the round tip ---------------------------------------------------
 
     // --- tapers ----------------------------------------------------------
 
@@ -1676,20 +1684,6 @@ mod tests {
 
     // --- segment budget ----------------------------------------------------
 
-    /// A stroke through `pts` with `brush`, as a path of plain full-pressure knots.
-    fn record(brush: BrushParams, pts: &[Vec2]) -> StrokeRecord {
-        StrokeRecord {
-            layer: stark_model::document::LayerId::ROOT,
-            brush,
-            path: pts
-                .iter()
-                .map(|p| stark_model::path::ControlPoint::at(*p))
-                .collect(),
-            seed: 0,
-            start: 0.0,
-        }
-    }
-
     /// `sin` and `cos` from their Maclaurin series in plain f64 arithmetic.
     ///
     /// Not for accuracy — the curves below only have to be representative shapes. The
@@ -1734,23 +1728,6 @@ mod tests {
             }
         }
         pts
-    }
-
-    /// A brush that manipulates paint, so the stroke takes the dynamics loop.
-    fn smearing(radius: f32) -> BrushParams {
-        use stark_model::document::BrushDynamics;
-        BrushParams {
-            size: radius,
-            effect: stark_model::document::BrushEffect::paint_with(
-                [0.0; 3],
-                BrushDynamics {
-                    lift: 0.8,
-                    deposit: 0.8,
-                    ..BrushDynamics::default()
-                },
-            ),
-            ..BrushParams::default()
-        }
     }
 
     /// **How many segments the flattener spends on a stroke — pinned, on purpose.**

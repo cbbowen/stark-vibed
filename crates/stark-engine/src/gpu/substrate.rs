@@ -199,7 +199,7 @@ impl crate::gpu::registry::Resource for Substrate {
         self.id
     }
 
-    /// `Flat` is a 1x1 full-height texel: a constant
+    /// `Flat` is a 1x1 *zero*-height texel: a constant
     /// height has zero gradient, so it is exactly equivalent to having no substrate
     /// (§6.4). It is the only substrate with no bytes behind it, which is what makes
     /// "the id names an image the holder may not have yet" a question with exactly

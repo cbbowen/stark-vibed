@@ -391,50 +391,13 @@ pub(super) struct RegionRect {
 #[cfg(test)]
 mod tests {
     use super::super::dynamics::BLEED_TRAVEL_QUANTUM;
-    use super::super::segments::{Paint, Stretch};
+    // The endpoint shape of the shared fixtures (`segments::testing`): these cases are
+    // about how the measurements combine boxes, so a sweep is named by where the tip
+    // went, and every other axis is held at the fixture's neutral.
+    use super::super::segments::testing::{seg_between, sweep_between};
     use super::*;
 
     // --- region measurement ----------------------------------------------
-
-    /// A sweep carrying only what the region measurements read.
-    ///
-    /// The paint rates are absent rather than zeroed: the region measurements are
-    /// geometry, so they take a [`Sweep`], which has nowhere to put a rate that would
-    /// imply one had been consulted.
-    fn sweep(start: Vec2, end: Vec2, radius: f32) -> Sweep {
-        let v = end - start;
-        let length = v.length();
-        Sweep {
-            start,
-            dir: if length > 0.0 {
-                v / length
-            } else {
-                Vec2::new(1.0, 0.0)
-            },
-            curvature: 0.0,
-            radius,
-            // A tip that holds still: these cases are about how the measurements
-            // combine boxes, and a ramp would put a second variable in every box.
-            ramp: 0.0,
-            // A tip that reaches its own radius: these cases are about how the
-            // measurements combine boxes, not about how wide one shape is.
-            reach: radius,
-            length,
-            orient: 0.0,
-            // An unstretched tip, for the reason the ramp is zero: an extent drawn
-            // out along an axis is a second variable in every box these combine.
-            stretch: Stretch::NONE,
-            dist: 0.0,
-        }
-    }
-
-    /// The same, as a whole segment — what the chunker and the tile walks take.
-    fn seg(start: Vec2, end: Vec2, radius: f32) -> Segment {
-        Segment {
-            sweep: sweep(start, end, radius),
-            paint: Paint::default(),
-        }
-    }
 
     /// A firing after segment `after`, sweeping `window`.
     fn fire(after: usize, window: Sweep) -> BleedFire {
@@ -486,7 +449,7 @@ mod tests {
         let segments: Vec<Segment> = (0..40)
             .map(|i| {
                 let t = i as f32;
-                seg(
+                seg_between(
                     Vec2::new(t * 31.0 - 200.0, (t * 0.4).sin() * 300.0),
                     Vec2::new((t + 1.0) * 31.0 - 200.0, ((t + 1.0) * 0.4).sin() * 300.0),
                     4.0 + (i % 5) as f32 * 9.0,
@@ -555,26 +518,38 @@ mod tests {
         let cases: Vec<(&str, Vec<Segment>)> = vec![
             (
                 "a dot",
-                vec![seg(Vec2::new(10.0, 10.0), Vec2::new(10.5, 10.0), 4.0)],
+                vec![seg_between(
+                    Vec2::new(10.0, 10.0),
+                    Vec2::new(10.5, 10.0),
+                    4.0,
+                )],
             ),
             (
                 "one tile-aligned span",
-                vec![seg(Vec2::ZERO, Vec2::new(tile, 0.0), 1.0)],
+                vec![seg_between(Vec2::ZERO, Vec2::new(tile, 0.0), 1.0)],
             ),
             (
                 "across the origin, into negative tiles",
-                vec![seg(Vec2::new(-300.0, -140.0), Vec2::new(220.0, 90.0), 12.0)],
+                vec![seg_between(
+                    Vec2::new(-300.0, -140.0),
+                    Vec2::new(220.0, 90.0),
+                    12.0,
+                )],
             ),
             (
                 "a fat tip, whose radius reaches past its endpoints",
-                vec![seg(Vec2::new(500.0, 500.0), Vec2::new(505.0, 500.0), 90.0)],
+                vec![seg_between(
+                    Vec2::new(500.0, 500.0),
+                    Vec2::new(505.0, 500.0),
+                    90.0,
+                )],
             ),
             (
                 "several segments, extremes in different ones",
                 vec![
-                    seg(Vec2::new(0.0, 0.0), Vec2::new(120.0, 30.0), 3.0),
-                    seg(Vec2::new(120.0, 30.0), Vec2::new(-90.0, 400.0), 20.0),
-                    seg(Vec2::new(-90.0, 400.0), Vec2::new(700.0, -60.0), 8.0),
+                    seg_between(Vec2::new(0.0, 0.0), Vec2::new(120.0, 30.0), 3.0),
+                    seg_between(Vec2::new(120.0, 30.0), Vec2::new(-90.0, 400.0), 20.0),
+                    seg_between(Vec2::new(-90.0, 400.0), Vec2::new(700.0, -60.0), 8.0),
                 ],
             ),
         ];
@@ -619,10 +594,10 @@ mod tests {
         // The piece's first segment, placed so its own coverage box starts 3 px
         // past a tile origin — inside the window's reach, outside the apron's.
         let x0 = 2.0 * tile + radius + TILE_APRON as f32 + 3.0;
-        let s = seg(Vec2::new(x0, 8.0), Vec2::new(x0 + 50.0, 8.0), radius);
+        let s = seg_between(Vec2::new(x0, 8.0), Vec2::new(x0 + 50.0, 8.0), radius);
         // Its firing's window, one quantum of arc ending where the segment starts —
         // the shape `bleed_fires` emits for the first segment of a range.
-        let w = sweep(Vec2::new(x0 - bq, 8.0), Vec2::new(x0, 8.0), radius);
+        let w = sweep_between(Vec2::new(x0 - bq, 8.0), Vec2::new(x0, 8.0), radius);
         let fires = vec![fire(0, w)];
 
         let without = cover(&[s], &[]).tiles;
@@ -669,7 +644,7 @@ mod tests {
                 let t = i as f32;
                 let a = Vec2::new(t * 9.0 - 400.0, (t * 0.05).sin() * 1500.0);
                 let b = Vec2::new((t + 1.0) * 9.0 - 400.0, ((t + 1.0) * 0.05).sin() * 1500.0);
-                seg(a, b, 60.0)
+                seg_between(a, b, 60.0)
             })
             .collect();
         let runs = chunk_segments(&segments, &[]);
