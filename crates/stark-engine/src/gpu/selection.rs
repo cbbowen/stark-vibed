@@ -27,7 +27,7 @@ use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use crate::gpu::{MASK_TEX, mask_tex_origin};
 use stark_model::document::{SelectionOp, SelectionShape};
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::{Extent2, TileCoord, Vec2};
 
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
 /// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
@@ -371,10 +371,27 @@ impl SelectionRenderer {
         )
     }
 
-    /// Gather `selection` into a region-sized mask for the stamp loop, matching the
-    /// region `stroke.rs` composited the paint into. Tiles the selection has no mask
-    /// for are left at the clear value, so the pass draws only what actually exists.
-    /// Returns the texture too, so the caller can register it for prompt destruction.
+    /// The usage a [`region_mask`](Self::region_mask) target needs: drawn into by the
+    /// gather below, then sampled by the loop. Stated here rather than at the caller
+    /// so the lease and the pass cannot disagree about it.
+    pub const REGION_MASK_USAGE: wgpu::TextureUsages =
+        wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
+
+    /// Gather `selection` into `into` — a region-sized mask for the stamp loop,
+    /// matching the region `stroke.rs` composited the paint into. Tiles the selection
+    /// has no mask for are left at the clear value, so the pass draws only what
+    /// actually exists.
+    ///
+    /// **The target is the caller's**, at [`REGION_MASK_USAGE`](Self::REGION_MASK_USAGE)
+    /// and `MASK_FORMAT`. It used to be created here and destroyed at the piece's
+    /// submit: a region is up to `MAX_REGION_DIM`² of `R8Unorm`, so a live stroke
+    /// under any selection was creating and destroying megabytes of texture per piece
+    /// per pointer move, and never reusing one. Leased from the stroke's scratch pool
+    /// it is the same texture every move, and the pool's own rule — a lease returns to
+    /// the free list only through a submit — is what keeps that sound.
+    ///
+    /// The pass writes every texel it owns, clear included, so the pool's
+    /// no-zero-init contract is met (`stroke::scratch`).
     ///
     /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
     /// already carries the mask's opacity (`Stamp::opacity`), and a mask that
@@ -382,29 +399,14 @@ impl SelectionRenderer {
     pub fn region_mask(
         &self,
         encoder: &mut wgpu::CommandEncoder,
+        into: &wgpu::TextureView,
         selection: &Selection,
         tiles: &[TileCoord],
-        region_origin: Vec2,
-        w: u32,
-        h: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
+        region: (Vec2, Extent2),
+    ) {
+        let (region_origin, size) = region;
+        let (w, h) = (size.width, size.height);
         let device = &self.ctx.device;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark selection region mask"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: MASK_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stark selection region uniform"),
             contents: bytemuck::bytes_of(&RegionUniform {
@@ -454,7 +456,7 @@ impl SelectionRenderer {
             let outside = outside_clear(selection);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark selection region gather"),
-                color_attachments: &[Some(desc::attach(&view, outside))],
+                color_attachments: &[Some(desc::attach(into, outside))],
                 ..Default::default()
             });
             if let Some(inst) = &instances {
@@ -468,7 +470,6 @@ impl SelectionRenderer {
                 }
             }
         }
-        (texture, view)
     }
 
     /// Rasterize `coords` into fresh mask tiles on top of `base`, reading `prev` for

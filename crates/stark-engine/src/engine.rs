@@ -2363,7 +2363,19 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             .chain(cs.resid_format()),
     );
     let zeroes = Zeroes::new(&gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
-    let stroke = StrokeRenderer::new(&gpu, cs.clone(), selection.clone(), zeroes.clone());
+    // Built here rather than inside either consumer, because both bind the group a
+    // *tile* caches over its own channels and a cached group answers to one layout:
+    // pass A composites the document, and the stamp loop composites the very same
+    // tiles into its working region (§6.2). Same bargain as `blend` and `filter`
+    // below — built once at the top, handed to everyone who needs it.
+    let tile_bgl = crate::gpu::composite::tile_bind_group_layout(&gpu.device, cs.as_ref());
+    let stroke = StrokeRenderer::new(
+        &gpu,
+        cs.clone(),
+        selection.clone(),
+        zeroes.clone(),
+        tile_bgl.clone(),
+    );
     // Built once and shared: `gpu::merge` runs this very pipeline on tile-sized
     // targets to merge a layer down through its mode (§14.11), and building a second
     // one would decode the Mixbox LUT twice.
@@ -2377,8 +2389,11 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         cs.as_ref(),
         substrate.clone(),
         environment.clone(),
-        blend.clone(),
-        filter.clone(),
+        crate::gpu::composite::SharedPasses {
+            blend: blend.clone(),
+            filter: filter.clone(),
+            tile_bgl,
+        },
     );
     let compositor = Compositor::new(&compositor_pipeline);
     let transform = TransformRenderer::new(&gpu, cs.as_ref(), selection.clone(), zeroes.clone());

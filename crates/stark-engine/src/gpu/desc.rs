@@ -58,7 +58,7 @@ pub(crate) fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupL
 
 /// One **dynamic-offset slot** of a uniform buffer, `slot` bytes wide — how both
 /// render paths vary a uniform across the draws or dispatches of a single pass
-/// without a buffer per draw (`UNIFORM_STRIDE`).
+/// without a buffer per draw (`gpu::uniforms`).
 ///
 /// `slot` is the struct's own size, and declaring it as `min_binding_size` is free
 /// validation against a truncated write: the layouts that pass `None` here get none.

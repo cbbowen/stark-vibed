@@ -53,7 +53,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::gpu::context::GpuContext;
 
-use crate::gpu::submit::ScopedResources;
 use crate::unpoisoned;
 
 /// How many bytes of free textures the pool will hold before it starts destroying
@@ -93,6 +92,56 @@ impl Key {
     }
 }
 
+/// What a scratch **buffer** checkout asks for. [`Key`]'s sibling, and it differs in
+/// exactly one way: the size is rounded up rather than matched exactly.
+///
+/// **Rounded, because a buffer's size follows the drawing.** A sweep's instance
+/// buffer is one record per segment-in-a-tile and grows through the stroke, so exact
+/// matching would put a fresh buffer on the free list at every size the stroke passed
+/// through and reuse none of them. Rounding to the next power of two turns that into
+/// a handful of buckets a stroke settles into, for at most a factor of two of slack —
+/// which is the same bargain `InstanceStream`'s high-water mark makes, arrived at
+/// from the pool side.
+///
+/// The label is out of the match for [`Key`]'s reason.
+#[derive(Clone, Copy)]
+pub(super) struct BufKey {
+    /// What the caller asked for. [`Self::bucket`] is what is actually allocated.
+    pub(super) size: u64,
+    pub(super) usage: wgpu::BufferUsages,
+    pub(super) label: &'static str,
+}
+
+impl BufKey {
+    /// The allocation this request lands in: the next power of two, floored at the
+    /// uniform slot quantum so the small end does not fragment into 4- and 8-byte
+    /// buckets.
+    fn bucket(&self) -> u64 {
+        self.size
+            .max(crate::gpu::uniforms::UNIFORM_SLOT)
+            .next_power_of_two()
+    }
+
+    /// Whether a buffer allocated for `self` can serve a checkout of `other`.
+    fn interchangeable(&self, other: &BufKey) -> bool {
+        self.usage == other.usage && self.bucket() == other.bucket()
+    }
+}
+
+/// One checked-out scratch buffer.
+struct BufLease {
+    buf: wgpu::Buffer,
+    key: BufKey,
+    bytes: u64,
+}
+
+struct BufEntry {
+    key: BufKey,
+    buf: wgpu::Buffer,
+    bytes: u64,
+    last: u64,
+}
+
 /// One checked-out scratch texture and the view onto it, pooled together for the
 /// same reason the tile pool's are ([`Pooled`](crate::gpu::tile)): every checkout
 /// wants the same whole-texture view, so re-creating it bought nothing but an
@@ -116,7 +165,9 @@ struct Entry {
 #[derive(Default)]
 struct Inner {
     free: Vec<Entry>,
-    /// Total bytes on the free list, maintained so the budget check is a compare
+    free_bufs: Vec<BufEntry>,
+    /// Total bytes on the free list — textures and buffers together, since they come
+    /// out of one device and one budget. Maintained so the budget check is a compare
     /// rather than a walk.
     bytes: u64,
     tick: u64,
@@ -139,7 +190,8 @@ impl ScratchPool {
             label,
             run_leases: Vec::new(),
             piece_leases: Vec::new(),
-            piece_scoped: ScopedResources::default(),
+            run_buf_leases: Vec::new(),
+            piece_buf_leases: Vec::new(),
             piece_held: Vec::new(),
             piece_open: false,
         }
@@ -199,6 +251,51 @@ impl ScratchPool {
         }
     }
 
+    /// Check a buffer out: the newest free entry [`BufKey::interchangeable`] with
+    /// `key`, or a fresh creation at the key's bucket size.
+    fn take_buf(&self, device: &wgpu::Device, key: BufKey) -> BufLease {
+        {
+            let mut inner = unpoisoned(self.0.lock());
+            inner.tick += 1;
+            if let Some(i) = inner
+                .free_bufs
+                .iter()
+                .rposition(|e| e.key.interchangeable(&key))
+            {
+                let e = inner.free_bufs.swap_remove(i);
+                inner.bytes -= e.bytes;
+                return BufLease {
+                    buf: e.buf,
+                    key,
+                    bytes: e.bytes,
+                };
+            }
+        }
+        let bytes = key.bucket();
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(key.label),
+            size: bytes,
+            usage: key.usage,
+            mapped_at_creation: false,
+        });
+        BufLease { buf, key, bytes }
+    }
+
+    /// [`give`](Self::give) for buffers, private for the same reason.
+    fn give_buf(&self, lease: BufLease) {
+        let mut inner = unpoisoned(self.0.lock());
+        inner.tick += 1;
+        let last = inner.tick;
+        inner.bytes += lease.bytes;
+        inner.free_bufs.push(BufEntry {
+            key: lease.key,
+            buf: lease.buf,
+            bytes: lease.bytes,
+            last,
+        });
+        Self::trim(&mut inner);
+    }
+
     /// Hand a lease back to the free list, then hold the list to [`POOL_BUDGET`] by
     /// destroying least-recently-returned entries.
     ///
@@ -217,18 +314,49 @@ impl ScratchPool {
             bytes: lease.bytes,
             last,
         });
+        Self::trim(&mut inner);
+    }
+
+    /// Hold the free lists to [`POOL_BUDGET`] by destroying the least-recently
+    /// returned entry, whichever list it is on.
+    ///
+    /// **One budget over both**, and evicted strictly by age: a stroke that stops
+    /// using a size should give it back whether it was a texture or a buffer, and two
+    /// budgets would be two numbers to pick where the device has one memory.
+    fn trim(inner: &mut Inner) {
         while inner.bytes > POOL_BUDGET {
-            let (i, _) = inner
+            let tex = inner
                 .free
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, e)| e.last)
-                .expect("bytes > 0 means the list is non-empty");
-            let e = inner.free.swap_remove(i);
-            inner.bytes -= e.bytes;
+                .map(|(i, e)| (i, e.last));
+            let buf = inner
+                .free_bufs
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, e)| e.last)
+                .map(|(i, e)| (i, e.last));
+            let evict = match (tex, buf) {
+                (Some((i, t)), Some((_, b))) if t <= b => Some((true, i)),
+                (_, Some((i, _))) => Some((false, i)),
+                (Some((i, _)), None) => Some((true, i)),
+                // Over budget with nothing free is a caller holding more than the
+                // budget at once, which the budget does not bound and never did.
+                (None, None) => None,
+            };
+            let Some((is_tex, i)) = evict else { break };
             // Destroyed outright rather than dropped: the free is deferred past any
             // in-flight use, and waiting on GC instead is how the tab OOMs (§6.2).
-            e.tex.destroy();
+            if is_tex {
+                let e = inner.free.swap_remove(i);
+                inner.bytes -= e.bytes;
+                e.tex.destroy();
+            } else {
+                let e = inner.free_bufs.swap_remove(i);
+                inner.bytes -= e.bytes;
+                e.buf.destroy();
+            }
         }
     }
 }
@@ -293,9 +421,11 @@ pub(super) struct SubmitScope {
     label: &'static str,
     run_leases: Vec<Lease>,
     piece_leases: Vec<Lease>,
-    /// Per-piece buffers and textures that are not pooled (uniforms, instance
-    /// buffers, the gathered selection mask) — destroyed at the piece's submit.
-    piece_scoped: ScopedResources,
+    /// The buffer leases. Only the piece lifetime is taken today — nothing in
+    /// either path holds a buffer across pieces — but the release is written for both
+    /// so `finish` cannot come to disagree with `flush` about which lists it drains.
+    run_buf_leases: Vec<BufLease>,
+    piece_buf_leases: Vec<BufLease>,
     /// Arbitrary resources whose *drop* must trail the submit — the swept path's
     /// pooled tile pair, whose early drop puts it back on the tile pool's free list
     /// while this encoder still names it.
@@ -335,18 +465,18 @@ impl SubmitScope {
         out
     }
 
-    /// Register a per-piece buffer; returns it unchanged, destroyed at the piece's
-    /// submit ([`ScopedResources`]'s argument: the allocation *rate* is what JS GC
-    /// cannot keep up with).
-    pub(super) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
+    /// Check out a pooled buffer for the piece being recorded — released at the
+    /// piece's own submit, exactly as [`take_piece`](Self::take_piece) is.
+    ///
+    /// **At least `key.size` bytes, and possibly more** ([`BufKey::bucket`]): a
+    /// caller writes its own prefix and draws its own range, so slack past the end is
+    /// unread. Contents are not zeroed, on the pool's general contract.
+    pub(super) fn take_piece_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
         self.piece_open = true;
-        self.piece_scoped.buffer(buf)
-    }
-
-    /// Register a per-piece texture; returns it unchanged.
-    pub(super) fn texture(&mut self, tex: wgpu::Texture) -> wgpu::Texture {
-        self.piece_open = true;
-        self.piece_scoped.texture(tex)
+        let lease = self.pool.take_buf(&self.ctx.device, key);
+        let out = lease.buf.clone();
+        self.piece_buf_leases.push(lease);
+        out
     }
 
     /// Keep `thing` alive past the submit, dropping it just after — for resources
@@ -368,10 +498,12 @@ impl SubmitScope {
         self.piece_open = false;
         let done = std::mem::replace(&mut self.encoder, fresh_encoder(&self.ctx, self.label));
         self.ctx.queue.submit([done.finish()]);
-        drop(std::mem::take(&mut self.piece_scoped));
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..) {
             self.pool.give(lease);
+        }
+        for lease in self.piece_buf_leases.drain(..) {
+            self.pool.give_buf(lease);
         }
     }
 
@@ -379,10 +511,16 @@ impl SubmitScope {
     /// the piece's resources and the run leases both, behind that same submit.
     pub(super) fn finish(mut self) {
         self.ctx.queue.submit([self.encoder.finish()]);
-        drop(self.piece_scoped);
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..).chain(self.run_leases.drain(..)) {
             self.pool.give(lease);
+        }
+        for lease in self
+            .piece_buf_leases
+            .drain(..)
+            .chain(self.run_buf_leases.drain(..))
+        {
+            self.pool.give_buf(lease);
         }
     }
 }

@@ -37,21 +37,21 @@ use crate::gpu::context::GpuContext;
 /// drop**, which the scopes arrange to happen right after their submit — safe,
 /// because WebGPU defers the real free until the in-flight work referencing them
 /// completes.
+///
+/// **Buffers only, now.** Every scratch *texture* a recording wants has a shape some
+/// later recording wants again, so all of them lease from a pool instead
+/// (`stroke::scratch`, `gpu::tile`) — which is strictly better than destroying one
+/// promptly, since a reused texture is not allocated at all. What is left here is the
+/// buffers, whose sizes follow a stroke's segment count and a piece's tile count and
+/// so genuinely differ call to call (`ENGINE_CLEANUP.md` [H]).
 #[derive(Default)]
 pub(crate) struct ScopedResources {
-    textures: Vec<wgpu::Texture>,
     buffers: Vec<wgpu::Buffer>,
 }
 
 impl ScopedResources {
-    /// Register a texture; returns it unchanged (the clone keeps the GPU resource
+    /// Register a buffer; returns it unchanged (the clone keeps the GPU resource
     /// alive until this `ScopedResources` drops).
-    pub(crate) fn texture(&mut self, tex: wgpu::Texture) -> wgpu::Texture {
-        self.textures.push(tex.clone());
-        tex
-    }
-
-    /// Register a buffer; returns it unchanged.
     pub(crate) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
         self.buffers.push(buf.clone());
         buf
@@ -60,15 +60,8 @@ impl ScopedResources {
 
 impl Drop for ScopedResources {
     fn drop(&mut self) {
-        if !self.textures.is_empty() || !self.buffers.is_empty() {
-            tracing::trace!(
-                textures = self.textures.len(),
-                buffers = self.buffers.len(),
-                "destroying scoped resources",
-            );
-        }
-        for tex in self.textures.drain(..) {
-            tex.destroy();
+        if !self.buffers.is_empty() {
+            tracing::trace!(buffers = self.buffers.len(), "destroying scoped resources");
         }
         for buf in self.buffers.drain(..) {
             buf.destroy();

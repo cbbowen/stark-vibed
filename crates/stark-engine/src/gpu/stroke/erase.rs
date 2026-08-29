@@ -41,7 +41,7 @@ use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
 };
 use super::incremental::Carried;
-use super::scratch::Key;
+use super::scratch::{BufKey, Key};
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
@@ -209,12 +209,11 @@ impl StrokeRenderer {
         let opacity = stark_shaders::mirror::erase::Erase {
             params: [k.opacity, 0.0, 0.0, 0.0],
         };
-        let opacity_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stark erase opacity"),
+        let opacity_buf = scope.take_piece_buffer(BufKey {
             size: std::mem::size_of_val(&opacity) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
+            label: "stark erase opacity",
+        });
         self.ctx
             .queue
             .write_buffer(&opacity_buf, 0, bytemuck::bytes_of(&opacity));

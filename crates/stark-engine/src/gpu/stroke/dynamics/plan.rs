@@ -42,6 +42,17 @@ use stark_shaders::mirror::dynamics::Stamp;
 /// rather than written down.
 pub(super) const SLOT: usize = std::mem::size_of::<Stamp>();
 
+/// Stride between those windows: the padded size a dynamic offset must be a multiple
+/// of, from the type rather than from a number written here.
+///
+/// [`SLOT`] is what a slot *holds* and this is what it *occupies*, and the difference
+/// is the whole reason to derive it: as a bare `256` beside a `copy_from_slice` of
+/// [`SLOT`] bytes, a `Stamp` that outgrew the quantum would have written over the next
+/// slot rather than widening them — silently, and only for whichever brush reached
+/// that dispatch. See `swept::XFORM_STRIDE`, which is the same law for the sweep's own
+/// per-tile uniform.
+pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>::STRIDE;
+
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
 /// stands for.
 pub(super) struct LoopDispatch {

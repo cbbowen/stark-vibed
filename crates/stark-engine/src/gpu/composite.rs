@@ -59,6 +59,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
+use crate::gpu::tile::TilePairHandle;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 use crate::view::ViewTransform;
 use stark_model::geom::Extent2;
@@ -83,6 +84,85 @@ pub(crate) use filter::FILTER_SLOTS;
 /// working region through the very same `composite.wesl` (§6.3, §6.10). One list, so
 /// the two callers cannot disagree about the group they both build.
 pub(crate) use tiles::{TILE_SLOTS as COMPOSITE_TILE_SLOTS, VIEW_SLOTS as COMPOSITE_VIEW_SLOTS};
+
+/// The layout of pass A's group over a tile's channels — **built once and handed to
+/// both consumers**, because a tile caches the group itself
+/// ([`TilePairHandle::composite_bg`]) and a cached group answers to one layout.
+///
+/// Pass A binds it and so does the stamp loop's region composite, which runs
+/// `composite.wesl` over the same tiles into its working region (§6.2). They used to
+/// build a layout each from this one slot list, which was two objects describing one
+/// thing — enough for the pipelines, since WebGPU compares layouts structurally, but
+/// not a footing to share a *cache* on: what makes the tile's group reusable is that
+/// there is exactly one layout it could have been built for (§6.7).
+///
+/// A colour-space change rebuilds the whole GPU stack and empties the document
+/// (`rebuild_gpu_for`), so no tile outlives the layout it cached a group against.
+pub(crate) fn tile_bind_group_layout(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> wgpu::BindGroupLayout {
+    desc::layout_for(
+        device,
+        "stark composite tile bgl",
+        COMPOSITE_TILE_SLOTS,
+        wgpu::ShaderStages::FRAGMENT,
+        color_space.resid_format().is_some(),
+    )
+}
+
+/// The pass objects a compositor is **given** rather than builds, because more than
+/// one consumer has to hold the very same one.
+///
+/// Not a convenience bundle: each of these is here because a second object of the
+/// same *shape* would be wrong rather than merely wasteful. `gpu::merge` runs the
+/// blend and filter pipelines on tile-sized targets to merge a layer down (§14.11),
+/// so a merged tile has to come out of the shader the screen runs — and building a
+/// second pair would decode the Mixbox LUT twice. The tile layout is the one a
+/// *tile's* cached group answers to, so pass A and the stamp loop must name one.
+pub(crate) struct SharedPasses {
+    pub(crate) blend: Arc<BlendPass>,
+    pub(crate) filter: Arc<FilterPass>,
+    pub(crate) tile_bgl: wgpu::BindGroupLayout,
+}
+
+/// Pass A's bind group over `handle`'s channels, built on the tile's first composite
+/// and kept on it thereafter — see [`TilePairHandle::composite_bg`] for why a tile's
+/// immutability makes that sound, and what it was costing.
+///
+/// One function rather than a closure at each consumer: pass A and the stamp loop's
+/// region composite bind the *same* group off the *same* tile, and two spellings of
+/// the group would be two ways for one of them to describe it differently and quietly
+/// lose the cache.
+pub(crate) fn tile_bind_group<'a>(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    handle: &'a TilePairHandle,
+) -> &'a wgpu::BindGroup {
+    handle.composite_bg(|| {
+        // The layout carries the residual slot exactly when the space has one (§6.7),
+        // and every tile of such a document has one — the space decides once, at
+        // `acquire_tile`.
+        desc::bind_group_for(
+            device,
+            "stark composite tile bg",
+            bgl,
+            COMPOSITE_TILE_SLOTS,
+            handle.resid_view().is_some(),
+            |i| {
+                let v = match i {
+                    cb::TILE_COLOR => handle.color_view(),
+                    cb::TILE_AUX => handle.aux_view(),
+                    cb::TILE_RESID => handle
+                        .resid_view()
+                        .expect("a residual space's tile has one"),
+                    other => unreachable!("`TILE_SLOTS` lists no binding {other}"),
+                };
+                wgpu::BindingResource::TextureView(v)
+            },
+        )
+    })
+}
 use view::{View, ViewBindings};
 
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent, MatteDraw};
@@ -405,8 +485,7 @@ impl CompositorPipeline {
         color_space: &dyn ColorSpace,
         substrate: SubstrateMap,
         environment: Environment,
-        blend: Arc<BlendPass>,
-        filter: Arc<FilterPass>,
+        shared: SharedPasses,
     ) -> Self {
         // **The target may not be an sRGB format**, and this is the one place that can
         // say so. The media pass encodes display sRGB itself
@@ -427,8 +506,13 @@ impl CompositorPipeline {
         // Passes B–E all write the one target the frame is presented from.
         let screen = [desc::target(target_format)];
 
+        let SharedPasses {
+            blend,
+            filter,
+            tile_bgl,
+        } = shared;
         let passes = CompositorPasses {
-            tiles: TilePass::new(device, color_space, formats),
+            tiles: TilePass::new(device, color_space, formats, tile_bgl),
             blend,
             filter,
             overlay: OverlayPass::new(device, target_format),
@@ -685,31 +769,7 @@ impl Compositor {
         let tile_bgs = plan
             .tiles
             .iter()
-            .map(|handle| {
-                handle.composite_bg(|| {
-                    // The layout carries the residual slot exactly when the space has
-                    // one (§6.7), and every tile of such a document has one — the space
-                    // decides once, at `acquire_tile`.
-                    desc::bind_group_for(
-                        device,
-                        "stark composite tile bg",
-                        &p.tiles.tile_bgl,
-                        tiles::TILE_SLOTS,
-                        handle.resid_view().is_some(),
-                        |i| {
-                            let v = match i {
-                                cb::TILE_COLOR => handle.color_view(),
-                                cb::TILE_AUX => handle.aux_view(),
-                                cb::TILE_RESID => handle
-                                    .resid_view()
-                                    .expect("a residual space's tile has one"),
-                                other => unreachable!("`TILE_SLOTS` lists no binding {other}"),
-                            };
-                            wgpu::BindingResource::TextureView(v)
-                        },
-                    )
-                })
-            })
+            .map(|handle| tile_bind_group(device, &p.tiles.tile_bgl, handle))
             .collect();
 
         self.instances.write(device, queue, &plan.instances);

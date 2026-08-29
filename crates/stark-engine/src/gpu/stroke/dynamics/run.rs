@@ -4,8 +4,6 @@
 //! This is the half that owns GPU state. What it is *asked* to record comes from
 //! [`plan`](super::plan); what it records *with* comes from [`kit`](super::kit).
 
-use wgpu::util::DeviceExt;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -28,14 +26,13 @@ use stark_shaders::mirror::composite::binding as cb;
 
 use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
-use super::super::scratch::{Kept, Key, SubmitScope};
+use super::super::scratch::{BufKey, Kept, Key, SubmitScope};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
-use super::super::{
-    StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE,
-};
+use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use super::BAKE_FORMAT;
 use super::plan::{
-    LoopDispatch, PlanCtx, SLOT, SlotKind, bleed_fires, cell_scratch_size, dynamics_plan,
+    LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, bleed_fires, cell_scratch_size,
+    dynamics_plan,
 };
 use super::slots;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
@@ -750,13 +747,14 @@ impl<'a> DynamicsRun<'a> {
             // working region — this is a buffer the loop evolves, not a picture.
             0.0,
         );
-        let view_buf = self.scope.buffer(device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("stark dynamics region view"),
-                contents: bytemuck::bytes_of(&view),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        ));
+        let view_buf = self.scope.take_piece_buffer(BufKey {
+            size: std::mem::size_of_val(&view) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label: "stark dynamics region view",
+        });
+        r.ctx
+            .queue
+            .write_buffer(&view_buf, 0, bytemuck::bytes_of(&view));
         let view_bg = desc::bind_group_for(
             device,
             "stark dynamics region view bg",
@@ -770,42 +768,39 @@ impl<'a> DynamicsRun<'a> {
             },
         );
         let mut tile_origins: Vec<TileInstance> = Vec::new();
-        let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
+        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
         for coord in halo {
             if let Some(tile) = base.get(coord) {
                 tile_origins.push(TileInstance {
                     origin: coord.origin().to_array(),
                     opacity: 1.0,
                 });
+                // **The group the tile itself caches**, which is why this loop is
+                // handed pass A's layout rather than building one from the same slot
+                // list (`kit.rs`). A live stroke re-composites its halo on every
+                // pointer move, and the halo of a wide tip is tens of tiles per piece
+                // — so a group built here was tens of WebGPU objects a move, which is
+                // the allocation *rate* `TilePairHandle::composite_bg` was introduced
+                // to stop pass A paying and this path went on paying.
+                //
                 // A resident tile in a pigment space always has a residual, so
                 // `Zeroes` never stands in here.
-                tile_bgs.push(desc::bind_group_for(
+                tile_bgs.push(crate::gpu::composite::tile_bind_group(
                     device,
-                    "stark dynamics region tile bg",
                     &kit.composite_tile_bgl,
-                    crate::gpu::composite::COMPOSITE_TILE_SLOTS,
-                    tile.resid_view().is_some(),
-                    |i| {
-                        wgpu::BindingResource::TextureView(match i {
-                            cb::TILE_COLOR => tile.color_view(),
-                            cb::TILE_AUX => tile.aux_view(),
-                            cb::TILE_RESID => {
-                                tile.resid_view().expect("a residual space's tile has one")
-                            }
-                            other => unreachable!("the tile group lists no binding {other}"),
-                        })
-                    },
+                    tile,
                 ));
             }
         }
         let tile_inst = (!tile_origins.is_empty()).then(|| {
-            self.scope.buffer(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("stark dynamics region tile instances"),
-                    contents: bytemuck::cast_slice(&tile_origins),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-            )
+            let bytes: &[u8] = bytemuck::cast_slice(&tile_origins);
+            let buf = self.scope.take_piece_buffer(BufKey {
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                label: "stark dynamics region tile instances",
+            });
+            r.ctx.queue.write_buffer(&buf, 0, bytes);
+            buf
         });
         {
             let targets = Targets {
@@ -829,7 +824,7 @@ impl<'a> DynamicsRun<'a> {
                 pass.set_vertex_buffer(0, inst.slice(..));
                 for (i, bg) in tile_bgs.iter().enumerate() {
                     let idx = i as u32;
-                    pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(1, *bg, &[]);
                     pass.draw(0..4, idx..idx + 1);
                 }
             }
@@ -842,15 +837,23 @@ impl<'a> DynamicsRun<'a> {
         let sel_mask = if self.scene.selection.is_universal() {
             r.selection.constant(1.0)
         } else {
-            let (tex, view) = r.selection.region_mask(
+            // Leased, not created: this is up to `MAX_REGION_DIM`² of `R8Unorm` and a
+            // live stroke re-gathers it per piece per pointer move, so creating one
+            // was megabytes of allocation and teardown a move for a texture of the
+            // very same shape each time (`scratch`).
+            let (_, view) = self.scope.take_piece(Key {
+                size: (w, h),
+                format: crate::gpu::tile::MASK_FORMAT,
+                usage: crate::gpu::SelectionRenderer::REGION_MASK_USAGE,
+                label: "stark selection region mask",
+            });
+            r.selection.region_mask(
                 self.scope.encoder(),
+                &view,
                 self.scene.selection,
                 halo,
-                region_origin,
-                w,
-                h,
+                (region_origin, stark_model::geom::Extent2::new(w, h)),
             );
-            self.scope.texture(tex);
             view
         };
 
@@ -941,7 +944,7 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
-    /// The plan's uniform slots, one [`UNIFORM_STRIDE`]-aligned window each — dynamic
+    /// The plan's uniform slots, one [`STAMP_STRIDE`]-aligned window each — dynamic
     /// uniform offsets being the standard way to vary a uniform across dispatches
     /// within one pass.
     ///
@@ -952,19 +955,16 @@ impl<'a> DynamicsRun<'a> {
     /// The scope destroys it behind the piece's own submit ([`SubmitScope::flush`]).
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
         let r = self.r;
-        let mut data = vec![0u8; plan.len() * UNIFORM_STRIDE];
+        let mut data = vec![0u8; plan.len() * STAMP_STRIDE as usize];
         for (i, d) in plan.iter().enumerate() {
-            let at = i * UNIFORM_STRIDE;
+            let at = i * STAMP_STRIDE as usize;
             data[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
         }
-        let buf = self
-            .scope
-            .buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("stark dynamics stamps"),
-                size: data.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+        let buf = self.scope.take_piece_buffer(BufKey {
+            size: data.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label: "stark dynamics stamps",
+        });
         r.ctx.queue.write_buffer(&buf, 0, &data);
         buf
     }
@@ -1223,7 +1223,7 @@ impl<'a> DynamicsRun<'a> {
         // differs invalidates the groups above it, and every consumer is reached only
         // across such a switch.
         for (i, d) in plan.iter().enumerate() {
-            let off = (i * UNIFORM_STRIDE) as u32;
+            let off = (i as u64 * STAMP_STRIDE) as u32;
             match d.kind {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The

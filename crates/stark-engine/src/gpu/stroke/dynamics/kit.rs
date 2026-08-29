@@ -99,6 +99,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
     ctx: &crate::gpu::context::GpuContext,
     color_space: &dyn ColorSpace,
+    composite_tile_bgl: wgpu::BindGroupLayout,
 ) -> DynamicsKit {
     let device = &ctx.device;
     // The loop's storage-texture declarations are `rgba16float`; both color
@@ -121,19 +122,15 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         label: Some("stark dynamics composite"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
     });
-    // The very layouts pass A builds, from the same declarations — this loop
-    // composites its working region through `composite.wesl` itself (§6.3).
+    // The very layout pass A builds, because it *is* pass A's: the group this loop
+    // binds per tile is the one the tile itself caches, which answers to one layout
+    // (`composite::tile_bind_group_layout`). The view group has no such cache and so
+    // is built here, from the same declarations pass A reads — this loop composites
+    // its working region through `composite.wesl` itself (§6.3).
     let composite_view_bgl = desc::layout_for(
         device,
         "stark dynamics composite view bgl",
         crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
-        frag,
-        resid,
-    );
-    let composite_tile_bgl = desc::layout_for(
-        device,
-        "stark dynamics composite tile bgl",
-        crate::gpu::composite::COMPOSITE_TILE_SLOTS,
         frag,
         resid,
     );

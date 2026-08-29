@@ -63,19 +63,6 @@ pub(crate) use incremental::{StrokeCarry, StrokeSpans, ToolState};
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
 // `segments` internals the rule is actually about.
 pub(crate) use incremental::safe_frozen;
-/// Stride between the slots of a uniform buffer read through **dynamic offsets**,
-/// which is how both render paths vary a uniform across the draws or dispatches of
-/// one pass. A dynamic offset must be a multiple of the device's
-/// `min_uniform_buffer_offset_alignment`, whose spec maximum is 256, so this clears it
-/// on every adapter — at the cost of the padding past each slot's real size.
-///
-/// **One buffer per stroke or per piece, not one per tile.** Every uniform here is
-/// tens of bytes and a live stroke re-renders on every pointer move, so a buffer and
-/// a bind group per affected tile is a rate of small WebGPU allocations rather than an
-/// amount of memory — and the rate is the thing JS GC cannot keep up with
-/// ([`ScopedResources`]). Laid out this way, a stroke's per-tile uniforms cost one
-/// registered buffer and one bind group however many tiles it crosses.
-const UNIFORM_STRIDE: usize = 256;
 
 #[derive(Clone)]
 pub struct StrokeRenderer {
@@ -165,18 +152,24 @@ pub struct StrokeScene<'a> {
 }
 
 impl StrokeRenderer {
+    /// `tile_bgl` is pass A's layout over a tile's channels, handed in for the same
+    /// reason the selection renderer and the zeroes are: the stamp loop composites
+    /// document tiles into its working region through `composite.wesl` (§6.2), and
+    /// the group it binds is the one the *tile* caches, which answers to exactly one
+    /// layout ([`tile_bind_group_layout`](crate::gpu::composite::tile_bind_group_layout)).
     pub(crate) fn new(
         ctx: &GpuContext,
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
         zeroes: Zeroes,
+        tile_bgl: wgpu::BindGroupLayout,
     ) -> Self {
         // Composition, not construction: each path's objects are built by the module
         // that uses them, and the brush textures both paths resolve live with their
         // caches. What is left here is the pair of them plus the scene-independent
         // things a renderer is handed.
         let swept = build_swept_kit(&ctx.device, color_space.as_ref());
-        let dynamics = build_dynamics_kit(ctx, color_space.as_ref());
+        let dynamics = build_dynamics_kit(ctx, color_space.as_ref(), tile_bgl);
         let erase = build_erase_kit(&ctx.device, color_space.as_ref(), &swept);
 
         Self {

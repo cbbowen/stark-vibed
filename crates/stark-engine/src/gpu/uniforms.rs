@@ -14,12 +14,15 @@
 //! sites wrote a buffer *and* a bind group per draw for want of it: the transform's
 //! per-quad uniform, the fill's per-tile origin, the selection's per-tile params.
 //!
-//! **`gpu::stroke` still states the law itself**, as a bare `UNIFORM_STRIDE`, and
-//! packs against it by hand — so the stride is declared twice in this crate and the
-//! stroke path creates a buffer and a bind group per render where these types would
-//! give it a grown one. That is a known debt rather than a design (`ENGINE_CLEANUP.md`
-//! [H]); it is written here because the alternative is a reader concluding from this
-//! module's existence that nothing is left to move onto it.
+//! **`gpu::stroke` takes the stride and not the buffer**, which is the one place a
+//! consumer departs from these types on purpose. Its two dynamic-offset uniforms —
+//! the sweep's per-tile `TileXform` and the stamp loop's per-dispatch `Stamp` — take
+//! their stride from [`UniformSlots::STRIDE`] like everyone else (`XFORM_STRIDE`,
+//! `STAMP_STRIDE`), so the law is stated once; what they do not take is the grow-only
+//! buffer, because that path has something stronger. A stroke's buffers are *leased*
+//! from its scratch pool (`stroke::scratch`), which recycles them across strokes
+//! rather than across the frames of one, and releases them only behind the submit of
+//! the commands that named them.
 //!
 //! # Why the vertex side lives here too
 //!

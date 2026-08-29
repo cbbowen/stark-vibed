@@ -65,10 +65,17 @@ pub(super) struct TilePass {
 }
 
 impl TilePass {
+    /// `tile_bgl` is handed in rather than built here: a tile caches the group over
+    /// its own channels ([`TilePairHandle::composite_bg`]), and the stamp loop binds
+    /// that same group, so there has to be exactly one layout it answers to
+    /// ([`tile_bind_group_layout`](super::tile_bind_group_layout)).
+    ///
+    /// [`TilePairHandle::composite_bg`]: crate::gpu::tile::TilePairHandle::composite_bg
     pub(super) fn new(
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
         formats: ChannelFormats,
+        tile_bgl: wgpu::BindGroupLayout,
     ) -> Self {
         let frag = wgpu::ShaderStages::FRAGMENT;
         // The residual channel a pigment space carries (§6.7): a third sampled tile
@@ -83,8 +90,6 @@ impl TilePass {
         // zoom rides through `misc.w` for the matte's edge antialiasing width.
         let view_bgl =
             desc::layout_for(device, "stark composite view bgl", VIEW_SLOTS, frag, resid);
-        let tile_bgl =
-            desc::layout_for(device, "stark composite tile bgl", TILE_SLOTS, frag, resid);
         let layout = desc::pipeline_layout(
             device,
             "stark composite layout",

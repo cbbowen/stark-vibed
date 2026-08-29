@@ -209,8 +209,8 @@ impl std::fmt::Debug for Census {
 /// (a scratch pair, a destination pair) on every pointer move, so a stroke crossing
 /// twenty tiles at pen rate was creating thousands of views a second. Natively that
 /// is a small allocation and some validation; on the web it is a JS object per
-/// acquire, which is precisely the allocation *rate* `ScopedResources` and
-/// `UNIFORM_STRIDE` exist to keep down (§6.2) — the pool was quietly the largest
+/// acquire, which is precisely the allocation *rate* this pool and the stroke's own
+/// scratch pool exist to keep down (§6.2) — this one was quietly the largest
 /// remaining source of it.
 struct Pooled {
     tex: wgpu::Texture,
@@ -431,18 +431,26 @@ impl TilePairHandle {
     /// the group naming them together, and no eviction policy is needed.
     ///
     /// **And the layout cannot change under it.** A bind group answers to one
-    /// `BindGroupLayout`, which here is the compositor's `tile_bgl` — a function of
-    /// the color space alone (§6.7). Every consumer that composites a given tile
-    /// shares one `CompositorPasses`: a sibling engine is handed the very same `Arc`
-    /// ([`Engine::new_sharing`]), and the one thing that builds a *different* one is
-    /// a color-space rebuild, which replaces the tile pool and requires an empty
-    /// document (`rebuild_gpu_for`) — so no tile survives it to be asked twice.
+    /// `BindGroupLayout`, and there is exactly one this could have been built for:
+    /// `composite::tile_bind_group_layout` is built once per GPU stack and handed to
+    /// both consumers, which is what makes the cache shareable *between* them rather
+    /// than merely reusable within one. A sibling engine is handed the very same
+    /// `Arc<CompositorPasses>` ([`Engine::new_sharing`]), and the one thing that
+    /// builds a different layout is a color-space rebuild, which replaces the tile
+    /// pool and requires an empty document (`rebuild_gpu_for`) — so no tile survives
+    /// it to be asked twice.
     ///
-    /// What this replaces is a bind group per tile, per layer, **per frame**. The
-    /// visible tile count scales as 1/zoom², so a zoomed-out multi-layer document
-    /// was creating ~10⁵ of them a frame — on the web, a JS object apiece, which is
-    /// the allocation *rate* `ScopedResources` and the pool's own [`Pooled`] exist
-    /// to keep down (§6.2). Now only a newly painted or newly loaded tile pays.
+    /// **The two consumers.** Pass A composites a tile onto the screen, and the stamp
+    /// loop composites the same tile into the working region it evolves (§6.2). Both
+    /// bind this group; both go through `composite::tile_bind_group`, so neither can
+    /// describe it differently and quietly build a second one.
+    ///
+    /// What this replaces is a bind group per tile, per layer, **per frame** — and on
+    /// the stroke path, per halo tile per piece per *pointer move*. The visible tile
+    /// count scales as 1/zoom², so a zoomed-out multi-layer document was creating
+    /// ~10⁵ of them a frame — on the web, a JS object apiece, which is the allocation
+    /// *rate* `ScopedResources` and the pool's own [`Pooled`] exist to keep down
+    /// (§6.2). Now only a newly painted or newly loaded tile pays.
     ///
     /// [`Engine::new_sharing`]: crate::Engine::new_sharing
     pub(crate) fn composite_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {

@@ -69,9 +69,10 @@ use super::accum::{
 };
 use super::incremental::Carried;
 use super::region::tiles_with_segments;
-use super::scratch::Key;
+use super::scratch::{BufKey, Key};
 use super::segments::{Segment, SegmentInstance, generate_segments_in};
-use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState, UNIFORM_STRIDE};
+use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use crate::gpu::uniforms::UniformSlots;
 
 // Vertices in one segment's swept geometry: a triangle strip of two rims across
 // `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc rather
@@ -98,6 +99,20 @@ use stark_shaders::mirror::stamp_common::TileXform;
 /// One tile's window into the stroke's transform buffer — the `min_binding_size` the
 /// sweep's layout declares, taken from the struct rather than written down.
 const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
+
+/// Stride between the per-tile [`TileXform`] slots, from the type rather than from a
+/// number written here (§6.10, and `gpu::uniforms`' own law): the padded size a
+/// dynamic offset must be a multiple of.
+///
+/// **Taken from [`UniformSlots`] without taking its buffer**, which is the one place
+/// this path departs from that type. What `UniformSlots` owns is a grow-only
+/// allocation per pass, and the stroke path has something better — a leased buffer
+/// from the scratch pool (`scratch::BufKey`), recycled across strokes rather than
+/// across frames of one. What it does *not* have on its own is the stride law, which
+/// used to be a bare `256` beside a `copy_from_slice` of the uniform's real size: a
+/// uniform that outgrew the quantum would have written over the next slot rather than
+/// widening them, silently, and only for whichever brush reached it.
+const XFORM_STRIDE: u64 = UniformSlots::<TileXform>::STRIDE;
 
 /// How many scratch pairs the sweep rotates through (§6.2) — see
 /// [`render_swept`](StrokeRenderer::render_swept), where the ring is acquired.
@@ -149,8 +164,8 @@ pub(super) fn build_swept_kit(device: &wgpu::Device, color_space: &dyn ColorSpac
 
     let frag = wgpu::ShaderStages::FRAGMENT;
     // One slot per affected tile, selected by a dynamic offset
-    // ([`UNIFORM_STRIDE`](super::UNIFORM_STRIDE)) — so a stroke crossing many tiles
-    // binds one buffer rather than building one per tile on every pointer move.
+    // ([`XFORM_STRIDE`]) — so a stroke crossing many tiles binds one buffer rather
+    // than building one per tile on every pointer move.
     let uniform_bgl = desc::layout_for(
         device,
         "stark sweep uniform bgl",
@@ -333,7 +348,7 @@ impl StrokeRenderer {
 
         let mut new_map = base.clone();
         for (i, coord) in coords.iter().enumerate() {
-            let xform_off = (i * UNIFORM_STRIDE) as u32;
+            let xform_off = draws.xform_offset(i);
             // Round-robin, so the reuse distance is the ring's length.
             let scratch = &ring[i % ring.len()];
 
@@ -630,12 +645,11 @@ pub(super) fn opacity_uniform(
     let u = stark_shaders::mirror::integrate::Integrate {
         params: [opacity, 0.0, 0.0, 0.0],
     };
-    let buf = scope.buffer(r.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark integrate opacity"),
+    let buf = scope.take_piece_buffer(BufKey {
         size: std::mem::size_of_val(&u) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }));
+        label: "stark integrate opacity",
+    });
     r.ctx.queue.write_buffer(&buf, 0, bytemuck::bytes_of(&u));
     buf
 }
@@ -657,9 +671,20 @@ pub(super) struct SweepDraws {
     /// Each tile's slice of the instance buffer.
     pub(super) runs: Vec<std::ops::Range<u32>>,
     pub(super) instances: wgpu::Buffer,
-    /// The per-tile [`TileXform`] slots, selected by a dynamic offset of
-    /// `i * UNIFORM_STRIDE` for tile `i` of [`coords`](Self::coords).
+    /// The per-tile [`TileXform`] slots, selected by
+    /// [`xform_offset`](Self::xform_offset).
     pub(super) xforms: wgpu::BindGroup,
+}
+
+impl SweepDraws {
+    /// The dynamic offset that selects tile `i` of [`coords`](Self::coords) in
+    /// [`xforms`](Self::xforms).
+    ///
+    /// Asked of the draws rather than computed at each pass, so the stride the slots
+    /// were *written* at and the stride they are *bound* at are one expression.
+    pub(super) fn xform_offset(&self, i: usize) -> u32 {
+        UniformSlots::<TileXform>::offset(i as u32)
+    }
 }
 
 /// Build a piece's [`SweepDraws`]: which segments reach which tile, and the
@@ -709,20 +734,21 @@ pub(super) fn sweep_draws(
         }));
         runs.push(from..instances.len() as u32);
     }
-    // Written via `write_buffer` (not `create_buffer_init`, which maps-at-creation):
-    // a long stroke makes this buffer large, and Chrome/Dawn caps map-at-creation
-    // buffers well below the normal `maxBufferSize`, so a long stroke would panic
-    // in `createBuffer`.
+    // Leased and written via `write_buffer`, never `create_buffer_init`: that maps at
+    // creation, and Chrome/Dawn caps map-at-creation buffers well below the normal
+    // `maxBufferSize`, so a long stroke would panic in `createBuffer`. Leasing is the
+    // other half of the same problem — this is the largest buffer the stroke path
+    // builds and it was built afresh on every pointer move, where the pool hands back
+    // the one the previous move used (`scratch::BufKey`).
     let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
-    let instance_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark sweep instances"),
+    let instance_buf = scope.take_piece_buffer(BufKey {
         size: instance_bytes.len() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }));
+        label: "stark sweep instances",
+    });
     r.ctx.queue.write_buffer(&instance_buf, 0, instance_bytes);
 
-    // Per-tile sweep transforms, one [`UNIFORM_STRIDE`] slot each in a single
+    // Per-tile sweep transforms, one [`XFORM_STRIDE`] slot each in a single
     // buffer the draws select with a dynamic offset. The texture top-left is
     // the interior origin shifted out by the apron, so the full TILE_TEX target
     // maps to NDC [-1, 1]; everything else is a stroke constant, repeated per slot
@@ -730,9 +756,9 @@ pub(super) fn sweep_draws(
     //
     // One buffer and one bind group for the stroke, not one of each per tile: this
     // path redraws on every pointer move, and the allocation *rate* is what OOMs
-    // the tab (see [`ScopedResources`] and [`UNIFORM_STRIDE`]).
+    // the tab (`gpu::uniforms`).
     let apron = TILE_APRON as f32;
-    let mut xform_data = vec![0u8; coords.len() * UNIFORM_STRIDE];
+    let mut xform_data = vec![0u8; coords.len() * XFORM_STRIDE as usize];
     for (i, coord) in coords.iter().enumerate() {
         let origin = coord.origin();
         let xform = TileXform {
@@ -759,15 +785,14 @@ pub(super) fn sweep_draws(
             // (§6.10).
             _pad_8: [0; 8],
         };
-        let at = i * UNIFORM_STRIDE;
+        let at = i * XFORM_STRIDE as usize;
         xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
     }
-    let xform_buf = scope.buffer(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark sweep xforms"),
+    let xform_buf = scope.take_piece_buffer(BufKey {
         size: xform_data.len() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }));
+        label: "stark sweep xforms",
+    });
     r.ctx.queue.write_buffer(&xform_buf, 0, &xform_data);
     let xforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("stark sweep bg"),

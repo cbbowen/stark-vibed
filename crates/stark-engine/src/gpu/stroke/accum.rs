@@ -55,7 +55,7 @@ use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle};
 
 use super::scratch::{Kept, Key, SubmitScope};
 use super::swept::SweepDraws;
-use super::{StrokeRenderer, StrokeScene, UNIFORM_STRIDE};
+use super::{StrokeRenderer, StrokeScene};
 
 /// The most lanes a parcel can have: the channel trio (§6.7), which is the widest
 /// thing a swept pass writes. The erase's single transparency mass is the other end
@@ -376,7 +376,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
                             ..Default::default()
                         });
                 pass.set_pipeline(sweep.pipeline);
-                pass.set_bind_group(0, &sweep.draws.xforms, &[(i * UNIFORM_STRIDE) as u32]);
+                pass.set_bind_group(0, &sweep.draws.xforms, &[sweep.draws.xform_offset(i)]);
                 pass.set_bind_group(1, sweep.prefix, &[]);
                 pass.set_bind_group(2, sweep.noise, &[]);
                 pass.set_vertex_buffer(0, sweep.draws.instances.slice(..));

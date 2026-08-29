@@ -87,7 +87,7 @@ const _: () = assert!(
 /// also emits a bleed slot per crossing of the bleed cadence — up to
 /// [`MAX_BLEED_FIRES_PER_SEGMENT`] of them — and the pen-up settle, so a piece plans
 /// at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
-/// [`UNIFORM_STRIDE`](super::UNIFORM_STRIDE) apiece that is ~17.8 MB, which is why the
+/// `dynamics::plan::STAMP_STRIDE` apiece that is ~17.8 MB, which is why the
 /// factor is worth stating and not worth chunking around: making the cut count planned
 /// slots would couple `chunk_segments` to the bleed cadence to save a few megabytes it
 /// does not need. Only a bleeding brush pays any of it, and only one whose segments

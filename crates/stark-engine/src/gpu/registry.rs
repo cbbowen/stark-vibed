@@ -55,7 +55,7 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     type Content: Copy + Eq + Hash + std::fmt::Debug;
 
     /// **Whatever decoding the bytes once produces that every build from them can
-    /// share**, kept beside them by [`Registered`].
+    /// share**, kept beside them by `Registered`.
     ///
     /// Which resources want one is decided by the ratio the module note sets up: the
     /// canvas substrate registers one height map and bakes a `SubstrateMap` per scale
