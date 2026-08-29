@@ -7,8 +7,10 @@ and the wire may change, and no finding needs a bit-identical result — a wrong
 is fixed and the goldens re-blessed.
 
 **Status: in progress.** The table carries the commit that closed each finding; a
-finding that turns out to be wrong is struck through and kept, as
-[N](#n-withdrawn-footprints-two-vecs-per-action) was in the model's ledger.
+finding that turns out to be wrong is struck through and kept, as the model's ledger
+did with its own N. That used to be a link, and it went nowhere: `MODEL_CLEANUP.md`
+was removed when it was settled, and an anchor into a deleted file reads as a working
+reference until somebody clicks it.
 
 Closed: A, B, C, D, E, G, I, J, N, O, Q, R, S, U, V, W, X, and — since — F's smaller
 correctness notes and its F3 comment, H, and most of T and Y. **Every finding marked
