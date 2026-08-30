@@ -67,7 +67,7 @@ static STAMPED_REF: LazyLock<Schema<StampedRef<'static>>> =
 /// other fails to encode here instead of shipping bytes the far end reads as something
 /// else.
 ///
-/// The `'static` schema serves a shorter-lived value because [`Schema`] is covariant in
+/// The `'static` schema serves a shorter-lived value because [`Schema`](struct@Schema) is covariant in
 /// its parameter — it holds the schema tree and a `PhantomData<fn() -> T>` — so the
 /// reference retypes without touching the tree. The `LazyLock` is what keeps the retype
 /// from rebuilding the tree per broadcast; the tree itself is a `const`-shaped thing the

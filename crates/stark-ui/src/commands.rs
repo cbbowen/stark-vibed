@@ -391,7 +391,7 @@ fn defaults() -> Vec<(Chord, Command)> {
 }
 
 /// The chord table as this browser has it: [`defaults`] with the user's
-/// rebindings laid over them. Lives on [`AppState`](crate::state::AppState) as
+/// rebindings laid over them. Lives on [`AppState`] as
 /// a signal, so a row's shortcut column re-renders the moment a rebind lands;
 /// stored under its own key like the preset library, since it is a table the
 /// palette edits rather than a ⚙ setting (`crate::prefs`'s remit).
@@ -516,7 +516,7 @@ impl Entry for StoredBinding {
     const STORE: Store = Store::Bindings;
 }
 
-/// Seed [`AppState::bindings`](crate::state::AppState::bindings) from this
+/// Seed [`Signals::bindings`](crate::state::Signals::bindings)(crate::state::Signals::bindings) from this
 /// browser's stored rebindings. Called once at app start, beside `prefs::load`.
 pub fn load(state: AppState) {
     let Some(stored) = crate::storage::load_list::<StoredBinding>() else {
@@ -1478,7 +1478,7 @@ fn arm_tool(state: AppState, tool: Tool) {
 }
 
 /// Hand back a shape tool without naming one — the last one armed
-/// ([`AppState::shape_tool`]), and nothing at all if one is already in hand.
+/// ([`Signals::shape_tool`](crate::state::Signals::shape_tool)), and nothing at all if one is already in hand.
 ///
 /// The Select panel's action row is what asks (`crate::panels::select`): picking
 /// what a shape *does* is a statement about a gesture that has not been made yet,

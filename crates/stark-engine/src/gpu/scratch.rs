@@ -424,7 +424,7 @@ impl ScratchPool {
 ///
 /// Sound on a borrow argument rather than a convention. The commands that read one
 /// of these are recorded by the run that *resumes* from it, which takes the owning
-/// [`ToolState`](super::ToolState) by `&` and submits before it returns — so the
+/// `stroke::incremental`'s `ToolState` by `&` and submits before it returns — so the
 /// owner can only drop this, and return the lease, after that submit. An unwind
 /// mid-run drops the run's encoder unsubmitted, so nothing pending names the lease
 /// on that path either.

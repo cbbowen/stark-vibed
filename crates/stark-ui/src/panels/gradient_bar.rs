@@ -220,7 +220,7 @@ impl Laid {
 /// library the bar is holding, not putting the bar down; but the trace mounts a
 /// catcher of its own and two of those cannot share the canvas (`crate::modes`),
 /// so the gesture — target, kind, and the axis already dragged — is parked
-/// rather than lost. [`resume`] brings it back.
+/// rather than lost. [`resume_from`] brings it back.
 ///
 /// The preview goes down with it, and that is not tidiness: a capture samples the
 /// **composite** (§22.2), so a fill preview left standing would be traced as if it

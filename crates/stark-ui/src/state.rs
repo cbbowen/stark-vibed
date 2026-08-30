@@ -59,7 +59,7 @@ pub(crate) fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
 ///
 /// The inner signal is a private field of a type declared in this module, so *this
 /// module* is the whole set of code that can mutate what one of these wraps. That
-/// is the point: [`AppState::renderer`] and [`AppState::obs`] are the two pieces of
+/// is the point: [`Signals::renderer`](crate::state::Signals::renderer) and [`Signals::obs`](crate::state::Signals::obs) are the two pieces of
 /// state whose mutation has to be paired with a publish, and the pairing is done
 /// once here ([`with_engine`]) rather than remembered at two dozen call sites.
 ///
@@ -463,7 +463,7 @@ pub struct Signals {
 /// one is a *command* — a thing a menu row, a chord, or whatever surface comes
 /// next may ask for — and a command can reach only what [`AppState`] holds. The
 /// brush panel's two dialogs made the same move earlier for their own reason
-/// ([`AppState::brush_editor_open`], [`AppState::preset_save_open`]) and keep
+/// ([`Signals::brush_editor_open`](crate::state::Signals::brush_editor_open), [`Signals::preset_save_open`](crate::state::Signals::preset_save_open)) and keep
 /// their longer-standing fields.
 #[derive(Clone, Copy)]
 pub struct Dialogs {
@@ -928,7 +928,7 @@ impl Dialogs {
 
 /// Subscribe to **one slice** of the projection instead of to all of it.
 ///
-/// [`AppState::obs`] is a single signal carrying everything from the view — which
+/// [`Signals::obs`](crate::state::Signals::obs) is a single signal carrying everything from the view — which
 /// moves at pointer rate — to the history budget, which moves about once a session.
 /// A `Signal` write marks every subscriber dirty with no equality check, so a
 /// component that calls `state.obs.read()` in its body re-renders on **every**
@@ -1082,7 +1082,7 @@ pub struct TimelineState {
 /// them, and the flag that says the drag is under way. (Whether the eyedropper is
 /// *armed* is no longer a flag of its own: it is the drag table's answer to the
 /// modifiers currently held — `drags::armed` over
-/// [`AppState::held_mods`].)
+/// [`Signals::held_mods`](crate::state::Signals::held_mods).)
 ///
 /// The options live here rather than in the engine because nothing in the engine
 /// reads them between calls — [`Engine::pick_color`](stark_engine::Engine::pick_color)
@@ -1246,7 +1246,7 @@ pub fn request_paint(state: AppState) {
 ///
 /// Two fields, because there are two ways to get here and only one of them has a
 /// projection to carry it: a device that died mid-session, and a device that
-/// never arrived ([`AppState::startup_failure`]). The second changes nothing on
+/// never arrived ([`Signals::startup_failure`](crate::state::Signals::startup_failure)). The second changes nothing on
 /// its own — with no renderer the doors below already answer `None` — and is
 /// asked anyway, so that the sentence above stays true of both.
 ///

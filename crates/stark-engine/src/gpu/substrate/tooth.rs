@@ -46,7 +46,7 @@ use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS
 ///
 /// A canvas px rather than a texel or a fraction of the tip: the reach is a property
 /// of the contact, and it must not change when the same substrate is stored at a different
-/// resolution (which the downsample in [`canonical_height`] does routinely) or when a
+/// resolution (which the downsample in [`canonical_height`](super::import::canonical_height) does routinely) or when a
 /// larger brush paints the same substrate. The rise baked into the map is measured across
 /// this distance in the map's own texels for exactly that reason — and it is also why
 /// laying the same substrate at a different [`SubstrateScale`](stark_model::SubstrateScale)
@@ -77,7 +77,7 @@ const TOOTH_REACH: f32 = 3.0;
 /// answer for.
 const SUBSTRATE_ANTIALIAS: f32 = 0.5;
 
-/// How many travel directions [`SubstrateMap::bearing_hist`] is tabulated at.
+/// How many travel directions [`SubstrateMap::bearing`](super::SubstrateMap::bearing) is tabulated at.
 ///
 /// The bearing is a smooth, low-harmonic function of direction — a constant on an
 /// isotropic substrate, four-fold on a woven one — so sixteen samples resolve it well
@@ -162,12 +162,12 @@ fn rise_ahead(ahead: [f32; 2], dir: [f32; 2]) -> f32 {
 /// The span is the reach converted into **each axis's own texels** (`dims / tile_px`
 /// texels per canvas px), so the same substrate reads identically however it was stored:
 /// halve a map's resolution and the span in texels halves with it. That is what makes
-/// the integer downsample in [`canonical_height`] invisible to the mark, and it is why
+/// the integer downsample in [`canonical_height`](super::import::canonical_height) invisible to the mark, and it is why
 /// [`TOOTH_REACH`] can be a physical distance at all. The span rounds to whole texels
 /// — never below one — and the half-texel that costs is well inside the blur it is
 /// measured on.
 ///
-/// `tile_px` is the canvas px one full tile of the map spans — [`SUBSTRATE_TILE_PX`]
+/// `tile_px` is the canvas px one full tile of the map spans — [`SUBSTRATE_TILE_PX`](super::SUBSTRATE_TILE_PX)
 /// times the document's scale ([`Substrate::tile_px`](super::Substrate)). It is the *only*
 /// thing the scale changes here, and it changes everything downstream of it: the
 /// antialias σ, the span, and so the bearing table tabulated off the result.
@@ -260,7 +260,7 @@ fn encode_rise(rise: f32) -> u8 {
 }
 
 /// Tabulate the rise's distribution, one row per travel direction
-/// ([`SubstrateMap::bearing_hist`]).
+/// ([`SubstrateMap::bearing`](super::SubstrateMap::bearing)).
 ///
 /// One pass per direction over the substrate, binning the **decoded** rise rather than
 /// the float it came from, so the tool books against the numbers the shader will

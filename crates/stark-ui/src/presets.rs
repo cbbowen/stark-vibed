@@ -525,7 +525,7 @@ pub fn apply(state: AppState, name: &str) {
 
 /// Put `brush` on: make it the live brush, **keeping the painting color** and
 /// resolving its stamp — and record which preset it came `from`, which is what
-/// [`AppState::preset_in_hand`] takes.
+/// [`Signals::preset_in_hand`](crate::state::Signals::preset_in_hand) takes.
 ///
 /// The rule this module's docs state, as a function, because it is not only the
 /// preset library's any more — the quick-brush rack (`crate::slots`) swaps
@@ -704,7 +704,7 @@ pub fn same_brush(a: &BrushConfig, b: &BrushConfig) -> bool {
 /// What "Overwrite preset" can do with the brush in hand. The brush editor's
 /// button is drawn from this — dead in every arm but one, with the arm as its
 /// tooltip — and [`overwrite_in_hand`] acts on that one arm. A pure rule over the
-/// library, the name in hand ([`AppState::preset_in_hand`]) and the brush, so a
+/// library, the name in hand ([`Signals::preset_in_hand`](crate::state::Signals::preset_in_hand)) and the brush, so a
 /// test can reach it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overwrite {

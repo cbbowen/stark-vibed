@@ -677,7 +677,7 @@ struct PoolInner {
     /// Recycled textures and their views, one free list per format ([`Pooled`]).
     free: Vec<Pooled>,
     /// How many textures this pool **owns** — created, less those released back to
-    /// the driver by [`Self::trim`]. `capacity - free.len()` is therefore what its
+    /// the driver by [`Self::tick`]. `capacity - free.len()` is therefore what its
     /// consumers are holding.
     capacity: usize,
     /// The most this pool has had checked out at once during the current epoch.

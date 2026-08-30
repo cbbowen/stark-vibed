@@ -295,7 +295,7 @@ pub struct Landing {
 /// A press being held, and everything the stroke it may become will need.
 ///
 /// It carries the *fit's* parameters (`tolerance`, `rope`) as they were at the
-/// press, not as they are when it opens, for the reason [`TuneDrag::zoom`] is
+/// press, not as they are when it opens, for the reason `tune::TuneDrag::zoom` is
 /// latched: a gesture measures against the view it started in.
 #[derive(Clone)]
 struct Held {

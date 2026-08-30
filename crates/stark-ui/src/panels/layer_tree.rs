@@ -5,7 +5,7 @@
 //! folded away, what a row's own Carry and Release would do, and — given a drag —
 //! where the block would land, at what depth, and what that spells as a
 //! [`MoveLayer`](stark_engine::command::DocCommand::MoveLayer). The rsx! that draws
-//! it is [`super::layer`], which is 900 lines of chrome this used to be buried in.
+//! it is [`layer`](crate::panels::layer), which is 900 lines of chrome this used to be buried in.
 //!
 //! It is a file of its own for `crate::gesture`'s reason: this is the part of the
 //! panel that can be *tested*, and ten of the crate's tests are here — the ones
@@ -14,7 +14,7 @@
 //! the code most likely to be skimmed as layout.
 //!
 //! The column arithmetic underneath — which rows yield, and by how much — is not
-//! here either. That is [`super::reorder`], shared with the guide list; what is
+//! here either. That is [`reorder`](crate::panels::reorder), shared with the guide list; what is
 //! here is the part only a *tree* has.
 
 use std::collections::{HashMap, HashSet};
@@ -90,7 +90,9 @@ impl Landing {
 }
 
 /// Resolve an in-flight drag against the displayed rows: where the block would land,
-/// what that spells as a [`MoveLayer`], and how to draw the panel meanwhile.
+/// what that spells as a
+/// [`MoveLayer`](stark_engine::command::DocCommand::MoveLayer), and how to draw the
+/// panel meanwhile.
 ///
 /// `None` when the drag cannot be resolved — a row without a box, which is what a
 /// document that changed under the pointer looks like (a peer's edit, §17). The panel

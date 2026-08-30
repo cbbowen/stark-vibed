@@ -20,7 +20,7 @@
 //!
 //! # The device that never arrived
 //!
-//! [`AppState::startup_failure`](crate::state::AppState) is the other way the
+//! [`Signals::startup_failure`](crate::state::Signals::startup_failure)(crate::state::AppState) is the other way the
 //! canvas ends up unable to take a mark, and it is not the same fact
 //! ([`StartupFailure`](crate::render::StartupFailure)): there is no engine, so
 //! there is no projection to carry it and no document to offer to save. It is

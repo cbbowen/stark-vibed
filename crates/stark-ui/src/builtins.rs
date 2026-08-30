@@ -5,7 +5,8 @@
 //! engine imports the bytes once at startup — the main canvas ([`import_all`]
 //! from `main`) and the brush editor's preview — and because the engine keys an
 //! asset by the hash of its decoded coverage, all of them land on the same
-//! [`AssetId`]. That is what lets a built-in be referenced the way any other
+//! [`AssetId`](stark_model::AssetId). That is what lets a built-in be referenced
+//! the way any other
 //! stamp is: by content id, with no notion of "built-in" anywhere downstream.
 //!
 //! The catch is *when*: an id is only knowable once the bytes have arrived, so

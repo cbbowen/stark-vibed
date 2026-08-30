@@ -103,7 +103,7 @@ const MAX_HEIGHT: u32 = 200;
 const SETTLE_MS: i32 = 180;
 
 /// Show the overview or put it away, and remember it — **the only thing that writes
-/// [`AppState::navigator`](crate::state::AppState::navigator)**, which is what makes
+/// [`Signals::navigator`](crate::state::Signals::navigator)(crate::state::Signals::navigator)**, which is what makes
 /// durability structural rather than a line every call site has to remember (the move
 /// `layout::set_open` makes for the panel stack, and `settings::SettingToggle` for the
 /// preferences).

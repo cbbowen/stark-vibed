@@ -83,7 +83,7 @@ impl Environment {
     /// **Fallible because the bytes come from outside**: an environment is fetched at
     /// runtime and handed straight in, so a truncated download or a file that is not
     /// an `.hdr` at all reaches here — the class §5 exists to remove, and one
-    /// [`hdr`](super::environment::hdr)'s own header says this path has to be
+    /// [`hdr`]'s own header says this path has to be
     /// defensive about. [`Resource::decode`] is the door a caller learns at;
     /// [`Resource::build`] is where a byte string that got past it anyway degrades to
     /// the procedural light rather than killing the renderer.

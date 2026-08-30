@@ -161,7 +161,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
 /// The filter being tuned, if the **selected layer** is one.
 ///
 /// There is deliberately no separate filter-selection state, for the reason
-/// [`selected_frame`](super::frame::selected_frame) has none: `active_layer` is the
+/// [`use_selected_frame`](super::frame::use_selected_frame) has none: `active_layer` is the
 /// selected layer and a filter may be it, so the bar keys off the same thing the
 /// Layers panel highlights — and a filter that is removed, undone, or replaced by a
 /// document load stops being tuned with no invalidation to remember.
@@ -505,7 +505,7 @@ fn snapped(v: f32, step: f32) -> f32 {
 
 /// One pointer sample on the dial: the filter that sample means, previewed to the
 /// canvas and stashed for the settle — the same live-preview/log-once bargain the
-/// sliders make (§21.6), through the same [`settle`].
+/// sliders make (§21.6), through the same [`Preview::settle`](crate::preview::Preview::settle).
 fn drag_dial(
     state: AppState,
     id: LayerId,

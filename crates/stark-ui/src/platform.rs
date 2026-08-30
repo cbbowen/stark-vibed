@@ -316,7 +316,7 @@ pub fn guide_boxes() -> Vec<(String, f32, f32)> {
 
 /// One element's box on screen, in CSS px from the viewport's top-left.
 ///
-/// The whole rectangle, where [`element_boxes`] keeps only the two numbers a column
+/// The whole rectangle, where `element_boxes` keeps only the two numbers a column
 /// drag needs. The caller is the guided tour's card ([`anchor_box`]), which has to
 /// put itself *beside* a thing rather than order a list of them, so it needs the
 /// horizontal half as well.

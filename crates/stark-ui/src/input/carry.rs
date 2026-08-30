@@ -1,7 +1,7 @@
 //! Shift-and-drag picks up whichever layer is showing paint under the press and
 //! carries it (§16.11) — the Move tool's auto-select, without the tool.
 //!
-//! The canvas's own gesture, for the mirror of [`Tune`](super::Tune)'s reason: it
+//! The canvas's own gesture, for the mirror of [`Tune`]'s reason: it
 //! moves the *painting*, which only the surface the painting is on can be
 //! pointing at.
 //!

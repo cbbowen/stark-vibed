@@ -35,7 +35,7 @@
 /// (`gpu::scratch`, `gpu::tile`) — which is strictly better than destroying one
 /// promptly, since a reused texture is not allocated at all. What is left here is the
 /// buffers, whose sizes follow a stroke's segment count and a piece's tile count and
-/// so genuinely differ call to call (`ENGINE_CLEANUP.md` [H]).
+/// so genuinely differ call to call (`ENGINE_CLEANUP.md`, item H).
 #[derive(Default)]
 pub(crate) struct ScopedResources {
     buffers: Vec<wgpu::Buffer>,

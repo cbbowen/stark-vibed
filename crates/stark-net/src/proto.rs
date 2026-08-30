@@ -275,7 +275,8 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
 ///
 /// Three phases, and the lock covers only the first and last. Taking the snapshot
 /// is a handful of refcount bumps — the log is persistent — while turning it into
-/// a [`DocumentFile`] copies every asset payload (the container owns its bytes) and
+/// a [`DocumentFile`](stark_model::DocumentFile) copies every asset payload (the
+/// container owns its bytes) and
 /// encodes the lot. A joiner arriving mid-session must not stall this peer's
 /// receive loop for the length of that, and the next joiner should not repeat it.
 fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Bytes> {

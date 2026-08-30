@@ -81,7 +81,7 @@ pub fn PeerCursors() -> Element {
 /// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is
 /// chrome, and it must never reach an export. The split of who re-renders is the
 /// point of its shape: the *position* is its own signal written per pointer
-/// report ([`AppState::brush_cursor`]), so only this component moves at pointer
+/// report ([`Signals::brush_cursor`](crate::state::Signals::brush_cursor)), so only this component moves at pointer
 /// rate, while the *size* is the projection's `brush.radius × view.zoom` through
 /// one memo — a bracket tap or a wheel notch resizes the circle where it stands,
 /// and a pan, which moves neither factor, wakes nothing here at all.

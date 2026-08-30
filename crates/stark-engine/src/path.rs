@@ -11,7 +11,7 @@
 //!   all that is needed to reconstruct the stroke.
 //! - [`IntermediateSample`] — a point *of the curve*: position plus its
 //!   derivative, and the pen attributes interpolated there. Transient, produced
-//!   by [`flatten`] and consumed by the stamp generator.
+//!   by [`flatten`](fn@flatten) and consumed by the stamp generator.
 //!
 //! [`PathFitter`] streams the first into the second: a **least-squares cubic
 //! B-spline fit**, grown and refit as samples arrive, with a prefix of control
@@ -21,7 +21,7 @@
 //! instead of repainting it on every pointer move (see
 //! [`PathFitter::frozen_spans`]).
 //!
-//! [`flatten`] expands control points through that same B-spline into a polyline,
+//! [`flatten`](fn@flatten) expands control points through that same B-spline into a polyline,
 //! **adaptively**: it subdivides only where a straight segment would exceed a
 //! bounded error in position, tangent direction, and pen attributes. A long gentle
 //! stroke then costs a handful of segments where uniform arc-length sampling cost

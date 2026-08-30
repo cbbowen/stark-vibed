@@ -109,13 +109,13 @@ impl StrokeRenderer {
     /// one: the loop is sequential, so pieces run back to back over the same segments
     /// in the same order, each compositing what the last wrote back. Length therefore
     /// costs the stroke extra pieces, not correctness. Degrading past
-    /// [`MAX_REGION_DIM`](super::MAX_REGION_DIM) to the plain swept deposit instead
+    /// [`MAX_REGION_DIM`](super::super::budget::MAX_REGION_DIM) to the plain swept deposit instead
     /// would cost correctness, since that path cannot manipulate paint at all.
     ///
     /// The loop starts from `tool` rather than from a fresh tip when one is given, and
     /// hands back the state it ends in whenever a further range remains to be drawn,
     /// so a live stroke redraws only its tail (see [`ToolState`]). `tol` comes from
-    /// [`dynamics_setup`], which has already decided — from the brush — that this
+    /// [`dynamics_setup`](super::dynamics_setup), which has already decided — from the brush — that this
     /// stroke runs the loop at all.
     pub(in crate::gpu::stroke) fn render_dynamic(
         &self,
@@ -235,7 +235,8 @@ impl StrokeRenderer {
 struct DynamicsRun<'a> {
     r: &'a StrokeRenderer,
     rec: &'a StrokeRecord,
-    /// The budget the range was flattened at ([`dynamics_setup`]), carried so a plan
+    /// The budget the range was flattened at ([`dynamics_setup`](super::dynamics_setup)),
+    /// carried so a plan
     /// can re-cut a piece of the record the same way — see [`PlanCtx::tol`].
     tol: crate::path::FlattenTolerance,
     scene: StrokeScene<'a>,
@@ -971,7 +972,7 @@ impl<'a> DynamicsRun<'a> {
     /// Leased on the *piece*, like the region it works on and for the same reason:
     /// nothing past this piece's own submission reads it, so holding it for the whole
     /// run would make a long stroke's peak cost scale with the number of pieces —
-    /// which is what [`MAX_REGION_DIM`](super::MAX_REGION_DIM) exists to prevent.
+    /// which is what [`MAX_REGION_DIM`](super::super::budget::MAX_REGION_DIM) exists to prevent.
     /// The scope returns it to the pool behind the piece's own submit
     /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
     /// this one used.
@@ -992,7 +993,7 @@ impl<'a> DynamicsRun<'a> {
 
     /// Every bind group the loop switches between while recording one piece.
     ///
-    /// Each is built from the very slot list its layout was ([`slots`](super::slots)),
+    /// Each is built from the very slot list its layout was ([`slots`]),
     /// so a group and its layout cannot disagree about which bindings are present or in
     /// what order. Written as two hand-kept arrays per entry point — one here, one in
     /// [`kit`](super::kit) — they would be aligned by nothing but the order they were
@@ -1371,7 +1372,7 @@ impl<'a> DynamicsRun<'a> {
     ///
     /// `lo` is the region's *interior* origin — the top-left tile origin, an apron in
     /// from the region rectangle — so a tile's offset into the region is measured
-    /// against it. Offsets are integral and non-negative by [`region_rect`]'s
+    /// against it. Offsets are integral and non-negative by [`Covered::rect`](super::super::region::Covered::rect)'s
     /// construction, and the far edge of the last tile's block is exactly the region's
     /// extent, so every copy is in bounds — and a violation is a loud validation error
     /// here, where a draw would silently read out of bounds instead.
@@ -1443,7 +1444,7 @@ impl<'a> DynamicsRun<'a> {
     /// straight into whatever it is handed. 64² rgba16f ×2, so the copy is ~64 KB —
     /// nothing beside the region work it saves the next pointer move.
     ///
-    /// The copies are pooled [`Kept`](crate::gpu::scratch::Kept) leases rather
+    /// The copies are pooled [`Kept`] leases rather
     /// than fresh textures: one of these is captured per pointer move, and the pool
     /// hands the same textures back — the drop that returns one is provably behind
     /// the resuming run's submit (see `Kept`).

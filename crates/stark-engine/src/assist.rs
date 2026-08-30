@@ -15,7 +15,7 @@
 //!
 //! Three separable pieces:
 //!
-//! - **Recognition** ([`recognize`]) — which shape, if any, the raw pointer trace is.
+//! - **Recognition** ([`recognize`](mod@recognize)) — which shape, if any, the raw pointer trace is.
 //!   It answers `None` freely: dwelling at the end of a stroke that is *not* a line or
 //!   an ellipse has to leave that stroke exactly as it was drawn, because a false
 //!   positive (a considered stroke silently replaced) costs far more than a miss

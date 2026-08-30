@@ -411,7 +411,7 @@ struct Site {
 impl Sites {
     /// `period` cells per side, searched `ring` cells out from a sample's own.
     ///
-    /// `ring` is a [`NonZeroU8`](std::num::NonZeroU8) because a table of no rings is
+    /// `ring` is a [`NonZeroU8`] because a table of no rings is
     /// one [`Sites::nearest`] cannot answer from: its search widens outward and has
     /// nowhere to stop. The parameter says that, where an `unreachable!` at the end of
     /// the loop would be reachable by writing `0` at either call site.

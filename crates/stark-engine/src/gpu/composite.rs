@@ -1108,7 +1108,7 @@ impl Compositor {
     /// one of them is a patch of this same document, so recording them together is the
     /// difference between one round trip to the queue and a hundred. What used to
     /// force a submit between patches was the view uniform: one buffer, rewritten per
-    /// patch. The views are slots now ([`ViewBindings`](view::ViewBindings)), so
+    /// patch. The views are slots now ([`ViewBindings`]), so
     /// `slot` is which of them this patch draws through and the ordering is the offset
     /// rather than the queue. The caller writes every view, records every patch, and
     /// submits once — keeping `prepared` alive until it has.

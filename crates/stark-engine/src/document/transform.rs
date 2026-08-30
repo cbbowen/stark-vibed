@@ -1,7 +1,8 @@
 //! Planning a transform (§16): which tiles are read, which are written, and how the
 //! source is cut into the units a pass resamples.
 //!
-//! The **maps** — the affine, the [`PerspectiveMap`]'s corners, the [`WarpMap`]'s
+//! The **maps** — the affine, the [`PerspectiveMap`](stark_model::document::PerspectiveMap)'s
+//! corners, the [`WarpMap`](stark_model::document::WarpMap)'s
 //! grid, and the [`Homography`] one solves for — are `stark-model`'s
 //! `document::transform`: a dozen floats each, and what the log carries. Everything
 //! here reads or writes a [`TileMap`], which is why it is on this side.

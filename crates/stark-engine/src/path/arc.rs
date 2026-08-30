@@ -1,6 +1,6 @@
 //! **Arcs**: what a flattened edge actually stands for (§6.2).
 //!
-//! [`super::flatten`] replaces a piece of curve with one edge, and the renderer sweeps
+//! [`super::flatten`](fn@super::flatten) replaces a piece of curve with one edge, and the renderer sweeps
 //! that edge as a **circular arc** rather than a chord (§6.2). So this is where the arc
 //! is defined, and [`FlattenTolerance`](super::FlattenTolerance) is measured against it
 //! — the two have to be the same primitive, or the budget is describing geometry

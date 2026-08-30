@@ -798,7 +798,7 @@ impl DocState {
     }
 
     /// Replace a matte layer's region wholesale — undo's restore path
-    /// ([`PatchOp::Matte`](super::patch::PatchOp)), which must put back the
+    /// (`patch::PatchOp::Matte`), which must put back the
     /// *value* rather than route through a rect the region may not have. A
     /// no-op on a paint layer or an absent id, like every setter here.
     pub(crate) fn set_matte_region(&self, id: LayerId, region: MatteRegion) -> Self {

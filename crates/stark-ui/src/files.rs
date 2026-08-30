@@ -61,7 +61,7 @@ pub fn guard_unload(state: AppState) {
 ///   just-opened file both come out clean without this module having to know every
 ///   way a document can be replaced;
 /// - this browser says which revision it last wrote to a file
-///   ([`AppState::written_revision`]), which is not a thing a document can notice
+///   ([`Signals::written_revision`](crate::state::Signals::written_revision)), which is not a thing a document can notice
 ///   happening to it.
 ///
 /// Committed only, deliberately. A stroke in flight and an uncommitted drag preview

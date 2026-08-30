@@ -10,7 +10,7 @@
 //! The path is three modules, split by what a maintainer is holding in their head:
 //! [`plan`] works out what to dispatch and touches no GPU at all, [`kit`] builds the
 //! objects it is dispatched with, and [`run`] records it — checking its working
-//! textures out of the stroke-level [`scratch`](super::scratch) pool through the
+//! textures out of the stroke-level [`scratch`](crate::gpu::scratch) pool through the
 //! submit scope that owns their release. What is left here is the one question
 //! asked before any of them — which path a stroke takes at all.
 

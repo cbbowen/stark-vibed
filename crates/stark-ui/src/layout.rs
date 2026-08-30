@@ -290,7 +290,7 @@ impl PanelLayout {
     }
 }
 
-/// An in-flight resize of a panel's bottom edge. Like [`DragState`], the height is
+/// An in-flight resize of a panel's bottom edge. Like [`ThumbGrab`], the height is
 /// derived from where the pointer started rather than from the panel's live box, so
 /// the element being resized can never feed back into the size being computed.
 #[derive(Clone, Copy, PartialEq)]
@@ -414,7 +414,7 @@ impl From<ChromeHiding> for String {
 /// Every one of them sits over the canvas and none of them is what the user is looking
 /// at mid-stroke, so they all fade together — the screen goes back to being the
 /// painting, and comes back the moment the gesture ends. The fade is CSS
-/// ([`crate::state::AppState::canvas_active`] only toggles the class), so the chrome
+/// ([`crate::state::Signals::canvas_active`] only toggles the class), so the chrome
 /// stays laid out where it was and nothing reflows on the way in or out.
 pub fn chrome_class(state: AppState, base: &str) -> String {
     dim_class(base, fading(state))
@@ -443,7 +443,7 @@ fn dim_class(base: &str, out: bool) -> String {
 
 /// [`chrome_class`] for the panel stack, which fades for a second reason: it stays
 /// out of the way after the gesture ends, until the pointer reaches into its column
-/// ([`AppState::panels_asleep`](crate::state::AppState::panels_asleep)).
+/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep)).
 ///
 /// One `dimmed` for both, deliberately — mid-gesture and asleep are the same fact
 /// about the stack (it is not what the screen is for right now), and giving the second
@@ -455,7 +455,7 @@ fn stack_class(state: AppState) -> String {
 
 /// Whether the stack is out of the way **and nothing is holding it up** — the
 /// question both the fade and the wake slice actually want, rather than
-/// [`AppState::panels_asleep`](crate::state::AppState::panels_asleep) raw.
+/// [`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep) raw.
 ///
 /// The tour holds it up for as long as a card is pointing into it (§24.3). Without
 /// that, the first stroke after a lesson appeared would put the panels back to sleep
@@ -517,7 +517,7 @@ fn reach_for_panels(state: AppState) {
 }
 
 /// Stand the panels down, as the end of a canvas gesture does
-/// ([`AppState::panels_asleep`](crate::state::AppState::panels_asleep)).
+/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep)).
 ///
 /// [`wake_panels`]'s counterpart, and public where that one is not, because it has
 /// an outside caller and waking has none: the tour's lesson about the wake gesture

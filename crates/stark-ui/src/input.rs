@@ -76,7 +76,7 @@ pub use tune::Tune;
 /// construction rather than by care: a pair that stayed inside this never opened a
 /// stroke, because the same threshold is what would have opened one.
 ///
-/// [`carry_deadzone`]'s figure for a finger, for its reason: a fingertip rolls
+/// `carry::carry_deadzone`'s figure for a finger, for its reason: a fingertip rolls
 /// several px on its way onto and off the glass, and of the two mistakes it is the
 /// one that leaves a mark that has to be protected against.
 pub(super) const TOUCH_SLOP: f32 = 10.0;

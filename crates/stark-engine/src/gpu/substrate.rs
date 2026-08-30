@@ -7,7 +7,7 @@
 //! views/samplers are reference-counted.
 //!
 //! The texture carries the height in `R` — the media pass's relief, §6.3 — and, in
-//! `GB`, the **rise the substrate makes one [`TOOTH_REACH`] ahead** along each canvas
+//! `GB`, the **rise the substrate makes one `tooth::TOOTH_REACH` ahead** along each canvas
 //! axis ([`pack_substrate`]). The rise is the whole of the deposition model: what a
 //! dragged tip contacts is not a level set of the height but the *slope of the substrate
 //! along its own travel* — it is pressed up by substrate rising to meet it and left

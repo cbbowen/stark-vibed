@@ -528,7 +528,7 @@ impl MatteInfo {
 /// a signal marks every subscriber dirty when it publishes, and a projection that
 /// cannot be compared leaves it no way to notice that the answer did not move. Every
 /// field was already comparable but the two view settings, both plain data
-/// ([`ViewTransform`], [`MediaParams`](crate::gpu::MediaParams)), so this costs
+/// ([`ViewTransform`], [`MediaParams`]), so this costs
 /// nothing but the derive.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObservableState {
@@ -2044,7 +2044,8 @@ impl Engine {
     }
 
     /// Note that the **committed** document has been replaced: every cached
-    /// [`FrozenHead`] built against the old one is stale, and anything the frontend
+    /// [`FrozenHead`](live::FrozenHead) built against the old one is stale, and anything
+    /// the frontend
     /// derived from it is out of date.
     ///
     /// One call rather than two counters bumped side by side at each of seven sites —

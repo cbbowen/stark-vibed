@@ -2,7 +2,7 @@
 //! made of three (§6.1, §6.7).
 //!
 //! `channels.rs` holds the trio for pooled tiles ([`Channels`](super::super::channels::Channels))
-//! and for borrows ([`Targets`](super::super::channels::Targets)); this is the third
+//! and for borrows ([`Targets`]); this is the third
 //! ownership, the one whose members free their memory when they are replaced. Written
 //! per consumer it is `blend`'s trio and the first three fields of `media`'s
 //! `Offscreen`, each with its own `targets()`, and the second has to pass its three

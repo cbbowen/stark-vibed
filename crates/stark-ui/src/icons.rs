@@ -15,7 +15,7 @@
 //! "Every icon in that directory" is a claim about files nobody reviews — a Phosphor
 //! download arrives with `fill="#000000"` baked in, and an icon that keeps it looks
 //! *right* in a file browser and paints a black glyph on near-black chrome. Nothing
-//! about the call site would say which happened, so [`tests::every_icon_inherits_its_color`]
+//! about the call site would say which happened, so `tests::every_icon_inherits_its_color`
 //! checks the directory rather than the table: an icon added and not yet wired up is
 //! caught before it is ever drawn, which is when a wrong fill is cheapest to fix.
 

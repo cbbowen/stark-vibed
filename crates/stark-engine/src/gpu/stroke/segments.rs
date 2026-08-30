@@ -98,7 +98,7 @@ pub(super) struct Sweep {
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
     /// makes those different numbers and this one bounds a box: under-reporting it is
-    /// a stroke clipped at a tile boundary (see [`coverage_bounds`]).
+    /// a stroke clipped at a tile boundary (see [`coverage_bounds`](super::region::coverage_bounds)).
     ///
     /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — the whole domain of
     /// the prefix-τ volume — but nothing any shape can paint lies outside the **disc**
@@ -152,7 +152,7 @@ impl Sweep {
     /// Spelled as the shader spells it (`stamp_common::sweep_vertex`'s `hull`) rather
     /// than as `max(r_start, r_end)`, which it equals algebraically. The two can differ
     /// by an ulp in floats, and this one has to come out **no smaller** than the strip
-    /// the GPU rasterizes: it is what [`coverage_bounds`] grows the box by, and a box
+    /// the GPU rasterizes: it is what [`coverage_bounds`](super::region::coverage_bounds) grows the box by, and a box
     /// narrower than its own geometry is a stroke clipped at a tile boundary.
     fn widest_tip(&self) -> f32 {
         self.radius * (1.0 + 0.5 * self.ramp.abs())
@@ -245,7 +245,7 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 //
 // The arc a flattened edge stands for is [`crate::path::fit_arc`]'s, called here with
 // the very cap the flattener called it with (`FlattenTolerance::max_arc_curvature`,
-// set by [`flatten_tolerance`](super::flatten_tolerance) from
+// set by [`flatten_tolerance`](super::budget::flatten_tolerance) from
 // [`MAX_TIP_TURN`](super::MAX_TIP_TURN)). One function, one rule, so the geometry the
 // flattener priced is the geometry that gets swept — and neither can spend the
 // positional budget on a primitive the other does not use.
@@ -282,14 +282,14 @@ const TAPER_MAX_SLOPE: f32 = 1.5;
 
 /// The largest `|d²/dt²|` [`taper_profile`] reaches, at `t = 1` (`f'' = −3t`). What
 /// bounds the error of drawing the profile as a **straight ramp** across a segment
-/// ([`Segment::ramp`]) rather than as the curve it is — the only part of the taper's
+/// ([`Sweep::ramp`]) rather than as the curve it is — the only part of the taper's
 /// shape a ramp does not already carry exactly.
 const TAPER_MAX_CURVATURE: f32 = 3.0;
 
 /// How far the drawn outline may sit from the true cone, in **canvas px**, where the
 /// tip is too hard (or too thin) for its own falloff to hide anything.
 ///
-/// A segment's tip is a straight ramp ([`Segment::ramp`]) across a profile that is
+/// A segment's tip is a straight ramp ([`Sweep::ramp`]) across a profile that is
 /// cubic, so what a cut has to buy is the *sagitta* of that chord — a second-order
 /// quantity, where before the ramp existed it was the whole first-order step. The
 /// budget is the flattener's own [`position`](crate::path::FlattenTolerance::position):
@@ -347,7 +347,7 @@ const TAPER_SHOULDER_SLACK: f32 = 0.25;
 // the tip. So the ramp is bounded where it matters and unbounded where it cannot
 // matter, and the one guarantee that has to hold everywhere — `|ramp| < 2`, which is
 // what keeps the tip positive at both ends, and now also what keeps both span scales
-// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Segment::ramp`]).
+// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Sweep::ramp`]).
 
 /// Cap on the pieces one flattened edge is cut into for the taper — a backstop on a
 /// pathological brush rather than a quality knob.
@@ -464,7 +464,7 @@ impl Taper {
     }
 
     /// A bound on `|d² factor / d dist²|` anywhere in `[dist, dist + len]` — what a
-    /// straight radius ramp has to be cut fine enough to track ([`Segment::ramp`]).
+    /// straight radius ramp has to be cut fine enough to track ([`Sweep::ramp`]).
     ///
     /// The product rule, term for term: `(f_s·f_e)'' = f_s''·f_e + 2 f_s' f_e' +
     /// f_s·f_e''`, and both factors are ≤ 1, so the two curvatures add and the cross
@@ -492,7 +492,7 @@ impl Taper {
     /// taper code.
     ///
     /// **The first-order variation is not what is being bought here.** A segment
-    /// carries the taper's slope exactly, as its ramp ([`Segment::ramp`]), and two
+    /// carries the taper's slope exactly, as its ramp ([`Sweep::ramp`]), and two
     /// adjacent segments agree on the radius at the knot they share — so the outline
     /// is continuous however coarse the cut. What is left is one second-order term:
     /// the ramp is a **chord** across a cubic profile, and the outline bows off it by
@@ -575,7 +575,7 @@ struct Track {
 /// of the deposit. Evaluated per fragment it drops out of the sum entirely — the
 /// stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut — so the
 /// flattener need not buy accuracy for it with segments
-/// (see [`flatten_tolerance`](super::flatten_tolerance)).
+/// (see [`flatten_tolerance`](super::budget::flatten_tolerance)).
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
@@ -642,7 +642,7 @@ pub(super) fn generate_segments_in(
     };
 
     // `ends` is the tip at the segment's two ends — where the radius *ramp* comes from
-    // ([`Segment::ramp`]). Everything else is sampled at the midpoint, `at`: the rates
+    // ([`Sweep::ramp`]). Everything else is sampled at the midpoint, `at`: the rates
     // below are applied per segment and the midpoint is the reading whose error is
     // second order where either end's would be first.
     let make = |at: At, track: Track, ends: (f32, f32)| {
@@ -767,7 +767,7 @@ pub(super) fn generate_segments_in(
             // adjacent pieces — and of two adjacent flattened edges, where `u1` of one
             // is `u0` of the next at the same `dist` — resolves to the same number on
             // both sides. That agreement is what makes the outline continuous
-            // ([`Segment::ramp`]); it is not approached, it is the same expression
+            // ([`Sweep::ramp`]); it is not approached, it is the same expression
             // evaluated twice.
             let (p0, t0) = pen_at(u0);
             let (p1, t1) = pen_at(u1);
@@ -1048,7 +1048,7 @@ mod tests {
         assert_outline_is_continuous(&segs);
     }
 
-    /// **The property the ramp exists to have** (§6.2, [`Segment::ramp`]): consecutive
+    /// **The property the ramp exists to have** (§6.2, [`Sweep::ramp`]): consecutive
     /// segments agree on the tip at the knot they share, so the stroke's outline has
     /// no C⁰ break to alias — at any brush size, and however coarsely the taper is
     /// cut.

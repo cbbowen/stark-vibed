@@ -5,7 +5,7 @@
 //! one picker dialog at a time. The trace itself is the mode the library
 //! pop-out arms (`crate::panels::gradients`); what lives here is the library
 //! around it: the entries, their persistence, and the capture call that turns a
-//! finished trace into one of them through [`Engine::pick_gradient`] (§22.2).
+//! finished trace into one of them through [`Engine::pick_gradient`](stark_engine::Engine::pick_gradient) (§22.2).
 //!
 //! Like the brush presets and the shape library, the entries are frontend state
 //! that follows *this browser* across documents via `localStorage`, and never

@@ -373,7 +373,7 @@ impl Mirror {
     /// document or a joiner's snapshot alike.
     ///
     /// Both kinds go in, keyed by their common content hash: a substrate's transfer id
-    /// is the [`AssetId`] inside its [`SubstrateId`], because both are the same BLAKE3
+    /// is the [`AssetId`] inside its [`SubstrateId`](stark_model::SubstrateId), because both are the same BLAKE3
     /// of the same canonical bytes. The blob store only ever moves bytes, so it has
     /// no need to know which kind it is holding — that is the receiver's question,
     /// answered by the action that referenced them.

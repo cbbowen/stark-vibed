@@ -88,7 +88,7 @@ use crate::storage::{Entry, Store};
 use crate::widgets::Modal;
 
 /// The modifier half of a drag chord — and, held in
-/// [`AppState::held_mods`](crate::state::AppState::held_mods), the modifiers
+/// [`Signals::held_mods`](crate::state::Signals::held_mods)(crate::state::Signals::held_mods), the modifiers
 /// currently down, which is what the resting cursor asks the table with
 /// ([`armed`]).
 ///
@@ -223,7 +223,7 @@ fn defaults() -> impl Iterator<Item = (DragChord, DragAction)> {
 }
 
 /// The drag table as this browser has it: [`defaults`] with the user's own rows
-/// laid over them. Lives on [`AppState::drags`](crate::state::AppState::drags)
+/// laid over them. Lives on [`Signals::drags`](crate::state::Signals::drags)(crate::state::Signals::drags)
 /// as a signal, so a settings row and the resting cursor both move the moment a
 /// rebind lands.
 ///
@@ -733,7 +733,7 @@ pub fn capture(mods: Mods, button: Option<DragButton>) -> DragCapture {
     }
 }
 
-/// Seed [`AppState::drags`](crate::state::AppState::drags) and the offer's state
+/// Seed [`Signals::drags`](crate::state::Signals::drags)(crate::state::Signals::drags) and the offer's state
 /// from this browser's stored rows. Called once at app start, beside
 /// `commands::load`.
 pub fn load(state: AppState) {

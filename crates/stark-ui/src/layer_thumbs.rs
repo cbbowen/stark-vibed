@@ -7,13 +7,13 @@
 //! **The layer alone, with its surroundings dropped.** Blend mode, clip and
 //! opacity all say how much of a layer the *document* shows; none of them says
 //! anything about what the paint is. So a thumbnail renders through
-//! [`Engine::export_view`]'s `only`, which drops all three — the same isolate the
+//! [`Engine::export_view`](stark_engine::Engine::export_view)'s `only`, which drops all three — the same isolate the
 //! eyedropper samples through, and settled there first (§18.0.2). Turning a layer
 //! down does not turn its paint into a paler paint, and its row must not claim
 //! otherwise.
 //!
 //! **Framed on the document, not on the layer.** Every row shows the same window
-//! — the rect an export would write, through the same [`Engine::export_plan`] the
+//! — the rect an export would write, through the same [`Engine::export_plan`](stark_engine::Engine::export_plan) the
 //! navigator asks (§11) — so the rows are mutually comparable and you can see at a
 //! glance that the highlights live in the top-left. Framing each row on its own
 //! content would fill every thumbnail and make none of them relate to another, and

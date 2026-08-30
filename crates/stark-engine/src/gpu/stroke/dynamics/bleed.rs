@@ -60,10 +60,10 @@ use stark_shaders::mirror::dynamics as shader;
 /// no segment is cut shorter than before either.
 pub(in crate::gpu::stroke) const BLEED_TRAVEL_QUANTUM: f32 = 0.25;
 /// How many firings one segment may contribute, so a plan's slot count stays bounded
-/// ([`MAX_STAMPS`]).
+/// ([`MAX_STAMPS`](super::super::budget::MAX_STAMPS)).
 ///
 /// A segment crosses the cadence `travel / (BLEED_TRAVEL_QUANTUM · radius)` times, and
-/// those two numbers are priced apart on purpose: [`flatten_tolerance`] buys segment
+/// those two numbers are priced apart on purpose: [`flatten_tolerance`](super::super::budget::flatten_tolerance) buys segment
 /// length off the brush's **nominal** radius while the cadence is the **modulated**
 /// one, so a pen thinning the tip runs the count up without shortening a thing. Sixteen
 /// covers a tip down to a quarter of its brush — every ordinary stroke, where a segment

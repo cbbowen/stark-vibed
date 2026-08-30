@@ -47,7 +47,8 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// A painting segment does not dispatch it: its snapshot rides in the tail of its
     /// own `exchange` grid, since it depends on nothing that pass writes
     /// (`dynamics.wesl::exchange`). The two slot kinds with no exchange to ride in —
-    /// [`SlotKind::Bleed`] and [`SlotKind::Settle`] — dispatch it standalone. (The
+    /// [`SlotKind::Bleed`](super::plan::SlotKind) and
+    /// [`SlotKind::Settle`](super::plan::SlotKind) — dispatch it standalone. (The
     /// settle could not have shared a grid in any case: it *reads* the snapshot,
     /// rather than merely sharing a consumer with it.)
     pub(in crate::gpu::stroke) snapshot_pipeline: wgpu::ComputePipeline,

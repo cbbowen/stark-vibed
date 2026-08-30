@@ -292,7 +292,7 @@ pub(super) struct OffscreenDesc<'a> {
 /// The offscreen targets pass A writes and the media bind group that reads them.
 pub(super) struct Offscreen {
     /// The accumulator itself — the same owned trio a scratch level holds
-    /// ([`Trio`](super::attachment::Trio)), including its residual, which is present
+    /// ([`Trio`]), including its residual, which is present
     /// exactly when the space has one and is then pass A's third attachment as well as
     /// the media pass's binding 7.
     pub(super) channels: Trio,

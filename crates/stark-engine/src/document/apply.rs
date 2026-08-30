@@ -5,7 +5,7 @@
 //! *happens* when one is applied, which needs the renderers, the tile pool and the
 //! canvas substrates, and so cannot live where the action does.
 //!
-//! The two are tied together by [`Materialize`](stark_model::document::Materialize):
+//! The two are tied together by [`Materialize`]:
 //! the model owns *that* an action folds over some state and which actions commute,
 //! and [`DocState`] is this crate's answer to what the state is. The orphan rule
 //! forced that shape and it is the right one — see §2.

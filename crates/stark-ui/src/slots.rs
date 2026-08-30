@@ -451,7 +451,7 @@ pub fn release_all(state: AppState) {
 /// and costs the panel nothing.
 ///
 /// Up while a number is held, and **kept** up by the visibility menu's "Quick
-/// brushes" ([`AppState::slots`]`.pinned`) — which is the same picture with one
+/// brushes" ([`Signals::slots`](crate::state::Signals::slots)`.pinned`) — which is the same picture with one
 /// thing added: pinned, the rows take clicks, and clicking one is [`pick`].
 /// That is the mouse-only way to a slot, and it is why the pin exists at all —
 /// a pen in one hand and a tablet under it leaves no spare finger for the number

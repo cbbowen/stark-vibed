@@ -268,7 +268,8 @@ pub struct LinearTimeline {
     history: History<Entry>,
     /// Actions popped by `undo`, awaiting `redo`. Cleared on a fresh `push`.
     redo: Vec<Action>,
-    /// Actions folded out of the undo stack by [`forget_oldest`], oldest first —
+    /// Actions folded out of the undo stack by [`LinearTimeline::forget_oldest`], oldest
+    /// first —
     /// **still part of the document** (§5).
     ///
     /// This is what makes retention safe. `History::forget_actions` hands its

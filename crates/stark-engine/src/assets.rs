@@ -36,7 +36,7 @@ struct Mask {
     bytes: Vec<u8>,
     /// The canonical coverage the id names, retained so the pen volume below can be
     /// baked without decoding the PNG again — one byte per texel, capped at
-    /// [`MAX_SHAPE_DIM`]², so at most a megabyte for the largest shape there is.
+    /// [`MAX_SHAPE_DIM`](stark_model::MAX_SHAPE_DIM)², so at most a megabyte for the largest shape there is.
     coverage: Vec<u8>,
     width: u32,
     height: u32,

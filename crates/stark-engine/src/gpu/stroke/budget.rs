@@ -85,7 +85,7 @@ const _: () = assert!(
 ///
 /// It bounds the stamp uniform buffer, but not one slot per segment: `dynamics_plan`
 /// also emits a bleed slot per crossing of the bleed cadence — up to
-/// [`MAX_BLEED_FIRES_PER_SEGMENT`] of them — and the pen-up settle, so a piece plans
+/// `dynamics::bleed::MAX_BLEED_FIRES_PER_SEGMENT` of them — and the pen-up settle, so a piece plans
 /// at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
 /// `dynamics::plan::STAMP_STRIDE` apiece that is ~17.8 MB, which is why the
 /// factor is worth stating and not worth chunking around: making the cut count planned

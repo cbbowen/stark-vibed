@@ -65,7 +65,7 @@ use stark_model::geom::Vec2;
 /// gradient can run `in oklab` without this file knowing that word.
 ///
 /// `guides.wesl` is the one place that cannot follow, needing shader constants;
-/// [`the_chips_are_painted_in_the_shader_s_own_axis_hues`] parses the
+/// `tests::the_chips_are_painted_in_the_shader_s_own_axis_hues` parses the
 /// stylesheet and holds the two together.
 const AXIS_CSS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
@@ -164,7 +164,7 @@ fn drag_guide(
 
 /// End a guide drag: lay down what the previews have been showing, once.
 /// Idempotent, which is what lets it hang off `change`, `pointerup` and
-/// `pointercancel` alike ([`Preview::settle`]).
+/// `pointercancel` alike ([`Preview::settle`](crate::preview::Preview::settle)).
 fn settle_guide(state: AppState, pending: Signal<Option<(GuideId, PerspectiveGuide)>>) {
     preview::GUIDE.settle(state, pending);
 }
@@ -315,7 +315,7 @@ fn move_guide(state: AppState, id: GuideId, to: usize) {
 /// anchor is the entry one before it in that same shortened list. The engine
 /// resolves the anchor against exactly that list (`DocState::move_guide`), which
 /// is what makes the round trip exact — and what
-/// [`the_anchor_lands_the_row_where_it_was_dropped`] pins.
+/// `tests::the_anchor_lands_the_row_where_it_was_dropped` pins.
 fn anchor_at(ids: &[GuideId], from: usize, to: usize) -> Option<GuideId> {
     let rest: Vec<GuideId> = ids
         .iter()

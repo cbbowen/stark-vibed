@@ -1,4 +1,5 @@
-//! This client's durable identity: the key its [`ActorId`] derives from, and a
+//! This client's durable identity: the key its
+//! [`ActorId`](stark_model::document::ActorId) derives from, and a
 //! counter distinguishing runs of it.
 //!
 //! # Why it is persisted
@@ -25,8 +26,8 @@
 //! A persisted key is a stable pseudonymous identity that follows this browser
 //! across every document it opens — which is the point, and is also a thing someone
 //! may not want. It is per-origin (`localStorage`), never leaves the machine except
-//! as the public half every peer already sees, and [`reset`] discards it for a fresh
-//! one. Where storage is unavailable — private windows, storage disabled — this
+//! as the public half every peer already sees, and clearing the browser's site data
+//! discards it for a fresh one. Where storage is unavailable — private windows, storage disabled — this
 //! degrades to the previous behaviour of a new identity per run, which costs the two
 //! properties above and breaks nothing.
 

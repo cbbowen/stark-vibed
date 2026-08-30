@@ -66,7 +66,7 @@ fn for_each_touched<'a>(
 ///
 /// The windows belong in every accounting because they write: a firing's sweep is
 /// walked back along the crossing segment's own arc, up to one
-/// [`BLEED_TRAVEL_QUANTUM`] before the segment it fires after (`plan::bleed_fires`) —
+/// `dynamics::bleed::BLEED_TRAVEL_QUANTUM` before the segment it fires after (`plan::bleed_fires`) —
 /// and for the first segment of a piece or a live-tail range that stretch lies behind
 /// every segment box, with one apron texel of margin. Left out of an accounting, the
 /// flux written there is silently clipped by the region's bounds check, and a

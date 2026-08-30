@@ -221,7 +221,7 @@ struct Slot {
     rect_origin: Vec2,
     /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
     orient: f32,
-    /// The `drain` falloff per canvas px — [`BrushParams::drain_px`], the brush's own
+    /// The `drain` falloff per canvas px — [`BrushParams::drain_px`](stark_model::document::BrushParams::drain_px), the brush's own
     /// per-*radius* knob already divided, so the shader's arc length (canvas px) and
     /// this rate are in the same units.
     drain: f32,
@@ -258,7 +258,7 @@ struct Slot {
     /// (§6.4). Zero whenever `cell` is 1.
     cell_anchor: Vec2,
     /// How much the tip grows across this slot's sweep, as a fraction of
-    /// [`frame`](Self::frame) — [`Segment::ramp`](super::super::segments::Segment).
+    /// [`frame`](Self::radius) — [`Sweep::ramp`](super::super::segments::Sweep).
     ///
     /// Zero on a bleed window and on a settle, and both are meant: a firing is a
     /// stretch of *diffusion* at one tip (which is also the radius
@@ -270,7 +270,7 @@ struct Slot {
     /// The tip drawn out along its facing axis (§6.6), solved into the map that
     /// carries a point of the reference travel frame into the frame the prefix-τ
     /// volume and the bake rows are indexed in
-    /// ([`Stretch`](super::super::segments::Stretch)).
+    /// ([`Stretch`]).
     ///
     /// The identity `(1, 0, 1)` for every brush that does not stretch — and, like
     /// the other neutral-at-1 lanes below, that is a triple of *scales* and not of
@@ -408,7 +408,7 @@ impl Slot {
 /// arithmetic, and because a slot's geometry is only meaningful relative to them.
 pub(super) struct PlanCtx<'a> {
     pub(super) rec: &'a StrokeRecord,
-    /// The budget `rec` was flattened at, handed down from [`dynamics_setup`] rather
+    /// The budget `rec` was flattened at, handed down from [`dynamics_setup`](super::dynamics_setup) rather
     /// than recomputed — one place answers what a stroke's segments are. Only the
     /// pen-up frame reads it ([`settle_tangent`]), which re-flattens an extent's
     /// worth of the record and must cut it exactly as the segments in hand were cut.
@@ -432,7 +432,7 @@ const RECT_MARGIN: f32 = 1.5;
 ///
 /// For the scratch pool's sake alone. The maximum drifts a few texels per fold as the
 /// tail's geometry evolves, which would make nearly every checkout a miss
-/// ([`ScratchPool`](super::super::scratch)); rounded, the handful of sizes a stroke's
+/// ([`ScratchPool`](crate::gpu::scratch)); rounded, the handful of sizes a stroke's
 /// folds actually take recur. Nothing the shaders compute changes — stores and reads
 /// are gated by the slot rects and the sweep test, and the `textureDimensions` bounds
 /// only widen onto texels those gates reject — so the round-up moves no pixel.
@@ -501,7 +501,7 @@ fn snapshot_square(rects: &[Rect]) -> u32 {
 /// The cell scratch's square for a piece, in cells: enough for any rect the piece's
 /// snapshot scratch admits at the finest cell the coarse path runs (2), plus the
 /// [`CELL_BORDER`] ring on each side. The same structural-fit move as
-/// [`snapshot_size`]/[`rect_extent`]: both sides of the relation go through this
+/// [`snapshot_square`]/[`dispatch_rect`]: both sides of the relation go through this
 /// function — [`cell_geometry`] asserts against it, `DynamicsRun::cell_scratch`
 /// allocates from it — so no slot a plan can build reads cells the scratch does not
 /// hold.

@@ -94,7 +94,7 @@
 //!
 //! One card at a time, anchored beside the thing it describes and pointing at it.
 //! It is ordinary floating chrome: it wears
-//! [`chrome_class`](crate::layout::chrome_class), so it fades out mid-stroke and
+//! [`chrome_class`], so it fades out mid-stroke and
 //! back when the hand lifts like every other box over the painting, and it never
 //! takes a press meant for the canvas.
 //!
@@ -335,7 +335,7 @@ impl Default for Recent {
 }
 
 /// Everything the tour holds, root-owned like the rest of
-/// [`AppState`](crate::state::AppState).
+/// [`AppState`].
 #[derive(Clone, Copy)]
 pub struct TutorState {
     /// The durable half: the tally and the lessons already given. Loaded by
@@ -511,7 +511,7 @@ impl Anchor {
     /// window, the rack takes only what the miniature under it leaves, and a dialog
     /// is centred in what is left.
     ///
-    /// Asked by [`tests::a_card_is_never_hung_into_the_edge_it_stands_on`] and by
+    /// Asked by `tests::a_card_is_never_hung_into_the_edge_it_stands_on` and by
     /// nothing at runtime, which is why it is compiled only for the test: a placement
     /// is *stated* on the lesson ([`Side`]) rather than derived, so this exists to
     /// check that statement and not to make it.
@@ -606,7 +606,7 @@ enum Side {
     /// either. Sideways a card narrows to fit ([`anchor::room_left`]); there is no vertical
     /// equivalent, because a card narrowed to fit its width is a card that has grown
     /// *taller*. Which is why the placement is the whole of the fix, and why
-    /// [`tests::a_card_is_never_hung_into_the_edge_it_stands_on`] is the guard.
+    /// `tests::a_card_is_never_hung_into_the_edge_it_stands_on` is the guard.
     ///
     /// The arrow cannot be a constant here the way it is for every other placement:
     /// the miniature's height is the artwork's own aspect fitted into a box
@@ -688,7 +688,7 @@ const INSIDE_DEPTH: f32 = 0.25;
 ///   deciding anything. Counted backwards it would foreclose its own lesson for
 ///   practically every user — [`Doing`](Self::Doing).
 ///
-/// So the test for [`Known`] is not "is the deed related" but **would having done it
+/// So the test for [`Answer::Known`] is not "is the deed related" but **would having done it
 /// prove they found the thing the card points at**.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Answer {

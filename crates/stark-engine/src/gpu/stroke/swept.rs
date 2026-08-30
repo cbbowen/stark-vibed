@@ -652,7 +652,7 @@ pub(super) fn opacity_uniform(
 /// slots behind one dynamic-offset bind group.
 ///
 /// One derivation for both consumers — the plain deposit ([`StrokeRenderer::render_swept`])
-/// and the erase pass (`erase.rs`) — for [`StrokeConstants`]'s reason: the two
+/// and the erase pass (`erase.rs`) — for [`StrokeConstants`](super::StrokeConstants)'s reason: the two
 /// rasterize the *same* extent, gated by the same drain, tooth and jitter, and a
 /// second copy of this construction would be a place for them to disagree about
 /// what the extent is.

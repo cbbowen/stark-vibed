@@ -483,7 +483,7 @@ pub enum DocCommand {
     ///
     /// Unlike every other `Add…`, the engine mints no id: a guide's identity is
     /// the id of the action that adds it
-    /// ([`GuideId`](stark_model::document::GuideId)), so the frontend learns it
+    /// ([`GuideId`]), so the frontend learns it
     /// by reading the roster back off the projection rather than being told.
     /// That is also why there is no counter here to resync (§17.9).
     AddGuide {

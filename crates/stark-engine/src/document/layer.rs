@@ -1,7 +1,8 @@
 //! What a layer *holds* (§5.1, §14, §21): its tiles, its matte or its filter, and
 //! the layers it carries.
 //!
-//! The other half — [`LayerId`], [`BlendMode`], [`Place`], [`Parcel`] and the
+//! The other half — [`LayerId`], [`BlendMode`], [`Place`](stark_model::document::Place),
+//! [`Parcel`] and the
 //! rest of what a layer *is* as a fact about the document — is `stark-model`'s
 //! `document::layer`. The line is the usual one (§2): those are in the log, these
 //! hold tiles.

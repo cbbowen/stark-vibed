@@ -10,19 +10,19 @@
 //!
 //! Three pieces, in the order a gesture meets them:
 //!
-//! - [`Grab`] is the pointer bookkeeping: what was pressed, where the hand started
+//! - [`Grab`](crate::panels::reorder::Grab) is the pointer bookkeeping: what was pressed, where the hand started
 //!   and is now, and every row's box **as it stood at the press**. Nothing derived
 //!   is kept, so a row that has slid out of the way cannot feed back into the
 //!   decision that moved it — the same bargain the panel-stack drag makes
-//!   ([`crate::layout::DragState`]).
-//! - [`Slide`] is the column arithmetic: given the block of rows that travels and
+//!   ([`crate::layout::ThumbGrab`]).
+//! - [`Slide`](crate::panels::reorder::Slide) is the column arithmetic: given the block of rows that travels and
 //!   how far the hand has taken it, which rows yield and by how much.
-//! - [`Motion`] is what one row does about it, written as the two CSS declarations
+//! - [`Motion`](crate::panels::reorder::Motion) is what one row does about it, written as the two CSS declarations
 //!   that say so.
 //!
 //! A row that is *both* pressable and draggable has one problem this module also
 //! owns: the browser sends a `click` after the release, and that click belongs to
-//! the drag rather than to the row. See [`claimed`].
+//! the drag rather than to the row. See [`claimed`](crate::panels::reorder::claimed).
 
 use dioxus::prelude::*;
 

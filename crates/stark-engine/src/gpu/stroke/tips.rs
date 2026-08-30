@@ -247,7 +247,7 @@ type NoiseKey = (NoiseKind, u32);
 /// is whatever it has to be, and it is not the profile's own shape — a swept deposit
 /// composes in **optical depth**, so a full pass lays `1 − exp(−τ(y))` where `τ` is
 /// this mask's `κ = −ln(1 − coverage)` integrated along the travel axis
-/// ([`build_prefix_tau`](crate::assets::build_prefix_tau)). Ask instead for the field
+/// ([`build_prefix_tau`]). Ask instead for the field
 /// whose row integrals are
 ///
 /// ```text

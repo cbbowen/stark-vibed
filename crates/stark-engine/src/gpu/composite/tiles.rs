@@ -2,7 +2,7 @@
 //! with matte layers drawn at their own place in the stack (§6.3, §15.4).
 //!
 //! One instanced quad per tile, one per matte, both in the canvas → NDC frame
-//! [`View`] holds. The two pipelines share group 0, so a run that interleaves them
+//! [`ViewUniform`](super::view::ViewUniform) holds. The two pipelines share group 0, so a run that interleaves them
 //! changes only the pipeline and the vertex buffer.
 
 use crate::colorspace::ColorSpace;

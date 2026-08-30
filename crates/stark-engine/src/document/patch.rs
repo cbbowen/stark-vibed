@@ -215,7 +215,7 @@ impl StatePatch {
 }
 
 /// Record what `to` holds for one written resource — the map from the
-/// [`Footprint`](stark_model::document::Footprint) vocabulary to the [`PatchOp`] that
+/// [`Footprint`] vocabulary to the [`PatchOp`] that
 /// puts that resource back, and the whole of the correspondence [`StatePatch::capture`]
 /// rests on.
 ///

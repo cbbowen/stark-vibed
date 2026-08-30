@@ -47,7 +47,8 @@ enum Chrome {
     Hidden,
 }
 
-/// Which [`Compositor`] a render's offscreen attachments come from.
+/// Which [`Compositor`](crate::gpu::Compositor) a render's offscreen attachments come
+/// from.
 ///
 /// Compositing runs through pass-A attachments the size of the target, so *whose*
 /// they are decides who pays for a resize. The substrate's are kept from frame to
@@ -799,8 +800,9 @@ impl Engine {
         self.composite_stack(doc.root().iter(), visible, false)
     }
 
-    /// The draw list for an eyedropper source (§18.0.2) — [`composite_groups`]
-    /// (fn@Self::composite_groups) for the whole-document and one-layer questions,
+    /// The draw list for an eyedropper source (§18.0.2) —
+    /// [`composite_groups`](Self::composite_groups) for the whole-document and one-layer
+    /// questions,
     /// plus the two scoped ones: a group's interior, and the document cut above a
     /// layer. Here rather than in `engine::pick` because it is draw-list
     /// arithmetic: everything it does is a restriction of `composite_stack`'s

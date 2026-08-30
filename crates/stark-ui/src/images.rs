@@ -3,7 +3,7 @@
 //! Three gestures that feel nothing alike — a menu and a file picker, Ctrl+V, a file
 //! dragged onto the window — and are the same thing from here down. All three arrive as
 //! encoded bytes, go through the browser's decoder, and commit one
-//! [`DocCommand::PlaceImage`](stark_engine::command::DocCommand::PlaceImage). So the
+//! [`DocCommand::PlaceImage`]. So the
 //! shared half is [`place_bytes`] and the three entry points are a few lines each,
 //! which is the right proportion: what differs between them is only where the bytes
 //! came from, whether there is a filename to name the layer after, and whether the
@@ -124,7 +124,7 @@ pub fn bind_paste(state: AppState) {
 /// Detached (`spawn_forever`) because no caller has a scope to tie the work to: a menu
 /// item unmounts the moment it is clicked, and a paste and a drop have no component
 /// behind them at all. The task writes nothing but the document, through
-/// [`dispatch`](crate::state::dispatch), so there is no signal of a dead scope to write
+/// [`dispatch`], so there is no signal of a dead scope to write
 /// through — the hazard `files::ExportModal` avoids by doing the opposite.
 fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
     spawn_forever(async move {

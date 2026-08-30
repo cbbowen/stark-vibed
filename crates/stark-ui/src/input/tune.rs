@@ -1,7 +1,7 @@
 //! Accelerator-and-drag tunes the brush instead of painting with it (§18.1.9):
 //! Size sideways, Flow up and down.
 //!
-//! The canvas's own gesture rather than a shared one, unlike [`Nav`](super::Nav):
+//! The canvas's own gesture rather than a shared one, unlike [`Nav`]:
 //! it moves the *brush*, and the overlays that navigate have no brush. Its
 //! readout is what `overlays::TuneReadoutOverlay` draws — a ring for Size, a bar
 //! for Flow — and the Brush panel's own sliders, which is why this is one of the
@@ -13,7 +13,7 @@ use super::*;
 /// How far a tuning drag must travel before it commits to a knob, in page px
 /// (§18.1.9).
 ///
-/// [`MIN_SPAN`]'s reasoning applied to one pointer instead of two: below this the
+/// `nav::MIN_SPAN`'s reasoning applied to one pointer instead of two: below this the
 /// drag's *direction* is noise, and the direction is the whole of what picks the
 /// parameter. A press meant for Size that happens to leave the glass two pixels high
 /// must not arrive as Flow.
@@ -102,7 +102,7 @@ struct TuneDrag {
     /// than an accumulation of steps — so a long gesture cannot drift, and a drag run
     /// past `MAX_RADIUS` and back comes back down the way it went up, since the clamp
     /// is never folded into the base. It is also why every write to
-    /// [`AppState::tune_readout`] is a write and never a read-modify-write: the drag holds
+    /// [`Signals::tune_readout`](crate::state::Signals::tune_readout) is a write and never a read-modify-write: the drag holds
     /// everything the indicator shows, which keeps the picture from drifting out of step
     /// with the gesture (and keeps a `peek` out of an `if`).
     was: f32,

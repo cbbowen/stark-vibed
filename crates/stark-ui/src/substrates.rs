@@ -40,7 +40,7 @@
 //! So the library is `crate::shapes` for substrates, down to the storage: rows (a name
 //! and an id) in `localStorage`, height maps in the blob store beside them (§25.6),
 //! and the shared parts of both in `crate::library`. Import runs through
-//! [`normalize_substrate_image`](crate::platform::normalize_substrate_image), which is where
+//! [`normalize_substrate_image`], which is where
 //! the one real difference between the two lives — a stamp's polarity is a spelling
 //! and a substrate's polarity *is the substrate*, so nothing here inverts anything.
 //!

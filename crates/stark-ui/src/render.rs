@@ -119,7 +119,7 @@ struct Overview {
 /// not the DOM's. What the chrome needs is who is here, where they are, and where
 /// they are working.
 ///
-/// Kept out of [`ObservableState`](stark_engine::ObservableState) for a related
+/// Kept out of [`ObservableState`] for a related
 /// reason: `obs` drives the entire component tree and is refreshed after every
 /// command, while this changes thirty times a second whenever anybody moves.
 #[derive(Clone, PartialEq, Debug)]
