@@ -309,10 +309,9 @@ impl GestureRx {
                     // The head arrives sanitized. `PeerFrame::sanitized` holds a
                     // frame's brush to the bounds `ActionKind::sanitized` holds a
                     // committed one to (§21.5), and `Peers::merge` calls it on the
-                    // door every frame comes through. It used to be done here
-                    // instead, which gated one of the frame's three free-form
-                    // payloads — the one a *stroke* carries — and left the name and
-                    // the cursor to arrive as they were.
+                    // door every frame comes through. Done here instead it would gate
+                    // one of the frame's three free-form payloads — the one a *stroke*
+                    // carries — and leave the name and the cursor as they arrived.
                     self.stroke = Some(StrokeAssembly {
                         id,
                         head,

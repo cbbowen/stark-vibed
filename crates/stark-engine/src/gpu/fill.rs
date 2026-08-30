@@ -91,13 +91,9 @@ pub struct FillRenderer {
     zeroes: Zeroes,
     /// The scratch this renderer opens its scope on — **the one the stroke path uses
     /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
-    /// the two paths draw from one free list.
-    ///
-    /// Today it is used for the scope alone. This renderer's own working textures
-    /// still come from `TilePool` through `Channels::scratch`, so its lease lists stay
-    /// empty and nothing is yet shared but the type — what the pool buys here is the
-    /// submit-then-release ordering the scope enforces, which is the half that was
-    /// duplicated (§7).
+    /// the two paths draw from one free list. Today it is the scope alone: the working
+    /// textures still come from `TilePool` through `Channels::scratch`, so what the
+    /// pool buys here is the submit-then-release ordering (§7).
     scratch: ScratchPool,
     /// Borrowed for the coverage rasterize and for the 0/1 constants bound where a
     /// mask has no tile.

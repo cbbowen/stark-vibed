@@ -366,8 +366,7 @@ impl Engine {
         // Read as a **field**, not through an accessor: a `&self` method borrows the
         // whole engine, and the compositor is borrowed mutably three lines down.
         // Rust splits disjoint fields and not method calls, which is the whole of why
-        // this is written out — and the whole of what the "own the masks so the borrow
-        // of `self` ends" dance here used to be working around.
+        // this is written out.
 
         let scene = CompositeScene {
             substrate_color: bg_channels,
@@ -587,8 +586,9 @@ impl Engine {
     /// which is the whole of what "export a frame" adds: [`ExportPlan::view`] already
     /// exists so that the two things which render a planned rect derive it in one
     /// place, and having said that, exporting one is not a second render path. The
-    /// tail — render off-screen, hand back a future that owns what it reads — was
-    /// written out twice, down to the borrow bargain the doc comment above explains.
+    /// tail — render off-screen, hand back a future that owns what it reads — is
+    /// otherwise written out twice, down to the borrow bargain the doc comment above
+    /// explains.
     pub fn export(
         &mut self,
         into: &mut Offscreen,
@@ -1331,9 +1331,8 @@ pub(super) struct DrawKey {
 ///
 /// Asked in two walks, which is why it is a function: `composite_stack` builds the
 /// draw list, and `stack_below` builds the restriction of it a `PickSource::Below`
-/// sample comes off. The comment here used to say this was "the only place the
-/// question is asked"; it was asked in both, and the second would have kept the old
-/// rule if the first changed.
+/// sample comes off. Written out at each, the second keeps the old rule when the first
+/// changes.
 fn group_of(
     params: CompositeParams,
     own: Vec<CompositeItem>,

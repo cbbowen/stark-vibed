@@ -325,8 +325,9 @@ impl Engine {
         //
         // A gradient capture samples up to `gradient::MAX_SAMPLES` points, and the
         // list is the same list every time: `composite_groups` walks the entire layer
-        // tree, and the only thing the point changed was the cull. So this was a tree
-        // walk per sample to build a hundred-odd copies of one answer. The union is a
+        // tree, and the only thing the point changes is the cull — so a list per
+        // sample is a tree walk to build a hundred-odd copies of one answer. The union
+        // is a
         // *wider* cull than any single patch's, which is sound in the only direction
         // that matters — a cull may name tiles a pass then draws nothing for, never
         // omit one it needed (see `ViewTransform::visible_tiles`) — and the trace is bounded, so
@@ -460,11 +461,11 @@ impl Engine {
     /// Composite one patch of a prepared plan into fresh attachments, returning the
     /// two a readback can name.
     ///
-    /// **Both pick paths ran this, written out twice.** The module header says the two
-    /// "share their machinery down to the readback, and differ only in which axis the
-    /// batch runs along" — they did not share it, they repeated it, and the copies had
-    /// already drifted: one gave `aux` `COPY_SRC` for a texture nothing reads back,
-    /// the other gave `resid` `COPY_SRC` in the path that drops it.
+    /// **Shared by both pick paths**, which is what the module header means by their
+    /// sharing machinery down to the readback and differing only in which axis the
+    /// batch runs along. Written out at each, the copies drift over what the
+    /// attachments are for: one gives `aux` `COPY_SRC` for a texture nothing reads
+    /// back, the other gives `resid` `COPY_SRC` in the path that drops it.
     ///
     /// The usages here are the strict reading. `color` and `resid` are read back (the
     /// eyedropper wants both; a pigment space's residual is just more colour

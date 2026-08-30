@@ -28,12 +28,11 @@
 //! its commands were never submitted, so nothing pending names its leases.
 //!
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
-//! through — the transform, the merge, the fill, the selection. It was two types for
-//! as long as this one's leases had to stay private to the stroke path and those four
-//! had nothing to lease, and the split cost two copies of one flush cadence and two
-//! statements of one ordering rule that had already drifted apart. Those four still
-//! take their working tiles from [`TilePool`](crate::gpu::TilePool) rather than from
-//! here; what they get from this type is the ordering, which was the duplicated half.
+//! through — the transform, the merge, the fill, the selection. As two types, one per
+//! side, it is two copies of one flush cadence and two statements of one ordering rule
+//! that are free to drift. Those four still take their working tiles from
+//! [`TilePool`](crate::gpu::TilePool) rather than from here; what they get from this
+//! type is the ordering, which is the half that would be duplicated.
 //!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the
 //! zero-initialization a fresh texture gets. That is an audited property of every

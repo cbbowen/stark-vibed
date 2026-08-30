@@ -165,11 +165,10 @@ impl Engine {
     ///   image lands, no later arrival un-bakes a stroke laid against the flat
     ///   stand-in (§6.6, §6.4).
     ///
-    /// The three callers had this written out three times and it had already drifted
-    /// three ways — the timelapse was missing the initial substrate, so every frame
-    /// before the log's first `SetSubstrate` deposited against the wrong substrate; it was
-    /// missing the color space too, so a Mixbox document replayed through Oklab's
-    /// shaders; and it swallowed a broken brush asset silently where the other two
+    /// Written out per caller it drifts three ways: a timelapse missing the initial
+    /// substrate deposits every frame before the log's first `SetSubstrate` against the
+    /// wrong substrate; one missing the color space replays a Mixbox document through
+    /// Oklab's shaders; and one swallows a broken brush asset silently where the others
     /// said so. A sequence whose *order* is the correctness argument is a sequence to
     /// write once.
     ///
@@ -181,9 +180,9 @@ impl Engine {
         self.reset_document();
         if file.canvas.color_space != self.shared.color_space.id() {
             // Infallible because of the argument's *type*: a [`ValidatedFile`] is one
-            // whose space this build resolves, and there is no other way to spell one.
-            // This line used to be an `expect` under a comment naming the callers that
-            // had settled it — see [`ValidatedFile`] for the third caller that had not.
+            // whose space this build resolves, and there is no other way to spell one —
+            // which is what makes this sound where an `expect` resting on a list of
+            // callers would not (see [`ValidatedFile`]).
             let cs = crate::colorspace::make(file.canvas.color_space)
                 .expect("a ValidatedFile's color space resolves, by construction");
             self.rebuild_gpu_for(cs);

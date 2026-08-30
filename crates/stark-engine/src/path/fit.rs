@@ -754,9 +754,9 @@ impl PathFitter {
     /// total grows with the window, so a fixed price would mean something different
     /// at every length.
     fn mean_error(&self, fit: &Fit, lo: usize) -> f32 {
-        // Borrowed, not copied: scoring a candidate reads its control points and
-        // never moves them, so the copy this used to make was a whole polygon per
-        // candidate per report to answer one number.
+        // Borrowed, not copied: scoring a candidate reads its control points and never
+        // moves them, so a copy here would be a whole polygon per candidate per report
+        // to answer one number.
         let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc_total();

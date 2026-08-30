@@ -34,9 +34,8 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 /// Absent elements become a zeroed slot with `valid = 0` (a trace's kind), so the
 /// shader branches on data rather than on pipeline variants.
 ///
-/// A free function rather than the `GuideUniform::pack` it replaced: the type is
-/// generated into `stark-shaders` now, and an inherent impl on another crate's type
-/// is not allowed.
+/// A free function rather than an inherent `pack`: the type is generated into
+/// `stark-shaders`, and an inherent impl on another crate's type is not allowed.
 fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
     use stark_model::document::{Lens, PairTrace};
     let inv = view.inverse_linear();

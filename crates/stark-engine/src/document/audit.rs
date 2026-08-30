@@ -138,11 +138,10 @@ fn shape(state: &DocState) -> Vec<(LayerId, usize)> {
 /// Whether two masks are the same selection. Mask tiles are rasterized afresh rather
 /// than rewritten, so handle identity is the content test here too.
 fn selections_agree(a: &Selection, b: &Selection) -> bool {
-    // Asked of the type rather than assembled here: this used to be a chain of four
-    // accessor comparisons, and `Selection` has five fields — `level` and `hull` were
-    // simply absent, so a divergence in the level that decides the outline contour
-    // and the invert reflection would have passed the audit. `Selection::same` is a
-    // destructuring `let`, which cannot lose a field that way.
+    // Asked of the type rather than assembled here. A chain of accessor comparisons
+    // silently covers only the fields it names, so a divergence in the level that
+    // decides the outline contour and the invert reflection passes the audit;
+    // `Selection::same` is a destructuring `let`, which cannot lose a field.
     a.same(b)
 }
 

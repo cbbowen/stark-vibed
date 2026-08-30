@@ -33,8 +33,8 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 ///
 /// **Three modules share this group**, and the list is where that shows: 0–4 are
 /// `blend_common.wesl`'s, 5–6 `mixbox_lut.wesl`'s, and 7–8 `blend_mixbox.wesl`'s. The
-/// partition used to be held by a comment in each file; the slot list names the
-/// declarations, so the host cannot disagree with any of the three about an index, and
+/// slot list names the declarations rather than the partition being held by a comment
+/// in each file, so the host cannot disagree with any of the three about an index, and
 /// `build.rs` checks the linked artifact for a collision between them.
 const BLEND_SLOTS: &[Slot] = &[
     // One slot per blend group in the frame; see [`UniformSlots`].
@@ -80,8 +80,8 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
 ///
 /// **Shared, not owned.** A merge-down through a blend mode runs this very pipeline on
 /// tile-sized targets (§14.11, `gpu::merge`), so a merged layer cannot drift from the
-/// stack it replaced — the same argument the eyedropper makes for sampling through the
-/// compositor rather than beside it. It is behind an `Arc` for a blunter reason too:
+/// stack it stands in for — the same argument the eyedropper makes for sampling
+/// through the compositor rather than beside it. It is behind an `Arc` for a blunter reason too:
 /// building one decodes the Mixbox LUT, which is not a thing to do twice per
 /// document.
 pub(crate) struct BlendPass {

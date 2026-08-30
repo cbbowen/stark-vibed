@@ -821,8 +821,8 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
 /// the prefix-τ volume is looked up in, once the extent is drawn out by
 /// [`BrushParams::elongation`].
 ///
-/// The whole feature is here, so it is worth stating why it costs three floats and no
-/// new texture. Stretching the tip by `s` along a canvas axis `û` is the linear map
+/// The whole feature is here, and it costs three floats and no new texture.
+/// Stretching the tip by `s` along a canvas axis `û` is the linear map
 /// `A = R_û·diag(s, 1)·R_ûᵀ` on the extent, and the deposit is that extent's
 /// integral as it is dragged along the travel `t̂`. Substituting `q = A⁻¹p` turns that
 /// integral into one of the **unstretched** extent — dragged along

@@ -388,7 +388,7 @@ impl ViewTransform {
     /// clamp below cannot do on its own: `f32::clamp` compares, and every comparison
     /// against NaN is false, so `(zoom * NaN).clamp(MIN, MAX)` is NaN and not `MAX`.
     /// A refused pinch leaves the view exactly as the hand found it — see the note on
-    /// the type for what a stored NaN used to cost.
+    /// the type for what a stored NaN costs.
     pub fn pinch(&mut self, anchor: Vec2, to: Vec2, scale: f32, turn: f32) {
         // The canvas point the gesture is holding, read through the view as it stands.
         let held = self.screen_to_canvas(anchor);

@@ -943,9 +943,9 @@ impl TilePool {
     /// creates no wgpu objects at all — it is a `Vec::pop` and an `Arc::new`.
     ///
     /// **The device call is made outside the lock**, which is the whole reason this
-    /// is two phases rather than one. `create_texture` is the single slowest thing
-    /// the pool can do and it used to run *inside* the critical section, so a miss on
-    /// one thread stalled every other thread's `Vec::pop` behind a driver call — and
+    /// is two phases rather than one. `create_texture` is the single slowest thing the
+    /// pool can do, and run *inside* the critical section a miss on one thread stalls
+    /// every other thread's `Vec::pop` behind a driver call — and
     /// `Drop for GpuTex`, which returns a texture from whichever thread happened to
     /// drop it, is exactly such a thread. The accounting still happens under the lock
     /// and in the same order: a miss books its capacity there, so a second acquirer

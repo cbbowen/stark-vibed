@@ -152,10 +152,10 @@ impl GpuContext {
     /// **Installs this crate's device callbacks**, which is not a courtesy — it is
     /// the only way the engine can find out that its device has died.
     /// `Action::Error` is `Infallible` on the stated substrates that "GPU work reports
-    /// failure via wgpu's device error callbacks"; for a long time nothing installed
-    /// one, so the sentence described a mechanism that did not exist and the first
-    /// anyone knew of a lost device was an `expect` in the readback path — an abort,
-    /// on the web, with the painting unsaved.
+    /// failure via wgpu's device error callbacks". With nothing installed that sentence
+    /// describes a mechanism that does not exist, and the first anyone knows of a lost
+    /// device is an `expect` in the readback path — an abort, on the web, with the
+    /// painting unsaved.
     ///
     /// A frontend that had installed its own handler will find it replaced. That is
     /// the right way round: the engine is what has to stop issuing work, and it

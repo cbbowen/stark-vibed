@@ -568,8 +568,8 @@ impl Session {
         let resync = self.tx.resync_due(now);
         let source = self.gesture_source();
 
-        // Asked before anything is built. The comparison used to run against a fresh
-        // `Published`, which cloned the name on every tick of the pump — including the
+        // Asked before anything is built: run against a fresh `Published`, the
+        // comparison clones the name on every tick of the pump — including the
         // overwhelming majority that return `None` two lines later.
         let changed = self
             .published
@@ -1050,12 +1050,11 @@ impl Session {
     /// place to do that is one method rather than a list in the engine that a new
     /// field can be added without joining.
     ///
-    /// [`visible_guides`] is what made that worth stating. A [`GuideId`] is an
-    /// `ActionId`, and a reset puts the client back to `Authoring::solo()` — so the
-    /// first guide of the *next* document is minted at the same `{ lamport: 0, actor }`
-    /// the last one's was, and an eye left open would reopen itself on a guide nobody
-    /// here has ever seen. That is precisely the thing the field's own doc says a
-    /// scaffold must not do.
+    /// [`visible_guides`] is the sharp case. A [`GuideId`] is an `ActionId`, and a
+    /// reset puts the client back to `Authoring::solo()` — so the first guide of the
+    /// *next* document is minted at the same `{ lamport: 0, actor }` the last one's
+    /// was, and an eye left open would reopen itself on a guide nobody here has ever
+    /// seen.
     ///
     /// The in-flight gesture goes too, for [`cancel_stroke`]'s reason: a load is a
     /// moment the hypothesis stopped describing anything.

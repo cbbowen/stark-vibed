@@ -120,7 +120,7 @@ impl Default for FlattenTolerance {
 /// and `attribute` are allowances a pathological span can ask unboundedly much of, so
 /// their pursuit has to stop somewhere and a picture drawn a shade off budget is the
 /// right thing to hand back. [`FlattenTolerance::max_len`] is not one of those: it is a
-/// requirement the caller states, and it used to be silently overridden here whenever a
+/// requirement the caller states, and would be silently overridden here whenever a
 /// span wanted more than 1,024 edges of it. [`span_pieces`] is what keeps the two
 /// apart — the requirement decides how many pieces a span is cut into, this decides
 /// how hard the error bounds are chased inside one.

@@ -396,10 +396,9 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
 
 /// **A commit supersedes the unlogged drag**, whichever commit it is (§17.6).
 ///
-/// The rule was written out at the commit sites that remembered it and absent from
-/// thirteen that did not, so a drag left in flight while some *other* edit landed
-/// pinned the canvas to the dragged value and shadowed it. `RemoveLayer` is the
-/// case here because it is one of the thirteen and because its effect is
+/// Written out per commit site, the rule is absent from whichever sites forget it, so
+/// a drag left in flight while some *other* edit lands pins the canvas to the dragged
+/// value and shadows it. `RemoveLayer` is the case here because its effect is
 /// unmistakable: the layer being previewed at 0% opacity is the layer that goes
 /// away, so a preview that survived the commit would still be drawing it.
 #[test]

@@ -361,8 +361,8 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
 /// Split out because it is the **only** thing here that a substrate or a light swap
 /// invalidates: the attachments are sized by the target and carry the color space's
 /// formats, neither of which a swap touches. `Offscreen::rebind` is what that split
-/// buys — see [`Compositor::ensure_targets`](super::Compositor), where rebuilding
-/// the trio for a swap used to cost a viewport of memory.
+/// buys — see [`Compositor::ensure_targets`](super::Compositor), where rebuilding the
+/// trio for a swap would cost a viewport of memory.
 fn media_bind_group(
     device: &wgpu::Device,
     media: &MediaPass,

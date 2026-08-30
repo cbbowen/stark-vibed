@@ -124,8 +124,8 @@ mod tests {
     /// Swept across a **whole tile stride** rather than checked at one alignment,
     /// because one alignment is precisely what hid it — `tests/footprint.rs` drives
     /// its fills at (40, 40)–(80, 80), which is nowhere near a boundary. At a
-    /// quarter-pixel step several samples land inside the one-pixel window where
-    /// the two answers used to differ.
+    /// quarter-pixel step several samples land inside the one-pixel window where the
+    /// two answers can differ.
     #[test]
     fn the_footprint_names_every_tile_the_plan_writes() {
         use stark_model::document::fill_rect;

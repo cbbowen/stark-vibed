@@ -36,9 +36,9 @@ pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
 /// px from a canvas-space distance (§6.8). Anything drawing into a frame with no
 /// outline over it passes 0.
 ///
-/// A free function rather than the `ViewUniform::new` it replaced: the type is
-/// generated into `stark-shaders` now, and an inherent impl on another crate's type
-/// is not allowed. It is still the only way one is built.
+/// A free function rather than an inherent `new`: the type is generated into
+/// `stark-shaders`, and an inherent impl on another crate's type is not allowed. It is
+/// still the only way one is built.
 pub(crate) fn view_uniform(st: [f32; 4], xlate: stark_model::geom::Vec2, zoom: f32) -> ViewUniform {
     ViewUniform {
         st,

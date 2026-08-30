@@ -26,7 +26,7 @@
 //! else — resolving the pristine handle, taking the working leases, the resume
 //! copy, load-versus-clear, the swept draw, the copy-on-write destination, the
 //! dirty list, the carry, and the submit that has to precede the carry leaving the
-//! call — was written twice, in two files, with the same comments on it.
+//! call — is otherwise written twice, in two files, with the same comments on it.
 //!
 //! So this holds the orchestration and **not** the rendering:
 //! [`IncrementalTileAccumulator::run`] is handed the effect's own pipelines and

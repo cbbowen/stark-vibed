@@ -28,10 +28,10 @@ use std::sync::Arc;
 // drifted, which `tests/dynamics.rs` would eventually notice and no golden would
 // localize.
 //
-// The transition's *width* used to be a fourth. It is a brush parameter now
-// (`ToothParams::softness`), so it arrives as an argument and neither side
-// declares it — the shader keeps only the floor under the division, which is a
-// property of the arithmetic rather than a number to agree on.
+// The transition's *width* is not a fourth: it is a brush parameter
+// (`ToothParams::softness`), so it arrives as an argument and neither side declares it
+// — the shader keeps only the floor under the division, which is a property of the
+// arithmetic rather than a number to agree on.
 use stark_shaders::mirror::paint_common::{RISE_LIMIT, TOOTH_RISE, TOOTH_SOFTNESS_FLOOR};
 
 /// The span the rise is measured across — how far ahead of itself a moving tip reads

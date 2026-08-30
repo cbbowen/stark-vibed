@@ -364,8 +364,8 @@ pub struct CompositorPipeline {
     /// and named nowhere else: the accumulator trio is sized by the target and
     /// carries the color space's formats, and the scratch levels' groups do not name
     /// either. So a swap costs one `create_bind_group`
-    /// ([`media::Offscreen::rebind`]) — where it used to drop and rebuild the
-    /// accumulator, the supersampled target and the whole blend scratch, up to
+    /// ([`media::Offscreen::rebind`]), where one stamp for both would drop and rebuild
+    /// the accumulator, the supersampled target and the whole blend scratch — up to
     /// `MAX_SUPERSAMPLED_BYTES`.
     ///
     /// What made that worth splitting is how ordinary the swap is: every undo or redo

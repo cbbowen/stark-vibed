@@ -67,9 +67,8 @@
 //! span it sees, so an unfiltered console layer would spend two JS calls and two
 //! `String`s per phase per frame reporting timings into the devtools timeline.
 //!
-//! Getting that target right at ~20 call sites is exactly the kind of thing this
-//! codebase makes structural rather than remembered, which is why [`span!`] exists
-//! and why no call site writes `info_span!` by hand.
+//! Getting that target right at ~20 call sites is why [`span!`] exists and why no
+//! call site writes `info_span!` by hand.
 //!
 //! # What it costs, and why it is always on
 //!
@@ -86,11 +85,11 @@
 //!
 //! # Why the layer is written here rather than taken off the shelf
 //!
-//! `tracing-timing` is the crate for this and Stark used it first. Its **read** path
-//! cannot run in a browser — see [`PhaseLayer`] for what exactly goes wrong and what
-//! was kept. The short version: what it offers over these forty lines is
-//! multi-threaded recording, the browser build has one thread, and the machinery that
-//! buys the threads is precisely the machinery that panics without a `std` clock.
+//! `tracing-timing` is the obvious crate for this, and its **read** path cannot run
+//! in a browser — see [`PhaseLayer`] for what exactly goes wrong and what was kept.
+//! The short version: what it offers over these forty lines is multi-threaded
+//! recording, the browser build has one thread, and the machinery that buys the
+//! threads is precisely the machinery that panics without a `std` clock.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -647,8 +646,8 @@ mod tests {
     /// because both of those are plausible things for a later hand to add, and either
     /// would leave every number on screen quietly meaning something different: an
     /// outer row would start reading as "time since the innermost thing that last
-    /// finished". (It is also the shape `tracing-timing` gets to only by turning off
-    /// two of its own defaults, which is how this file used to be written.)
+    /// finished". (It is also the shape `tracing-timing` reaches only by turning off
+    /// two of its own defaults.)
     #[test]
     fn a_span_is_one_row_and_a_child_does_not_eat_the_parent() {
         let t = under_a_subscriber(|| {

@@ -413,8 +413,8 @@ impl Sites {
     ///
     /// `ring` is a [`NonZeroU8`](std::num::NonZeroU8) because a table of no rings is
     /// one [`Sites::nearest`] cannot answer from: its search widens outward and has
-    /// nowhere to stop. That used to be an `unreachable!` at the end of the loop,
-    /// reachable by writing `0` at either call site; the parameter says it instead.
+    /// nowhere to stop. The parameter says that, where an `unreachable!` at the end of
+    /// the loop would be reachable by writing `0` at either call site.
     fn new(period: i32, seed: u32, ring: std::num::NonZeroU8) -> Self {
         let m = period as i64;
         let ring = i64::from(ring.get());

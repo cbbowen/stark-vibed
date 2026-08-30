@@ -72,11 +72,10 @@ const ROOT_LAYER: LayerId = LayerId::ROOT;
 /// before it starts giving up undo depth (§5).
 ///
 /// `DocState` is cheap to clone and tiles are copy-on-write, so history retention
-/// drives GPU memory reclamation for free — but only if something ever retires
-/// history, and for a long time nothing did. `history` keeps its snapshots
-/// geometrically spaced, so what is retained is `O(log n)` states rather than
-/// `O(n)`; each still pins every tile version that has changed since, and on a large
-/// canvas a tile pair is ~640 KB.
+/// drives GPU memory reclamation for free — but only if something retires history.
+/// `history` keeps its snapshots geometrically spaced, so what is retained is
+/// `O(log n)` states rather than `O(n)`; each still pins every tile version that has
+/// changed since, and on a large canvas a tile pair is ~640 KB.
 ///
 /// **This is a bound on a cost that has not been measured**, in the sense
 /// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::TilePool) and the compositor's flush cadence
@@ -146,9 +145,8 @@ use stark_model::MAX_NAME;
 /// model rather than a habit of the UI. The logged action carries the result, so
 /// replay reproduces it without re-running these rules.
 ///
-/// Shared by layers and drawing guides, which is the whole reason it is not called
-/// `normalize_layer_name` any more: the two are named through different commands —
-/// one logged, one view state — and the rule for what a name *is* should not be a
+/// Shared by layers and drawing guides: the two are named through different commands
+/// — one logged, one view state — and the rule for what a name *is* should not be a
 /// property of which command carried it.
 ///
 /// Generic at both ends for that reason too, and only for that reason: the two
@@ -181,11 +179,8 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
 ///   feels.
 ///
 /// Generic because the argument is about what a *projection* is, not about what any
-/// one list holds. It was written twice for the layer roster and applied to it
-/// alone: the guide roster, projected from the same `observe()` at the same rate,
-/// stayed a `Vec` that was deep-cloned and deep-compared per pointer sample even
-/// though a guide's name had already been made an `Arc<str>` citing this very
-/// reasoning. One type is what stops the third list repeating that.
+/// one list holds — a second roster projected from the same `observe()` at the same
+/// rate would otherwise be a `Vec` deep-cloned and deep-compared per pointer sample.
 ///
 /// Derefs to `[T]`, so it is read exactly as the `Vec` it replaces was. Building one
 /// is `Vec::into`, which happens where the list actually changes and nowhere else.
@@ -237,10 +232,8 @@ impl<T: PartialEq> PartialEq for Projected<T> {
     ///
     /// The fall-through keeps the answer exact. Identity alone would be sound
     /// (same `Arc` ⇒ same contents, since the contents are immutable once shared)
-    /// but conservative: a rebuild that changed nothing would report a change, and
-    /// a commit that leaves the tree alone happens on every stroke. Comparing the
-    /// contents when the pointers differ costs that walk only where the old code
-    /// paid it anyway.
+    /// but conservative: a rebuild that changed nothing would report a change, and a
+    /// commit that leaves the tree alone happens on every stroke.
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
     }
@@ -297,9 +290,8 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
     /// had to be a function rather than three comparisons written out. A build is
     /// arbitrary engine code — the layer walk asks
     /// [`merge::plan_at`](crate::document::merge::plan_at) per row, the draw list
-    /// walks every visible tile of every layer — so one that ever read the memo it
-    /// was filling would panic, at run time, on whichever path a test did not take.
-    /// Two of the three held the borrow across exactly that call.
+    /// walks every visible tile of every layer — so one that read the memo it was
+    /// filling would panic, at run time, on whichever path a test did not take.
     ///
     /// `V: Clone`, and cheaply so at all three call sites: the two rosters hand back
     /// an `Arc` bump ([`Projected`]) and the draw list an `Arc<[CompositeGroup]>`. A
@@ -474,10 +466,9 @@ pub struct LayerInfo {
     /// beside it rather than from a document that has moved on since.
     ///
     /// **This is the one field that moves on an ordinary stroke.** Every other one
-    /// describes the tree, which a stroke leaves alone, so the layer list used to
-    /// compare equal across a commit that only painted. It no longer does, and that is
-    /// the feature: a thumbnail that did not notice paint landing on its layer would be
-    /// a wrong picture.
+    /// describes the tree, which a stroke leaves alone — so without this the layer list
+    /// would compare equal across a commit that only painted, and a thumbnail that did
+    /// not notice paint landing on its layer is a wrong picture.
     ///
     /// **A stroke costs one rebuild, at the commit.** Not because the field is cheap
     /// but because a stroke is not in `shown` at all: the live fold is the renderer's
@@ -659,9 +650,9 @@ pub struct ObservableState {
     /// **Projected because the document outlives the device.** The engine's state is
     /// an action log in ordinary memory, so a frontend told this has gone can still
     /// write the file — where discovering the same fact by aborting in the readback
-    /// path, which is how it used to come out, takes the painting with it. What a
-    /// frontend should do with it is stop dispatching and offer to save; what it must
-    /// not do is keep painting, since nothing after this point reaches a pixel.
+    /// path takes the painting with it. What a frontend should do with it is stop
+    /// dispatching and offer to save; what it must not do is keep painting, since
+    /// nothing after this point reaches a pixel.
     ///
     /// An `Arc` so that this projection stays cheap to clone at pointer rate: the
     /// common value is `None`, and the uncommon one is a refcount bump rather than a
@@ -682,21 +673,17 @@ pub struct ObservableState {
 /// seeding is deliberate and is what lets the brush editor's preview open on the
 /// document's own substrate with nothing re-fetched (`CompositorPipeline::sharing`).
 ///
-/// **Why it is a type rather than a constructor's argument list.** `Engine::new_sharing`
-/// used to assemble this field by field, and that had already gone wrong once in the
-/// way such lists do: a renderer added to [`ApplyCtx`] was shared by every engine
-/// except the one that constructor built, and nothing said so until a preview canvas
-/// used it. `ApplyCtx` fixed that one level down by being cloned whole; this is the
-/// same move one level up. A thing added here is shared by construction, on every
-/// path — the new engine, the sibling, and the color-space rebuild.
+/// **Why it is a type rather than a constructor's argument list.** Assembled field by
+/// field, a renderer added to [`ApplyCtx`] is shared by every engine except the one
+/// that constructor builds, and nothing says so until a preview canvas uses it.
+/// `ApplyCtx` closes that one level down by being cloned whole; this is the same move
+/// one level up, so a thing added here is shared on every path — the new engine, the
+/// sibling, and the color-space rebuild.
 ///
 /// It is also what a consumer can *hold*. A preset thumbnail wants the device and the
-/// pipelines and nothing else; before this it had to borrow the whole live
-/// [`Renderer`]-equivalent to reach them, which meant it could not exist without one
-/// and had to be built lazily inside the loop that used it. This clones for a handful
-/// of refcount bumps and outlives whoever it came from.
-///
-/// [`Renderer`]: crate::Engine
+/// pipelines and nothing else, and this clones for a handful of refcount bumps and
+/// outlives whoever it came from — where borrowing a live engine to reach them means
+/// the thumbnail rig cannot exist until one does.
 #[derive(Clone)]
 pub struct EngineShared {
     gpu: GpuContext,
@@ -797,11 +784,10 @@ pub struct Engine {
     /// in-flight gesture, the settled head of each live stroke, and the epoch that
     /// says when a head has gone stale (§17.6).
     ///
-    /// One field rather than four, because they are one thing with one invariant.
-    /// As four they could be — and were — moved independently: three of the epoch's
-    /// five bumps were written out at their call sites, and `DocCommand::Seek`
-    /// dropped the drag preview without bumping it at all when the seek turned out
-    /// to be a no-op. Now the slot cannot move without the epoch moving with it.
+    /// One field rather than four, because they are one thing with one invariant: as
+    /// four they can be moved independently, and a call site that drops the drag
+    /// preview without bumping the epoch shows a document nothing knows is stale. The
+    /// slot cannot move without the epoch moving with it.
     preview: live::Preview,
     /// How much resident tile memory history retention may hold before undo depth
     /// is given up (§5) — [`ViewCommand::SetHistoryBudget`], defaulting to
@@ -875,13 +861,12 @@ pub struct Engine {
 /// Who this client is when it writes to the log (§17.9), and what it owes the
 /// wire (§12.4).
 ///
-/// One struct because they are one thing and they *move* as one thing: an engine
-/// is authoring solo, or as some actor in a session, and every field here changes
-/// at exactly the moments that identity does — sharing, joining, and the reset that
-/// precedes a load. Written out flat they were reset field-by-field in
-/// `reset_document` and constructed field-by-field in two constructors, so what "a
-/// fresh solo session" is had three statements that the compiler could only hold to
-/// the same *shape*, never to the same values.
+/// One struct because they are one thing and they *move* as one thing: an engine is
+/// authoring solo, or as some actor in a session, and every field here changes at
+/// exactly the moments that identity does — sharing, joining, and the reset that
+/// precedes a load. Flat, "a fresh solo session" is stated once in `reset_document`
+/// and again in each constructor, and the compiler can hold those to the same *shape*
+/// but never to the same values.
 struct Authoring {
     actor: ActorId,
     /// This client's Lamport counter: the `lamport` half of every [`ActionId`] it
@@ -914,10 +899,9 @@ impl Authoring {
     /// A fresh, unshared session: the solo actor, the clock at its origin, nothing
     /// owed to anybody.
     ///
-    /// One counter, where there were two. The layer half went with the id shape it
-    /// served: a `LayerId` is the id of the action that minted it, so the clock is
-    /// the only thing a fresh session has to start, and the only thing a loaded one
-    /// has to resume (§17.9).
+    /// One counter, because a `LayerId` is the id of the action that minted it — so
+    /// the clock is the only thing a fresh session has to start and a loaded one has
+    /// to resume (§17.9).
     const fn solo() -> Self {
         Self {
             actor: ActorId::SOLO,
@@ -1033,13 +1017,10 @@ impl Engine {
     /// [`new_sharing`](Self::new_sharing), for a caller that holds the shared half
     /// without holding an engine.
     ///
-    /// That is the difference worth having. A preset thumbnail wants the device and
-    /// the pipelines; asking it to produce a *donor engine* meant borrowing whichever
-    /// live one happened to exist — with its substrate, its document and its in-flight
-    /// gesture — for the length of the call, so the thumbnail rig could not be built
-    /// until one did and had to be created lazily inside the loop that used it. An
-    /// `EngineShared` clones for a handful of refcount bumps and outlives whoever it
-    /// came from.
+    /// That is the difference worth having: a preset thumbnail wants the device and
+    /// the pipelines, and requiring a *donor engine* would mean borrowing whichever
+    /// live one happens to exist — with its substrate, its document and its in-flight
+    /// gesture — for the length of the call.
     ///
     /// The document opens on `shared`'s current substrate, so a preview needs no
     /// `SetSubstrate` step — and no substrate bytes handed across, which is the point.
@@ -1075,15 +1056,12 @@ impl Engine {
     /// and the [`apply_document_substrate`](Self::apply_document_substrate) both
     /// constructors owe once they are set.
     ///
-    /// **This closes [`EngineShared`]'s failure one level up.** That type exists
-    /// because a renderer added to [`ApplyCtx`] was shared by every engine except the
-    /// one whose constructor listed its siblings by hand, and nothing said so until a
-    /// preview canvas used it. Two struct literals naming fourteen identical fields
-    /// were the same shape waiting to happen: a field given a value in one and
-    /// forgotten in the other is invisible on the main canvas and shows up only on a
-    /// preview or a thumbnail — the hardest surface in the app to notice on. A field
-    /// added to [`Engine`] now has one place to be given a value, and the compiler
-    /// asks for it there.
+    /// **[`EngineShared`]'s argument, one level up.** Two struct literals naming
+    /// fourteen identical fields are the same shape waiting to go wrong: a field given
+    /// a value in one and forgotten in the other is invisible on the main canvas and
+    /// shows up only on a preview or a thumbnail, the hardest surface in the app to
+    /// notice on. A field added to [`Engine`] has one place to be given a value, and
+    /// the compiler asks for it there.
     ///
     /// Every parameter is a distinct type, so a transposed argument list is a compile
     /// error rather than a silently wrong engine — which is what makes six positional
@@ -1572,10 +1550,9 @@ impl Engine {
             // Grab-and-drag: content follows the cursor, so the view center moves
             // opposite by the drag delta, carried into canvas units — through the
             // whole map, since a turned or mirrored canvas sends a screen-space drag
-            // somewhere else entirely. Spelled out here until it was one of three
-            // arms writing a view field directly; every arm now names a mutator, so
-            // a command carrying a non-finite number is refused by the view rather
-            // than stored by whichever arm forgot to ask (see [`ViewTransform`]).
+            // somewhere else entirely. Every arm here names a mutator rather than
+            // writing a view field, so a command carrying a non-finite number is
+            // refused by the view rather than stored (see [`ViewTransform`]).
             ViewCommand::Pan { delta } => self.session.view.pan_by(delta),
             ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
             ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
@@ -1621,10 +1598,10 @@ impl Engine {
             }
             // The preview moves the *document* the compositor reads, and stops there:
             // no `apply_document_substrate`, so nothing is baked while the hand is on
-            // the slider. What that costs is honest and worth stating — a preview
-            // shows the scale in the **light**, since the media pass re-reads the
-            // substrate every frame off one uniform, and not in the **tooth**, whose
-            // substrate is a stored bake. Paint already down looks right immediately;
+            // the slider. What that costs: a preview shows the scale in the
+            // **light**, since the media pass re-reads the substrate every frame off
+            // one uniform, and not in the **tooth**, whose substrate is a stored bake.
+            // Paint already down looks right immediately;
             // what the next stroke will bite is right from the commit.
             ViewCommand::PreviewSubstrateScale(scale) => {
                 self.preview_setter(scale.map(ActionKind::SetSubstrateScale));
@@ -1708,10 +1685,9 @@ impl Engine {
     /// show what the smoothing slider beside it would do to that hand.
     /// **Answers what it committed**, which is §4's requirement of anything that
     /// mutates and is not a command: this is a batch of inputs ending in a logged,
-    /// replicated action — the most command-like thing on the facade — and it reported
-    /// nothing at all, so a caller could not tell a committed stroke from a refused
-    /// one. `None` is "these samples held no stroke": none at all, or a hand that never
-    /// left its first point.
+    /// replicated action, so a caller has to be able to tell a committed stroke from a
+    /// refused one. `None` is "these samples held no stroke": none at all, or a hand
+    /// that never left its first point.
     ///
     /// Not routed through `GestureCommand` instead, deliberately. The command tier's
     /// payloads are values a frontend builds per event; this takes a borrowed slice a
@@ -1799,9 +1775,9 @@ impl Engine {
     /// Building the roster is cheap: a handful of rows, a `Copy` camera and an
     /// `Arc` bump apiece. What the memo buys is that an *unchanged* roster hands
     /// back the same `Arc`, so the frontend's "did this move?" stays the pointer
-    /// comparison [`Projected`] exists for. Rebuilt fresh per observation it would
-    /// be a new allocation every time, and every memo over the roster would fall
-    /// through to comparing rows — which is exactly the state this type replaced.
+    /// comparison [`Projected`] exists for. Rebuilt fresh per observation it would be
+    /// a new allocation every time, and every memo over the roster would fall through
+    /// to comparing rows.
     fn projected_guides(&self, build: impl FnOnce() -> Vec<GuideInfo>) -> Guides {
         let key = GuideKey {
             shown: self.shown_key(),
@@ -2071,23 +2047,20 @@ impl Engine {
     /// [`FrozenHead`] built against the old one is stale, and anything the frontend
     /// derived from it is out of date.
     ///
-    /// One call rather than two counters bumped side by side at each of seven sites
-    /// — a commit, either half of undo/redo, a merge, a share, a join, a reset —
-    /// because "these advance together" is the property that has to hold, and a
-    /// site that remembered one and forgot the other would be silent. The
-    /// preview path deliberately does *not* come through here: it moves what is
-    /// drawn without changing the document (see
-    /// [`ObservableState::doc_revision`]).
+    /// One call rather than two counters bumped side by side at each of seven sites —
+    /// a commit, either half of undo/redo, a merge, a share, a join, a reset —
+    /// because "these advance together" is the property that has to hold, and a site
+    /// that remembered one and forgot the other would be silent. The preview path
+    /// deliberately does *not* come through here: it moves what is drawn without
+    /// changing the document (see [`ObservableState::doc_revision`]).
     ///
-    /// **Repointing the brush belongs here too**, for the same argument one scope
-    /// up: a document that has been replaced may no longer hold the layer this
-    /// client had selected, and where that was asked *per cause* it was asked
-    /// wrongly three times over (§17.9). The rule is not "a `RemoveLayer` removes a
-    /// layer" — an undo of an `AddLayer` withdraws one, a merge folds one away, a
-    /// peer's merge arrives having done the same, and a seek crosses additions
-    /// wholesale. All of them come through here, and none of them has to know it:
-    /// [`repoint_active_layer`](Self::repoint_active_layer) returns on its first
-    /// line when the layer still exists, which is every ordinary commit.
+    /// **Repointing the brush belongs here too**, for the same argument one scope up.
+    /// The rule is not "a `RemoveLayer` removes a layer" — an undo of an `AddLayer`
+    /// withdraws one, a merge folds one away, a peer's merge arrives having done the
+    /// same, and a seek crosses additions wholesale (§17.9). All of them come through
+    /// here, and none has to know it:
+    /// [`repoint_active_layer`](Self::repoint_active_layer) returns on its first line
+    /// when the layer still exists, which is every ordinary commit.
     fn committed_changed(&mut self) {
         self.preview.invalidate();
         self.doc_revision += 1;
@@ -2130,23 +2103,19 @@ impl Engine {
     /// logged and the drag in flight is still dropped.
     ///
     /// **One door, so an arm of [`process_doc_inner`](Self::process_doc_inner) is one
-    /// word.** The no-op question used to be a second entry point beside this one, and
-    /// which of the two an arm reached for was a per-arm judgement nothing checked.
-    /// A per-arm judgement about this question has produced a bug before:
-    /// `SetLayerVisible` logged a step for setting the value it already held while
-    /// `SetLayerOpacity` did not. Unifying the two *bodies* fixed that instance and
-    /// left the *choice*; unifying the choice rules out the class (CLAUDE.md). Folding them costs nothing, because every kind
-    /// that took the unchecked door — a stroke, a fill, a transform, a selection, a
-    /// removal, a merge, a move — sits in `is_noop_on`'s exhaustive `false` arm and so
-    /// answers the new question by construction.
+    /// word.** A second entry point that skipped the no-op question would make which
+    /// door an arm reaches for a per-arm judgement nothing checks — and that judgement
+    /// has produced a bug before, `SetLayerVisible` logging a step for setting the
+    /// value it already held while `SetLayerOpacity` did not. Ruling out the class
+    /// costs nothing here, because every kind that would want the unchecked door — a
+    /// stroke, a fill, a transform, a selection, a removal, a merge, a move — sits in
+    /// `is_noop_on`'s exhaustive `false` arm and answers by construction (CLAUDE.md).
     ///
     /// **The unlogged drag in flight is dropped on every path through here**, once,
     /// rather than at each commit site that remembered to. A drag preview is a whole
     /// document standing in for the committed one (§17.6), so anything that moves the
     /// committed document supersedes it — leaving it up pins the canvas to the last
-    /// dragged value and shadows every later edit. Written out at the call sites it
-    /// was present at eight of them and absent from thirteen, including the gesture
-    /// commit, and which thirteen was not a decision anybody had made.
+    /// dragged value and shadows every later edit.
     ///
     /// The declining path drops it too, which is the other half of a setter's
     /// bargain: a slider dragged out and back must log nothing *and* must still
@@ -2216,15 +2185,12 @@ impl Engine {
         // action, so a peer that received the raw kind and cleaned it on arrival would
         // agree about pixels while disagreeing about the log.
         //
-        // One call for every kind, rather than the three payload-level calls this
-        // replaces (`AddFilter`, `SetFilter`, `SetLayerBlend`), which were a list
-        // every new action-with-a-knob had to be added to and the brush, the fill
-        // and the selection op never were.
+        // One call for every kind, rather than a payload-level call per kind that
+        // carries a knob — a list every new action-with-a-knob has to be added to.
         let action = Action { id, kind };
-        // Cloned only when there is somewhere for the copy to go. A `CommitStroke`
-        // carries the stroke's whole fitted control-point list — the largest thing
-        // in the log — and a solo session was duplicating one per commit to drop it
-        // an instruction later.
+        // Cloned only when there is somewhere for the copy to go: a `CommitStroke`
+        // carries the stroke's whole fitted control-point list, the largest thing in
+        // the log, and a solo session has nowhere to put it.
         let broadcast = self.is_shared().then(|| action.clone());
         let ctx = &mut self.shared.apply;
         self.timeline.push(action, ctx);
@@ -2327,11 +2293,10 @@ impl Engine {
     ///
     /// A diagnostic, so a shipping build carries neither the samples nor the field
     /// that would hold them: this is `#[cfg]`, not a runtime `cfg!` around a `Vec`
-    /// that exists either way. Keeping the capture behind a *call* rather than
-    /// behind an `#[cfg]` block at each site is what keeps the gesture arms
-    /// readable, and what stops the two of them disagreeing about the gate again —
-    /// `Start` was ungated while `To` was gated, so a shipping build accumulated the
-    /// first sample of every stroke and dropped the rest.
+    /// that exists either way. Keeping the capture behind a *call* rather than an
+    /// `#[cfg]` block at each site keeps the gesture arms readable, and stops the two
+    /// of them disagreeing about the gate — one gated and one not means a shipping
+    /// build accumulates the first sample of every stroke and drops the rest.
     #[cfg(feature = "debug-unfrozen")]
     fn note_debug_sample(&mut self, capture: Capture, sample: crate::command::InputSample) {
         if capture == Capture::Restart {
@@ -2381,14 +2346,11 @@ impl Engine {
 
     /// Point the brush at `id` if it landed and can take a stroke.
     ///
-    /// **Both halves matter and both were written four times** (`AddLayer`,
-    /// `PlaceImage`, `DuplicateLayer`, `MergeLayerDown`), in three spellings: an
-    /// unknown carrier adds nothing (§14.8), so arming an id no layer has would leave
-    /// the next stroke with nowhere to go — and a matte or a filter has no tile map,
-    /// so arming one would swallow that stroke instead (§15.7, §21.4). Which of the
-    /// two each site checked was not a decision anybody had made: two asked
-    /// `contains_layer`, one asked `is_paintable`, and the fourth asked nothing until
-    /// it was noticed.
+    /// **Both halves matter**, and there are four callers (`AddLayer`, `PlaceImage`,
+    /// `DuplicateLayer`, `MergeLayerDown`) that would otherwise each choose which to
+    /// ask: an unknown carrier adds nothing (§14.8), so arming an id no layer has
+    /// leaves the next stroke with nowhere to go — and a matte or a filter has no tile
+    /// map, so arming one swallows that stroke instead (§15.7, §21.4).
     ///
     /// A no-op otherwise, deliberately: the brush stays where it was, which is a place
     /// that exists, rather than moving somewhere that cannot be painted on.
@@ -2499,10 +2461,10 @@ struct GpuKeep {
 ///
 /// The whole [`EngineShared`] rather than its parts loose, which is the point: a
 /// rebuild is then `self.shared = built.shared` and anything added to the shared half
-/// is rebuilt by construction. Assigned field-by-field, `TransformRenderer` and
-/// `FillRenderer` and `MergeRenderer` each had to be remembered in three places — the
-/// tuple, the constructor and the rebuild — and the rebuild is the one whose omission
-/// shows up only in a document that changed color space.
+/// is rebuilt by construction. Assigned field by field, each renderer has to be
+/// remembered in three places — the tuple, the constructor and the rebuild — and the
+/// rebuild is the one whose omission shows up only in a document that changed color
+/// space.
 ///
 /// The two compositor values come back beside it rather than inside it because they
 /// are **per-engine**: the attachments are this target's, and the pipeline carries

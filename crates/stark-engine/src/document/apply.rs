@@ -203,8 +203,9 @@ impl ApplyCtx {
 /// **The gate every action that lays or moves paint passes through** — the layer's
 /// tiles, the author's mask, the renderer's answer, and the rewrite — in one place.
 ///
-/// It was written out four times (a stroke, a fill, a transform, a merge), and the
-/// three things it settles are the three each copy had to get right on its own:
+/// Four actions lay or move paint (a stroke, a fill, a transform, a merge), and the
+/// three things this settles are the three each would otherwise get right on its
+/// own:
 ///
 /// - a **matte or an absent layer refuses** the edit rather than swallowing it
 ///   ([`paint_base`], §15.7) — here, in the engine, so replay and peers agree about a
@@ -323,8 +324,8 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
     };
     // What the survivor's tiles become, and what its params become — `None` for
     // "its own, untouched", which is the whole content of a filter merge (see
-    // [`MergeKind`](super::merge::MergeKind)). Saying the difference once here is
-    // what the two `return`ing branches this replaced could not.
+    // [`MergeKind`](super::merge::MergeKind)). Said once here rather than by two
+    // `return`ing branches that would each have to state it.
     let (tiles, keeps) = match plan.kind {
         // A **filter** source is the other kind of merge (§14.11.7): nothing is
         // stacked, so the destination's channels are rewritten where they stand and

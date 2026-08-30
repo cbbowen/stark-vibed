@@ -547,13 +547,13 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
     // comparator's stated reason: "steps and seams are loud in the maximum and quiet
     // in the average".
     //
-    // This counted a *fraction* instead, and passed while up to 1% of the frame
-    // differed by any amount whatever. 1% of a 256² golden is 655 texels — a disc of
-    // radius 14, which is the size of the lift-end ring, the settle crease and the
-    // stranded glob, each of which has a bespoke test in `tests/dynamics.rs` because
-    // a golden did not catch it. The hatch also hid ordinary drift: `corpus_curve`
-    // and `corpus_bleed` were 456 and 559 texels out (max 10 and 8) against goldens
-    // nobody had re-blessed, and nothing said so for as long as it stayed under 1%.
+    // Counting a *fraction* instead passes while up to 1% of the frame differs by any
+    // amount whatever. 1% of a 256² golden is 655 texels — a disc of radius 14, the
+    // size of the lift-end ring, the settle crease and the stranded glob, each of
+    // which has a bespoke test in `tests/dynamics.rs` because a golden did not catch
+    // it. A fraction also hides ordinary drift: `corpus_curve` and `corpus_bleed` sat
+    // 456 and 559 texels out (max 10 and 8) against un-re-blessed goldens, silently,
+    // for as long as it stayed under 1%.
     //
     // What the fraction was really absorbing is visible in that measurement's own
     // shape — 2100 texels at 1 level, 3400 at 2, decaying to 2 at 10, scattered at

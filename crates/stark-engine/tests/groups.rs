@@ -724,11 +724,11 @@ fn group_opacity_fades_the_composite_not_the_members() {
 /// A group's opacity fades its **base** exactly once.
 ///
 /// The test above says the two granularities differ; it does not say by how much, and
-/// for a long time the answer was wrong in a way it could not see. `layer_items` tags
-/// every item with the layer's opacity — right for a leaf, where that is the only
-/// place the slider is applied — and the group built from those items then applied it
-/// *again* at the merge. So a group base at 0.5 drew its own paint at 0.25 while
-/// everything it carried drew at 0.5. The slider still faded, the two granularities
+/// that is where the fade can be wrong invisibly. `layer_items` tags every item with
+/// the layer's opacity — right for a leaf, where that is the only place the slider is
+/// applied — and a group built from those items can then apply it *again* at the
+/// merge, so a group base at 0.5 draws its own paint at 0.25 while everything it
+/// carries draws at 0.5. The slider still fades, the two granularities
 /// still differed, and nothing in the suite contradicted it.
 ///
 /// What pins it is a case where the two granularities **coincide**: where a group's

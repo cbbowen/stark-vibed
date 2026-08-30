@@ -569,8 +569,7 @@ impl Engine {
     /// all, only services a cache whose content is fully determined by them.
     /// Idempotent; calling it twice does the work once.
     /// **`pub` for the suite and nothing else** — an integration test is a separate
-    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
-    /// docs to say so.
+    /// crate, so a diagnostic it reads has to be public (`testing`).
     #[doc(hidden)]
     pub fn flush_live(&mut self) {
         if !self.preview.stale {

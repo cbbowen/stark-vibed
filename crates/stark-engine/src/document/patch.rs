@@ -161,10 +161,11 @@ impl StatePatch {
     /// **Driven by the footprint's own write list**, resource for resource, rather
     /// than by a second match on [`ActionKind`](stark_model::document::ActionKind). That is
     /// what makes "a patch restores exactly what the action declared" true by
-    /// construction instead of by inspection: the two used to be parallel matches in
-    /// two files with nothing but prose between them, and Rust's exhaustiveness gets
-    /// the *presence* of an arm, never its *correspondence*. A kind whose footprint
-    /// grows a resource now grows the op that puts it back, in the same edit.
+    /// construction instead of by inspection. As parallel matches in two files there
+    /// is nothing but prose between them, and Rust's exhaustiveness gets the
+    /// *presence* of an arm, never its *correspondence*; driven by the write list, a
+    /// kind whose footprint grows a resource grows the op that puts it back in the
+    /// same edit.
     ///
     /// `Undo` falls out rather than needing an arm: it is never materialized, which
     /// is why its footprint is empty, so it captures nothing.

@@ -3,8 +3,8 @@
 //!
 //! The distinction is the whole subject. `DocState` is cheap to clone and tiles are
 //! copy-on-write, so history retention drives GPU memory reclamation for free — but
-//! only if something ever retires history, and for a long time nothing did. What
-//! makes retiring it *safe* is that the log is the document (§1, §8): folding an
+//! only if something retires history. What makes retiring it *safe* is that the log is
+//! the document (§1, §8): folding an
 //! action out of the undo stack must not fold it out of the file, the timelapse, or
 //! what a joining peer is sent.
 //!

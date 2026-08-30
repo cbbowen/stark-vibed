@@ -186,9 +186,8 @@ impl Selection {
     /// what `document::audit` asks to decide whether a selection differed, so it is
     /// the one place that has to learn about a new field — and a `let` over the
     /// whole struct stops compiling until somebody teaches it, where a chain of
-    /// accessor comparisons would silently keep answering about the fields it
-    /// already knew. It used to be that chain, and it had already stopped covering
-    /// two of the five.
+    /// accessor comparisons would silently keep answering about the fields it already
+    /// knew.
     ///
     /// `hull` is deliberately *not* compared, and the exclusion is a decision rather
     /// than an omission: it is a conservative box carried through the op algebra —

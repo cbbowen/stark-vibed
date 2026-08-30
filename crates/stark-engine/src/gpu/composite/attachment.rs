@@ -3,10 +3,10 @@
 //!
 //! `channels.rs` holds the trio for pooled tiles ([`Channels`](super::super::channels::Channels))
 //! and for borrows ([`Targets`](super::super::channels::Targets)); this is the third
-//! ownership, the one whose members free their memory when they are replaced. It was
-//! written twice — once as `blend`'s `Trio`, once as the first three fields of
-//! `media`'s `Offscreen`, each with its own `targets()` — and the second of those had
-//! to pass its three around behind a disabled lint. One shape, one name.
+//! ownership, the one whose members free their memory when they are replaced. Written
+//! per consumer it is `blend`'s trio and the first three fields of `media`'s
+//! `Offscreen`, each with its own `targets()`, and the second has to pass its three
+//! around behind a disabled lint. One shape, one name.
 //!
 //! Here rather than in `composite.rs` because neither is "the part no single pass
 //! owns", which is what that file says is left in it: four sibling passes reached

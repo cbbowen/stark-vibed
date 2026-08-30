@@ -23,9 +23,9 @@
 //! That it covers *every* kind is `stark_testdata::vocabulary`'s claim rather than
 //! this file's: the run collects what it reached by slot and insists at the end on
 //! the whole roster, and the roster is held complete by an exhaustive match no new
-//! variant can compile past. That match was written out here as well as in the
-//! model's own suite until the day both copies missed the same variant — see its
-//! note for what that cost.
+//! variant can compile past. Written out here as well as in the model's own suite,
+//! both copies can miss the same variant — see that module's note for what that
+//! cost.
 //!
 //! `ActionKind::Undo` is deliberately out of scope: it is resolved by the timeline
 //! and never materialized through `apply` (which is *why* its footprint is empty),

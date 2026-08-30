@@ -110,10 +110,10 @@ const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 /// this path departs from that type. What `UniformSlots` owns is a grow-only
 /// allocation per pass, and the stroke path has something better — a leased buffer
 /// from the scratch pool (`scratch::BufKey`), recycled across strokes rather than
-/// across frames of one. What it does *not* have on its own is the stride law, which
-/// used to be a bare `256` beside a `copy_from_slice` of the uniform's real size: a
-/// uniform that outgrew the quantum would have written over the next slot rather than
-/// widening them, silently, and only for whichever brush reached it.
+/// across frames of one. What it does *not* have on its own is the stride law: spelled
+/// as a bare `256` beside a `copy_from_slice` of the uniform's real size, a uniform
+/// that outgrew the quantum would write over the next slot rather than widening them —
+/// silently, and only for whichever brush reached it.
 const XFORM_STRIDE: u64 = UniformSlots::<TileXform>::STRIDE;
 
 /// How many scratch pairs the sweep rotates through (§6.2) — see
@@ -332,9 +332,9 @@ impl StrokeRenderer {
         // with the latent premultiplied by it, the aux accumulates its height and
         // optical mass additively). The scratch aux is the wide format.
         //
-        // **A ring, not one pair and not one per tile**, and the only reason left is
-        // the second of the two this used to give. Sharing *one* pair across every
-        // tile is sound — each sweep pass clears both targets, so no tile can see what
+        // **A ring, not one pair and not one per tile.** Sharing *one* pair across
+        // every tile is sound — each sweep pass clears both targets, so no tile can see
+        // what
         // the tile before it left — but it serializes the path: tile `n+1`'s sweep
         // writes the very texture tile `n`'s integrate reads, a write-after-read the
         // driver has to order, so the `2N` passes ran strictly back to back. A ring of
@@ -592,7 +592,7 @@ pub(super) fn sweep_binds(
     let device = &r.ctx.device;
     // The brush's prefix-τ texture — image brushes from the asset store, the round tip
     // generated and cached from its hardness — resolved by `render_range`'s own gate
-    // and handed down. It used to be re-resolved here behind an `expect` naming that
+    // and handed down rather than re-resolved here behind an `expect` naming that
     // gate, which is a claim about a caller where passing the value is a fact.
     let prefix_view = tip.prefix.clone();
     let prefix_bg = desc::bind_group_for(

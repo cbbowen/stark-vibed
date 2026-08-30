@@ -51,10 +51,10 @@
 //!
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
-//! **Eight modules used to be both**, which is what the rule forbids and what it was
-//! written about — `stark_engine::InputSample` and `stark_engine::command::InputSample`
-//! were live in the same file of `stark-ui`. They are settled the way the traffic
-//! decided: `command` and `document` are navigated (132 and 4 module-path uses
+//! **A module that is both is what the rule forbids** — `stark_engine::InputSample`
+//! and `stark_engine::command::InputSample` both live, in the same file of `stark-ui`.
+//! The split is settled the way the traffic decided: `command` and `document` are
+//! navigated (132 and 4 module-path uses
 //! outside the crate), so they keep the module and lose their root re-exports;
 //! `assets`, `colorspace`, `engine`, `gpu`, `peer`, `pictures`, `session` and `view`
 //! are not, so they lose the module and the root list absorbs the handful of names
@@ -101,14 +101,11 @@ pub(crate) mod view;
 /// renderer, which is a worse answer than a cold cache.
 ///
 /// At the crate root rather than beside any one of them, because the argument is
-/// about what this crate puts *in* a `Mutex` and not about which module did it — and
-/// the second module to want it is what made that worth saying once.
+/// about what this crate puts *in* a `Mutex` and not about which module did it.
 ///
-/// **Every lock in the crate goes through here.** That was not true for a while:
-/// `TilePool::acquire_tex` and `free_count` panicked where the `Drop` beside them
-/// recovered, and `AssetStore` and `Registry` panicked throughout — so the rule above
-/// held on the paths somebody remembered rather than as a property of the crate. The
-/// list is the whole of it now, and a new `Mutex` belongs on it.
+/// **Every lock in the crate goes through here**, which is what makes the rule above
+/// a property of the crate rather than of the paths somebody remembered. The list is
+/// the whole of it, and a new `Mutex` belongs on it.
 /// `std::result::Result` spelled out, because this crate re-exports an
 /// [`EngineError`]-shaped `Result` below and a bare one here would resolve to that.
 pub(crate) fn unpoisoned<'a, T>(

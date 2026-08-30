@@ -280,9 +280,9 @@ pub(super) fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 ///
 /// **The format is checked here rather than by the caller**, and unconditionally.
 /// The decode is four halves a texel, which is a claim about the texture and not
-/// about the reader — so the reader is where it belongs, and the two callers that
-/// each carried their own `debug_assert` were two copies of one fact that a release
-/// build did not hold at all. A color space whose `color_format` is something else
+/// about the reader — so the reader is where it belongs, rather than a
+/// `debug_assert` per caller, which is one fact copied twice and held in no release
+/// build at all. A color space whose `color_format` is something else
 /// (§6.7 leaves that open) would otherwise hand back a picture decoded at the wrong
 /// stride: not an error, a wrong colour. The formats come from this build's own
 /// pipeline, never from a file or a peer, so an assert is the right shape — there is

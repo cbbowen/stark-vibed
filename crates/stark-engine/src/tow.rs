@@ -446,7 +446,8 @@ mod tests {
                     }
                     let mut tow = Tow::new(rope, tolerance_in(res, zoom), sample(0.0, 0.0));
                     // Reports 4 canvas px apart at this zoom: an unhurried hand at a
-                    // few hundred hertz, which is the case that used to cost seconds.
+                    // few hundred hertz, which is the case a per-report walk costs
+                    // seconds on.
                     let step = 4.0 / zoom;
                     for i in 1..=40 {
                         let mut n = 0usize;

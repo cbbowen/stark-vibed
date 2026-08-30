@@ -121,9 +121,10 @@ impl Engine {
     /// lacks** ([`DocError::UnsupportedColorSpace`](stark_model::DocError)) — the same refusal
     /// [`Engine::load_bytes`] makes about a file, for the same reason and now through
     /// the same door ([`ValidatedFile`]). It is a `Result` because of that: a session
-    /// arrives over a transport, so this is the one adoption path whose input nobody
-    /// in this process has ever looked at, and it used to reach `adopt`'s `expect`
-    /// with the painting unsaved. A frontend shows the refusal and stays where it is.
+    /// arrives over a transport, so this is the one adoption path whose input nobody in
+    /// this process has ever looked at, and an unchecked one would reach `adopt`'s
+    /// `expect` with the painting unsaved. A frontend shows the refusal and stays where
+    /// it is.
     ///
     /// [`ValidatedFile`]: super::file::ValidatedFile
     pub fn join_collaboration(
@@ -269,9 +270,8 @@ impl Engine {
     /// `&mut`, because the fold it counts within is rebuilt lazily: the count is
     /// only meaningful of a serviced fold, so this flushes first — the same
     /// picture the next paint would build.
-    /// **`pub` for the suite and nothing else** — an integration test is a separate
-    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
-    /// docs to say so.
+    /// **`pub` for the suite and nothing else** — see
+    /// [`timeline_stats`](Self::timeline_stats).
     #[doc(hidden)]
     pub fn live_head_count(&mut self) -> usize {
         self.flush_live();
@@ -286,9 +286,8 @@ impl Engine {
     /// design, so only a count can say which one ran — and a commit that quietly
     /// fell back to the whole render is the hitch this path exists to remove,
     /// reported by nothing else.
-    /// **`pub` for the suite and nothing else** — an integration test is a separate
-    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
-    /// docs to say so.
+    /// **`pub` for the suite and nothing else** — see
+    /// [`timeline_stats`](Self::timeline_stats).
     #[doc(hidden)]
     pub fn strokes_reused(&self) -> u64 {
         self.strokes_reused
@@ -305,9 +304,8 @@ impl Engine {
     /// the picture is right while the rule that keeps it right has been broken. It only
     /// becomes visible for a preview that does move tiles, by which point the cause is
     /// several commands behind.
-    /// **`pub` for the suite and nothing else** — an integration test is a separate
-    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
-    /// docs to say so.
+    /// **`pub` for the suite and nothing else** — see
+    /// [`timeline_stats`](Self::timeline_stats).
     #[doc(hidden)]
     pub fn preview_epoch(&self) -> u64 {
         self.preview.epoch()

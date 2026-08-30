@@ -566,9 +566,9 @@ mod tests {
     /// [`QUAD_STRIP`] is exactly `PrimitiveState::default()` with a strip topology,
     /// and [`fullscreen_pipeline`]'s primitive is exactly the default.
     ///
-    /// Both were written out by hand when the pipelines that had spelled them
-    /// inline were folded into [`render_pipeline`], so this is the assertion that
-    /// the fold changed nothing. It is the only way that pass could have moved a
+    /// Both are written out by hand rather than derived from the pipelines that use
+    /// them, so this is the assertion that they still agree. It is the only way that
+    /// could move a
     /// pixel: every other field these helpers fill in is one wgpu validates or one
     /// the shader ignores, whereas winding, culling and topology decide what gets
     /// rasterized and would simply come out different, on ten pipelines, with

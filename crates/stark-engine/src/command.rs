@@ -45,12 +45,10 @@ use serde::{Deserialize, Serialize};
 /// in hand is not part of what a document *is*; the stroke or the op it produced
 /// is, and that is what the log carries.
 ///
-/// It is **not serializable**, and it spent a long time in the document crate on the
-/// strength of that: not being `Serialize` kept it from contradicting the placement
-/// rule *if a type is serializable it lives in the model*, which is a sufficient
-/// condition and not a partition. Nothing in `stark-model` ever read it — every
-/// caller was here or in `stark-ui` — so the rule that actually placed it was the
-/// one its own first paragraph states.
+/// Not being `Serialize` would keep it from contradicting the placement rule *if a
+/// type is serializable it lives in the model*, but that is a sufficient condition
+/// rather than a partition: nothing in `stark-model` reads this, so what places it is
+/// the paragraph above.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
@@ -108,9 +106,9 @@ impl InputSample {
     /// **A sample arrives from outside and one NaN in it is a panic**, which is why
     /// this is a property of the sample rather than a check at each consumer. A
     /// pointer position is the frontend's `screen_to_canvas` of a pointer event, so
-    /// it inherits whatever the view transform is — and a non-finite one used to be
-    /// reachable ([`ViewTransform`](crate::view::ViewTransform), whose mutators now
-    /// refuse to store one). Downstream, `PathFitter` parameterizes its samples by
+    /// it inherits whatever the view transform is — which is why
+    /// [`ViewTransform`](crate::view::ViewTransform)'s mutators refuse to store a
+    /// non-finite one. Downstream, `PathFitter` parameterizes its samples by
     /// arc length, a NaN spreads from `arc` into every curve parameter, and the
     /// normal equations it builds are then unsolvable at *any* ridge — which
     /// `spline`'s solve reports by panicking, because for admissible input it
@@ -178,9 +176,9 @@ impl Default for InputSample {
 /// restated per report because the zoom it derives from can change mid-hover.
 /// `reach` is how far ahead of the cursor the predicted mark extends — canvas
 /// px **by nature rather than by conversion**: the mark is a hypothesis about
-/// paint, paint is denominated on the canvas, and a screen-fixed length grew
-/// in canvas terms as the view zoomed out, promising more painting the less
-/// closely you looked. The window the heading is estimated over rides neither
+/// paint, paint is denominated on the canvas, and a screen-fixed length would grow
+/// in canvas terms as the view zoomed out, promising more painting the less closely
+/// you looked. The window the heading is estimated over rides neither
 /// field: it is a fact about the tolerance alone, so the engine derives it from
 /// `tolerance` (`session`'s `WINDOW_ARC_TOLERANCES`).
 #[derive(Copy, Clone, Debug)]
@@ -468,9 +466,7 @@ pub enum DocCommand {
     /// of what the document *is* — it is saved, and reopening on a different substrate
     /// would be a different painting. It also **gates deposition** (§6.4): the tooth
     /// reads the substrate in force at each action's point in the log, so a switch
-    /// part-way through changes the strokes after it and not the ones before. That
-    /// this was already a logged action is what made the tooth a rendering change
-    /// rather than a history one, exactly as this note anticipated.
+    /// part-way through changes the strokes after it and not the ones before.
     SetSubstrate(SubstrateId),
 
     /// Lay the canvas substrate at a different size (§6.4).
@@ -642,11 +638,11 @@ pub enum ViewCommand {
     /// Not what a *selecting* gesture lands at: a selection's strength is the
     /// whole mask's and is set after the fact
     /// ([`DocCommand::SetSelectionOpacity`], §6.8), which is why that one is the
-    /// selection bar's slider rather than the panel's. One question — how
-    /// strongly does this coverage land — asked of the two places coverage can
-    /// land, and each answer given where its moment is: this one before the
-    /// gesture, with the gesture's other settings; the mask's after, with the
-    /// acts on the whole selection.
+    /// selection bar's slider rather than the panel's. One question — how strongly
+    /// does this coverage land — asked of the two places coverage can land, and each
+    /// answer given where its moment is: this one before the gesture, with the
+    /// gesture's other settings; the mask's after, on the bar that acts on the whole
+    /// selection.
     SetShapeOpacity(f32),
 
     /// Whether collaborators' selection outlines are drawn over the canvas
