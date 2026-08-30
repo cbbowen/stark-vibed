@@ -95,13 +95,10 @@ impl AssetNeed {
 /// that references content cannot be taught to the loader and forgotten by the
 /// transport.
 ///
-/// **Exhaustive, with no `_` arm.** That is what makes the sentence above true of
-/// the *future* and not only of today: a wildcard answers "nothing" for every
+/// **Exhaustive, with no `_` arm.** A wildcard would answer "nothing" for every
 /// variant that does not exist yet, so an action added later carrying an id would
-/// save a document that silently fails to bundle it — and an unresolved substrate
-/// bakes a smooth deposit into tiles no later arrival un-bakes. Adding a variant
-/// stops this function compiling instead, which is the device `minted_layers` and
-/// `tests/footprint.rs`'s `slot` already use.
+/// save a document that silently fails to bundle it. Adding a variant stops this
+/// function compiling instead.
 pub fn action_content(action: &Action) -> Option<AssetNeed> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {
@@ -169,24 +166,13 @@ impl DocumentFile {
     ///
     /// Whoever opens the document has to make this good *before* replaying it: a
     /// `SetSubstrate` whose height map is not registered when its strokes replay
-    /// deposits them through the flat stand-in, and those pixels are stored
-    /// (§6.4).
+    /// deposits them through the flat stand-in, and those pixels are stored (§6.4).
     ///
-    /// **A need is answered by its own store, and that is now a fact about the
-    /// type rather than a rule this function keeps.** The bundle was three
-    /// `Vec`s once — brushes, substrates, pictures — because their bytes decode
-    /// differently (a mask is luminance × alpha, a substrate is channel 0, a
-    /// picture is all four channels kept), and an [`AssetId`] is a *content* hash,
-    /// so one image imported as a stamp and placed as a picture carries one id in
-    /// two stores that cannot stand in for each other. Asking one flattened set
-    /// whether the id was present anywhere answered "bundled" for a substrate whose
-    /// bytes were only in the brush bag — and the miss was the silent one: nothing
-    /// refused the replay, and every stroke made on that substrate deposited
-    /// through the flat stand-in.
-    ///
-    /// The bag is keyed by [`AssetNeed`] now, which *is* "the id, plus which store
-    /// it belongs in". So the wrong answer is no longer something to avoid giving;
-    /// it is something there is no longer a way to ask for (§1).
+    /// **A need is answered only by its own store.** An [`AssetId`] is a *content*
+    /// hash, so one image imported as a stamp and placed as a picture carries one id
+    /// in two stores that cannot stand in for each other. Keying the bag by
+    /// [`AssetNeed`] — the id *plus* which store it belongs in — is what makes asking
+    /// the cross-store question impossible rather than merely wrong (§1).
     pub fn unbundled_content(&self) -> Vec<AssetNeed> {
         let held: std::collections::HashSet<AssetNeed> =
             self.content.iter().map(|(need, _)| *need).collect();
@@ -227,17 +213,12 @@ mod tests {
 
     /// **One content hash, three needs, and each answered only by its own.**
     ///
-    /// The hazard this guards is that an [`AssetId`] is a *content* hash, so one image
-    /// imported as a stamp, laid as a substrate and placed as a picture carries **one
-    /// id** filed three ways — and the three decode differently (luminance × alpha,
-    /// channel 0, all four channels kept). A bundle that answered "present" for any of
-    /// them because the id was somewhere was short by two, nothing refused the replay,
-    /// and every stroke on that substrate deposited through the flat stand-in (§6.4).
-    ///
-    /// That used to be three `Vec`s and a three-armed match that had to remember not
-    /// to cross them. It is one bag keyed by [`AssetNeed`] now, so what is left to
-    /// check is not "does it remember" but "does it match" — the id *and* the kind
-    /// together, which is the whole content of the key.
+    /// An [`AssetId`] is a *content* hash, so one image imported as a stamp, laid as a
+    /// substrate and placed as a picture carries **one id** filed three ways — and the
+    /// three decode differently (luminance × alpha, channel 0, all four channels
+    /// kept). A bundle answering "present" for any of them because the id was
+    /// somewhere would be short by two, nothing would refuse the replay, and every
+    /// stroke on that substrate would deposit through the flat stand-in (§6.4).
     #[test]
     fn one_id_filed_three_ways_is_three_separate_needs() {
         let id = AssetId([7u8; 32]);
@@ -282,9 +263,9 @@ mod tests {
         assert!(d.unbundled_content().is_empty());
     }
 
-    /// `Flat` is procedural: it has no bytes to move, so it is never a need and
-    /// never waited on — the one place that case is answered
-    /// ([`AssetNeed::substrate`]).
+    /// `Flat` is procedural: it has no bytes to move, so it is never a need and never
+    /// waited on ([`AssetNeed::for_substrate`], the one place that case is
+    /// answered).
     #[test]
     fn a_flat_substrate_is_never_owed() {
         let doc = DocumentFile::new(vec![act(ActionKind::SetSubstrate(SubstrateId::Flat))]);

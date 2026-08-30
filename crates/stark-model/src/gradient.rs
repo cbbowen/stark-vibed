@@ -54,22 +54,14 @@ pub struct GradientStop {
 /// refusing funnel on the load path, and it takes the whole document with it — a ramp
 /// sits inside a `Parcel`, a `Filter::GradientMap`, and a
 /// [`FillOp`](crate::document::FillOp)'s parcel, where it is refused *before* that
-/// op's own clamp can run. `RawFillOp` states the opposite policy for a reason that
-/// applies here too: a fill that will not open is worse than one whose opacity was
-/// pulled into range. Today nothing this build writes can fail the gate, so the two
-/// coexist. But adding a condition — a stop-count bound, monotonic lightness — would
+/// op's own clamp can run. Adding a condition here — monotonic lightness, say — would
 /// retroactively unload files that were valid when saved, which §19 does not permit.
-/// A tightened invariant has to arrive as **repair on the way in** (drop the
-/// offending stops, spread coincident positions, fall back to a two-stop ramp) with
+/// A tightened invariant has to arrive as **repair on the way in**, with
 /// [`new`](Self::new) left refusing for the *authoring* path, where a caller who
 /// traced a line does need to hear that the samples describe no ramp.
 ///
-/// [`MAX_STOPS`] is the first condition added that way, and the paragraph above is
-/// why it thins rather than refuses. It is an invariant of *this type* and not of the
-/// fitter that happens to share the number: every consumer reads the stops into a
-/// fixed array of exactly that length (`fill.wesl`, `matte.wesl`,
-/// `filter_common.wesl`), so a ramp longer than the bound is not a richer picture —
-/// it is an index past the end of a uniform.
+/// [`MAX_STOPS`] is the one condition added that way, which is why it thins rather
+/// than refuses.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
 #[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]
@@ -85,21 +77,16 @@ impl Gradient {
     /// no ramp to rescale).
     ///
     /// **Only the positions are checked**, because only the positions can be wrong:
-    /// a [`Srgb`] is inside the cube by construction, so the color half of what this
-    /// used to refuse cannot be handed to it. That is also why `Gradient::clamped`
-    /// is gone — it was this branch's stepping stone to the newtype, three callers
-    /// clamping a ramp on the way into a document, and the type now does it on the
-    /// way into a *stop*.
+    /// an [`Srgb`] is inside the cube by construction.
     ///
     /// The only door, and it refuses: a caller that traced a line expecting a ramp
     /// needs to hear "these samples do not describe one" (§22.2), and so does a file
     /// carrying a stop list that is not one.
     ///
-    /// **Except for the count, which is thinned rather than refused** — see the
-    /// type's own note. Every other condition here is about a list that names no
-    /// ramp at all; a long list names one perfectly well and simply names more of
-    /// it than a uniform can hold, so refusing would unload a file over something
-    /// this can answer.
+    /// **Except for the count, which is thinned rather than refused.** Every other
+    /// condition here is about a list that names no ramp at all; a long list names one
+    /// perfectly well and simply names more of it than a uniform can hold, so refusing
+    /// would unload a file over something this can answer.
     pub fn new(mut stops: Vec<GradientStop>) -> Option<Self> {
         if stops.len() < 2 {
             return None;
@@ -214,11 +201,9 @@ fn thin(stops: &mut Vec<GradientStop>) {
     if len <= MAX_STOPS {
         return;
     }
-    // Through [`pick_index`](crate::pick_index) for the reason the lasso's
-    // decimation is: `usize` is 32 bits in the browser. This one is safe by size
-    // alone — the product needs 286M stops to overflow, which is 4.6 GB — but the
-    // arithmetic should hold itself rather than rest on a bound stated elsewhere,
-    // and there is no reason for the crate's two decimations to be spelled
+    // Through `pick_index` for the reason the lasso's decimation is: `usize` is 32
+    // bits in the browser. Safe by size alone here — the product needs 286M stops to
+    // overflow — but there is no reason for the crate's two decimations to be spelled
     // differently.
     *stops = (0..MAX_STOPS)
         .map(|i| stops[crate::pick_index(i, len - 1, MAX_STOPS - 1)])
@@ -233,8 +218,7 @@ fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
 fn from_lab(lab: [f32; 3]) -> Srgb {
     let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
     // A lerp between in-gamut colors can leave the sRGB cube (Oklab is wider), and
-    // the constructor is where that is held — which is the third clamp `Srgb` has
-    // absorbed rather than the first it has added.
+    // the constructor is where that is held.
     Srgb::new([s[0], s[1], s[2]])
 }
 
@@ -256,12 +240,9 @@ pub const MAX_SAMPLES: usize = 128;
 /// what a shader does with the number. Every consumer copies the stops into a fixed
 /// array of exactly this length — `fill.wesl`'s `stop_c`, `matte.wesl`'s `Ramp`,
 /// `filter_common.wesl`'s gradient map, each asserted equal to this constant
-/// host-side (§6.10) — so the constant, the shader and *the data* have to agree.
-/// The first two were pinned by a `const` assert while the third was free: `fit`
-/// respected the bound, and a stop list arriving from a file or a peer went through
-/// `try_from`, which checked everything about a ramp except how long it was. The
-/// assert cannot see that, because it is not about the data; only the constructor
-/// can, which is where the bound now is.
+/// host-side (§6.10) — so the constant, the shader and *the data* have to agree. A
+/// `const` assert can pin the first two but not the data, which is why the bound is
+/// in the constructor.
 pub const MAX_STOPS: usize = 16;
 
 /// The fitting tolerance: the largest Oklab distance allowed between the
@@ -480,12 +461,10 @@ mod tests {
 
     /// What a stored ramp can smuggle past the funnel: nothing.
     ///
-    /// Serde's `try_from` routes through this impl, so this is the test of what a file,
-    /// a peer, or a library entry in browser storage can land — and it **refuses**,
-    /// which is worth a note because for a while it could not. A schema used to be
-    /// discovered by tracing this impl with synthetic values, so a funnel that turned
-    /// one away could not describe itself and had to be relaxed; `carbonite(as)` states
-    /// the shape as the stop list instead, and nothing drives the conversion (§8).
+    /// Serde's `try_from` routes through this impl, so this is the test of what a
+    /// file, a peer, or a library entry in browser storage can land — and it
+    /// **refuses**. `carbonite(as)` states the shape as the stop list, so nothing
+    /// drives the conversion to find out what the type looks like (§8).
     #[test]
     fn deserialization_funnels_through_the_same_gate() {
         assert!(Gradient::try_from(vec![stop(0.0, [0.0; 3]), stop(1.0, [1.0; 3])]).is_ok());
@@ -504,13 +483,11 @@ mod tests {
     /// `fill.wesl`, `matte.wesl` and `filter_common.wesl` each hold exactly
     /// [`MAX_STOPS`] lanes, and the hosts that fill them index by the stop's own
     /// position — so one stop past the bound is an index off the end of a uniform,
-    /// which is a panic on two of those three paths. Nothing bounded it: `fit`
-    /// respected the number, and every other way in went through this gate, which
-    /// checked what a ramp *is* and never how long.
+    /// which is a panic on two of those three paths.
     ///
     /// Thinned rather than refused, because a long list names a perfectly good ramp
-    /// (see [`Gradient`]) — so what is asserted is that the ramp *survives*, keeps
-    /// its ends, and stays a ramp.
+    /// (see [`Gradient`]) — so what is asserted is that the ramp *survives*, keeps its
+    /// ends, and stays a ramp.
     #[test]
     fn a_ramp_longer_than_the_uniform_is_thinned_rather_than_refused() {
         let long: Vec<GradientStop> = (0..=1000)

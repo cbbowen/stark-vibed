@@ -29,15 +29,12 @@
 //!
 //! # Why the whole of it is here, in the document
 //!
-//! A guide used to be view state — per-client, unlogged, unsaved, outside the
-//! undo history — on the argument that it is an aid for the hand holding the
-//! pen, like the pan and the zoom. That argument was wrong about what a guide
-//! *is*. A perspective set up over a drawing is part of the drawing's
-//! construction: it is what the artist reasons in, it is worth as much care as
-//! a layer, and losing it on reload — or leaving a collaborator unable to see
-//! the scaffold the work is being built on — is losing work. So a guide is a
-//! document entity now, with an id, saved in the log, replicated to peers and
-//! undoable (§20.5).
+//! A guide is not an aid for the hand holding the pen, the way the pan and the
+//! zoom are. A perspective set up over a drawing is part of the drawing's
+//! construction: it is what the artist reasons in, it is worth as much care as a
+//! layer, and losing it on reload — or leaving a collaborator unable to see the
+//! scaffold the work is being built on — is losing work. So a guide is a document
+//! entity, with an id, saved in the log, replicated to peers and undoable (§20.5).
 //!
 //! The one thing that stayed per-client is **whether a guide is drawn**. That
 //! genuinely is about the hand rather than about the drawing: shutting a
@@ -47,12 +44,12 @@
 //! combined into one per-client reading of the roster (`GuideInfo`).
 //!
 //! And it defaults to **not drawn**, which is the same sentence read forwards: a
-//! document now carries every perspective anyone ever built over it, so laying
-//! them all on the canvas the moment it opens would make the scaffolding into
-//! something you have to clear away. The construction is kept; looking at it is
-//! a thing you ask for. Nothing here knows that — a camera has no eye — but it
-//! is why the derivations below gate on the guide's own controls and never on
-//! whether it is on screen.
+//! document carries every perspective anyone ever built over it, so laying them all
+//! on the canvas the moment it opens would make the scaffolding into something you
+//! have to clear away. The construction is kept; looking at it is a thing you ask
+//! for. Nothing here knows that — a camera has no eye — but it is why the
+//! derivations below gate on the guide's own controls and never on whether it is on
+//! screen.
 //!
 //! # What is derived
 //!

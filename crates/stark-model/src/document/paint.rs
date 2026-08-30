@@ -5,21 +5,8 @@
 //! [`Fill`](super::ActionKind::Fill) lands a [`Parcel`] through `fill.wesl`; a matte
 //! layer stands in one through `matte.wesl` (§15.4). Both reach the same
 //! `ramp_common::ramp_position`, both take their colors from the same picker, and
-//! both are gated by the same `sanitized`.
-//!
-//! # It was two types
-//!
-//! `MattePaint` was a second enum with the same two cases, and its `sanitized` was
-//! word for word this one's — under a comment saying so, and saying why it had not
-//! been merged: the two "reached the file at different times and their wire shapes
-//! were written differently", so merging was a save-format change and worth doing on
-//! its own rather than as a side effect. This is that change, taken while §19's beta
-//! rung is unclaimed and the format is still free to move.
-//!
-//! What it buys is not the deleted lines. It is that a matte and a fill can no longer
-//! *diverge*: the gap that comment was written to explain had been open long enough
-//! for one of the two to clamp a solid color and hand a ramp's forty-eight floats
-//! through untouched, from the same picker into the same texel.
+//! both are gated by the same `sanitized` — one type, so a matte and a fill cannot
+//! diverge over what paint is.
 
 use serde::{Deserialize, Serialize};
 
@@ -73,11 +60,7 @@ impl Parcel {
     /// comes through.
     ///
     /// Held here rather than at those gates because it is a fact about *paint*, and
-    /// there is now one kind of paint for both of them to lay. It was written twice —
-    /// once for a fill, once for a matte, word for word — and before that `FillOp`
-    /// clamped a `Solid` and passed a `Gradient` through untouched: a solid's three
-    /// floats guarded and a ramp's forty-eight not, from the same picker, into the
-    /// same texel. Two copies of a gate is how that happens twice.
+    /// there is one kind of paint for both of them to lay.
     ///
     /// **An unusable axis degrades the parcel to the ramp's anchor**, rather than
     /// being clamped into a different axis or refusing the fill. That is the honest

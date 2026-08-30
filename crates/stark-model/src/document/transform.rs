@@ -106,16 +106,11 @@ impl PerspectiveMap {
     /// the quad cannot be measured.
     ///
     /// **An `Option` for [`WarpMap::image_aabb`](super::warp::WarpMap::image_aabb)'s
-    /// reason**, and it took the footprint to make that visible. The fold below is
-    /// `min`/`max`, which return the *non*-NaN operand, so a non-finite corner used
-    /// to step straight over the box and leave it looking tight — and
-    /// `footprint.rs` passed the result through as `Some(...)`, where the warp arm
-    /// beside it fell back to the whole layer. That was safe only because `usable`
-    /// refuses such a map at `apply`, which is honesty resting on a refusal in
-    /// another file — the very thing `MergeLayerDown`'s footprint declines to do.
-    /// Said this way the two arms are the same claim for the same reason, and a
-    /// caller with no `apply` behind it cannot get a tight box out of a map that
-    /// has none.
+    /// reason.** The fold below is `min`/`max`, which return the *non*-NaN operand, so
+    /// a non-finite corner would step straight over the box and leave it looking
+    /// tight. Answering `None` instead means a caller with no `apply` behind it cannot
+    /// get a tight box out of a map that has none — rather than resting on `usable`
+    /// refusing the map in another file.
     pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
         self.corners.iter().all(|c| c.is_finite()).then(|| {
             let lo = self.corners.iter().fold(self.corners[0], |a, p| a.min(*p));

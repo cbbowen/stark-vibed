@@ -2,9 +2,8 @@
 //! (§4, §5).
 //!
 //! The submodules are **crate-private**, and the re-exports below are the API — the
-//! same rule `stark-engine`'s `document` keeps, and for the same reason: publishing
-//! both gives every type two paths, `document::BrushParams` and
-//! `document::brush::BrushParams`, with nothing choosing between them.
+//! same rule `stark-engine`'s `document` keeps: publishing both would give every type
+//! two paths, with nothing choosing between them.
 //!
 //! What is *not* here is the state these actions fold into. `DocState`, `Layer`'s
 //! tiles, the `Selection`'s mask and the `Timeline` that materializes them are all
@@ -74,8 +73,7 @@ pub use warp::{Lattice, MAX_WARP_GRID, Prepared, WarpMap, cell_point};
 /// The tiles a fill would write, as a canvas box — `None` when it would be unbounded.
 ///
 /// `pub` where its neighbours are `pub(crate)` because the planner that consumes it
-/// is in the other crate now (§2), and so is the pass that must write exactly the
-/// tiles this names. That it is one function reaching across is the point: a fill's
-/// written tiles and its footprint have to be *the same* tiles (§12.6), so there is
-/// one derivation of them and both sides call it.
+/// is in the other crate (§2), and so is the pass that must write exactly the tiles
+/// this names: a fill's written tiles and its footprint have to be *the same* tiles
+/// (§12.6), so there is one derivation and both sides call it.
 pub use fill::fill_bounds;

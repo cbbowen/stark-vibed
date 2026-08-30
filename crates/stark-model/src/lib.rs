@@ -21,10 +21,7 @@
 //!
 //! The mechanical form of the same test is `#[derive(Serialize)]`: if a type is
 //! serializable it is a fact about the document and lives here; if it holds a tile
-//! it is a cache and lives there. That is not a judgement call — it is the
-//! invariant §8 already enforces, which is why the boundary can be checked rather
-//! than remembered.
-//!
+//! it is a cache and lives there.
 
 pub mod color;
 pub mod colorspace;
@@ -38,20 +35,12 @@ pub mod path;
 pub mod peer;
 pub mod substrate;
 
-// # What the root re-exports, and what it does not
+// The small modules below are flat, so their headline types are lifted here and the
+// module stays available for the rest.
 //
-// The small modules below are flat: `color`, `colorspace`, `content`, `geom`,
-// `gradient`, `io`, `path`, `peer` and `substrate` each hold a handful of items, so
-// their headline types are lifted here and the module stays available for the
-// rest. That is the ordinary prelude shape.
-//
-// **`document` is the exception, and it is deliberate.** It has a curated
-// re-export list of its own over crate-private submodules (see its header), so a
-// type there already has exactly one public path — and lifting a subset of them
-// again gave `LayerId` two, `SelectionOp` two, and `ActionId` and `FillOp` one
-// apiece, with nothing choosing between them and no rule saying which four were
-// special. Nothing in the workspace ever took the short path; the four are gone
-// rather than the other twenty added, so `document::` means what it says.
+// `document` is the exception: it has a curated re-export list of its own over
+// crate-private submodules (see its header), so a type there already has exactly one
+// public path, and lifting a subset again would give those two.
 pub use color::Srgb;
 pub use colorspace::ColorSpaceId;
 pub use content::{AssetNeed, action_content};
@@ -67,46 +56,25 @@ pub use peer::{GestureFrame, PeerFrame, StrokeHead};
 pub use stark_assetid::{AssetId, MAX_SHAPE_DIM};
 pub use substrate::{SubstrateId, SubstrateScale};
 
-/// `x` into [0, 1], with NaN landing on 0 — **the crate's NaN policy**, in one
-/// place because it is one policy.
-///
-/// `max`-then-`min` rather than `clamp`, which is what makes the NaN clause true:
-/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. Same
-/// argument as [`BrushParams::taper_px`](document::BrushParams::taper_px), and the
-/// reason clippy's suggestion here is the wrong one.
-///
-/// It grew up in `document::brush`, which is where the values it guards were first
-/// coming from, and moved here when the fourth caller was a
-/// [`Gradient`] — a type outside `document` entirely. Every
-/// deserialization gate in the crate spells the bound this way now
-/// ([`SelectionOp::at`](document::SelectionOp::at),
-/// [`FillOp::with_paint`](document::FillOp::with_paint)), and each of them at some
-/// point spelled it `clamp` instead — passing a `NaN` opacity through the very
-/// funnel that exists to stop one. One definition, so the policy cannot be
-/// half-remembered at the next gate.
-///
-/// A gradient used to be a third caller, through a `Gradient::clamped` that is gone:
-/// a ramp's stops are [`Srgb`]s, which cannot be built outside the cube, so the
-/// newtype holds there what this holds here (see
-/// [`Gradient::new`](gradient::Gradient::new)). That is the shape to prefer where a
-/// type can carry the bound — this is for the knobs that are bare `f32`s.
 /// Longest name that travels, in `char`s.
 ///
-/// Not a taste limit but a bound on what one client can make every other client
-/// hold. Two different names travel and the argument is the same for both: a layer's
-/// or a guide's is replicated to every peer and saved with the document, and a
+/// A bound on what one client can make every other client hold: a layer's or a
+/// guide's name is replicated to every peer and saved with the document, and a
 /// presence frame's display name is republished to the whole session — and nothing
-/// about a text field stops a paste from being a megabyte. Counted in `char`s and not
-/// bytes because it is user text, so the cut can never land inside one.
+/// about a text field stops a paste from being a megabyte. Counted in `char`s and
+/// not bytes because it is user text, so the cut can never land inside one.
 ///
 /// Here rather than in [`peer`], which is only the presence half: `stark-engine`'s
-/// `normalize_name` caps a *layer* name to this, and a layer name borrowing the
-/// presence protocol's limit would read as a coincidence. Here rather than in the
-/// engine for the reason [`clamp01`] is here — the model cannot depend on the engine
-/// (§2), and this is the side both can reach. One definition, so the two cannot agree
-/// at 64 by having been written twice.
+/// `normalize_name` caps a *layer* name to this too. Here rather than in the engine
+/// because the model cannot depend on the engine (§2).
 pub const MAX_NAME: usize = 64;
 
+/// `x` into `[0, 1]`, with NaN landing on 0 — **the crate's NaN policy**, stated
+/// here and cited from the gates that hold to it.
+///
+/// `max`-then-`min` rather than `clamp`, which is what makes the NaN clause true:
+/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. That
+/// is why clippy's suggestion here is the wrong one.
 pub(crate) const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }
@@ -114,11 +82,9 @@ pub(crate) const fn clamp01(x: f32) -> f32 {
 /// `x` if it is a number this parameter can be, else `fallback` — [`clamp01`]'s
 /// companion for a knob with **no upper bound** to clamp to.
 ///
-/// Falling back to the field's own default rather than to zero is
-/// [`ColorAdjust::sanitized`](document::ColorAdjust)'s argument, read for any
-/// parameter: `NaN` says nothing about which end was meant, and a radius silently
-/// rounded to 0 is a brush that paints nothing, which is a worse answer than the
-/// one the slider ships at.
+/// Falling back to the field's own default rather than to zero: `NaN` says nothing
+/// about which end was meant, and a radius silently rounded to 0 is a brush that
+/// paints nothing, which is a worse answer than the one the slider ships at.
 pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
     if x.is_finite() { x } else { fallback }
 }
@@ -126,15 +92,11 @@ pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
 /// `x` as a non-negative length or rate: finite, and floored at zero.
 ///
 /// **Finite first, then floored**, and that order is the whole of it. A bare
-/// `x.max(0.0)` turns a `NaN` into 0 and an *infinity* into an infinity, which is
-/// exactly half a guard — and the half that was missing is the one a shader
-/// notices: an infinite feather reaches `selection.wesl` as a coverage ramp of
-/// infinite width, where `0.5 - sd/w` is `0.5` at every texel that is not itself
-/// infinitely far away, and `NaN` at the ones that are. A selection nobody asked
-/// for, drawn at half strength across the plane.
-///
-/// Every non-negative length in the crate goes through here now — a brush's radius,
-/// drain and tapers, a selection's feather, a fill's feather.
+/// `x.max(0.0)` turns a `NaN` into 0 but passes an infinity through — and the
+/// infinity is the half a shader notices: an infinite feather reaches
+/// `selection.wesl` as a coverage ramp of infinite width, where `0.5 - sd/w` is
+/// `0.5` at every texel that is not itself infinitely far away. A selection nobody
+/// asked for, drawn at half strength across the plane.
 pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
     finite_or(x, fallback).max(0.0)
 }
@@ -142,20 +104,13 @@ pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
 /// `x` held to `[lo, hi]`, with a non-finite `x` landing on `neutral` —
 /// [`finite_or`]'s companion for a knob that has a range at **both** ends.
 ///
-/// The third shape the crate's gates come in, and the one that was missing: every
-/// bounded knob spelled it inline instead, which is five copies of six lines and
-/// one of the two orderings that matter. `is_finite` **first**, then `clamp` — a
-/// bare `clamp` returns the `NaN` it exists to catch, since both of its comparisons
-/// against one are false ([`clamp01`] is the same argument for the unit interval,
-/// where `max`-then-`min` says it without a branch).
+/// `is_finite` **first**, then `clamp`, for [`clamp01`]'s reason: a bare `clamp`
+/// returns the `NaN` it exists to catch.
 ///
-/// Falling back to `neutral` rather than to a bound is
-/// [`ColorAdjust::sanitized`](document::ColorAdjust)'s argument, and it is why this
-/// takes three numbers rather than two: `NaN` says nothing about which end was
-/// meant, so the answer is the setting that cannot make a picture worse — which for
-/// an exposure is 0, for a contrast 1, and for a blend's bend
-/// [`DRAGO_K`](document::DRAGO_K). A bound would have to pick one end and be wrong
-/// half the time.
+/// It takes three numbers rather than two because `NaN` says nothing about which end
+/// was meant, so the fallback is the setting that cannot make a picture worse — 0
+/// for an exposure, 1 for a contrast, [`DRAGO_K`](document::DRAGO_K) for a blend's
+/// bend. A bound would have to pick one end and be wrong half the time.
 pub(crate) fn finite_in(x: f32, neutral: f32, (lo, hi): (f32, f32)) -> f32 {
     if x.is_finite() {
         x.clamp(lo, hi)
@@ -170,20 +125,16 @@ pub(crate) fn finite_in(x: f32, neutral: f32, (lo, hi): (f32, f32)) -> f32 {
 /// The width is the whole reason this is a function rather than three characters at
 /// each call site. `usize` is **32 bits on `wasm32`**, so the obvious
 /// `i * span / out_of` wraps once `span` passes `u32::MAX / out_of` — for a lasso
-/// (`out_of` = 4096) that is about 1.05 million vertices, some 8 MB of [`Vec2`],
-/// which a document reaches easily and which deflate hides on the way in (§8).
-///
-/// A debug build panics there, which is at least loud. A release build **wraps, and
-/// lands on a perfectly valid index**: the browser then decimates a *different*
-/// polygon than a native peer decodes from the same bytes, and §6.8 allows exactly
-/// one amount of disagreement between two clients rasterizing the same log. Nothing
-/// in the suite can see it — every test host is 64-bit, and
-/// `cargo check --target wasm32-unknown-unknown` is green either way.
+/// (`out_of` = 4096) about 1.05 million vertices, which a document reaches easily
+/// and which deflate hides on the way in (§8). A release build wraps onto a
+/// perfectly valid index, so the browser decimates a *different* polygon than a
+/// native peer decodes from the same bytes — a §6.8 divergence no test host can
+/// see, since they are all 64-bit.
 ///
 /// Same stance as [`TileRect::covering`](geom::TileRect::covering)'s `i64`: the
-/// arithmetic holds itself, instead of resting on a bound stated in another file.
+/// arithmetic holds itself instead of resting on a bound stated in another file.
 /// Both decimations in the crate go through here — [`SelectionShape::sanitized`]
-/// and `gradient::thin` — so there is one place to be right.
+/// and `gradient::thin`.
 ///
 /// [`SelectionShape::sanitized`]: document::SelectionShape::sanitized
 pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
@@ -197,11 +148,9 @@ mod tests {
 
     /// [`pick_index`] is exact where the naive `usize` product is not.
     ///
-    /// The span here overflows a `u32` against a lasso's own `out_of`, which is the
-    /// case the browser reaches and this host does not — so what this really pins is
-    /// the *arithmetic*, against a `u128` reference that has room for either width.
-    /// It would fail outright if the body narrowed back to `usize` on a 32-bit
-    /// target, which is the regression it exists for.
+    /// The span overflows a `u32` against a lasso's own `out_of` — the case the
+    /// browser reaches and this host does not — so what this pins is the arithmetic,
+    /// against a `u128` reference with room for either width.
     #[test]
     fn a_pick_is_exact_past_the_32_bit_product() {
         let out_of = 4096usize;

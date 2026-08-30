@@ -18,10 +18,10 @@ use stark_assetid::{MAX_PICTURE_DIM, Picture};
 ///
 /// Every other tile cap in the document is a judgement about how much work one action
 /// may ask for ([`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES),
-/// [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES)), and each carries
-/// the risk of disagreeing with the thing it bounds. Here there is nothing to judge:
-/// [`MAX_PICTURE_DIM`] already bounds the box, so the tile count follows from it, and
-/// a plan that exceeded this could only mean the arithmetic below is wrong.
+/// [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES)), each carrying the
+/// risk of disagreeing with what it bounds. Here [`MAX_PICTURE_DIM`] already bounds
+/// the box, so the tile count follows from it and a plan that exceeded this could only
+/// mean the arithmetic below is wrong.
 pub const MAX_IMAGE_TILES: usize = {
     // The picture's own span, plus the apron band `image_tiles` reaches into, can
     // start anywhere within a tile — hence one partial tile at each end.
@@ -40,12 +40,10 @@ pub const MAX_IMAGE_TILES: usize = {
 /// the cast starts rounding — silently, to as much as a whole tile at the far end of
 /// the `i32` grid.
 ///
-/// So this is the point at which the placement stops being the one it says it is.
-/// The picture's own span comes off the budget because [`extent`] adds it to `at`
-/// and that sum has to be exact too. About 16.7 million canvas px from the origin,
-/// which is four orders of magnitude past any painting and still a refusal rather
-/// than a rounding — the stance §16.1 takes for a transform that cannot be repaired
-/// into a different transform without changing what the author asked for.
+/// So this is the point at which the placement stops being the one it says it is. The
+/// picture's own span comes off the budget because [`extent`] adds it to `at` and that
+/// sum has to be exact too. About 16.7 million canvas px from the origin — four orders
+/// of magnitude past any painting, and still a refusal rather than a rounding (§16.1).
 const MAX_EXACT_PLACEMENT: i32 = (1 << 24) - MAX_PICTURE_DIM as i32;
 
 /// The picture's own extent in canvas px, `[lo, hi)` — `None` for a placement too
@@ -73,21 +71,20 @@ fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
 /// here at all.
 ///
 /// A tile is written when its **texture** holds any of the picture — the interior plus
-/// the apron band, because a tile's texture starts one texel before its interior and
-/// content reaching into that band belongs to the neighbour too (§6.4). Stated that
-/// way, and filtered rather than merely quantized, because [`TileRect::covering`]
-/// floors both bounds: a picture ending exactly on a tile boundary would otherwise
-/// name the tile past it, and an all-zero tile is worse than no tile — it pollutes
-/// `bounds` and holds pool memory for a texel of nothing.
+/// the apron band, since a tile's texture starts one texel before its interior and
+/// content reaching into that band belongs to the neighbour too (§6.4). Filtered
+/// rather than merely quantized, because [`TileRect::covering`] floors both bounds: a
+/// picture ending exactly on a tile boundary would otherwise name the tile past it,
+/// and an all-zero tile pollutes `bounds` and holds pool memory for a texel of
+/// nothing.
 ///
-/// `None` refuses the whole action, deterministically, for a placement whose box
-/// falls off the `i32` tile grid — or, well before that, one too far from the origin
-/// for `f32` to state exactly (`MAX_EXACT_PLACEMENT`). Refused rather than rounded,
-/// because a placement is a promise about landing texels on pixels one for one and a
-/// rounded one is a different placement wearing the same numbers. [`MAX_IMAGE_TILES`] cannot be
-/// exceeded by a picture `stark_assetid::picture` admitted, so a `None` from
-/// [`tiles_of`] would be a bug in that arithmetic rather than a document to refuse —
-/// which is why the cap is derived and not chosen.
+/// `None` refuses the whole action, deterministically, for a placement whose box falls
+/// off the `i32` tile grid — or, well before that, one too far from the origin for
+/// `f32` to state exactly (`MAX_EXACT_PLACEMENT`). Refused rather than rounded,
+/// because a placement is a promise about landing texels on pixels one for one.
+/// [`MAX_IMAGE_TILES`] cannot be exceeded by a picture `stark_assetid::picture`
+/// admitted, so a `None` from [`tiles_of`] would be a bug in that arithmetic rather
+/// than a document to refuse.
 pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
     let (lo, hi) = extent(at, picture)?;
     let apron = Vec2::splat(TILE_APRON as f32);
@@ -115,17 +112,6 @@ mod tests {
         }
     }
 
-    /// **Every tile the plan names holds some of the picture, and every tile that
-    /// holds some of it is named.**
-    ///
-    /// Swept across a whole tile stride on both axes rather than checked at one
-    /// alignment, because one alignment is exactly what hides a boundary case: the
-    /// over-claim this exists to catch appears only when an edge lands *on* a tile
-    /// boundary, and the under-claim only when it lands one texel inside the apron
-    /// band.
-    ///
-    /// Stated against the tile's own interior rather than against the padded box the
-    /// plan quantizes, so the two derivations are independent: a tile is named exactly
     /// **A placement past what `f32` states exactly is refused, not rounded.**
     ///
     /// `PlaceImage` promises the picture's texels land on canvas pixels one for one
@@ -163,6 +149,16 @@ mod tests {
         assert_eq!((hi.x - lo.x) as u32, img.width, "and so does the span");
     }
 
+    /// **Every tile the plan names holds some of the picture, and every tile that
+    /// holds some of it is named.**
+    ///
+    /// Swept across a whole tile stride on both axes rather than checked at one
+    /// alignment, because one alignment is exactly what hides a boundary case: the
+    /// over-claim appears only when an edge lands *on* a tile boundary, and the
+    /// under-claim only when it lands one texel inside the apron band.
+    ///
+    /// Stated against the tile's own interior rather than against the padded box the
+    /// plan quantizes, so the two derivations are independent: a tile is named exactly
     /// when its interior, grown by the apron it must show, meets the picture.
     #[test]
     fn the_plan_names_exactly_the_tiles_the_picture_touches() {

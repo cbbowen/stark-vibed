@@ -91,12 +91,10 @@ fn hermite_axis(d: &[Vec2], k: usize, f: f32) -> Vec2 {
 /// caller that would have to *build* the slice first.
 ///
 /// **It reads at most four of the `len` entries**: `k − 1`, `k`, `k + 1`, `k + 2`,
-/// clamped at the ends. That is the whole reason this shape exists.
+/// clamped at the ends — which is the whole reason this shape exists.
 /// [`Prepared::eval`] evaluates a row-hermite per control row and then interpolates
-/// across them, and materializing every row to hand over as a slice meant computing
-/// all `rows` of them — plus a `Vec` — for the four it goes on to read. In the
-/// frontend's mesh drag that runs per sample of the hand, which is what
-/// [`WarpMap::prepared`] exists to keep cheap.
+/// across them, so a slice would mean computing all `rows` of them, plus a `Vec`, for
+/// the four it reads. In the frontend's mesh drag that runs per sample of the hand.
 ///
 /// Bit-identical to feeding it the full slice, which §16.4 requires: the entries it
 /// does read are computed the same way and combined in the same order, and the ones
@@ -152,13 +150,13 @@ fn axis_basis(len: usize, k: usize, f: f32) -> Vec<f32> {
 /// The fine lattice a [`WarpMap`] rasterizes through: base coordinates per axis
 /// and the image of every lattice node, row-major (`ny` rows of `nx`).
 ///
-/// **Fields are private and [`WarpMap::lattice`] is the only way to one**, which
-/// is what makes the methods below total rather than merely lucky: `positive`
-/// walks `0..ny - 1` and `aabb` reads `pts[0]`, so a hand-built empty lattice
-/// panicked on both. The constructor guarantees at least `SUBDIV + 1` nodes an
-/// axis (a map is refused below two control points), so there is no degenerate
-/// lattice left to defend against — §1's preference for ruling out a class over
-/// checking for its instances.
+/// **Fields are private and [`WarpMap::lattice`] is the only way to one**, which is
+/// what makes the methods below total rather than merely lucky: `positive` walks
+/// `0..ny - 1` and `aabb` reads `pts[0]`, both of which a hand-built empty lattice
+/// would panic on. The constructor guarantees at least `SUBDIV + 1` nodes an axis (a
+/// map is refused below two control points), so there is no degenerate lattice to
+/// defend against — §1's preference for ruling out a class over checking for its
+/// instances.
 pub struct Lattice {
     nx: usize,
     ny: usize,
@@ -351,7 +349,7 @@ impl WarpMap {
 
     /// Which control cell the grid fraction `t` falls in on one axis, and how far
     /// through it — the shared half of [`eval`](Self::eval) and
-    /// [`basis`](Self::basis), which carried a verbatim copy each.
+    /// [`basis`](Self::basis).
     fn locate(t: f32, n: usize) -> (usize, f32) {
         let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
         let k = (u.floor() as usize).min(n - 2);
@@ -440,8 +438,8 @@ impl Prepared<'_> {
         let (kx, fx) = WarpMap::locate(t.x, cols);
         let (ky, fy) = WarpMap::locate(t.y, rows);
         // Row deviations on demand rather than collected: the outer hermite reads
-        // four of the `rows` of them, so building all of them into a `Vec` was the
-        // allocation `prepared` removed from this loop, put straight back.
+        // four of the `rows` of them, so a `Vec` here would put back the allocation
+        // `prepared` exists to remove.
         let delta = hermite_axis_by(
             rows,
             |j| hermite_axis(&self.deltas[j * cols..(j + 1) * cols], kx, fx),
@@ -543,9 +541,8 @@ mod tests {
     ///
     /// §16.4's identity invariant is stated bitwise and the watertightness of the
     /// rasterized quads rests on shared points agreeing to the bit, so a `Prepared`
-    /// that reassociated anything would be a second implementation quietly
-    /// disagreeing with the first — the class of drift this codebase keeps ruling
-    /// out with one shared formula (`grid_base`, `rect_corners`, `lerp2`).
+    /// that reassociated anything would be a second implementation quietly disagreeing
+    /// with the first.
     #[test]
     fn preparing_changes_nothing_about_the_answer() {
         let (min, max) = rect();
@@ -572,10 +569,9 @@ mod tests {
     /// them**, which is what lets [`Prepared::eval`] read four rows instead of
     /// building all of them (see [`hermite_axis_by`]).
     ///
-    /// The eager version is spelled out here because it no longer exists anywhere
-    /// else — the whole point of the change was to have one path — so this is the
-    /// only thing standing between a future edit and a silent difference. §16.4 is
-    /// stated bitwise, so `assert_eq` rather than a tolerance.
+    /// The eager version exists nowhere else, so this is the only thing standing
+    /// between a future edit and a silent difference. §16.4 is stated bitwise, so
+    /// `assert_eq` rather than a tolerance.
     ///
     /// Driven over a mesh whose deviations are all *different*: on the identity mesh
     /// every row deviation is zero, and lazy and eager cannot be told apart.
@@ -595,8 +591,8 @@ mod tests {
                 let t = Vec2::new(i as f32 / 20.0, j as f32 / 20.0);
                 let (kx, fx) = WarpMap::locate(t.x, cols);
                 let (ky, fy) = WarpMap::locate(t.y, rows);
-                // What `eval` used to do: every row deviation, collected, then the
-                // outer hermite over the slice.
+                // The eager form: every row deviation, collected, then the outer
+                // hermite over the slice.
                 let deviations: Vec<Vec2> = (0..rows)
                     .map(|r| hermite_axis(&prepared.deltas[r * cols..(r + 1) * cols], kx, fx))
                     .collect();

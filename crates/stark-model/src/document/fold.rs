@@ -57,11 +57,9 @@ pub trait Materialize: Clone {
     /// surgery cheaper (§12.6) without changing what it means.
     ///
     /// **`footprint` is handed in rather than derived**, and it is the one the
-    /// [`Logged`] already carries. An implementor that restores by write list is
-    /// asking exactly the question this type was given a cached answer to, and the
-    /// engine's did derive it again — once per `inverse`, which is once per cached
-    /// state per shift. Passing it makes the cache reach its second consumer and
-    /// takes away the call site's chance to be wrong (see [`Logged`]'s note).
+    /// [`Logged`] already carries: an implementor that restores by write list is
+    /// asking exactly the question that cache answers, so passing it in both saves
+    /// the rederivation and takes away the call site's chance to disagree.
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &Self) {
         let _ = (action, footprint);
         self.clone_from(previous);
@@ -71,32 +69,27 @@ pub trait Materialize: Clone {
     /// what its [`Footprint`] declared — the rule §12.6 opens with, asked of every
     /// fold rather than of a table.
     ///
-    /// **The rule is the one thing here that nothing structural holds.** Seven
+    /// **The rule is the one thing here that nothing structural holds.** The
     /// exhaustive matches over `ActionKind` say every action *has* a footprint; none
-    /// of them says the footprint is the one its `apply` arm honours, and the
-    /// compiler cannot: the two are a walk of the tree and a list of resources.
-    /// `stark-engine/tests/footprint.rs` asked it of a hand-driven vocabulary, which
-    /// is a sample. This asks it of every action every test in the workspace folds.
+    /// of them says the footprint is the one its `apply` arm honours, and the compiler
+    /// cannot: the two are a walk of the tree and a list of resources.
+    /// `stark-engine/tests/footprint.rs` asks it of a hand-driven vocabulary, which is
+    /// a sample; this asks it of every action every test in the workspace folds.
     ///
     /// A no-op by default, and by default it also costs nothing: the caller only
-    /// clones the previous state when an implementor has something to compare. A
-    /// consumer whose state is a counter has no business paying for this.
+    /// clones the previous state when an implementor has something to compare.
     ///
-    /// Debug-only because the comparison is a walk of the layer tree per action,
-    /// which is fine for a test and not for a release fold — and because a violation
-    /// is a bug in *this* crate's tables, not a state a shipped build should try to
-    /// survive.
+    /// Debug-only because the comparison is a walk of the layer tree per action, and
+    /// because a violation is a bug in *this* crate's tables rather than a state a
+    /// shipped build should try to survive.
     ///
-    /// **The gate is on the call, not on this declaration.** Both live here
-    /// unconditionally so the trait has *one shape in every profile*: gated, its
-    /// members would depend on `debug_assertions` at the definition, and the
-    /// arrangement would hold only for as long as every crate that names this
-    /// trait is compiled under one profile. A `[profile.*.package.stark-model]`
-    /// override, or any split that reaches one side of the boundary and not the
-    /// other, would report itself as "`audit` is not a member of trait
-    /// `Materialize`" from a line nobody edited. An implementor is free to gate
-    /// *its* override — `DocState` does — and falls back to this no-op where the
-    /// gate is off, which is the same release fold either way.
+    /// **The gate is on the call, not on this declaration**, so the trait has one
+    /// shape in every profile. Gated here, its members would depend on
+    /// `debug_assertions` at the definition, and a `[profile.*.package.stark-model]`
+    /// override — or any split reaching one side of the crate boundary and not the
+    /// other — would report itself as "`audit` is not a member of trait
+    /// `Materialize`" from a line nobody edited. An implementor is free to gate *its*
+    /// override; `DocState` does.
     fn audit(_before: &Self, _after: &Self, _action: &Action, _footprint: &Footprint) {}
 
     /// Whether [`audit`](Self::audit) has anything to say — and so whether the fold
@@ -111,31 +104,27 @@ pub trait Materialize: Clone {
 /// An [`Action`] paired with the state it is to be folded into — the local type that
 /// carries the `history::Action` impl.
 ///
-/// Transparent in every way that matters: [`Deref`](std::ops::Deref) gives the
-/// action straight back. Its first job is to be *this crate's* type, so the impl
-/// below can be written at all. Its second is to be the **one door onto the
-/// history**, which is what lets the two things below happen exactly once per
-/// action instead of once per question asked about it.
+/// Transparent in every way that matters: [`Deref`](std::ops::Deref) gives the action
+/// straight back. Its first job is to be *this crate's* type, so the impl below can be
+/// written at all. Its second is to be the **one door onto the history**, which is
+/// what lets the two things below happen once per action rather than once per question
+/// asked about it.
 ///
 /// # What the door does
 ///
-/// **It sanitizes** ([`ActionKind::sanitized`](super::ActionKind::sanitized)). Every action reaching a state
-/// comes through here — a local commit, a replay from a file, a peer's action
-/// merged into the replicated log — and this is the "enters state" half of the
+/// **It sanitizes** ([`ActionKind::sanitized`](super::ActionKind::sanitized)). Every
+/// action reaching a state comes through here — a local commit, a replay from a file,
+/// a peer's action merged into the replicated log — the "enters state" half of the
 /// funnel §21.5 describes, with `Engine::commit` the "is minted" half. Peers still
-/// converge because sanitizing is a pure, idempotent function of the action: two
-/// peers handed the same log materialize the same state whether or not the log
-/// itself was ever cleaned.
+/// converge because sanitizing is a pure, idempotent function of the action.
 ///
-/// **It computes the footprint once.** `history` builds a centralizer once per
-/// removal and then asks it about *each* later action
-/// (`History::try_remove_action_with`), so `Centralizer::commutes` used to
-/// rebuild the other action's footprint on every comparison — two `Vec`
-/// allocations always, a walk of the whole control-point list for a stroke, and
-/// for a `TransformWarp` an entire fine-lattice solve (`WarpMap::image_aabb`,
-/// 57×57 nodes at an 8×8 grid). An undo across a warp was quadratic in the log for
-/// an answer that cannot change: a footprint is a pure function of an action, and
-/// the action is not moving. Held here, it is paid once at push.
+/// **It computes the footprint once.** `history` builds a centralizer once per removal
+/// and then asks it about *each* later action (`History::try_remove_action_with`), so
+/// deriving the other action's footprint per comparison makes an undo across a
+/// `TransformWarp` quadratic in the log — each comparison a fresh fine-lattice solve
+/// (`WarpMap::image_aabb`, 57×57 nodes at an 8×8 grid) for an answer that cannot
+/// change. A footprint is a pure function of an action, so held here it is paid once
+/// at push.
 #[derive(Clone, Debug)]
 pub struct Logged<S: Materialize> {
     action: Action,
@@ -216,9 +205,9 @@ impl<S: Materialize> history::Action for Logged<S> {
     }
 }
 
-/// Borrowed from the action rather than rebuilt: both halves read the footprint
-/// each `Logged` already carries, which is the whole of the fix described on the
-/// type. `commutes` is the hot one — it runs once per later action, per removal.
+/// Borrowed from the action rather than rebuilt: both halves read the footprint each
+/// `Logged` already carries (see the type's note). `commutes` is the hot one — it runs
+/// once per later action, per removal.
 impl<'a, S: Materialize> history::Centralizer<'a, Logged<S>> for &'a Footprint {
     fn for_action(action: &'a Logged<S>) -> Self {
         action.footprint()

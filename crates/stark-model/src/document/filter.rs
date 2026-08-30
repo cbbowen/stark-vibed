@@ -37,10 +37,9 @@ use crate::finite_in;
 /// wherever it reads best — a variant is matched by *name*, not by position, so
 /// inserting one does not disturb the filters in saved files (§8, `ActionKind`).
 ///
-/// `Clone`, not `Copy`, since the gradient map arrived: a ramp is a stop list, and
-/// the enum's old `Copy` was always documented as lasting until the first variant
-/// that carries more than a handful of numbers. A filter is still read once per
-/// render and once per projection, so the clones stay countable.
+/// `Clone` rather than `Copy`, because a gradient map carries a stop list. A filter is
+/// still read once per render and once per projection, so the clones stay
+/// countable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Filter {
     /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
@@ -140,18 +139,12 @@ impl Filter {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
             Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
-            // A `Gradient`'s structural invariants (two stops, ascending, finite)
-            // are already held by construction — deserialization funnels through
-            // `Gradient::new`, and its stops' *range* is held by `Srgb`, which is
-            // the only thing a stop's color can be. So this arm has nothing left to
-            // do, and it is worth leaving as an arm rather than folding into a
-            // catch-all: this is where a gradient map's knobs would go if it grew
-            // one, and the enum is exhaustive here for `sanitized`'s usual reason.
-            //
-            // It has been three things on this branch — a loop spelling the bound
-            // `f32::clamp` (which returns the NaN it exists to catch), then a call
-            // to `Gradient::clamped`, and now nothing at all. That is the newtype's
-            // whole argument in one arm.
+            // A `Gradient`'s structural invariants (two stops, ascending, finite) are
+            // held by construction — deserialization funnels through `Gradient::new` —
+            // and its stops' *range* is held by `Srgb`. So this arm has nothing to do,
+            // and stays an arm rather than a catch-all: it is where a gradient map's
+            // knobs would go if it grew one, and the match is exhaustive for
+            // `sanitized`'s usual reason.
             Filter::GradientMap(g) => Filter::GradientMap(g),
         }
     }
@@ -450,12 +443,10 @@ mod tests {
     /// A gradient map's stops are inside the cube **before the sanitizer sees
     /// them**, which is what the newtype bought.
     ///
-    /// This used to assert that `Filter::sanitized` clamped them, and it was the
-    /// only one of the three ramp sites that did. Now a stop's color is an
-    /// [`Srgb`](crate::Srgb) and there is no way to build one outside the cube, so
-    /// what is left to check is that the *ramp* still survives being given hot
-    /// values — the clamp must not turn two stops into a degenerate one — and that
-    /// the sanitizer is the identity on it.
+    /// A stop's color is an [`Srgb`](crate::Srgb), and there is no way to build one
+    /// outside the cube — so what is left to check is that the *ramp* survives being
+    /// given hot values (the clamp must not turn two stops into a degenerate one) and
+    /// that the sanitizer is the identity on it.
     #[test]
     fn a_gradient_maps_stops_are_inside_the_cube_before_it_is_sanitized() {
         use crate::Srgb;

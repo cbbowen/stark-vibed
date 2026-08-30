@@ -24,17 +24,12 @@ use crate::clamp01;
 /// boundary convention (§6.5) as a type rather than as a promise.**
 ///
 /// Every color the *document* carries is one of these: the substrate a painting sits
-/// on (§15.5), a matte's paint, a fill's parcel, a gradient stop. They had four
-/// separate clamps between them, one per funnel — and the funnels were where three of
-/// the four were missing. `SetSubstrateColor` and `Parcel` had none at all and sat
-/// under a comment saying there was nothing to hold; the ramp's was spelled
-/// `f32::clamp`, which returns the `NaN` it exists to catch.
+/// on (§15.5), a matte's paint, a fill's parcel, a gradient stop.
 ///
-/// There is nothing left to remember. The only way to build one clamps
-/// ([`new`](Self::new)), and that is what `Deserialize` runs too, so a color outside
-/// the cube cannot arrive from a file or a peer either. No `sanitized` in the crate
-/// mentions color any more, which is the whole point: §1 prefers ruling out a class
-/// to enumerating its instances, and a color out of range is the class.
+/// The only way to build one clamps ([`new`](Self::new)), and that is what
+/// `Deserialize` runs too, so a color outside the cube cannot arrive from a file or a
+/// peer either — §1's preference for ruling out a class over enumerating its
+/// instances, where the class is "a color out of range".
 ///
 /// # Why it derefs
 ///
@@ -46,19 +41,17 @@ use crate::clamp01;
 /// # What is deliberately not one
 ///
 /// [`PaintEffect::color`](crate::document::PaintEffect::color) stays a bare
-/// `[f32; 3]`. Not an oversight: the frontend writes it a component at a time —
-/// a channel slider assigns `color[1]` — so a wrapper there would need setters
-/// that re-clamp, which is the *other* design (a value you may mutate carefully)
-/// rather than this one (a value that cannot be built wrong). And a brush already
-/// has a funnel of its own in `BrushParams::sanitized`, which is exactly what the
-/// four sites here did not.
+/// `[f32; 3]`. The frontend writes it a component at a time — a channel slider
+/// assigns `color[1]` — so a wrapper there would need setters that re-clamp, which is
+/// the *other* design (a value you may mutate carefully) rather than this one (a value
+/// that cannot be built wrong). A brush has a funnel of its own in
+/// `BrushParams::sanitized`.
 ///
 /// # The wire
 ///
 /// `[f32; 3]`, in both directions and under the same field names, so this is not a
 /// format change — a document written before the type existed reads back into it,
-/// clamped on the way (§8). The `serde(from/into)` pair and `carbonite(as)` state
-/// that once, the device `FillOp` and `SelectionOp` already use.
+/// clamped on the way (§8).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 #[serde(from = "[f32; 3]", into = "[f32; 3]")]
 #[carbonite(as = "[f32; 3]")]
@@ -70,12 +63,7 @@ impl Srgb {
 
     /// The color `c`, held to the cube — the one door, and it cannot fail.
     ///
-    /// `const`, so a palette or a default can be written as one. That rests on
-    /// `clamp01` being const, which rests on `f32::max`/`min`
-    /// being const on this toolchain — the crate is on nightly for a different
-    /// reason (§CLAUDE.md) and this is not a second one: written with comparisons
-    /// instead it is the same function, and the `max`-then-`min` spelling is kept
-    /// because it is where the NaN policy is stated.
+    /// `const`, so a palette or a default can be written as one.
     pub const fn new(c: [f32; 3]) -> Self {
         Self([clamp01(c[0]), clamp01(c[1]), clamp01(c[2])])
     }
@@ -213,14 +201,11 @@ mod tests {
     ///
     /// Asked of the *bytes*, because that is the only place it can still be asked: a
     /// hostile `Parcel::Solid` or `GradientStop` is no longer a value anyone can
-    /// build, so the three tests that used to check this at their own funnels have
-    /// nothing left to construct. What a document actually carries is `[f32; 3]`, and
-    /// this is that column decoded.
+    /// build. What a document carries is `[f32; 3]`, and this is that column decoded.
     ///
-    /// The `NaN` channel is the one that matters. `f32::clamp` returns it — both of
-    /// its comparisons against a NaN are false — so every earlier spelling of this
-    /// bound caught the out-of-range values and passed the one that reaches a shader
-    /// as a NaN texel. [`clamp01`] is `max`-then-`min` for exactly that.
+    /// The `NaN` channel is the one that matters — it is the value `f32::clamp` would
+    /// pass through to a shader as a NaN texel, and the reason [`clamp01`] is
+    /// `max`-then-`min`.
     #[test]
     fn a_color_from_the_wire_is_inside_the_cube() {
         let wire = |c: [f32; 3]| {

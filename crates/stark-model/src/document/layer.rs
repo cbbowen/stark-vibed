@@ -28,16 +28,12 @@ use crate::geom::Vec2;
 /// from another. There is no counter, nothing to resync when a log is picked back up,
 /// and no re-share rule to remember.
 ///
-/// It replaced a counter partitioned by a **32-bit fold of the actor**, which was the
-/// same guarantee made statistically: two actors whose folds coincided minted
-/// colliding ids, and nothing anywhere said so. [`GuideId`](super::GuideId) took this
-/// answer from the start, and needs no `k` because one `AddGuide` mints exactly one
-/// guide — where `DuplicateLayer` mints one per layer of a subtree. `k` is which of
-/// the action's layers this is, assigned by the author in the order `Layer::visit`
-/// walks and **carried** in that action's own map. Carried rather than re-derived at
-/// each peer: every peer then reads the same `k` off the log whatever its own tree
-/// looks like, which is the stronger guarantee and the one `DuplicateLayer`'s doc
-/// insists on.
+/// [`GuideId`](super::GuideId) is the same answer without a `k`, since one `AddGuide`
+/// mints exactly one guide where `DuplicateLayer` mints one per layer of a subtree.
+/// `k` is which of the action's layers this is, assigned by the author in the order
+/// `Layer::visit` walks and **carried** in that action's own map. Carried rather than
+/// re-derived at each peer: every peer then reads the same `k` off the log whatever
+/// its own tree looks like, which is what `DuplicateLayer`'s doc insists on.
 ///
 /// [`ROOT`](Self::ROOT) is the one id no action mints, and it has to be: every peer
 /// must agree on the root layer, which predates every action.
@@ -91,9 +87,6 @@ impl LayerId {
     }
 
     /// Whether `actor` minted this layer — the author of the action it came from.
-    ///
-    /// Exact, where the fold this replaced could only answer "an actor whose fold
-    /// matches yours did".
     pub fn minted_by(self, actor: ActorId) -> bool {
         self.action.actor == actor
     }
@@ -120,8 +113,7 @@ impl LayerId {
     /// A *display* number and nothing else, which is why it is not called an ordinal:
     /// nothing resumes from it, and it is neither dense nor unique across authors. It
     /// is monotone within one author's layers, which is the whole of what a label
-    /// needs to be — and the per-actor counter it replaces was not unique across
-    /// authors either.
+    /// needs to be.
     pub fn minted_at(self) -> u64 {
         self.action.lamport
     }
@@ -154,12 +146,9 @@ impl std::fmt::Display for LayerId {
 /// drop position in a stack except its foot — and "put this behind everything"
 /// is not an exotic move, it is where a background goes.
 ///
-/// The variant order is **not** load-bearing, and it is worth saying so because it
-/// used to be: `Top` and `Above` were laid out to occupy `Option<LayerId>`'s `None`
-/// and `Some` discriminants, and `Bottom` could only be appended, because the encoding
-/// was positional and a reorder would have decoded every saved move as a different one
-/// (§8). Variants are matched by *name* now, so a case may be added wherever it reads
-/// best. `a_place_is_read_by_variant_name_not_position` is what keeps that honest.
+/// The variant order is **not** load-bearing: variants are matched by *name* (§8), so
+/// a case may be added wherever it reads best.
+/// `a_place_is_read_by_variant_name_not_position` is what keeps that honest.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Place {
     /// On top of the stack, over everything already in it.
@@ -244,22 +233,17 @@ impl From<Option<LayerId>> for Place {
 /// in RGB instead would make the result depend on the display's primaries; blending
 /// in Oklab or in pigment concentrations would be adding things that are not light.
 ///
-/// **A mode may carry its own parameters**, and [`Drago`](Self::Drago) is the first
-/// that does. They live on the variant rather than beside it, in a struct of blend
-/// settings a layer would carry alongside its mode, because that is the one shape in
-/// which a parameter cannot be stated for a mode that has none: there is no `k` on a
-/// `Multiply` layer to be edited, saved, replicated and silently ignored, and no way
-/// for a mode and its settings to disagree about which mode they are. It is also what
-/// makes the merge's "the two layers agree about how they meet the backdrop"
-/// (`document::merge`) keep meaning that once a mode is a family of curves rather than
-/// one — two `Drago`s with different `k` are two different functions, and `!=` already
-/// says so.
+/// **A mode may carry its own parameters**, and [`Drago`](Self::Drago) does. They live
+/// on the variant rather than in a settings struct beside it, because that is the one
+/// shape in which a parameter cannot be stated for a mode that has none: there is no
+/// `k` on a `Multiply` layer to be edited, saved, replicated and silently ignored. It
+/// is also what keeps the merge's "the two layers agree about how they meet the
+/// backdrop" (`document::merge`) meaning that once a mode is a family of curves — two
+/// `Drago`s with different `k` are two different functions, and `!=` says so.
 ///
 /// A new mode may go wherever it reads best, and a parameterized one may gain a knob:
 /// variants and fields are matched by *name* (§8), so neither disturbs the modes in
-/// saved files — a field added to [`Drago`](Self::Drago) needs only the
-/// `#[serde(default)]` that says what an older file's bend meant.
-/// `a_mode_is_read_by_variant_name_bend_and_all` is what holds that.
+/// saved files. `a_mode_is_read_by_variant_name_bend_and_all` holds that.
 ///
 /// See `blend_common.wesl` for the derivations and `Compositor` for the isolation
 /// pass that makes per-layer blending possible at all.
@@ -349,17 +333,16 @@ pub enum BlendMode {
 /// what the picker hands out and what the panel's Bend slider rests on. Large `k`
 /// tends to plain addition, small `k` tends to `max`.
 ///
-/// Chosen so the two light modes are a genuine choice rather than two settings of
-/// one. Take two half-lit layers: [`BlendMode::Reinhard`] gives 0.667, Screen gives
-/// 0.75, plain addition gives 1.0 (clipped), and this gives 0.769. So Glow reads
-/// distinctly softer than the mode everyone already knows and Radiance reads
-/// distinctly hotter, across the whole range instead of only at the extremes — which
-/// is what a value near 0.35 gave, and the reason it is not that. At the top, two
-/// whites come out at ≈1.36, well into the media pass's highlight roll-off.
+/// Chosen so the two light modes are a genuine choice rather than two settings of one.
+/// Take two half-lit layers: [`BlendMode::Reinhard`] gives 0.667, Screen gives 0.75,
+/// plain addition gives 1.0 (clipped), and this gives 0.769 — so Glow reads distinctly
+/// softer than the mode everyone already knows and Radiance distinctly hotter, across
+/// the whole range rather than only at the extremes. At the top, two whites come out
+/// at ≈1.36, well into the media pass's highlight roll-off.
 ///
-/// It is a **default** rather than the value now that the curve is per layer, and it
-/// keeps its argument: a mode's resting setting is the one it is judged by, and this
-/// is the one the goldens and the docs' worked example are written against.
+/// A **default** rather than the value, since the curve is per layer — but a mode's
+/// resting setting is the one it is judged by, and this is the one the goldens and the
+/// docs' worked example are written against.
 pub const DRAGO_K: f32 = 0.6;
 
 /// How far [`BlendMode::Drago`]'s bend may be taken — the span a frontend's slider
@@ -484,14 +467,11 @@ impl BlendMode {
 /// at any zoom, keeps the log to four floats, and — being a pure function of
 /// canvas position — satisfies the §6.4 seam invariant for free.
 ///
-/// Two variants, because two are built — the frame, and the §15.2 table's third
-/// row, the whole-plane backing ([`Everything`](Self::Everything), §15.5's
-/// "opaque underpainting"). This is still the seam where the `SelectionOp`
-/// algebra lands (§15.9, P4), bringing comic gutters, lasso mattes and
-/// frame-from-selection at once. Per this codebase's own precedent (§1 —
-/// `drag` and `wetness` were deleted rather than kept inert, and `bleed` and
-/// `tooth` came back only once each had a model), no variant appears here before
-/// it does something.
+/// Two variants, because two are built — the frame, and the §15.2 table's third row,
+/// the whole-plane backing ([`Everything`](Self::Everything), §15.5's "opaque
+/// underpainting"). This is still the seam where the `SelectionOp` algebra lands
+/// (§15.9, P4), bringing comic gutters, lasso mattes and frame-from-selection at once;
+/// per §1, no variant appears here before it does something.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MatteRegion {
     /// Everything *outside* this canvas-space rect — the frame / mat board.
@@ -558,11 +538,7 @@ mod tests {
     /// gain a case anywhere, and a saved `MoveLayer` still means the move it meant
     /// (§8).
     ///
-    /// This is the guarantee that replaced "appended only". Under the old positional
-    /// encoding a `Place` had to keep occupying `Option<LayerId>`'s discriminants and
-    /// every new case had to go last, because reordering would have decoded every
-    /// saved move as a *different* one with nothing in the file able to notice. `Old`
-    /// here is that hazard made concrete: the same three cases in a different order,
+    /// `Old` is the hazard made concrete: the same three cases in a different order,
     /// written by a build that declared them that way. It must read back exactly.
     #[test]
     fn a_place_is_read_by_variant_name_not_position() {
@@ -588,12 +564,9 @@ mod tests {
     /// The same for [`BlendMode`], where the stakes are a picture: a mode read as the
     /// wrong one recomposites every layer that used it.
     ///
-    /// `Drago` is the sharp case, and the reason this test exists rather than a
-    /// comment. It carries a payload, and it was *inserted* into the middle of the
-    /// enum's declaration order — under a positional encoding that would have renamed
-    /// every mode after it in every saved file, which is what forced the
-    /// "appended only, payloads included" rule §8 used to carry. Here it is written
-    /// from the far end of the enum and still arrives as itself, bend and all.
+    /// `Drago` is the sharp case: it carries a payload and sits in the middle of the
+    /// declaration order, so here it is written from the far end of the enum and must
+    /// still arrive as itself, bend and all.
     #[test]
     fn a_mode_is_read_by_variant_name_bend_and_all() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]

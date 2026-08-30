@@ -19,13 +19,11 @@ use crate::content::AssetNeed;
 #[derive(Debug, Error)]
 pub enum DocError {
     /// The two halves of the container's codec. They carry the `carbonite::Error`
-    /// itself rather than its `to_string()`, so `source()` reaches it and a caller
-    /// printing the chain gets what actually went wrong — the courtesy every other
-    /// variant here already extends (`AssetId`, `Io`).
+    /// itself rather than its `to_string()`, so `source()` reaches it.
     ///
-    /// Two variants rather than one `#[from]`, because both directions fail with
-    /// the same type and which one it was is the useful half of the message: a
-    /// serialize failure is this build's bug, a deserialize failure is the file's.
+    /// Two variants rather than one `#[from]`, because both directions fail with the
+    /// same type and which one it was is the useful half of the message: a serialize
+    /// failure is this build's bug, a deserialize failure is the file's.
     #[error("serialization failed")]
     Serialize(#[source] carbonite::Error),
 
@@ -38,16 +36,13 @@ pub enum DocError {
     /// A document written by a **pre-carbonite** build, whose container carried a
     /// schema version and whose body was postcard (§8.1).
     ///
-    /// The one error here that can never be fixed by a newer build, and the reason
-    /// the format moved: postcard writes no field names, so those bytes only mean
-    /// anything to the exact schema that wrote them, and reading version 6 would
-    /// take this build's copy of all thirteen historical layouts. Files are alpha
-    /// (§19), so they are named rather than migrated.
+    /// The one error here that a newer build can never fix: postcard writes no field
+    /// names, so those bytes only mean anything to the exact schema that wrote them.
+    /// Files are alpha (§19), so they are named rather than migrated.
     ///
-    /// **A tombstone, not a version check.** It is raised by recognizing the old
-    /// *container header*, never consulted to decide how to read a current file, and
-    /// nothing bumps it — a carbonite document carries no version at all, because
-    /// the writer's schema travels with it and is reconciled by name (§8).
+    /// **A tombstone, not a version check.** Raised by recognizing the old *container
+    /// header*, never consulted to decide how to read a current file, and never
+    /// bumped — a carbonite document carries no version at all (§8).
     #[error(
         "this document was saved by an older Stark (format version {0}), \
          which this build can no longer read"
@@ -58,26 +53,23 @@ pub enum DocError {
     /// `io::MAX_DECOMPRESSED` — raised by `DocumentFile::from_untrusted_bytes` and
     /// by nothing else (§8, §12.4).
     ///
-    /// A refusal rather than a decode error, and its own variant rather than an
-    /// `Io`, because the bytes may be perfectly well-formed: deflate compresses a
-    /// long run to almost nothing, so a small file can name an enormous one, and a
-    /// reader that expands first and asks afterwards has already spent the memory.
+    /// A refusal rather than a decode error, because the bytes may be perfectly
+    /// well-formed: deflate compresses a long run to almost nothing, so a small file
+    /// can name an enormous one, and a reader that expands first and asks afterwards
+    /// has already spent the memory.
     ///
-    /// **Opening the user's own file cannot produce this**, which is the half worth
-    /// stating: a document is as large as the artist made it, so the bound is about
-    /// who wrote the bytes rather than about how many there are.
+    /// **Opening the user's own file cannot produce this.** A document is as large as
+    /// the artist made it, so the bound is about who wrote the bytes rather than
+    /// about how many there are.
     #[error("document expands to more than {limit} bytes")]
     TooLarge { limit: u64 },
 
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.
     ///
-    /// A refusal rather than a decode error: the bytes are perfectly well-formed and
-    /// perfectly well understood — the id is a variant every build has, because the
-    /// save format's vocabulary cannot depend on a feature (§8, §19) — and what is
-    /// missing is the implementation behind it. That distinction is what lets a
-    /// frontend say "this document needs a Mixbox build" instead of "this file is
-    /// corrupt".
+    /// A refusal rather than a decode error: the id is a variant every build has,
+    /// because the save format's vocabulary cannot depend on a feature (§8, §19), and
+    /// what is missing is the implementation behind it.
     ///
     /// Raised by whoever *opens* the document rather than by whoever decodes it: this
     /// crate has no `mixbox` feature to consult (§2), and "can this build honour the
@@ -91,12 +83,11 @@ pub enum DocError {
     /// Content arrived under an id its own bytes do not hash to.
     ///
     /// **The one way a content-addressed store could still hold the wrong thing**
-    /// (§19), and so a refusal rather than a repair: `import_*` derives the id from
-    /// the bytes and has nothing to disagree with, but `accept_*` is handed both, off
-    /// a save file's bundle or a peer's transfer (§8, §12.4). What installing them
-    /// anyway would cost differs by kind and is never nothing — a substrate deposits
-    /// the wrong tooth into tiles no later arrival un-bakes (§6.4), a picture is
-    /// simply a different photograph — so the check is the same at every door.
+    /// (§19): `import_*` derives the id from the bytes and has nothing to disagree
+    /// with, but `accept_*` is handed both, off a save file's bundle or a peer's
+    /// transfer (§8, §12.4). Installing them anyway is never free — a substrate
+    /// deposits the wrong tooth into tiles no later arrival un-bakes (§6.4) — so the
+    /// check is the same at every door.
     #[error("{expected:?} arrived as {actual:?}; refusing to install it")]
     Misnamed {
         expected: crate::AssetNeed,
@@ -117,17 +108,14 @@ pub enum DocError {
     /// A document was asked to replay while content its log names is neither bundled
     /// in the file nor loaded in this engine (§8).
     ///
-    /// **Refusing is the point.** Replaying anyway is not a degraded open, it is a
-    /// wrong one that persists: a `SetSubstrate` whose height map is missing deposits
-    /// every stroke made on it through the flat stand-in, and those pixels are stored,
-    /// so no later arrival un-bakes them (§6.4). Logging and returning `Ok(())` here
-    /// would report success and hand back a document that replays perfectly smooth,
-    /// with nothing on screen to say which substrate it was actually painted through.
+    /// **Refusing is the point.** Replaying anyway is not a degraded open but a wrong
+    /// one that persists: a `SetSubstrate` whose height map is missing deposits every
+    /// stroke made on it through the flat stand-in, and those pixels are stored, so no
+    /// later arrival un-bakes them (§6.4).
     ///
     /// Settle it first — `stark-engine`'s `Engine::unresolved_content` is the bill and
     /// names each need, `import_brush`/`accept_substrate` pay it. A collaboration *join*
-    /// is the one caller that legitimately starts short and heals, and it does not come
-    /// through here.
+    /// legitimately starts short and heals, and does not come through here.
     #[error("this document names content that is neither bundled nor loaded: {0:?}")]
     MissingContent(Vec<AssetNeed>),
 

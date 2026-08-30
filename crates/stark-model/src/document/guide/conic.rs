@@ -31,9 +31,9 @@ use crate::geom::{Ellipse, Vec2, principal_axis};
 /// reason the chart is the representation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AxisPlane {
-    /// `pub(super)` rather than private: [`PerspectiveGuide::planes`](super::PerspectiveGuide::planes) is what builds
-    /// these, and it sits in `camera` now — the same module it always did logically,
-    /// one file over. Nothing outside `guide` can reach them.
+    /// `pub(super)` rather than private:
+    /// [`PerspectiveGuide::planes`](super::PerspectiveGuide::planes) builds these and
+    /// sits in `camera`, one file over. Nothing outside `guide` can reach them.
     pub(super) canvas_from_plane: Mat3,
     pub(super) plane_from_canvas: Mat3,
 }

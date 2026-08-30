@@ -129,10 +129,11 @@ pub enum Resource {
     /// earns its place the same way: two actions genuinely read a whole layer, and
     /// spelling that out finely is nine resources that always travel together.
     /// `DuplicateLayer` copies every tile and every property of every layer in a
-    /// subtree, and `MergeLayerDown` is a function of everything about both sides —
-    /// both said so already, at nine and five entries a layer, which made
-    /// [`Footprint::conflicts`] (a nested scan) quadratic in a number that had no
-    /// business being large: a twenty-layer duplicate claimed 180 read resources.
+    /// subtree, and `MergeLayerDown` is a function of everything about both sides.
+    /// Spelled finely that is nine and five entries a layer, which makes
+    /// [`Footprint::conflicts`] — a nested scan — quadratic in a number that has no
+    /// business being large: a twenty-layer duplicate would claim 180 read
+    /// resources.
     ///
     /// It says the same thing. A coarse claim is *more* conservative than the fine
     /// ones it replaces, never less, and §12.6 permits a footprint to claim too much
@@ -217,9 +218,16 @@ pub struct Footprint {
 }
 
 impl Footprint {
-    /// Whether the two actions may fail to commute: any write here overlapping
-    /// any read *or* write there (and vice versa). Reads never conflict with
-    /// reads.
+    /// Whether the two actions may fail to commute: any write here overlapping any
+    /// read *or* write there (and vice versa). Reads never conflict with reads.
+    ///
+    /// This is what the `history::Centralizer` impl on `&Footprint` (in the `fold`
+    /// module) commutes by. Disjoint footprints satisfy that
+    /// contract — neither action reads or writes anything the other writes, so
+    /// applying them in either order produces the same state, and `inverse`
+    /// restricted to this footprint removes exactly this action's effect. A false
+    /// conflict only costs the fast path; the contract permits false negatives,
+    /// never false positives.
     pub fn conflicts(&self, other: &Footprint) -> bool {
         let hits =
             |xs: &[Resource], ys: &[Resource]| xs.iter().any(|x| ys.iter().any(|y| x.overlaps(y)));
@@ -229,17 +237,6 @@ impl Footprint {
     }
 }
 
-/// A [`Footprint`] is the `history::Centralizer` of a [`Logged`](super::fold::Logged)
-/// action
-/// (§12.6): the history builds it **once** per removal and asks it about each
-/// later action, which is what lets `try_remove_action_with` shift an undone
-/// action past everything it commutes with instead of replaying it.
-///
-/// Disjoint footprints satisfy the centralizer contract — neither action reads
-/// or writes anything the other writes, so applying them in either order
-/// produces the same state, and [`Action`]'s `inverse` restricted to this
-/// footprint removes exactly this action's effect. A false conflict only costs
-/// the fast path (the contract permits false negatives, never false positives).
 /// Padding around a stroke's control-point bounding box, in canvas px: the
 /// farthest any of the tip's marks can land from the fitted centerline.
 ///
@@ -368,8 +365,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
             // [`Resource::Layer`] for the minted id, as every action that mints one
             // claims: what it writes is *everything about a layer that did not exist*,
             // and naming that as `Existence` plus whichever finer resources the arm
-            // happens to touch is the same claim said three different ways — see
-            // `PlaceImage` below, which spelled out two of them.
+            // happens to touch would be the same claim said three ways.
             writes: vec![Resource::Layer(*id), Resource::StackOrder],
         },
         // A placed image is an `AddLayer` that arrives with paint and a name in it
@@ -425,14 +421,12 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // and why each gets the coarse [`Resource::Layer`], the same claim
         // `DuplicateLayer` makes about what it copied.
         //
-        // `StackOrder` said this once and did not cover it. It is about the tree's
-        // *shape*, so it meets other structural edits and nothing else: a stroke on a
-        // carried layer claims `Paint(child, rect)` and a slider claims
-        // `Prop(child, _)`, neither of which overlaps `{Existence(id), StackOrder,
-        // Paint(id, ALL)}`. The pair was judged to commute, the undo's commuting
-        // splice put the pre-edit subtree back through `PatchOp::Present`, and the
-        // canonical replay kept the edit — divergence with no pixel able to report it
-        // (§12.6).
+        // `StackOrder` alone does not cover it: it is about the tree's *shape*, so it
+        // meets other structural edits and nothing else. A stroke on a carried layer
+        // claims `Paint(child, rect)` and a slider claims `Prop(child, _)`, neither of
+        // which overlaps `{Existence(id), StackOrder, Paint(id, ALL)}` — the pair would
+        // be judged to commute, and the undo's splice and a canonical replay would then
+        // disagree with no pixel able to report it (§12.6).
         ActionKind::RemoveLayer { id, carried } => Footprint {
             reads: Vec::new(),
             writes: std::iter::once(*id)
@@ -523,24 +517,18 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // A merge is a function of **everything about both layers**, because that is
         // what its plan reads: the tiles it stacks, the blend, clip, opacity and
         // visibility that decide whether the merge is offered at all (§14.11), and the
-        // **filter**, which for a filter source is both half the offer (a resampling
-        // kind is declined, §14.11.7) and the thing the merge writes into the
-        // destination's texels. It is
-        // also a function of the tree's shape, which decides what "down" means — and
-        // `StackOrder` is written here, so the write covers that read.
+        // filter, which for a filter source is both half the offer (a resampling kind
+        // is declined, §14.11.7) and what the merge writes into the destination's
+        // texels. It is also a function of the tree's shape, which decides what "down"
+        // means — and `StackOrder` is written here, so the write covers that read.
         //
-        // The same argument `DuplicateLayer` makes, taken one step further: a duplicate
-        // reads its subtree's properties, while a merge would silently *change its own
-        // answer* if one of them moved past it, so claiming them is what keeps a
-        // concurrent blend-mode change from commuting with a merge that the mode would
-        // have refused.
+        // `DuplicateLayer`'s argument taken one step further: a duplicate reads its
+        // subtree's properties, while a merge would silently *change its own answer* if
+        // one of them moved past it. Claiming them is what keeps a concurrent
+        // blend-mode change from commuting with a merge the mode would have refused —
+        // and why the filter is claimed on both ids though only a source can carry one.
         ActionKind::MergeLayerDown { source, dest } => Footprint {
-            // Everything about both layers, in the one resource that says so. The
-            // blend, the clip and the visibility decide whether the merge is offered
-            // at all (§14.11); both opacities are folded into the merged tiles; the
-            // **filter** is claimed on both ids though only a source can carry one,
-            // since a merge that commuted with a `SetFilter` would bake a filter the
-            // log says was replaced, and the pixels could not say which had run. The
+            // Everything about both layers, in the one resource that says so: the
             // source's paint is stacked and the destination's is rewritten.
             reads: [*source, *dest].into_iter().map(Resource::Layer).collect(),
             writes: vec![
@@ -581,10 +569,10 @@ pub fn compute_footprint(action: &Action) -> Footprint {
 /// which is the one answer §12.6 does not permit. The same test, for the same
 /// reason, as the one [`stroke_rect`] makes per control point.
 ///
-/// The `image` half became an [`Option`] for exactly this (see
-/// `PerspectiveMap::image_aabb`), which left the `rect` half honest only
-/// because `usable`/`shape_ok` refuse a non-finite map at `apply` — honesty
-/// resting on a refusal in another file, the thing that change set out to stop.
+/// The `image` half is an [`Option`] for exactly this reason (see
+/// `PerspectiveMap::image_aabb`); testing the `rect` half here rather than leaving it
+/// to `usable`/`shape_ok` at `apply` is what keeps this footprint's honesty from
+/// resting on a refusal in another file.
 fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
     let Some(image) = image else {
         return TileRect::ALL;
@@ -660,11 +648,10 @@ mod tests {
     /// from it would make the coarse claim quietly finer than it says it is — and
     /// finer is the direction §12.6 cannot survive.
     ///
-    /// The match is the guard: it is exhaustive with no `_` arm, so a new `Prop` does
-    /// not compile until it is named here, next to the assertion that `ALL` has grown
-    /// with it. It forces a visit rather than proving the correspondence, which is as
-    /// far as Rust goes without a derive — the same bargain `tests/footprint.rs`'s
-    /// `slot` makes for `ActionKind`.
+    /// The match is the guard: exhaustive with no `_` arm, so a new `Prop` does not
+    /// compile until it is named here, next to the assertion that `ALL` has grown with
+    /// it. It forces a visit rather than proving the correspondence, which is as far as
+    /// Rust goes without a derive.
     #[test]
     fn every_prop_is_named_in_all() {
         for prop in Prop::ALL {
@@ -804,9 +791,9 @@ mod tests {
     }
 
     /// A duplicate reads *everything* about every layer it copies (§14.8), which is
-    /// what keeps it from commuting with a stroke or a rename inside the group. Said
-    /// in one resource a layer now rather than nine, so this pins the claim rather
-    /// than the spelling: what must hold is that each of the nine still conflicts.
+    /// what keeps it from commuting with a stroke or a rename inside the group. Stated
+    /// as one coarse resource a layer, so this pins the claim rather than the
+    /// spelling: what must hold is that each finer edit still conflicts.
     #[test]
     fn a_duplicate_conflicts_with_every_edit_inside_what_it_copies() {
         let inner = LayerId::solo(3);
@@ -839,8 +826,7 @@ mod tests {
                 other.kind,
             );
         }
-        // A stroke inside the copied subtree, too — the case the finer spelling
-        // existed for.
+        // A stroke inside the copied subtree, too.
         let paint = stroke(2, inner, Vec2::ZERO, Vec2::splat(40.0), 8.0);
         assert!(!commutes(&dup, &paint));
         // …and a layer it does not copy is still free.
@@ -1046,11 +1032,11 @@ mod tests {
         );
     }
 
-    /// A stroke whose box cannot be quantized claims the **whole layer**, never a
-    /// tile at the origin. The old `NaN as i32` did the latter: a non-finite radius
-    /// or path point produced a tight-looking footprint that a distant stroke then
-    /// commuted past, which is the one direction §12.6 cannot survive — the fast
-    /// path would splice on a lie, and no pixel could show it.
+    /// A stroke whose box cannot be quantized claims the **whole layer**, never a tile
+    /// at the origin — which is what a bare `NaN as i32` would give. A non-finite
+    /// radius or path point producing a tight-looking footprint is the one direction
+    /// §12.6 cannot survive: a distant stroke commutes past it, the fast path splices
+    /// on a lie, and no pixel can show it.
     #[test]
     fn an_unboundable_stroke_claims_the_layer_rather_than_the_origin() {
         let elsewhere = stroke(
@@ -1071,8 +1057,8 @@ mod tests {
             assert!(claims_all(&a), "radius {bad} must claim the layer");
             assert!(!commutes(&a, &elsewhere));
 
-            // A path point that cannot be bounded. `f32::min` would have stepped
-            // over it and left the other point's box looking exact.
+            // A path point that cannot be bounded. `f32::min` would step over it and
+            // leave the other point's box looking exact.
             a = stroke(
                 1,
                 LayerId::ROOT,
@@ -1085,7 +1071,7 @@ mod tests {
         }
 
         // Finite, but past what an `i32` tile index can address: clamping inward
-        // (what the old `clamp(-1e9, 1e9)` did) would shrink the claim.
+        // would shrink the claim.
         let far = stroke(
             1,
             LayerId::ROOT,
@@ -1109,9 +1095,6 @@ mod tests {
     /// back tight and wrong. That is the under-claim §12.6 cannot survive, and it
     /// is invisible in a picture, since `apply` refuses such a map anyway and no
     /// pixel is ever written by the action that lied about its reach.
-    ///
-    /// The `image` half of this was closed by making `image_aabb` an `Option`; the
-    /// `rect` half rested on `usable`/`shape_ok` — a refusal in another file.
     #[test]
     fn a_transform_with_an_unmeasurable_rect_claims_the_layer() {
         use crate::document::transform::{PerspectiveMap, rect_corners};

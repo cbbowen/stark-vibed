@@ -64,11 +64,10 @@ pub struct ActionId {
 
 /// A fully-recorded stroke: enough to replay it bit-for-bit (§4).
 ///
-/// Deliberately does **not** carry the tool. Only the brush tool can reach a
-/// stroke — the selection tools produce a [`SelectionOp`] instead — so the field
-/// held one value for every stroke of every document and no reader ever asked it
-/// (§8, wire version 5). A tool worth recording would be recorded by whatever
-/// distinguishes it, which this enum does not.
+/// Deliberately does **not** carry the tool. Only the brush tool can reach a stroke —
+/// the selection tools produce a [`SelectionOp`] instead — so such a field would hold
+/// one value for every stroke of every document. A tool worth recording would be
+/// recorded by whatever distinguishes it, which this enum does not.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct StrokeRecord {
     pub layer: LayerId,
@@ -180,14 +179,12 @@ pub enum ActionKind {
     ///
     /// **`carried` names the rest of the subtree**, for the reason
     /// [`DuplicateLayer`](Self::DuplicateLayer)'s `ids` do and
-    /// [`MergeLayerDown`](Self::MergeLayerDown)'s `dest` does: a [`Footprint`] is
-    /// built from the action alone and cannot walk the tree for what a group held
-    /// (§12.6). Carried as a tuple variant it declared `id` and `StackOrder` and
-    /// wrote the existence, the paint and every property of layers it never named —
-    /// so a stroke inside the group was judged to *commute* with removing it, and
-    /// the fast-path undo put the pre-stroke subtree back while a canonical replay
-    /// kept the paint. Peers diverged, and §12.6's whole point is that no pixel can
-    /// say which materialization ran.
+    /// [`MergeLayerDown`](Self::MergeLayerDown)'s `dest` does: a [`Footprint`] is built
+    /// from the action alone and cannot walk the tree for what a group held (§12.6).
+    /// Without it the action writes the existence, the paint and every property of
+    /// layers it never names, so a stroke inside the group is judged to *commute* with
+    /// removing it — and the fast-path undo and a canonical replay then disagree about
+    /// the paint, with no pixel able to say which ran.
     ///
     /// Root first, then depth-first in composite order — the order
     /// [`DocState::visit`] produces, so minting one is a walk and checking one is a
@@ -468,14 +465,13 @@ pub enum ActionKind {
     /// meaning nothing on their own. `AddMatte` already carries this shape: a layer
     /// arriving with content is one fact, not a layer and then its content.
     ///
-    /// **The pixels are not the payload.** The picture is named by content id, like
-    /// a stamp brush's shape, and travels beside the log — bundled in
-    /// `DocumentFile::content`, and over the wire on the blob ALPN (§23). It was
-    /// briefly built the other way, with the image in the action behind an `Arc`;
-    /// `docs/images.md` records why that was wrong in three places at once, of which
-    /// the sharpest is that an action is *cloned constantly* — a commit clones one
-    /// for the outbox, the history clones them while splicing an undo past what it
-    /// commutes with (§12.6) — and every one of those copies is thirty-two bytes now.
+    /// **The pixels are not the payload.** The picture is named by content id, like a
+    /// stamp brush's shape, and travels beside the log — bundled in
+    /// `DocumentFile::content`, and over the wire on the blob ALPN (§23).
+    /// `docs/images.md` records why carrying it in the action is wrong in three places
+    /// at once; the sharpest is that an action is *cloned constantly* — a commit clones
+    /// one for the outbox, the history clones them while splicing an undo past what it
+    /// commutes with (§12.6) — and every one of those copies is thirty-two bytes.
     ///
     /// **`at` is in whole canvas pixels, and that is a promise about resampling**: the
     /// image's texels land on canvas pixels one for one, so nothing is filtered and
@@ -535,14 +531,13 @@ pub enum ActionKind {
         /// The id this guide gets — **the id of this very action**, minted through
         /// the same door every layer id is (`Engine::commit_minting`, §17.9).
         ///
-        /// Carried rather than derived inside the fold, which is where it was. A
-        /// derived id is not part of the action, so `start_collaboration`'s rewrite of
-        /// solo-authored `ActionId`s moved it while every `RemoveGuide`,
-        /// `SetGuide`, `SetGuideName` and `MoveGuide` in the same log went on naming
-        /// the old one — and each of those no-ops on an id it cannot find. Sharing a
-        /// document therefore reverted every guide edit made before it and brought
-        /// back every deleted guide. A payload the rewrite does not touch cannot do
-        /// that, which is what `LayerId` had all along.
+        /// Carried rather than derived inside the fold. A derived id is not part of
+        /// the action, so `start_collaboration`'s rewrite of solo-authored `ActionId`s
+        /// would move it while every `RemoveGuide`, `SetGuide`, `SetGuideName` and
+        /// `MoveGuide` in the same log went on naming the old one — and each of those
+        /// no-ops on an id it cannot find, so sharing a document would revert every
+        /// guide edit and bring back every deleted guide. A payload the rewrite does
+        /// not touch cannot do that, which is what `LayerId` has always had.
         id: GuideId,
         guide: PerspectiveGuide,
         /// The guide this one lands directly after, or the head of the roster
@@ -597,26 +592,22 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Every layer id this action **mints** — the ids a client's counter has to
-    /// mints, which the engine's mint door checks are its own (§17.9).
+    /// Every layer id this action **mints** — what the engine's mint door checks are
+    /// the action's own (§17.9).
     ///
-    /// **The check it exists for**: a `LayerId` is the id of the action that minted
-    /// it, and `Engine::commit_minting` is where that is arranged — it draws the
-    /// action id, hands it to the closure that builds the kind, and then asks this
-    /// which layers the kind claims to mint and whether they all name that id. What
-    /// the door can enforce, the shape need not be trusted about.
+    /// **The check it exists for**: a `LayerId` is the id of the action that minted it,
+    /// and `Engine::commit_minting` is where that is arranged — it draws the action id,
+    /// hands it to the closure that builds the kind, then asks this which layers the
+    /// kind claims to mint and whether they all name that id.
     ///
-    /// Lives here, beside the variants, because it is a fact about *them*: minting
-    /// is what an `Add…` action does, and a caller that keeps its own list of which
-    /// ones do has a list a new variant does not appear in. The engine kept exactly
-    /// such a list once, `AddFilter` was added after it, and a document whose highest
-    /// id came from a filter reloaded with a counter that would mint that id a second
-    /// time — two layers under one id, the convergence failure §17.9 is about.
+    /// Lives here, beside the variants, because it is a fact about *them*: a caller
+    /// keeping its own list of which actions mint has a list a new variant does not
+    /// appear in, and a missed one means two layers under a single id — the
+    /// convergence failure §17.9 is about.
     ///
     /// **Exhaustive, with no `_` arm, and that is the whole point of it.** A variant
     /// added to the enum stops this function compiling, three lines from the doc
-    /// comment that says why — the device `slot` in `tests/footprint.rs` already
-    /// uses, for the same reason and after the same variant escaped it.
+    /// comment that says why — the device `slot` in `tests/footprint.rs` also uses.
     ///
     /// Note it reports what the action *names as minted*, not what applying it
     /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and the id it
@@ -671,20 +662,16 @@ impl ActionKind {
     /// The same action with every payload finite and in range — **the one funnel
     /// an action passes through on its way into the document.**
     ///
-    /// The pieces existed already and were called one at a time:
-    /// `Filter::sanitized` at two sites, `BlendMode::sanitized` at two more, and
-    /// nothing at all for the brush a stroke carries or the ops a fill and a
-    /// selection do. That is a list a caller keeps, and §1 prefers ruling out a
-    /// class to enumerating its instances — so the list is here, once, and the
-    /// engine sanitizes an *action* rather than remembering which of its payloads
-    /// have knobs.
+    /// The alternative is a list of per-payload gates a caller has to keep, and §1
+    /// prefers ruling out a class to enumerating its instances — so the list is here,
+    /// once, and the engine sanitizes an *action* rather than remembering which of its
+    /// payloads have knobs.
     ///
     /// **Exhaustive, with no `_` arm**, which is the whole point of writing it this
     /// way: a variant added later stops this compiling until it says whether it
     /// carries a number, where a wildcard would answer "nothing to hold" on its
-    /// behalf and be right until the day it was not. Same device as
-    /// [`minted_layers`](Self::minted_layers) and
-    /// [`action_content`](crate::content::action_content), after the same escape.
+    /// behalf. Same device as [`minted_layers`](Self::minted_layers) and
+    /// [`action_content`](crate::content::action_content).
     ///
     /// **Idempotent** on anything this engine wrote, so applying it on the way in
     /// *and* on replay cannot make a load into a small edit.
@@ -705,7 +692,7 @@ impl ActionKind {
             }),
             // A coverage weight every gating read multiplies by, so a NaN here would
             // take the whole mask with it. `clamp01` rather than `clamp`, for
-            // `SelectionOp::at`'s reason: both of NaN's comparisons are false.
+            // `SelectionOp::at`'s reason.
             ActionKind::SetSelectionOpacity(a) => ActionKind::SetSelectionOpacity(clamp01(a)),
             ActionKind::SetLayerBlend(id, mode) => ActionKind::SetLayerBlend(id, mode.sanitized()),
             ActionKind::SetFilter(id, f) => ActionKind::SetFilter(id, f.sanitized()),
@@ -742,11 +729,9 @@ impl ActionKind {
                 name,
             },
             ActionKind::SetGuide(id, guide) => ActionKind::SetGuide(id, guide.sanitized()),
-            // A matte's paint is a color or a ramp on an axis, and every one of
-            // those numbers reaches `matte.wesl` — the same payload a `Fill` carries
-            // and, until this arm existed, the one that carried it *past* the
-            // funnel. The region beside it is geometry, gated at `apply` by
-            // `MatteRegion::usable` rather than clamped, for the reason the
+            // A matte's paint is a color or a ramp on an axis, and every one of those
+            // numbers reaches `matte.wesl`. The region beside it is geometry, gated at
+            // `apply` by `MatteRegion::usable` rather than clamped, for the reason the
             // transforms are.
             ActionKind::SetMattePaint(id, paint) => {
                 ActionKind::SetMattePaint(id, paint.sanitized())
@@ -773,20 +758,15 @@ impl ActionKind {
             //
             // **The list is what the compiler cannot check.** Every arm above says
             // "this payload holds its own invariant"; this one says "there is no
-            // invariant to hold", and nothing but the reader tells the two apart. It
-            // is where `SetSubstrateColor`, `SetMattePaint` and `AddMatte` sat while
-            // carrying colors to a shader, under a comment that named gates only the
-            // three transforms have. So: a variant belongs here when its payload is
-            // ids, flags, places, `bool`s and `String`s — and if it carries a float,
-            // it belongs above, or beside a `usable` this comment can name.
+            // invariant to hold", and nothing but the reader tells the two apart. So: a
+            // variant belongs here when its payload is ids, flags, places, `bool`s and
+            // `String`s — and if it carries a float, it belongs above, or beside a
+            // `usable` this comment can name.
+            //
             // A fill and a selection carry numbers and are still here, which is the
-            // shape worth noticing rather than an oversight. Their fields are
-            // private and `FillOp::with_paint` / `SelectionOp::at` are the only
-            // doors — deserialization included — so an op in hand already holds its
-            // bounds and there is nothing for a second gate to do. These arms used
-            // to rebuild each op through its own constructor to say that; the
-            // constructor now says it, the way `Filter::sanitized`'s gradient arm
-            // stopped having a body once `Srgb` held the cube.
+            // shape worth noticing rather than an oversight: their fields are private
+            // and `FillOp::with_paint` / `SelectionOp::at` are the only doors,
+            // deserialization included, so an op in hand already holds its bounds.
             ActionKind::Fill { .. }
             | ActionKind::Select(_)
             | ActionKind::AddLayer { .. }
@@ -807,9 +787,8 @@ impl ActionKind {
             // `apply` beside the three transforms below rather than rounded into a
             // different rectangle. Its *paint* is sanitized above.
             | ActionKind::SetMatteRect(..)
-            // The substrate color, which holds itself now: `Srgb` cannot be built
-            // outside the cube, so this is back to being an arm with nothing in it
-            // — the shape the comment above describes.
+            // The substrate color, which holds itself: an `Srgb` cannot be built
+            // outside the cube.
             | ActionKind::SetSubstrateColor(_)
             | ActionKind::SetSubstrate(_)
             // And the scale it is laid at, which holds itself the same way: a
@@ -848,20 +827,16 @@ impl ActionKind {
 /// what it clamps (§21.5), what it reads and writes (§12.6) and what content it
 /// names (§23). Those are four different questions and they deserve four answers.
 ///
-/// What did *not* deserve four answers was the roster itself. The enum's list of
-/// members was written out four times — `label`'s match here, and `LABELS`, `KINDS`
-/// and `slot` in `stark-testdata::vocabulary`, across a crate boundary — and only
-/// one of the four was compiler-checked. `vocabulary`'s own header records what that
-/// cost: `SetSelectionOpacity` got the arm the compiler demanded in each `slot` and
-/// was left out of every list those arms index, in two crates at once, and both
-/// suites went on passing having never driven it.
+/// What does *not* deserve four answers is the roster itself — a hand-kept list of
+/// the enum's members, repeated here and in `stark-testdata::vocabulary`, where only
+/// some copies are compiler-checked and a variant can be left out of the lists the
+/// checked arms index (`vocabulary`'s own header records what that cost).
 ///
 /// So the roster is **one list**, below, and everything else is derived from it: the
-/// enum, [`ALL`](ActionTag::ALL), and [`label`](ActionTag::label) all come out of the same
-/// macro invocation, and [`ActionKind::tag`] is the one exhaustive match that binds
-/// a variant to its tag. A new kind now fails to compile in exactly one place it did
-/// not before, and cannot be missing from a list at all, because there is no second
-/// list to be missing from.
+/// enum, [`ALL`](ActionTag::ALL) and [`label`](ActionTag::label) all come out of the
+/// same macro invocation, and [`ActionKind::tag`] is the one exhaustive match binding a
+/// variant to its tag. A new kind cannot be missing from a list, because there is no
+/// second list to be missing from.
 macro_rules! roster {
     ($($variant:ident => $label:literal,)*) => {
         #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -959,12 +934,11 @@ mod tests {
     use super::*;
     use crate::document::{FillOp, Parcel, SelectionMode, SelectionShape};
 
-    /// The funnel reaches the payloads that carry numbers — the three that had no
-    /// gate of their own before it existed (a stroke's brush, a fill's op, a
-    /// selection's op) alongside the two that did.
+    /// The funnel reaches every payload that carries numbers — a stroke's brush, a
+    /// fill's op, a selection's op, a layer's opacity.
     ///
-    /// A `NaN` in any of them reaches a shader: a brush's radius sizes a dispatch,
-    /// a fill's opacity is inverted through the coverage law, a selection's opacity
+    /// A `NaN` in any of them reaches a shader: a brush's radius sizes a dispatch, a
+    /// fill's opacity is inverted through the coverage law, a selection's opacity
     /// scales the mask every other tool acts through.
     #[test]
     fn the_funnel_reaches_every_payload_that_carries_a_number() {
@@ -993,11 +967,10 @@ mod tests {
         assert_eq!(rec.brush.tooth.give, 1.0);
         assert_eq!(rec.start, 0.0);
 
-        // A fill and a selection are **not** repaired by the funnel, and no longer
-        // can be: their fields are private, so the hostile values below cannot get
-        // past the constructor to reach it. The op is already in range on the way
-        // in, and `sanitized` leaves it exactly as it is — which is the whole of
-        // what an arm here used to be doing by rebuilding it.
+        // A fill and a selection are **not** repaired by the funnel, and cannot be:
+        // their fields are private, so the hostile values below never get past the
+        // constructor to reach it. The op is already in range on the way in, and
+        // `sanitized` leaves it exactly as it is.
         let op = FillOp::with_paint(
             SelectionShape::All,
             -1.0,

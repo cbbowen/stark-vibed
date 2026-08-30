@@ -134,16 +134,12 @@ impl FillOp {
     pub fn with_paint(shape: SelectionShape, feather: f32, paint: Parcel, opacity: f32) -> Self {
         Self {
             // Both payloads hold their own invariants, so this gate states no bound
-            // of its own beyond the two scalars that are the *fill's* rather than
-            // anything else's (§1). Spelled inline, it clamped a solid color and
-            // handed a ramp and a lasso straight through.
+            // of its own beyond the two scalars that are the *fill's* (§1).
             shape: shape.sanitized(),
-            // Floored like a selection op's, and for the same reason now that this
-            // is also the deserialization gate: `reach` scales it into the fill's
-            // claimed box, so a negative one shrinks the box the footprint promised
-            // — the §12.6 direction — and a NaN one unquantizes it entirely.
-            // A length, so `at_least_zero` rather than a bare `max` — see there for
-            // the infinity the floor alone let past.
+            // Floored like a selection op's: `reach` scales it into the fill's
+            // claimed box, so a negative one shrinks the box the footprint promised —
+            // the §12.6 direction — and a NaN one unquantizes it entirely. A length,
+            // so `at_least_zero` rather than a bare `max`, which passes an infinity.
             feather: at_least_zero(feather, 0.0),
             paint: paint.sanitized(),
             opacity: clamp01(opacity),
@@ -218,21 +214,16 @@ impl FillOp {
 /// **One box, quantized twice, and that is the whole point of this function.**
 /// `stark-engine`'s `document::fill::plan` turns it into the tiles a fill writes and
 /// [`fill_rect`](super::footprint::fill_rect) turns it into the tiles the action
-/// declares, and those must be the same tiles: a footprint naming fewer than the
-/// plan writes is the §12.6 under-claim, which diverges peers through the
-/// commutation gate and — because `stark-engine`'s `document::patch::tile_diff`
-/// deliberately bounds the undo diff by the very rect the action declared — leaves behind on undo exactly the
-/// tiles it failed to name.
+/// declares, and those must be the same tiles: a footprint naming fewer than the plan
+/// writes is the §12.6 under-claim, which diverges peers through the commutation gate
+/// and — because `stark-engine`'s `document::patch::tile_diff` bounds the undo diff by
+/// the rect the action declared — leaves behind on undo exactly the tiles it failed to
+/// name.
 ///
-/// They were two boxes until they weren't. `plan` padded by the apron (through
-/// `selection::tile_box`) and the footprint did not, from identical inputs, so the
-/// plan named a tile the footprint omitted whenever the padded bound fell within a
-/// pixel of a tile boundary — which is every fill aligned to the tile grid. That is
-/// the drift `TileRect::covering` was introduced to end, surviving one wrapper out;
-/// the fix is not a matching pad in the second place but the removal of the second
-/// place. The two still quantize *separately* because they answer differently for a
-/// box that cannot be quantized at all — the footprint claims everything, the plan
-/// refuses — which is the question `covering` returns rather than picking.
+/// The two still quantize *separately* because they answer differently for a box that
+/// cannot be quantized at all — the footprint claims everything, the plan refuses —
+/// which is the question `TileRect::covering` returns rather than picking. What they
+/// must not do is derive the box differently, which is why it is derived here.
 pub fn fill_bounds(op: &FillOp) -> Option<(Vec2, Vec2)> {
     let (lo, hi) = op.shape.bounds()?;
     let pad = Vec2::splat(op.reach() + TILE_APRON as f32);
@@ -244,11 +235,11 @@ pub fn fill_bounds(op: &FillOp) -> Option<(Vec2, Vec2)> {
 /// saved fill's columns and field *names* come from here, and the rename back to
 /// `FillOp` is what keeps a document from recording the mirror's name.
 ///
-/// Both directions rather than the one it started with: a schema describes reading and
-/// writing at once, so a one-sided conversion is refused outright rather than left to
-/// disagree with itself. That the conversion is `From` and never `TryFrom` is the whole
-/// design — a hostile value is *clamped* on the way in, not rejected, because a fill
-/// that will not open is worse than one whose opacity was pulled into range.
+/// Both directions, because a schema describes reading and writing at once and a
+/// one-sided conversion is refused outright. That the conversion is `From` and never
+/// `TryFrom` is the whole design — a hostile value is *clamped* on the way in, not
+/// rejected, because a fill that will not open is worse than one whose opacity was
+/// pulled into range.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "FillOp")]
 struct RawFillOp {
@@ -295,9 +286,8 @@ mod tests {
         };
         // The **paint** is not among the hostile values here, and cannot be: a
         // `Parcel::Solid` holds an `Srgb`, which has no constructor that admits one
-        // out of the cube. That half of this test moved to
-        // `color::tests::a_color_from_the_wire_is_inside_the_cube`, which asks it of
-        // the bytes rather than of a value — the only place it can still be asked.
+        // out of the cube. That half is asked of the bytes instead, in
+        // `color::tests::a_color_from_the_wire_is_inside_the_cube`.
         let hostile = FillOp {
             shape: SelectionShape::Rect {
                 min: Vec2::ZERO,
@@ -311,10 +301,9 @@ mod tests {
         assert_eq!(landed.opacity, 1.0);
         assert_eq!(landed.feather, 0.0);
 
-        // A NaN opacity is the one `f32::clamp` would have let through — both of its
-        // comparisons against NaN are false — which is why this gate spells the
-        // bound `clamp01`. The shader inverts the coverage law through it, so a NaN
-        // there is a NaN mass on every texel of the region.
+        // A NaN opacity is the one `f32::clamp` would let through, which is why this
+        // gate spells the bound `clamp01`. The shader inverts the coverage law through
+        // it, so a NaN there is a NaN mass on every texel of the region.
         let nan_strength = FillOp {
             opacity: f32::NAN,
             ..hostile.clone()
@@ -339,9 +328,8 @@ mod tests {
     ///
     /// `FillOp` declares [`RawFillOp`] as its representation in both directions, so
     /// the schema, the columns and the bytes are the mirror's — there is no second
-    /// layout to drift from. A field present on one side only will not compile, where
-    /// under a positional format it decoded every saved fill as a different one. What
-    /// is left to test is that the round trip is the identity on a normalized op,
+    /// layout to drift from, and a field present on one side only will not compile.
+    /// What is left to test is that the round trip is the identity on a normalized op,
     /// which is the property the two `From` impls have to have between them.
     #[test]
     fn the_wire_shape_is_the_op_field_for_field() {

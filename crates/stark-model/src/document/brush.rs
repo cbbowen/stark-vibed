@@ -703,9 +703,8 @@ pub struct ToothParams {
     /// grey and the grain stops reading at all.
     /// [`DEFAULT_SOFTNESS`](Self::DEFAULT_SOFTNESS) is the bundled substrates' own
     /// interquartile rise, so the transition spans the grain's natural variation —
-    /// which is what a paint that *sits on* the substrate wants, and it is where
-    /// this number lived when it was a constant in `paint_common.wesl`. A charcoal
-    /// or a soft graphite does not sit on the substrate: the stick crumbles into the
+    /// which is what a paint that *sits on* the substrate wants. A charcoal or a
+    /// soft graphite does not sit on the substrate: the stick crumbles into the
     /// valleys instead of spanning them, so its contact comes on gradually over
     /// several times that band, and a knob is the only way to say so.
     ///
@@ -1291,12 +1290,10 @@ impl BrushParams {
     /// [`elongation`](Self::elongation) reaches [`MAX_ELONGATION`](Self::MAX_ELONGATION)
     /// and the knob stops meaning anything (§6.6).
     ///
-    /// Here rather than in the frontend, where it was spelled inline as the
-    /// stretch slider's end, because a slider is only one of the ways a value
-    /// reaches this field — a file and a peer are two more, and neither passes
-    /// through a panel. `MAX_FLOW`'s own doc already makes this argument for the
-    /// *drag* bindings ("a knob reachable two ways must have one range"); the
-    /// wire is simply the third way.
+    /// Here rather than inline at the frontend's stretch slider, because a slider is
+    /// only one of the ways a value reaches this field — a file and a peer are two
+    /// more, and neither passes through a panel. `MAX_FLOW`'s own doc makes this
+    /// argument for the *drag* bindings; the wire is the third way.
     pub const MAX_STRETCH: f32 = 1.0 - 1.0 / Self::MAX_ELONGATION;
 
     /// The same brush with every number a number, and every number that has a

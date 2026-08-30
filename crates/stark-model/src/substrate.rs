@@ -18,10 +18,9 @@ use stark_assetid::AssetId;
 /// table the asker might not have, and the miss was silent — the tooth read a flat
 /// stand-in and baked it into the tiles.
 ///
-/// So this is the same bargain brush shapes already make (§6.6): the id
-/// comes *from* the image (`stark-engine`'s `Engine::import_substrate`),
-/// which is what makes "built-in" a property of the frontend's asset list and of
-/// nothing downstream. The engine still embeds no image bytes.
+/// The same bargain brush shapes already make (§6.6): the id comes *from* the image
+/// (`stark-engine`'s `Engine::import_substrate`), which makes "built-in" a property
+/// of the frontend's asset list and of nothing downstream.
 #[derive(
     Copy,
     Clone,
@@ -43,9 +42,9 @@ pub enum SubstrateId {
     #[default]
     Flat,
     /// A height map, named by the BLAKE3 hash of its canonical decoded form
-    /// (`stark-engine`'s `substrate::identify`). Covers the substrates that ship with the app and the ones a
-    /// user brings, identically — the engine cannot tell them apart, which is why
-    /// neither can go missing in a way the other wouldn't.
+    /// (`stark-engine`'s `substrate::identify`). The substrates that ship with the app
+    /// and the ones a user brings are indistinguishable here, which is why neither can
+    /// go missing in a way the other would not.
     Image(AssetId),
 }
 
@@ -61,8 +60,6 @@ pub enum SubstrateId {
 /// was painted on — so this rides beside [`SubstrateId`] everywhere that one goes.
 ///
 /// # Why a quantized integer and not an `f32`
-///
-/// Three reasons, and the third is the one that decided it.
 ///
 /// - **It is a key.** The engine bakes a substrate *per scale* — the rise a tip meets
 ///   over its reach is measured in the map's own texels, so the reach in texels
@@ -155,10 +152,8 @@ impl From<SubstrateScale> for u16 {
 mod tests {
     use super::*;
 
-    /// The constructor is the only door, and `Deserialize` runs it too — so a scale
-    /// off the ladder or outside the range cannot arrive from a file or a peer any
-    /// more than it can be written by hand. That is the whole reason the field is
-    /// private and the wire is a `u16`.
+    /// The constructor is the only door, and `Deserialize` runs it too, so a scale
+    /// off the ladder or outside the range cannot arrive from a file or a peer.
     #[test]
     fn every_scale_lands_on_the_ladder_inside_the_range() {
         for percent in 0..=1000u16 {
@@ -186,9 +181,9 @@ mod tests {
         assert_eq!(SubstrateScale::NATURAL.factor(), 1.0);
     }
 
-    /// Sanitizing is idempotent — the property §8's funnel rests on: a value read
-    /// back out of a file has already been through this door, so passing it through
-    /// again must not move it.
+    /// Sanitizing is idempotent — the property §8's funnel rests on: a value read back
+    /// out of a file has already been through this door, so passing it through again
+    /// must not move it.
     #[test]
     fn holding_a_held_scale_leaves_it_alone() {
         for percent in 0..=1000u16 {

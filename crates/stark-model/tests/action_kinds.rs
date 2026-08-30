@@ -13,9 +13,9 @@
 //! That device is shared with `stark-engine/tests/footprint.rs`, which asks a
 //! different question of the same vocabulary (did a *run* reach every kind?) and
 //! needs a GPU to ask it — which is why the model's funnel cannot simply be checked
-//! beside it. It was written out twice, once per crate, and the two copies drifted
-//! the first time a variant landed: `stark_testdata::vocabulary`'s own note has
-//! what escaped and how. One roster now, in the crate both suites already depend on.
+//! beside it. The roster lives once, in `stark_testdata::vocabulary`, the crate both
+//! suites already depend on; kept per crate, the two copies drift the first time a
+//! variant lands, and that module's own note records what escaped.
 //!
 //! What is still local is the list itself, and deliberately: an action's payload is
 //! the model's vocabulary spelled out, and the run that drives it is three lines

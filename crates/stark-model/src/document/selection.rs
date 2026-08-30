@@ -47,16 +47,14 @@ pub const MAX_SELECTION_TILES: usize = 1024;
 /// validation instead of rasterizing; and `selection.wesl` walks every edge **per
 /// texel**, so `N` prices the pass linearly across a million-texel tile set.
 ///
-/// The first of those is now held where the texture is built rather than only
-/// claimed here — `gpu::selection`'s `MIN_MAX_TEXTURE_DIM_1D` asserts against this
-/// constant, which is why it is re-exported from `document` at all. It was not, so
-/// the engine could name the bound in prose and nothing could check it.
+/// The first is held where the texture is built rather than only claimed here —
+/// `gpu::selection`'s `MIN_MAX_TEXTURE_DIM_1D` asserts against this constant, which is
+/// why it is re-exported from `document` at all.
 ///
-/// Four thousand is far past any loop a hand draws: the frontend decimates live
-/// input to one vertex per `LASSO_MIN_STEP` (2 px), so this is a boundary some
-/// eight kilopixels long. What it is defending against is not a drawing but a
-/// document — a stop list, a stroke path and a lasso are all `Vec`s a file or a
-/// peer states the length of, and this is the one that was unbounded.
+/// Four thousand is far past any loop a hand draws: the frontend decimates live input
+/// to one vertex per `LASSO_MIN_STEP` (2 px), so this is a boundary some eight
+/// kilopixels long. What it defends against is not a drawing but a document — a lasso
+/// is a `Vec` whose length a file or a peer states.
 pub const MAX_LASSO_POINTS: usize = 4096;
 
 /// A region-producing shape, in canvas space (§6.8).
@@ -96,22 +94,19 @@ impl SelectionShape {
     /// give: the shape is unbounded ([`Self::All`]), degenerate (a lasso with no
     /// vertices), or **not measurable** (any coordinate non-finite).
     ///
-    /// The third case is the one worth naming, because every consumer already had
-    /// the right answer waiting for it and only this function could reach it. A
-    /// `None` here declines a selection op outright (`Selection::plan` returns
-    /// `None`, and the caller leaves the mask alone), fills nothing on the fill path
-    /// (`document::fill::plan`'s `None` arm), and claims the whole layer in a
-    /// footprint (`fill_rect`) — a deterministic refusal, an empty write and an
-    /// over-claim, which are the safe answers in their three directions.
+    /// The third case is the one worth naming. A `None` here declines a selection op
+    /// outright (`Selection::plan` returns `None`, and the caller leaves the mask
+    /// alone), fills nothing on the fill path (`document::fill::plan`'s `None` arm),
+    /// and claims the whole layer in a footprint (`fill_rect`) — a deterministic
+    /// refusal, an empty write and an over-claim, which are the safe answers in their
+    /// three directions.
     ///
-    /// **The lasso is tested rather than folded**, exactly as `stroke_rect` is and
-    /// for its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so a
-    /// fold steps straight over a bad vertex and leaves the box looking tight. That
-    /// box quantized cleanly, so the op proceeded and the NaN reached
-    /// `selection.wesl`'s coverage ramp, where `clamp` on a NaN is not specified —
-    /// two clients disagreeing about a mask, which §6.8 says is the one thing that
-    /// may not happen. Shapes arrive from files and peers; a shape that cannot be
-    /// bounded has to say so.
+    /// **The lasso is tested rather than folded**, exactly as `stroke_rect` is and for
+    /// its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so a fold
+    /// steps over a bad vertex and leaves the box looking tight — it then quantizes
+    /// cleanly, and the NaN reaches `selection.wesl`'s coverage ramp, where `clamp` on
+    /// a NaN is unspecified. That is two clients disagreeing about a mask, which §6.8
+    /// says may not happen.
     pub fn bounds(&self) -> Option<(Vec2, Vec2)> {
         let finite = |lo: Vec2, hi: Vec2| (lo.is_finite() && hi.is_finite()).then_some((lo, hi));
         match self {
@@ -147,11 +142,10 @@ impl SelectionShape {
     /// loop a loop — the first vertex is kept and the closing edge is implicit, so
     /// there is no end to pin the way a ramp's is.
     ///
-    /// The index goes through `pick_index` rather than being
-    /// spelled `i * points.len() / MAX_LASSO_POINTS` here, and that is not
-    /// tidiness: `usize` is 32 bits in the browser, so the product wraps on a loop
-    /// past ~1.05M vertices and lands on a valid-but-wrong index — a different
-    /// polygon than a native peer reads from the same bytes. See there.
+    /// The index goes through `pick_index` because `usize` is 32 bits in the browser:
+    /// spelled `i * points.len() / MAX_LASSO_POINTS` here, the product wraps on a loop
+    /// past ~1.05M vertices onto a valid-but-wrong index — a different polygon than a
+    /// native peer reads from the same bytes.
     pub fn sanitized(self) -> Self {
         match self {
             Self::Lasso(points) if points.len() > MAX_LASSO_POINTS => Self::Lasso(
@@ -218,14 +212,11 @@ impl SelectionMode {
 /// One logged edit to the selection (§6.8): a shape, how it combines, and
 /// how soft its edge is. Compact enough to live in the action log and on the wire.
 ///
-/// **Deserialization funnels through [`SelectionOp::at`]**, so an op that arrives
-/// from a file or a peer holds the same invariants as one a gesture built:
-/// non-negative feather, opacity in `0..=1`, and full strength on the unbounded
-/// shape. The derived impl walked past all three — including the last, whose whole
-/// doc below is an argument that the state must not exist — which left the gate
-/// guarding only the caller who was already going to be reasonable. Same device as
-/// [`Gradient`](crate::gradient::Gradient)'s `try_from`, and same reason: the funnel
-/// is worth nothing if there is a second door.
+/// **Deserialization funnels through [`SelectionOp::at`]**, so an op that arrives from
+/// a file or a peer holds the same invariants as one a gesture built: non-negative
+/// feather, opacity in `0..=1`, and full strength on the unbounded shape. Same device
+/// as [`Gradient`](crate::gradient::Gradient)'s `try_from` — a funnel is worth nothing
+/// if there is a second door.
 ///
 /// `Raw` mirrors the fields **in order**, so the encoding is unchanged (§8) —
 /// `an_op_from_the_wire_is_normalized` pins that.
@@ -269,13 +260,11 @@ impl SelectionOp {
         Self {
             mode,
             // The shape holds its own invariant, so this gate does not have to know
-            // what one is (§1). It used to clamp two scalars and hand the geometry
-            // through untouched — which left the one field that is a `Vec` as the
-            // only payload in the op with no bound at all.
+            // what one is (§1).
             shape: shape.sanitized(),
-            // A length, so `at_least_zero` rather than a bare `max`: the floor
-            // alone lands a NaN on 0 and lets an *infinity* straight through, and an
-            // infinitely wide coverage ramp is a half-selected plane (see there).
+            // A length, so `at_least_zero` rather than a bare `max`: the floor alone
+            // lands a NaN on 0 and lets an *infinity* through, and an infinitely wide
+            // coverage ramp is a half-selected plane (see there).
             feather: at_least_zero(feather, 0.0),
             opacity: if unbounded { 1.0 } else { clamp01(opacity) },
         }
@@ -312,9 +301,9 @@ impl SelectionOp {
 /// The wire shape of a [`SelectionOp`], which is the same shape — its only job is
 /// to be the type `#[serde(from)]` deserializes *before* the constructor runs.
 ///
-/// **This is the op's wire shape**, named in both directions by the type above for
-/// the reason `RawFillOp` is (§8): a schema describes reading and writing at once, so
-/// the representation is stated once and a one-sided conversion is refused.
+/// Named in both directions by the type above, for `RawFillOp`'s reason (§8): a schema
+/// describes reading and writing at once, so the representation is stated once and a
+/// one-sided conversion is refused.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "SelectionOp")]
 struct RawSelectionOp {
@@ -349,12 +338,10 @@ mod tests {
 
     /// An op decoded from a file or a peer holds what the constructor promises.
     ///
-    /// Three separate lies a hostile or corrupt log could tell, all of which the
-    /// derived `Deserialize` used to pass straight through to a shader: a negative
-    /// feather, an opacity outside `0..=1`, and — the one whose absence
-    /// [`SelectionOp::opacity`] spends a paragraph justifying — a partial strength
-    /// on the unbounded shape, which has no boundary to rasterize and would need a
-    /// rewrite-every-tile path that does not exist.
+    /// Three separate lies a hostile or corrupt log could tell: a negative feather, an
+    /// opacity outside `0..=1`, and a partial strength on the unbounded shape, which
+    /// has no boundary to rasterize and would need a rewrite-every-tile path that does
+    /// not exist (see [`SelectionOp::opacity`]).
     #[test]
     fn an_op_from_the_wire_is_normalized() {
         let wire = |op: &SelectionOp| carbonite::to_vec_static(op).expect("encodes");
@@ -387,9 +374,8 @@ mod tests {
         assert_eq!(landed.opacity, 1.0, "opacity is clamped into range");
         assert_eq!(landed.feather, 0.0, "a NaN feather lands on zero, not NaN");
 
-        // A NaN *opacity* is the one `f32::clamp` would have let through — both of
-        // its comparisons against NaN are false — which is why this gate spells the
-        // bound `clamp01` (`max`-then-`min`) and not `clamp`.
+        // A NaN *opacity* is the one `f32::clamp` would let through, which is why
+        // this gate spells the bound `clamp01` and not `clamp`.
         let nan_strength = SelectionOp {
             opacity: f32::NAN,
             ..hot

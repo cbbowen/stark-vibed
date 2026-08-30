@@ -30,10 +30,10 @@ pub const HEARTBEAT: f64 = 2.0;
 /// How long a live gesture survives without an update before it is dropped
 /// (seconds). Shorter than [`PEER_TIMEOUT`]: a peer that crashes mid-stroke should
 /// stop smearing paint well before it leaves the roster. Strictly *longer* than
-/// [`HEARTBEAT`]: the expiry clock advances at least per heartbeat but no faster
-/// than the pump bothers to tick it, so a timeout inside that window sat on a
-/// knife edge — equal to it, every live stroke on an idle receiver died at the
-/// first heartbeat boundary.
+/// [`HEARTBEAT`]: the expiry clock advances at least per heartbeat but no faster than
+/// the pump bothers to tick it, so a timeout inside that window is a knife edge —
+/// equal to it, every live stroke on an idle receiver dies at the first heartbeat
+/// boundary.
 pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 
 /// How often the sender re-sends a gesture's invariant head and its whole path
@@ -41,18 +41,12 @@ pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 /// that arrived mid-stroke (§17.5) — or `None` to send no resync frames at all.
 ///
 /// **Currently `None`, deliberately.** This is a cadence, not a switch on the
-/// feature: the encoder takes `resync` as a parameter and both halves implement the
-/// repair in full, which is why
+/// feature: both halves implement the repair in full, and
 /// `presence::tests::a_resync_repairs_a_receiver_that_missed_everything` exercises it
-/// regardless of what this says. What is deferred is only *how often it is worth
-/// paying for*, and that needs a measurement this crate cannot make — a resync frame
-/// carries the whole path, so on a long stroke it is the largest presence frame a
-/// session sends, and whether it earns its place depends on the loss rate and the
-/// added latency on a real transport rather than on anything visible from here.
-///
-/// Setting it is a one-line change with no other edit anywhere: what a receiver does
-/// with a resync frame is already settled, already tested, and already the reason
-/// `GestureRx` carries its frozen watermark across one.
+/// regardless of what this says. What is deferred is *how often it is worth paying
+/// for* — a resync frame carries the whole path, so on a long stroke it is the
+/// largest presence frame a session sends, and whether it earns its place depends on
+/// the loss rate and latency of a real transport. Setting it is a one-line change.
 pub const GESTURE_RESYNC: Option<f64> = None;
 
 /// The invariant part of a live stroke: everything but the path. Sent on the
@@ -118,9 +112,8 @@ impl GestureFrame {
     ///
     /// **Exhaustive, with no `_` arm**, for
     /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s reason: a
-    /// fourth shape of gesture stops this compiling until it says whether it carries
-    /// a number, where a wildcard would answer "nothing to hold" on its behalf and
-    /// be right until the day it was not.
+    /// fourth shape of gesture stops this compiling until it says whether it carries a
+    /// number, where a wildcard would answer "nothing to hold" on its behalf.
     fn sanitized(self) -> Self {
         match self {
             Self::Stroke {
@@ -141,12 +134,11 @@ impl GestureFrame {
                 }),
                 from,
                 // Gated already, and by the same device as the ops below: a
-                // `ControlPoint` is `#[serde(from)]` through `ControlPoint::clamped`,
-                // so pressure and tilt cannot arrive outside their ranges. The one
-                // channel `clamped` leaves alone is `pos`, which `stroke_rect`
-                // answers by claiming the whole layer on a non-finite point. Nothing
-                // for a walk here to find, and a walk would cost per point at
-                // pointer rate.
+                // `ControlPoint` is `#[serde(from)]` through `ControlPoint::clamped`.
+                // The one channel it leaves alone is `pos`, which `stroke_rect`
+                // answers by claiming the whole layer on a non-finite point — so a
+                // walk here would find nothing, and would cost per point at pointer
+                // rate.
                 points,
                 // The marker's ceiling is the path's span count, which is the
                 // flattening's to know. What a frame can state on its own is what
@@ -195,22 +187,17 @@ impl PeerFrame {
     /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s twin for
     /// the half of the wire that is not the log.
     ///
-    /// A frame is never an action, so it never meets that funnel — and what it carries
-    /// that no type of its own bounds is more than one thing: a name, republished to
-    /// everyone; a cursor, which is `screen_to_canvas`'s output; a stroke's `start`;
-    /// and the brush on its head, whose radius sizes a dispatch and whose rates reach
-    /// the dynamics loop exactly as the author's do. Each was answered on its own,
-    /// which meant most of them were not answered at all and the brush's answer sat in
-    /// the engine's gesture receiver, one branch deep, where only a stroke could reach
-    /// it. §1 prefers ruling out the class: one call, at the door, and no place left
-    /// to forget. The count is deliberately not written down here — a field added to
-    /// the frame is a field this function must visit, and the compiler says so below.
+    /// A frame is never an action, so it never meets that funnel — and it carries
+    /// several things no type of its own bounds: a name, republished to everyone; a
+    /// cursor, which is `screen_to_canvas`'s output; a stroke's `start`; and the brush
+    /// on its head, whose radius sizes a dispatch and whose rates reach the dynamics
+    /// loop exactly as the author's do. One call, at the door, rather than a gate per
+    /// field to forget (§1).
     ///
-    /// **Every field written out, no `..self`**, which is the whole point of writing
-    /// it this way: a field added to the frame later stops this compiling until it
-    /// says whether it is a number, where the update syntax would answer "nothing to
-    /// hold" on its behalf. Same device as `GestureFrame::sanitized`'s missing
-    /// `_` arm.
+    /// **Every field written out, no `..self`**: a field added to the frame later
+    /// stops this compiling until it says whether it is a number, where the update
+    /// syntax would answer "nothing to hold" on its behalf. Same device as
+    /// `GestureFrame::sanitized`'s missing `_` arm.
     ///
     /// **Idempotent**, so the door may hold it without first establishing that no
     /// other gate already did.
@@ -230,12 +217,11 @@ impl PeerFrame {
                     name
                 })
                 // An empty name is *no* name, which is what `None` already means on
-                // this field. Idempotent with the sender, which filters the empty
-                // case out before it ever builds a frame (`Session::publish`) — so
-                // this changes nothing an honest peer can send, and closes what an
-                // inhonest one could: `Peer::apply` overwrites the id-derived
-                // `default_name` unconditionally, so a `Some("")` would blank that
-                // peer's row for the rest of the session with nothing to restore it.
+                // this field. The sender filters the empty case out before it builds
+                // a frame (`Session::publish`), so this changes nothing an honest peer
+                // can send and closes what a dishonest one could: `Peer::apply`
+                // overwrites the id-derived `default_name` unconditionally, so a
+                // `Some("")` would blank that peer's row for the rest of the session.
                 .filter(|name| !name.is_empty()),
             active_layer: self.active_layer,
             // The sender filters this too, and says why (`Session::set_cursor`) —
@@ -286,9 +272,8 @@ mod tests {
         }
     }
 
-    /// The gate holds, stated beside the code that declares it rather than only in
-    /// the crate downstream that calls it — `stark-model` is where the funnel lives,
-    /// so this is where a change to it is answered.
+    /// The gate holds, stated beside the funnel rather than only in the crate
+    /// downstream that calls it.
     #[test]
     fn a_frame_arrives_finite_and_in_range() {
         let f = hostile().sanitized();
@@ -312,10 +297,8 @@ mod tests {
     /// [`PeerFrame::sanitized`] claims to be idempotent, which is what lets the door
     /// hold it without first establishing that nothing else already did.
     ///
-    /// Asserted rather than argued, for
-    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s reason —
-    /// its own twin is held to this by `action_kinds.rs`, and a stated property no
-    /// test checks is the shape this crate is least willing to leave lying around.
+    /// Asserted rather than argued, as `action_kinds.rs` does for
+    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized).
     #[test]
     fn sanitizing_a_frame_twice_does_not_move_it_again() {
         let once = hostile().sanitized();

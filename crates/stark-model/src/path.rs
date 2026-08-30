@@ -22,22 +22,16 @@ use crate::geom::Vec2;
 /// that is what velocity and timelapse want (§8), and it halves the
 /// field.
 ///
-/// **Deserialization funnels through [`ControlPoint::clamped`]**, for
-/// [`SelectionOp`](crate::document::SelectionOp)'s reason and by the same device:
-/// the constructor is documented as the way *every* fitted point is built, and the
-/// derived impl walked past it — so a stroke arriving from a file or a peer was
-/// the one path on which the bound it states was not held. Pressure is a radius
-/// the renderer multiplies the brush by with no ceiling of its own, so a `9.0`
-/// from a corrupt log is not a slightly-wider stroke; it is a stamp nine times
-/// the size the footprint padded for, which is a §12.6 divergence and not a
+/// **Deserialization funnels through [`ControlPoint::clamped`]** (§8), so a point
+/// arriving from a file or a peer holds the same bounds a fitter's does. A `9.0`
+/// pressure from a corrupt log is not a slightly-wider stroke but a stamp nine times
+/// the size the footprint padded for, which is a §12.6 divergence rather than a
 /// visible bug.
 ///
-/// The fields stay `pub`, so unlike the ops this is a funnel and not a wall: the
-/// three fitters and the tests that stage a bad point still build one directly.
-/// What it closes is the door a *log* comes through, which is the one the fitters'
-/// own care cannot reach. The `pos` channel is the exception that needs no gate —
+/// The fields stay `pub`, so this is a funnel and not a wall: the three fitters and
+/// the tests that stage a bad point still build one directly. `pos` needs no gate —
 /// `footprint::stroke_rect` tests every point for finiteness itself and claims the
-/// whole layer rather than trusting the box, which is the stronger shape.
+/// whole layer rather than trusting the box.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 #[serde(from = "RawControlPoint", into = "RawControlPoint")]
 #[carbonite(as = "RawControlPoint")]
@@ -62,10 +56,9 @@ impl ControlPoint {
     /// A control point with its channels **held to what a pen can report** —
     /// pressure in `[0, 1]`, tilt inside the unit disc.
     ///
-    /// **Every fitted point is built this way, and so is every decoded one** (see
-    /// the type's own doc), and the reason is that a fit is a
-    /// least-squares solve rather than an interpolation: a control point the data
-    /// barely reaches is held only by the ridge, so it can overshoot the values it
+    /// **Every fitted point is built this way, and so is every decoded one.** A fit
+    /// is a least-squares solve rather than an interpolation, so a control point the
+    /// data barely reaches is held only by the ridge and can overshoot the values it
     /// was fitted from. Pressure is a radius the renderer multiplies the brush by
     /// with no ceiling of its own, and tilt steers the footprint.
     ///
@@ -73,11 +66,9 @@ impl ControlPoint {
     /// polygon: B-spline bases are non-negative and sum to one, so every evaluated
     /// value is a convex combination of them.
     ///
-    /// It lives here rather than beside any one fitter because there are three —
-    /// the streaming fit, its finished form, and the shape assist's realization
-    /// (§6.9) — and a fourth is what the next tool that produces a path will be.
-    /// Three copies of a clamp is three places for one of them to be forgotten, and
-    /// what a forgotten one costs is a stroke whose radius the log does not bound.
+    /// It lives here rather than beside any one fitter because there are three — the
+    /// streaming fit, its finished form, and the shape assist's realization (§6.9) —
+    /// and a fourth is whatever tool next produces a path.
     pub fn clamped(pos: Vec2, pressure: f32, tilt: Vec2, time: f32) -> Self {
         // Scaled rather than component-clamped: the pen reports a direction and a
         // lean, and clipping the components alone would turn a diagonal overshoot
@@ -85,11 +76,9 @@ impl ControlPoint {
         let len = tilt.length();
         Self {
             pos,
-            // `clamp01` rather than `clamp`: both of NaN's comparisons are false,
-            // so `f32::clamp` returns the NaN it was handed and a pen report that
-            // says nothing becomes a radius that says nothing (see there). The
-            // tilt below is already safe on NaN — `len > 1.0` is false, and the
-            // vector passes through to a fitter that tests it.
+            // `clamp01` rather than `clamp`, per the crate's NaN policy. The tilt
+            // below is already safe on NaN — `len > 1.0` is false, and the vector
+            // passes through to a fitter that tests it.
             pressure: crate::clamp01(pressure),
             tilt: if len > 1.0 { tilt / len } else { tilt },
             time,
@@ -100,10 +89,9 @@ impl ControlPoint {
 /// The wire shape of a [`ControlPoint`], which is the same shape — its only job is
 /// to be the type `#[serde(from)]` deserializes *before* the constructor runs.
 ///
-/// Named in both directions by the type above for `RawSelectionOp`'s reason (§8):
-/// a schema describes reading and writing at once, so the representation is stated
-/// once and a one-sided conversion is refused. The fields mirror the originals
-/// **in order**, so the encoding is unchanged.
+/// Named in both directions because a schema describes reading and writing at once
+/// (§8). The fields mirror the originals **in order**, so the encoding is
+/// unchanged.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "ControlPoint")]
 struct RawControlPoint {
@@ -121,9 +109,8 @@ impl From<RawControlPoint> for ControlPoint {
 
 impl From<ControlPoint> for RawControlPoint {
     /// A rename and nothing more: a point in hand already holds what
-    /// [`ControlPoint::clamped`] promises — or was built past it on purpose by a
-    /// fitter's test, and writing that back unchanged is what keeps this from
-    /// being a second gate that could disagree with the first.
+    /// [`ControlPoint::clamped`] promises, and writing it back unchanged keeps this
+    /// from being a second gate that could disagree with the first.
     fn from(p: ControlPoint) -> Self {
         Self {
             pos: p.pos,
@@ -141,12 +128,10 @@ mod tests {
     /// A control point decoded from a file or a peer holds what
     /// [`ControlPoint::clamped`] promises.
     ///
-    /// Three lies a corrupt or hostile log could tell that the derived
-    /// `Deserialize` passed straight to the segment generator: a pressure past 1
-    /// (a radius the renderer has no ceiling for, and one the footprint did not
-    /// pad for), a NaN pressure — the case `f32::clamp` lets through, since both
-    /// of its comparisons against NaN are false — and a tilt outside the unit
-    /// disc, which steers the stamp footprint.
+    /// Three lies a corrupt or hostile log could tell: a pressure past 1 (a radius
+    /// the footprint did not pad for), a NaN pressure (the case `f32::clamp` lets
+    /// through), and a tilt outside the unit disc, which steers the stamp
+    /// footprint.
     #[test]
     fn a_control_point_from_the_wire_is_normalized() {
         let wire = |p: &ControlPoint| carbonite::to_vec_static(p).expect("encodes");

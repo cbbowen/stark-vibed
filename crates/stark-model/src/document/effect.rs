@@ -2,18 +2,12 @@
 //!
 //! The third of the three facts the model owns about a log, beside *that* it folds
 //! ([`fold`](super::fold)) and *which actions commute*
-//! ([`footprint`](super::footprint)). It lived in `stark-engine`'s timeline, which is
-//! the one place the split had left on the wrong side: not a line of it names a
-//! `DocState`, an `ApplyCtx`, a tile or a renderer — it is `Action`, `ActionId` and
-//! `ActorId` and nothing else, and the boundary was already reporting itself, since
-//! [`ActionKind::Undo`](super::ActionKind::Undo)'s own doc had to cite it in prose
-//! because an intra-doc link cannot point from the model into the engine.
-//!
-//! Two things follow. `stark-net`'s mirror can reason about an effective log without
-//! ever naming an engine type, which is what §2 says the split bought; and the
-//! property this most wants tested — random `(actor, lamport, kind)` logs with undo,
-//! redo and late arrival, asserting that splicing agrees with rewind-and-replay —
-//! becomes a test with no GPU and no `ApplyCtx` anywhere near it.
+//! ([`footprint`](super::footprint)). Not a line of it names a `DocState`, an
+//! `ApplyCtx`, a tile or a renderer — it is `Action`, `ActionId` and `ActorId` and
+//! nothing else — so `stark-net`'s mirror can reason about an effective log without
+//! naming an engine type (§2), and the property this most wants tested (random
+//! `(actor, lamport, kind)` logs with undo, redo and late arrival, asserting that
+//! splicing agrees with rewind-and-replay) needs no GPU.
 //!
 //! # The rules
 //!
@@ -208,9 +202,8 @@ mod tests {
     use super::*;
     use crate::Srgb;
 
-    /// Logs here are built in increasing id order, which is the state
-    /// [`ReplicatedTimeline`] keeps its own in — and what `action_by_id`'s binary
-    /// search and `undone_ids`' single descending pass both rest on.
+    /// Logs here are built in increasing id order, which is what `action_by_id`'s
+    /// binary search and `undone_ids`' single descending pass both rest on.
     fn resolve(log: &[Action], actor: u64) -> Targets {
         targets(log, ActorId(actor), &undone_ids(log))
     }

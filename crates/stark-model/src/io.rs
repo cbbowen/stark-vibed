@@ -12,9 +12,8 @@
 //! by name, exactly as reading JSON would (§8). A field added since is filled from
 //! its `#[serde(default)]`, one removed is skipped, one renamed is found through
 //! its `#[serde(alias)]`, and a variant may be inserted anywhere rather than only
-//! appended. So a file this build writes stays readable by later ones, and the
-//! version check that used to *refuse* older files — and the thirteen numbered
-//! layouts behind it (§8.1) — is gone with the encoding that needed it.
+//! appended. So a file this build writes stays readable by later ones, with no
+//! version to check.
 //!
 //! **What it cannot absorb is a type changing shape.** Reconciliation is by name over
 //! a *given* type: a scalar that became a struct is not a field to default or a name
@@ -27,12 +26,11 @@
 //! kept beside the new one.
 //!
 //! The schema is built at **compile time** (`#[derive(carbonite::Schema)]` on every
-//! type the log names), so writing a file discovers nothing at runtime. That is not a
-//! speed choice: a schema can also be found by *tracing* a type's `Deserialize` impl,
-//! but tracing drives it with synthetic values, and the three types here that gate
-//! their own invariants — `FillOp`, `SelectionOp`, `Gradient` — refuse those on
-//! principle. Each states its wire shape with `#[carbonite(as = "...")]` instead,
-//! which is what lets a funnel keep refusing (§8).
+//! type the log names), which is what lets a funnel keep refusing: the alternative,
+//! tracing a type's `Deserialize` impl, drives it with synthetic values, and the three
+//! types here that gate their own invariants — `FillOp`, `SelectionOp`, `Gradient` —
+//! turn those away. Each states its wire shape with `#[carbonite(as = "...")]`
+//! instead (§8).
 //!
 //! [`DocError::Legacy`] is what remains of the version ratchet: enough to recognize a
 //! pre-carbonite container and say so, since postcard wrote no field names and those
@@ -43,11 +41,10 @@
 //! [`DocumentFile::from_bytes`] opens a file the user owns;
 //! [`DocumentFile::from_untrusted_bytes`] opens one that arrived from somewhere else
 //! (§12.4). They differ in one thing — whether the decompressed body is bounded —
-//! and the split exists because a single answer was wrong in both directions. A
-//! bound low enough to be worth having against a stranger is one an honest document
-//! can cross, since nothing caps how many pictures a document places (§23); so the
-//! one bound refused paintings this very build had saved. There is no threat model
-//! in which the artist's own file is the attacker.
+//! and the split exists because a single answer is wrong in both directions: a bound
+//! low enough to be worth having against a stranger is one an honest document can
+//! cross, since nothing caps how many pictures a document places (§23). There is no
+//! threat model in which the artist's own file is the attacker.
 //!
 //! ## File size
 //!
@@ -58,9 +55,9 @@
 //!    values sit back to back, and sampled stroke paths are smooth.
 //!
 //! Both are pure Rust (deflate via miniz_oxide), so the format also works in the
-//! wasm/Dioxus frontend. Further wins (path simplification, delta/quantized
-//! samples, and the advisory raster `checkpoints` of §8) are additions a later
-//! build can make without a break, which is the point of the paragraph above.
+//! wasm/Dioxus frontend. Further wins (path simplification, delta/quantized samples,
+//! and the advisory raster `checkpoints` of §8) are additions a later build can make
+//! without a break.
 
 use std::io::{Read, Write};
 
@@ -87,13 +84,11 @@ const MAGIC: &[u8; 8] = b"STARKDOC";
 /// height maps at ~3 MB each — so this is roughly two orders of magnitude of
 /// headroom over anything a *session* produces.
 ///
-/// **It does not bound [`DocumentFile::from_bytes`], and that is the fix rather
-/// than an oversight.** Applied to both doors it was a bound on the writer that
-/// only the reader enforced: nothing caps how many pictures a document places
-/// (§23), each is up to `MAX_PICTURE_DIM²` of RGBA, and a dozen photographic
-/// placements clear this — so Stark saved a file it then refused to open, which is
-/// the one failure a save format may not have. The bound belongs where the bytes
-/// are a stranger's, and a painting on the artist's own disk is not that.
+/// **It deliberately does not bound [`DocumentFile::from_bytes`].** Nothing caps how
+/// many pictures a document places (§23), each up to `MAX_PICTURE_DIM²` of RGBA, so a
+/// dozen photographic placements clear this — and a save format that refuses to open
+/// what it wrote is the one failure it may not have. The bound belongs where the
+/// bytes are a stranger's.
 const MAX_DECOMPRESSED: u64 = 256 << 20;
 
 /// The last schema version the **pre-carbonite** container carried, and the only
@@ -123,19 +118,15 @@ impl Default for BuildId {
 
 /// Canvas-wide metadata needed to reproduce the document (§8).
 ///
-/// **The tile stride is deliberately not here.** It was recorded on every save and
-/// then, once something finally read it, used to *refuse* a file written against a
-/// different `TILE_SIZE` — on the argument that every tile boundary moves with it,
-/// so there was nothing to degrade to. The argument was about pixels, and it proves
-/// less than it looks: nothing in a log is expressed in tile units. `TileCoord`,
-/// `TileRect` and `Extent2` are not `Serialize` at all, and every action states
-/// itself in canvas px. So the stride reaches only *derived* things — which tiles a
-/// footprint quantizes to (§12.6), where an apron sits (§6.4), whether an action
-/// clears a tile cap — and a document whose pixels come back slightly differently is
-/// exactly what §19 permits. Recording it bought one thing: making `TILE_SIZE`
-/// unchangeable for the life of the format, since the first change would orphan
-/// every file ever saved. An implementation detail is not a fact about a painting,
-/// and a field older files carry is skipped on the way in like any other (§8).
+/// **The tile stride is deliberately not here.** Nothing in a log is expressed in
+/// tile units — `TileCoord`, `TileRect` and `Extent2` are not `Serialize` at all, and
+/// every action states itself in canvas px — so the stride reaches only *derived*
+/// things: which tiles a footprint quantizes to (§12.6), where an apron sits (§6.4),
+/// whether an action clears a tile cap. A document whose pixels come back slightly
+/// differently is exactly what §19 permits, whereas recording the stride would make
+/// `TILE_SIZE` unchangeable for the life of the format. An implementation detail is
+/// not a fact about a painting; older files that carry one are skipped over like any
+/// other dropped field (§8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct CanvasMeta {
     pub color_space: ColorSpaceId,
@@ -177,21 +168,12 @@ pub struct DocumentFile {
     ///
     /// # One bag, keyed by the thing that knows which store
     ///
-    /// It was three, because the three decode differently — a mask is luminance ×
-    /// alpha, a substrate is channel 0, a picture is all four channels kept — so a
-    /// single bag *keyed by id* would hand each store the others' bytes to
-    /// reinterpret. That is a real hazard and it is why the split existed: an
-    /// [`AssetId`] is a **content** hash, so one image imported as a stamp and placed
-    /// as a picture carries one id under two decodings that cannot stand in for each
-    /// other.
-    ///
-    /// But [`AssetNeed`] already *is* "the id, plus which store it belongs in" — it
-    /// was invented for exactly that question and used everywhere else the question is
-    /// asked (`content.rs`, and `stark-net`'s transfers). Keying the bag by it says
-    /// what the three bags said, and says it in the types: there is no longer a way to
-    /// ask one store about another's bytes, so `unbundled_content` does not have to
-    /// remember not to, and the test that held that rule holds a property that cannot
-    /// be violated instead (§1).
+    /// The three kinds decode differently — a mask is luminance × alpha, a substrate
+    /// is channel 0, a picture is all four channels kept — and an [`AssetId`] is a
+    /// **content** hash, so one image imported as a stamp and placed as a picture
+    /// carries one id under two decodings that cannot stand in for each other. Keying
+    /// by [`AssetNeed`], which is "the id, plus which store it belongs in", leaves no
+    /// way to ask one store about another's bytes (§1).
     ///
     /// This is by far the largest thing in the container when a document places
     /// pictures, which is the bargain §23 takes deliberately: the log stays a log, and
@@ -207,12 +189,10 @@ pub struct DocumentFile {
 /// by [`AssetNeed`] replaced them. They are kept, hollow, for the reason §8 keeps a
 /// retired action's variant: a field this build no longer declares is one an older
 /// file's bytes are silently *dropped* through, and a document that loads without the
-/// brush shape its strokes stamp with is worse than one that refuses — the stroke
-/// degrades to a round tip, the substrate to a flat deposit, and nothing says why.
+/// brush shape its strokes stamp with degrades to a round tip with nothing saying why.
 ///
-/// So they are read and folded into `content`, and written empty. When no
-/// three-bag files are left to open, the three go together — exactly as
-/// `LAST_VERSIONED_SCHEMA` will.
+/// So they are read and folded into `content`, and written empty. When no three-bag
+/// files are left to open, the three go together — as `LAST_VERSIONED_SCHEMA` will.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "DocumentFile")]
 struct RawDocumentFile {
@@ -234,8 +214,8 @@ struct RawDocumentFile {
 
 impl From<RawDocumentFile> for DocumentFile {
     /// Folds the tombstoned bags in, each under the need its own store answers —
-    /// which is the whole of the migration, and is only expressible because the
-    /// *old* shape said which store it meant by which field it used.
+    /// expressible only because the old shape said which store it meant by which
+    /// field it used.
     fn from(raw: RawDocumentFile) -> Self {
         let mut content = raw.content;
         content.extend(
@@ -296,19 +276,14 @@ impl DocumentFile {
         let body = carbonite::to_vec_static(self).map_err(DocError::Serialize)?;
 
         // `default` (level 6) rather than `best` (9). Saving is latency the artist
-        // waits through, and level 9 spends a large multiple of 6's time hunting
-        // longer matches for a fraction of a percent on data that is already this
-        // compressible — fitted paths are smooth, so the wins deflate finds here it
-        // finds early. The bundled PNGs, which dominate a large file, are
-        // incompressible either way.
+        // waits through, and level 9 spends a large multiple of 6's time for a
+        // fraction of a percent on data that is already this compressible — fitted
+        // paths are smooth, and the bundled PNGs are incompressible either way.
         //
         // **The magic goes in the sink, not on the front afterwards.** The encoder
         // appends to whatever `Vec` it is given and never rewinds it, so eight bytes
-        // put there first come out ahead of the deflate stream uncompressed — which
-        // is what the container wants — and the whole compressed body is spared a
-        // copy. Prepending instead cost a third full pass over the file on every
-        // save, on top of carbonite's buffer and deflate's: a document is dominated
-        // by the pictures it places (§23), and those are the bytes being moved.
+        // put there first come out ahead of the deflate stream uncompressed — which is
+        // what the container wants — and the whole compressed body is spared a copy.
         let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
         encoder.write_all(&body)?;
         Ok(encoder.finish()?)
@@ -318,12 +293,9 @@ impl DocumentFile {
     /// owns** — a file off their own disk, or bytes this process just wrote.
     ///
     /// Unbounded in what it will expand to, which is what
-    /// [`from_untrusted_bytes`](Self::from_untrusted_bytes) exists to be the other
-    /// half of. A painting is as large as the artist made it: nothing caps how many
-    /// pictures a document places (§23), so a bound low enough to be worth having
-    /// against a stranger is one an honest document can cross — and refusing to open
-    /// a painting this very build saved is a worse failure than any it prevents. The
-    /// bytes here came from somewhere the user already trusts with their files.
+    /// [`from_untrusted_bytes`](Self::from_untrusted_bytes) is the other half of. A
+    /// painting is as large as the artist made it, and the bytes here came from
+    /// somewhere the user already trusts with their files (see `MAX_DECOMPRESSED`).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         Self::decode(bytes, None)
     }
@@ -422,10 +394,8 @@ mod tests {
     ///
     /// One body, the two doors, opposite answers. Deflate takes a long run down to
     /// almost nothing, so the compressed length says nothing about the decompressed
-    /// one — the whole point of the bound, and exactly the shape a peer can send
-    /// (§12.4). The same bytes off the artist's own disk are expanded, because a
-    /// bound low enough to stop that is one an honest document can cross, and a save
-    /// format that will not open what it wrote is the worse failure.
+    /// one — exactly the shape a peer can send (§12.4). The same bytes off the
+    /// artist's own disk are expanded.
     #[test]
     fn the_cap_guards_the_untrusted_door_and_not_the_trusted_one() {
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
@@ -478,10 +448,8 @@ mod tests {
     /// corrupt deflate stream (§8.1).
     ///
     /// Those bytes are postcard: no field names, no lengths, meaningful only to the
-    /// exact schema that wrote them. Nothing a newer build does can read them, so
-    /// the whole job here is to say which thing went wrong to someone holding a
-    /// painting they made — `DocError::Legacy` is the last trace of the version
-    /// ratchet this format removed.
+    /// exact schema that wrote them. Nothing a newer build can do will read them, so
+    /// the whole job here is to say which thing went wrong.
     #[test]
     fn a_document_from_before_the_format_change_says_so() {
         for version in [1u32, 6, LAST_VERSIONED_SCHEMA] {
@@ -535,18 +503,15 @@ mod tests {
     /// **A color newtype is not a format change**, which is the claim `Srgb` makes
     /// and the one a save format has to be held to.
     ///
-    /// `Old` spells the four payloads that took the type the way they were written
-    /// *before* it — a bare `[f32; 3]`, under the variant name that build used
-    /// (`SetBackground`, since renamed to `SetSubstrateColor`) — and a document
-    /// written that way has to come back with the same colors. Names are what
-    /// carbonite reconciles on (§8): `#[carbonite(as = "[f32; 3]")]` keeps the column
-    /// a plain triple on both sides of the change, and `#[serde(alias)]` is what finds
-    /// today's variant under yesterday's name.
+    /// `Old` spells the payloads the way they were written *before* the newtype — a
+    /// bare `[f32; 3]`, under the variant name that build used (`SetBackground`, since
+    /// renamed to `SetSubstrateColor`). `#[carbonite(as = "[f32; 3]")]` keeps the
+    /// column a plain triple on both sides of the change, and `#[serde(alias)]` finds
+    /// today's variant under yesterday's name (§8).
     ///
-    /// The hostile value is the second half of it: an older build could write a color
-    /// outside the cube, since nothing stopped it, and such a file must **load**
-    /// rather than be refused — clamped on the way in, which is the whole stance §19
-    /// takes about tightening an invariant.
+    /// The hostile value is the second half: an older build could write a color
+    /// outside the cube, and such a file must **load** rather than be refused —
+    /// clamped on the way in, which is §19's stance on tightening an invariant.
     #[test]
     fn a_document_written_before_the_color_newtype_still_loads() {
         use crate::document::{ActionKind, LayerId, MatteRegion, Parcel, Place};
@@ -654,16 +619,14 @@ mod tests {
     /// **The whole point of the format**: a file written against an older shape of
     /// these types loads, rather than being refused by a version number (§8).
     ///
-    /// `Old` is what `DocumentFile` and `CanvasMeta` looked like at some earlier
-    /// build — no `substrate` on the canvas (a field this build added), and a
-    /// `tile_size` this build has since dropped — spelled with the names the real
-    /// types carry, because names are what carbonite reconciles on. Both moves are
-    /// exercised at once: the added field arrives from its `#[serde(default)]`, the
-    /// removed one is skipped, and everything either shape shares comes through.
+    /// `Old` is what `DocumentFile` and `CanvasMeta` looked like at an earlier build —
+    /// no `substrate` on the canvas (a field this build added), and a `tile_size` this
+    /// build has since dropped — spelled with the names the real types carry, since
+    /// names are what carbonite reconciles on. Both moves at once: the added field
+    /// arrives from its `#[serde(default)]`, the removed one is skipped.
     ///
-    /// `tile_size` is not a hypothetical here: every document written before the
-    /// stride stopped being recorded carries one, and this is the assertion that
-    /// those files still open (see [`CanvasMeta`]).
+    /// `tile_size` is not hypothetical — every document written before the stride
+    /// stopped being recorded carries one (see [`CanvasMeta`]).
     #[test]
     fn a_file_written_against_an_older_shape_still_loads() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]

@@ -7,24 +7,19 @@
 //! quantizes against `TILE_SIZE` (§12.6) and an apron sits one texel inside it
 //! (§6.4).
 //!
-//! # Where the line falls, and why the constants are on this side of it
+//! # Why the tile constants are on this side of the line
 //!
 //! A tile's *texture* geometry is the engine's — the interior UV scale and bias, a
-//! mask tile's edge length and where its texture starts, the edge-texel layout a
-//! lasso is uploaded in. All of those lived here and none of them had a caller in
-//! this crate; they are in `gpu::tile` and `gpu::selection` now, on the argument
-//! [`io`](crate::io) already makes about not recording the stride in a save file:
+//! mask tile's edge length, the edge-texel layout a lasso is uploaded in — on the
+//! argument [`io`](crate::io) makes about not recording the stride in a save file:
 //! *an implementation detail is not a fact about a painting.*
 //!
-//! [`TILE_SIZE`], [`TILE_APRON`] and [`TILE_TEX`] do not follow them out, and it is
-//! worth saying why rather than leaving it to look like an oversight. The model's
-//! own quantization is written against them — `fill_bounds`' reach, `image_tiles`,
-//! [`tile_box`] — because a *box* has to be padded by what a pass will read past it
-//! before anyone can ask which tiles it touches. And `TILE_SIZE` is derived from
-//! `TILE_TEX`, so the three are one fact and cannot be split down the middle. What
-//! makes that harmless is the thing `io` establishes: nothing in a log is expressed
-//! in tile units, so the stride reaches only *derived* answers and a document whose
-//! pixels come back slightly differently is exactly what §19 permits.
+//! [`TILE_SIZE`], [`TILE_APRON`] and [`TILE_TEX`] stay because the model's own
+//! quantization is written against them — `fill_bounds`' reach, `image_tiles`,
+//! [`tile_box`] — a box having to be padded by what a pass reads past it before
+//! anyone can ask which tiles it touches. `TILE_SIZE` is derived from `TILE_TEX`, so
+//! the three are one fact. Nothing in a log is expressed in tile units, so the stride
+//! reaches only *derived* answers, which is what §19 permits.
 //!
 //! Canvas space is in pixels with x to the right and y downward. Tile `(i, j)`
 //! covers the square `[i*TILE_SIZE, (i+1)*TILE_SIZE) × [j*TILE_SIZE, ...)`.
@@ -41,12 +36,10 @@ pub use glam::{Affine2, IVec2, Mat2, Vec2};
 /// isotropic (a circle, where the axes are genuinely arbitrary but must still be
 /// *some* orthogonal pair).
 ///
-/// Here rather than beside either caller because both a scatter of samples and a conic
-/// are the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
+/// Here rather than beside either caller because a scatter of samples and a conic are
+/// the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
 /// moments of a trace, and `document::guide` reads one off the quadratic part of a
-/// conic (§20.7). One caller each side of the crate boundary now — `guide` is the
-/// module §20.5 keeps whole in the model — so this is `pub` for the engine's half and
-/// shared for both.
+/// conic (§20.7). One caller on each side of the crate boundary, so it is `pub`.
 pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
     let half_trace = 0.5 * (sxx + syy);
     let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
@@ -64,15 +57,13 @@ pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) 
 /// An axis-aligned-in-its-own-frame ellipse: where it is, how big, and how it is
 /// turned.
 ///
-/// Here beside [`principal_axis`] and for the same reason. Two modules arrive at an
-/// ellipse from opposite directions — `stark-engine`'s `assist` reads one off the
-/// second moments of a hand-drawn loop, `document::guide` off the quadratic part of a
-/// conic (§20.7) — and both were passing it around as a bare `(Vec2, Vec2, f32)`,
-/// which says nothing about which `Vec2` is which and left the convergence test in
-/// `assist` comparing `a.0` against `b.1`.
+/// Here beside [`principal_axis`] and for the same reason: two modules arrive at an
+/// ellipse from opposite directions, `stark-engine`'s `assist` off the second moments
+/// of a hand-drawn loop and `document::guide` off the quadratic part of a conic
+/// (§20.7).
 ///
-/// `radii` is **major first**, which the triple could not state and every producer
-/// had to promise in prose.
+/// `radii` is **major first**, which a bare `(Vec2, Vec2, f32)` could not state and
+/// every producer had to promise in prose.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Ellipse {
     pub center: Vec2,
@@ -164,12 +155,11 @@ impl TileRect {
     /// axis.
     ///
     /// One definition, asked by everything here that has to treat an empty rect as
-    /// empty. It exists because the emptiness test used to be spelled inline and
-    /// per axis: [`intersects`](Self::intersects) guarded x and not y, so a rect
-    /// empty only in y intersected everything, while [`union`](Self::union)
-    /// guarded both. The fields are public, so the disagreement was reachable from
-    /// outside — and this is a footprint predicate, where §12.6 survives a rect
-    /// claiming too much and cannot survive one claiming too little.
+    /// empty — spelled inline and per axis, [`intersects`](Self::intersects) and
+    /// [`union`](Self::union) can disagree about a rect empty on one axis only. The
+    /// fields are public, so that disagreement is reachable from outside, and this is
+    /// a footprint predicate: §12.6 survives a rect claiming too much and cannot
+    /// survive one claiming too little.
     pub const fn is_empty(self) -> bool {
         self.min.0 > self.max.0 || self.min.1 > self.max.1
     }
@@ -211,13 +201,11 @@ impl TileRect {
     /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on
     /// every side.
     ///
-    /// **The one quantizer**, and the reason it is one: this arithmetic was
-    /// written out five times across `document/`, and the copies disagreed in
-    /// exactly the place that matters. `NaN as i32` is 0, so a `clamp`-then-cast
-    /// version answered "one tile at the origin" for a box it could not measure;
-    /// a bare `as i32` on an out-of-range index wrapped it to a tile somewhere
-    /// else entirely. Both are silent, and both point the unsafe way for the two
-    /// things that ask: a footprint that under-claims diverges peers (§12.6), and
+    /// **The one quantizer**, and the reason it is one: the obvious spellings fail
+    /// silently in the unsafe direction. `NaN as i32` is 0, so a `clamp`-then-cast
+    /// answers "one tile at the origin" for a box it could not measure, and a bare
+    /// `as i32` on an out-of-range index wraps to a tile somewhere else entirely.
+    /// Both matter here — a footprint that under-claims diverges peers (§12.6), and
     /// a tile cover that under-counts is enumerated rather than refused.
     ///
     /// So the arithmetic is `i64` and saturating throughout, and the answer is
@@ -279,10 +267,9 @@ impl Extent2 {
 mod tests {
     use super::*;
 
-    /// `covering` is the one quantizer five call sites across `document/` now
-    /// share, so the box it names has to be exactly the tiles the canvas box
-    /// reaches — no more (a fill would rewrite tiles it never covered) and no
-    /// fewer (a footprint would under-claim, which diverges peers).
+    /// The box `covering` names has to be exactly the tiles the canvas box reaches —
+    /// no more (a fill would rewrite tiles it never covered) and no fewer (a footprint
+    /// would under-claim, which diverges peers).
     #[test]
     fn covering_names_exactly_the_tiles_a_box_reaches() {
         let side = TILE_SIZE as f32;
@@ -359,20 +346,17 @@ mod tests {
         assert!(!TileRect::EMPTY.intersects(&TileRect::ALL));
     }
 
-    /// **Empty is empty on either axis**, and every predicate has to agree about
-    /// it. `intersects` used to guard `min > max` on x alone, so a rect inverted
-    /// only in y reached everything — where `union` treated the same rect as the
-    /// identity. The fields are public, so the disagreement was reachable, and
-    /// this is the predicate the commutation gate rests on: a footprint that
-    /// intersects what it does not touch costs the fast path, but a rect that
-    /// *claims* to touch nothing while testing positive is the §12.6 direction
-    /// with no pixel able to show it.
+    /// **Empty is empty on either axis**, and every predicate has to agree about it.
+    /// This is the predicate the commutation gate rests on: a footprint that
+    /// intersects what it does not touch costs the fast path, but a rect that *claims*
+    /// to touch nothing while testing positive is the §12.6 direction, with no pixel
+    /// able to show it.
     #[test]
     fn a_rect_inverted_on_either_axis_reaches_nothing() {
         let real = TileRect::covering(Vec2::ZERO, Vec2::splat(9.0), 0).unwrap();
         let inverted = [
             TileRect::EMPTY,
-            // Empty in x alone, and in y alone — the case that used to slip past.
+            // Empty in x alone, and in y alone.
             TileRect {
                 min: (5, 0),
                 max: (0, 10),
@@ -407,12 +391,9 @@ mod tests {
 // A selection, a fill and a transform all have to answer the same question — which
 // tiles does this canvas box touch, and is that more than I am willing to walk — and
 // they have to answer it *identically*, because a fill's written tiles and its
-// footprint are required to be the same tiles (§12.6).
-//
-// It lives here rather than in `document::selection`, where it grew up, because the
-// answer is a fact about the tile grid and not about any one of the three. That the
-// GPU side of all three reaches for it (`gpu::fill`, `gpu::selection`) was the
-// standing hint; the crate split turned the hint into a `pub`.
+// footprint are required to be the same tiles (§12.6). It is a fact about the tile
+// grid rather than about any one of the three, and the GPU side of all three reaches
+// for it (`gpu::fill`, `gpu::selection`), so it is `pub` and lives here.
 
 /// The tiles whose *texture* (interior + apron) overlaps the canvas box
 /// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
@@ -432,12 +413,10 @@ pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
 /// expanded by `ring` tiles on every side — `None` when there would be more than
 /// `budget` of them.
 ///
-/// **Counted before it is walked**, which is what makes an absurd box a clean
-/// refusal instead of a hang: the box is quadratic in the drag, so a marquee at far
-/// zoom-out (or an op arriving from a file or a peer) can name more tiles than
-/// there is memory to list, and finding that out by listing them is not an option.
-/// Same stance and same shape as `document::transform`'s `quad_reached_tiles`, which counts its
-/// candidates against its own budget before enumerating, for the same reason.
+/// **Counted before it is walked**, which is what makes an absurd box a clean refusal
+/// instead of a hang: the box is quadratic in the drag, so a marquee at far zoom-out
+/// (or an op arriving from a file or a peer) can name more tiles than there is memory
+/// to list. Same shape as `document::transform`'s `quad_reached_tiles`.
 pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Vec<TileCoord>> {
     tiles_of(tile_box(lo, hi, ring)?, budget)
 }
@@ -447,9 +426,8 @@ pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Ve
 /// that has its own reason to hold the `TileRect`.
 ///
 /// The fill is that caller: its written tile set and its footprint have to be the
-/// same tiles (§12.6), so the rect is derived once by
-/// `document::fill_bounds` and quantized once, and only *then*
-/// walked. Counted before it is walked for [`tiles_covering`]'s own reason.
+/// same tiles (§12.6), so the rect is derived once by `document::fill_bounds`,
+/// quantized once, and only *then* walked.
 pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
     let count = rect.count();
     if count > budget as u64 {
