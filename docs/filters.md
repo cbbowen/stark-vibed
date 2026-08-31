@@ -544,12 +544,14 @@ nothing on screen to say where it came from.
   in reach per tap. One whose kernel is *large* follows the focal blur instead
   (§21.12), whose FFT machinery is kernel-shape-agnostic by construction: a motion
   blur is `make_kernel` rasterizing a line instead of a disc, and nothing else.
-- **The aperture as an image.** The focal blur's kernel is a disc today, and the
-  disc is one compute pass of the machinery — everything after `make_kernel` is
-  shape-blind (§21.12). A user-supplied aperture (a hexagon, a heart, a cat) is
-  that pass sampling an asset instead of evaluating a distance, plus the asset
-  plumbing a brush shape already has (§6.9); the reason it is not done is the
-  reason it is easy.
+- **The aperture as an image.** The three analytic apertures (§21.12) took the
+  cheap half of this: each is a signed distance in `make_kernel` and everything
+  after it is shape-blind. What is left is the half that needs an *asset* — a
+  user-supplied aperture (a heart, a cat, a scan of a real iris) is that same pass
+  sampling a texture instead of evaluating a distance, plus the asset plumbing a
+  brush shape already has (§6.9). The contract it would have to keep is the one
+  the analytic shapes keep: contained in the disc of the radius, since that is what
+  the planes are padded by.
 - **Radial dispersion.** The chromatic filter's axis is uniform (§21.10) because an
   infinite canvas has no centre for a lens's field to grow from. The frame (§15) is
   the obvious candidate to donate one — dispersion growing with distance from the
@@ -753,22 +755,79 @@ bokeh — with a hard rim. That difference *is* the look, and it is not a parame
 of a Gaussian at any setting. So this filter is the real convolution:
 
 ```
-out(x) = Σ_d k(d) · image(x − d),    k = the aperture, a filled disc
+out(x) = Σ_d k(d) · image(x − d),    k = the aperture’s own shape
 ```
 
-One number describes it, because one number describes the disc:
+A size and a shape, because that is what an aperture is:
 
 ```rust
 pub struct FocalBlur {
-    pub radius: f32,   // the circle of confusion's radius, canvas px; 0 the identity
+    pub radius: f32,        // the circle of confusion's radius, canvas px; 0 the identity
+    pub aperture: Aperture, // what one point of light becomes; Disc by default
 }
 ```
 
-Stated in canvas px on the chromatic pair's argument (§21.10): the bokeh belongs
-to the artwork, so it scales with a zoom and holds its size in an export; the trip
-into accumulator texels is the renderer's, per frame, through the view's linear
-map. The struct is expected to grow exactly one thing — the aperture's *shape* —
-and the machinery below was built so that day changes one compute pass (§21.9).
+The radius is stated in canvas px on the chromatic pair's argument (§21.10): the
+bokeh belongs to the artwork, so it scales with a zoom and holds its size in an
+export; the trip into accumulator texels is the renderer's, per frame, through the
+view's linear map. **An aperture's angle is stated in canvas space for the same
+reason and makes the same trip**, through the view's orientation rather than its
+full linear map, since the zoom is the radius' half and cancels out of a direction:
+a six-bladed iris turns when the canvas is turned and flips when it is mirrored, so
+an export at a rotated view shows the picture the screen showed. Skip that trip and
+the polygon stays welded to the screen while the painting rotates under it — which
+is a document whose pixels depend on view state, the one thing §6.4 forbids.
+
+**The aperture is three shapes, and they are the ones a lens makes.**
+
+```rust
+pub enum Aperture {
+    Disc { obstruction: f32 },                   // wide open, or a mirror lens's doughnut
+    Blades { count: u32, angle: f32 },           // the iris stopped down onto its blades
+    Oval { squeeze: f32, angle: f32 },           // anamorphic
+}
+```
+
+Three rather than the five or six a list of *looks* would have, because each is the
+continuous family a real mechanism sweeps out and the named looks are settings of
+it. `Blades` is the unification §20 makes of 1-, 2- and 3-point perspective,
+arrived at the same way: pentagon, hexagon and octagon are what a 5-, 6- and
+8-bladed iris each make, three named cases differing in one number, so they are one
+case with the number exposed. `Disc` is the same move for the catadioptric — a
+mirror lens's aperture is not a different shape from a plain one, it is a plain one
+with the secondary mirror's shadow across the middle — so the doughnut is a place
+on the obstruction knob and 0 is the plain disc. `Oval` is the anamorphic squeeze.
+
+That merge costs one thing and it is worth naming: the doughnut is a knob away
+rather than a click away, so the knob's own words are where it is advertised. What
+it buys is that there is no seam in the middle of a continuous family, and no
+second spelling of the setting where the two used to meet.
+
+Two properties are worth stating because everything else leans on them:
+
+- **Each variant carries the parameters its geometry can hold and no others.** A
+  disc is rotationally symmetric however far it is obstructed, so it has no angle
+  and there is no turned disc to express — which is §1's preference for a
+  representation that cannot say the wrong thing over a check that remembers not to.
+- **Every shape is contained in the disc of the radius**, so the radius is each
+  one's *circumradius*. That is a contract with the renderer rather than an
+  aesthetic: the planes are padded by the radius on each side so the circular
+  convolution's wrap-around lands in zeros, and a shape reaching past it would carry
+  one edge of the picture onto the other. It is also what makes the shapes
+  comparable — at one radius they are one bokeh, stopped down differently — and what
+  lets the shape change with nothing about the padding recomputed.
+
+In the shader a shape is **one signed distance** and nothing else: `make_kernel`
+evaluates `aperture_sd` and antialiases the rim over a texel, and the transform,
+the multiply and the inverse never learn what they are carrying. That is the whole
+of what §21.9 promised the machinery would cost when the shape arrived, and it is
+also why the ranges are where they are — `Aperture::OBSTRUCTION` stops at 0.9
+because an obstructed disc's *rim* is what the decimation below has to resolve, not
+its span. The one place the merge is not free is the signed distance itself: the
+annulus is `max(outer, inner)`, and at obstruction 0 the inner rim is a circle of
+radius zero that still wins within half a texel of the origin — so the plain disc
+would come out with a half-weight centre texel. The inner rim is counted only when
+there is one, and then obstruction 0 is `length(d) - r` exactly.
 
 **Why an FFT.** A disc of radius `r` is `πr²` taps per texel and not separable; at
 a painterly radius that is tens of thousands of taps, and a gather loop the shape
@@ -825,8 +884,11 @@ the space's decode lays the accumulator into the padded planes; the forward FFT,
 one frequency-domain multiply and the inverse FFT run as compute dispatches; and
 the fullscreen pass's `FILTER_FOCAL_BLUR` arm reads the result through two
 bindings every other kind leaves on 1×1 stand-ins (§6.8's pattern). The kernel's
-own transform is cached against its radius and rebuilt only when that moves —
-a settled blur pays no kernel work per frame. The eyedropper picks through all of
+own transform is cached against its aperture, its radius **and the extent it was
+transformed at** — one shape at two sizes is two tables of frequencies — and
+rebuilt only when one of the three moves, so a settled blur pays no kernel work
+per frame; two blur layers that disagree rebuild it between them, which is the
+cost of keeping one kernel texture rather than one per layer. The eyedropper picks through all of
 it (§18.0.2): a `PreparedPick` carries a patch-sized copy of the same planes, so
 what the picker reports under a blur is the blurred paint the screen shows.
 
@@ -848,17 +910,28 @@ resolution, chosen per layer so its radius lands back inside the bound, with
 the decode averaging down and the resolve interpolating up while the transform
 between them stays scale-blind. That is the chromatic filter's tap-cap trade —
 degrade the sampling, never the picture's geometry — and it is invisible where
-it is legal, because a disc past a hundred texels wide carries nothing near
-texel frequency. The device's texture limit stays as the clamp of last resort,
+it is legal, because an aperture past a hundred texels wide carries nothing near
+texel frequency. That last claim is about a shape's *thinnest* part rather than
+its span, which is what `Aperture::OBSTRUCTION`'s ceiling buys: at the widest
+obstruction the document will hold, the disc's remaining rim is a tenth of its
+radius, so even the one setting with a thin part is a dozen texels thick where the
+bound bites. The device's texture limit stays as the clamp of last resort,
 and only there does the radius itself give way — a smaller blur, never a
 wrapped one. And the FFT recomputes per frame while the filter is above live
 painting, which is what "accurate bokeh at painterly radii" costs; the recorded
 optimization path is radix-4 passes and a workgroup-memory transform, both
 invisible to everything outside `blur.wesl`.
 
-In the bar (§21.6) the blur is one track — a radius is one number with no partner
-to be a vector or a map with, so a track is the right control, by the same test
-that gave the chromatic pair a pad — through the same preview-per-sample /
-commit-once funnel as every knob. Radius 0 is the neutral, dropped from the draw
-list to the byte (§21.3), so a freshly added blur changes nothing until it is
-dialled.
+In the bar (§21.6) the blur is a run of shape buttons and the tracks under it. The
+shapes are a segmented run on §25.9's rule — three alternative answers to one
+question, exactly one lit — and they come *first*, because which tracks are on the
+bar at all is that row's answer and a control that decides what else is present
+reads wrong downstream of it. Picking a shape is a discrete choice, so it commits
+directly rather than through the preview-then-settle funnel a track needs; picking
+the one already showing is refused engine-side and costs no undo step. The radius
+is a track for the reason it always was — one number with no partner to be a vector
+or a map with, the same test that gave the chromatic pair a pad — and each shape
+adds its own beneath it, up to two. Radius 0 stays the neutral **whatever the
+aperture**, dropped from the draw list to the byte (§21.3): a shape chosen before
+the radius is dialled is not an edit yet, exactly as an angle dialled before a
+chromatic spread is not.

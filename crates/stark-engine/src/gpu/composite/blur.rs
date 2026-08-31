@@ -15,10 +15,10 @@
 //! Per focal-blur layer, in encoder order (which is execution order):
 //!
 //! 1. **The kernel**, only when what the kernel texture holds is not this
-//!    layer's radius at this layer's extent: `make_kernel` rasterizes the disc
-//!    into a scratch plane and `fft_one` walks it into the dedicated kernel
-//!    texture. Cached across frames — a settled radius costs nothing here — and
-//!    rebuilt mid-frame when two blur layers disagree.
+//!    layer's aperture at this layer's radius and extent: `make_kernel`
+//!    rasterizes the shape into a scratch plane and `fft_one` walks it into the
+//!    dedicated kernel texture. Cached across frames — a settled bokeh costs
+//!    nothing here — and rebuilt mid-frame when two blur layers disagree.
 //! 2. **The decode**: the space's own `fs_blur_decode` (`FilterPass::blur_decode`)
 //!    lays the accumulator into set **B** as premultiplied XYZ light, coverage,
 //!    height and the border weight, zeros in the padding. It binds the very
@@ -52,7 +52,7 @@
 //! rather than growing, its transform running at a power-of-two fraction of the
 //! accumulator's resolution — the chromatic tap cap's own trade (§21.10),
 //! degrade the sampling and never the picture's geometry, and invisible where
-//! it is legal because a disc that wide carries nothing near texel frequency.
+//! it is legal because an aperture that wide carries nothing near texel frequency.
 //! The decode averages down and the resolve interpolates back up
 //! (`filter_common.wesl`'s `blur_src` / `blur_read`); the transform between
 //! them is scale-blind. The device's texture limit stays as the last-resort
@@ -129,11 +129,11 @@ impl BlurPass {
     }
 
     /// Bring `frame` in line with what this render is about to blur: the planes
-    /// for an accumulator of `accum`, the dispatch plan for `radii` (one
-    /// `(filter slot, radius in accumulator texels)` per focal-blur layer, in
-    /// slot order), and every per-dispatch uniform written. Empty `radii` drops
-    /// the frame whole — the planes are the largest scratch there is, and a
-    /// document that stops blurring should stop paying for it.
+    /// for an accumulator of `accum`, the dispatch plan for `kernels` (one
+    /// `(filter slot, radius in accumulator texels, aperture)` per focal-blur
+    /// layer, in slot order), and every per-dispatch uniform written. Empty
+    /// `kernels` drops the frame whole — the planes are the largest scratch there
+    /// is, and a document that stops blurring should stop paying for it.
     ///
     /// **Returns whether the planes the filter bind group names changed** —
     /// created, resized, or dropped — because those groups are cached per scratch
@@ -145,13 +145,13 @@ impl BlurPass {
         ctx: &GpuContext,
         frame: &mut Option<BlurFrame>,
         accum: Extent2,
-        radii: &[(u32, f32)],
+        kernels: &[(u32, f32, Aperture)],
         max_dim: u32,
     ) -> bool {
-        if radii.is_empty() {
+        if kernels.is_empty() {
             return frame.take().is_some();
         }
-        let layers = layers(accum, radii, max_dim);
+        let layers = layers(accum, kernels, max_dim);
         // The planes hold the largest layer's transform; a smaller layer runs on
         // a subregion at their origin, its extent riding its own uniforms.
         let planes = layers.iter().fold(Extent2::new(2, 2), |m, l| {
@@ -192,13 +192,77 @@ pub(super) fn texel_radius(f: &FilterDraw, view: ViewTransform) -> f32 {
     (view.linear() * stark_model::geom::Vec2::new(f.params[0], 0.0)).length()
 }
 
-/// The per-filter-slot radii this frame's plan needs, in slot order.
-pub(super) fn blur_radii(filters: &[&FilterDraw], view: ViewTransform) -> Vec<(u32, f32)> {
+/// The aperture's shape as `make_kernel` reads it (§21.12) — the shader's own
+/// `APERTURE_*` code, the shape's one number, and its turn.
+///
+/// Three lanes rather than the document's [`Aperture`] enum for
+/// [`FilterDraw`]'s reason: by the time a filter reaches the compositor it is
+/// numbers, and which number means which shape is a fact about `blur.wesl`
+/// rather than about the document.
+///
+/// `shape` and `param` are **scale-free** — a code, a blade count, a fraction of
+/// the radius, a ratio — which is what lets a decimated layer (§21.12) rescale
+/// its radius and carry them through untouched. `angle` is not: it is the one
+/// lane that has already made a trip, from the canvas frame the document states
+/// it in into this one ([`aperture`]).
+///
+/// [`Aperture`]: stark_model::document::Aperture
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub(super) struct Aperture {
+    shape: u32,
+    param: f32,
+    /// The aperture's turn **in the accumulator's frame**, not the canvas's — see
+    /// [`aperture`]. Zero for a shape that has no direction, and held there, since
+    /// this keys the kernel cache.
+    angle: f32,
+}
+
+/// The aperture a focal-blur draw carries, off the lanes `group::aperture_lanes`
+/// wrote — with its turn carried into the frame the convolution runs in.
+///
+/// **The turn makes the same trip the radius does** (§21.10, §6.4), and for the
+/// same reason the chromatic filter's angle does (`plan::view_lanes`): the bokeh
+/// belongs to the artwork, so a six-bladed iris turns when the canvas is turned
+/// and flips when it is mirrored, and an export at a rotated view shows the
+/// picture the screen showed. Without it the polygon stays welded to the screen
+/// while the painting rotates under it.
+///
+/// [`ViewTransform::orientation`] rather than the full `linear()` because the
+/// zoom is the *radius*' half of the map and cancels out of a direction anyway;
+/// the mirror is not optional, or a flipped view would leave a turned iris
+/// unflipped.
+fn aperture(f: &FilterDraw, view: ViewTransform) -> Aperture {
+    let shape = f.params[1] as u32;
+    let canvas = f.params[3];
+    let turned = view.orientation() * stark_model::geom::Vec2::new(canvas.cos(), canvas.sin());
+    let angle = turned.y.atan2(turned.x);
+    Aperture {
+        shape,
+        param: f.params[2],
+        // Only a shape that *has* a direction takes the trip. A disc's lane is zero
+        // and has to stay zero — turning it would key a new kernel on every frame of
+        // a canvas rotation, for a shape that cannot tell one turn from another.
+        // Non-finite lands on zero for `layers`' reason: the view multiplies this,
+        // and the arithmetic has to hold whatever a hostile one does.
+        angle: if shape == stark_shaders::mirror::blur::APERTURE_DISC || !angle.is_finite() {
+            0.0
+        } else {
+            angle
+        },
+    }
+}
+
+/// What each focal-blur layer asks the convolution for this frame, in filter-slot
+/// order: its slot, its radius in accumulator texels, and its aperture.
+pub(super) fn blur_kernels(
+    filters: &[&FilterDraw],
+    view: ViewTransform,
+) -> Vec<(u32, f32, Aperture)> {
     filters
         .iter()
         .enumerate()
         .filter(|(_, f)| f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR)
-        .map(|(slot, f)| (slot as u32, texel_radius(f, view)))
+        .map(|(slot, f)| (slot as u32, texel_radius(f, view), aperture(f, view)))
         .collect()
 }
 
@@ -208,12 +272,18 @@ pub(super) fn blur_radii(filters: &[&FilterDraw], view: ViewTransform) -> Vec<(u
 /// The number is the document knob's own ceiling ([`FocalBlur::RADIUS`]), which
 /// makes the statement exact: **at any zoom up to 1:1 the convolution is never
 /// decimated**, and past 1:1 it decimates only once the on-screen radius has
-/// outgrown the widest blur the knob can ask for. A disc this many texels wide
-/// carries nothing near texel frequency, so halving the resolution under it is
-/// invisible where it is legal — which is the same trade the chromatic filter's
-/// tap cap makes, chosen the same way round: degrade the *sampling*, never the
-/// picture's own geometry.
+/// outgrown the widest blur the knob can ask for. An aperture this many texels
+/// wide carries nothing near texel frequency, so halving the resolution under it
+/// is invisible where it is legal — which is the same trade the chromatic
+/// filter's tap cap makes, chosen the same way round: degrade the *sampling*,
+/// never the picture's own geometry.
 ///
+/// "This many texels wide" is a claim about the *thinnest* part of a shape, not
+/// about its span, which is why [`Aperture::OBSTRUCTION`] has a ceiling: a ring's
+/// rim is a tenth of its radius at the widest obstruction the document will hold,
+/// so even that shape is a dozen texels thick where the bound bites.
+///
+/// [`Aperture::OBSTRUCTION`]: stark_model::document::Aperture::OBSTRUCTION
 /// [`FocalBlur::RADIUS`]: stark_model::document::FocalBlur::RADIUS
 const MAX_CONV_RADIUS: f32 = 128.0;
 
@@ -224,7 +294,7 @@ const MAX_CONV_RADIUS: f32 = 128.0;
 /// This is what bounds the FFT (§21.12): without it, zooming into a blur grows
 /// the guard band with the zoom, and the padded planes balloon past the device's
 /// buffer and memory limits — the transform would be spending gigabytes to
-/// resolve texel-scale detail that a disc hundreds of texels wide provably
+/// resolve texel-scale detail that an aperture hundreds of texels wide provably
 /// cannot contain. The floor keeps a hostile radius (a non-finite zoom, a log
 /// this engine did not write) from looping; past it the extent clamp in
 /// [`layers`] absorbs what is left.
@@ -353,10 +423,10 @@ pub(crate) struct BlurFrame {
     /// Set **B**: the other half of the ping-pong, and the decode's target.
     b_light: Plane,
     b_aux: Plane,
-    /// The kernel's transform, kept across frames while the radius holds still.
+    /// The kernel's transform, kept across frames while the bokeh holds still.
     kern: Plane,
-    /// What `kern` holds (after this frame's encoded work runs) — the radius
-    /// **and the extent it was transformed at**, since the same disc at two
+    /// What `kern` holds (after this frame's encoded work runs) — the aperture
+    /// and radius, **and the extent it was transformed at**, since one shape at two
     /// convolution sizes is two different spectra — or `None` while it holds
     /// nothing.
     kernel_key: Option<KernelKey>,
@@ -522,21 +592,24 @@ impl BlurFrame {
     }
 }
 
-/// What the kernel texture holds: a disc radius, at the convolution extent it
-/// was transformed at — both halves of the identity, since the same disc at two
-/// sizes is two different spectra.
-type KernelKey = (f32, Extent2);
+/// What the kernel texture holds: an aperture at a radius, at the convolution
+/// extent it was transformed at — all three, since the same shape at two radii or
+/// two sizes is two different spectra.
+type KernelKey = (Aperture, f32, Extent2);
 
 /// One focal-blur layer's transform, decided: its filter slot, its decimation
-/// [`scale`], its radius in **convolution texels**, and the power-of-two extent
-/// its chain runs on.
+/// [`scale`], its radius in **convolution texels**, the aperture rasterized at
+/// that radius, and the power-of-two extent its chain runs on.
 #[derive(Copy, Clone, Debug)]
 struct Layer {
     slot: u32,
     conv: Extent2,
     /// The radius in convolution texels, after the extent clamp below — what
-    /// `make_kernel` rasterizes, and what keys the kernel cache.
+    /// `make_kernel` rasterizes, and half of what keys the kernel cache.
     radius: f32,
+    /// The shape rasterized at that radius — carried through the decimation
+    /// untouched, since every lane of it is scale-free ([`Aperture`]).
+    aperture: Aperture,
 }
 
 /// Decide every layer's transform: per layer, decimate by [`scale`], then take
@@ -551,7 +624,7 @@ struct Layer {
 /// (an accumulator near the limit on a device whose cap is not a power of two),
 /// the **radius** gives way to the guard the clamp left, a smaller blur rather
 /// than a wrapped one.
-fn layers(accum: Extent2, radii: &[(u32, f32)], max_dim: u32) -> Vec<Layer> {
+fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec<Layer> {
     // The largest power of two the device can hold. Every real adapter's limit
     // is itself one; the floor is for a hypothetical that is not.
     let cap = if max_dim.is_power_of_two() {
@@ -559,9 +632,9 @@ fn layers(accum: Extent2, radii: &[(u32, f32)], max_dim: u32) -> Vec<Layer> {
     } else {
         (max_dim / 2).max(2).next_power_of_two()
     };
-    radii
+    kernels
         .iter()
-        .map(|&(slot, r_texels)| {
+        .map(|&(slot, r_texels, aperture)| {
             // The document's radius is sanitized, but the *view* multiplies it
             // (`texel_radius`), and this arithmetic must hold whatever a zoom
             // does: a non-finite product decimates to a point rather than
@@ -588,7 +661,12 @@ fn layers(accum: Extent2, radii: &[(u32, f32)], max_dim: u32) -> Vec<Layer> {
             let radius = r
                 .min(left(conv.width, accum.width) as f32)
                 .min(left(conv.height, accum.height) as f32);
-            Layer { slot, conv, radius }
+            Layer {
+                slot,
+                conv,
+                radius,
+                aperture,
+            }
         })
         .collect()
 }
@@ -597,12 +675,12 @@ fn layers(accum: Extent2, radii: &[(u32, f32)], max_dim: u32) -> Vec<Layer> {
 /// (index `i` is slot `i`), the dispatches, the per-layer [`Job`]s, and what the
 /// kernel texture holds when the plan has run.
 ///
-/// `kern_holds` is what it holds *now* — a layer whose convolution radius and
-/// extent both match owes no kernel work, which is every settled frame; two
-/// layers that disagree in either rebuild it between them, which is the cost of
-/// one kernel texture rather than one per layer. The extent is half the key
-/// because it is half the spectrum: the same disc transformed at two sizes is
-/// two different tables of frequencies.
+/// `kern_holds` is what it holds *now* — a layer whose aperture, convolution
+/// radius and extent all match owes no kernel work, which is every settled frame;
+/// two layers that disagree in any of the three rebuild it between them, which is
+/// the cost of one kernel texture rather than one per layer. The extent is part of
+/// the key because it is part of the spectrum: one shape transformed at two sizes
+/// is two different tables of frequencies.
 fn plan(
     layers: &[Layer],
     kern_holds: Option<KernelKey>,
@@ -614,14 +692,23 @@ fn plan(
     let mut jobs = Vec::new();
     let mut kern_holds = kern_holds;
 
-    for &Layer { slot, conv, radius } in layers {
+    for &Layer {
+        slot,
+        conv,
+        radius,
+        aperture,
+    } in layers
+    {
         let kernel_start = b.dispatches.len();
-        if kern_holds != Some((radius, conv)) {
-            // The disc into set A's aux plane — nothing meaningful lives there
+        if kern_holds != Some((aperture, radius, conv)) {
+            // The aperture into set A's aux plane — nothing meaningful lives there
             // between layers — then its transform, landing in the kernel.
             b.push(
                 FftUniform {
                     radius,
+                    shape: aperture.shape,
+                    param: aperture.param,
+                    angle: aperture.angle,
                     ..for_conv(conv)
                 },
                 Pipe::MakeKernel,
@@ -629,7 +716,7 @@ fn plan(
                 full_groups(conv),
             );
             b.sweep(conv, Pipe::FftOne, -1.0, true, true);
-            kern_holds = Some((radius, conv));
+            kern_holds = Some((aperture, radius, conv));
         }
         let kernel = kernel_start..b.dispatches.len();
 
@@ -753,11 +840,46 @@ mod tests {
     }
 
     fn layer(slot: u32, w: u32, h: u32, radius: f32) -> Layer {
+        shaped(slot, w, h, radius, DISC)
+    }
+
+    fn shaped(slot: u32, w: u32, h: u32, radius: f32, aperture: Aperture) -> Layer {
         Layer {
             slot,
             conv: Extent2::new(w, h),
             radius,
+            aperture,
         }
+    }
+
+    /// The engine's reading of a focal-blur draw's lanes, through the encoder that
+    /// wrote them.
+    /// The lanes a plain, unobstructed disc decodes to — what the assertions below
+    /// compare against, and the value the shader's own `APERTURE_DISC` names.
+    const DISC: Aperture = Aperture {
+        shape: stark_shaders::mirror::blur::APERTURE_DISC,
+        param: 0.0,
+        angle: 0.0,
+    };
+
+    /// The engine's reading of a focal-blur draw's lanes, through the encoder that
+    /// wrote them, under a view that is not turning the canvas.
+    fn lanes_of(a: stark_model::document::Aperture) -> Aperture {
+        lanes_under(a, ViewTransform::identity(Extent2::new(256, 256)))
+    }
+
+    /// The same, under a chosen view — the half of the trip `aperture` adds.
+    fn lanes_under(a: stark_model::document::Aperture, view: ViewTransform) -> Aperture {
+        aperture(
+            &FilterDraw::new(
+                stark_model::document::Filter::FocalBlur(stark_model::document::FocalBlur {
+                    radius: 4.0,
+                    aperture: a,
+                }),
+                crate::document::CompositeParams::IDENTITY,
+            ),
+            view,
+        )
     }
 
     /// **The inverse transform lands in set A**, whatever the extent — the
@@ -793,13 +915,13 @@ mod tests {
     }
 
     /// The kernel is owed exactly when the texture does not already hold this
-    /// radius **at this extent**: a settled frame plans no kernel work; a
-    /// changed radius plans one build plus one transform whose last pass writes
-    /// the kernel texture; and the same radius at a different extent is a
-    /// different spectrum, owed again.
+    /// aperture, at this radius, **at this extent**: a settled frame plans no
+    /// kernel work; a change in any of the three plans one build plus one
+    /// transform whose last pass writes the kernel texture.
     #[test]
-    fn the_kernel_is_cached_by_radius_and_extent() {
+    fn the_kernel_is_cached_by_aperture_radius_and_extent() {
         let conv = Extent2::new(64, 64);
+        let disc = (DISC, 3.0, conv);
         let (_, dispatches, jobs, holds) = plan(&[layer(0, 64, 64, 3.0)], None);
         let log = 12; // 6 + 6
         assert_eq!(jobs[0].kernel.len(), 1 + log, "build + one transform");
@@ -807,33 +929,177 @@ mod tests {
             dispatches[jobs[0].kernel.clone()].last().unwrap().binds,
             Binds::AToKernel | Binds::BToKernel
         ));
-        assert_eq!(holds, Some((3.0, conv)));
+        assert_eq!(holds, Some(disc));
 
-        let (_, _, jobs, holds) = plan(&[layer(0, 64, 64, 3.0)], Some((3.0, conv)));
+        let (_, _, jobs, holds) = plan(&[layer(0, 64, 64, 3.0)], Some(disc));
         assert!(jobs[0].kernel.is_empty(), "a settled radius owes nothing");
-        assert_eq!(holds, Some((3.0, conv)));
+        assert_eq!(holds, Some(disc));
 
         // Two layers, two radii: the second rebuilds, and the cache ends on it.
-        let (_, _, jobs, holds) = plan(
-            &[layer(0, 64, 64, 3.0), layer(2, 64, 64, 7.0)],
-            Some((3.0, conv)),
-        );
+        let (_, _, jobs, holds) = plan(&[layer(0, 64, 64, 3.0), layer(2, 64, 64, 7.0)], Some(disc));
         assert!(jobs[0].kernel.is_empty());
         assert!(!jobs[1].kernel.is_empty());
-        assert_eq!(holds, Some((7.0, conv)));
+        assert_eq!(holds, Some((DISC, 7.0, conv)));
         assert_eq!(jobs[1].slot, 2, "a job answers for its filter slot");
 
-        // The half of the key that is easy to forget: one radius, two extents —
+        // The part of the key that is easy to forget: one radius, two extents —
         // a decimated layer beside an undecimated one — is two spectra.
-        let (_, _, jobs, _) = plan(
-            &[layer(0, 64, 64, 3.0), layer(1, 32, 32, 3.0)],
-            Some((3.0, conv)),
-        );
+        let (_, _, jobs, _) = plan(&[layer(0, 64, 64, 3.0), layer(1, 32, 32, 3.0)], Some(disc));
         assert!(jobs[0].kernel.is_empty());
         assert!(
             !jobs[1].kernel.is_empty(),
             "one disc at two transform sizes is two different tables of frequencies",
         );
+
+        // And the part added with the shapes: the same radius at the same extent
+        // through a *different aperture* is a different spectrum too. Missing this
+        // is the failure with no symptom in the plan — the picture would simply go
+        // on wearing the shape the layer before it asked for.
+        let hex = Aperture {
+            shape: stark_shaders::mirror::blur::APERTURE_BLADES,
+            param: 6.0,
+            angle: 0.0,
+        };
+        let (uniforms, dispatches, jobs, holds) = plan(
+            &[layer(0, 64, 64, 3.0), shaped(1, 64, 64, 3.0, hex)],
+            Some(disc),
+        );
+        assert!(jobs[0].kernel.is_empty());
+        assert!(
+            !jobs[1].kernel.is_empty(),
+            "a shape change owes a kernel: the disc's spectrum is not the hexagon's",
+        );
+        assert_eq!(holds, Some((hex, 3.0, conv)));
+        // …and the shape reaches `make_kernel`'s own uniform rather than stopping
+        // at the cache key.
+        let build = dispatches[jobs[1].kernel.start];
+        assert_eq!(build.pipe, Pipe::MakeKernel);
+        let u = &uniforms[build.slot as usize];
+        assert_eq!((u.shape, u.param, u.radius), (hex.shape, 6.0, 3.0));
+
+        // One shape at two turns is likewise two kernels — an angle that keyed
+        // nothing would leave a rotated iris showing the previous one's.
+        let turned = Aperture { angle: 0.4, ..hex };
+        let (_, _, jobs, _) = plan(&[shaped(0, 64, 64, 3.0, turned)], Some((hex, 3.0, conv)));
+        assert!(!jobs[0].kernel.is_empty());
+    }
+
+    /// **Every aperture the document can hold arrives here as its own lanes**, and
+    /// the shape codes are the shader's own — the round trip through
+    /// `group::aperture_lanes`, which is the only place a `Filter` becomes numbers.
+    ///
+    /// Pinned as a set rather than arm by arm because what would actually break is
+    /// two shapes agreeing: a code copied from the arm above it renders one
+    /// aperture as another, and no assertion about a single arm can see that.
+    #[test]
+    fn every_aperture_survives_the_trip_through_the_draw() {
+        use stark_model::document::Aperture as Doc;
+        use stark_shaders::mirror::blur as code;
+
+        assert_eq!(lanes_of(Doc::Disc { obstruction: 0.0 }), DISC);
+        // The obstruction is the disc's own lane, not a shape of its own — the
+        // merge, checked where it would show if the two ever came apart again.
+        assert_eq!(
+            lanes_of(Doc::Disc { obstruction: 0.5 }),
+            Aperture { param: 0.5, ..DISC },
+        );
+        assert_eq!(
+            lanes_of(Doc::Blades {
+                count: 5,
+                angle: 0.25
+            }),
+            Aperture {
+                shape: code::APERTURE_BLADES,
+                param: 5.0,
+                angle: 0.25,
+            },
+        );
+        assert_eq!(
+            lanes_of(Doc::Oval {
+                squeeze: 2.0,
+                angle: -0.5
+            }),
+            Aperture {
+                shape: code::APERTURE_OVAL,
+                param: 2.0,
+                angle: -0.5,
+            },
+        );
+
+        let codes: Vec<u32> = Doc::ALL.iter().map(|a| lanes_of(*a).shape).collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), codes.len(), "two apertures share one code");
+    }
+
+    /// **The aperture turns with the canvas, not with the screen** (§21.10, §6.4) —
+    /// the trip the radius has always made, made by the angle too.
+    ///
+    /// The bug this pins had no symptom a still frame could show: the polygon was
+    /// correct at every setting, and only *rotating the canvas* revealed that it had
+    /// stayed welded to the screen while the painting turned under it — with an
+    /// export at a rotated view then disagreeing with the display, which is a
+    /// document whose pixels depend on view state.
+    ///
+    /// Also pinned here: the disc's lane stays zero however the view turns. It is
+    /// not that a turned disc would look wrong — it cannot — but that the angle keys
+    /// the kernel cache, so a disc that took the trip would rebuild its kernel on
+    /// every frame of a canvas rotation for no visible difference.
+    #[test]
+    fn the_apertures_turn_is_carried_from_the_canvas_frame() {
+        use stark_model::document::Aperture as Doc;
+
+        let flat = ViewTransform::identity(Extent2::new(256, 256));
+        let turned = ViewTransform {
+            rotation: 0.5,
+            ..flat
+        };
+        let blades = Doc::Blades {
+            count: 6,
+            angle: 0.25,
+        };
+        assert!((lanes_under(blades, flat).angle - 0.25).abs() < 1e-5);
+        assert!(
+            (lanes_under(blades, turned).angle - 0.75).abs() < 1e-5,
+            "a canvas turned by 0.5 rad must turn the iris with it",
+        );
+
+        // The mirror is part of the trip too. `flip_h` negates x, so a canvas
+        // direction θ is seen at π − θ; an iris that ignored the mirror would point
+        // the wrong way in the one view whose whole purpose is to show the drawing
+        // as it is rather than as it is expected.
+        let flipped = ViewTransform {
+            flip_h: true,
+            ..flat
+        };
+        assert!(
+            (lanes_under(blades, flipped).angle - (std::f32::consts::PI - 0.25)).abs() < 1e-5,
+            "a mirrored view must mirror the iris's turn",
+        );
+
+        // An oval is a direction too, and takes the same trip.
+        let oval = Doc::Oval {
+            squeeze: 2.0,
+            angle: 0.0,
+        };
+        assert!((lanes_under(oval, turned).angle - 0.5).abs() < 1e-5);
+
+        // The disc has no direction to carry, at any view.
+        for view in [flat, turned, flipped] {
+            assert_eq!(lanes_under(Doc::Disc { obstruction: 0.5 }, view).angle, 0.0);
+        }
+    }
+
+    /// A decimated layer keeps its aperture and rescales only its radius — the
+    /// shape's own numbers are ratios and counts, which a change of resolution
+    /// does not touch (§21.12).
+    #[test]
+    fn decimation_rescales_the_radius_and_leaves_the_shape_alone() {
+        let ring = Aperture { param: 0.5, ..DISC };
+        let l = layers(Extent2::new(2560, 1440), &[(0, 2800.0, ring)], 8192);
+        assert_eq!(l[0].radius, 2800.0 / 32.0, "the radius survives, rescaled");
+        assert_eq!(l[0].aperture, ring, "a fraction of the radius is still it");
     }
 
     /// The decimation rule: full resolution through the whole of the knob's own
@@ -859,14 +1125,14 @@ mod tests {
     fn zooming_in_cannot_balloon_the_transform() {
         let accum = Extent2::new(2560, 1440);
         // Radius 44 canvas px at 64× zoom, say: ~2800 accumulator texels.
-        let l = layers(accum, &[(0, 2800.0)], 8192);
+        let l = layers(accum, &[(0, 2800.0, DISC)], 8192);
         assert_eq!(l[0].conv, Extent2::new(256, 256), "decimated to affordable");
         assert_eq!(l[0].radius, 2800.0 / 32.0, "the radius survives, rescaled");
 
         // Absurd and hostile radii stay bounded rather than saturating.
-        let l = layers(accum, &[(0, 1e6)], 8192);
+        let l = layers(accum, &[(0, 1e6, DISC)], 8192);
         assert!(l[0].conv.width <= 512 && l[0].conv.height <= 512);
-        let l = layers(accum, &[(0, f32::NAN)], 8192);
+        let l = layers(accum, &[(0, f32::NAN, DISC)], 8192);
         assert!(
             l[0].conv.width <= 4096,
             "a non-finite radius decimates to a point"
@@ -874,7 +1140,7 @@ mod tests {
 
         // And at working zooms nothing changed: the guard band pads at full
         // resolution, exactly as before.
-        let l = layers(Extent2::new(300, 200), &[(0, 10.0)], 8192);
+        let l = layers(Extent2::new(300, 200), &[(0, 10.0, DISC)], 8192);
         assert_eq!(l[0].conv, Extent2::new(512, 256));
         assert_eq!(l[0].radius, 10.0);
     }
@@ -883,7 +1149,7 @@ mod tests {
     /// does the radius itself give way — a smaller blur, never a wrapped one.
     #[test]
     fn the_device_cap_binds_last_and_costs_radius() {
-        let l = layers(Extent2::new(200, 200), &[(0, 60.0)], 256);
+        let l = layers(Extent2::new(200, 200), &[(0, 60.0, DISC)], 256);
         assert_eq!(l[0].conv, Extent2::new(256, 256), "capped by the device");
         assert_eq!(l[0].radius, 28.0, "the guard the cap left: (256 − 200) / 2");
     }

@@ -7,7 +7,7 @@
 
 use crate::document::CompositeParams;
 use crate::gpu::tile::TilePairHandle;
-use stark_model::document::Filter;
+use stark_model::document::{Aperture, Filter};
 use stark_model::geom::TileCoord;
 
 /// A matte layer's draw parameters (§15.4).
@@ -155,15 +155,20 @@ impl FilterDraw {
             },
             // The radius stays in canvas terms on the chromatic pair's argument;
             // the trip into accumulator texels is the blur plan's, per frame
-            // (§21.12, `blur::blur_radii`).
-            Filter::FocalBlur(b) => Self {
-                kind: stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR,
-                strength,
-                clip,
-                params: [b.radius, 0.0, 0.0, 0.0],
-                params2: [0.0; 4],
-                stops: None,
-            },
+            // (§21.12, `blur::blur_kernels`). The aperture rides the three lanes
+            // beside it, and is the one filter whose numbers no *fullscreen* pass
+            // reads: `blur::aperture` picks them back up to build the kernel.
+            Filter::FocalBlur(b) => {
+                let (shape, param, angle) = aperture_lanes(b.aperture);
+                Self {
+                    kind: stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR,
+                    strength,
+                    clip,
+                    params: [b.radius, shape, param, angle],
+                    params2: [0.0; 4],
+                    stops: None,
+                }
+            }
             // The one conversion the ramp pays, here and once: stops are straight
             // sRGB in the document and Oklab in the pass, because Oklab is where
             // `Gradient::sample`'s interpolation — the thing the map *is* — is
@@ -199,6 +204,26 @@ impl FilterDraw {
                 }
             }
         }
+    }
+}
+
+/// The focal blur's aperture as the three lanes beside its radius: the shape's
+/// mirrored `APERTURE_*` code, its own number, and its turn (§21.12).
+///
+/// One lane for the parameter rather than one per shape, on `FilterDraw::params`'
+/// own terms — the lanes are read according to the code, and one shape is
+/// rasterized at a time. The codes are `blur.wesl`'s (§6.10), never literals, for
+/// [`FilterDraw::new`]'s reason: a variant added to [`Aperture`] without a
+/// declaration in the shader has no constant to name here.
+///
+/// The inverse is `blur::aperture`, and the two are pinned against each other
+/// there rather than trusted to read alike.
+fn aperture_lanes(aperture: Aperture) -> (f32, f32, f32) {
+    use stark_shaders::mirror::blur as a;
+    match aperture {
+        Aperture::Disc { obstruction } => (a::APERTURE_DISC as f32, obstruction, 0.0),
+        Aperture::Blades { count, angle } => (a::APERTURE_BLADES as f32, count as f32, angle),
+        Aperture::Oval { squeeze, angle } => (a::APERTURE_OVAL as f32, squeeze, angle),
     }
 }
 

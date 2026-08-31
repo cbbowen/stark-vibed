@@ -1110,7 +1110,7 @@ impl Compositor {
             &p.ctx,
             &mut blur,
             view.viewport,
-            &blur::blur_radii(&plan.filters, view),
+            &blur::blur_kernels(&plan.filters, view),
             p.ctx.device.limits().max_texture_dimension_2d,
         );
         PreparedPick {
@@ -1244,16 +1244,16 @@ impl Compositor {
             .write(&p.ctx.device, &p.ctx.queue, view_groups(p), &[view]);
         let streams = self.upload_streams(p, view, &plan);
         // The focal blur's planes and dispatch plan (§21.12), against this frame's
-        // radii carried into accumulator texels — `view` is already supersampled,
-        // which is the whole reason this waits for it. The filter bind groups the
-        // scratch caches name the blur's planes, so a frame that grew, resized or
-        // dropped them starts those caches over.
-        let radii = blur::blur_radii(&plan.filters, view);
+        // apertures and radii carried into accumulator texels — `view` is already
+        // supersampled, which is the whole reason this waits for it. The filter
+        // bind groups the scratch caches name the blur's planes, so a frame that
+        // grew, resized or dropped them starts those caches over.
+        let kernels = blur::blur_kernels(&plan.filters, view);
         let blur_changed = p.blur.prepare(
             &p.ctx,
             &mut self.blur,
             self.size,
-            &radii,
+            &kernels,
             p.ctx.device.limits().max_texture_dimension_2d,
         );
         if let Some(scratch) = self.scratch.as_mut().filter(|_| blur_changed) {

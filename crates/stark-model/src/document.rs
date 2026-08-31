@@ -47,7 +47,7 @@ pub use brush::{
     WetModulations,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
-pub use filter::{ChromaticAberration, ColorAdjust, Filter, FocalBlur};
+pub use filter::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 // The undo algebra (§12.3): which actions in a log are effective. The helpers behind
 // these — the revival keys, the two target searches — stay inside the module.
 pub use effect::{

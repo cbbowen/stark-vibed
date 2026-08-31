@@ -69,14 +69,14 @@ use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
 use stark_model::color::linear_to_srgb;
 use stark_model::document::LayerId;
-use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur};
+use stark_model::document::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::gradient::Gradient;
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
 /// round trip through the filter's own parameter struct `F`.
 ///
 /// A table rather than hand-written rows because the rows differ in nothing but
-/// these five things, and a hand-written row is a place for one of them to disagree
+/// these few things, and a hand-written row is a place for one of them to disagree
 /// with the value it displays. `get`/`set` are the pair that makes the whole filter
 /// travel on every edit (§21.6) — the bar reads the current settings off the
 /// projection, replaces one number, and sends the result back. Generic over the
@@ -101,6 +101,13 @@ struct Knob<F: 'static> {
     /// (`ColorAdjust::EXPOSURE` and friends) so the track and the sanitizer cannot
     /// disagree about how far a knob goes.
     range: (f32, f32),
+    /// What the track snaps to, in display units, or `None` for the continuous
+    /// default. It exists for the one knob here that **counts** rather than
+    /// measures — an iris's blades — and a count needs it twice over: the arrow
+    /// keys move a continuous range by a hundredth of its span, which for three to
+    /// twelve blades rounds back to the blade it started on and reads as a dead
+    /// key.
+    step: Option<f32>,
     /// What the slider shows, in the unit the *hand* thinks in — degrees for an
     /// angle, the number itself for the rest. The engine's unit is radians (§21.5),
     /// and translating here is what keeps "how an angle is presented" out of the log.
@@ -137,6 +144,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
                than the way a brightness slider does.",
         glyph: Some(icons::EXPOSURE),
         range: ColorAdjust::EXPOSURE,
+        step: None,
         scale: 1.0,
         get: |c| c.exposure,
         set: |c, v| ColorAdjust { exposure: v, ..c },
@@ -151,6 +159,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
                saturation, which is not true of a contrast curve in sRGB.",
         glyph: Some(icons::CONTRAST),
         range: ColorAdjust::CONTRAST,
+        step: None,
         scale: 1.0,
         get: |c| c.contrast,
         set: |c, v| ColorAdjust { contrast: v, ..c },
@@ -158,24 +167,244 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
     },
 ];
 
-/// The focal blur's one knob (§21.12). A knob table rather than a picture, and
-/// honestly so: a radius is one number with no partner to be a vector or a map
-/// with, so a track is the right control — the same test that gave the chromatic
-/// pair a pad. No glyph, on [`Knob::glyph`]'s bar rule: this kind's bar has one
-/// row, and a lone mark would say less than the word.
+/// The focal blur's **size** knob (§21.12) — the one every aperture has, and the
+/// one the run of shape buttons beside it does not change. A knob table rather than
+/// a picture, and honestly so: a radius is one number with no partner to be a vector
+/// or a map with, so a track is the right control — the same test that gave the
+/// chromatic pair a pad. No glyph, on [`Knob::glyph`]'s bar rule: this kind's bar
+/// has no marked row, and a lone mark would say less than the word.
 const BLUR_KNOBS: &[Knob<FocalBlur>] = &[Knob {
     name: "Radius",
     hint: "The circle of confusion's radius, in canvas pixels \u{2014} how far each \
-           point's light is spread. A true disc convolution, so lights bloom into \
-           bokeh instead of washing out (\u{a7}21.12); stated on the canvas, so \
-           the blur scales with the painting rather than with the window.",
+           point's light is spread. A true convolution with the aperture, so lights \
+           bloom into bokeh instead of washing out (\u{a7}21.12); stated on the \
+           canvas, so the blur scales with the painting rather than with the window.",
     glyph: None,
     range: FocalBlur::RADIUS,
+    step: None,
     scale: 1.0,
     get: |b| b.radius,
-    set: |_, v| FocalBlur { radius: v },
+    set: |b, v| FocalBlur { radius: v, ..b },
     fmt: |v| format!("{v:.1} px"),
 }];
+
+/// The knobs an [`Aperture::Blades`] iris has: how many, and turned how far.
+///
+/// Every `set` here rebuilds its own variant field by field rather than reaching
+/// through an accessor, which is the enum's whole point read back (§21.12): the
+/// parameters a shape does not have are not there to be written, so the `_` arm is
+/// the shape having been changed underneath a row that is about to be unmounted,
+/// and leaving it alone is the only right answer.
+const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
+    Knob {
+        name: "Blades",
+        hint: "How many blades the iris has \u{2014} five, six and eight are the \
+               common ones, and each makes its own polygon out of every \
+               out-of-focus highlight. Wide open a lens shows none of this; it is \
+               stopping down that brings the blades into the bokeh.",
+        glyph: None,
+        range: (Aperture::BLADES.0 as f32, Aperture::BLADES.1 as f32),
+        // A count, so the track lands on one — see [`Knob::step`].
+        step: Some(1.0),
+        scale: 1.0,
+        get: |b| match b.aperture {
+            Aperture::Blades { count, .. } => count as f32,
+            // In range, like every sibling table's unreachable arm: a fallback
+            // outside `range` would print a readout the track cannot show.
+            _ => Aperture::BLADES.0 as f32,
+        },
+        set: |b, v| FocalBlur {
+            aperture: match b.aperture {
+                Aperture::Blades { angle, .. } => Aperture::Blades {
+                    count: v.round() as u32,
+                    angle,
+                },
+                other => other,
+            },
+            ..b
+        },
+        fmt: |v| format!("{v:.0}"),
+    },
+    Knob {
+        name: "Angle",
+        hint: "Which way the polygon points.",
+        glyph: None,
+        // In **degrees**, because [`Knob::range`] is in display units and this
+        // knob's are not the engine's — the pair with `scale` below, which is what
+        // carries the number back to radians.
+        range: (Aperture::ANGLE.0 * DEG, Aperture::ANGLE.1 * DEG),
+        step: None,
+        scale: 1.0 / DEG,
+        get: |b| match b.aperture {
+            Aperture::Blades { angle, .. } => angle,
+            _ => 0.0,
+        },
+        set: |b, v| FocalBlur {
+            aperture: match b.aperture {
+                Aperture::Blades { count, .. } => Aperture::Blades { count, angle: v },
+                other => other,
+            },
+            ..b
+        },
+        fmt: fmt_degrees,
+    },
+];
+
+/// The knob an [`Aperture::Disc`] has: how much of its middle is taken out.
+///
+/// This is also where the mirror lens is *advertised*, and deliberately so: the two
+/// are one shape, so the doughnut is not a chip on the run above but a place on this
+/// track — and a knob whose point cannot be guessed has to say what it is for.
+const DISC_KNOBS: &[Knob<FocalBlur>] = &[Knob {
+    name: "Obstruction",
+    hint: "How much of the aperture's middle is blocked, as a share of the radius. \
+           0 is a plain disc; wind it up and you have a mirror lens, whose \
+           secondary shadows the centre and pushes every highlight out into a \
+           doughnut.",
+    glyph: None,
+    range: Aperture::OBSTRUCTION,
+    step: None,
+    scale: 1.0,
+    get: |b| match b.aperture {
+        Aperture::Disc { obstruction } => obstruction,
+        _ => 0.0,
+    },
+    set: |b, v| FocalBlur {
+        aperture: match b.aperture {
+            Aperture::Disc { .. } => Aperture::Disc { obstruction: v },
+            other => other,
+        },
+        ..b
+    },
+    fmt: |v| format!("{v:.2}"),
+}];
+
+/// The knobs an [`Aperture::Oval`] has: how hard the squeeze, and along what.
+const OVAL_KNOBS: &[Knob<FocalBlur>] = &[
+    Knob {
+        name: "Squeeze",
+        hint: "The long axis over the short one \u{2014} 2\u{d7} is the anamorphic \
+               cinema means when it says the word. The long axis stays the radius, \
+               so squeezing narrows the bokeh rather than stretching it.",
+        glyph: None,
+        range: Aperture::SQUEEZE,
+        step: None,
+        scale: 1.0,
+        get: |b| match b.aperture {
+            Aperture::Oval { squeeze, .. } => squeeze,
+            _ => 1.0,
+        },
+        set: |b, v| FocalBlur {
+            aperture: match b.aperture {
+                Aperture::Oval { angle, .. } => Aperture::Oval { squeeze: v, angle },
+                other => other,
+            },
+            ..b
+        },
+        fmt: |v| format!("{v:.2}\u{d7}"),
+    },
+    Knob {
+        name: "Angle",
+        hint: "Which way the long axis runs.",
+        glyph: None,
+        // In **degrees**, because [`Knob::range`] is in display units and this
+        // knob's are not the engine's — the pair with `scale` below, which is what
+        // carries the number back to radians.
+        range: (Aperture::ANGLE.0 * DEG, Aperture::ANGLE.1 * DEG),
+        step: None,
+        scale: 1.0 / DEG,
+        get: |b| match b.aperture {
+            Aperture::Oval { angle, .. } => angle,
+            _ => 0.0,
+        },
+        set: |b, v| FocalBlur {
+            aperture: match b.aperture {
+                Aperture::Oval { squeeze, .. } => Aperture::Oval { squeeze, angle: v },
+                other => other,
+            },
+            ..b
+        },
+        fmt: fmt_degrees,
+    },
+];
+
+/// The knobs the chosen aperture adds under the radius — one or two, never none:
+/// every shape here is a family rather than a single figure, which is what the
+/// enum's own merges bought.
+fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
+    match aperture {
+        Aperture::Disc { .. } => DISC_KNOBS,
+        Aperture::Blades { .. } => BLADES_KNOBS,
+        Aperture::Oval { .. } => OVAL_KNOBS,
+    }
+}
+
+/// The sentence a shape's chip carries — what the aperture *is*, since the picture
+/// it makes is the whole reason to pick one.
+fn aperture_hint(aperture: &Aperture) -> &'static str {
+    match aperture {
+        Aperture::Disc { .. } => {
+            "A circular aperture \u{2014} the lens wide open, and the circle of \
+             confusion at its most ideal. Obstruct the middle of it and you have a \
+             mirror lens, whose highlights come out as doughnuts."
+        }
+        Aperture::Blades { .. } => {
+            "The iris stopped down onto its blades: highlights take the shape of \
+             the polygon they were let through."
+        }
+        Aperture::Oval { .. } => {
+            "An anamorphic lens: the front element squeezes one axis, and \
+             highlights stretch into ovals with it."
+        }
+    }
+}
+
+/// The run of shape buttons: which aperture the light is spread through (§21.12).
+///
+/// One control rather than three chips standing apart, on §25.9's rule — they are
+/// alternative answers to one question and exactly one is lit. Three short words fit
+/// a line with room to spare, so this is the segmented ladder's first rung and not
+/// the `.select` its second.
+///
+/// A discrete choice, so it commits directly rather than through the
+/// preview-then-settle funnel a track needs: there is nothing continuous to watch
+/// (§21.6).
+///
+/// Picking a *new* shape takes [`Aperture::ALL`]'s setting for it rather than
+/// carrying the last one over, because the shapes share no parameter to carry — a
+/// blade count is not an obstruction — and each arriving at its own good default is
+/// what makes the run browsable. Picking the shape already lit sends the filter
+/// **unchanged**, which the engine refuses and which therefore costs no undo step:
+/// clicking the chip you are already on must not throw that shape's knobs away, and
+/// dispatching `ALL`'s default for it would do exactly that.
+fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
+    rsx! {
+        div { class: "segmented",
+            for want in Aperture::ALL {
+                button {
+                    key: "{want.label()}",
+                    class: if blur.aperture.same_shape(&want) { "chip active" } else { "chip" },
+                    title: aperture_hint(&want),
+                    onclick: move |_| {
+                        let aperture = if blur.aperture.same_shape(&want) {
+                            blur.aperture
+                        } else {
+                            want
+                        };
+                        let next = FocalBlur { aperture, ..blur };
+                        dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
+                    },
+                    // Bare text, not [`icons::label`]: these chips carry no mark, and a
+                    // word wrapped as hideable on a chip with nothing beside it is a
+                    // chip that empties in minimal mode. The same pairing [`Knob::glyph`]
+                    // enforces for a track, kept by hand here because a button has no
+                    // one field to read it off.
+                    "{want.label()}"
+                }
+            }
+        }
+    }
+}
 
 /// The filter being tuned, if the **selected layer** is one.
 ///
@@ -385,7 +614,11 @@ fn knob_rows<F: Copy + 'static>(
                         (knob.get)(&current) / knob.scale,
                     ),
                     r#type: "range",
-                    min: "{knob.range.0}", max: "{knob.range.1}", step: "any",
+                    min: "{knob.range.0}", max: "{knob.range.1}",
+                    step: match knob.step {
+                        Some(s) => s.to_string(),
+                        None => "any".to_string(),
+                    },
                     value: "{(knob.get)(&current) / knob.scale}",
                     // Previewed per sample, committed once when the drag settles.
                     // A filter is judged *by looking*, so every value the pointer
@@ -1148,9 +1381,16 @@ pub fn FilterBar() -> Element {
         },
         Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
         Filter::GradientMap(g) => map_rows(state, info.id, g),
+        // The shape first and the numbers after it, because the run of buttons is
+        // what the knobs under it are *about*: which two tracks are there at all is
+        // the chip row's answer, and a control that decides what else is on the bar
+        // reads wrong downstream of it.
         Filter::FocalBlur(b) => rsx! {
+            {aperture_run(state, info.id, b)}
+            span { class: "bar-sep" }
             div { class: "filter-knob-stack",
                 {knob_rows(state, info.id, b, BLUR_KNOBS, Filter::FocalBlur, tuning)}
+                {knob_rows(state, info.id, b, aperture_knobs(&b.aperture), Filter::FocalBlur, tuning)}
             }
         },
     };

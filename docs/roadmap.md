@@ -342,8 +342,9 @@ clipping toggle Photoshop needs beside every adjustment is not a control here at
 all (§21.1). Four kinds ship — the color filter (exposure / contrast /
 saturation / hue / tint, in Oklab, §21.5), the spectral chromatic aberration
 (§21.10), the gradient map over the captured ramps of §22 (§21.11), and the
-focal blur, a true FFT convolution of the light through the aperture's disc
-rather than a Gaussian (§21.12) — and the rest are a variant and an arm each
+focal blur, a true FFT convolution of the light through the aperture — a disc
+that obstructs into a mirror lens's doughnut, the iris's blades, or an anamorphic
+oval — rather than a Gaussian (§21.12); and the rest are a variant and an arm each
 (§21.9), with the blur's transform machinery standing ready for any
 large-kernel kind.
 

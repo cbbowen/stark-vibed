@@ -110,6 +110,15 @@ struct Filter {
     // px, `.y` angle in radians — the pair `disp` above is derived from, carried so
     // the uniform states the document's numbers as well as the view's.
     //
+    // For `FILTER_FOCAL_BLUR` (§21.12) all four are live, and **no arm in this file
+    // reads any of them** — which is why they are worth naming here. `.x` is the
+    // circle-of-confusion radius in canvas px; `.yzw` are the aperture, as
+    // `blur.wesl`'s `APERTURE_*` code, that shape's own number, and its turn in
+    // canvas radians. The compositor picks them up before the fullscreen pass runs
+    // (`blur::blur_kernels`) and spends them on the kernel; by the time this
+    // struct's own `FILTER_FOCAL_BLUR` arm runs, the convolution is already done and
+    // all it does is read the planes.
+    //
     // One lane rather than a member per knob, because what a lane *means* is the
     // filter's to say: the next kind reads these four floats as its own four, and
     // neither the host struct nor the bind group layout has to learn about it.

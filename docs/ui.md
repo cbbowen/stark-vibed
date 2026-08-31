@@ -1338,7 +1338,8 @@ each author's care.
 **Buttons that are alternatives to each other are one control, so they wear
 `.segmented`.** That covers a mutually exclusive toggle group — the three
 chrome-hiding states in ⚙ (`settings::SettingChoice`), the selection panel's tool
-and combine rows, the eyedropper's scope, the timeline's speeds — and equally any
+and combine rows, the eyedropper's scope, the timeline's speeds, the focal blur's
+aperture (§21.12) — and equally any
 run of buttons offering alternative answers to one question, whether or not one of
 them stays lit: the drag presets (§25.8) are six tables to *start from*, and they
 are the same control. The run's closed seams, single outer radius and one hairline

@@ -21,7 +21,9 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur, LayerId, Place};
+use stark_model::document::{
+    Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur, LayerId, Place,
+};
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
 
@@ -62,7 +64,10 @@ const FRINGE: Filter = Filter::Chromatic(ChromaticAberration {
 /// A focal blur wide enough that its spill clears [`is_bare`]'s margin on every
 /// side of the stroke, and narrower than the stroke's half-width, so its disc
 /// sits wholly on paint at the centre (§21.12).
-const BLUR: Filter = Filter::FocalBlur(FocalBlur { radius: 6.0 });
+const BLUR: Filter = Filter::FocalBlur(FocalBlur {
+    radius: 6.0,
+    aperture: Aperture::Disc { obstruction: 0.0 },
+});
 
 /// How far the filter moved each pixel's red-minus-blue separation, scanned along
 /// the stroke's row: `(min, max)` of `(R−B)_after − (R−B)_before` across it.
@@ -876,7 +881,10 @@ fn a_filter_survives_save_and_load() {
     let blur = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
     engine.process(DocCommand::SetFilter(
         blur,
-        Filter::FocalBlur(FocalBlur { radius: 4.5 }),
+        Filter::FocalBlur(FocalBlur {
+            radius: 4.5,
+            aperture: Aperture::Disc { obstruction: 0.0 },
+        }),
     ));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
@@ -1156,6 +1164,134 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
     );
 }
 
+/// **Every aperture makes its own picture** (§21.12) — the claim the whole shape
+/// enum rests on, and the one that cannot be made from the plan alone.
+///
+/// `blur.rs`'s own tests pin that each shape reaches `make_kernel`'s uniform with
+/// its own code; what they cannot see is whether the shader then *does* anything
+/// different with it. A missing arm, two codes that collided, or a signed distance
+/// that came out the disc's would all leave the plan correct and the picture
+/// wrong — so this renders each of `Aperture::ALL` over the same paint and asserts
+/// the four are pairwise distinct.
+///
+/// Pairwise rather than each-against-the-disc, because "the ring and the oval are
+/// both not the disc" is also true when they are each other.
+#[test]
+fn each_aperture_spreads_the_light_differently() {
+    let Some(mut engine) = painted() else { return };
+    let filter = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    // Every shape the picker offers, plus the obstructed disc — which is a
+    // *setting* rather than an entry in `ALL` now that the mirror lens and the plain
+    // one are one shape, and which would therefore go untested by a sweep of the
+    // list alone. Including it is what pins that the obstruction knob reaches the
+    // kernel at all.
+    let shots: Vec<(Aperture, RgbaImage)> = Aperture::ALL
+        .into_iter()
+        .chain([Aperture::Disc { obstruction: 0.5 }])
+        .map(|aperture| {
+            engine.process(DocCommand::SetFilter(
+                filter,
+                Filter::FocalBlur(FocalBlur {
+                    radius: 14.0,
+                    aperture,
+                }),
+            ));
+            (aperture, engine.render_to_image())
+        })
+        .collect();
+
+    for (i, (a, one)) in shots.iter().enumerate() {
+        for (b, other) in &shots[i + 1..] {
+            assert!(
+                !images_match(one, other, 1),
+                "{a:?} and {b:?} render the same picture: one of the two shapes \
+                 never reached `make_kernel`",
+            );
+        }
+    }
+}
+
+/// **An oval bokeh is longer along the axis it is pointed down** (§21.12) — the
+/// anamorphic squeeze as geometry rather than as a number that merely differs.
+///
+/// The reach is measured out from a filled square, along the centre row and the
+/// centre column, and the two are compared *to each other* rather than to a
+/// figure: a squeeze of four should spread several times as far along its long
+/// axis as across it. Then the same oval is turned a quarter turn and the two
+/// reaches must swap — which is what rules out the whole class this is really
+/// guarding, an aperture that is anisotropic but rotates the wrong way, ignores
+/// its angle, or has its axes crossed. Any one of those passes a test that only
+/// asks whether the picture changed.
+#[test]
+fn an_oval_aperture_reaches_further_along_its_long_axis() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: stark_model::document::FillOp::new(
+            stark_model::document::SelectionShape::rect_from_corners(
+                Vec2::new(-20.0, -20.0),
+                Vec2::new(20.0, 20.0),
+            ),
+            0.0,
+            Srgb::new(RED),
+            1.0,
+        ),
+    });
+    let bare = engine.render_to_image();
+    let filter = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+
+    // How far out from the centre the blur still changed a pixel, along the centre
+    // row and the centre column. The spill dies into the 8-bit floor a texel or two
+    // short of the geometric edge, which is why these are compared with each other
+    // and not with the radius.
+    let reach = |after: &RgbaImage| {
+        let (cx, cy) = (bare.width / 2, bare.height / 2);
+        let far = |along_x: bool| {
+            (1..cx.min(cy))
+                .rev()
+                .find(|&d| {
+                    let (x, y) = if along_x { (cx + d, cy) } else { (cx, cy + d) };
+                    after.pixel(x, y) != bare.pixel(x, y)
+                })
+                .unwrap_or(0)
+        };
+        (far(true), far(false))
+    };
+
+    let set = |engine: &mut Engine, angle: f32| {
+        engine.process(DocCommand::SetFilter(
+            filter,
+            Filter::FocalBlur(FocalBlur {
+                radius: 24.0,
+                aperture: Aperture::Oval {
+                    squeeze: 4.0,
+                    angle,
+                },
+            }),
+        ));
+        engine.render_to_image()
+    };
+
+    let flat = set(&mut engine, 0.0);
+    let (wide, tall) = reach(&flat);
+    assert!(
+        wide > tall + 8,
+        "a 4x squeeze pointed along x should reach much further across than down \
+         (across: {wide}, down: {tall})",
+    );
+
+    let upright = set(&mut engine, std::f32::consts::FRAC_PI_2);
+    let (across, down) = reach(&upright);
+    assert!(
+        down > across + 8,
+        "turned a quarter turn, the same oval should reach further down than \
+         across (across: {across}, down: {down})",
+    );
+}
+
 /// A **neutral** focal blur — radius 0 — changes no pixel, to the byte: §21.3's
 /// rule for this kind, which is what keeps adding one a step taken before
 /// deciding what it does. The draw list drops it, so this also pins that a
@@ -1239,7 +1375,10 @@ fn a_focal_blur_survives_an_extreme_zoom() {
     let id = add_filter(
         &mut engine,
         None,
-        Filter::FocalBlur(FocalBlur { radius: 32.0 }),
+        Filter::FocalBlur(FocalBlur {
+            radius: 32.0,
+            aperture: Aperture::Disc { obstruction: 0.0 },
+        }),
     );
     let blurred = engine.render_to_image();
     assert!(

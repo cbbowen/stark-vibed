@@ -116,7 +116,8 @@ impl Filter {
             // the absence is the one neutral this kind has.
             Filter::GradientMap(g) => g.is_none(),
             // The radius alone, on the chromatic spread's argument: at zero no
-            // light moves, and the kernel has no other knob yet.
+            // light moves, whatever aperture it would have moved through — so a
+            // shape picked before the radius is dialled is not an edit either.
             Filter::FocalBlur(b) => b.radius == 0.0,
         }
     }
@@ -361,15 +362,209 @@ impl Default for ChromaticAberration {
     }
 }
 
+/// The aperture's **shape**: what one point of light becomes (§21.12).
+///
+/// The convolution is shape-blind by construction — everything after the kernel's
+/// one compute pass multiplies transforms, whatever they are transforms *of* — so a
+/// shape costs a signed distance in `make_kernel` and nothing else. What this enum
+/// spends its judgement on is therefore not which shapes are affordable but which
+/// ones a lens actually makes.
+///
+/// **A variant is a mechanism, not a look.** Each is the continuous family one piece
+/// of a lens sweeps out — the iris closing onto its blades, the secondary mirror
+/// growing across the middle, the anamorphic element squeezing — so the named looks
+/// (hexagonal bokeh, the mirror lens's doughnut, the cat's eye) are *settings* here
+/// rather than entries. That is what keeps three variants from being the six a list
+/// of looks would have needed, and it is why every one of them carries a knob.
+///
+/// **Every variant is contained in the disc of the blur's radius**, and that is a
+/// contract rather than an aesthetic: the FFT pads its planes by the radius on each
+/// side so the circular convolution's wrap-around lands in zeros (§21.12), and a
+/// shape reaching past it would carry one edge of the picture onto the other. So the
+/// radius is each shape's *circumradius* — a polygon's vertices and an oval's long
+/// axis both land on it — which is also what makes the shapes comparable: at one
+/// radius they are one bokeh, stopped down differently.
+///
+/// Each variant carries the parameters its geometry can hold and no others, which is
+/// the representation ruling out a class rather than a check remembering to (§1):
+/// [`Disc`](Self::Disc) is rotationally symmetric however it is obstructed, so there
+/// is no turned disc to express and no arm anywhere that has to ignore an angle.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+pub enum Aperture {
+    /// A circular aperture, with as much of its middle as one likes taken out of it:
+    /// the lens wide open at `obstruction` 0, and a catadioptric — mirror — lens's
+    /// doughnut as it grows.
+    ///
+    /// **One variant, because it is one lens.** A mirror lens's aperture is not a
+    /// different shape from a plain one; it is a plain one with the secondary
+    /// mirror's shadow across the middle, and the family between them is continuous.
+    /// Splitting it in two would put a seam in the middle of a knob and give the
+    /// enum two spellings of the setting where they meet — the same argument
+    /// [`Blades`](Self::Blades) makes for putting one n-gon behind three named
+    /// polygons.
+    Disc {
+        /// The central shadow's share of the radius, held to
+        /// [`OBSTRUCTION`](Aperture::OBSTRUCTION). `0` is the plain disc, and the
+        /// neutral: it is what every file written before the aperture existed meant
+        /// by saying nothing.
+        ///
+        /// The ceiling is the renderer's as much as the eye's: past it the rim is
+        /// thin enough that decimating the convolution (§21.12) would sample it
+        /// rather than resolve it, and the bound is what keeps that trade honest for
+        /// the one setting of the one shape that has a thin part.
+        obstruction: f32,
+    },
+    /// The iris stopped down onto its blades — a regular polygon of `count` sides,
+    /// turned by `angle`.
+    ///
+    /// One n-gon behind pentagon, hexagon and octagon, which is what a 5-, 6- and
+    /// 8-bladed iris each make: the unification §20 makes of 1-, 2- and 3-point
+    /// perspective, for the same reason — named cases differing in one number are
+    /// one case with the number exposed.
+    Blades {
+        /// How many blades, held to [`BLADES`](Aperture::BLADES). Below three there
+        /// is no polygon, and much past a dozen there is no telling one from the
+        /// [`Disc`](Self::Disc) that is already a variant.
+        count: u32,
+        /// The iris's turn, in radians and **canvas space** — the frame
+        /// [`ChromaticAberration::angle`] is stated in, for the same reason (§6.4):
+        /// the bokeh belongs to the artwork, so the polygon turns when the canvas is
+        /// turned. The renderer makes the trip per frame.
+        ///
+        /// A polygon's own symmetry makes this periodic in `2π/count`, but the range
+        /// spans a full turn like every other angle here: it is the hand's range,
+        /// not the shape's.
+        angle: f32,
+    },
+    /// The oval an anamorphic lens makes: a cylindrical front element squeezes the
+    /// circle of confusion along one axis, and every out-of-focus highlight stretches
+    /// with it.
+    Oval {
+        /// The long axis's length over the short one's, held to
+        /// [`SQUEEZE`](Aperture::SQUEEZE) — `2` is the anamorphic cinema means when
+        /// it says the word. The long axis is the radius, so squeezing narrows the
+        /// oval rather than growing it.
+        squeeze: f32,
+        /// The long axis's direction, in radians and **canvas space** — see
+        /// [`Blades`](Self::Blades)'s own turn.
+        angle: f32,
+    },
+}
+
+impl Aperture {
+    /// How many blades an iris may be given. Three is the floor a polygon has;
+    /// twelve is where one stops being tellable from a [`Disc`](Self::Disc) at any
+    /// radius the blur can be dialled to.
+    pub const BLADES: (u32, u32) = (3, 12);
+
+    /// How far a shape that has a direction may be turned — a whole turn, stated
+    /// here rather than borrowed from [`ChromaticAberration::ANGLE`]: that the two
+    /// agree is a fact about angles, not a coupling between two filters that would
+    /// then have to be kept.
+    pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+
+    /// The central obstruction's range — see [`Aperture::Disc`].
+    pub const OBSTRUCTION: (f32, f32) = (0.0, 0.9);
+
+    /// The anamorphic squeeze's range — see [`Aperture::Oval`].
+    ///
+    /// The floor is `1` — the round oval — rather than anything below it, because
+    /// a squeeze under 1 is the *same* set of ovals turned a quarter turn, and one
+    /// shape with two spellings is what an angle beside a ratio is for.
+    pub const SQUEEZE: (f32, f32) = (1.0, 4.0);
+
+    /// Every shape this build offers, at the setting it is *given* when picked — the
+    /// list the bar's run of buttons is built from, in the order it should offer
+    /// them: the disc first because it is the neutral and what a lens does when
+    /// nothing is stopping it down, then the two ways of departing from it.
+    ///
+    /// The numbers are defaults, not fudge constants: unobstructed is the plain
+    /// lens, six blades is the commonest iris, and 2× is the anamorphic squeeze.
+    /// The mirror lens is a *setting* of the first rather than a fourth entry here,
+    /// which is the one thing this list gives up by merging the two: the doughnut is
+    /// a knob away rather than a click away, and the knob's own words are where it
+    /// is now advertised.
+    pub const ALL: [Aperture; 3] = [
+        Aperture::Disc { obstruction: 0.0 },
+        Aperture::Blades {
+            count: 6,
+            angle: 0.0,
+        },
+        Aperture::Oval {
+            squeeze: 2.0,
+            angle: 0.0,
+        },
+    ];
+
+    /// What this shape is called, in the bar and in the layer row.
+    ///
+    /// The name of the **family**, not of the setting: an obstructed disc is still
+    /// on the "Disc" chip, because a chip whose word changed under the knob beside
+    /// it would stop being the thing that says which of the three is lit.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Aperture::Disc { .. } => "Disc",
+            Aperture::Blades { .. } => "Blades",
+            Aperture::Oval { .. } => "Oval",
+        }
+    }
+
+    /// Whether these are the same **shape**, whatever each is set to — what a picker
+    /// lights a chip by, since re-picking the shape already showing must not throw
+    /// its knobs away.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// Every parameter finite and in range — see [`Filter::sanitized`]. A non-finite
+    /// value lands on the knob's own identity for [`ColorAdjust::sanitized`]'s
+    /// reason: `NaN` says nothing about which end was meant.
+    ///
+    /// **The shape itself survives** whatever its numbers do. A variant is a choice
+    /// rather than a measurement, so there is no unusable value to read it off — a
+    /// `NaN` squeeze is a broken oval, not a request for a disc — and repairing the
+    /// one number is the whole of the repair.
+    pub fn sanitized(self) -> Self {
+        match self {
+            Aperture::Disc { obstruction } => Aperture::Disc {
+                obstruction: finite_in(obstruction, 0.0, Self::OBSTRUCTION),
+            },
+            // A count is an integer, so it has no `NaN` to fall back from and the
+            // clamp is the whole of it: a zero-bladed iris out of a log this engine
+            // did not write becomes the triangle that is the fewest a polygon has.
+            Aperture::Blades { count, angle } => Aperture::Blades {
+                count: count.clamp(Self::BLADES.0, Self::BLADES.1),
+                angle: finite_in(angle, 0.0, Self::ANGLE),
+            },
+            Aperture::Oval { squeeze, angle } => Aperture::Oval {
+                // A `NaN` squeeze falls back to `1` — the un-squeezed oval — exactly
+                // as a `NaN` contrast falls back to the gain that changes nothing.
+                squeeze: finite_in(squeeze, 1.0, Self::SQUEEZE),
+                angle: finite_in(angle, 0.0, Self::ANGLE),
+            },
+        }
+    }
+}
+
+impl Default for Aperture {
+    /// The unobstructed disc — what a file written before the aperture existed means
+    /// by saying nothing (see [`FocalBlur::aperture`]).
+    ///
+    /// Written out rather than derived: `#[derive(Default)]` can only mark a *unit*
+    /// variant, and the disc stopped being one when the mirror lens joined it.
+    fn default() -> Self {
+        Aperture::Disc { obstruction: 0.0 }
+    }
+}
+
 /// Focal blur: everything beneath spread through a lens's **circle of confusion** —
 /// a true convolution of the light with the aperture's shape, computed by FFT, not a
-/// Gaussian standing in for one (§21.12). A disc for now; the shape is the knob this
-/// struct is expected to grow.
+/// Gaussian standing in for one (§21.12).
 ///
-/// One number, stated **in canvas px** for the chromatic spread's reason (§21.10):
-/// the bokeh belongs to the artwork, so it scales with a zoom and holds its size in
-/// an export. The trip into accumulator texels is the renderer's, per frame, through
-/// the view's own linear map.
+/// A size and a shape. The size is stated **in canvas px** for the chromatic
+/// spread's reason (§21.10): the bokeh belongs to the artwork, so it scales with a
+/// zoom and holds its size in an export, and the trip into accumulator texels is the
+/// renderer's, per frame, through the view's own linear map.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct FocalBlur {
     /// The radius of the circle of confusion, in **canvas px**. `0` is the
@@ -379,12 +574,22 @@ pub struct FocalBlur {
     /// over, and a distance rather than a unitless "amount" because that is what
     /// the knob does to the picture — and because bounding it is what keeps the
     /// pass's padded FFT scratch honest (§21.12).
+    ///
+    /// It is also every [`Aperture`]'s circumradius, which is what lets the shape
+    /// change without the padding being recomputed — see there.
     pub radius: f32,
+    /// The shape the light is spread through. [`Aperture::Disc`] by default, which
+    /// is what a file written before this field existed meant by saying nothing.
+    #[serde(default)]
+    pub aperture: Aperture,
 }
 
 impl FocalBlur {
     /// The identity: nothing spreads.
-    pub const NEUTRAL: Self = Self { radius: 0.0 };
+    pub const NEUTRAL: Self = Self {
+        radius: 0.0,
+        aperture: Aperture::Disc { obstruction: 0.0 },
+    };
 
     /// The widest the radius may be dialled — the range a frontend's slider spans
     /// and the range [`sanitized`](Self::sanitized) holds a log entry to.
@@ -401,6 +606,7 @@ impl FocalBlur {
     pub fn sanitized(self) -> Self {
         Self {
             radius: finite_in(self.radius, 0.0, Self::RADIUS),
+            aperture: self.aperture.sanitized(),
         }
     }
 }
@@ -438,7 +644,34 @@ mod tests {
                 wild.sanitized(),
                 Filter::Chromatic(ChromaticAberration::NEUTRAL),
             );
-            let wild = Filter::FocalBlur(FocalBlur { radius: bad });
+            // The blur is the one kind whose settings are not all numbers, and the
+            // shape survives what its numbers do not: a `NaN` squeeze says nothing
+            // about which aperture was chosen, so the fallback is per knob — the
+            // radius to 0, the squeeze to the 1 that is its own identity — and the
+            // variant stays. Which is also invisible either way, an oval at squeeze
+            // 1 being a disc; the reason to prefer it is that it is the smaller
+            // repair, not that it looks different.
+            let wild = Filter::FocalBlur(FocalBlur {
+                radius: bad,
+                aperture: Aperture::Oval {
+                    squeeze: bad,
+                    angle: bad,
+                },
+            });
+            assert_eq!(
+                wild.sanitized(),
+                Filter::FocalBlur(FocalBlur {
+                    radius: 0.0,
+                    aperture: Aperture::Oval {
+                        squeeze: 1.0,
+                        angle: 0.0,
+                    },
+                }),
+            );
+            let wild = Filter::FocalBlur(FocalBlur {
+                radius: bad,
+                aperture: Aperture::Disc { obstruction: 0.0 },
+            });
             assert_eq!(wild.sanitized(), Filter::FocalBlur(FocalBlur::NEUTRAL));
         }
         // …and an ordinary out-of-range value is *clamped* rather than neutralized:
@@ -482,11 +715,90 @@ mod tests {
                 angle: ChromaticAberration::ANGLE.1,
             }),
         );
-        let deep = Filter::FocalBlur(FocalBlur { radius: 1e6 });
+        let deep = Filter::FocalBlur(FocalBlur {
+            radius: 1e6,
+            aperture: Aperture::Disc { obstruction: 0.0 },
+        });
         assert_eq!(
             deep.sanitized(),
             Filter::FocalBlur(FocalBlur {
                 radius: FocalBlur::RADIUS.1,
+                aperture: Aperture::Disc { obstruction: 0.0 },
+            }),
+        );
+        // An aperture out of range is clamped the same way, per shape and per
+        // parameter — a blade count included, which has no `NaN` to neutralize and
+        // so is only ever clamped.
+        let absurd = Filter::FocalBlur(FocalBlur {
+            radius: 4.0,
+            aperture: Aperture::Blades {
+                count: 0,
+                angle: 9.0,
+            },
+        });
+        assert_eq!(
+            absurd.sanitized(),
+            Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: Aperture::Blades {
+                    count: Aperture::BLADES.0,
+                    angle: Aperture::ANGLE.1,
+                },
+            }),
+        );
+        let pinched = Filter::FocalBlur(FocalBlur {
+            radius: 4.0,
+            aperture: Aperture::Disc { obstruction: 5.0 },
+        });
+        assert_eq!(
+            pinched.sanitized(),
+            Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: Aperture::Disc {
+                    obstruction: Aperture::OBSTRUCTION.1,
+                },
+            }),
+        );
+        // Both ends of the count, since a clamp is two bounds and only one of them
+        // was above.
+        let many = Filter::FocalBlur(FocalBlur {
+            radius: 4.0,
+            aperture: Aperture::Blades {
+                count: 1000,
+                angle: 0.0,
+            },
+        });
+        assert_eq!(
+            many.sanitized(),
+            Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: Aperture::Blades {
+                    count: Aperture::BLADES.1,
+                    angle: 0.0,
+                },
+            }),
+        );
+        // **The squeeze floor is the containment contract**, not a matter of taste:
+        // the long axis is the radius the renderer padded its planes by, so a
+        // squeeze below 1 would put the *other* axis outside that padding and wrap
+        // one edge of the picture onto the other (§21.12). The shader floors it too,
+        // which is what makes the guarantee structural — this pins that a log never
+        // asks it to.
+        let stretched = Filter::FocalBlur(FocalBlur {
+            radius: 4.0,
+            aperture: Aperture::Oval {
+                squeeze: 0.25,
+                angle: 0.0,
+            },
+        });
+        assert_eq!(
+            stretched.sanitized(),
+            Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: Aperture::Oval {
+                    squeeze: Aperture::SQUEEZE.0,
+                    angle: 0.0,
+                },
             }),
         );
     }
@@ -507,6 +819,33 @@ mod tests {
             aimed,
             "sanitizing must not disturb it"
         );
+    }
+
+    /// A radius-0 blur is the identity **whatever aperture it is set to** — the
+    /// chromatic filter's rule above, arrived at from the other direction: at zero
+    /// radius no light moves, so the shape is not an edit yet and the draw list
+    /// must still be free to drop the pass.
+    ///
+    /// Worth its own test because the aperture is the first thing a focal blur
+    /// holds besides its radius, and "is this filter neutral?" is exactly the
+    /// question a new field is most likely to be added to by reflex.
+    #[test]
+    fn an_unradiused_blur_is_neutral_at_any_aperture() {
+        for aperture in Aperture::ALL {
+            let shaped = Filter::FocalBlur(FocalBlur {
+                radius: 0.0,
+                aperture,
+            });
+            assert!(
+                shaped.is_neutral(),
+                "{aperture:?} at radius 0 is not an edit"
+            );
+            assert_eq!(
+                shaped.clone().sanitized(),
+                shaped,
+                "every shape `ALL` offers is already in range",
+            );
+        }
     }
 
     /// A gradient map's stops are inside the cube **before the sanitizer sees
