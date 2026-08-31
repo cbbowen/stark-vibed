@@ -16,7 +16,7 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ModSource, Modulation,
-    PaintEffect, PaintModulations,
+    PaintModulations, WetEffect, WetModulations,
 };
 use stark_model::geom::Vec2;
 
@@ -232,7 +232,7 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
         return;
     };
     let b = BrushParams {
-        effect: BrushEffect::Paint(PaintEffect {
+        effect: BrushEffect::Wet(WetEffect {
             color: RED,
             dynamics: BrushDynamics {
                 flow: 0.0,
@@ -241,11 +241,11 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
                 charge: 1.5,
                 bleed: 0.0,
             },
-            modulation: PaintModulations {
+            modulation: WetModulations {
                 deposit: Some(Modulation::linear(ModSource::Tilt)),
-                ..PaintModulations::default()
+                ..WetModulations::default()
             },
-            ..PaintEffect::default()
+            ..WetEffect::default()
         }),
         shape: BrushShape::Round { hardness: 0.9 },
         ..plain(30.0)

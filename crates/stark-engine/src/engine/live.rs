@@ -388,6 +388,8 @@ impl Preview {
             // undiagnosed, which the boundary this exists to show survives.
             if let Some(p) = r.brush.paint_mut() {
                 p.color = DEBUG_UNFROZEN_COLOR;
+            } else if let Some(w) = r.brush.wet_mut() {
+                w.color = DEBUG_UNFROZEN_COLOR;
             }
             r
         };

@@ -253,7 +253,7 @@ mod tests {
                     layer: LayerId::ROOT,
                     brush: BrushParams {
                         size: f32::NAN,
-                        effect: BrushEffect::paint_with(
+                        effect: BrushEffect::wet_with(
                             [0.0; 3],
                             BrushDynamics {
                                 lift: f32::INFINITY,

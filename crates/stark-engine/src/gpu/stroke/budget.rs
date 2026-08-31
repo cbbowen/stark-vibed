@@ -218,13 +218,14 @@ fn bleed_reach(b: &BrushParams) -> f32 {
     }
 }
 
-/// The four dynamics axes as the budget prices them: the paint effect's, and all
-/// zero on an eraser — which has none to price. An eraser's own path needs no
-/// region at all, but the caps here are also *published* limits an editor clamps
-/// any brush against ([`max_tip_reach`], [`max_stretch`]), so they have to answer
-/// for every effect — and zero axes is the relaxed answer the erase pass earns.
+/// The four dynamics axes as the budget prices them: the wet effect's, and all
+/// zero on a plain paint brush or an eraser — which have none to price. Neither
+/// of those paths needs a region at all, but the caps here are also *published*
+/// limits an editor clamps any brush against ([`max_tip_reach`], [`max_stretch`]),
+/// so they have to answer for every effect — and zero axes is the relaxed answer
+/// the swept paths earn.
 fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
-    b.paint().map_or(
+    b.wet().map_or(
         stark_model::document::BrushDynamics {
             flow: 0.0,
             lift: 0.0,
@@ -232,25 +233,16 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
             charge: 0.0,
             bleed: 0.0,
         },
-        |p| p.dynamics,
+        |w| w.dynamics,
     )
 }
 
-/// Does a brush settled like this reach for paint that is *already on the canvas* —
-/// the question that sends a stroke down the stamp loop rather than the swept deposit
-/// (§6.2)?
-///
-/// **One spelling, asked from both sides.** [`flatten_tolerance`] buys the loop's
-/// length cap for exactly the brushes
-/// [`dynamics_setup`](super::dynamics::dynamics_setup) hands to the loop, so these are
-/// not two tests that ought to agree — they are one question with two callers. Spelled
-/// out in both places they were four `> 0.0` here against four `<= 0.0` there, and over
-/// floats that is not a complement: a NaN axis satisfies neither, so the pair would have
-/// flattened a brush for the swept path and then drawn it down the loop, at a segment
-/// length the loop's own error bound never priced.
-pub(super) fn manipulates_paint(d: &BrushDynamics) -> bool {
-    d.lift > 0.0 || d.deposit > 0.0 || d.charge > 0.0 || d.bleed > 0.0
-}
+// What used to stand here: `manipulates_paint`, the rate predicate that sent a
+// stroke down the stamp loop — four `> 0.0`s whose float complement a NaN axis
+// satisfied from neither side, which is why it had to be one function with two
+// callers. The [`BrushEffect::Wet`](stark_model::document::BrushEffect) split
+// retired the question: the loop is the variant's, and a variant has no number
+// for two spellings to disagree over (§6.2).
 
 /// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
 /// draw for a brush settled like `b`** (§6.2). A brush past it loses its dynamics
@@ -397,8 +389,7 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
-    let d = axes(b);
-    if manipulates_paint(&d) {
+    if b.wet().is_some() {
         tol.max_len = tol.max_len.min(dynamics_len(b));
         // The region floor's price (§6.2): a tip so wide that a full-length
         // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments

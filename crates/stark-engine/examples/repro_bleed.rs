@@ -65,13 +65,9 @@ fn main() {
         let ActionKind::CommitStroke(rec) = &mut doc.actions[last].kind else {
             unreachable!()
         };
-        rec.brush.paint_mut().expect("a paint brush").dynamics.bleed = 0.0;
-        rec.brush.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
-        rec.brush
-            .paint_mut()
-            .expect("a paint brush")
-            .dynamics
-            .charge = 1e-4;
+        rec.brush.wet_mut().expect("a wet brush").dynamics.bleed = 0.0;
+        rec.brush.wet_mut().expect("a wet brush").dynamics.flow = 0.0;
+        rec.brush.wet_mut().expect("a wet brush").dynamics.charge = 1e-4;
         println!("--identity: final stroke reduced to the bare stamp loop");
     }
     if synth {
@@ -132,11 +128,11 @@ fn main() {
         rec.path.len(),
         b.size,
         b.drain,
-        b.paint().expect("a paint brush").dynamics.flow,
-        b.paint().expect("a paint brush").dynamics.lift,
-        b.paint().expect("a paint brush").dynamics.deposit,
-        b.paint().expect("a paint brush").dynamics.charge,
-        b.paint().expect("a paint brush").dynamics.bleed,
+        b.wet().expect("a wet brush").dynamics.flow,
+        b.wet().expect("a wet brush").dynamics.lift,
+        b.wet().expect("a wet brush").dynamics.deposit,
+        b.wet().expect("a wet brush").dynamics.charge,
+        b.wet().expect("a wet brush").dynamics.bleed,
         b.effect.opacity(),
     );
 

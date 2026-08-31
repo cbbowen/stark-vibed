@@ -400,9 +400,15 @@ strokes and fat tips that wanted it most.
 
 One thing must be decided from the record rather than the piece in hand, because
 a live tail and the commit that replaces it must draw the same pixels: whether
-the stroke runs the stamp loop at all. It is decided from the **brush alone** —
-the strongest form of that guarantee, since there is nothing about the piece, or
-about how long the stroke has grown, for it to disagree over. What it asks is
+the stroke runs the stamp loop at all. It is the **effect's own variant** —
+`BrushEffect::Wet` loops, `Paint` and `Erase` sweep — the strongest form of that
+guarantee, since a variant carries no number for a piece and its commit to read
+differently. It was a rate predicate on the brush's fluxes once, sound only
+because the loop at zero rates degenerated to the swept deposit exactly; the
+pixel-footprint filter broke that degeneracy (the swept deposit is antialiased,
+the loop point-samples), which turned "fast path" into a real feature difference
+— and a feature difference is a tool identity, so it moved into the enum where
+`Erase` already lives. What the loop still asks of a wet brush is
 the floor no cutting gets under: the reservoir pickup reduces over the whole tip
 at once, so a region can never be smaller than one tip's extent plus one
 segment's travel. The travel is the one knob subdivision still has, so it is

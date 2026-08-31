@@ -415,7 +415,7 @@ mod tests {
                 give: -3.0,
                 softness: f32::NEG_INFINITY,
             },
-            effect: stark_model::document::BrushEffect::paint_with(
+            effect: stark_model::document::BrushEffect::wet_with(
                 [0.0; 3],
                 stark_model::document::BrushDynamics {
                     lift: f32::INFINITY,
@@ -483,12 +483,8 @@ mod tests {
             // a number, just not one in range — and it is poisoned at *that* end because
             // the knob's other end is its default, where a clamp would prove nothing.
             assert_eq!(
-                brush.paint().expect("a paint brush").dynamics.lift,
-                BrushParams::default()
-                    .paint()
-                    .expect("a paint brush")
-                    .dynamics
-                    .lift
+                brush.wet().expect("a wet brush").dynamics.lift,
+                stark_model::document::BrushDynamics::default().lift,
             );
         }
 

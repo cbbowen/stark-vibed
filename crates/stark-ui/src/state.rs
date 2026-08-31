@@ -790,10 +790,9 @@ impl AppState {
             // at mount, before any engine exists, and the first stroke has to
             // lay the color the marker shows (`main` pushes the same
             // configuration to the engine once one is up).
-            brush: root_signal(|| {
-                let mut b = crate::brush_config::BrushConfig::default();
-                b.paint.color = crate::panels::color::INITIAL_COLOR;
-                b
+            brush: root_signal(|| crate::brush_config::BrushConfig {
+                color: crate::panels::color::INITIAL_COLOR,
+                ..Default::default()
             }),
             tow: root_signal(|| None),
             assist: AssistState::new(),
@@ -1664,7 +1663,8 @@ mod tests {
                         stretch: knob,
                         ..Default::default()
                     };
-                    b.paint.dynamics.bleed = bleed;
+                    b.effect = crate::brush_config::BrushEffectType::Wet;
+                    b.wet.bleed = bleed;
                     hold_the_tip_drawable(&mut b);
                     let reach = b.size * BrushParams::elongation(b.stretch);
                     assert!(

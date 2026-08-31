@@ -43,7 +43,7 @@ pub use action::{Action, ActionId, ActionKind, ActionTag, ActorId, StrokeRecord}
 pub use brush::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
     EraseEffect, EraseModulations, ModSource, Modulation, NoiseKind, OrientationSource,
-    PaintEffect, PaintModulations, PenState, ToothParams,
+    PaintEffect, PaintModulations, PenState, ToothParams, WetEffect, WetModulations,
 };
 pub use fill::{FillOp, MAX_FILL_TILES, ShapeAction};
 pub use filter::{ChromaticAberration, ColorAdjust, Filter};

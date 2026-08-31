@@ -896,7 +896,7 @@ impl ViewCommand {
     /// (`stark-ui`'s `BrushConfig`), and sends it alongside explicitly.
     pub fn set_brush(brush: BrushParams) -> Self {
         Self::SetBrush {
-            color: brush.paint().map_or([0.0; 3], |p| p.color),
+            color: brush.pigment().unwrap_or([0.0; 3]),
             brush,
         }
     }

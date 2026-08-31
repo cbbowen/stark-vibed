@@ -1105,17 +1105,23 @@ static LESSONS: &[Lesson] = &[
                neighbouring bristles stay neighbours. A little of this is what keeps a \
                flat fill from looking printed.",
     },
+    // Anchored at the effect chips rather than at the Wet section itself,
+    // because the section exists only while the brush *is* wet — a card pointing
+    // at a box the default paint brush never renders would be a card in the
+    // corner with nothing beside it. The chips are where the switch lives, which
+    // is also what the lesson teaches.
     Lesson {
-        key: "be-pickup",
+        key: "be-wet",
         deed: Deed::OpenedBrushEditor,
         after: 1,
         answer: Answer::Button,
-        anchor: Anchor::BrushEditor(BrushPart::Pickup),
+        anchor: Anchor::BrushEditor(BrushPart::Paint),
         side: Side::RightAtTop,
-        title: "Pickup \u{2014} moving paint that is already there",
-        body: "The rest of the brush lays paint; this moves it. Lift takes canvas \
-               paint onto the tip so the next stretch of stroke carries it \u{2014} which \
-               is a smudge, and with no paint of its own a palette knife. Bleed \
+        title: "Wet \u{2014} moving paint that is already there",
+        body: "A Paint brush lays paint; a Wet brush also moves what is on the \
+               canvas. Switch the effect to Wet and its section appears: Lift takes \
+               canvas paint onto the tip so the next stretch of stroke carries it \
+               \u{2014} a smudge, and with no paint of its own a palette knife. Bleed \
                spreads sideways into what it passes over. Together they are how wet \
                paint behaves when something drags through it.",
     },
@@ -1389,6 +1395,9 @@ fn brush_deed(
     let mut colored = *was;
     if let Some(p) = colored.paint_mut() {
         p.color = now.paint().map_or(p.color, |n| n.color);
+    }
+    if let Some(w) = colored.wet_mut() {
+        w.color = now.wet().map_or(w.color, |n| n.color);
     }
     if colored == *now && was_color != now_color {
         return Some(Deed::ChangedColor);

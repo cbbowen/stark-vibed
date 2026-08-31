@@ -698,16 +698,20 @@ pub(super) fn generate_segments_in(
         // drawn by one and skipped by the other (§6.4).
         sweep.reach = sweep.widest_tip() * elong + stark_shaders::mirror::stamp_common::AA_RIM_PX;
         // The rates are the effect's own, at its own pen mappings — the one place
-        // per segment the enum is asked. An eraser's `add` is its flow (the rate
-        // its bite builds at, §6.12) and it has no fluxes to carry; which is
-        // a statement about the *brush*, so every segment of every stroke answers
-        // it the same way (`dynamics_setup`'s purity argument).
+        // per segment the enum is asked. Paint and erase have one rate each —
+        // paint's `add` is its flow, an eraser's the rate its bite builds at
+        // (§6.12) — and only a wet brush carries fluxes; which is a statement
+        // about the *brush*, so every segment of every stroke answers it the same
+        // way (`dynamics_setup`'s purity argument).
         let (add, lift, deposit, bleed) = match &b.effect {
-            stark_model::document::BrushEffect::Paint(p) => (
-                p.dynamics.flow * p.modulation.flow(pen),
-                p.dynamics.lift * p.modulation.lift(pen),
-                p.dynamics.deposit * p.modulation.deposit(pen),
-                p.dynamics.bleed * p.modulation.bleed(pen),
+            stark_model::document::BrushEffect::Paint(p) => {
+                (p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0)
+            }
+            stark_model::document::BrushEffect::Wet(w) => (
+                w.dynamics.flow * w.modulation.flow(pen),
+                w.dynamics.lift * w.modulation.lift(pen),
+                w.dynamics.deposit * w.modulation.deposit(pen),
+                w.dynamics.bleed * w.modulation.bleed(pen),
             ),
             stark_model::document::BrushEffect::Erase(e) => {
                 (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0)
@@ -1768,7 +1772,7 @@ mod tests {
         let at = |lift: f32, deposit: f32, charge: f32| {
             flatten_tolerance(&BrushParams {
                 size: 100.0,
-                effect: stark_model::document::BrushEffect::paint_with(
+                effect: stark_model::document::BrushEffect::wet_with(
                     [0.0; 3],
                     BrushDynamics {
                         lift,
@@ -1810,8 +1814,18 @@ mod tests {
         // …and it does not tighten a brush that *does* trade.
         assert!((at(0.95, 0.95, 1.0) - at(0.95, 0.95, 0.0)).abs() < f32::EPSILON);
 
-        // A brush with no dynamics at all is not capped by this at all.
-        assert!(at(0.0, 0.0, 0.0) > 100.0);
+        // A plain paint brush — no wet variant at all — is not capped by this at
+        // all; a wet brush that trades nothing still runs the loop, so it keeps
+        // the structural ceiling. The cap is the variant's now (§6.2).
+        assert!(
+            flatten_tolerance(&BrushParams {
+                size: 100.0,
+                ..BrushParams::default()
+            })
+            .max_len
+                > 100.0
+        );
+        assert_eq!(at(0.0, 0.0, 0.0), 100.0);
 
         // Never a tightening: a brush that trades *faster* than the reference is left at
         // the reference step, so no setting pays more than it did before the scaling.

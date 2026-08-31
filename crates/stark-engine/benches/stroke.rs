@@ -126,9 +126,9 @@ fn smear(radius: f32) -> BrushParams {
         effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
         ..BrushParams::default()
     };
-    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
-    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
-    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
+    b.make_wet().dynamics.lift = 0.6;
+    b.make_wet().dynamics.deposit = 0.5;
+    b.make_wet().dynamics.flow = 0.5;
     b
 }
 
@@ -141,7 +141,7 @@ fn smear(radius: f32) -> BrushParams {
 /// unmeasured, and the one number anybody had for it came from a hand-timed replay.
 fn blender(radius: f32) -> BrushParams {
     let mut b = smear(radius);
-    b.paint_mut().expect("a paint brush").dynamics.bleed = 0.9;
+    b.make_wet().dynamics.bleed = 0.9;
     b
 }
 

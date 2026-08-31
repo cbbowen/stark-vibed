@@ -118,7 +118,7 @@ impl ModRow {
         }
     }
 
-    /// The base slider's range, for the brush being edited. The three pickup axes
+    /// The base slider's range, for the brush being edited. The three wet fluxes
     /// stop at 0.95 for the reason they always did — λ diverges at 1 (§6.2).
     ///
     /// Takes the brush because one row's top is not a constant: see `Stretch`.
@@ -154,25 +154,26 @@ impl ModRow {
             Self::Flow => b.flow(),
             Self::Stretch => b.stretch,
             Self::ToothGive => b.tooth.give,
-            Self::Lift => b.paint.dynamics.lift,
-            Self::Deposit => b.paint.dynamics.deposit,
-            Self::Bleed => b.paint.dynamics.bleed,
+            Self::Lift => b.wet.lift,
+            Self::Deposit => b.wet.deposit,
+            Self::Bleed => b.wet.bleed,
         }
     }
 
-    /// The three paint-only rows write the paint side directly: the
-    /// configuration holds both effects, so a write racing the pen's eraser end
-    /// (§18.1.8) — [`edit`] defers its closure a throttle window — lands on
-    /// the remembered paint half instead of being dropped.
+    /// The three wet-only rows write the wet half directly: the configuration
+    /// holds every effect, so a write racing the pen's eraser end (§18.1.8) —
+    /// [`edit`] defers its closure a throttle window — lands on the remembered
+    /// wet half instead of being dropped. The effect switch is the user's own
+    /// and never moves under an edit (`BrushConfig::effect`).
     fn set(self, b: &mut BrushConfig, v: f32) {
         match self {
             Self::Size => b.size = v,
             Self::Flow => b.set_flow(v),
             Self::Stretch => b.stretch = v,
             Self::ToothGive => b.tooth.give = v,
-            Self::Lift => b.paint.dynamics.lift = v,
-            Self::Deposit => b.paint.dynamics.deposit = v,
-            Self::Bleed => b.paint.dynamics.bleed = v,
+            Self::Lift => b.wet.lift = v,
+            Self::Deposit => b.wet.deposit = v,
+            Self::Bleed => b.wet.bleed = v,
         }
     }
 
@@ -185,12 +186,12 @@ impl ModRow {
             Self::Stretch => &mut b.modulation.stretch,
             Self::ToothGive => &mut b.modulation.tooth_give,
             Self::Flow => match b.effect {
-                BrushEffectType::Paint => &mut b.paint.modulation.flow,
+                BrushEffectType::Paint | BrushEffectType::Wet => &mut b.flow_modulation,
                 BrushEffectType::Erase => &mut b.erase.modulation.flow,
             },
-            Self::Lift => &mut b.paint.modulation.lift,
-            Self::Deposit => &mut b.paint.modulation.deposit,
-            Self::Bleed => &mut b.paint.modulation.bleed,
+            Self::Lift => &mut b.wet.lift_modulation,
+            Self::Deposit => &mut b.wet.deposit_modulation,
+            Self::Bleed => &mut b.wet.bleed_modulation,
         }
     }
 
@@ -200,12 +201,12 @@ impl ModRow {
             Self::Stretch => b.modulation.stretch,
             Self::ToothGive => b.modulation.tooth_give,
             Self::Flow => match b.effect {
-                BrushEffectType::Paint => b.paint.modulation.flow,
+                BrushEffectType::Paint | BrushEffectType::Wet => b.flow_modulation,
                 BrushEffectType::Erase => b.erase.modulation.flow,
             },
-            Self::Lift => b.paint.modulation.lift,
-            Self::Deposit => b.paint.modulation.deposit,
-            Self::Bleed => b.paint.modulation.bleed,
+            Self::Lift => b.wet.lift_modulation,
+            Self::Deposit => b.wet.deposit_modulation,
+            Self::Bleed => b.wet.bleed_modulation,
         }
     }
 }
@@ -275,7 +276,7 @@ pub enum BrushPart {
     Tip,
     Paint,
     Color,
-    Pickup,
+    Wet,
 }
 
 impl BrushPart {
@@ -287,7 +288,7 @@ impl BrushPart {
             BrushPart::Tip => "tip",
             BrushPart::Paint => "paint",
             BrushPart::Color => "color",
-            BrushPart::Pickup => "pickup",
+            BrushPart::Wet => "wet",
         }
     }
 }
@@ -332,10 +333,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let tip_open = use_signal(|| true);
     let paint_open = use_signal(|| true);
     let color_open = use_signal(|| false);
-    let pickup_open = use_signal(|| false);
+    let wet_open = use_signal(|| false);
     let _surface_open = use_signal(|| false);
     // Per-section "Show more" for the rarely-touched knobs.
-    let pickup_more = use_signal(|| false);
+    let wet_more = use_signal(|| false);
     // Which parameter's pen mapping is open, at most one at a time — so the dialog
     // grows by one sub-row while a mapping is being edited and by nothing otherwise
     // (see [`mod_slider`]). Held here rather than per row because the rows are plain
@@ -346,23 +347,26 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // rows are the brush, and they wake for brush edits and nothing else.
     let brush = (state.brush)();
     let is_round = matches!(brush.shape, BrushShape::Round { .. });
-    // Which effect the brush is (§6.12) — what gates the paint-only
-    // sections below, what the Paint/Erase chips read, and what the effect
-    // section calls itself.
+    // Which effect the brush is (§6.2, §6.12) — what gates the laying-only
+    // sections below, what the effect chips read, and what the effect section
+    // calls itself.
     let erases = brush.effect == BrushEffectType::Erase;
-    let (effect_title, effect_desc) = if erases {
-        (
-            "Erase",
-            "The stroke removes what the eye sees, instead of laying paint.",
-        )
-    } else {
-        (
+    let (effect_title, effect_desc) = match brush.effect {
+        BrushEffectType::Paint => (
             "Paint",
             "The brush's own paint: how much goes down and how far it lasts.",
-        )
+        ),
+        BrushEffectType::Wet => (
+            "Wet",
+            "The paint mixes with what is on the canvas: lift, deposit, bleed.",
+        ),
+        BrushEffectType::Erase => (
+            "Erase",
+            "The stroke removes what the eye sees, instead of laying paint.",
+        ),
     };
-    let charge = brush.paint.dynamics.charge;
-    let cd = brush.paint.color_dynamics;
+    let charge = brush.wet.charge;
+    let cd = brush.color_dynamics;
     // The jitter channels are the *color space's* channels — label them for
     // whatever space the document is in.
     let space = state
@@ -587,16 +591,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     desc: effect_desc,
                     glyph: icons::PAINT,
                     open: paint_open,
-                    // What a stroke of this brush **does** (§6.12): paint, or
-                    // erase. A chip pair rather than a dial, because it is the
-                    // tool's identity and not an amount — the sections below come
-                    // and go with it, which a slider position would not say.
+                    // What a stroke of this brush **does** (§6.2, §6.12):
+                    // paint, wet paint, or erase. Chips rather than a dial,
+                    // because it is the tool's identity and not an amount — the
+                    // sections below come and go with it, which a slider
+                    // position would not say. The user's own choice: no slider
+                    // moves this switch (`BrushConfig::effect`).
                     div { class: "brush-shapes",
-                        button { class: chip(!erases),
-                            onclick: move |_| set_effect(state, preview, false),
+                        button { class: chip(brush.effect == BrushEffectType::Paint),
+                            onclick: move |_| set_effect(state, preview, BrushEffectType::Paint),
                             "Paint" }
+                        button { class: chip(brush.effect == BrushEffectType::Wet),
+                            onclick: move |_| set_effect(state, preview, BrushEffectType::Wet),
+                            "Wet" }
                         button { class: chip(erases),
-                            onclick: move |_| set_effect(state, preview, true),
+                            onclick: move |_| set_effect(state, preview, BrushEffectType::Erase),
                             "Erase" }
                     }
                     // The effect's ceiling (§6.2, §6.12), whichever it is: the
@@ -682,7 +691,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                 button {
                                     key: "{noise_label(kind)}",
                                     class: chip(cd.noise == kind),
-                                    onclick: move |_| edit(state, preview, move |b| b.paint.color_dynamics.noise = kind),
+                                    onclick: move |_| edit(state, preview, move |b| b.color_dynamics.noise = kind),
                                     "{noise_label(kind)}"
                                 }
                             }
@@ -690,29 +699,30 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // How far each color channel wanders (± in the channel's units).
                         for i in 0..3 {
                             Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
-                                oninput: move |v| edit(state, preview, move |b| b.paint.color_dynamics.amplitude[i] = v) }
+                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }
                         }
                         // How fast it wanders along each lookup axis; the modulation
                         // sliders live only while some channel is active (no effect at 0).
                         if cd.amplitude.iter().any(|a| *a > 0.0) {
                             div { class: "be-sub",
                                 Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
-                                    oninput: move |v| edit(state, preview, move |b| b.paint.color_dynamics.frequency[0] = v) }
+                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
                                 Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
-                                    oninput: move |v| edit(state, preview, move |b| b.paint.color_dynamics.frequency[1] = v) }
+                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
                             }
                         }
                     }
                 }
 
-                // The four fluxes are the paint effect's own (§6.12), so the
-                // section goes with it — an eraser neither lifts nor lays back.
-                if !erases {
+                // The fluxes are the wet effect's own (§6.2), so the section
+                // goes with the chip that names it: a paint brush lays and an
+                // eraser removes, and neither has an axis here to show.
+                if brush.effect == BrushEffectType::Wet {
                     Section {
-                        part: BrushPart::Pickup,
-                        title: "Pickup", desc: "Canvas paint on the move — smudge, knife, blur.",
-                        glyph: icons::PICKUP,
-                        open: pickup_open,
+                        part: BrushPart::Wet,
+                        title: "Wet", desc: "Canvas paint on the move — smudge, knife, blur.",
+                        glyph: icons::WET,
+                        open: wet_open,
                         // The three axes a palette knife is built out of, and the three
                         // most worth mapping onto the pen: a knife that lifts with
                         // pressure and lays back with tilt is those two chips
@@ -724,10 +734,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // melts the ridges of the strokes being painted over. Capped at
                         // 0.95 like the two vertical rates — the λ diverges at 1.
                         {mod_slider(state, preview, mod_open, ModRow::Bleed, brush)}
-                        More { open: pickup_more,
+                        More { open: wet_more,
                             // The finite glob pre-loaded on the tool (palette knife, §6.2).
                             Slider { label: "Charge", min: 0.0, max: 2.0, value: charge,
-                                oninput: move |v| edit(state, preview, move |b| b.paint.dynamics.charge = v) }
+                                oninput: move |v| edit(state, preview, move |b| b.wet.charge = v) }
                         }
                     }
                 }
@@ -844,19 +854,13 @@ fn noise_label(kind: NoiseKind) -> &'static str {
     }
 }
 
-/// Switch what the brush does (§6.12). One field moves and nothing is
-/// forgotten: the brush carries **both** effects' configurations
-/// (`BrushConfig`), so toggling to Erase and back costs a tuned smudge none of
-/// its axes — across dialog closes, preset swaps and sessions alike, where the
-/// stash this replaced remembered only for the dialog's own length.
-fn set_effect(state: AppState, preview: Preview, erase: bool) {
-    edit(state, preview, move |b| {
-        b.effect = if erase {
-            BrushEffectType::Erase
-        } else {
-            BrushEffectType::Paint
-        };
-    });
+/// Switch what the brush does (§6.2, §6.12). One field moves and nothing is
+/// forgotten: the brush carries every effect's configuration (`BrushConfig`),
+/// so switching to Erase and back costs a tuned smudge none of its axes —
+/// across dialog closes, preset swaps and sessions alike, where the stash this
+/// replaced remembered only for the dialog's own length.
+fn set_effect(state: AppState, preview: Preview, kind: BrushEffectType) {
+    edit(state, preview, move |b| b.effect = kind);
 }
 
 /// Set (or clear) a row's mapping source, keeping the shape it already had — so
@@ -1239,7 +1243,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // untouched. A stamp shape needs no handing over: the preview engine shares
     // the main engine's content-addressed asset store, so whatever the brush
     // holds is already here.
-    brush.paint.color = PREVIEW_STROKE_COLOR;
+    brush.color = PREVIEW_STROKE_COLOR;
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();

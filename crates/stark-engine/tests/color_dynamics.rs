@@ -183,12 +183,12 @@ fn jitter_applies_in_dynamics_loop() {
         return;
     };
     let mut jb = jitter_brush(NoiseKind::Simplex, [3.0, 3.0], [0.2, 0.12, 0.12]);
-    jb.paint_mut().expect("a paint brush").dynamics.lift = 0.3;
-    jb.paint_mut().expect("a paint brush").dynamics.deposit = 0.3; // lift/deposit > 0 ⇒ the exchange-loop path
+    jb.make_wet().dynamics.lift = 0.3;
+    jb.make_wet().dynamics.deposit = 0.3; // lift/deposit > 0 ⇒ the exchange-loop path
     stroke_with(&mut a, jb, &S_CURVE);
     stroke_with(&mut b, jb, &S_CURVE);
     let mut pb = jb;
-    pb.paint_mut().expect("a paint brush").color_dynamics = ColorDynamics::default();
+    pb.wet_mut().expect("a wet brush").color_dynamics = ColorDynamics::default();
     stroke_with(&mut plain, pb, &S_CURVE);
 
     let (ia, ib) = (a.render_to_image(), b.render_to_image());

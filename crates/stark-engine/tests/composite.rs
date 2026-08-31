@@ -30,7 +30,7 @@ use stark_engine::command::DocCommand;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
+use stark_model::document::{BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.10, 0.10];
@@ -44,10 +44,7 @@ fn soft(color: [f32; 3], radius: f32) -> BrushParams {
         drain: 0.0,
         effect: BrushEffect::Paint(PaintEffect {
             color,
-            dynamics: BrushDynamics {
-                flow: 0.6,
-                ..Default::default()
-            },
+            flow: 0.6,
             ..Default::default()
         }),
         ..Default::default()

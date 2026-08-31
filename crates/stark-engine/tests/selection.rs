@@ -59,13 +59,17 @@ fn marquee(engine: &mut stark_engine::Engine, action: ShapeAction, min: Vec2, ma
 /// A stroke that saturates its parcel over the core in one pass — flow high, no
 /// drain — so a texel there reads the ceiling and not a half-built fringe
 /// (`tests/opacity.rs`'s construction). `deposit` off zero routes it through the
-/// stamp loop while moving no paint (`dynamics_setup`); zero keeps it on the swept
-/// path.
+/// stamp loop while moving no paint (`dynamics_setup`); zero keeps it a paint
+/// brush on the swept path — the variant is the path now (§6.2).
 fn washed(opacity: f32, deposit: f32) -> BrushParams {
     let mut b = brush(RED, 14.0);
-    let d = &mut b.paint_mut().expect("a paint brush").dynamics;
-    d.flow = 2.5;
-    d.deposit = deposit;
+    if deposit > 0.0 {
+        let d = &mut b.make_wet().dynamics;
+        d.flow = 2.5;
+        d.deposit = deposit;
+    } else {
+        b.paint_mut().expect("a paint brush").flow = 2.5;
+    }
     b.effect.set_opacity(opacity);
     b.drain = 0.0;
     b
@@ -240,7 +244,7 @@ fn selection_gates_the_brush_dynamics_path() {
     // exact "keeps its value" exit whatever gates the exposure, which is the very
     // thing this test pins.
     let mut b = brush(RED, 14.0);
-    b.effect = BrushEffect::paint_with(
+    b.effect = BrushEffect::wet_with(
         RED,
         BrushDynamics {
             flow: 1.0,
@@ -289,7 +293,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
 
     let mut smudge = brush([0.0, 0.0, 0.0], 16.0);
-    smudge.effect = BrushEffect::paint_with(
+    smudge.effect = BrushEffect::wet_with(
         [0.0, 0.0, 0.0],
         BrushDynamics {
             flow: 0.0,
@@ -1211,7 +1215,7 @@ fn golden_selection_smear() {
     // A conservative smudge: no paint of its own, so everything that moves was lifted
     // from the canvas — and none of it may cross the boundary in either direction.
     let mut smudge = brush([0.0, 0.0, 0.0], 26.0);
-    smudge.effect = BrushEffect::paint_with(
+    smudge.effect = BrushEffect::wet_with(
         [0.0, 0.0, 0.0],
         BrushDynamics {
             flow: 0.0,

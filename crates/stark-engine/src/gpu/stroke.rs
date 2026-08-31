@@ -352,11 +352,12 @@ impl StrokeRenderer {
         substrate: &crate::gpu::substrate::SubstrateMap,
         selection: &crate::document::Selection,
     ) -> StrokeConstants {
-        // The pigment is the paint effect's own (§6.2); an erase stroke has none,
-        // and zero is safe because every lane derived from it feeds passes the
-        // erase path never binds. This is the boundary where the stored sRGB
-        // becomes the display color the conversion is defined on.
-        let rgb = Srgb::new(rec.brush.paint().map_or([0.0; 3], |p| p.color));
+        // The pigment is the laying effect's own — paint's or wet's (§6.2); an
+        // erase stroke has none, and zero is safe because every lane derived
+        // from it feeds passes the erase path never binds. This is the boundary
+        // where the stored sRGB becomes the display color the conversion is
+        // defined on.
+        let rgb = Srgb::new(rec.brush.pigment().unwrap_or([0.0; 3]));
         let l = self.color_space.rgb_to_latent(rgb);
         let (nfreq, namp) = noise_uniform(rec);
         StrokeConstants {

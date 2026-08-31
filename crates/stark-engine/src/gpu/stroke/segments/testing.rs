@@ -107,11 +107,11 @@ pub(in crate::gpu::stroke) fn record(brush: BrushParams, pts: &[Vec2]) -> Stroke
     }
 }
 
-/// A brush that manipulates paint, so a stroke of it takes the dynamics loop at all.
+/// A wet brush that manipulates paint, so a stroke of it takes the dynamics loop.
 pub(in crate::gpu::stroke) fn smearing(radius: f32) -> BrushParams {
     BrushParams {
         size: radius,
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
                 lift: 0.8,

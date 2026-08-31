@@ -78,9 +78,9 @@ fn smear_brush(radius: f32) -> BrushParams {
         effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
         ..BrushParams::default()
     };
-    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
-    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
-    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
+    b.make_wet().dynamics.lift = 0.6;
+    b.make_wet().dynamics.deposit = 0.5;
+    b.make_wet().dynamics.flow = 0.5;
     b
 }
 

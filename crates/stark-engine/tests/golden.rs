@@ -50,7 +50,7 @@ fn golden_studio_environment() {
     let mut b = brush(RED, 34.0);
     b.shape = BrushShape::Round { hardness: 0.55 };
     b.drain = 0.0;
-    b.paint_mut().expect("a paint brush").dynamics.flow = 1.2;
+    b.paint_mut().expect("a paint brush").flow = 1.2;
     for (color, y) in [
         ([1.0, 0.35, 0.2], -60.0),
         ([0.2, 0.4, 0.9], 0.0),
@@ -209,7 +209,7 @@ fn golden_lift_end_regression() {
         drain: 0.4,
         // Black, as `BrushParams::default()` always painted here — the blessed
         // pixels are of a black smear.
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
                 flow: 1.0,
@@ -248,13 +248,10 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 200.0,
             shape,
-            effect: BrushEffect::paint_with(
-                [0.0; 3],
-                BrushDynamics {
-                    flow: 1.5,
-                    ..BrushDynamics::default()
-                },
-            ),
+            effect: BrushEffect::Paint(PaintEffect {
+                flow: 1.5,
+                ..Default::default()
+            }),
             ..BrushParams::default()
         },
         &points,
@@ -264,7 +261,7 @@ fn golden_heavy_smear_regression() {
         BrushParams {
             size: 50.0,
             shape,
-            effect: BrushEffect::paint_with(
+            effect: BrushEffect::wet_with(
                 [0.0; 3],
                 BrushDynamics {
                     flow: 0.0,
@@ -294,7 +291,7 @@ fn golden_drained_brush_length_independent() {
         drain: 0.4,
         // Black, as `BrushParams::default()` always painted here — the blessed
         // pixels are of a black smear.
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
                 flow: 1.0,
@@ -343,10 +340,7 @@ fn golden_straight_smear_into_paint() {
             shape,
             effect: BrushEffect::Paint(PaintEffect {
                 color,
-                dynamics: BrushDynamics {
-                    flow: 2.0,
-                    ..Default::default()
-                },
+                flow: 2.0,
                 ..Default::default()
             }),
             ..Default::default()
@@ -359,16 +353,15 @@ fn golden_straight_smear_into_paint() {
         BrushParams {
             size: 64.0,
             shape,
-            effect: BrushEffect::Paint(PaintEffect {
+            effect: BrushEffect::wet_with(
                 color,
-                dynamics: BrushDynamics {
+                BrushDynamics {
                     flow: 0.0,
                     lift: 0.5,
                     deposit: 0.95,
                     ..Default::default()
                 },
-                ..Default::default()
-            }),
+            ),
             ..Default::default()
         },
         &[Vec2::new(-256.0, 0.0), Vec2::new(0.0, 0.0)],
@@ -399,10 +392,7 @@ fn golden_wiggly_smear_into_paint() {
             shape,
             effect: BrushEffect::Paint(PaintEffect {
                 color,
-                dynamics: BrushDynamics {
-                    flow: 2.0,
-                    ..Default::default()
-                },
+                flow: 2.0,
                 ..Default::default()
             }),
             ..Default::default()
@@ -422,16 +412,15 @@ fn golden_wiggly_smear_into_paint() {
         BrushParams {
             size: 64.0,
             shape,
-            effect: BrushEffect::Paint(PaintEffect {
+            effect: BrushEffect::wet_with(
                 color,
-                dynamics: BrushDynamics {
+                BrushDynamics {
                     flow: 0.0,
                     lift: 0.5,
                     deposit: 0.95,
                     ..Default::default()
                 },
-                ..Default::default()
-            }),
+            ),
             ..Default::default()
         },
         &points,

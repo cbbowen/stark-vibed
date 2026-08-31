@@ -209,9 +209,9 @@ impl Case {
 /// cadence across the cut.
 pub fn smear_brush(radius: f32) -> BrushParams {
     let mut b = brush(RED, radius);
-    b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
-    b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
-    b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
+    b.make_wet().dynamics.lift = 0.6;
+    b.make_wet().dynamics.deposit = 0.5;
+    b.make_wet().dynamics.flow = 0.5;
     b.drain = 0.0;
     b
 }
@@ -571,7 +571,7 @@ pub const CASES: &[Case] = &[
             let mut b = brush(RED, 16.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
             b.drain = 0.0;
-            b.paint_mut().expect("a paint brush").dynamics.flow = 1.0;
+            b.paint_mut().expect("a paint brush").flow = 1.0;
             b.start_taper_length = 4.0;
             b.end_taper_length = 9.0;
             b
@@ -600,9 +600,9 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |e, _| {
             let mut b = bristle_stamp(e, 45.0);
-            b.paint_mut().expect("a paint brush").dynamics.lift = 0.6;
-            b.paint_mut().expect("a paint brush").dynamics.deposit = 0.5;
-            b.paint_mut().expect("a paint brush").dynamics.flow = 0.5;
+            b.make_wet().dynamics.lift = 0.6;
+            b.make_wet().dynamics.deposit = 0.5;
+            b.make_wet().dynamics.flow = 0.5;
             b
         },
         path: half_turn_arc,
@@ -734,8 +734,8 @@ pub const CASES: &[Case] = &[
             undercoat(e, at);
             let mut b = brush(RED, 30.0);
             b.drain = 0.0;
-            b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
-            b.paint_mut().expect("a paint brush").dynamics.bleed = 0.8;
+            b.make_wet().dynamics.flow = 0.0;
+            b.make_wet().dynamics.bleed = 0.8;
             b
         },
         path: || sine_sweep(80, 180.0, 30.0, 0.75),
@@ -763,7 +763,7 @@ pub const CASES: &[Case] = &[
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             // Replayed, as `undercoat` is and for its reason.
             let mut lay = brush([0.0, 0.0, 0.0], 260.0);
-            lay.paint_mut().expect("a paint brush").dynamics.flow = 1.5;
+            lay.paint_mut().expect("a paint brush").flow = 1.5;
             lay.drain = 0.0;
             replay_with(
                 e,
@@ -772,9 +772,9 @@ pub const CASES: &[Case] = &[
             );
             let mut b = smear_brush(250.0);
             b.shape = BrushShape::Round { hardness: 0.9 };
-            b.paint_mut().expect("a paint brush").dynamics.flow = 0.0;
-            b.paint_mut().expect("a paint brush").dynamics.lift = 0.9;
-            b.paint_mut().expect("a paint brush").dynamics.deposit = 0.9;
+            b.make_wet().dynamics.flow = 0.0;
+            b.make_wet().dynamics.lift = 0.9;
+            b.make_wet().dynamics.deposit = 0.9;
             b
         },
         path: || at(&[(-300.0, -120.0), (0.0, 120.0), (300.0, -120.0)]),
@@ -848,7 +848,7 @@ pub const CASES: &[Case] = &[
             // Flow high enough that the parcel saturates over the stroke's core,
             // so the crossing is a claim about the ceiling rather than about two
             // half-built fringes stacking.
-            b.paint_mut().expect("a paint brush").dynamics.flow = 2.5;
+            b.paint_mut().expect("a paint brush").flow = 2.5;
             b.effect.set_opacity(0.6);
             b.drain = 0.0;
             b
@@ -876,7 +876,7 @@ pub const CASES: &[Case] = &[
         prepare: |e, at| {
             undercoat(e, at);
             let mut b = smear_brush(15.0);
-            b.paint_mut().expect("a paint brush").dynamics.flow = 2.0;
+            b.make_wet().dynamics.flow = 2.0;
             b.effect.set_opacity(0.6);
             b
         },

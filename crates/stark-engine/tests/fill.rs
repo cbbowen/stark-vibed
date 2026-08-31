@@ -506,7 +506,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
     let scraper = BrushParams {
         size: 24.0,
         // A pure scraper mints nothing, so its pigment is never seen.
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
                 flow: 0.0,

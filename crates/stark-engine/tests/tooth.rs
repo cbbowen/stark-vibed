@@ -62,16 +62,14 @@ fn toothed(give: f32) -> BrushParams {
         },
         shape: BrushShape::Round { hardness: 0.9 },
         modulation: Default::default(),
-        effect: BrushEffect::paint_with(
-            RED,
-            BrushDynamics {
-                // Low flow: the tooth decides how much of the parcel lands, and at a
-                // flow that saturates the slab law every texel reads as solid whatever
-                // fraction it received. A dry-brush mark is the case this axis is *for*.
-                flow: 0.35,
-                ..Default::default()
-            },
-        ),
+        effect: BrushEffect::Paint(stark_model::document::PaintEffect {
+            color: RED,
+            // Low flow: the tooth decides how much of the parcel lands, and at a
+            // flow that saturates the slab law every texel reads as solid whatever
+            // fraction it received. A dry-brush mark is the case this axis is *for*.
+            flow: 0.35,
+            ..Default::default()
+        }),
         // No deposit jitter: two of this file's claims are exact comparisons
         // across strokes (the flat-canvas identity, the level-set monotonicity),
         // and the jitter is per-stroke-seeded by design (§6.2).
@@ -411,11 +409,12 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     // the two strokes differ in which shader ran and in nothing else that shows.
     let swept = toothed(0.5);
     let looped = BrushParams {
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             RED,
             BrushDynamics {
+                flow: swept.paint().expect("a paint brush").flow,
                 lift: 0.05,
-                ..swept.paint().expect("a paint brush").dynamics
+                ..Default::default()
             },
         ),
         ..swept
@@ -568,7 +567,7 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
             give,
             softness: BAND,
         },
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             [1.0, 0.0, 0.0],
             BrushDynamics {
                 flow: 0.0,
@@ -802,7 +801,7 @@ fn a_toothed_smear_previews_as_it_commits() {
             give: 0.5,
             softness: BAND,
         },
-        effect: BrushEffect::paint_with(
+        effect: BrushEffect::wet_with(
             RED,
             BrushDynamics {
                 flow: 0.6,

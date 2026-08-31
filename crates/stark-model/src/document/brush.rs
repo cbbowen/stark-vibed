@@ -78,12 +78,14 @@ pub enum OrientationSource {
     Pen,
 }
 
-/// How a brush interacts with paint already on the canvas (§6.2). One
-/// **unified tool**, not a mode switch: every axis is a flux on the single conserved
-/// quantity — paint **height** (the amount; §6.1) — and the axes compose freely.
-/// [`flow`](Self::flow) is the only *source* (the brush's own paint); the rest move paint
-/// that is already on the canvas, so with `flow = 0` the tool conserves height (it only
-/// moves paint around). The everyday brush is just `flow` with the rest 0 (the default).
+/// How a [`BrushEffect::Wet`] brush interacts with paint already on the canvas
+/// (§6.2). One **unified tool** within that effect: every axis is a flux on the
+/// single conserved quantity — paint **height** (the amount; §6.1) — and the axes
+/// compose freely. [`flow`](Self::flow) is the only *source* (the brush's own
+/// paint); the rest move paint that is already on the canvas, so with `flow = 0`
+/// the tool conserves height (it only moves paint around). The everyday flow-only
+/// brush is not a corner of this space — it is [`BrushEffect::Paint`], a separate
+/// effect that carries no fluxes at all.
 ///
 /// Two axes are **vertical** flux between the canvas and a transient
 /// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
@@ -110,11 +112,10 @@ pub struct BrushDynamics {
     /// that runs dry as it travels see [`BrushParams::drain`]; for a finite carried
     /// glob that depletes as it is laid see [`charge`](Self::charge).
     ///
-    /// **It means the same amount of paint whatever the other three are doing.** The
-    /// axes below decide whether the stroke goes through the swept fast path or the
-    /// sequential stamp loop (§6.2), so a gain applied on one path and not the other
-    /// would make nudging [`deposit`](Self::deposit) off zero change the flow of a
-    /// slider that has nothing to do with it.
+    /// **It means the same amount of paint as [`PaintEffect::flow`]** (§6.2):
+    /// the loop's `add` axis and the swept deposit share one law, so moving a
+    /// brush between [`BrushEffect::Paint`] and [`BrushEffect::Wet`] does not
+    /// re-interpret its Flow slider.
     #[serde(default)]
     pub flow: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
@@ -547,8 +548,8 @@ impl BrushModulations {
     }
 }
 
-/// The pen mappings whose targets exist only while **painting** — the four rates
-/// of [`BrushDynamics`] (§6.2). With the effect they modulate
+/// The pen mappings whose targets exist only while **painting** (§6.2) —
+/// the one rate a [`PaintEffect`] has. With the effect it modulates
 /// ([`PaintEffect::modulation`]) rather than beside the tip's own mappings, so a
 /// mapping cannot name a knob its brush does not have.
 ///
@@ -559,6 +560,44 @@ impl BrushModulations {
 /// pieces — so the knob the pen drives is the rate.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct PaintModulations {
+    /// Scales [`PaintEffect::flow`] — the brush's own paint, "Flow" in the UI.
+    pub flow: Option<Modulation>,
+}
+
+impl PaintModulations {
+    pub fn flow(&self, pen: PenState) -> f32 {
+        mod_factor(self.flow, pen)
+    }
+
+    /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
+    fn all(&self) -> [Option<Modulation>; 1] {
+        let Self { flow } = *self;
+        [flow]
+    }
+
+    /// Whether any target is mapped.
+    pub fn is_active(&self) -> bool {
+        self.all().iter().any(Option::is_some)
+    }
+
+    /// Every mapped target sanitized, the unmapped ones left unmapped.
+    pub fn sanitized(self) -> Self {
+        let [flow] = self.all().map(|m| m.map(Modulation::sanitized));
+        Self { flow }
+    }
+
+    /// The steepest response across these targets (`mod_slope`).
+    pub fn max_slope(&self) -> f32 {
+        mod_slope(&self.all())
+    }
+}
+
+/// The pen mappings whose targets exist only while **working wet paint** — the
+/// four rates of [`BrushDynamics`] (§6.2). With the effect they modulate
+/// ([`WetEffect::modulation`]) for [`PaintModulations`]' reason, whose note on
+/// modulating `opacity` applies here unchanged.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+pub struct WetModulations {
     /// Scales [`BrushDynamics::flow`] — the brush's own paint, "Flow" in the UI.
     pub flow: Option<Modulation>,
     /// Scales [`BrushDynamics::lift`].
@@ -569,7 +608,7 @@ pub struct PaintModulations {
     pub bleed: Option<Modulation>,
 }
 
-impl PaintModulations {
+impl WetModulations {
     pub fn flow(&self, pen: PenState) -> f32 {
         mod_factor(self.flow, pen)
     }
@@ -774,9 +813,11 @@ impl ToothParams {
     }
 }
 
-/// The **painting** effect (§6.2): the brush lays its own paint and works
-/// what is already there — the everyday brush, the smudge, the knife, the blur,
-/// and every mixture of them.
+/// The **painting** effect (§6.2): the brush lays its own paint and nothing
+/// else — the everyday brush, and the whole of the swept fast path's antialiased
+/// deposit. A brush that also *works* what is already there — the smudge, the
+/// knife, the blur — is [`BrushEffect::Wet`], a different tool with different
+/// available features rather than this one at other rates.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PaintEffect {
     /// The pigment: straight **sRGB**, components in [0, 1], converted to the
@@ -807,23 +848,20 @@ pub struct PaintEffect {
     /// 0.5 a saturated stroke covers half, scrubbing walks its soft edge toward
     /// the cap rather than past it, and a stroke crossing itself never outruns the
     /// dial. The knob a digital artist calls Opacity, beside the
-    /// [`flow`](BrushDynamics::flow) that is the rate.
-    ///
-    /// On a brush that also works existing paint (a nonzero
-    /// [`lift`](BrushDynamics::lift) / [`deposit`](BrushDynamics::deposit) /
-    /// [`bleed`](BrushDynamics::bleed) axis), the ceiling cannot be exact: what the
-    /// stroke moves it must move whole — conservation (§6.1) — and once fresh
-    /// paint is smeared into the picture there is no longer a "this stroke's
-    /// share" for a ceiling to scale. There the knob scales what the brush
-    /// **mints** — the flow's paint and the [`charge`](BrushDynamics::charge)'s
-    /// glob — by the same fraction, which agrees with the ceiling to first order
-    /// in the amount laid and exactly at 1.
+    /// [`flow`](Self::flow) that is the rate.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
-    /// The source rate and the four fluxes — the unified natural-media tool
-    /// (§6.2).
-    #[serde(default)]
-    pub dynamics: BrushDynamics,
+    /// The paint **height** laid per unit of swept optical depth (§6.1) —
+    /// this effect's one rate, playing exactly the role [`BrushDynamics::flow`]
+    /// plays for wet paint and [`EraseEffect::flow`] for the eraser. Its own
+    /// field rather than a reading of a [`BrushDynamics`], for the eraser's
+    /// reason: this effect has no fluxes, and a struct of knobs it would
+    /// silently veto is the shape [`BrushEffect`]'s own doc forbids.
+    ///
+    /// A *rate*, not a quantity — it never runs out on its own; see
+    /// [`BrushParams::drain`] for a stroke that does.
+    #[serde(default = "PaintEffect::default_flow")]
+    pub flow: f32,
     /// Color dynamics (color jitter) — how the applied color varies across the
     /// brush and along the stroke (§6.2). Historized (it changes stored
     /// pixels); the default (amplitude 0) is the constant color.
@@ -841,7 +879,7 @@ impl Default for PaintEffect {
         Self {
             color: [0.0, 0.0, 0.0],
             opacity: 1.0,
-            dynamics: BrushDynamics::default(),
+            flow: Self::default_flow(),
             color_dynamics: ColorDynamics::default(),
             modulation: PaintModulations::default(),
         }
@@ -864,6 +902,64 @@ impl PaintEffect {
     /// constant.
     fn default_opacity() -> f32 {
         1.0
+    }
+
+    /// The flow a brush gets when it does not say ([`flow`](Self::flow)) —
+    /// [`BrushDynamics::default`]'s own source rate, so the two effects' everyday
+    /// brushes lay the same paint.
+    fn default_flow() -> f32 {
+        0.6
+    }
+}
+
+/// The **wet** effect (§6.2): the brush lays its own paint *and works what is
+/// already there* through the sequential lift/deposit loop — the smudge, the
+/// knife, the blur, the loaded brush, and every mixture of them.
+///
+/// A separate effect rather than a [`PaintEffect`] at other rates, because the
+/// two are different tools with different available features, not one tool on
+/// two budgets: wet strokes mix with the canvas and carry a reservoir, and in
+/// exchange their deposit is point-sampled where paint's is antialiased through
+/// the pixel-footprint filter (§6.2) — a trade a brush should make by identity,
+/// not by a rate crossing zero.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+pub struct WetEffect {
+    /// The pigment — [`PaintEffect::color`], and its doc holds here unchanged.
+    #[serde(default)]
+    pub color: [f32; 3],
+    /// The ceiling on a full stroke — [`PaintEffect::opacity`]'s law, **inexact
+    /// here by nature**: what the stroke moves it must move whole — conservation
+    /// (§6.1) — and once fresh paint is smeared into the picture there is no
+    /// longer a "this stroke's share" for a ceiling to scale. The knob scales
+    /// what the brush **mints** — the flow's paint and the
+    /// [`charge`](BrushDynamics::charge)'s glob — by the same fraction, which
+    /// agrees with the ceiling to first order in the amount laid and exactly
+    /// at 1.
+    #[serde(default = "PaintEffect::default_opacity")]
+    pub opacity: f32,
+    /// The source rate and the four fluxes — the unified natural-media tool
+    /// (§6.2).
+    #[serde(default)]
+    pub dynamics: BrushDynamics,
+    /// Color dynamics — [`PaintEffect::color_dynamics`], unchanged here.
+    #[serde(default)]
+    pub color_dynamics: ColorDynamics,
+    /// The pen mappings onto this effect's own rates ([`WetModulations`]).
+    #[serde(default)]
+    pub modulation: WetModulations,
+}
+
+impl Default for WetEffect {
+    /// The everyday wet brush: black, a full stroke, the default dynamics —
+    /// which lay paint and move none until a flux is turned up.
+    fn default() -> Self {
+        Self {
+            color: [0.0, 0.0, 0.0],
+            opacity: 1.0,
+            dynamics: BrushDynamics::default(),
+            color_dynamics: ColorDynamics::default(),
+            modulation: WetModulations::default(),
+        }
     }
 }
 
@@ -889,7 +985,7 @@ pub struct EraseEffect {
     /// walks the stroke's soft edge toward the cap rather than eating past it.
     pub opacity: f32,
     /// The rate: how fast a pass builds `w` — the eraser's own flow, playing
-    /// exactly the role [`BrushDynamics::flow`] plays for paint, and so the knob an
+    /// exactly the role [`PaintEffect::flow`] plays for paint, and so the knob an
     /// airbrush-style eraser turns down. Its own field rather than a reading of the
     /// paint effect's, so switching a brush's effect never re-interprets a number
     /// that meant something else.
@@ -920,8 +1016,11 @@ impl Default for EraseEffect {
 /// exist while it is the one in force.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BrushEffect {
-    /// Lay and work paint (§6.2).
+    /// Lay paint (§6.2) — the swept, antialiased deposit.
     Paint(PaintEffect),
+    /// Lay paint and work what is already there (§6.2) — the sequential
+    /// wet-mixing loop.
+    Wet(WetEffect),
     /// Remove visible opacity (§6.12).
     Erase(EraseEffect),
 }
@@ -934,36 +1033,38 @@ impl Default for BrushEffect {
 }
 
 impl BrushEffect {
-    /// A paint effect of a pigment and its axes — the shorthand a test reaches
+    /// A wet effect of a pigment and its axes — the shorthand a test reaches
     /// for when the color dynamics and the pen mappings are the defaults.
     ///
     /// The color is a parameter and not a default on purpose: the pigment lives
-    /// *inside* the paint effect, so a constructor that let a caller build one
+    /// *inside* the effect, so a constructor that let a caller build one
     /// without saying a color would be the door through which
-    /// `effect: paint_with(..), ..brush(color, r)` silently paints black —
+    /// `effect: wet_with(..), ..brush(color, r)` silently paints black —
     /// the spread's colored effect replaced whole, with nothing left to say so.
-    pub fn paint_with(color: [f32; 3], dynamics: BrushDynamics) -> Self {
-        Self::Paint(PaintEffect {
+    pub fn wet_with(color: [f32; 3], dynamics: BrushDynamics) -> Self {
+        Self::Wet(WetEffect {
             color,
             dynamics,
-            ..PaintEffect::default()
+            ..WetEffect::default()
         })
     }
 
-    /// [`Paint`](Self::Paint) of just a color — [`paint_with`](Self::paint_with)
-    /// from the pigment side.
+    /// [`Paint`](Self::Paint) of just a color — [`wet_with`](Self::wet_with)'s
+    /// swept sibling, from the pigment side.
     pub fn painted(color: [f32; 3]) -> Self {
         Self::Paint(PaintEffect::colored(color))
     }
 
     /// The effect's **source rate** — "Flow" in the UI, whichever effect is in
-    /// force: how much the stroke lays ([`BrushDynamics::flow`]) or how fast its
-    /// bite builds ([`EraseEffect::flow`]). One question with one answer per
-    /// effect, which is what lets the brush panel's Flow slider and the tuning
-    /// drag tune the tool in hand without asking which kind it is.
+    /// force: how much the stroke lays ([`PaintEffect::flow`],
+    /// [`BrushDynamics::flow`]) or how fast its bite builds
+    /// ([`EraseEffect::flow`]). One question with one answer per effect, which is
+    /// what lets the brush panel's Flow slider and the tuning drag tune the tool
+    /// in hand without asking which kind it is.
     pub fn flow(&self) -> f32 {
         match self {
-            Self::Paint(p) => p.dynamics.flow,
+            Self::Paint(p) => p.flow,
+            Self::Wet(w) => w.dynamics.flow,
             Self::Erase(e) => e.flow,
         }
     }
@@ -971,19 +1072,21 @@ impl BrushEffect {
     /// Write the effect's source rate — [`flow`](Self::flow)'s other half.
     pub fn set_flow(&mut self, flow: f32) {
         match self {
-            Self::Paint(p) => p.dynamics.flow = flow,
+            Self::Paint(p) => p.flow = flow,
+            Self::Wet(w) => w.dynamics.flow = flow,
             Self::Erase(e) => e.flow = flow,
         }
     }
 
     /// The effect's **opacity** — the ceiling on what a saturated stroke does,
     /// whichever effect is in force: how much of a full stroke it lays
-    /// ([`PaintEffect::opacity`]) or removes ([`EraseEffect::opacity`]).
-    /// [`flow`](Self::flow)'s sibling, and one question for one slider for the
-    /// same reason.
+    /// ([`PaintEffect::opacity`], [`WetEffect::opacity`]) or removes
+    /// ([`EraseEffect::opacity`]). [`flow`](Self::flow)'s sibling, and one
+    /// question for one slider for the same reason.
     pub fn opacity(&self) -> f32 {
         match self {
             Self::Paint(p) => p.opacity,
+            Self::Wet(w) => w.opacity,
             Self::Erase(e) => e.opacity,
         }
     }
@@ -992,6 +1095,7 @@ impl BrushEffect {
     pub fn set_opacity(&mut self, opacity: f32) {
         match self {
             Self::Paint(p) => p.opacity = opacity,
+            Self::Wet(w) => w.opacity = opacity,
             Self::Erase(e) => e.opacity = opacity,
         }
     }
@@ -1001,6 +1105,7 @@ impl BrushEffect {
     pub fn max_slope(&self) -> f32 {
         match self {
             Self::Paint(p) => p.modulation.max_slope(),
+            Self::Wet(w) => w.modulation.max_slope(),
             Self::Erase(e) => e.modulation.max_slope(),
         }
     }
@@ -1014,16 +1119,25 @@ impl BrushEffect {
                 // In `[0, 1]` by the field's own doc, for the erase twin's
                 // reason: a ceiling on the fraction laid, meaningless past 1.
                 opacity: clamp01(finite_or(p.opacity, 1.0)),
-                dynamics: p.dynamics.sanitized(),
+                // Floored but not capped, for `BrushDynamics::flow`'s reason: a
+                // rate, whose ceiling is a slider's.
+                flow: at_least_zero(p.flow, PaintEffect::default_flow()),
                 color_dynamics: p.color_dynamics.sanitized(),
                 modulation: p.modulation.sanitized(),
+            }),
+            Self::Wet(w) => Self::Wet(WetEffect {
+                color: w.color.map(clamp01),
+                opacity: clamp01(finite_or(w.opacity, 1.0)),
+                dynamics: w.dynamics.sanitized(),
+                color_dynamics: w.color_dynamics.sanitized(),
+                modulation: w.modulation.sanitized(),
             }),
             Self::Erase(e) => Self::Erase(EraseEffect {
                 // In `[0, 1]` by the field's own doc: the removal `opacity` is
                 // a fraction of the visible opacity, and past 1 it would ask for
                 // less than none.
                 opacity: clamp01(finite_or(e.opacity, 1.0)),
-                // Floored but not capped, for `BrushDynamics::flow`'s reason: a
+                // Floored but not capped, for `PaintEffect::flow`'s reason: a
                 // rate, whose ceiling is a slider's.
                 flow: at_least_zero(e.flow, 1.0),
                 modulation: e.modulation.sanitized(),
@@ -1170,13 +1284,13 @@ impl Default for BrushParams {
 }
 
 impl BrushParams {
-    /// The [`PaintEffect`] in force, on a brush that paints — the reading every
-    /// consumer of a paint-only knob goes through, so "this brush does not have
-    /// that knob" is a `None` rather than a number that lies.
+    /// The [`PaintEffect`] in force, on a brush that lays plain paint — the
+    /// reading every consumer of a paint-only knob goes through, so "this brush
+    /// does not have that knob" is a `None` rather than a number that lies.
     pub fn paint(&self) -> Option<&PaintEffect> {
         match &self.effect {
             BrushEffect::Paint(p) => Some(p),
-            BrushEffect::Erase(_) => None,
+            BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
         }
     }
 
@@ -1184,8 +1298,59 @@ impl BrushParams {
     pub fn paint_mut(&mut self) -> Option<&mut PaintEffect> {
         match &mut self.effect {
             BrushEffect::Paint(p) => Some(p),
-            BrushEffect::Erase(_) => None,
+            BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
         }
+    }
+
+    /// The [`WetEffect`] in force, on a brush that works wet paint —
+    /// [`paint`](Self::paint) for the loop's own knobs.
+    pub fn wet(&self) -> Option<&WetEffect> {
+        match &self.effect {
+            BrushEffect::Wet(w) => Some(w),
+            BrushEffect::Paint(_) | BrushEffect::Erase(_) => None,
+        }
+    }
+
+    /// [`wet`](Self::wet), writable.
+    pub fn wet_mut(&mut self) -> Option<&mut WetEffect> {
+        match &mut self.effect {
+            BrushEffect::Wet(w) => Some(w),
+            BrushEffect::Paint(_) | BrushEffect::Erase(_) => None,
+        }
+    }
+
+    /// The brush turned wet in place, and its effect handed back — the editor's
+    /// own gesture when a flux slider is first raised on a plain brush, and the
+    /// shorthand a test builds a smearing brush with.
+    ///
+    /// What both kinds hold carries over — the pigment, the opacity, the flow
+    /// (rate and mapping), the color dynamics — and the fluxes start at zero, so
+    /// wetting a brush and touching nothing lays the paint it always laid. A
+    /// brush already wet is handed back untouched; an eraser keeps its opacity
+    /// and takes the default wet brush for the rest, having nothing else the two
+    /// share.
+    pub fn make_wet(&mut self) -> &mut WetEffect {
+        self.effect = match self.effect {
+            BrushEffect::Wet(w) => BrushEffect::Wet(w),
+            BrushEffect::Paint(p) => BrushEffect::Wet(WetEffect {
+                color: p.color,
+                opacity: p.opacity,
+                dynamics: BrushDynamics {
+                    flow: p.flow,
+                    ..BrushDynamics::default()
+                },
+                color_dynamics: p.color_dynamics,
+                modulation: WetModulations {
+                    flow: p.modulation.flow,
+                    ..WetModulations::default()
+                },
+            }),
+            BrushEffect::Erase(e) => BrushEffect::Wet(WetEffect {
+                opacity: e.opacity,
+                ..WetEffect::default()
+            }),
+        };
+        self.wet_mut().expect("just made wet")
     }
 
     /// The [`EraseEffect`] in force, on a brush that erases — [`paint`](Self::paint)
@@ -1193,7 +1358,7 @@ impl BrushParams {
     pub fn erase(&self) -> Option<&EraseEffect> {
         match &self.effect {
             BrushEffect::Erase(e) => Some(e),
-            BrushEffect::Paint(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) => None,
         }
     }
 
@@ -1201,17 +1366,32 @@ impl BrushParams {
     pub fn erase_mut(&mut self) -> Option<&mut EraseEffect> {
         match &mut self.effect {
             BrushEffect::Erase(e) => Some(e),
-            BrushEffect::Paint(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) => None,
         }
     }
 
-    /// The color dynamics a stroke of this brush jitters with: the paint effect's,
-    /// and the inactive default on an eraser — which has no color to wander
-    /// (§6.12). By value because [`ColorDynamics`] is small and `Copy`, and a
-    /// borrow would force every eraser call site through a `static` default.
+    /// The pigment a stroke of this brush lays — the laying effect's own color,
+    /// and `None` on an eraser, which lays nothing a color could be a property
+    /// of (§6.12). The one spelling of "whichever effect carries the color",
+    /// so a consumer cannot ask the paint side alone and silently read black
+    /// off a wet brush.
+    pub fn pigment(&self) -> Option<[f32; 3]> {
+        match &self.effect {
+            BrushEffect::Paint(p) => Some(p.color),
+            BrushEffect::Wet(w) => Some(w.color),
+            BrushEffect::Erase(_) => None,
+        }
+    }
+
+    /// The color dynamics a stroke of this brush jitters with: the laying
+    /// effect's, and the inactive default on an eraser — which has no color to
+    /// wander (§6.12). By value because [`ColorDynamics`] is small and `Copy`,
+    /// and a borrow would force every eraser call site through a `static`
+    /// default.
     pub fn color_dynamics(&self) -> ColorDynamics {
         match &self.effect {
             BrushEffect::Paint(p) => p.color_dynamics,
+            BrushEffect::Wet(w) => w.color_dynamics,
             BrushEffect::Erase(_) => ColorDynamics::default(),
         }
     }
@@ -1487,12 +1667,13 @@ mod tests {
     /// No mapping is not a mapping with no effect: the parameter is untouched.
     #[test]
     fn an_unmapped_target_is_exactly_one() {
-        let none = PaintModulations::default();
+        let none = WetModulations::default();
         assert!(!none.is_active());
         for x in [0.0, 0.25, 1.0] {
             assert_eq!(none.flow(pen(x)), 1.0);
             assert_eq!(none.lift(pen(x)), 1.0);
         }
+        assert_eq!(PaintModulations::default().flow(pen(0.25)), 1.0);
         assert_eq!(EraseModulations::default().flow(pen(0.25)), 1.0);
         // …and the everyday brush maps size alone.
         let m = BrushModulations::PRESSURE_SIZE;
@@ -1586,8 +1767,14 @@ mod tests {
         fn paint(b: &mut BrushParams) -> &mut PaintEffect {
             b.paint_mut().expect("the default brush paints")
         }
+        /// The brush turned wet and its effect handed back — what a poke at a
+        /// wet-only knob reaches through.
+        fn wet(b: &mut BrushParams) -> &mut WetEffect {
+            b.effect = BrushEffect::Wet(WetEffect::default());
+            b.wet_mut().expect("just made wet")
+        }
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 19] = [
+        let pokes: [Poke; 20] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("erase.opacity", |b, f| {
@@ -1609,11 +1796,12 @@ mod tests {
             ("end_taper", |b, f| b.end_taper_length = f),
             ("color.r", |b, f| paint(b).color[0] = f),
             ("paint.opacity", |b, f| paint(b).opacity = f),
-            ("dynamics.add", |b, f| paint(b).dynamics.flow = f),
-            ("dynamics.lift", |b, f| paint(b).dynamics.lift = f),
-            ("dynamics.deposit", |b, f| paint(b).dynamics.deposit = f),
-            ("dynamics.charge", |b, f| paint(b).dynamics.charge = f),
-            ("dynamics.bleed", |b, f| paint(b).dynamics.bleed = f),
+            ("paint.flow", |b, f| paint(b).flow = f),
+            ("wet.flow", |b, f| wet(b).dynamics.flow = f),
+            ("wet.lift", |b, f| wet(b).dynamics.lift = f),
+            ("wet.deposit", |b, f| wet(b).dynamics.deposit = f),
+            ("wet.charge", |b, f| wet(b).dynamics.charge = f),
+            ("wet.bleed", |b, f| wet(b).dynamics.bleed = f),
             ("jitter.amplitude", |b, f| {
                 paint(b).color_dynamics.amplitude[1] = f
             }),
@@ -1638,12 +1826,12 @@ mod tests {
                 b.effect.flow(),
                 b.effect.opacity(),
             ];
-            if let Some(p) = b.paint() {
+            if let Some(w) = b.wet() {
                 v.extend([
-                    p.dynamics.lift,
-                    p.dynamics.deposit,
-                    p.dynamics.charge,
-                    p.dynamics.bleed,
+                    w.dynamics.lift,
+                    w.dynamics.deposit,
+                    w.dynamics.charge,
+                    w.dynamics.bleed,
                 ]);
             }
             v
@@ -1651,11 +1839,14 @@ mod tests {
         let unit = |b: &BrushParams| {
             let mut v = vec![b.tooth.give, b.effect.opacity()];
             if let Some(p) = b.paint() {
+                v.push(p.color[0]);
+            }
+            if let Some(w) = b.wet() {
                 v.extend([
-                    p.color[0],
-                    p.dynamics.lift,
-                    p.dynamics.deposit,
-                    p.dynamics.bleed,
+                    w.color[0],
+                    w.dynamics.lift,
+                    w.dynamics.deposit,
+                    w.dynamics.bleed,
                 ]);
             }
             v
@@ -1692,7 +1883,7 @@ mod tests {
                 // slider's.
                 softness: 0.3,
             },
-            effect: BrushEffect::Paint(PaintEffect {
+            effect: BrushEffect::Wet(WetEffect {
                 opacity: 0.85,
                 dynamics: BrushDynamics {
                     flow: 2.5, // past the frontend's slider, and legitimately so
@@ -1700,11 +1891,21 @@ mod tests {
                     bleed: 0.95,
                     ..BrushDynamics::default()
                 },
-                ..PaintEffect::default()
+                ..WetEffect::default()
             }),
             ..BrushParams::default()
         };
         assert_eq!(ordinary.sanitized(), ordinary);
+        // …an ordinary plain-paint brush too, its flow past the slider included…
+        let plain = BrushParams {
+            effect: BrushEffect::Paint(PaintEffect {
+                opacity: 0.85,
+                flow: 2.5,
+                ..PaintEffect::default()
+            }),
+            ..BrushParams::default()
+        };
+        assert_eq!(plain.sanitized(), plain);
         // …and so does an ordinary eraser, its own rate past 1 included.
         let eraser = BrushParams {
             effect: BrushEffect::Erase(EraseEffect {

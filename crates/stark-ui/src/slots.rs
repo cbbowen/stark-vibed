@@ -1068,7 +1068,7 @@ mod tests {
         let entered = base.transient();
         let mut thinned = base;
         thinned.set_opacity(0.4);
-        thinned.paint.color = [0.9, 0.1, 0.2];
+        thinned.color = [0.9, 0.1, 0.2];
         let (kept, back) = held(entered, base).settle(thinned.transient(), Some("Pen"));
         assert_eq!(kept, None);
         assert_eq!(back, Some(base));

@@ -172,7 +172,7 @@ fn lookup(state: AppState, w: &BrushConfig) -> Option<String> {
 /// reason: a slot tuned off its preset is a different stroke, and gets one.
 fn keyed(w: &BrushConfig) -> BrushConfig {
     let mut w = *w;
-    w.paint.color = STROKE_COLOR;
+    w.color = STROKE_COLOR;
     w
 }
 
@@ -424,9 +424,10 @@ mod tests {
     use super::*;
 
     fn brush(color: [f32; 3]) -> BrushConfig {
-        let mut b = BrushConfig::default();
-        b.paint.color = color;
-        b
+        BrushConfig {
+            color,
+            ..Default::default()
+        }
     }
 
     /// The second render this key exists to rule out: a preset carries the color

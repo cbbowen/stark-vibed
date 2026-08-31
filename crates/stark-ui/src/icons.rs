@@ -360,7 +360,7 @@ icons! {
     // distinction on a heading.
     TIP => "shapes-bold",
     PAINT => "paint-bucket-bold",
-    PICKUP => "drop-simple-bold",
+    WET => "drop-simple-bold",
     // Sliders. Each says what the number *does* rather than naming the parameter: a
     // rule for how wide, moving air for how much the brush lets go, a feather for an
     // edge that stops being an edge.
@@ -389,7 +389,7 @@ icons! {
     // 14px mark in a row beside the well that shows the actual cloth.
     TEXTURE => "checkerboard-bold",
     // Gloss, drawn as the quantity itself: a bead of paint with a highlight on it,
-    // which is the whole of what this slider adds (§6.3). The file is [`PICKUP`]'s
+    // which is the whole of what this slider adds (§6.3). The file is [`WET`]'s
     // drop *plus that highlight* — the two differ by exactly the thing the number
     // sets, so the mark at 0 is the bare drop and the mark at 1 is this one. Near
     // kin rather than a collision, on `PAINT`/`PAINT_BUCKET`'s argument.

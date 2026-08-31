@@ -29,7 +29,7 @@ const RED: [f32; 3] = [1.0, 0.0, 0.0];
 /// instead of removing.
 fn washed(opacity: f32, radius: f32) -> BrushParams {
     let mut b = brush(RED, radius);
-    b.paint_mut().expect("a paint brush").dynamics.flow = 2.5;
+    b.paint_mut().expect("a paint brush").flow = 2.5;
     b.effect.set_opacity(opacity);
     b.drain = 0.0;
     b
@@ -174,7 +174,7 @@ fn a_whisper_of_deposit_does_not_change_the_paint() {
         let mut b = washed(opacity, 20.0);
         // Off zero so the stroke takes the loop; with nothing lifted and nothing
         // charged, the axis itself moves no paint (`dynamics_setup`).
-        b.paint_mut().expect("a paint brush").dynamics.deposit = 0.01;
+        b.make_wet().dynamics.deposit = 0.01;
         b
     };
     let path = [Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
@@ -217,7 +217,7 @@ fn a_whisper_of_deposit_does_not_change_the_paint() {
 #[test]
 fn scrubbing_the_loop_cannot_pass_the_dial() {
     let mut whisper = washed(0.5, 20.0);
-    whisper.paint_mut().expect("a paint brush").dynamics.deposit = 0.01;
+    whisper.make_wet().dynamics.deposit = 0.01;
 
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -255,10 +255,10 @@ fn a_charged_glob_at_half_opacity_is_the_half_charge_glob() {
     let glob = |charge: f32, opacity: f32| {
         let mut b = brush(RED, 24.0);
         b.drain = 0.0;
-        let p = b.paint_mut().expect("a paint brush");
-        p.dynamics.flow = 0.0;
-        p.dynamics.deposit = 0.6;
-        p.dynamics.charge = charge;
+        let d = &mut b.make_wet().dynamics;
+        d.flow = 0.0;
+        d.deposit = 0.6;
+        d.charge = charge;
         b.effect.set_opacity(opacity);
         b
     };

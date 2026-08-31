@@ -44,12 +44,11 @@
 use dioxus::prelude::*;
 
 use stark_model::document::{
-    BrushDynamics, BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations,
-    ModSource, Modulation, NoiseKind, OrientationSource, PaintEffect, PaintModulations,
-    ToothParams,
+    BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations, ModSource,
+    Modulation, NoiseKind, OrientationSource, ToothParams,
 };
 
-use crate::brush_config::{BrushConfig, BrushEffectType};
+use crate::brush_config::{BrushConfig, BrushEffectType, WetDynamics};
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
@@ -153,25 +152,20 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 size: 100.0,
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
-                paint: PaintEffect {
-                    opacity: 1.0,
-                    dynamics: BrushDynamics {
-                        flow: 3.0,
-                        lift: 0.25,
-                        deposit: 0.75,
-                        bleed: 0.25,
-                        ..BrushDynamics::default()
-                    },
-                    color_dynamics: ColorDynamics {
-                        noise: NoiseKind::Simplex,
-                        frequency: [0.05, 0.1],
-                        amplitude: [0.0, 0.025, 0.05],
-                    },
-                    modulation: PaintModulations {
-                        flow: Some(Modulation::linear(ModSource::Pressure)),
-                        ..PaintModulations::default()
-                    },
-                    ..PaintEffect::default()
+                effect: BrushEffectType::Wet,
+                opacity: 1.0,
+                flow: 3.0,
+                flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::Simplex,
+                    frequency: [0.05, 0.1],
+                    amplitude: [0.0, 0.025, 0.05],
+                },
+                wet: WetDynamics {
+                    lift: 0.25,
+                    deposit: 0.75,
+                    bleed: 0.25,
+                    ..WetDynamics::default()
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation {
@@ -191,25 +185,20 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             BrushConfig {
                 size: 100.0,
                 shape: shapes.bristles,
-                paint: PaintEffect {
-                    opacity: 1.0,
-                    dynamics: BrushDynamics {
-                        flow: 3.0,
-                        lift: 0.25,
-                        deposit: 0.75,
-                        bleed: 0.5,
-                        ..BrushDynamics::default()
-                    },
-                    color_dynamics: ColorDynamics {
-                        noise: NoiseKind::Simplex,
-                        frequency: [0.05, 0.1],
-                        amplitude: [0.0, 0.025, 0.05],
-                    },
-                    modulation: PaintModulations {
-                        flow: Some(Modulation::linear(ModSource::Pressure)),
-                        ..PaintModulations::default()
-                    },
-                    ..PaintEffect::default()
+                effect: BrushEffectType::Wet,
+                opacity: 1.0,
+                flow: 3.0,
+                flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::Simplex,
+                    frequency: [0.05, 0.1],
+                    amplitude: [0.0, 0.025, 0.05],
+                },
+                wet: WetDynamics {
+                    lift: 0.25,
+                    deposit: 0.75,
+                    bleed: 0.5,
+                    ..WetDynamics::default()
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation {
@@ -234,13 +223,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
-                paint: PaintEffect {
-                    dynamics: BrushDynamics {
-                        flow: 0.45,
-                        ..BrushDynamics::default()
-                    },
-                    ..PaintEffect::default()
-                },
+                flow: 0.45,
                 ..BrushConfig::default()
             },
         ),
@@ -290,22 +273,13 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                paint: PaintEffect {
-                    opacity: 1.0,
-                    dynamics: BrushDynamics {
-                        flow: 0.4,
-                        ..BrushDynamics::default()
-                    },
-                    color_dynamics: ColorDynamics {
-                        noise: NoiseKind::White,
-                        frequency: [0.5, 0.0],
-                        amplitude: [0.01, 0.0, 0.0],
-                    },
-                    modulation: PaintModulations {
-                        flow: Some(Modulation::linear(ModSource::Pressure)),
-                        ..PaintModulations::default()
-                    },
-                    ..PaintEffect::default()
+                opacity: 1.0,
+                flow: 0.4,
+                flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::White,
+                    frequency: [0.5, 0.0],
+                    amplitude: [0.01, 0.0, 0.0],
                 },
                 ..BrushConfig::default()
             },
@@ -325,22 +299,13 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     }),
                     ..BrushModulations::default()
                 },
-                paint: PaintEffect {
-                    opacity: 1.0,
-                    dynamics: BrushDynamics {
-                        flow: 0.1,
-                        ..BrushDynamics::default()
-                    },
-                    color_dynamics: ColorDynamics {
-                        noise: NoiseKind::Simplex,
-                        frequency: [0.05, 0.1],
-                        amplitude: [0.0, 0.025, 0.05],
-                    },
-                    modulation: PaintModulations {
-                        flow: Some(Modulation::linear(ModSource::Pressure)),
-                        ..PaintModulations::default()
-                    },
-                    ..PaintEffect::default()
+                opacity: 1.0,
+                flow: 0.1,
+                flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                color_dynamics: ColorDynamics {
+                    noise: NoiseKind::Simplex,
+                    frequency: [0.05, 0.1],
+                    amplitude: [0.0, 0.025, 0.05],
                 },
                 ..BrushConfig::default()
             },
@@ -356,29 +321,24 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..ToothParams::default()
                 },
                 shape: BrushShape::Round { hardness: 0.8 },
-                paint: PaintEffect {
-                    opacity: 1.0,
-                    dynamics: BrushDynamics {
-                        flow: 0.0,
-                        lift: 0.25,
-                        deposit: 0.75,
-                        bleed: 0.25,
-                        ..BrushDynamics::default()
-                    },
-                    modulation: PaintModulations {
-                        lift: Some(Modulation {
-                            source: ModSource::Pressure,
-                            floor: 0.8,
-                            curve: 0.0,
-                        }),
-                        bleed: Some(Modulation {
-                            source: ModSource::Pressure,
-                            floor: 0.0,
-                            curve: 0.0,
-                        }),
-                        ..PaintModulations::default()
-                    },
-                    ..PaintEffect::default()
+                effect: BrushEffectType::Wet,
+                opacity: 1.0,
+                flow: 0.0,
+                wet: WetDynamics {
+                    lift: 0.25,
+                    deposit: 0.75,
+                    bleed: 0.25,
+                    lift_modulation: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.8,
+                        curve: 0.0,
+                    }),
+                    bleed_modulation: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.0,
+                        curve: 0.0,
+                    }),
+                    ..WetDynamics::default()
                 },
                 ..BrushConfig::default()
             },
@@ -568,9 +528,9 @@ pub fn wear(state: AppState, brush: BrushConfig, from: Option<String>) {
         // The hand's color survives the swap — a tool is everything but it
         // (§18.1.8), and the whole configuration around it moves as one,
         // the feel (§6.11) and the inactive effect included.
-        let rgb = b.paint.color;
+        let rgb = b.color;
         *b = brush;
-        b.paint.color = rgb;
+        b.color = rgb;
     });
     crate::tutor::not_reaching(state, false);
     let mut in_hand = state.preset_in_hand;
@@ -697,7 +657,7 @@ pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
 /// ([`Overwrite::Unchanged`]), since a preset carries the transient half too.
 pub fn same_brush(a: &BrushConfig, b: &BrushConfig) -> bool {
     let mut b = *b;
-    b.paint.color = a.paint.color;
+    b.color = a.color;
     b == *a
 }
 
@@ -906,7 +866,7 @@ mod tests {
             flow: 0.2,
         });
         let mut recolored = preset;
-        recolored.paint.color = [0.9, 0.1, 0.2];
+        recolored.color = [0.9, 0.1, 0.2];
         let mut thinned = preset;
         thinned.set_opacity(0.4);
         let smoothed = BrushConfig {
@@ -950,7 +910,7 @@ mod tests {
         let builtin = entries[0].name.clone();
         let edited = BrushConfig { size: 34.0, ..mine };
         let mut recolored = mine;
-        recolored.paint.color = [0.9, 0.1, 0.2];
+        recolored.color = [0.9, 0.1, 0.2];
 
         assert_eq!(overwrite(&entries, None, &edited), Overwrite::Nothing);
         assert_eq!(

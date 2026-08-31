@@ -91,8 +91,12 @@ use crate::mirror::{Mirror, Served};
 /// `action.id` (§20.5, §17.9) — a field added to a variant every guide gossips, and
 /// the fix for a defect the derivation had: `start_collaboration` rewrites
 /// solo-authored `ActionId`s, which moved a derived guide id out from under every
-/// later action naming it.
-pub(crate) const ALPN: &[u8] = b"stark/collab/17";
+/// later action naming it;
+/// 18: the wet-mixing loop became its own effect — `BrushEffect` gained `Wet`,
+/// `PaintEffect` lost its `dynamics` to it and kept a bare `flow` (§6.2): a
+/// reshaping of the struct every stroke gossips, with no migration — the alpha
+/// rule (§19).
+pub(crate) const ALPN: &[u8] = b"stark/collab/18";
 
 /// The first byte of every response.
 ///

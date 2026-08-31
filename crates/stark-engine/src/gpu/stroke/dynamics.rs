@@ -16,7 +16,7 @@
 
 use stark_model::document::BrushParams;
 
-use super::budget::{MIN_SEGMENT_LEN, dynamics_len, fit_len, flatten_tolerance, manipulates_paint};
+use super::budget::{MIN_SEGMENT_LEN, dynamics_len, fit_len, flatten_tolerance};
 
 mod bleed;
 mod kit;
@@ -107,13 +107,11 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // stroke costs more pieces, not coarser geometry — and the swept fallback below
     // draws the very segments the loop would have.
     let tol = flatten_tolerance(b);
-    // The brush's **own** rates, not the modulated ones — and that is sound rather
-    // than an oversight the pen could catch out. A modulation is a factor in [0, 1]
-    // (`document::Modulation`), so an axis the brush leaves at zero is zero at every
-    // point of every stroke it could ever draw, and one it leaves positive is
-    // positive *somewhere*. There is no segment this test could be asked about that
-    // would answer differently — which is exactly the property the function's
-    // contract above needs, and the reason a modulation was built as a multiplier.
+    // The path is the effect's **variant**, structurally (§6.2): a wet brush runs
+    // the loop, a paint brush the swept deposit, an eraser its own pass — no rate
+    // predicate at all, so there is no number for a piece and its commit to read
+    // differently. The predicate this replaces was sound but one NaN-shaped trap
+    // away from not being (`budget.rs`' history at the old `manipulates_paint`).
     let d = match &b.effect {
         stark_model::document::BrushEffect::Erase(_) => {
             return StrokePlan {
@@ -122,15 +120,15 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
                 shortened: None,
             };
         }
-        stark_model::document::BrushEffect::Paint(p) => p.dynamics,
+        stark_model::document::BrushEffect::Paint(_) => {
+            return StrokePlan {
+                path: StrokePath::Swept,
+                tol,
+                shortened: None,
+            };
+        }
+        stark_model::document::BrushEffect::Wet(w) => w.dynamics,
     };
-    if !manipulates_paint(&d) {
-        return StrokePlan {
-            path: StrokePath::Swept,
-            tol,
-            shortened: None,
-        };
-    }
     let fit = fit_len(b);
     if fit < MIN_SEGMENT_LEN {
         return StrokePlan {
@@ -155,15 +153,17 @@ mod tests {
     use super::*;
 
     fn brush(size: f32, lift: f32) -> BrushParams {
-        let mut b = BrushParams {
+        BrushParams {
             size,
+            effect: stark_model::document::BrushEffect::wet_with(
+                [0.0; 3],
+                stark_model::document::BrushDynamics {
+                    lift,
+                    ..Default::default()
+                },
+            ),
             ..BrushParams::default()
-        };
-        b.paint_mut()
-            .expect("the default brush paints")
-            .dynamics
-            .lift = lift;
-        b
+        }
     }
 
     /// An `Erase` brush takes the erase path at any size: the pass needs no
@@ -256,7 +256,7 @@ mod tests {
             for knob in [0.0f32, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0f32, 0.4] {
                     let mut b = brush(size, 0.5);
-                    b.paint_mut().expect("a paint brush").dynamics.bleed = bleed;
+                    b.wet_mut().expect("a wet brush").dynamics.bleed = bleed;
                     b.stretch = knob;
                     let reach = size * BrushParams::elongation(knob);
                     let fits = reach <= max_tip_reach(&b);
@@ -309,7 +309,7 @@ mod tests {
         for size in [1.0f32, 30.0, 110.0, 250.0, 400.0, 492.0, 500.0] {
             for bleed in [0.0f32, 0.6] {
                 let mut b = brush(size, 0.5);
-                b.paint_mut().expect("a paint brush").dynamics.bleed = bleed;
+                b.wet_mut().expect("a wet brush").dynamics.bleed = bleed;
                 b.stretch = max_stretch(&b);
                 assert!(
                     matches!(dynamics_setup(&b).path, StrokePath::Loop { .. }),
