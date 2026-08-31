@@ -130,6 +130,20 @@ impl Key {
         }
     }
 
+    /// The same key at `n×` the linear resolution — the supersampled sweep's parcel
+    /// lanes (§6.2), which cover the same canvas extent at `n` texels per px so the
+    /// integrate can box-resolve the slab law's output rather than its input.
+    ///
+    /// Derived from the key it scales rather than constructed beside it, so the two
+    /// cannot disagree about anything but the size — and the free list keeps one line
+    /// per size, since `size` is part of what makes textures interchangeable.
+    pub(crate) const fn scaled(self, n: u32) -> Self {
+        Self {
+            size: (self.size.0 * n, self.size.1 * n),
+            ..self
+        }
+    }
+
     /// A copy extent covering the whole of a texture this key describes.
     ///
     /// Asked of the key rather than written beside it, which is what the three

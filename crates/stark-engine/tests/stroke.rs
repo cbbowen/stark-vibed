@@ -716,3 +716,79 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         );
     }
 }
+
+/// The supersampled resolve's whole claim (§6.2), measured off the tiles: the
+/// **visible** edge of a heavy, hard stroke spans about a pixel.
+///
+/// The slab law re-sharpens the pixel footprint's τ ramp — `1 − exp(−K·m)` hugs
+/// saturation until `K·m` falls to order 1 — so before the resolve this brush drew
+/// its 10–90% transition across a fifth of a px: a step the tile grid can only
+/// alias. A texel-spaced read cannot see that (interpolating 1 px samples inflates
+/// any sub-texel step to look ~0.8 px wide), so the profile is reconstructed at
+/// eighth-px resolution instead: the same stroke at eight sub-texel placements,
+/// each rim texel's visible alpha pinned to its distance from that stroke's own
+/// centreline. Before the resolve this measured ~0.2 px and fails the floor.
+#[test]
+fn a_heavy_hard_strokes_visible_edge_spans_a_px() {
+    use stark_model::document::{BrushShape, LayerId};
+    use stark_shaders::mirror::paint_common::OPACITY_K;
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut b = brush(RED, 12.0);
+    b.shape = BrushShape::Round { hardness: 1.0 };
+    b.drain = 0.0;
+    b.paint_mut().expect("a paint brush").flow = 2.5;
+
+    // Eight horizontal strokes, each 30 px apart plus an eighth of a px: stacking
+    // their rims by distance-to-centreline samples one profile at 1/8 px. The
+    // spacing clears the tip's whole reach (12 px + the filter's rim) plus the
+    // measurement window, so no stroke's window reads its neighbour's paint.
+    let phases = 8;
+    let mut profile: Vec<(f32, f32)> = Vec::new();
+    for j in 0..phases {
+        let y_c = 24.3 + 30.0 * j as f32 + j as f32 / phases as f32;
+        replay_with(
+            &mut engine,
+            b,
+            &[Vec2::new(40.0, y_c), Vec2::new(216.0, y_c)],
+        );
+        // The upper rim: texel centres from well outside the tip to its core.
+        for y in (y_c - 16.0) as i32..(y_c - 6.0) as i32 {
+            let w = paint_at(&engine, LayerId::ROOT, Vec2::new(128.0, y as f32))
+                .map_or(0.0, |(h, op)| 1.0 - (-(OPACITY_K * op * h)).exp());
+            profile.push((y as f32 + 0.5 - y_c, w));
+        }
+    }
+    profile.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let wmax = profile.iter().fold(0.0f32, |m, &(_, w)| m.max(w));
+    assert!(
+        wmax > 0.95,
+        "the stroke's interior is not saturated (w = {wmax}), so this test \
+         would measure a soft ramp rather than the slab law's edge"
+    );
+
+    // First crossing of each level, walking in from outside — the profile rises
+    // monotonically across the rim, and the 1/8 px sampling makes interpolation
+    // between neighbours exact to the reconstruction's own resolution.
+    let cross = |level: f32| -> f32 {
+        let lv = level * wmax;
+        for pair in profile.windows(2) {
+            let (u0, w0) = pair[0];
+            let (u1, w1) = pair[1];
+            if w0 <= lv && w1 > lv {
+                return u0 + (u1 - u0) * (lv - w0) / (w1 - w0);
+            }
+        }
+        panic!("the profile never crosses {level} of its own maximum");
+    };
+    let width = cross(0.9) - cross(0.1);
+    assert!(
+        (0.6..=1.8).contains(&width),
+        "the visible 10–90% edge spans {width:.2} px; under 0.6 the slab law's \
+         re-sharpening is back (the resolve is not engaging), over 1.8 the edge \
+         has gone soft beyond the pixel footprint"
+    );
+}

@@ -190,7 +190,11 @@ impl StrokeRenderer {
         // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
         // substrate and stroke uniform (the noise field rides along unread).
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
-        let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
+        // At 1× always: the supersampled resolve averages the *paint* parcel's
+        // finished visible alpha (§6.2), and the erase's transparency mass runs a
+        // different law through `erase.wesl` — its resolve would live there, and
+        // nothing gates an eraser today (`budget::supersample_scale`).
+        let draws = sweep_draws(self, &mut scope, rec, &k, &segments, 1);
 
         // The stroke's ceiling, once per *call* — `StrokeConstants` resolved it with
         // the color, the mask's opacity folded in, so this path cannot disagree

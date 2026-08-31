@@ -297,8 +297,18 @@ impl StrokeRenderer {
         // soft, and a texel under it scales the parcel exactly as a dial below 1
         // does. A ring of stateless pieces there would cap each piece on its own
         // and let a stroke crossing itself outrun the mask.
-        if k.opacity < 1.0 || selection.is_active() {
-            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume, tip);
+        //
+        // A **supersampled** stroke (§6.2, `budget::supersample_scale`) takes the
+        // same shape for the same theorem, one level up: the resolve averages the
+        // parcel's *finished* visible alpha, and an average of parcels over-blended
+        // per piece differs from the whole parcel averaged by the covariance of the
+        // subsample alphas — a cut-dependent term worth a quarter of the alpha at a
+        // rim texel where pieces meet. Landing the whole accumulated parcel from
+        // pristine paint each piece is what makes the resolve exact whatever the
+        // pointer's cadence, and it is why the ring below never supersamples.
+        let ss = super::budget::supersample_scale(&rec.brush);
+        if k.opacity < 1.0 || selection.is_active() || ss > 1 {
+            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume, tip, ss);
         }
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
@@ -309,12 +319,13 @@ impl StrokeRenderer {
 
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
         // The per-tile draw list, instance buffer and transform slots — shared with
-        // the erase pass ([`sweep_draws`]).
-        let draws = sweep_draws(self, &mut scope, rec, &k, &segments);
+        // the erase pass ([`sweep_draws`]). Always at 1×: a supersampled stroke
+        // never reaches this loop (the branch above).
+        let draws = sweep_draws(self, &mut scope, rec, &k, &segments, 1);
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was.
-        let opacity_buf = opacity_uniform(&mut scope, 1.0);
+        let opacity_buf = opacity_uniform(&mut scope, 1.0, 1);
         let SweepDraws {
             coords,
             runs,
@@ -445,9 +456,16 @@ impl StrokeRenderer {
     /// per piece, and no ring overlap. The full-opacity path — every stroke
     /// whose dial is at 1 — never comes here, which is why the branch is on the
     /// brush and not a uniform alone.
+    ///
+    /// `ss` is the supersampling factor (§6.2, `budget::supersample_scale`): at 2
+    /// the parcel lanes hold 2 subsample texels per canvas px, the sweep
+    /// rasterizes into them with its pixel-footprint window halved to match
+    /// (`TileXform::params.w`), and the integrate box-resolves each destination
+    /// texel from the finished 2×2 block (`integrate.wesl`). 1 is this path
+    /// exactly as it was, to the bit.
     #[expect(
         clippy::too_many_arguments,
-        reason = "every argument is a distinct type, so the transposition the lint guards cannot be written; the four beyond `scene` are what `render_swept` already flattened and resolved, and re-deriving any of them here is what this path exists to avoid"
+        reason = "every argument is a distinct type or a plain scalar resolved once, so the transposition the lint guards cannot be written; the five beyond `scene` are what `render_swept` already flattened and resolved, and re-deriving any of them here is what this path exists to avoid"
     )]
     fn render_swept_scaled(
         &self,
@@ -458,14 +476,15 @@ impl StrokeRenderer {
         end_dist: f32,
         resume: Resume<'_>,
         tip: &ResolvedTip,
+        ss: u32,
     ) -> (TileMap, StrokeCarry) {
         // The pool and the selection are the accumulator's, as in `erase.rs`; the
         // base it reads pristine paint out of is too.
         let StrokeScene { substrate, .. } = scene;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
-        let draws = sweep_draws(self, &mut scope, rec, k, segments);
-        let opacity_buf = opacity_uniform(&mut scope, k.opacity);
+        let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);
+        let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss);
 
         // The carried parcel's lanes, in the order `stamp.wesl`'s deposit declares
         // its targets — the same three channels at the same formats the unscaled
@@ -473,7 +492,9 @@ impl StrokeRenderer {
         // coming from the scratch pool rather than the tile pool, since nothing
         // here ever becomes a document tile). A space with no residual builds two
         // lanes and binds two, the `[..2 + has_resid]` count every list of these
-        // takes (§6.7).
+        // takes (§6.7). A supersampled stroke's lanes are the same trio at `ss`
+        // texels per px — the one place the 4× memory is paid, and it is transient:
+        // no document tile ever holds a subsample.
         let keys: Vec<Key> = [
             Some(parcel_key(self.color_space.color_format())),
             Some(parcel_key(SCRATCH_AUX_FORMAT)),
@@ -481,6 +502,7 @@ impl StrokeRenderer {
         ]
         .into_iter()
         .flatten()
+        .map(|key| key.scaled(ss))
         .collect();
 
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
@@ -633,12 +655,17 @@ pub(super) fn sweep_binds(
 /// the stroke's ceiling — the effect's dial with the mask's opacity folded in
 /// (`stroke_constants`) — or exactly 1, the shader's identity branch, on the
 /// unscaled path, which binds it because the layout names it either way.
+///
+/// `ss` rides beside it: how many subsample texels per canvas px the scratch
+/// holds (§6.2), which is what tells the shader to box-resolve the parcel — 1,
+/// the plain 1:1 load, everywhere the sweep did not supersample.
 pub(super) fn opacity_uniform(
     scope: &mut crate::gpu::scratch::SubmitScope,
     opacity: f32,
+    ss: u32,
 ) -> wgpu::Buffer {
     let u = stark_shaders::mirror::integrate::Integrate {
-        params: [opacity, 0.0, 0.0, 0.0],
+        params: [opacity, ss as f32, 0.0, 0.0],
     };
     let buf = scope.take_run_buffer(BufKey {
         size: std::mem::size_of_val(&u) as u64,
@@ -692,12 +719,19 @@ impl SweepDraws {
 ///
 /// The duplication is real but small: a segment is at most a tip wide, so it
 /// appears under a handful of tiles. What it replaces grew with the *stroke*.
+///
+/// `ss` is the supersampling factor the piece rasterizes at (§6.2): it reaches the
+/// shader as the pixel footprint's half-width, `0.5 / ss` canvas px
+/// (`TileXform::params.w`), so each subsample box-filters over its own footprint
+/// rather than the whole pixel's. 1 — half a px, the value the lane always meant —
+/// on every path that does not supersample, the erase sweep included.
 pub(super) fn sweep_draws(
     r: &StrokeRenderer,
     scope: &mut crate::gpu::scratch::SubmitScope,
     rec: &StrokeRecord,
     k: &super::StrokeConstants,
     segments: &[Segment],
+    ss: u32,
 ) -> SweepDraws {
     let device = &r.ctx.device;
     let touched = tiles_with_segments(segments);
@@ -766,7 +800,12 @@ pub(super) fn sweep_draws(
                 origin.x - apron,
                 origin.y - apron,
                 2.0 / TILE_TEX as f32,
-                0.0,
+                // Half the deposit's own footprint in canvas px (§6.2): the box
+                // filter's half-window at 1×, and each subsample's own share of
+                // the pixel when the sweep supersamples. The canvas→NDC scale
+                // beside it does *not* move — a supersampled target covers the
+                // same canvas extent; only the rasterizer's grid is finer.
+                0.5 / ss as f32,
             ],
             color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
             resid: k.resid,

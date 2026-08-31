@@ -73,6 +73,7 @@ battery!(
     wide_smear,
     oversized_smear,
     opacity,
+    supersampled,
     wet_opacity,
     erase,
 );

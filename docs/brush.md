@@ -330,17 +330,50 @@ the hardness floor (§6.6) owns that regime. The strip and the per-segment reach
 both grow by `AA_RIM_PX` for the half-px the filter reads past the extent
 (`sweep_vertex`, `Sweep::reach`).
 
-Two boundaries drawn on purpose. The filter does not chase the *visible* edge of
-heavy paint: the slab law re-sharpens whatever `τ` carries (`1 − exp(−K·m)`
-compresses a filtered ramp toward its low end), and the average the eye wants is
-of the composited parcel, not of `τ` — §6.4's supersampling theorem, one level
-down. The hardness floor covers the common case; a supersampled sweep scratch,
-resolved where the integrate already reads it, is the exact answer if profiling
-ever asks for one. And the wet loop still point-samples: its exposure is divided
-into bake rows integrated in the same measure (`dynamics.wesl::deposit`), so
-filtering one side alone would shear the reservoir means it recovers. Its
-brushes are the soft ones; the erase pass, which shares `swept_depth`, is
-covered.
+**The supersampled resolve (the visible edge).** The filter above cannot chase
+the *visible* edge of heavy paint: the slab law re-sharpens whatever `τ` carries
+— `1 − exp(−K·m)` hugs saturation until `K·m` falls to order 1, so the 10–90%
+transition occupies `ln 9 / (K·m_interior)` of the τ ramp, and a stroke whose
+interior sits at `K·m ≈ 10` renders a fifth of a px of visible edge from a full
+px of coverage. No per-segment correction can widen it back — shaping `τ` at the
+rim needs the whole stroke's total, and an analytic average correction composes
+multiplicatively where it should combine on the total, both cut-dependent
+(§6.2's own law refusing its own patch). The average the eye wants is of the
+**finished parcel**, taken after the cross-segment composition, and the one
+place that exists is the integrate. So a stroke whose predicted visible edge
+falls under ¾ px (`budget::supersample_scale` — interior mass `flow ·
+TAU_PER_PASS` against the shoulder's px, a pure function of the brush, so live,
+commit and replay agree) rasterizes its parcel at **2 subsample texels per px**
+and the integrate box-resolves each destination texel from the finished 2×2
+block (`integrate.wesl`). The resolve is shaped by the tile's own
+representation: every consumer re-derives coverage from `(height, op)` through
+the slab law, so a plain mean of subsample *masses* would hand the Jensen gap
+straight back. Height resolves as the plain mean — §6.1's conserved channel,
+kept exact — and the mass as the **visible-equivalent** one, the log-mean-exp
+`−ln(mean exp(−K·mᵢ))/K`: the unique mass whose slab coverage is the mean of
+the subsamples', exact where they agree, computed shifted by the block's
+smallest mass so nothing underflows. A rim texel then reads as *the same paint,
+thinner-bodied* — the adjustment lands entirely in the derived per-unit
+opacity. The premultiplied latent is the plain mean, unpremultiplied by the
+mean alpha into the coverage-weighted color, and the opacity ceiling needs no
+second spelling: inverting the resolved mass recovers exactly the averaged
+coverage, so the 1× branch already scales what a supersampled render of the
+scaled stroke would show. The fragment's own box window shrinks to its
+subsample's share (`TileXform::params.w`), the rest of the pixel being the
+resolve's. Two structural notes: a gated stroke takes the carried-parcel path
+even at full opacity, because over-blending per-piece averages differs from
+averaging the whole parcel by the covariance of subsample alphas where pieces
+meet — landing the whole accumulated parcel from pristine paint is what keeps
+the resolve exact whatever the pointer's cadence; and only the transient scratch
+ever holds a subsample — no document tile pays the 4×.
+
+One boundary still drawn on purpose: the wet loop point-samples its exposure,
+which is divided into bake rows integrated in the same measure
+(`dynamics.wesl::deposit`), so filtering one side alone would shear the
+reservoir means it recovers. Its brushes are the soft ones; the erase pass,
+which shares `swept_depth`, is covered by the τ filter and stays at 1× — its
+transparency runs a different law, whose resolve would live in `erase.wesl` the
+day an eraser gates.
 
 **Running dry.** `drain` fades what the brush lays, linearly with distance
 travelled, until the stroke is bone dry. It is quoted **per brush radius** for the

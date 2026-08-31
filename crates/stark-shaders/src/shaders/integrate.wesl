@@ -36,8 +36,13 @@ struct Integrate {
     // (`PaintEffect::opacity`, §6.2) with the selection mask's folded in
     // (`stroke_constants`, §6.8) — the mask's overall opacity is not in the mask
     // texture, and this is the one number it reaches the deposit through. 1 is
-    // the identity, and taken as an exact branch below. `.yzw` unused — the
-    // uniform's 16-byte round (§6.10).
+    // the identity, and taken as an exact branch below.
+    //
+    // `.y` = how many scratch subsample texels stand for one canvas px, per axis
+    // (§6.2): 1 on the plain path — the 1:1 load, bit for bit — and the sweep's
+    // supersampling factor when the scratch was rasterized finer, which is what
+    // sends the loads through the box resolve below. `.zw` unused — the uniform's
+    // 16-byte round (§6.10).
     params: vec4<f32>,
 }
 
@@ -82,8 +87,78 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // The stroke's parcel: latent premultiplied by its visible alpha, that alpha in
     // `.a`. Wide scratch aux: (laid height, optical mass, unused, unused) — see
     // stamp.wesl's fs_main for the channel-by-channel story.
-    let s_c = textureLoad(scratch_color, c, 0);
-    let s_a = textureLoad(scratch_aux, c, 0);
+    //
+    // At `s` subsamples per px (§6.2) the parcel is instead the **box resolve** of
+    // the s×s block of finished subsample parcels — the average taken *after* the
+    // slab law and the cross-segment composition, which is the only place the
+    // pixel's true footprint can be applied to what the eye actually sees: the
+    // visible alpha `1 − exp(−K·m)` re-sharpens any filtering of τ itself, and no
+    // per-segment correction survives §6.2's cut-independence.
+    //
+    // What the resolve stores is shaped by the tile's own representation. A tile
+    // carries (height, per-unit opacity) and every consumer re-derives coverage
+    // through the slab law, so a plain mean of subsample **masses** would hand the
+    // Jensen gap straight back — `1 − exp(−K·m̄)` at a rim texel overshoots the
+    // averaged coverage by exactly the sharpening being removed. So:
+    //
+    //   · height is the plain mean — §6.1's conserved channel, kept exact;
+    //   · the mass is the **visible-equivalent** one: the log-mean-exp
+    //     `m′ = −ln(mean exp(−K·mᵢ))/K`, the unique mass whose slab coverage is
+    //     the mean of the subsamples' — computed shifted by the block's smallest
+    //     mass, so the mean of `exp` sits in [1/s², 1], nothing underflows at any
+    //     load, and a block whose subsamples agree resolves to exactly their mass
+    //     (the interior, bit for bit up to the shift's own zero);
+    //   · the premultiplied latent (and residual) is the plain mean, divided
+    //     below by the mean alpha — the coverage-weighted mean color.
+    //
+    // A rim texel then reads as *the same paint, thinner-bodied*: all of the
+    // adjustment lands in the derived per-unit opacity, none in the paint amount.
+    // Everything downstream is already exact on the resolved pair — the parcel
+    // covers the base by `1 − exp(−K·m′)`, which *is* its averaged visible alpha,
+    // and the ceiling below inverts through the same law, so it scales the
+    // averaged coverage precisely as a supersampled render of the scaled stroke
+    // would show it. No second branch needed anywhere past this point.
+    let s = i32(ig.params.y);
+    var s_c: vec4<f32>;
+    var s_a: vec4<f32>;
+    var s_res = vec3<f32>(0.0, 0.0, 0.0);
+    if s <= 1 {
+        s_c = textureLoad(scratch_color, c, 0);
+        s_a = textureLoad(scratch_aux, c, 0);
+        @if(resid) { s_res = textureLoad(scratch_resid, c, 0).rgb; }
+    } else {
+        // The block's smallest mass first: the shift that keeps the log-mean-exp
+        // exact where the subsamples agree and finite however heavy they are.
+        var m_min = textureLoad(scratch_aux, c * s, 0).y;
+        for (var j = 0; j < s; j = j + 1) {
+            for (var i = 0; i < s; i = i + 1) {
+                m_min = min(m_min, textureLoad(scratch_aux, c * s + vec2<i32>(i, j), 0).y);
+            }
+        }
+        var acc_c = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc_h = 0.0;
+        var acc_e = 0.0;
+        var acc_r = vec3<f32>(0.0, 0.0, 0.0);
+        for (var j = 0; j < s; j = j + 1) {
+            for (var i = 0; i < s; i = i + 1) {
+                let sc = c * s + vec2<i32>(i, j);
+                acc_c += textureLoad(scratch_color, sc, 0);
+                let a = textureLoad(scratch_aux, sc, 0);
+                acc_h += a.x;
+                acc_e += exp(-OPACITY_K * (a.y - m_min));
+                @if(resid) { acc_r += textureLoad(scratch_resid, sc, 0).rgb; }
+            }
+        }
+        let inv = 1.0 / f32(s * s);
+        s_c = acc_c * inv;
+        s_a = vec4<f32>(
+            acc_h * inv,
+            m_min - log(acc_e * inv) / OPACITY_K,
+            0.0,
+            0.0,
+        );
+        @if(resid) { s_res = acc_r * inv; }
+    }
     // The two colors, each as one value (§6.7, `lib::latent`). **The gate is on the
     // load and nowhere else**: a residual *texture* exists only in a space that has
     // one, so fetching it is an `@if` no bundle can absorb — but everything between
@@ -97,7 +172,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     @if(resid) {
         base_r = load1(base_resid, c);
         base_col.res = base_r.rgb;
-        s_col.res = textureLoad(scratch_resid, c, 0).rgb;
+        s_col.res = s_res;
     }
 
     var out: FsOut;
@@ -153,7 +228,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     //
     // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
     // level up: the round trip below lands an ulp off now and then, and every
-    // full-opacity stroke would pay it.
+    // full-opacity stroke would pay it. On the supersampled path this is exact
+    // *because* the resolve stored the visible-equivalent mass: the `w` below is
+    // then the parcel's averaged coverage, so the ceiling scales exactly what a
+    // supersampled render of the scaled stroke would show.
     if opacity != 1.0 {
         // The parcel's own coverage, from the unsaturated mass — the same number
         // the color target's `.a` carries, except that the saturated copy cannot

@@ -11,7 +11,12 @@ import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
     // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
-    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w unused.
+    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w = half
+    // the deposit's own footprint in canvas px — 0.5 on the 1× path, 0.5/s when
+    // the sweep rasterizes s subsamples per px into a supersampled scratch
+    // (§6.2). Only `swept_depth`'s lateral window reads it: every other
+    // per-fragment quantity is a function of the interpolated canvas position,
+    // which the finer raster grid supplies on its own.
     params: vec4<f32>,
     // The brush's color in the color space's channels (.xyz); .w unused. Constant
     // across the stroke — color dynamics (below) jitter the channels per fragment.
@@ -878,11 +883,15 @@ fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     // and only the lookup into the mask is re-coordinated, which is also what keeps
     // `stroke_arc` measuring canvas px rather than the lookup frame's own units.
     let l = stretch_look(sw, in.stretch);
-    // Half a canvas px in the lookup frame's lateral units (§6.2's pixel footprint):
-    // brush-local y is denominated in the tip in force, drawn out by the stretch's
-    // lateral scale. A function of the fragment's frame alone, like everything here,
-    // so the deposit stays a pure function of canvas position (§6.4).
-    let dy = 0.5 * in.stretch.z / sw.radius;
+    // Half the fragment's own footprint in the lookup frame's lateral units
+    // (§6.2's pixel footprint): brush-local y is denominated in the tip in force,
+    // drawn out by the stretch's lateral scale. `xf.params.w` is half a canvas px
+    // on the 1× path and half a *subsample* when the sweep supersamples — each
+    // fragment filters over the patch of canvas it will answer for, and the
+    // integrate's resolve supplies the rest of the pixel. A function of the
+    // fragment's frame and the stroke's own constant, like everything here, so
+    // the deposit stays a pure function of canvas position (§6.4).
+    let dy = xf.params.w * in.stretch.z / sw.radius;
     var depth: f32;
     // Box-filtered only where the window spans at least a mask texel. Below that the
     // differenced lateral prefix degenerates into a fixed one-texel blur *scaled by

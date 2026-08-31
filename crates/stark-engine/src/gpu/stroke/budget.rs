@@ -563,6 +563,59 @@ pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
     }
 }
 
+/// The supersampling factor the swept deposit renders its parcel at when
+/// [`supersample_scale`] engages: 2 per axis, so the integrate resolves each canvas
+/// texel from a 2×2 block of finished subsample parcels (§6.2).
+pub(super) const SUPERSAMPLE: u32 = 2;
+
+/// The 10–90% span of `1 − exp(−x)`, `ln 9` — what converts an interior optical
+/// mass into the *visible* width of the edge a linear τ ramp draws through the slab
+/// law (§6.1): the transition occupies `ln 9 / (K·m)` of the ramp.
+const EDGE_10_90: f32 = 2.197_224_6;
+
+/// The narrowest visible edge the 1× render is allowed to draw before the sweep
+/// supersamples: under ¾ px, the slab law has re-sharpened the pixel footprint's
+/// ~px τ ramp into a step the tile grid can only alias.
+const SUPERSAMPLE_EDGE_PX: f32 = 0.75;
+
+/// How finely the swept deposit rasterizes `b`'s parcel: [`SUPERSAMPLE`] where the
+/// stroke's **visible** edge would come out sharper than the pixel grid, 1 — the
+/// plain path, bit for bit — everywhere else (§6.2).
+///
+/// The pixel footprint's box filter makes **τ** cross a rim as a ~px ramp, but what
+/// the eye sees is the parcel's visible alpha `1 − exp(−K·m)`, and the exponential
+/// re-sharpens the ramp: the 10–90% transition occupies `ln 9 / (K·m_interior)` of
+/// it, so a heavy stroke renders a fraction of a px of visible edge from a full px
+/// of coverage. No per-segment correction can widen it back — a shape other than
+/// §6.2's two makes the stroke depend on where the flattener cut — so the correct
+/// pixel is the **average of the finished parcel**, taken after the cross-segment
+/// composition: the sweep rasterizes at 2× and the integrate box-resolves what the
+/// slab law produced (`integrate.wesl`). This gate is what decides who pays for
+/// that, from the numbers already in hand:
+///
+///   * the interior mass of one nominal pass, `flow · TAU_PER_PASS` — drain, tooth
+///     and modulation only ever scale it down, so the brush's own value bounds it;
+///   * the τ ramp's width: the tip's shoulder in px, floored at the box filter's
+///     one px — a `Stamp` may be arbitrarily hard, so it gets the floor alone.
+///
+/// A **pure function of the brush**, like everything in this file: a live tail,
+/// its commit and a replay make the same choice, which is what lets the carried
+/// parcel resume across pieces at one resolution (§1.3). Only the paint effect
+/// answers with 2: the wet loop's exposure is paired point-for-point with its bake
+/// rows and the erase reads a different law — both stay 1×.
+pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
+    let Some(p) = b.paint() else { return 1 };
+    let mass = stark_shaders::mirror::paint_common::OPACITY_K * p.flow * TAU_PER_PASS;
+    let ramp = (shoulder_per_radius(&b.shape) * b.size.max(0.5)).max(1.0);
+    // `mass ≤ 0` (a brush laying nothing) divides to ∞ or NaN, and neither is
+    // under the threshold — the comparison answers 1 without a guard.
+    if ramp * EDGE_10_90 / mass < SUPERSAMPLE_EDGE_PX {
+        SUPERSAMPLE
+    } else {
+        1
+    }
+}
+
 /// The hardness a round tip actually **bakes** at `radius` px (§6.6): the brush's
 /// own, floored so the shoulder above never falls under one canvas px. A falloff
 /// narrower than a px is content past the tile grid's Nyquist — it can only shimmer —
@@ -672,5 +725,45 @@ mod tests {
         // Wherever the tip can carry a px of shoulder, the hardness is untouched.
         assert_eq!(effective_hardness(0.9, 100.0), 0.9);
         assert_eq!(effective_hardness(0.5, 2.0), 0.5);
+    }
+
+    // --- the supersample gate --------------------------------------------
+
+    /// Who pays for the supersampled resolve (§6.2), pinned at the corners: a
+    /// heavy hard tip gates on, a soft or light one stays on the plain path bit
+    /// for bit, and the two non-paint effects never answer 2 — the wet loop's
+    /// exposure is paired with its bake rows and the erase reads a different law.
+    #[test]
+    fn only_a_visibly_sharp_paint_edge_supersamples() {
+        let heavy_hard = |hardness: f32, flow: f32, size: f32| {
+            let mut b = BrushParams {
+                shape: BrushShape::Round { hardness },
+                size,
+                ..BrushParams::default()
+            };
+            b.paint_mut().expect("a paint brush").flow = flow;
+            b
+        };
+        // A hard tip at real flow: the 1× visible edge is a fraction of a px.
+        assert_eq!(supersample_scale(&heavy_hard(1.0, 2.5, 10.0)), SUPERSAMPLE);
+        // The same flow through a soft tip: the shoulder already spans px.
+        assert_eq!(supersample_scale(&heavy_hard(0.5, 2.5, 20.0)), 1);
+        // A hard tip laying almost nothing: the slab law never saturates, so the
+        // τ ramp *is* the visible edge.
+        assert_eq!(supersample_scale(&heavy_hard(1.0, 0.1, 10.0)), 1);
+        // A brush laying nothing at all divides to ∞ and must still answer 1.
+        assert_eq!(supersample_scale(&heavy_hard(1.0, 0.0, 10.0)), 1);
+        // A stamp mask may be arbitrarily hard, so it is treated as the sharpest
+        // case: the box filter's px is its whole ramp.
+        let mut stamp = heavy_hard(1.0, 2.5, 10.0);
+        stamp.shape = BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
+        assert_eq!(supersample_scale(&stamp), SUPERSAMPLE);
+        // The other two effects keep their paths whatever their rates say.
+        let mut wet = heavy_hard(1.0, 2.5, 10.0);
+        wet.make_wet();
+        assert_eq!(supersample_scale(&wet), 1);
+        let mut erase = heavy_hard(1.0, 2.5, 10.0);
+        erase.effect = stark_model::document::BrushEffect::Erase(Default::default());
+        assert_eq!(supersample_scale(&erase), 1);
     }
 }

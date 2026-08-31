@@ -865,6 +865,54 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        name: "supersampled",
+        what: "The supersampled resolve (§6.2): a hard tip at heavy flow, whose 1× \
+               visible edge would come out sharper than the pixel grid, sent by the \
+               gate (`budget::supersample_scale`) through the carried-parcel path \
+               at 2 subsamples per px. The only cover for `integrate.wesl`'s box \
+               resolve under the battery's obligations at once — the piece seam in \
+               particular is what holds the resolve to the *whole* accumulated \
+               parcel, where averaging each piece's own would drift by the \
+               covariance of subsample alphas wherever the pointer happened to cut.",
+        view: SIZE,
+        prepare: |_, _| {
+            let mut b = brush(RED, 10.0);
+            b.shape = BrushShape::Round { hardness: 1.0 };
+            b.drain = 0.0;
+            // Inside the gate with margin (0.5 > 0.42 at a shoulderless px ramp),
+            // interior coverage saturated (w ≈ 0.97) — but deliberately not
+            // heavier. The resolve hands a hard stroke's rim a real 1 px slope of
+            // impasto, and the media pass lights it: at flow 2.5 that slope is 17
+            // height units per px, and its shading amplifies the fitter's own
+            // sub-px translation phase (~1–3 levels everywhere else) to a
+            // measured worst of 13 — a property of lighting a cliff, not of the
+            // resolve. The extreme brush stays pinned where lighting is not in
+            // the frame: `stroke.rs`'s visible-edge-width test reads the tiles.
+            b.paint_mut().expect("a paint brush").flow = 0.5;
+            b
+        },
+        // The curve case's zigzag, scaled in: rims at every orientation, so the
+        // resolve is exercised across the whole compass rather than along one axis.
+        path: || {
+            at(&[
+                (-90.0, 35.0),
+                (-45.0, -45.0),
+                (0.0, 35.0),
+                (45.0, -45.0),
+                (90.0, 35.0),
+            ])
+        },
+        tol: Tol {
+            golden: 6,
+            // The opacity case's figure, for its reason: the carried parcel holds
+            // the same sums however the stroke is cut, so this bound is about f16
+            // stores, not the pass.
+            seam: 4,
+            refine: 4.0,
+            lift: 0.0,
+        },
+    },
+    Case {
         name: "wet_opacity",
         what: "The opacity ceiling on the stamp loop (§6.2): the smear's own brush, \
                its flow raised so the mint actually climbs toward the cap, at \

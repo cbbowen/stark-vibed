@@ -223,7 +223,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.95 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
-                flow: 0.45,
+                flow: 1.0,
                 ..BrushConfig::default()
             },
         ),
