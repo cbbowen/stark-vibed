@@ -344,6 +344,13 @@ saturation / hue / tint, in Oklab, §21.5), the spectral chromatic aberration
 (§21.10), and the gradient map over the captured ramps of §22 (§21.11) — and
 the rest are a variant and an arm each (§21.9).
 
+**Liquify** shipped as a brush effect rather than a filter, which is what the
+gesture is: `BrushEffect::Liquify` drags the paint under the tip along the
+stroke (§6.13), on the dynamics path's own region loop. The filter-layer form —
+a stored displacement field over a region — remains open if a non-destructive
+variant is ever wanted; the destructive brushed one is what the reference apps'
+users reach for.
+
 #### 18.1.7 Touch: the two-finger gesture — built
 
 Middle-drag pans and the wheel zooms, and a tablet has neither. Everything

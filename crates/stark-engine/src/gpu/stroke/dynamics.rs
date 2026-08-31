@@ -26,7 +26,7 @@ mod slots;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
-pub(in crate::gpu::stroke) use run::LoopBrush;
+pub(in crate::gpu::stroke) use run::{LoopBrush, LoopTool};
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
@@ -45,6 +45,12 @@ pub(super) enum StrokePath {
     Loop {
         dynamics: stark_model::document::BrushDynamics,
     },
+    /// Run the same region machinery with the **warp** kernel alone (§6.13): a
+    /// liquify stroke drags the canvas under it, so like the loop it needs the
+    /// region — and like the loop, a tip whose extent overflows one cannot run.
+    /// No payload: the follow rides the segments, modulated per segment as every
+    /// rate does, and the tip's peak τ rides the resolved tip.
+    Liquify,
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
     Swept,
@@ -112,7 +118,7 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // predicate at all, so there is no number for a piece and its commit to read
     // differently. The predicate this replaces was sound but one NaN-shaped trap
     // away from not being (`budget.rs`' history at the old `manipulates_paint`).
-    let d = match &b.effect {
+    let path = match &b.effect {
         stark_model::document::BrushEffect::Erase(_) => {
             return StrokePlan {
                 path: StrokePath::Erase,
@@ -127,7 +133,10 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
                 shortened: None,
             };
         }
-        stark_model::document::BrushEffect::Wet(w) => w.dynamics,
+        stark_model::document::BrushEffect::Wet(w) => StrokePath::Loop {
+            dynamics: w.dynamics,
+        },
+        stark_model::document::BrushEffect::Liquify(_) => StrokePath::Liquify,
     };
     let fit = fit_len(b);
     if fit < MIN_SEGMENT_LEN {
@@ -138,12 +147,17 @@ pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
         };
     }
     // `flatten_tolerance` has already taken the min; this only names the price so
-    // the renderer can quote it.
-    let wanted = dynamics_len(b);
+    // the renderer can quote it. Infinite for a liquify brush at strength 0
+    // ([`liquify_len`]) — no step error for a cap to bound, so nothing was
+    // shortened and nothing warns.
+    let wanted = match path {
+        StrokePath::Liquify => super::budget::liquify_len(b),
+        _ => dynamics_len(b),
+    };
     StrokePlan {
-        path: StrokePath::Loop { dynamics: d },
+        path,
         tol,
-        shortened: (fit < wanted).then_some(Shortened { wanted, got: fit }),
+        shortened: (fit < wanted && wanted.is_finite()).then_some(Shortened { wanted, got: fit }),
     }
 }
 
@@ -177,6 +191,43 @@ mod tests {
         // The tip that would be too large for the loop.
         b.size = super::super::budget::MAX_REGION_DIM as f32;
         assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
+    }
+
+    /// A `Liquify` brush takes the warp path (§6.13), and prices its tip against
+    /// the region exactly as the loop does: it needs one too, so a tip that alone
+    /// overflows degrades the same way — to a swept deposit that, with every rate
+    /// at zero, draws nothing at all.
+    #[test]
+    fn a_liquify_brush_takes_the_warp_path_and_prices_its_tip_like_the_loop() {
+        let liquified = |size: f32, strength: f32| {
+            let mut b = brush(size, 0.0);
+            b.effect =
+                stark_model::document::BrushEffect::Liquify(stark_model::document::LiquifyEffect {
+                    strength,
+                    ..Default::default()
+                });
+            b
+        };
+        let plan = dynamics_setup(&liquified(40.0, 1.0));
+        assert!(matches!(plan.path, StrokePath::Liquify));
+        // The warp's own step cap (§6.13): held at `strength · travel` fixed, so
+        // a full-strength drag flattens at `WARP_TRAVEL_STEP` of its radius…
+        assert_eq!(
+            plan.tol.max_len,
+            super::super::budget::liquify_len(&liquified(40.0, 1.0)),
+            "the flattener must spend the warp's own budget",
+        );
+        // …and a drag that moves nothing has no step error for a cap to bound:
+        // only the region floor remains, and nothing warns of a shortening that
+        // never happened.
+        let idle = dynamics_setup(&liquified(40.0, 0.0));
+        assert!(matches!(idle.path, StrokePath::Liquify));
+        assert_eq!(idle.tol.max_len, fit_len(&liquified(40.0, 0.0)));
+        assert!(idle.shortened.is_none());
+        // The region floor is the loop's: a tip wider than the whole region
+        // cannot warp at any segment length.
+        let b = liquified(super::super::budget::MAX_REGION_DIM as f32, 1.0);
+        assert!(matches!(dynamics_setup(&b).path, StrokePath::TipTooLarge));
     }
 
     /// The floor the shortening cannot get under: the tip's own extent plus one

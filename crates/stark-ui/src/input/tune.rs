@@ -238,21 +238,24 @@ impl Tune {
             Some(Knob::Flow) => {
                 // Carried out of the write: this knob is a rate, so what the brush
                 // ends up carrying is only known inside that closure.
-                let mut flow = None;
+                let mut fill = None;
                 update_brush(self.state, |b| {
-                    // The effect's own rate, paint or eraser alike — the drag tunes
-                    // the tool in hand (`BrushEffect::flow`, §6.12).
-                    let stepped =
-                        (b.flow() - step.y * MAX_FLOW / FLOW_DRAG_SPAN).clamp(0.0, MAX_FLOW);
+                    // The effect's own rate, paint or eraser or liquify alike — the
+                    // drag tunes the tool in hand (`BrushEffect::flow`, §6.12,
+                    // §6.13) — against that effect's own range
+                    // (`BrushConfig::max_flow`), so a full drag is a full knob
+                    // whichever it is.
+                    let max = b.max_flow();
+                    let stepped = (b.flow() - step.y * max / FLOW_DRAG_SPAN).clamp(0.0, max);
                     b.set_flow(stepped);
-                    flow = Some(stepped);
+                    fill = Some(stepped / max);
                 });
                 // The ring does not have to be taken down first. It was the *size*
                 // drag's readout and this is the flow drag's, and a gesture has one —
                 // which `TuneReadout` says by being one value, so putting the bar up
                 // *is* taking the ring down.
-                if let Some(flow) = flow {
-                    self.show_bar(&in_flight, flow);
+                if let Some(fill) = fill {
+                    self.show_bar(&in_flight, fill);
                 }
             }
             None => {}
@@ -286,14 +289,15 @@ impl Tune {
         })));
     }
 
-    /// Draw the flow bar for `drag`, with the brush carrying `flow`. Divided by the
-    /// range here for [`FlowBar`]'s reason: the overlay is told how full, and decides
-    /// for itself how long a bar that is.
-    fn show_bar(self, drag: &TuneDrag, flow: f32) {
+    /// Draw the flow bar for `drag`, already reduced to how `fill` of its own
+    /// range the knob is — divided where the brush was in hand, since the range
+    /// is the effect's (`BrushConfig::max_flow`); the overlay is told how full,
+    /// and decides for itself how long a bar that is ([`FlowBar`]).
+    fn show_bar(self, drag: &TuneDrag, fill: f32) {
         let mut readout = self.state.tune_readout;
         readout.set(Some(TuneReadout::Flow(FlowBar {
             at: drag.from,
-            fill: flow / MAX_FLOW,
+            fill,
         })));
     }
 

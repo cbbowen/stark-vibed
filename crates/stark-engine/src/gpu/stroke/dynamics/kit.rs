@@ -86,6 +86,11 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// integral, not a per-segment window — never the cell that sits overhead.
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
+    /// The liquify effect's one kernel (§6.13): the backward-mapped gather that
+    /// drags the region along the travel (`dynamics.wesl::warp`). A warp slot's
+    /// only companion dispatch is the `snapshot`, over the whole square.
+    pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) warp_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
     /// swept fast path samples, so the exchange extent *is* the definite
     /// integral of the brush along the travel (compute-visible variant).
@@ -100,8 +105,9 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) slice_bgl: wgpu::BindGroupLayout,
 }
 
-/// Build the brush-dynamics stamp-loop kit (§6.2): the region
-/// composite, the loop's nine compute pipelines, and the region→tile slice.
+/// Build the brush-dynamics stamp-loop kit (§6.2, §6.13): the region
+/// composite, the loop's compute pipelines — the warp among them — and the
+/// region→tile slice.
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
     ctx: &crate::gpu::context::GpuContext,
     color_space: &dyn ColorSpace,
@@ -189,9 +195,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, seven entry points — `snapshot`, `exchange`,
-    // `bake`, `deposit`, `cell_hoist`, `deposit_coarse`, `settle` — over seven bind
-    // group layouts, each built from the slot list in [`slots`](super::slots).
+    // ---- The stamp loop: one module, nine entry points — `snapshot`,
+    // `bleed_weight`, `exchange`, `bake`, `deposit`, `cell_hoist`,
+    // `deposit_coarse`, `settle`, `warp` — over as many bind group layouts, each
+    // built from the slot list in [`slots`](super::slots).
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
@@ -215,6 +222,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let bake_bgl = bgl("stark dynamics bake bgl", slots::BAKE);
     let settle_bgl = bgl("stark dynamics settle bgl", slots::SETTLE);
     let deposit_bgl = bgl("stark dynamics deposit bgl", slots::DEPOSIT);
+    let warp_bgl = bgl("stark dynamics warp bgl", slots::WARP);
     let hoist_bgl = bgl("stark dynamics cell hoist bgl", slots::HOIST);
     let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", slots::DEPOSIT_COARSE);
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
@@ -291,6 +299,13 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "settle",
         &[Some(&settle_bgl), Some(&prefix_bgl)],
     );
+    // The warp's follow is the deposit's own exposure (§6.13), so it reads the
+    // prefix-τ volume at group 1 like every pass that runs on one.
+    let warp_pipeline = cpipe(
+        "stark dynamics warp",
+        "warp",
+        &[Some(&warp_bgl), Some(&prefix_bgl)],
+    );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics exchange sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -350,6 +365,8 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         deposit_coarse_bgl,
         settle_pipeline,
         settle_bgl,
+        warp_pipeline,
+        warp_bgl,
         exchange_sampler,
         slice_pipeline,
         slice_bgl,

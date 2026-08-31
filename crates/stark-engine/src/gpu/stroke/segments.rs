@@ -179,6 +179,12 @@ pub(super) struct Paint {
     pub(super) lift: f32,
     pub(super) deposit: f32,
     pub(super) bleed: f32,
+    /// The liquify effect's follow fraction as the pen asked for it here
+    /// (§6.13) — [`LiquifyEffect::strength`](stark_model::document::LiquifyEffect)
+    /// modulated, and nonzero only on a liquify stroke. The plan divides the
+    /// tip's peak τ density out before it reaches the shader's lane
+    /// (`dynamics::plan`), because the tip is resolved there and not here.
+    pub(super) drag: f32,
     /// How much give this segment's tip has against the canvas substrate (§6.4) — the
     /// brush's `tooth_give`, likewise modulated. Not a paint rate: it gates `add` per
     /// *texel* from the substrate under it, in the shader.
@@ -207,6 +213,7 @@ impl Default for Paint {
             lift: 0.0,
             deposit: 0.0,
             bleed: 0.0,
+            drag: 0.0,
             tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
         }
     }
@@ -703,18 +710,22 @@ pub(super) fn generate_segments_in(
         // (§6.12) — and only a wet brush carries fluxes; which is a statement
         // about the *brush*, so every segment of every stroke answers it the same
         // way (`dynamics_setup`'s purity argument).
-        let (add, lift, deposit, bleed) = match &b.effect {
+        let (add, lift, deposit, bleed, drag) = match &b.effect {
             stark_model::document::BrushEffect::Paint(p) => {
-                (p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0)
+                (p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
             }
             stark_model::document::BrushEffect::Wet(w) => (
                 w.dynamics.flow * w.modulation.flow(pen),
                 w.dynamics.lift * w.modulation.lift(pen),
                 w.dynamics.deposit * w.modulation.deposit(pen),
                 w.dynamics.bleed * w.modulation.bleed(pen),
+                0.0,
             ),
             stark_model::document::BrushEffect::Erase(e) => {
-                (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0)
+                (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+            }
+            stark_model::document::BrushEffect::Liquify(l) => {
+                (0.0, 0.0, 0.0, 0.0, l.strength * l.modulation.strength(pen))
             }
         };
         Segment {
@@ -724,6 +735,7 @@ pub(super) fn generate_segments_in(
                 lift,
                 deposit,
                 bleed,
+                drag,
                 tooth_give: b.tooth.give * m.tooth_give(pen),
             },
         }

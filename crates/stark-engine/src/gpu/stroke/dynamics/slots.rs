@@ -151,6 +151,24 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
     Slot::at(d::CELL_RES),
 ];
 
+/// `warp`: the liquify effect's one kernel (§6.13) — the snapshot in, the region
+/// out, the selection and the substrate gating the follow, and nothing of the
+/// tool: no reservoir, no bake, no noise, because the effect carries no paint of
+/// its own for any of them to serve.
+pub(super) const WARP: &[Slot] = &[
+    Slot::dynamic(d::ST),
+    Slot::at(d::UNDER_COLOR),
+    Slot::at(d::UNDER_AUX),
+    Slot::at(d::UNDER_RESID),
+    Slot::at(d::REGION_COLOR_W),
+    Slot::at(d::REGION_AUX_W),
+    Slot::at(d::REGION_RESID_W),
+    Slot::at(d::SEL_MASK),
+    // The substrate (§6.4): the drag is gated by the tooth exactly as a deposit
+    // is — a dry tip's pull catches the peaks and skips the valleys.
+    Slot::at(d::SUBSTRATE_TEX),
+];
+
 /// The pen-up: the deposit's targets and snapshot, and its *baked* reservoir reads too
 /// — the settle's parcel is the delivery integral of the remaining pass, which the
 /// settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`).
@@ -226,8 +244,8 @@ mod tests {
         }
     }
 
-    /// The seven entry points' lists, named — every test here is about all of them.
-    const LISTS: [(&str, &[Slot]); 8] = [
+    /// The entry points' lists, named — every test here is about all of them.
+    const LISTS: [(&str, &[Slot]); 9] = [
         ("bleed_weight", BLEED_WEIGHT),
         ("snapshot", SNAPSHOT),
         ("exchange", EXCHANGE),
@@ -236,6 +254,7 @@ mod tests {
         ("hoist", HOIST),
         ("deposit_coarse", DEPOSIT_COARSE),
         ("settle", SETTLE),
+        ("warp", WARP),
     ];
 
     /// A residual binding is listed **beside** the color binding it rides with, and a

@@ -24,7 +24,10 @@ pub const MAX_RADIUS: f32 = 500.0;
 ///
 /// Named beside the radius bounds because the *drag* bindings clamp against the same
 /// three figures (`input::Tune`, §18.1.9): a knob reachable two ways must have one
-/// range, or the drag would quietly go somewhere the slider cannot show.
+/// range, or the drag would quietly go somewhere the slider cannot show. Every
+/// reader now goes through `BrushConfig::max_flow`, which is where the one
+/// effect whose rate has a ceiling of its own — the liquify strength (§6.13) —
+/// substitutes it.
 pub const MAX_FLOW: f32 = 3.0;
 
 /// The longest taper the editor offers, in brush radii
@@ -66,9 +69,11 @@ pub fn BrushPanel() -> Element {
         Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.size,
             oninput: move |v| update_brush(state, move |b| b.size = v) }
         // "Flow" is the effect's own source rate — how much a paint brush lays,
-        // or how fast an eraser's bite builds (§6.12) — so the slider tunes
-        // the tool in hand whichever it is (`BrushEffect::flow`).
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: MAX_FLOW, value: brush.flow(),
+        // how fast an eraser's bite builds (§6.12), how hard a liquify brush's
+        // paint follows (§6.13) — so the slider tunes the tool in hand
+        // whichever it is (`BrushEffect::flow`), over that effect's own range
+        // (`BrushConfig::max_flow`).
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: brush.max_flow(), value: brush.flow(),
             oninput: move |v| update_brush(state, move |b| b.set_flow(v)) }
         // The panel's one door: the dialog where the brush is adjusted — and kept.
         // Saving a preset is the editor's act (its "Overwrite preset" and "Save new

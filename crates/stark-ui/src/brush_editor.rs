@@ -47,7 +47,7 @@ use crate::brush_config::{BrushConfig, BrushEffectType};
 use crate::commands::{self, Command};
 use crate::icons::{self, icon};
 use crate::panels::brush::{
-    MAX_FLOW, MAX_RADIUS, MAX_TAPER, MAX_TOOTH_SOFTNESS, MIN_RADIUS, set_orientation, set_shape,
+    MAX_RADIUS, MAX_TAPER, MAX_TOOTH_SOFTNESS, MIN_RADIUS, set_orientation, set_shape,
 };
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
@@ -105,11 +105,16 @@ enum ModRow {
 
 impl ModRow {
     /// The word on the row, which is also the word the section already used for the
-    /// parameter — "Flow" for `add`, not "Add".
-    fn label(self) -> &'static str {
+    /// parameter — "Flow" for `add`, not "Add". Takes the brush because the Flow
+    /// row *is* the in-force effect's rate, and the liquify effect's rate is not
+    /// a flow of anything: it is how hard the paint follows (§6.13).
+    fn label(self, b: &BrushConfig) -> &'static str {
         match self {
             Self::Size => "Size",
-            Self::Flow => "Flow",
+            Self::Flow => match b.effect {
+                BrushEffectType::Liquify => "Strength",
+                _ => "Flow",
+            },
             Self::Stretch => "Stretch",
             Self::ToothGive => "Tooth give",
             Self::Lift => "Lift",
@@ -125,7 +130,10 @@ impl ModRow {
     fn range(self, b: &BrushConfig) -> (f32, f32) {
         match self {
             Self::Size => (MIN_RADIUS, MAX_RADIUS),
-            Self::Flow => (0.0, MAX_FLOW),
+            // The in-force effect's own range (`BrushConfig::max_flow`) — the
+            // liquify strength stops at its quoted 1, the rates at the slider's
+            // own top.
+            Self::Flow => (0.0, b.max_flow()),
             // The knob is `1 − 1/s`, so its own top is an infinitely long tip. Two
             // things stop it short, and the smaller wins: the elongation saturates
             // at `MAX_ELONGATION`, past which the slider stops meaning anything
@@ -188,6 +196,7 @@ impl ModRow {
             Self::Flow => match b.effect {
                 BrushEffectType::Paint | BrushEffectType::Wet => &mut b.flow_modulation,
                 BrushEffectType::Erase => &mut b.erase.modulation.flow,
+                BrushEffectType::Liquify => &mut b.liquify.modulation.strength,
             },
             Self::Lift => &mut b.wet.lift_modulation,
             Self::Deposit => &mut b.wet.deposit_modulation,
@@ -203,6 +212,7 @@ impl ModRow {
             Self::Flow => match b.effect {
                 BrushEffectType::Paint | BrushEffectType::Wet => b.flow_modulation,
                 BrushEffectType::Erase => b.erase.modulation.flow,
+                BrushEffectType::Liquify => b.liquify.modulation.strength,
             },
             Self::Lift => b.wet.lift_modulation,
             Self::Deposit => b.wet.deposit_modulation,
@@ -351,6 +361,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // sections below, what the effect chips read, and what the effect section
     // calls itself.
     let erases = brush.effect == BrushEffectType::Erase;
+    let liquifies = brush.effect == BrushEffectType::Liquify;
+    // Whether the effect in force lays pigment at all — what gates the sections
+    // that are properties of laying it: the color dynamics, and the opacity
+    // ceiling on the amount laid (§6.12, §6.13).
+    let lays = !erases && !liquifies;
     let (effect_title, effect_desc) = match brush.effect {
         BrushEffectType::Paint => (
             "Paint",
@@ -363,6 +378,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         BrushEffectType::Erase => (
             "Erase",
             "The stroke removes what the eye sees, instead of laying paint.",
+        ),
+        BrushEffectType::Liquify => (
+            "Liquify",
+            "The stroke drags the picture with it — paint warps instead of mixing.",
         ),
     };
     let charge = brush.wet.charge;
@@ -607,13 +626,21 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         button { class: chip(erases),
                             onclick: move |_| set_effect(state, preview, BrushEffectType::Erase),
                             "Erase" }
+                        button { class: chip(liquifies),
+                            onclick: move |_| set_effect(state, preview, BrushEffectType::Liquify),
+                            "Liquify" }
                     }
                     // The effect's ceiling (§6.2, §6.12), whichever it is: the
                     // fraction of a full stroke this stroke lays — or, erasing,
                     // removes. 0.5 really shows (or leaves) half, however hard
                     // the spot is scrubbed. Not a rate: the rate is Flow below.
-                    Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.opacity(),
-                        oninput: move |v| edit(state, preview, move |b| b.set_opacity(v)) }
+                    // A liquify brush has no such ceiling — scrubbing keeps
+                    // carrying (§6.13) — so the dial is not shown rather than
+                    // shown and vetoed (`BrushConfig::set_opacity`).
+                    if !liquifies {
+                        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.opacity(),
+                            oninput: move |v| edit(state, preview, move |b| b.set_opacity(v)) }
+                    }
                     // `add` is the tool's only source term (§6.2) and its only amount
                     // knob: the paint height laid per unit swept optical depth — or,
                     // erasing, how fast the bite builds toward its ceiling (§6.12).
@@ -675,12 +702,12 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 }
 
                 // Pigment wander is a property of laying pigment, so the whole
-                // section is the paint effect's (§6.12) — an eraser shows no
-                // rows that reach nothing. The closures write the paint side
-                // directly: it is always there to take them (`BrushConfig`),
-                // even when the pen's eraser end swaps the effect inside
-                // `edit`'s throttle window (§18.1.8).
-                if !erases {
+                // section is the laying side's (§6.12, §6.13) — an eraser or a
+                // liquify brush shows no rows that reach nothing. The closures
+                // write the paint side directly: it is always there to take them
+                // (`BrushConfig`), even when the pen's eraser end swaps the
+                // effect inside `edit`'s throttle window (§18.1.8).
+                if lays {
                     Section {
                         part: BrushPart::Color,
                         title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
@@ -785,7 +812,7 @@ fn mod_slider(
 
     rsx! {
         div { class: "mod-slider",
-            Slider { label: row.label().to_string(), min, max, value: row.get(&brush),
+            Slider { label: row.label(&brush).to_string(), min, max, value: row.get(&brush),
                 oninput: move |v| edit(state, preview, move |b| row.set(b, v)) }
             button {
                 class: chip_class,

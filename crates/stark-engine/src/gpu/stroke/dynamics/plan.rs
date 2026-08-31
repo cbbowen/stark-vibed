@@ -93,6 +93,12 @@ pub(super) enum SlotKind {
     /// its last slot — the transfer the tip was still in the middle of when the
     /// stroke stopped (`dynamics.wesl::settle`).
     Settle,
+    /// One segment of a liquify stroke (§6.13): `snapshot` (over the whole
+    /// square — the gather pulls from upstream of any one texel's sweep test) →
+    /// `warp`. The tool plays no part, so there is nothing to bake or exchange,
+    /// the reservoir ping-pong never advances, and a plan of these is the whole
+    /// of what [`liquify_plan`] emits.
+    Warp,
 }
 
 /// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once — so
@@ -229,6 +235,10 @@ struct Slot {
     add: f32,
     /// Signed curvature of the sweep (1/region px); 0 is a straight one.
     curvature: f32,
+    /// The liquify follow rate (§6.13): the segment's modulated strength over
+    /// the tip's peak τ density — nonzero **only** on a warp slot, and the lane
+    /// `snapshot` reads to know it must copy its whole square.
+    drag: f32,
     /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
     bleed_reach: f32,
     /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX and
@@ -319,6 +329,7 @@ impl Default for Slot {
             drain: 0.0,
             add: 0.0,
             curvature: 0.0,
+            drag: 0.0,
             bleed_reach: 0.0,
             noise_freq: [0.0; 4],
             noise_amp: [0.0; 3],
@@ -373,6 +384,7 @@ impl Slot {
             opacity: self.opacity,
             brush_res: [self.resid[0], self.resid[1], self.resid[2]],
             add: self.add,
+            drag: self.drag,
             noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
             arc_at_start: self.dist,
             noise_amp: self.noise_amp,
@@ -395,7 +407,6 @@ impl Slot {
             jitter_eps: self.jitter_eps,
             jitter_seed: self.jitter_seed,
             canvas_origin: self.canvas_origin,
-            ..Default::default()
         }
     }
 }
@@ -927,6 +938,88 @@ pub(super) fn dynamics_plan(
     DynamicsPlan { slots: plan, dsize }
 }
 
+/// Build the liquify dispatch plan (§6.13): one warp slot per flattened segment,
+/// in stroke order, and nothing else — no bleed cadence (the effect has no such
+/// axis) and no pen-up (the warp strands nothing at a break of contact: each
+/// segment's follow is applied whole as the tip passes, the bleed axis's own
+/// argument).
+///
+/// The follow rate the slot carries is the segment's modulated strength over the
+/// tip's **peak τ density** (`assets::peak_tau`, through `inv_peak_tau`), so the
+/// shader's `drag · e · radius` is px of travel kept pace with — see
+/// `dynamics.wesl::warp`. Pure CPU float math over the record and the piece's
+/// geometry, like [`dynamics_plan`], and replay-deterministic for the same
+/// reason (§12.1).
+pub(super) fn liquify_plan(
+    ctx: &PlanCtx<'_>,
+    segments: &[Segment],
+    inv_peak_tau: f32,
+) -> DynamicsPlan {
+    let &PlanCtx {
+        rec,
+        region_origin,
+        consts,
+        ..
+    } = ctx;
+    let b = &rec.brush;
+    let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
+    let common = SlotCommon {
+        k: consts,
+        substrate: [
+            consts.substrate_uv_scale,
+            substrate_uv_bias.x,
+            substrate_uv_bias.y,
+        ],
+        origin: [region_origin.x as i32, region_origin.y as i32],
+    };
+    // The same three-pass shape as [`dynamics_plan`], with one source kind: the
+    // walk *is* the order, the rects are measured over it, and the slots zip to
+    // them — so the rect that sizes the scratch is the rect that dispatches.
+    let sources: Vec<SlotSource<'_>> = segments.iter().map(SlotSource::Segment).collect();
+    let rects = rects_for(&sources, region_origin);
+    let dsize = snapshot_square(&rects);
+    let mut plan = Vec::with_capacity(sources.len());
+    for (s, rect) in segments.iter().zip(&rects) {
+        let (sw, paint) = (&s.sweep, &s.paint);
+        let p = sw.start - region_origin;
+        plan.push(LoopDispatch {
+            groups: rect.groups(),
+            // The warp gathers the field whole; a cell would staircase exactly
+            // the structure the effect exists to carry.
+            cell_groups: None,
+            kind: SlotKind::Warp,
+            slot: Slot {
+                start: p,
+                dir: sw.dir,
+                radius: sw.radius,
+                travel_radii: sw.length / sw.radius,
+                ramp: sw.ramp,
+                // The one lane only a warp slot carries — and the lane
+                // `snapshot` reads to know its square must be copied whole.
+                drag: paint.drag * inv_peak_tau,
+                rect_origin: rect.origin,
+                orient: sw.orient,
+                stretch: sw.stretch,
+                curvature: sw.curvature,
+                // The drag runs dry as a deposit would (§6.2): the drain at the
+                // texel's own arc, which needs the arc at the slot's start.
+                drain: b.drain_px(),
+                dist: sw.dist,
+                // …and catches on the substrate as a deposit would (§6.4). No
+                // `bearing`: there is no tool side to book the transfer against.
+                tooth_give: paint.tooth_give,
+                // Every rate a deposit would run on stays `Slot::default`'s
+                // zero — a warp slot lays nothing, lifts nothing, bleeds
+                // nothing — and the noise lanes stay zero with them: the effect
+                // has no color for a jitter to wander (§6.13).
+                ..common.slot()
+            }
+            .pack(),
+        });
+    }
+    DynamicsPlan { slots: plan, dsize }
+}
+
 /// The travel direction the pen-up settle measures `owed` and `received` along: the
 /// chord over the **last extent's worth of path**, rather than the last segment's
 /// own tangent.
@@ -1052,10 +1145,9 @@ mod tests {
     /// host array (`channels`, `resid`, `noise_freq`). Those are the assertions
     /// below; the rest are the compiler's.
     ///
-    /// It also stands behind `pack`'s `..Default::default()`, which exists to leave the
-    /// generated padding alone and would otherwise let a *forgotten* member zero
-    /// silently. Every value here is distinct, so a member that never got assigned
-    /// reads back 0 and fails.
+    /// (`pack` used to close with a `..Default::default()` for the generated
+    /// padding's sake; `drag` filled the last hole, so the struct is now written
+    /// out whole and a forgotten member is the compiler's to catch.)
     #[test]
     fn every_slot_field_lands_in_the_member_the_shader_reads_it_from() {
         let packed = Slot {
@@ -1072,6 +1164,7 @@ mod tests {
             drain: 16.0,
             add: 17.0,
             curvature: 18.0,
+            drag: 54.0,
             bleed_reach: 19.0,
             noise_freq: [20.0, 21.0, 22.0, 23.0],
             noise_amp: [24.0, 25.0, 26.0],
@@ -1124,6 +1217,7 @@ mod tests {
         assert_eq!(packed.lambda_bleed, 31.0);
         assert_eq!(packed.curvature, 18.0);
         assert_eq!(packed.add, 17.0);
+        assert_eq!(packed.drag, 54.0, "the liquify follow rate (§6.13)");
         assert_eq!(packed.drain, 16.0);
         assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
         assert_eq!(packed.tooth_give, 32.0);

@@ -696,6 +696,46 @@ impl EraseModulations {
     }
 }
 
+/// The pen mappings whose targets exist only while **liquifying** (§6.13) —
+/// the one rate a [`LiquifyEffect`] has. With the effect it modulates for
+/// [`PaintModulations`]' reason: a mapping cannot name a knob its brush does
+/// not have.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+pub struct LiquifyModulations {
+    /// Scales [`LiquifyEffect::strength`] — how hard the paint follows the tip.
+    /// Mapped to pressure this is the natural finger: barely touching, the
+    /// picture slides a little; borne down, it keeps pace with the hand.
+    pub strength: Option<Modulation>,
+}
+
+impl LiquifyModulations {
+    pub fn strength(&self, pen: PenState) -> f32 {
+        mod_factor(self.strength, pen)
+    }
+
+    /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
+    fn all(&self) -> [Option<Modulation>; 1] {
+        let Self { strength } = *self;
+        [strength]
+    }
+
+    /// Whether any target is mapped.
+    pub fn is_active(&self) -> bool {
+        self.all().iter().any(Option::is_some)
+    }
+
+    /// Every mapped target sanitized, the unmapped ones left unmapped.
+    pub fn sanitized(self) -> Self {
+        let [strength] = self.all().map(|m| m.map(Modulation::sanitized));
+        Self { strength }
+    }
+
+    /// The steepest response across these targets (`mod_slope`).
+    pub fn max_slope(&self) -> f32 {
+        mod_slope(&self.all())
+    }
+}
+
 /// The brush's two knobs against the canvas substrate's tooth (§6.4) — one
 /// pair, because they are the two halves of one contact model: how far the tip
 /// settles, and how sharply it stops. The *substrate* is document state
@@ -1008,7 +1048,66 @@ impl Default for EraseEffect {
     }
 }
 
-/// What a stroke of this brush **does** (§6.2, §6.12) — the tool's
+/// The **liquify** effect (§6.13): the stroke drags the picture itself. The
+/// paint under the tip — color, per-unit opacity and height together — follows
+/// the travel as a resample of the field, so structure *moves* where the wet
+/// loop's smudge would mix it toward a mean: an edge dragged is that edge,
+/// displaced, and a texture rides along whole. Nothing is minted and nothing
+/// is exchanged — the brush carries no reservoir, no pigment, and no color a
+/// jitter could wander.
+///
+/// A separate effect rather than a [`WetEffect`] at some rate, for the
+/// eraser's reason: warping and smearing are different tools with different
+/// available features, not one tool on two settings. A smudge trades paint
+/// through the tool and conserves height; a warp reparameterizes the canvas
+/// and preserves *composition* pointwise instead — every value the stroke
+/// leaves is one the field held nearby (§6.13 is where that trade is argued).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+pub struct LiquifyEffect {
+    /// The **follow fraction**, in [0, 1] — this effect's one rate: how much of
+    /// the tip's own travel the paint under full coverage keeps up with, per
+    /// pass. At 1 the paint under the tip's core moves with the hand; lower and
+    /// it slips behind, so a light setting nudges where a full one carries.
+    /// Texels the tip covers more thinly — the shoulder of a soft tip, the gaps
+    /// of a textured stamp — follow proportionally less, which is what makes
+    /// the falloff the *tip's* rather than a second knob here.
+    ///
+    /// **The quoted range is load-bearing, not taste** ([`BrushParams::sanitized`]
+    /// clamps to it): the renderer's per-segment gather reads a snapshot whose
+    /// margin is sized by the segment's own travel, so "paint cannot outrun the
+    /// brush" is what keeps every read inside it (§6.13).
+    ///
+    /// A fraction of *travel*, so scrubbing keeps carrying — there is no
+    /// ceiling a worked spot saturates at, which is why this effect has no
+    /// opacity knob at all ([`BrushEffect::opacity`]).
+    #[serde(default = "LiquifyEffect::default_strength")]
+    pub strength: f32,
+    /// The pen mappings onto this effect's own rate ([`LiquifyModulations`]).
+    #[serde(default)]
+    pub modulation: LiquifyModulations,
+}
+
+impl Default for LiquifyEffect {
+    /// The plain full drag: the paint under the tip keeps pace with the hand.
+    fn default() -> Self {
+        Self {
+            strength: Self::default_strength(),
+            modulation: LiquifyModulations::default(),
+        }
+    }
+}
+
+impl LiquifyEffect {
+    /// The follow fraction a brush gets when it does not say
+    /// ([`strength`](Self::strength)): the full drag — for
+    /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
+    /// constant.
+    fn default_strength() -> f32 {
+        1.0
+    }
+}
+
+/// What a stroke of this brush **does** (§6.2, §6.12, §6.13) — the tool's
 /// identity, as a sum rather than a mode flag beside knobs it would silently
 /// veto. Everything outside this enum — the tip, the tooth, the jitter, the
 /// tapers, the drain — shapes the swept extent; the effect is what that extent
@@ -1023,6 +1122,9 @@ pub enum BrushEffect {
     Wet(WetEffect),
     /// Remove visible opacity (§6.12).
     Erase(EraseEffect),
+    /// Drag the picture itself (§6.13) — the paint under the tip follows
+    /// the travel as a warp of the field, structure carried rather than mixed.
+    Liquify(LiquifyEffect),
 }
 
 impl Default for BrushEffect {
@@ -1066,6 +1168,7 @@ impl BrushEffect {
             Self::Paint(p) => p.flow,
             Self::Wet(w) => w.dynamics.flow,
             Self::Erase(e) => e.flow,
+            Self::Liquify(l) => l.strength,
         }
     }
 
@@ -1075,6 +1178,7 @@ impl BrushEffect {
             Self::Paint(p) => p.flow = flow,
             Self::Wet(w) => w.dynamics.flow = flow,
             Self::Erase(e) => e.flow = flow,
+            Self::Liquify(l) => l.strength = flow,
         }
     }
 
@@ -1088,15 +1192,27 @@ impl BrushEffect {
             Self::Paint(p) => p.opacity,
             Self::Wet(w) => w.opacity,
             Self::Erase(e) => e.opacity,
+            // A warp has no ceiling for a dial to set: the follow is a fraction
+            // of *travel*, so scrubbing keeps carrying the way the bleed keeps
+            // buying distance (§6.13), and there is no saturated stroke for an
+            // opacity to be a fraction of. 1 is the identity every consumer of
+            // this number — the integrate, the mask's fold — expects of "no
+            // ceiling".
+            Self::Liquify(_) => 1.0,
         }
     }
 
     /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half.
+    /// A no-op on [`Liquify`](Self::Liquify), which has no such knob — the
+    /// editor never shows the dial while it is in force, so nothing writes
+    /// here; stated as an arm rather than left to a wildcard so a fourth
+    /// effect has to answer for itself.
     pub fn set_opacity(&mut self, opacity: f32) {
         match self {
             Self::Paint(p) => p.opacity = opacity,
             Self::Wet(w) => w.opacity = opacity,
             Self::Erase(e) => e.opacity = opacity,
+            Self::Liquify(_) => {}
         }
     }
 
@@ -1107,6 +1223,7 @@ impl BrushEffect {
             Self::Paint(p) => p.modulation.max_slope(),
             Self::Wet(w) => w.modulation.max_slope(),
             Self::Erase(e) => e.modulation.max_slope(),
+            Self::Liquify(l) => l.modulation.max_slope(),
         }
     }
 
@@ -1141,6 +1258,15 @@ impl BrushEffect {
                 // rate, whose ceiling is a slider's.
                 flow: at_least_zero(e.flow, 1.0),
                 modulation: e.modulation.sanitized(),
+            }),
+            Self::Liquify(l) => Self::Liquify(LiquifyEffect {
+                // In `[0, 1]` by the field's own doc, and here the range is a
+                // *renderer* invariant rather than a semantic one: the gather's
+                // snapshot margin is sized by the segment's travel, and a
+                // follow past 1 would read outside it (§6.13). Capped, unlike
+                // the flows, because this crate owns that bound.
+                strength: clamp01(finite_or(l.strength, 1.0)),
+                modulation: l.modulation.sanitized(),
             }),
         }
     }
@@ -1290,7 +1416,7 @@ impl BrushParams {
     pub fn paint(&self) -> Option<&PaintEffect> {
         match &self.effect {
             BrushEffect::Paint(p) => Some(p),
-            BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
+            BrushEffect::Wet(_) | BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1298,7 +1424,7 @@ impl BrushParams {
     pub fn paint_mut(&mut self) -> Option<&mut PaintEffect> {
         match &mut self.effect {
             BrushEffect::Paint(p) => Some(p),
-            BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
+            BrushEffect::Wet(_) | BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1307,7 +1433,7 @@ impl BrushParams {
     pub fn wet(&self) -> Option<&WetEffect> {
         match &self.effect {
             BrushEffect::Wet(w) => Some(w),
-            BrushEffect::Paint(_) | BrushEffect::Erase(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1315,7 +1441,7 @@ impl BrushParams {
     pub fn wet_mut(&mut self) -> Option<&mut WetEffect> {
         match &mut self.effect {
             BrushEffect::Wet(w) => Some(w),
-            BrushEffect::Paint(_) | BrushEffect::Erase(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1349,6 +1475,10 @@ impl BrushParams {
                 opacity: e.opacity,
                 ..WetEffect::default()
             }),
+            // A liquify brush shares nothing the wet effect could keep — no
+            // pigment, no ceiling, and its one rate means "follow", not "lay" —
+            // so it takes the default wet brush whole, as the eraser nearly does.
+            BrushEffect::Liquify(_) => BrushEffect::Wet(WetEffect::default()),
         };
         self.wet_mut().expect("just made wet")
     }
@@ -1358,7 +1488,7 @@ impl BrushParams {
     pub fn erase(&self) -> Option<&EraseEffect> {
         match &self.effect {
             BrushEffect::Erase(e) => Some(e),
-            BrushEffect::Paint(_) | BrushEffect::Wet(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1366,7 +1496,24 @@ impl BrushParams {
     pub fn erase_mut(&mut self) -> Option<&mut EraseEffect> {
         match &mut self.effect {
             BrushEffect::Erase(e) => Some(e),
-            BrushEffect::Paint(_) | BrushEffect::Wet(_) => None,
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) | BrushEffect::Liquify(_) => None,
+        }
+    }
+
+    /// The [`LiquifyEffect`] in force, on a brush that drags the picture —
+    /// [`paint`](Self::paint) from the fourth side (§6.13).
+    pub fn liquify(&self) -> Option<&LiquifyEffect> {
+        match &self.effect {
+            BrushEffect::Liquify(l) => Some(l),
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
+        }
+    }
+
+    /// [`liquify`](Self::liquify), writable.
+    pub fn liquify_mut(&mut self) -> Option<&mut LiquifyEffect> {
+        match &mut self.effect {
+            BrushEffect::Liquify(l) => Some(l),
+            BrushEffect::Paint(_) | BrushEffect::Wet(_) | BrushEffect::Erase(_) => None,
         }
     }
 
@@ -1379,7 +1526,10 @@ impl BrushParams {
         match &self.effect {
             BrushEffect::Paint(p) => Some(p.color),
             BrushEffect::Wet(w) => Some(w.color),
-            BrushEffect::Erase(_) => None,
+            // Neither lays anything a color could be a property of: the eraser
+            // removes (§6.12), the liquify brush moves what is already
+            // colored (§6.13).
+            BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
@@ -1392,7 +1542,7 @@ impl BrushParams {
         match &self.effect {
             BrushEffect::Paint(p) => p.color_dynamics,
             BrushEffect::Wet(w) => w.color_dynamics,
-            BrushEffect::Erase(_) => ColorDynamics::default(),
+            BrushEffect::Erase(_) | BrushEffect::Liquify(_) => ColorDynamics::default(),
         }
     }
 
@@ -1974,5 +2124,47 @@ mod tests {
                 assert_eq!(m.factor(pen(x)).to_bits(), m.factor(pen(x)).to_bits());
             }
         }
+    }
+
+    /// The liquify strength's quoted `[0, 1]` is a **renderer** invariant, not
+    /// taste (§6.13): the warp's snapshot margin is sized by the segment's own
+    /// travel, so a follow past 1 would read outside it. The sanitize is the one
+    /// door a wire or file value comes through, so it is where the bound is
+    /// pinned — a value past 1 is nonsense, not a stronger drag.
+    #[test]
+    fn a_liquify_strength_is_held_to_the_range_the_gather_is_sized_by() {
+        for (dirty, clean) in [(1.5, 1.0), (-0.25, 0.0), (f32::NAN, 1.0), (0.4, 0.4)] {
+            let b = BrushEffect::Liquify(LiquifyEffect {
+                strength: dirty,
+                ..LiquifyEffect::default()
+            })
+            .sanitized();
+            let BrushEffect::Liquify(l) = b else {
+                panic!("sanitize must not change the effect's identity");
+            };
+            assert_eq!(
+                l.strength, clean,
+                "strength {dirty} must sanitize to {clean}"
+            );
+        }
+    }
+
+    /// A liquify brush survives the save format's own encode/decode whole — the
+    /// schema-by-name reconciliation (§8) carries the new variant and both its
+    /// fields, mapping included.
+    #[test]
+    fn a_liquify_brush_round_trips_through_the_save_format() {
+        let b = BrushParams {
+            effect: BrushEffect::Liquify(LiquifyEffect {
+                strength: 0.65,
+                modulation: LiquifyModulations {
+                    strength: Some(Modulation::linear(ModSource::Pressure)),
+                },
+            }),
+            ..BrushParams::default()
+        };
+        let bytes = carbonite::to_vec_static(&b).expect("encode a liquify brush");
+        let back = carbonite::from_slice_static::<BrushParams>(&bytes).expect("decode it back");
+        assert_eq!(back, b);
     }
 }

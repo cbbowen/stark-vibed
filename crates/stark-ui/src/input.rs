@@ -34,7 +34,7 @@ use stark_engine::command::Tool;
 use crate::collab::now_seconds;
 use crate::commands;
 use crate::drags;
-use crate::panels::brush::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
     self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,

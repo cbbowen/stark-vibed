@@ -24,6 +24,7 @@ use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolSt
 use super::bleed::bleed_fires;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dynamics_plan,
+    liquify_plan,
 };
 use super::slots;
 use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
@@ -51,18 +52,31 @@ use stark_shaders::mirror::dynamics::decl as d;
 use crate::gpu::stroke::tips::ResolvedTip;
 
 /// The brush as [`StrokeRenderer::render_range`](crate::gpu::stroke::StrokeRenderer)'s
-/// gate resolved it, for the one path that needs both halves.
+/// gate resolved it, for the paths that need both halves.
 ///
-/// The tip every path binds, and the dynamics axes that chose *this* path. Both were
+/// The tip every path binds, and the tool that chose *this* path. Both were
 /// re-derived inside the run behind an `expect` naming the gate that had already
 /// produced them — one re-resolving the tip through the LRU under its lock, the other
-/// unwrapping the `Paint` effect the plan had matched on to get here. Carried together
+/// unwrapping the effect the plan had matched on to get here. Carried together
 /// because they arrive together and are exactly what "the gate said the loop runs"
 /// means.
 #[derive(Clone, Copy)]
 pub(in crate::gpu::stroke) struct LoopBrush<'a> {
     pub(in crate::gpu::stroke) tip: &'a ResolvedTip,
-    pub(in crate::gpu::stroke) dynamics: stark_model::document::BrushDynamics,
+    pub(in crate::gpu::stroke) tool: LoopTool,
+}
+
+/// Which tool the region loop is running — the wet exchange with the axes that
+/// chose it (§6.2), or the liquify warp (§6.13), which shares the region, the
+/// piece chunking and the write-back and dispatches a plan of warp slots instead.
+/// A tag on [`LoopBrush`] rather than a second entry point, because everything
+/// that differs between the two is a per-slot question the plan already answers
+/// ([`SlotKind`]); what is decided here is only which plan gets built and whether
+/// there is a tool to seed, settle and carry at all.
+#[derive(Clone, Copy)]
+pub(in crate::gpu::stroke) enum LoopTool {
+    Wet(stark_model::document::BrushDynamics),
+    Liquify,
 }
 use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::composite::Instance as TileInstance;
@@ -154,7 +168,11 @@ impl StrokeRenderer {
         // measure every piece **with its windows** — a window can reach back a
         // quantum before the segment it fires after, which for a piece's first
         // segment is substrate no segment box covers ([`chunk_segments`]).
-        let (fires, bleed_capped) = bleed_fires(brush.dynamics.bleed, &segments);
+        // A liquify stroke has no such axis, so it fires nothing (§6.13).
+        let (fires, bleed_capped) = match brush.tool {
+            LoopTool::Wet(d) => bleed_fires(d.bleed, &segments),
+            LoopTool::Liquify => (Vec::new(), false),
+        };
         // The third budget, said out loud like the other two. A segment wanting more
         // than `MAX_BLEED_FIRES_PER_SEGMENT` firings gets the cap, and past it the axis
         // "quietly under-delivers" — `bleed.rs`'s own words. The artist sees a bleed
@@ -178,6 +196,10 @@ impl StrokeRenderer {
         // pushes a run whenever it is given a segment, and the empty range returned
         // above — but the proof was two functions away from the subtraction relying on
         // it, and "is there another piece after this one" is the question anyway.
+        // Only the wet tool has a pen-up to settle: the warp applies each
+        // segment's follow whole as the tip passes, so a break of contact strands
+        // nothing — the bleed axis's argument, and §6.13's statement of it.
+        let settles = matches!(brush.tool, LoopTool::Wet(_));
         let mut pieces = chunk_segments(&segments, &fires).into_iter().peekable();
         while let Some(piece) = pieces.next() {
             let is_last = pieces.peek().is_none();
@@ -193,9 +215,19 @@ impl StrokeRenderer {
                     ..*f
                 })
                 .collect();
-            map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
+            map = run.draw(
+                &map,
+                &segments[piece],
+                &piece_fires,
+                settles && !capture && is_last,
+            );
         }
-        let tool_out = capture.then(|| run.capture_tool());
+        // A liquify range hands nothing on: the canvas *is* the state (§6.13),
+        // and a later range recomposites it from the tiles this one wrote back.
+        let tool_out = match brush.tool {
+            LoopTool::Wet(_) => capture.then(|| run.capture_tool()),
+            LoopTool::Liquify => None,
+        };
         // The pieces partition the segments, so the union of what each one enumerated
         // for itself *is* what the whole range touched — accumulated as they went
         // rather than walked a second time over every (segment, tile) pair, which is
@@ -287,6 +319,13 @@ struct DynamicsRun<'a> {
     /// touched with the leases it extracted. Untouched — and empty — at the
     /// identity opacity.
     fresh: BTreeMap<TileCoord, Arc<Kept>>,
+    /// Which tool this run is drawing (§6.2, §6.13) — what picks the plan a
+    /// piece dispatches, and gates everything only the wet tool has: the mint
+    /// budget, the settle, the carry.
+    tool: LoopTool,
+    /// The liquify follow's normalizer, `1 / peak_tau` of the resolved tip
+    /// (`assets::peak_tau`) — read only by [`liquify_plan`]'s slots.
+    inv_peak_tau: f32,
 }
 
 impl<'a> DynamicsRun<'a> {
@@ -296,8 +335,14 @@ impl<'a> DynamicsRun<'a> {
     /// and a texel under it caps its mint exactly as a dial below 1 does (§6.8).
     /// The mask's overall opacity is already inside `consts.opacity`
     /// (`stroke_constants`); this is about its coverage.
+    ///
+    /// Never for the liquify tool: it mints nothing for a ceiling to budget —
+    /// its opacity *is* 1 (`BrushEffect::opacity`) and the mask scales its
+    /// follow directly in the warp kernel (§6.13) — so even under a selection
+    /// there are no lanes to seed or carry.
     fn capped(&self) -> bool {
-        self.consts.opacity < 1.0 || self.scene.selection.is_active()
+        matches!(self.tool, LoopTool::Wet(_))
+            && (self.consts.opacity < 1.0 || self.scene.selection.is_active())
     }
 
     /// Open the run: resolve the brush's textures, and put the tool in the state the
@@ -407,8 +452,14 @@ impl<'a> DynamicsRun<'a> {
         } else {
             // Init: latent = the brush's own color, per-unit opacity = exactly 1
             // (minted paint is opaque per unit, §6.2); the carried amount starts
-            // at the pre-`charge` glob (0 = empty tool).
-            let d = brush.dynamics;
+            // at the pre-`charge` glob (0 = empty tool). A liquify brush has no
+            // glob — and no reservoir reader either: its plan dispatches nothing
+            // that touches the tool, so this clear only keeps the pool's
+            // no-stale-reads contract the cheap way.
+            let charge = match brush.tool {
+                LoopTool::Wet(d) => d.charge,
+                LoopTool::Liquify => 0.0,
+            };
             scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -434,7 +485,7 @@ impl<'a> DynamicsRun<'a> {
                                 // deliver is the scaled glob, so no budget lane is
                                 // needed where the `add` rate's unbounded mint takes
                                 // one (§6.2, `dynamics.wesl::lay_parcel`).
-                                r: (d.charge * consts.opacity) as f64,
+                                r: (charge * consts.opacity) as f64,
                                 g: 0.0,
                                 b: 0.0,
                                 a: 0.0,
@@ -497,6 +548,11 @@ impl<'a> DynamicsRun<'a> {
             bake_latm,
             bake_rlm,
             fresh,
+            tool: brush.tool,
+            // Floored where it is inverted, though `assets::peak_tau` already
+            // floors what it hands out: a divisor is the one reading of the
+            // number that cannot shrug off a zero.
+            inv_peak_tau: 1.0 / brush.tip.peak_tau.max(1e-6),
         }
     }
 
@@ -632,7 +688,10 @@ impl<'a> DynamicsRun<'a> {
                 consts: &self.consts,
                 substrate: self.scene.substrate,
             };
-            let plan = dynamics_plan(&ctx, segments, fires, settle);
+            let plan = match self.tool {
+                LoopTool::Wet(_) => dynamics_plan(&ctx, segments, fires, settle),
+                LoopTool::Liquify => liquify_plan(&ctx, segments, self.inv_peak_tau),
+            };
             let under = self.snapshot_scratch(plan.dsize);
             // The cell scratch (§6.2), only when some slot actually takes the coarse
             // path — a small or hard tip allocates nothing and binds nothing.
@@ -1170,6 +1229,19 @@ impl<'a> DynamicsRun<'a> {
             resid,
             |s| common(s).expect("settle lists no other binding"),
         );
+        // The warp's group (§6.13), only on the run whose plan can dispatch one —
+        // every slot it lists is in `common`, the tool having nothing of its own
+        // to bind.
+        let warp = matches!(self.tool, LoopTool::Liquify).then(|| {
+            desc::bind_group_for(
+                device,
+                "stark dynamics warp bg",
+                &kit.warp_bgl,
+                slots::WARP,
+                resid,
+                |s| common(s).expect("warp lists no other binding"),
+            )
+        });
         // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
         // The hoist reads the same baked prefixes the exact deposit's front half did;
         // the coarse deposit swaps those two bindings for the cell means and keeps
@@ -1211,6 +1283,7 @@ impl<'a> DynamicsRun<'a> {
             bleed_weight,
             coarse,
             settle,
+            warp,
         }
     }
 
@@ -1350,6 +1423,29 @@ impl<'a> DynamicsRun<'a> {
                     cpass.dispatch_workgroups(1, BAKE_RES, 1);
                     cpass.set_pipeline(&kit.settle_pipeline);
                     cpass.set_bind_group(0, &bind.settle, &[off]);
+                    cpass.set_bind_group(1, prefix_bg, &[]);
+                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                }
+                // One liquify segment (§6.13): snapshot, then the gather. The
+                // tool plays no part, so `cur` stays put — as it does for a
+                // bleed firing, and for the same reason.
+                SlotKind::Warp => {
+                    // Over the **whole snapshot square**, the mobility pass's
+                    // argument one arm up: the gather pulls from upstream of any
+                    // one texel's sweep test, and a clamped tap must land on a
+                    // texel this slot's snapshot wrote (`dynamics.wesl`'s
+                    // `snapshot_at` reads `st.drag` to copy the square whole).
+                    cpass.set_pipeline(&kit.snapshot_pipeline);
+                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
+                    cpass.dispatch_workgroups(square_groups, square_groups, 1);
+                    cpass.set_pipeline(&kit.warp_pipeline);
+                    cpass.set_bind_group(
+                        0,
+                        bind.warp
+                            .as_ref()
+                            .expect("a warp slot comes only from a liquify plan"),
+                        &[off],
+                    );
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 }
@@ -1573,6 +1669,9 @@ struct PieceBindings {
     /// scratch, i.e. when some slot's [`extent_cell`](super::plan) beat 1.
     coarse: Option<CoarseBindings>,
     settle: wgpu::BindGroup,
+    /// The warp's group (§6.13) — `Some` exactly when the run's tool is
+    /// [`LoopTool::Liquify`], whose plan is the only source of warp slots.
+    warp: Option<wgpu::BindGroup>,
 }
 
 /// The two bind groups a coarse slot dispatches with (§6.2).

@@ -2097,3 +2097,116 @@ it. Both exist because they are different questions.
 the pen drives an eraser through its flow (the rate, already a target there)
 and Size for now; a modulated *ceiling* needs a second accumulator lane
 (mass-weighted opacity) to stay piece-independent, and is its own change.
+
+## 6.13 The liquify brush — dragging the picture itself
+
+The fourth effect (`BrushEffect::Liquify`): the stroke **warps** the canvas
+under it. Every channel — color, per-unit opacity, height — follows the travel
+together as a resample of the field, so structure *moves* where the wet loop's
+smudge would mix it toward a mean: an edge dragged is that edge, displaced; a
+texture rides along whole. It is the brushed cousin of the selection
+transform's mesh warp (§16.9) — the same "moving paint through a map" idea,
+keyed to a gesture instead of a lattice — and the tool Photoshop, Procreate
+and Clip Studio each ship under this name.
+
+Its own effect rather than a `Wet` at some rate, for the eraser's reason:
+warping and smearing are different tools with different available features. A
+smudge trades paint through a tool reservoir and conserves height; a warp has
+no reservoir, no pigment, no color for a jitter to wander, and no opacity for a
+ceiling to cap — the follow is a fraction of *travel*, so scrubbing keeps
+carrying the way the bleed keeps buying distance, and there is no saturated
+stroke for a ceiling to be a fraction of.
+
+### The kernel: a backward-mapped gather on the region loop
+
+Liquify runs the dynamics path's own machinery (§6.2's region composite, piece
+chunking and CoW write-back — `StrokePath::Liquify`,
+`gpu/stroke/dynamics/plan.rs::liquify_plan`) with one kernel in place of the
+whole exchange: per flattened segment, a **snapshot** of the extent scratch and
+a **warp** dispatch (`dynamics.wesl::warp`). Each covered texel pulls the
+region from upstream along the local travel tangent, one bilinear tap of every
+channel:
+
+```
+follow(x) = min(strength · e(x) / peak_τ, travel) · sel(x)      canvas px
+out(x)    = under(x − follow(x) · t̂(x))
+```
+
+- **`e(x)` is the deposit's own exposure**: the prefix-τ difference over the
+  segment's sweep, gated by the tooth (§6.4), the deposit jitter and the drain
+  at the texel's own arc. Riding that integral is what makes the follow
+  **additive in τ** — §6.2's composition rule — so overlapping quads of
+  consecutive segments hand a texel exactly the follow the joined segment
+  would, and every tip knob shapes the warp the way it shapes a deposit: a
+  taper's point drags less, a dry tip's pull skips the substrate's valleys, a
+  drained stroke lets go as it travels, a stamp's gaps slip.
+- **`peak_τ` normalizes to the tip's densest texel** (`assets::peak_tau`, on
+  the resolved tip): at strength 1 the paint under the tip's core keeps pace
+  with the hand exactly, and the rest follows in proportion to the coverage
+  genuinely over it — so the falloff is the *tip's*, and hardness is the
+  shape knob rather than a second strength.
+- **The selection scales the follow, not a blend of the result** (§6.8): a
+  half-selected texel's paint goes half as far, so a mask rim tapers the warp
+  instead of ghosting two pictures over each other.
+
+The `min` against the travel is load-bearing: `e ≤ peak_τ · travel` per row
+makes every pull land inside the segment's own sweep box, which is what the
+snapshot holds — so a **warp slot's snapshot copies its whole square** where
+every other slot's skips texels outside the sweep (`snapshot_at` reads the
+slot's `drag` lane to know). The clamp of the taps into the scratch is the
+no-flux wall for whatever rounding remains, exactly the bleed ladder's.
+
+Sequenced in place, the gather reads the region as earlier segments left it,
+so a stroke drags **its own trail** when it crosses it — order-dependence is
+the loop's, inherited whole. And because the warp's entire state *is* the
+region, the loop's incremental story carries over with nothing to carry: no
+reservoir, no settle (each segment's follow is applied whole as the tip
+passes, so a break of contact strands nothing — the bleed axis's argument),
+and `ToolState` stays `None` across ranges. A cut — a frozen head's bake, a
+region-sized piece — materializes the warp into tiles and the next stretch
+gathers through them; what a cut costs is the f16 store every loop cut costs,
+plus one extra resample where the tail re-crosses the boundary, and the
+corpus's `liquify` case bounds it in the same `seam` column as the smear's.
+
+### What it trades, honestly
+
+**Composition is preserved pointwise; height is not conserved.** Every value
+the stroke leaves is one the field held nearby — but a warp with falloff is
+not divergence-free, so stretching duplicates paint and pinching discards it,
+exactly as the mesh warp of §16.9 resamples a selection and as every liquify
+tool behaves. That is the tool's identity, stated against §6.1's ledger: the
+conserving movers are the wet loop's fluxes; liquify treats the canvas as a
+*picture*. (Scaling the height by the warp's Jacobian — pinches piling paint
+up like real impasto — is the recorded refinement if the physical reading is
+ever wanted; it is one finite-difference of the follow field away.)
+
+**Each resample softens by its tent filter** — a sub-texel blur per step,
+bounded by holding `strength · travel` fixed per segment
+(`budget::WARP_TRAVEL_STEP`, the exchange step's cousin: a gentle drag earns
+longer segments because the error is first order in the follow a segment
+completes, and halving the step halves it with no knee). A long scrub
+therefore softens what it carries — far less than a smudge averages, and the
+honest cost of warping in place. The alternative — accumulating a
+displacement field for the whole stroke and resampling the pristine base
+once — keeps edges bit-sharp *within* a piece and was weighed and set aside:
+its field cannot cross the cuts the live path is made of (a frozen head bakes
+tiles, a piece's region moves), so every cut becomes a visible double-resample
+seam between preview and replay, which is the column §6.2 already rejected a
+cheaper error over. If the warp ever wants it, the field, like the wick's
+ladder lesson, is recorded here rather than relearned.
+
+Strength 0 — and the zero-rate slot a modulation can produce — stores nothing
+at all (`WARP_MIN_FOLLOW`, the deposit's rewrite guard in this kernel's
+terms), so a near-inert drag cannot walk texels down the f16 lattice; the
+stores that do land go through `lib::store::f16_nearest` like every store in
+the loop. A drag along a field that does not vary in its own direction is the
+identity to the byte (`tests/liquify.rs`), which is this effect's reading of
+"conserves where there is nothing to move".
+
+*Determinism* — the plan is CPU float math over the record and the piece's
+geometry, the gather's weights are a pure function of its inputs
+(`FLOAT32_FILTERABLE` is never needed), so replay and `preview == committed`
+hold exactly as they do for the loop (§12.1). *Cost* — two small dispatches
+per segment (against the wet loop's three-plus), no reservoir passes, no
+settle; the snapshot covers the square rather than the rect, which is the
+bleed-weight pass's cost class.

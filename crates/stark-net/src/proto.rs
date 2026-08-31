@@ -95,8 +95,12 @@ use crate::mirror::{Mirror, Served};
 /// 18: the wet-mixing loop became its own effect — `BrushEffect` gained `Wet`,
 /// `PaintEffect` lost its `dynamics` to it and kept a bare `flow` (§6.2): a
 /// reshaping of the struct every stroke gossips, with no migration — the alpha
-/// rule (§19).
-pub(crate) const ALPN: &[u8] = b"stark/collab/18";
+/// rule (§19);
+/// 19: `BrushEffect` gained `Liquify` (§6.13) — a variant added to the enum
+/// every stroke gossips, which reshapes it on the wire even though every
+/// existing stroke encodes as it did: a peer without the variant cannot decode
+/// a stroke that carries it, and there is no schema on the wire to say so.
+pub(crate) const ALPN: &[u8] = b"stark/collab/19";
 
 /// The first byte of every response.
 ///

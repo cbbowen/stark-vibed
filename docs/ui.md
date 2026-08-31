@@ -37,9 +37,10 @@ which the engine draws into directly. DOM chrome surrounds it.
   and the moves after it are still plain `To`s.
 - **The brush is the frontend's, and the engine holds a projection.** The model's
   `BrushParams` is shaped for what a stroke's record needs — the shared tip knobs
-  and *the* effect in force (§6.2, §6.12) — but a brush is *edited* across that
-  line: both effects stay configured while one is in force, so toggling Paint ↔
-  Erase forgets nothing (the hand's color above all — an erasing brush carries no
+  and *the* effect in force (§6.2, §6.12, §6.13) — but a brush is *edited* across
+  that line: every effect stays configured while one is in force, so toggling
+  Paint ↔ Erase — or through Liquify — forgets nothing (the hand's color above
+  all — an erasing or liquify brush carries no
   pigment of its own), and the stroke-smoothing feel (§6.11) travels with the
   brush though the record must not carry it. `brush_config::BrushConfig` is that
   editing shape, held in `AppState::brush`; the preset library stores it whole,

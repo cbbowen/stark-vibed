@@ -323,6 +323,38 @@ pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
     (exchange_travel(axes(b)) * b.size).max(MIN_SEGMENT_LEN)
 }
 
+/// How far a liquify brush at **full strength** may travel per segment, as a
+/// fraction of the radius (§6.13) — [`RESERVOIR_EXCHANGE_STEP`]'s cousin, priced
+/// against a different first-order error: the warp is a flow integrated one Euler
+/// step per segment, each step gathering through the field the previous steps
+/// left, and what that error is first order in is the **follow a segment
+/// completes**, `strength · travel`. [`liquify_len`] holds that product fixed, so
+/// a gentle drag earns longer segments exactly as a gentle exchange does.
+///
+/// A quarter radius at strength 1: the follow is bounded by the travel, so this
+/// also caps how far any one gather pulls, and a step this size keeps the pull
+/// well inside the sweep's own box (the snapshot's containment argument, §6.13)
+/// while the tent-filter softening it buys stays sub-texel per step.
+const WARP_TRAVEL_STEP: f32 = 0.25;
+
+/// The travel a liquify brush's own budget puts on one segment ([`WARP_TRAVEL_STEP`]
+/// at the brush's strength and size), floored at [`MIN_SEGMENT_LEN`] — what
+/// [`flatten_tolerance`] spends for §6.13's path, and the number the shortening
+/// warning quotes, exactly as [`dynamics_len`] is for the loop.
+///
+/// Priced off the brush's own strength, not the modulated one, for
+/// [`exchange_travel`]'s reason: a modulation only ever scales the axis down, so
+/// the brush's value bounds every segment's. **Infinite at strength 0** — a drag
+/// that moves nothing has no step error for a cap to bound, and the flattener's
+/// base budget governs; a caller comparing against it asks `is_finite` first.
+pub(super) fn liquify_len(b: &BrushParams) -> f32 {
+    let s = b.liquify().map_or(0.0, |l| l.strength.clamp(0.0, 1.0));
+    if s <= 0.0 {
+        return f32::INFINITY;
+    }
+    (WARP_TRAVEL_STEP / s * b.size).max(MIN_SEGMENT_LEN)
+}
+
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///
@@ -389,8 +421,18 @@ pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
-    if b.wet().is_some() {
-        tol.max_len = tol.max_len.min(dynamics_len(b));
+    // The two effects that run the region loop each price their own step —
+    // the exchange's mean-field freeze for wet, the warp's Euler step for
+    // liquify (§6.13) — and both then pay the region floor below.
+    let own_len = if b.wet().is_some() {
+        Some(dynamics_len(b))
+    } else if b.liquify().is_some() {
+        Some(liquify_len(b))
+    } else {
+        None
+    };
+    if let Some(own) = own_len {
+        tol.max_len = tol.max_len.min(own);
         // The region floor's price (§6.2): a tip so wide that a full-length
         // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments
         // instead of losing its dynamics — the same trade `chunk_segments` makes

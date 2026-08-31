@@ -54,8 +54,8 @@
 use serde::{Deserialize, Serialize};
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
-    EraseEffect, Modulation, OrientationSource, PaintEffect, PaintModulations, ToothParams,
-    WetEffect, WetModulations,
+    EraseEffect, LiquifyEffect, Modulation, OrientationSource, PaintEffect, PaintModulations,
+    ToothParams, WetEffect, WetModulations,
 };
 
 /// Which effect a stroke of the brush has — the user's own choice, beside the
@@ -71,6 +71,9 @@ pub enum BrushEffectType {
     Wet,
     /// Remove visible opacity (§6.12).
     Erase,
+    /// Drag the picture itself — the paint under the tip follows the travel as
+    /// a warp of the field (§6.13).
+    Liquify,
 }
 
 /// The **wet-only** half of the natural-media tool (§6.2): the fluxes
@@ -175,6 +178,10 @@ pub struct BrushConfig {
     /// The erasing effect's configuration — held whether or not it is in force.
     /// Its `flow` is the transient half's flow while erase is in force.
     pub erase: EraseEffect,
+    /// The liquify effect's configuration (§6.13) — held whether or not it is
+    /// in force, like the eraser's. Its `strength` is the transient half's flow
+    /// while liquify is in force.
+    pub liquify: LiquifyEffect,
     /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope
     /// is derived at gesture start (`input::rope`), because the knob is
     /// denominated in the hand's own screen px and only a live view converts
@@ -202,7 +209,9 @@ impl Default for BrushConfig {
         let d = BrushParams::default();
         let p = match d.effect {
             BrushEffect::Paint(p) => p,
-            BrushEffect::Wet(_) | BrushEffect::Erase(_) => PaintEffect::default(),
+            BrushEffect::Wet(_) | BrushEffect::Erase(_) | BrushEffect::Liquify(_) => {
+                PaintEffect::default()
+            }
         };
         Self {
             size: d.size,
@@ -223,6 +232,7 @@ impl Default for BrushConfig {
             color_dynamics: p.color_dynamics,
             wet: WetDynamics::default(),
             erase: EraseEffect::default(),
+            liquify: LiquifyEffect::default(),
             smoothing: 0.0,
         }
     }
@@ -279,6 +289,7 @@ impl BrushConfig {
                     },
                 }),
                 BrushEffectType::Erase => BrushEffect::Erase(self.erase),
+                BrushEffectType::Liquify => BrushEffect::Liquify(self.liquify),
             },
         }
     }
@@ -296,6 +307,7 @@ impl BrushConfig {
         match self.effect {
             BrushEffectType::Paint | BrushEffectType::Wet => self.flow,
             BrushEffectType::Erase => self.erase.flow,
+            BrushEffectType::Liquify => self.liquify.strength,
         }
     }
 
@@ -304,23 +316,43 @@ impl BrushConfig {
         match self.effect {
             BrushEffectType::Paint | BrushEffectType::Wet => self.flow = flow,
             BrushEffectType::Erase => self.erase.flow = flow,
+            BrushEffectType::Liquify => self.liquify.strength = flow,
         }
     }
 
     /// The effect's **opacity** — the ceiling on what a saturated stroke does
-    /// (`BrushEffect::opacity`), read off whichever side is in force.
+    /// (`BrushEffect::opacity`), read off whichever side is in force. A liquify
+    /// brush has none (`BrushEffect::opacity`'s own arm says why), so it reads
+    /// as the identity and the editor hides the dial.
     pub fn opacity(&self) -> f32 {
         match self.effect {
             BrushEffectType::Paint | BrushEffectType::Wet => self.opacity,
             BrushEffectType::Erase => self.erase.opacity,
+            BrushEffectType::Liquify => 1.0,
         }
     }
 
     /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half.
+    /// A no-op while liquify is in force, which has no such knob and no dial
+    /// shown to write it.
     pub fn set_opacity(&mut self, opacity: f32) {
         match self.effect {
             BrushEffectType::Paint | BrushEffectType::Wet => self.opacity = opacity,
             BrushEffectType::Erase => self.erase.opacity = opacity,
+            BrushEffectType::Liquify => {}
+        }
+    }
+
+    /// Where the in-force effect's rate slider stops — one range for a knob
+    /// reachable three ways (the panel's Flow slider, the editor's row, the
+    /// tuning drag), or the drag would quietly go somewhere a slider cannot
+    /// show. The liquify strength's top is its quoted — and load-bearing — 1
+    /// (`LiquifyEffect::strength`); every other rate's ceiling is the slider's
+    /// own (`panels::brush::MAX_FLOW`).
+    pub fn max_flow(&self) -> f32 {
+        match self.effect {
+            BrushEffectType::Liquify => 1.0,
+            _ => crate::panels::brush::MAX_FLOW,
         }
     }
 

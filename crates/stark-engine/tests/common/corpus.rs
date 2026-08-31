@@ -982,4 +982,38 @@ pub const CASES: &[Case] = &[
             lift: 0.0,
         },
     },
+    Case {
+        name: "liquify",
+        what: "The liquify warp (§6.13): a full-strength drag through two painted \
+               bands, whose edges bend along the travel — carried, not mixed. The \
+               only cover for the backward-mapped gather, for the whole-square \
+               snapshot a warp slot copies (a clamped tap must land on written \
+               scratch), and for the follow riding the same prefix-τ exposure \
+               every deposit runs on, so a cut of the path moves the same paint.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = brush(RED, 30.0);
+            b.drain = 0.0;
+            b.effect = stark_model::document::BrushEffect::Liquify(
+                stark_model::document::LiquifyEffect::default(),
+            );
+            b
+        },
+        path: || sine_sweep(140, 124.0, 34.0, 1.3),
+        tol: Tol {
+            golden: 6,
+            // The loop's figure: a cut materializes the warp into tiles and the
+            // next range gathers through them, so what a cut costs is the f16
+            // store plus one extra resample where the tail re-crosses the
+            // boundary — bounded like the smear's, and for the same reason.
+            seam: 12,
+            // The warp is a flow integrated one Euler step per segment
+            // (`budget::WARP_TRAVEL_STEP`); refitting four times finer takes
+            // smaller steps of the same additive exposure, so what moves is the
+            // dragged edges' last texel, not the field.
+            refine: 1.0,
+            lift: 0.0,
+        },
+    },
 ];

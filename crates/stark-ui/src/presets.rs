@@ -44,8 +44,8 @@
 use dioxus::prelude::*;
 
 use stark_model::document::{
-    BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations, ModSource,
-    Modulation, NoiseKind, OrientationSource, ToothParams,
+    BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations, LiquifyEffect,
+    LiquifyModulations, ModSource, Modulation, NoiseKind, OrientationSource, ToothParams,
 };
 
 use crate::brush_config::{BrushConfig, BrushEffectType, WetDynamics};
@@ -399,6 +399,31 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     size: Some(Modulation::linear(ModSource::Pressure)),
                     ..BrushModulations::default()
                 },
+                ..BrushConfig::default()
+            },
+        ),
+        // The liquify brush (§6.13): the stroke drags the picture with it —
+        // structure warps along the travel instead of mixing toward a mean. The
+        // tip holds its width, and what the pen drives is the *grip*: a light
+        // touch nudges the paint, borne down it keeps pace with the hand — so
+        // the one mapping points at strength, not size. A soft-ish shoulder is
+        // what makes the drag read as a field bending rather than a disc
+        // shearing against its rim.
+        shipped(
+            "Liquify",
+            None,
+            0.2,
+            BrushConfig {
+                size: 90.0,
+                shape: BrushShape::Round { hardness: 0.35 },
+                effect: BrushEffectType::Liquify,
+                liquify: LiquifyEffect {
+                    strength: 1.0,
+                    modulation: LiquifyModulations {
+                        strength: Some(Modulation::linear(ModSource::Pressure)),
+                    },
+                },
+                modulation: BrushModulations::default(),
                 ..BrushConfig::default()
             },
         ),

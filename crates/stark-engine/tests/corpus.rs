@@ -76,6 +76,7 @@ battery!(
     supersampled,
     wet_opacity,
     erase,
+    liquify,
 );
 
 /// How many points along a stroke the incremental preview is held against a fresh

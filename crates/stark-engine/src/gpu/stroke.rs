@@ -272,7 +272,30 @@ impl StrokeRenderer {
                 }
                 let brush = dynamics::LoopBrush {
                     tip: &tip,
-                    dynamics,
+                    tool: dynamics::LoopTool::Wet(dynamics),
+                };
+                self.render_dynamic(scene, rec, spans, resume, plan.tol, brush)
+            }
+            // The liquify warp (§6.13): the same region loop with the warp
+            // plan, and the same fit warning — its segments shorten against the
+            // region floor exactly as the loop's do.
+            StrokePath::Liquify => {
+                if let Some(s) = &plan.shortened
+                    && self.complain_once(rec.seed)
+                {
+                    tracing::warn!(
+                        radius = rec.brush.size,
+                        wanted_px = s.wanted,
+                        got_px = s.got,
+                        "brush tip nearly fills a dynamics region: segments \
+                         shortened to fit, so this stroke costs ~{:.1}x the stamps \
+                         its brush budgeted",
+                        s.wanted / s.got,
+                    );
+                }
+                let brush = dynamics::LoopBrush {
+                    tip: &tip,
+                    tool: dynamics::LoopTool::Liquify,
                 };
                 self.render_dynamic(scene, rec, spans, resume, plan.tol, brush)
             }

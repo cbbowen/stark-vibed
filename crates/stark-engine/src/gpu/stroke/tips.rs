@@ -115,6 +115,7 @@ impl TipCache {
                     .map(|views| ResolvedTip {
                         prefix: views.prefix,
                         coverage: views.coverage,
+                        peak_tau: views.peak_tau,
                     })
             }
             BrushShape::Round { hardness } => {
@@ -122,6 +123,7 @@ impl TipCache {
                 Some(ResolvedTip {
                     prefix: tip.prefix,
                     coverage: tip.coverage,
+                    peak_tau: tip.peak_tau,
                 })
             }
         }
@@ -143,9 +145,14 @@ impl TipCache {
             // suffices — the shader's wrapping lookup reads it for every
             // orientation (§6.6).
             let prefix = build_prefix_tau(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov);
+            let peak_tau = crate::assets::peak_tau(&cov);
             let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
             let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
-            RoundTip { prefix, coverage }
+            RoundTip {
+                prefix,
+                coverage,
+                peak_tau,
+            }
         });
         // An eviction is dropped rather than `destroy()`ed: unlike the per-stroke
         // resources, they happen at the *rate the brush changes*, not per pointer
@@ -221,10 +228,13 @@ impl NoiseLease {
     }
 }
 
-/// The prefix volume and coverage mask selected together for one brush.
+/// The prefix volume and coverage mask selected together for one brush — and the
+/// mask's peak τ density, the liquify follow's normalizer (§6.13,
+/// `assets::peak_tau`).
 pub(super) struct ResolvedTip {
     pub(super) prefix: wgpu::TextureView,
     pub(super) coverage: wgpu::TextureView,
+    pub(super) peak_tau: f32,
 }
 
 /// A baked round tip: the **prefix-τ** volume both render paths integrate the swept
@@ -238,6 +248,9 @@ pub(super) struct ResolvedTip {
 struct RoundTip {
     prefix: wgpu::TextureView,
     coverage: wgpu::TextureView,
+    /// The field's peak τ (`assets::peak_tau`), cached with the pair it was
+    /// measured from.
+    peak_tau: f32,
 }
 
 /// What a noise tile is cached by: the brush's kind and the stroke's seed.
