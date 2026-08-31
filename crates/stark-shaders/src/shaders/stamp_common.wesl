@@ -57,7 +57,10 @@ struct TileXform {
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
 // Prefix-τ volume (§6.2, §6.6): x = travel, y = lateral, array layer = shape
-// orientation (one slice per relative angle, sampled with wrapping). Round tips are
+// orientation (one slice per relative angle, sampled with wrapping). Rg32Float:
+// `r` is the running travel integral of optical depth, `g` the lateral prefix of
+// `r` — what lets `prefix_span_box` read the deposit's exact box average over the
+// pixel's own footprint as one more difference (§6.2). Round tips are
 // rotation-invariant and have a single slice; image stamps carry up to
 // MAX_ORIENTATION_LAYERS. A 2D array (not a 3D texture) so the mask keeps its full size.
 @group(1) @binding(0) var prefix_tex: texture_2d_array<f32>;
@@ -439,9 +442,18 @@ const SWEEP_SLICES: u32 = 8u;
 // = 2 * (SWEEP_SLICES + 1); the host's draw call must ask for exactly this many.
 const SWEEP_VERTS: u32 = 18u;
 
+// How far outside the tip's own reach the deposit can land, canvas px: the pixel
+// footprint's box filter (`swept_depth`) reads half a px past `|y| = 1`, and a px of
+// margin keeps the strip's two bounds one inequality apart from the filter's. Grows
+// the strip's rims below and the host's per-segment reach (`segments::Sweep::reach`,
+// through the generated mirror) — the two statements of the same bound, and a
+// fragment either one under-reports is a stroke clipped along a straight line.
+const AA_RIM_PX: f32 = 1.0;
+
 // Build the swept geometry for one segment: a strip of `SWEEP_SLICES` quads covering
 // brush-local x ∈ [-1, lr+1], y ∈ [-1, 1] — a radius of margin at each end for the
-// round cap — bent around the segment's arc and mapped into the tile's apron'd target.
+// round cap, plus [`AA_RIM_PX`] on every side for the pixel footprint's half-px reach
+// — bent around the segment's arc and mapped into the tile's apron'd target.
 //
 // Nothing here has to be tight, only *conservative*: a fragment outside the extent
 // differences two prefix taps to zero and writes nothing. So the outer rim is pushed
@@ -475,23 +487,24 @@ fn sweep_vertex(
     // along its facing axis paints outside the strip its radius alone would have been
     // given, and a fragment that is never rasterized is a stroke cut off along a
     // straight line — the failure every under-reported reach lands on
-    // (`segments::Sweep::reach`, §6.6). Both factors are exactly 1 with no stretch, so
-    // no existing stroke's strip moves by an ulp.
+    // (`segments::Sweep::reach`, §6.6). Plus the filter's rim ([`AA_RIM_PX`]): the
+    // pixel footprint reads half a px past the extent, so the strip carries a px of
+    // margin on both axes for it.
     let hf = stretch_hull(stretch);
-    let ha = hull * hf.x; // the travel margin at each end
-    let hl = hull * hf.y; // the lateral rim
+    let ha = hull * hf.x + AA_RIM_PX; // the travel margin at each end
+    let hl = hull * hf.y + AA_RIM_PX; // the lateral rim
 
     let u = f32(vi >> 1u) / f32(SWEEP_SLICES); // 0..1 along the travel
     let side = select(-1.0, 1.0, (vi & 1u) != 0u); // the two lateral rims
 
     var canvas: vec2<f32>;
     if kappa == 0.0 {
-        // The straight case is one quad's worth of geometry, cut into slices.
-        // The travel margin is a radius of the *widest* tip at each end, for the
-        // same reason the lateral rim is.
-        let lr = len / hull;
-        let cx = -hf.x + u * (lr + 2.0 * hf.x);
-        canvas = start + dir * (cx * hull) + perp * (side * hl);
+        // The straight case is one quad's worth of geometry, cut into slices: the
+        // travel runs from one margin's reach to the other's, in canvas px — a
+        // radius of the *widest* tip plus the filter's rim at each end, for the
+        // same reason the lateral rim carries both.
+        let cx = -ha + u * (len + 2.0 * ha);
+        canvas = start + dir * cx + perp * (side * hl);
     } else {
         let ak = abs(kappa);
         let sk = sign(kappa);
@@ -683,8 +696,8 @@ fn jitter_of(in: VsOut) -> f32 {
 // (`dynamics::bake_at`). Two of those reasons are worth pinning to this caller in
 // particular:
 //
-//   · prefix_tex is R32Float because each fragment takes the *difference* of two
-//     prefix sums (see `swept_depth`), which is sensitive to catastrophic
+//   · prefix_tex is fp32 (Rg32Float) because each fragment takes the *difference* of
+//     two prefix sums (see `swept_depth`), which is sensitive to catastrophic
 //     cancellation, and a row's total κ can be large for opaque brushes. A
 //     filterable 16-bit format would band exactly where the differencing is most
 //     sensitive.
@@ -715,10 +728,40 @@ fn prefix_edge(xl: f32, yl: f32, zi: i32) -> f32 {
     return prefix_slice(xl, yl, zi);
 }
 
+// The `g` channel's reading at brush-local (xl, yl): the **lateral prefix of the
+// travel prefix**, `∫₋₁^yl prefix(xl, ·)` in brush units, with `prefix_edge`'s
+// leading-edge rule. Baked at the midpoint rule, so a bilinear read at a row's
+// centre is the exact integral up to it (`assets::build_prefix_tau`); the lateral
+// clamp is the right boundary here rather than a hazard — a tap past either rim
+// reads the column's empty start or its total, which is what a window hanging off
+// the mask's edge means.
+fn prefix2_edge(xl: f32, yl: f32, zi: i32) -> f32 {
+    if xl <= -1.0 {
+        return 0.0;
+    }
+    let b = bilerp_taps(vec2<f32>(textureDimensions(prefix_tex)), vec2<f32>(xl, yl));
+    return bilerp_mix1(
+        b,
+        textureLoad(prefix_tex, vec2<i32>(b.i0.x, b.i0.y), zi, 0).g,
+        textureLoad(prefix_tex, vec2<i32>(b.i1.x, b.i0.y), zi, 0).g,
+        textureLoad(prefix_tex, vec2<i32>(b.i0.x, b.i1.y), zi, 0).g,
+        textureLoad(prefix_tex, vec2<i32>(b.i1.x, b.i1.y), zi, 0).g,
+    );
+}
+
+// One slice's swept depth integrated over the lateral window [y_lo, y_hi]: the
+// lateral prefix differenced across the window at each travel end, then across the
+// travel pair. Differencing in y first is the conditioned order — each pair is two
+// nearby readings of one column, subtracted before anything scales them.
+fn prefix2_box(x1: f32, x0: f32, y_hi: f32, y_lo: f32, zi: i32) -> f32 {
+    return (prefix2_edge(x1, y_hi, zi) - prefix2_edge(x1, y_lo, zi))
+        - (prefix2_edge(x0, y_hi, zi) - prefix2_edge(x0, y_lo, zi));
+}
+
 // Trilinear lookup of the prefix-τ volume at brush-local (xl, yl) ∈ [-1,1] and shape
 // orientation `w` (turns ∈ [0,1)). The orientation axis wraps (a full turn is periodic),
 // so the two bracketing slices are chosen modulo the slice count. The x,y bilinear is
-// hand-rolled for the same reasons (R32Float isn't filterable, the asymmetric travel-edge
+// hand-rolled for the same reasons (fp32 isn't filterable here, the asymmetric travel-edge
 // boundary, fp32 precision); 0 before the leading edge, clamp-to-row-total past the
 // trailing edge. A single-slice (round) volume collapses to that one slice for every `w`.
 fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
@@ -740,7 +783,7 @@ fn prefix_at(xl: f32, yl: f32, w: f32) -> f32 {
 // `mix(a₁,b₁,t) − mix(a₀,b₀,t)` and `mix(a₁−a₀, b₁−b₀, t)` are the same number
 // exactly; in floats the second subtracts two readings that are close to each other
 // before they are scaled, where the first forms two large interpolants and differences
-// those. The whole reason this volume is R32Float is that this subtraction is where the
+// those. The whole reason this volume is fp32 is that this subtraction is where the
 // digits go (`prefix_slice`).
 //
 // `x0 <= -1` is the plain single lookup: nothing is subtracted, because the tip had not
@@ -782,6 +825,40 @@ fn prefix_span(x1: f32, x0: f32, yl: f32, w: f32) -> f32 {
     return mix(a, b, fw);
 }
 
+// [`prefix_span`] **box-filtered across the lateral axis**: the swept depth averaged
+// over the window `yl ± dy` (brush units) rather than read at `yl` alone — the pixel's
+// own footprint, when the caller passes half a canvas px (§6.2). One more prefix
+// difference, on the volume's `g` channel, exactly as the travel axis has always been
+// integrated; twice the loads of the point read.
+//
+// The filter is linear in τ, so it commutes with the sum over a stroke's overlapping
+// segments — a box average of `Στ` is the sum of box averages — and the deposit stays
+// exactly as independent of the flattener's cuts as the point read (§6.2's law). It
+// conserves the profile's lateral integral wherever the window sits (adjacent windows
+// telescope), which is what keeps a sub-px tip's paint on the canvas instead of
+// vanishing between texel centres — height conserved, §6.1's own invariant.
+fn prefix_span_box(x1: f32, x0: f32, yl: f32, w: f32, dy: f32) -> f32 {
+    // The filtered support: the window must overlap the extent's |y| < 1.
+    if abs(yl) - dy >= 1.0 {
+        return 0.0;
+    }
+    let y_hi = yl + dy;
+    let y_lo = yl - dy;
+    let norm = 0.5 / dy;
+    let nz = i32(textureNumLayers(prefix_tex));
+    if nz == 1 {
+        return prefix2_box(x1, x0, y_hi, y_lo, 0) * norm;
+    }
+    let fl = fract(w) * f32(nz);
+    let l0f = floor(fl);
+    let fw = fl - l0f;
+    let z0 = (i32(l0f) % nz + nz) % nz;
+    let z1 = (z0 + 1) % nz;
+    let a = prefix2_box(x1, x0, y_hi, y_lo, z0);
+    let b = prefix2_box(x1, x0, y_hi, y_lo, z1);
+    return mix(a, b, fw) * norm;
+}
+
 // Swept geometric optical depth over the fragment's segment: the brush extent
 // integrated as it travels, as a difference of prefix sums on the segment's orientation
 // slice. Sums exactly across a stroke's overlapping segment sweeps (under "over" for τ,
@@ -801,6 +878,20 @@ fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     // and only the lookup into the mask is re-coordinated, which is also what keeps
     // `stroke_arc` measuring canvas px rather than the lookup frame's own units.
     let l = stretch_look(sw, in.stretch);
-    let depth = prefix_span(l.x, l.y, l.z, w);
+    // Half a canvas px in the lookup frame's lateral units (§6.2's pixel footprint):
+    // brush-local y is denominated in the tip in force, drawn out by the stretch's
+    // lateral scale. A function of the fragment's frame alone, like everything here,
+    // so the deposit stays a pure function of canvas position (§6.4).
+    let dy = 0.5 * in.stretch.z / sw.radius;
+    var depth: f32;
+    // Box-filtered only where the window spans at least a mask texel. Below that the
+    // differenced lateral prefix degenerates into a fixed one-texel blur *scaled by
+    // the radius* — softer than the px asked for, and growing with the tip — while a
+    // tip that large resolves its own profile over many px anyway.
+    if dy * f32(textureDimensions(prefix_tex).y) >= 1.0 {
+        depth = prefix_span_box(l.x, l.y, l.z, w, dy);
+    } else {
+        depth = prefix_span(l.x, l.y, l.z, w);
+    }
     return max(depth, 0.0) * sw.warp * stretch_gain(in.stretch);
 }

@@ -690,7 +690,13 @@ pub(super) fn generate_segments_in(
         // is further out than `‖A‖ = elongation` times where it started, so one factor
         // bounds every angle — which is what this has to be, since it grows an
         // axis-aligned box (`coverage_bounds`).
-        sweep.reach = sweep.widest_tip() * elong;
+        //
+        // Plus the antialiasing rim: the pixel footprint's box filter deposits up to
+        // half a px past the disc (§6.2), and the strip the GPU rasterizes carries
+        // `AA_RIM_PX` of margin for it (`stamp_common::sweep_vertex`) — so the box
+        // must too, or the rim px of a tile another tile's apron rewrites would be
+        // drawn by one and skipped by the other (§6.4).
+        sweep.reach = sweep.widest_tip() * elong + stark_shaders::mirror::stamp_common::AA_RIM_PX;
         // The rates are the effect's own, at its own pen mappings — the one place
         // per segment the enum is asked. An eraser's `add` is its flow (the rate
         // its bite builds at, §6.12) and it has no fluxes to carry; which is
@@ -1669,10 +1675,11 @@ mod tests {
                         );
                     }
                 }
-                // Tightness: the box is the travel's own, grown by one radius — not
-                // by `√2` of one.
-                let tight_lo = s.start.min(end) - Vec2::splat(s.radius);
-                let tight_hi = s.start.max(end) + Vec2::splat(s.radius);
+                // Tightness: the box is the travel's own, grown by one radius plus
+                // the antialiasing rim ([`Sweep::reach`]) — not by `√2` of one.
+                let rim = stark_shaders::mirror::stamp_common::AA_RIM_PX;
+                let tight_lo = s.start.min(end) - Vec2::splat(s.radius + rim);
+                let tight_hi = s.start.max(end) + Vec2::splat(s.radius + rim);
                 assert!(
                     (lo - tight_lo).length() <= SLACK && (hi - tight_hi).length() <= SLACK,
                     "angle {k}/16, segment {i}: box {lo:?}..{hi:?} is not the tight \

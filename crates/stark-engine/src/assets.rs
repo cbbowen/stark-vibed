@@ -244,7 +244,7 @@ impl AssetStore {
 const MAX_ORIENTATION_LAYERS: u32 = 64;
 
 /// Memory budget (bytes) for one brush's pen-oriented prefix-τ volume. The layer count
-/// is chosen so `width × height × layers × 4 (R32Float)` stays under this — so a large
+/// is chosen so `width × height × layers × 8 (Rg32Float)` stays under this — so a large
 /// detailed stamp keeps its full resolution and trades orientation granularity for
 /// memory instead. Only the pen volume is measured against it: the follow-stroke bake
 /// is a single layer and has nothing to trade.
@@ -253,7 +253,7 @@ const PREFIX_BUDGET_BYTES: u32 = 64 << 20; // 64 MiB
 /// How many orientation slices to build for a `width × height` volume: as many as
 /// the memory budget allows, capped at [`MAX_ORIENTATION_LAYERS`] and at least 1.
 fn orientation_layers(width: u32, height: u32) -> u32 {
-    let per_layer = (width * height * 4).max(1);
+    let per_layer = (width * height * 8).max(1);
     (PREFIX_BUDGET_BYTES / per_layer).clamp(1, MAX_ORIENTATION_LAYERS)
 }
 
@@ -327,11 +327,20 @@ pub(crate) fn tau_of(coverage: f32) -> f32 {
 /// Build a brush's **prefix-τ** volume (§6.2, §6.6): for each orientation
 /// `layer` and each row, the running integral of optical depth `κ = −ln(1−coverage)`
 /// along the travel axis (x), normalized to brush-local units (x spans `[-1, 1]`, width
-/// 2). Stored as a `R32Float` **2D-array** texture (the array axis is orientation, sampled
-/// with wrapping) and read via `textureLoad` + manual trilinear by the sweep shader: a
-/// segment's swept depth at a point is `prefix(u) − prefix(u−d)` on its layer. (A 2D array
-/// rather than a true 3D texture so the mask keeps its full width/height — 3D textures are
-/// capped far smaller, e.g. 256px, by `maxTextureDimension3D`.)
+/// 2). Stored as an `Rg32Float` **2D-array** texture (the array axis is orientation,
+/// sampled with wrapping) and read via `textureLoad` + manual trilinear by the sweep
+/// shader: a segment's swept depth at a point is `prefix(u) − prefix(u−d)` on its
+/// layer. (A 2D array rather than a true 3D texture so the mask keeps its full
+/// width/height — 3D textures are capped far smaller, e.g. 256px, by
+/// `maxTextureDimension3D`.)
+///
+/// `g` carries the **lateral prefix of `r`** — `∫₋₁^y prefix(x, ·)`, brush units on
+/// both axes — so the sweep can read the deposit's exact box average over the pixel's
+/// own footprint as one more difference (`stamp_common::prefix_span_box`, §6.2).
+/// Baked at the midpoint rule: the value at a row's centre is the integral *to* that
+/// centre, which is what makes the shader's bilinear tap exact there rather than half
+/// a texel off — a filtered stroke would otherwise sit shifted against its own
+/// unfiltered taper.
 ///
 /// Shared by [`AssetStore`] (image brushes — one identity layer for follow-stroke, a
 /// rotated stack for pen) and the stroke renderer (the round tip, regenerated per
@@ -349,19 +358,7 @@ pub(crate) fn build_prefix_tau(
     layers: u32,
     coverage: &[f32],
 ) -> wgpu::TextureView {
-    let w = width as usize;
-    let dx = 2.0 / width as f32;
-    let mut prefix = vec![0.0f32; coverage.len()];
-    for y in 0..(height * layers) as usize {
-        // Rows are contiguous across layers (layer-major, then row), so one linear pass
-        // integrates every layer's rows independently.
-        let mut acc = 0.0f32;
-        for x in 0..w {
-            acc += tau_of(coverage[y * w + x]) * dx;
-            prefix[y * w + x] = acc;
-        }
-    }
-
+    let data = prefix_tau_data(width, height, layers, coverage);
     let extent = wgpu::Extent3d {
         width,
         height,
@@ -373,16 +370,16 @@ pub(crate) fn build_prefix_tau(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R32Float,
+        format: wgpu::TextureFormat::Rg32Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     ctx.queue.write_texture(
         texture.as_image_copy(),
-        bytemuck::cast_slice(&prefix),
+        bytemuck::cast_slice(&data),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(width * 4),
+            bytes_per_row: Some(width * 8),
             rows_per_image: Some(height),
         },
         extent,
@@ -393,6 +390,40 @@ pub(crate) fn build_prefix_tau(
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+/// The prefix-τ volume's texels ([`build_prefix_tau`]): interleaved `(r, g)` pairs,
+/// `r` the travel prefix of `κ` per row, `g` the lateral (midpoint-rule) prefix of
+/// `r` per column. Split from the upload so the arithmetic is testable without a
+/// device.
+fn prefix_tau_data(width: u32, height: u32, layers: u32, coverage: &[f32]) -> Vec<f32> {
+    let w = width as usize;
+    let h = height as usize;
+    let dx = 2.0 / width as f32;
+    let dy = 2.0 / height as f32;
+    let mut data = vec![0.0f32; coverage.len() * 2];
+    for l in 0..layers as usize {
+        let plane = l * w * h;
+        for y in 0..h {
+            let mut acc = 0.0f32;
+            for x in 0..w {
+                acc += tau_of(coverage[plane + y * w + x]) * dx;
+                data[(plane + y * w + x) * 2] = acc;
+            }
+        }
+        // The midpoint rule: a row's stored value is the integral to its *centre* —
+        // every earlier row whole, half of its own — so the shader's bilinear read
+        // is exact at row centres and piecewise linear between them.
+        for x in 0..w {
+            let mut acc = 0.0f32;
+            for y in 0..h {
+                let r = data[(plane + y * w + x) * 2];
+                data[(plane + y * w + x) * 2 + 1] = acc + r * (0.5 * dy);
+                acc += r * dy;
+            }
+        }
+    }
+    data
 }
 
 /// Upload a coverage mask as a filterable `R8Unorm` texture — the per-stamp
@@ -477,6 +508,47 @@ mod tests {
                  does — the rotation is losing mask off the edge of its own volume",
                 total(l) / flat * 100.0,
             );
+        }
+    }
+
+    /// The `g` channel is the lateral integral of `r` — checked per layer with an
+    /// asymmetric two-layer mask, so a plane- or stride-indexing slip cannot cancel.
+    ///
+    /// Two readings of the claim, both against independent summation of `r`:
+    /// the last row's `g` reaches the column total less its own half-row (the
+    /// midpoint rule's rim), and every row's `g` is the rows before it plus half
+    /// itself — which is what makes a bilinear tap at a row centre the exact
+    /// integral to that centre (`stamp_common::prefix2_edge` relies on it).
+    #[test]
+    fn the_lateral_prefix_integrates_the_travel_prefix() {
+        let (w, h, layers) = (16u32, 12u32, 2u32);
+        let plane = (w * h) as usize;
+        let cov: Vec<f32> = (0..plane * layers as usize)
+            .map(|i| {
+                let l = i / plane;
+                let x = (i % w as usize) as f32 / w as f32;
+                let y = ((i % plane) / w as usize) as f32 / h as f32;
+                (0.9 * x * (0.3 + 0.7 * y) * (1.0 - 0.4 * l as f32)).clamp(0.0, 0.95)
+            })
+            .collect();
+        let data = prefix_tau_data(w, h, layers, &cov);
+        let dy = 2.0 / h as f32;
+        let r = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2];
+        let g = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2 + 1];
+        for l in 0..layers as usize {
+            for x in 0..w as usize {
+                let mut below = 0.0f32;
+                for y in 0..h as usize {
+                    let want = below + r(l, x, y) * 0.5 * dy;
+                    assert!(
+                        (g(l, x, y) - want).abs() < 1e-5,
+                        "layer {l}, column {x}, row {y}: g = {}, not the midpoint \
+                         integral {want}",
+                        g(l, x, y),
+                    );
+                    below += r(l, x, y) * dy;
+                }
+            }
         }
     }
 }

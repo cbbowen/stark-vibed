@@ -572,6 +572,21 @@ pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
     }
 }
 
+/// The hardness a round tip actually **bakes** at `radius` px (§6.6): the brush's
+/// own, floored so the shoulder above never falls under one canvas px. A falloff
+/// narrower than a px is content past the tile grid's Nyquist — it can only shimmer —
+/// so a hard edge keeps the ~px antialiased rim every selection mask's feather
+/// already has ("floored at one, which *is* the antialiased hard edge", §6.8), and a
+/// tip too small to carry even that comes out as soft as its own footprint.
+///
+/// Beside [`shoulder_per_radius`] because it is the same fact bounded from the other
+/// side. Deliberately **not** fed back into the budgets built on the nominal
+/// hardness (the taper's subdivision, [`extent_cell`]): the nominal shoulder is the
+/// narrower of the two, so those bounds only over-provide for a floored tip.
+pub(super) fn effective_hardness(hardness: f32, radius: f32) -> f32 {
+    hardness.min(1.0 - 1.0 / (3.0 * radius.max(0.5)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,5 +653,33 @@ mod tests {
                  {shoulder} px shoulder",
             );
         }
+    }
+
+    // --- the hardness floor ---------------------------------------------
+
+    /// [`effective_hardness`]'s whole claim, read through the shoulder it floors: the
+    /// baked tip's shoulder is never under a canvas px, a brush the floor does not
+    /// bind keeps its hardness exactly, and the floor relaxes monotonically as the
+    /// tip grows — so resizing a hard brush never makes its edge *softer* in px.
+    #[test]
+    fn the_baked_shoulder_never_falls_under_a_px() {
+        for radius in [0.1f32, 0.5, 2.0, 16.0, 100.0, 500.0] {
+            let mut last = 0.0f32;
+            for h in [0.0f32, 0.3, 0.7, 0.9, 0.99, 1.0] {
+                let eff = effective_hardness(h, radius);
+                let shoulder =
+                    shoulder_per_radius(&BrushShape::Round { hardness: eff }) * radius.max(0.5);
+                assert!(
+                    shoulder >= 1.0 - 1e-5,
+                    "radius {radius}, hardness {h}: baked shoulder is {shoulder} px",
+                );
+                assert!(eff <= h, "the floor must never harden a brush");
+                assert!(eff >= last, "the floor must stay monotone in hardness");
+                last = eff;
+            }
+        }
+        // Wherever the tip can carry a px of shoulder, the hardness is untouched.
+        assert_eq!(effective_hardness(0.9, 100.0), 0.9);
+        assert_eq!(effective_hardness(0.5, 2.0), 0.5);
     }
 }

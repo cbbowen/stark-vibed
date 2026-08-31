@@ -31,7 +31,7 @@ pub(super) const ROUND_RES: u32 = 256;
 /// 256² of `acos`/`exp` plus two texture uploads per miss, per frame. Four covers a
 /// handful of simultaneous brushes; a hardness slider still walks through fresh
 /// values per frame, which is why this is an LRU of a few rather than a map that
-/// banks ~320 KB of GPU texture per position and never hands it back.
+/// banks ~590 KB of GPU texture per position and never hands it back.
 const ROUND_TIPS_KEPT: usize = 4;
 
 /// How many color-dynamics tiles [`TipCache`] keeps baked at once.
@@ -57,8 +57,11 @@ type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
-    /// The round tips' baked textures, keyed by `hardness.to_bits()` (§6.6): an LRU
-    /// of [`ROUND_TIPS_KEPT`], newest last.
+    /// The round tips' baked textures, keyed by the **effective** hardness's bits —
+    /// the brush's own floored by its size (`budget::effective_hardness`, §6.6) — an
+    /// LRU of [`ROUND_TIPS_KEPT`], newest last. Only a brush the floor binds (hard
+    /// *and* small) re-bakes as its size changes; every other key is the hardness
+    /// alone, as it always was.
     round_tip: Lru<u32, RoundTip>,
     /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1 zero tile
     /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
@@ -101,7 +104,9 @@ impl TipCache {
     /// The **orientation source** is part of the question for an image brush (§6.6):
     /// follow-stroke reads a single identity layer, pen a stack of them. A round
     /// tip is rotation-invariant and answers both with the same one slice, which is why
-    /// it is asked only for its hardness.
+    /// it is asked only for its hardness — floored by the brush's own size
+    /// (`budget::effective_hardness`, §6.6), so a hard edge keeps a ~px of
+    /// antialiased rim at any radius.
     pub(super) fn resolve(&self, assets: &AssetStore, brush: &BrushParams) -> Option<ResolvedTip> {
         match brush.shape {
             BrushShape::Stamp(id) => {
@@ -113,7 +118,7 @@ impl TipCache {
                     })
             }
             BrushShape::Round { hardness } => {
-                let tip = self.round_tip(hardness);
+                let tip = self.round_tip(super::budget::effective_hardness(hardness, brush.size));
                 Some(ResolvedTip {
                     prefix: tip.prefix,
                     coverage: tip.coverage,

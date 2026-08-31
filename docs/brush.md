@@ -306,6 +306,42 @@ Two places the obvious implementation is wrong:
   whatever it says. The pause it buys back is the whole stroke's render, which
   is why it is not the default.
 
+**The pixel's own footprint (antialiasing).** The sweep evaluates a continuous
+field at texel centres, and a point sample is the wrong reading wherever the
+field outruns the tile grid's Nyquist: a tip a couple of px wide drops out or
+ropes with its sub-pixel position (its paint falls *between* centres — a
+height-conservation failure in §6.1's own terms), and a falloff narrower than a
+px shimmers. The fix stays inside `τ`, because `τ` is the quantity everything
+composes linearly in: the prefix-τ volume carries a **second prefix, across the
+lateral axis** (`build_prefix_tau`'s `g` channel), so a fragment can read not the
+profile *at* its centre but its exact box average over the pixel it stands for —
+one more prefix difference, the travel axis's own trick turned sideways
+(`stamp_common::prefix_span_box`), at twice the loads. Filtering is linear, so it
+commutes with the sum over overlapping segments — the box average of `Στ` is the
+sum of box averages — and the deposit stays exactly as cut-independent filtered
+as plain; adjacent windows telescope, so the profile's lateral integral is
+conserved wherever the window sits, which is what keeps a hairline's paint on
+the canvas. The window is half a canvas px each way in the frame of the tip in
+force, a pure function of canvas position like every input to the deposit
+(§6.4). It engages only where it spans at least a mask texel (`swept_depth`):
+below that the differenced prefix degenerates into a texel-wide blur scaled by
+the radius, and a tip that large resolves its own profile over many px anyway —
+the hardness floor (§6.6) owns that regime. The strip and the per-segment reach
+both grow by `AA_RIM_PX` for the half-px the filter reads past the extent
+(`sweep_vertex`, `Sweep::reach`).
+
+Two boundaries drawn on purpose. The filter does not chase the *visible* edge of
+heavy paint: the slab law re-sharpens whatever `τ` carries (`1 − exp(−K·m)`
+compresses a filtered ramp toward its low end), and the average the eye wants is
+of the composited parcel, not of `τ` — §6.4's supersampling theorem, one level
+down. The hardness floor covers the common case; a supersampled sweep scratch,
+resolved where the integrate already reads it, is the exact answer if profiling
+ever asks for one. And the wet loop still point-samples: its exposure is divided
+into bake rows integrated in the same measure (`dynamics.wesl::deposit`), so
+filtering one side alone would shear the reservoir means it recovers. Its
+brushes are the soft ones; the erase pass, which shares `swept_depth`, is
+covered.
+
 **Running dry.** `drain` fades what the brush lays, linearly with distance
 travelled, until the stroke is bone dry. It is quoted **per brush radius** for the
 taper's reason, and it is the stronger case of the two: `radius` is meant to read
@@ -1253,6 +1289,22 @@ the profile is exact rather than approached. (It was not, before: normalizing a
 `1 − r^h` disc by its chord half-length aimed at the same profile through the
 linear integral, and drew a stroke up to 0.54 in coverage fuller than its
 hardness named, with the falloff crushed into the outermost texels.)
+
+The hardness a stroke actually bakes is **floored by its own size**: the tip's
+shoulder — `3·(1−hardness)·radius` px, the one definition
+(`budget::shoulder_per_radius`) — never falls under one canvas px
+(`budget::effective_hardness`, applied where the tip is resolved,
+`TipCache::resolve`). A falloff narrower than a px is content the tile grid
+cannot carry — it can only alias — so a hard edge keeps the ~px antialiased rim
+every selection mask's feather already has ("floored at one, which *is* the
+antialiased hard edge", §6.8), and a tip too small to hold even that comes out
+as soft as its own footprint. This is the pixel footprint's other half: the box
+filter (§6.2) owns the small tips, where its window spans mask texels, and the
+floor owns the large hard ones, where the window is sub-texel but the profile
+itself must stay ≥ a px wide. The budgets built on the *nominal* hardness (the
+taper's subdivision, the coarse-deposit cell) are left there deliberately — the
+nominal shoulder is the narrower, so they only over-provide. A `Stamp` carries
+no hardness to floor and takes the box filter alone.
 
 **Brush shapes are content-addressed assets.** An imported image is identified by
 the hash of its bytes; `BrushParams` references that id, never the pixels:

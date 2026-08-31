@@ -26,8 +26,9 @@ use stark_shaders::mirror::stamp_common::decl as sd;
 /// tile on every pointer move.
 const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
 
-/// The prefix-τ volume at group 1 — an R32Float 2-D array (x, y, + orientation layers)
-/// read with `textureLoad`, since the shader does its own trilinear lookup (§6.6). The
+/// The prefix-τ volume at group 1 — an Rg32Float 2-D array (x, y, + orientation
+/// layers; travel prefix in `r`, its lateral prefix in `g`, §6.2) read with
+/// `textureLoad`, since the shader does its own trilinear lookup (§6.6). The
 /// array dimension comes from the declaration; the host used to name it.
 pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 
@@ -193,8 +194,9 @@ pub(super) fn build_swept_kit(
         false,
     );
 
-    // The prefix-τ texture is a R32Float 2D-array (x, y, + orientation layers), sampled
-    // via textureLoad (not filterable), so the shader does its own trilinear lookup.
+    // The prefix-τ texture is an Rg32Float 2D-array (x, y, + orientation layers),
+    // sampled via textureLoad (not filterable), so the shader does its own trilinear
+    // lookup.
     let prefix_bgl = desc::layout_for(device, "stark sweep prefix bgl", PREFIX_SLOTS, frag, false);
 
     // Group 2: the color-dynamics noise field (a tileable 3-D volume) + its
