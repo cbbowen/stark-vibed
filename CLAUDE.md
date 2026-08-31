@@ -39,7 +39,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [rendering.md](docs/rendering.md) | §6.3–§6.5, §6.7, §6.10 | The three compositing passes, blend modes, the media/lighting pass, aprons and the canvas substrate, Oklab and Mixbox, the generated uniform mirrors |
 | [selection.md](docs/selection.md) | §6.8, §16 | The soft-mask coverage field every tool acts through, fill, and transform |
 | [layers.md](docs/layers.md) | §14, §15 | Groups and clipping as one mechanism; merging a layer down without changing the picture; matte layers, framing and export |
-| [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map |
+| [filters.md](docs/filters.md) | §21 | Filter layers: adjustment as a layer, where it sits *is* its scope, the color filter, the spectral chromatic aberration, the gradient map, the FFT focal blur |
 | [gradients.md](docs/gradients.md) | §22 | Gradients: stops fitted from a line traced through the painting — the eyedropper generalized — the browser-local library of them, the gradient fill (a `FillOp` parcel that varies with position), and the shared gradient bar that also grades matte paint |
 | [images.md](docs/images.md) | §23 | Placing an image from a file or the clipboard: why the picture is *named* rather than carried (and what carrying it cost), why its tiles are built on the CPU with no shader at all, and the deposit that makes an import *paint* |
 | [engine.md](docs/engine.md) | §7–§10 | The actor target, the timing histograms, the save format, golden tests, the extensibility map |

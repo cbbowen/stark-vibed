@@ -12,12 +12,13 @@
 // round trip, which is the point: in a colorimetric space the three channels are
 // the whole color, and they are already Oklab (§6.7).
 
-import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab};
+import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, linear_to_light};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
-    FsOut, f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve,
-    is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    FsOut, f, FILTER_CHROMATIC, FILTER_FOCAL_BLUR, back_color, back_aux, back_samp,
+    filtered, resolve, is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    BlurOut, blur_pad, blur_read, blur_src,
 };
 
 @vertex
@@ -80,9 +81,59 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         return out;
     }
 
+    if f.kind == FILTER_FOCAL_BLUR {
+        // The convolution already ran (§21.12, `blur.wesl`): one read per lane —
+        // exact, or interpolated up from a decimated transform — and the trip
+        // back from light into this space's channels. Like the gather, this
+        // filter moved color, coverage and height together, so the unclipped
+        // strength mix runs on the raw premultiplied lanes and the clipped one
+        // tails through the point filters' own ending.
+        let b = blur_read(frag.xy);
+        let lab = linear_srgb_to_oklab(b.lin);
+        if is_clipped() {
+            return resolve(cb, cb.rgb / max(cb.a, COVERAGE_EPS), lab, h);
+        }
+        var out: FsOut;
+        out.color = mix(cb, vec4<f32>(lab * b.cov, b.cov), f.strength);
+        out.aux = vec4<f32>(mix(h, b.h, f.strength), 0.0, 0.0, 0.0);
+        return out;
+    }
+
     let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
     let out_chan = filtered(chan);
     return resolve(cb, chan, out_chan, h);
+}
+
+// The focal blur's decode (§21.12): the accumulator laid into `blur.wesl`'s
+// spatial-domain planes — premultiplied XYZ light, coverage, height, and the
+// border weight — over this layer's padded FFT extent, zeros past the
+// accumulator's edge, decimated by the scale in `f.disp.x` when the on-screen
+// radius demands it. Space-specific for the chromatic gather's reason: a texel
+// has to go through this space's own decode to *be* light, and here that is one
+// Oklab trip.
+@fragment
+fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
+    let src = blur_src(frag.xy);
+    if !src.inside {
+        return blur_pad();
+    }
+    var cb: vec4<f32>;
+    var h: f32;
+    if src.load {
+        cb = textureLoad(back_color, src.p, 0);
+        h = textureLoad(back_aux, src.p, 0).x;
+    } else {
+        cb = textureSampleLevel(back_color, back_samp, src.uv, 0.0);
+        h = textureSampleLevel(back_aux, back_samp, src.uv, 0.0).x;
+    }
+    let lab = cb.rgb / max(cb.a, COVERAGE_EPS);
+    // `max(…, 0)` for the gather's reason: an out-of-gamut mixture's linear form
+    // can dip below zero, and light does not go negative.
+    let light = linear_to_light(max(oklab_to_linear_srgb(lab), vec3<f32>(0.0)));
+    return BlurOut(
+        vec4<f32>(light * cb.a, cb.a),
+        vec4<f32>(h, 1.0, 0.0, 0.0),
+    );
 }
 
 // —— the merge (§14.11.7) ————————————————————————————————————————————————————

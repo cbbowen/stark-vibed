@@ -39,7 +39,7 @@ Status lives here and nowhere else.
 | — | View mirror & rotate (§18.1.2) | done |
 | — | Timeline mode / scrubber (§18.2.4) | done |
 | — | Groups & clipping (§14) | done |
-| — | Filter layers (§21) | done — the architecture and the color filter; the rest of the kinds (§21.9) remain |
+| — | Filter layers (§21) | done — the architecture and four kinds, the FFT focal blur among them (§21.12); the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
 | — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
@@ -339,10 +339,13 @@ it.
 Built as **filter layers** (§21), and the model went one step past what this
 paragraph asked for: an adjustment layer's *scope* is where its row sits, so the
 clipping toggle Photoshop needs beside every adjustment is not a control here at
-all (§21.1). Three kinds ship — the color filter (exposure / contrast /
+all (§21.1). Four kinds ship — the color filter (exposure / contrast /
 saturation / hue / tint, in Oklab, §21.5), the spectral chromatic aberration
-(§21.10), and the gradient map over the captured ramps of §22 (§21.11) — and
-the rest are a variant and an arm each (§21.9).
+(§21.10), the gradient map over the captured ramps of §22 (§21.11), and the
+focal blur, a true FFT convolution of the light through the aperture's disc
+rather than a Gaussian (§21.12) — and the rest are a variant and an arm each
+(§21.9), with the blur's transform machinery standing ready for any
+large-kernel kind.
 
 **Liquify** shipped as a brush effect rather than a filter, which is what the
 gesture is: `BrushEffect::Liquify` drags the paint under the tip along the

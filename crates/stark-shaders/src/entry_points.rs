@@ -19,6 +19,7 @@
 pub const ENTRY_POINTS: &[&str] = &[
     "blend_mixbox",
     "blend_oklab",
+    "blur",
     "composite",
     "dynamics",
     "erase",

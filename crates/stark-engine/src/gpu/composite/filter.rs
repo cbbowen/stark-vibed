@@ -48,11 +48,18 @@ const FILTER_SLOTS: &[Slot] = &[
     Slot::sampled(fcd::BACK_COLOR),
     Slot::sampled(fcd::BACK_AUX),
     Slot::at(fcd::BACK_SAMP),
+    // The focal blur's convolved planes (§21.12), at the blend's other source
+    // slot and past the space partition — `filter_common.wesl` says why those
+    // numbers. Loaded exactly, never sampled: their `f32` formats are not
+    // filterable everywhere this runs, and the resolve wants its own texel.
+    // A 1×1 zero stands in whenever the frame has no blur (§6.8's pattern).
+    Slot::at(fcd::BLUR_LIGHT),
     Slot::sampled(mld::PIGMENT_LUT),
     Slot::at(mld::PIGMENT_SAMP),
     // Sampled, unlike the blend's two: the gather reads the residual through the same
     // taps as the color it belongs to.
     Slot::sampled(fmd::BACK_RESID).only_with_resid(),
+    Slot::at(fcd::BLUR_AUX),
 ];
 
 /// The filter pass: one fullscreen draw rewriting the accumulator.
@@ -75,6 +82,15 @@ pub(crate) struct FilterPass {
     /// LUT. What differs is what the alpha lane *means* (per-unit opacity rather than
     /// coverage), which is a fact about the caller rather than about the binding.
     pub(crate) tile: wgpu::RenderPipeline,
+    /// The focal blur's decode (§21.12): the same module's `fs_blur_decode`, on the
+    /// same layout, into `blur.wesl`'s two spatial-domain planes — the accumulator
+    /// as premultiplied XYZ light plus coverage, height and the border weight.
+    /// Here rather than in [`BlurPass`](super::blur::BlurPass) because the decode
+    /// is the per-space half of the blur: the FFT is arithmetic on light, this is
+    /// what makes a texel light at all.
+    ///
+    /// [`BlurPass`]: super::blur::BlurPass
+    pub(super) blur_decode: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
@@ -84,6 +100,11 @@ pub(crate) struct FilterPass {
     /// Bound by the tile pass too, which never reads it: a bind group has to satisfy
     /// the whole layout, and one layout for two pipelines is the trade that buys.
     sampler: wgpu::Sampler,
+    /// What stands at the blur-plane slots when the frame has no blur — and in
+    /// every merge, which refuses a resampling filter and so never reads them
+    /// (§14.11.7). The §6.8 stand-in pattern; a bind group answers to the whole
+    /// layout.
+    blur_zero: (wgpu::TextureView, wgpu::TextureView),
 }
 
 impl FilterPass {
@@ -140,6 +161,21 @@ impl FilterPass {
             ("vs_main", "fs_tile"),
             &targets,
         );
+        // The blur decode's targets are the FFT planes' own formats, read off the
+        // shader that will transform them (§6.10) rather than restated.
+        use stark_shaders::mirror::blur::decl as bld;
+        let blur_targets = [
+            desc::target(bld::DST_LIGHT.storage_format()),
+            desc::target(bld::DST_AUX.storage_format()),
+        ];
+        let blur_decode = desc::fullscreen_pipeline(
+            device,
+            "stark filter blur decode pipeline",
+            &layout,
+            &shader,
+            ("vs_main", "fs_blur_decode"),
+            &blur_targets,
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("stark filter sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -148,11 +184,17 @@ impl FilterPass {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let blur_zero = (
+            desc::zero_texture(ctx, bld::DST_LIGHT.storage_format(), "stark blur light 1x1"),
+            desc::zero_texture(ctx, bld::DST_AUX.storage_format(), "stark blur aux 1x1"),
+        );
         Self {
             pipeline,
             tile,
+            blur_decode,
             bgl,
             sampler,
+            blur_zero,
         }
     }
 
@@ -172,13 +214,19 @@ impl FilterPass {
     ///
     /// The sampler at `BACK_SAMP` is bound by the tile pass and never read — `fs_tile`
     /// takes no taps — because a bind group answers to the whole layout.
+    /// `blur` is the frame's convolved planes when it has a focal blur (§21.12),
+    /// and absent otherwise — the 1×1 zeroes stand in, so the layout is answered
+    /// either way and a document without a blur pays two stand-in bindings rather
+    /// than a variant of this group.
     pub(crate) fn bind_group(
         &self,
         device: &wgpu::Device,
         uniform: wgpu::BindingResource<'_>,
         back: Targets<'_>,
         pigment: &crate::gpu::pigment::PigmentLut,
+        blur: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> wgpu::BindGroup {
+        let (blur_light, blur_aux) = blur.unwrap_or((&self.blur_zero.0, &self.blur_zero.1));
         desc::bind_group_for(
             device,
             "stark filter bg",
@@ -190,6 +238,8 @@ impl FilterPass {
                 fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
                 fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
                 fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+                fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
+                fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
                 ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&pigment.view),
                 ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&pigment.sampler),
                 fm::BACK_RESID => wgpu::BindingResource::TextureView(
@@ -200,6 +250,16 @@ impl FilterPass {
         )
     }
 
+    /// `blur` is this consumer's blur scratch when the frame has a focal blur
+    /// anywhere — the planes it lands in ride the bind group either way, so a
+    /// point filter beside a blur reads the same group (§21.12). `convolve` is
+    /// `Some` exactly when **this** layer is the blur: the frame's kernel,
+    /// decode and FFT round trip are encoded ahead of the fullscreen pass, whose
+    /// `FILTER_FOCAL_BLUR` arm then reads what they landed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every argument is a distinct piece of what one filter pass names"
+    )]
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
@@ -207,16 +267,25 @@ impl FilterPass {
         b: Bounce<'_>,
         slots: &UniformSlots<FilterUniform>,
         pigment: &crate::gpu::pigment::PigmentLut,
+        blur: Option<&super::blur::BlurFrame>,
+        convolve: Option<&super::blur::BlurPass>,
     ) {
         let bg = b.here.filter_bg(b.phase.back_is_swap, || {
-            self.bind_group(&ctx.device, slots.resource(), b.back, pigment)
+            self.bind_group(
+                &ctx.device,
+                slots.resource(),
+                b.back,
+                pigment,
+                blur.map(|f| f.planes()),
+            )
         });
-        b.pass(
-            encoder,
-            "stark filter pass",
-            &self.pipeline,
-            bg,
-            UniformSlots::<FilterUniform>::offset(b.slot),
-        );
+        let offset = UniformSlots::<FilterUniform>::offset(b.slot);
+        if let Some(pass) = convolve {
+            // `b.slot` is this layer's dense filter slot (§14.7's one walk), which
+            // is also how the frame's jobs are keyed — one index, two lists.
+            blur.expect("a focal blur's frame is prepared before anything encodes")
+                .encode(pass, self, encoder, bg, offset, b.slot);
+        }
+        b.pass(encoder, "stark filter pass", &self.pipeline, bg, offset);
     }
 }

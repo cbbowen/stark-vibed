@@ -21,7 +21,7 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, LayerId, Place};
+use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur, LayerId, Place};
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
 
@@ -58,6 +58,11 @@ const FRINGE: Filter = Filter::Chromatic(ChromaticAberration {
     spread: 12.0,
     angle: 0.0,
 });
+
+/// A focal blur wide enough that its spill clears [`is_bare`]'s margin on every
+/// side of the stroke, and narrower than the stroke's half-width, so its disc
+/// sits wholly on paint at the centre (§21.12).
+const BLUR: Filter = Filter::FocalBlur(FocalBlur { radius: 6.0 });
 
 /// How far the filter moved each pixel's red-minus-blue separation, scanned along
 /// the stroke's row: `(min, max)` of `(R−B)_after − (R−B)_before` across it.
@@ -867,6 +872,12 @@ fn a_filter_survives_save_and_load() {
             (1.0, [0.05, 0.77, 0.43]),
         ]))),
     ));
+    // And a fourth of the fourth kind, so the enum stays exercised whole.
+    let blur = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    engine.process(DocCommand::SetFilter(
+        blur,
+        Filter::FocalBlur(FocalBlur { radius: 4.5 }),
+    ));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -886,7 +897,7 @@ fn a_filter_survives_save_and_load() {
             .collect()
     };
     let back = filters(&loaded);
-    assert_eq!(back.len(), 3, "all three filter layers came back");
+    assert_eq!(back.len(), 4, "all four filter layers came back");
     assert_eq!(back, filters(&engine));
 }
 
@@ -1051,6 +1062,219 @@ fn a_gradient_map_works_in_a_pigment_document() {
     assert!(
         red_dominant(after),
         "an all-red ramp should repaint pigment paint red too: {after:?}",
+    );
+}
+
+/// **A focal blur spreads the paint past its edge, in every direction, and keeps
+/// the middle** (§21.12). The spill onto bare canvas is the blur moving coverage
+/// and height with the light — the chromatic transport rule, over a disc — and
+/// the centre staying red is the trivial half of the partition of unity: a disc
+/// wholly on red paint averages red paint.
+///
+/// "Bare canvas" is read off the paint-free render, [`is_bare`]'s own idiom, and
+/// **both flanks** of the stroke must gain paint: a disc spills symmetrically
+/// where the dispersion's vector spills one way, and a wrap-around error in the
+/// FFT's padding — one edge of the picture leaking in from the other — is
+/// exactly the class of bug that shows up as one-sided.
+#[test]
+fn a_focal_blur_spreads_the_paint_past_its_edge() {
+    let Some(mut empty) = engine_or_skip() else {
+        return;
+    };
+    let unpainted = empty.render_to_image();
+    let Some(mut engine) = painted() else { return };
+    let bare = engine.render_to_image();
+
+    add_filter(&mut engine, None, BLUR);
+    let after = engine.render_to_image();
+    assert!(
+        red_dominant(center(&after)),
+        "deep inside the stroke a disc of red stays red: {:?}",
+        center(&after),
+    );
+
+    let y_mid = bare.height / 2;
+    let (mut above, mut below) = (0u32, 0u32);
+    for y in 0..bare.height {
+        for x in 0..bare.width {
+            if !is_bare(&bare, &unpainted, x, y) {
+                continue;
+            }
+            if after.pixel(x, y) != bare.pixel(x, y) {
+                if y < y_mid {
+                    above += 1;
+                } else {
+                    below += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        above > 0 && below > 0,
+        "the blur should spill onto bare canvas on both flanks of the stroke \
+         (above: {above}, below: {below})",
+    );
+}
+
+/// **A focal blur is the exact identity on a uniform field** — the FFT round
+/// trip's keystone (§21.12). On a field laid flat with a feather-0 fill, every
+/// tap of the kernel lands on the same paint, so the convolution provably
+/// returns it: at the rim by the border weight's renormalization, everywhere
+/// else by the kernel's own normalization, and both to within rounding. This is
+/// the one assertion a broken transform cannot pass — a twiddle sign, a
+/// mis-strided Stockham pass, a stale ping-pong half or a lost `1/N` all turn a
+/// flat field into a picture of the mistake.
+///
+/// A fill, not a stroke, because the claim needs a truly flat field; and a
+/// tolerance of one level, because the trip through `f32` frequency space and
+/// back is not bit-exact under the 8-bit render.
+#[test]
+fn a_focal_blur_is_the_identity_on_a_uniform_field() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: stark_model::document::FillOp::new(
+            stark_model::document::SelectionShape::rect_from_corners(
+                Vec2::new(-140.0, -140.0),
+                Vec2::new(140.0, 140.0),
+            ),
+            0.0,
+            Srgb::new(RED),
+            1.0,
+        ),
+    });
+    let before = engine.render_to_image();
+    add_filter(&mut engine, None, BLUR);
+    let after = engine.render_to_image();
+    assert!(
+        images_match(&before, &after, 1),
+        "a blurred uniform field moved by more than rounding: {:?}",
+        diff_fraction(&before, &after),
+    );
+}
+
+/// A **neutral** focal blur — radius 0 — changes no pixel, to the byte: §21.3's
+/// rule for this kind, which is what keeps adding one a step taken before
+/// deciding what it does. The draw list drops it, so this also pins that a
+/// document holding an idle blur allocates none of the FFT scratch path's
+/// passes.
+#[test]
+fn a_neutral_focal_blur_changes_no_pixel() {
+    let Some(mut engine) = painted() else { return };
+    let before = engine.render_to_image();
+    add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    assert!(
+        images_match(&before, &engine.render_to_image(), 0),
+        "a radius-0 focal blur is not the identity",
+    );
+}
+
+/// **A clipped focal blur stays inside the paint it softens** (§21.4.1) — the
+/// chromatic clip's claim, for the second filter with an opinion about coverage:
+/// unclipped its spill reaches bare canvas, clipped every texel the paint does
+/// not cover comes through byte for byte while the paint itself still blurs.
+#[test]
+fn a_clipped_focal_blur_stays_inside_the_paint() {
+    let Some(mut empty) = engine_or_skip() else {
+        return;
+    };
+    let unpainted = empty.render_to_image();
+    let Some(mut engine) = painted() else { return };
+    let bare = engine.render_to_image();
+
+    let id = add_filter(&mut engine, None, BLUR);
+    let open = engine.render_to_image();
+    engine.process(DocCommand::SetLayerClip(id, true));
+    let shut = engine.render_to_image();
+
+    let (mut spilled, mut leaked) = (0u32, 0u32);
+    for y in 0..bare.height {
+        for x in 0..bare.width {
+            if !is_bare(&bare, &unpainted, x, y) {
+                continue;
+            }
+            spilled += u32::from(open.pixel(x, y) != bare.pixel(x, y));
+            leaked += u32::from(shut.pixel(x, y) != bare.pixel(x, y));
+        }
+    }
+    assert!(
+        spilled > 0,
+        "the unclipped blur never left the paint, so the clip has nothing to bound",
+    );
+    assert_eq!(
+        leaked, 0,
+        "a clipped blur wrote {leaked} texels of bare canvas: coverage came out \
+         other than it went in",
+    );
+    assert!(
+        !images_match(&bare, &shut, 0),
+        "the clipped blur changed nothing at all, so it is not the clip under test",
+    );
+}
+
+/// **A focal blur survives an extreme zoom-in** (§21.12) — the crash this pins:
+/// the radius is a canvas fact, so zooming in multiplies it on screen, and the
+/// FFT's guard band once grew with it until the planes blew past the device's
+/// buffer limits and the submit failed. Decimation is what bounds it now, and
+/// this drives the real path at a zoom that put the old padding at 8192² —
+/// through the render, which is where the validation error fired.
+///
+/// Three claims, because a crash fix that silenced the filter would also pass a
+/// mere no-crash test: the render completes, the blur is still visibly doing
+/// something at that zoom, and dropping it restores the unblurred picture — so
+/// the decimated pipeline is running, not skipped.
+#[test]
+fn a_focal_blur_survives_an_extreme_zoom() {
+    let Some(mut engine) = painted() else { return };
+    // 64× about the viewport's centre: a 32-canvas-px radius becomes 2048
+    // on-screen texels, which is decimation territory many times over.
+    engine.process(ViewCommand::Zoom {
+        anchor: Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5),
+        factor: 64.0,
+    });
+    let sharp = engine.render_to_image();
+    let id = add_filter(
+        &mut engine,
+        None,
+        Filter::FocalBlur(FocalBlur { radius: 32.0 }),
+    );
+    let blurred = engine.render_to_image();
+    assert!(
+        !images_match(&sharp, &blurred, 0),
+        "a 2048-texel blur at 64x should still change the picture",
+    );
+    engine.process(DocCommand::RemoveLayer(id));
+    assert!(
+        images_match(&sharp, &engine.render_to_image(), 0),
+        "removing the blur should restore the zoomed picture exactly",
+    );
+}
+
+/// The focal blur in a **pigment** document (§21.12, §6.7): each texel decodes
+/// through Mixbox's polynomial with its residual on the way into light, and the
+/// blurred light re-enters through the inverse LUT with the residual recomputed
+/// — the same two legs the chromatic gather pays, through the blur's own path.
+#[cfg(feature = "mixbox")]
+#[test]
+fn a_focal_blur_works_in_a_pigment_document() {
+    let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
+        return;
+    };
+    paint(&mut engine, RED, 22.0, STROKE);
+    let before = engine.render_to_image();
+    add_filter(&mut engine, None, BLUR);
+    let after = engine.render_to_image();
+    assert!(
+        !images_match(&before, &after, 0),
+        "the blur has to change the pigment picture",
+    );
+    assert!(
+        red_dominant(center(&after)),
+        "deep inside the stroke pigment red blurs to red: {:?}",
+        center(&after),
     );
 }
 

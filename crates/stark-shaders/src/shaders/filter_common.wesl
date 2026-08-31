@@ -64,6 +64,7 @@ import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, light_t
 const FILTER_COLOR: u32 = 0u;
 const FILTER_CHROMATIC: u32 = 1u;
 const FILTER_GRADIENT_MAP: u32 = 2u;
+const FILTER_FOCAL_BLUR: u32 = 3u;
 
 struct Filter {
     // Which filter this layer is (see the codes above).
@@ -94,6 +95,14 @@ struct Filter {
     // they must turn, mirror and scale with it rather than with the window, which
     // is the same statement `media_common`'s `view_m` makes about the substrate. View
     // state, never document state; zero for every other kind.
+    //
+    // For `FILTER_FOCAL_BLUR`, `.x` is the **decimation scale** instead (§21.12): a
+    // power of two ≥ 1, accumulator texels per convolution texel, chosen by the
+    // encoder so the on-screen radius never asks the FFT for an unaffordable
+    // transform (`blur::scale`). 1 at every working zoom; `.y` stays zero. A view
+    // fact on `disp`'s own terms — the same filter decimates differently at two
+    // zooms — and read by the decode and the resolve, which are the two ends of
+    // the trip the transform between them is scale-blind to.
     disp: vec2<f32>,
     // The filter's own numbers, read according to `kind`. For `FILTER_COLOR`
     // (§21.5): `.x` exposure in stops, `.y` contrast, `.z` saturation, `.w` hue
@@ -138,6 +147,16 @@ struct Filter {
 // spends on the isolated source this pass does not have; the point filters keep
 // their exact `textureLoad`s and never touch it.
 @group(0) @binding(3) var back_samp: sampler;
+// The focal blur's convolved planes (§21.12), landed by `blur.wesl`'s inverse FFT
+// before this pass runs and read only by the `FILTER_FOCAL_BLUR` arm — a 1×1 zero
+// stands here for every other frame (§6.8's pattern). `blur_light` is the blurred
+// premultiplied XYZ light with the blurred coverage in `.w`; `blur_aux` is the
+// blurred height and, in `.y`, the blurred border weight `blur_read` divides by.
+// Padded larger than the accumulator, image at the origin, so the fragment's own
+// texel is the right load. Binding 4 takes the blend pass's other source slot;
+// 8 sits past `mixbox_lut`'s 5–6 and `filter_mixbox`'s 7.
+@group(0) @binding(4) var blur_light: texture_2d<f32>;
+@group(0) @binding(8) var blur_aux: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -397,4 +416,134 @@ fn ca_lum(w: vec3<f32>) -> f32 {
 // `+disp` is found by looking back along it.)
 fn ca_uv(frag: vec2<f32>, s: f32, dim: vec2<f32>) -> vec2<f32> {
     return (frag - f.disp * (s - 0.5)) / dim;
+}
+
+// —— focal blur (§21.12) ————————————————————————————————————————————————————
+//
+// The convolution itself ran before this pass: `fs_blur_decode` (one per space)
+// laid the accumulator into `blur.wesl`'s planes as premultiplied XYZ light plus
+// coverage, height and the border weight, and the FFT round trip landed the
+// blurred planes in the pair bound above. What is left for each space's `fs_main`
+// is one load, the division that makes the kernel exactly normalized, and the trip
+// back into its own channels — the same shape as the chromatic gather's ending,
+// with the integral already taken.
+
+// What the decode entry points write: the blur planes' spatial-domain layout,
+// shared here so the two spaces cannot pack them differently.
+struct BlurOut {
+    // Premultiplied XYZ light in `.xyz`, coverage in `.w`.
+    @location(0) light: vec4<f32>,
+    // Height in `.x`; the border weight — 1 on the accumulator, 0 in the padding —
+    // in `.y`.
+    @location(1) aux: vec4<f32>,
+}
+
+// The all-zero texel the decode writes outside the accumulator: no light, no
+// coverage, no height, and — the load-bearing lane — no border weight.
+fn blur_pad() -> BlurOut {
+    return BlurOut(vec4<f32>(0.0), vec4<f32>(0.0));
+}
+
+// Where a decode texel reads the accumulator, under the decimation scale
+// (§21.12): the centre of its scale×scale block, or padding when that centre
+// falls past the accumulator's edge.
+struct BlurSrc {
+    // Whether to `textureLoad` at `p` — the exact path, taken at scale 1 so an
+    // undecimated decode is byte-for-byte what it always was.
+    load: bool,
+    p: vec2<i32>,
+    // The bilinear path at scale > 1: the block centre as `back_samp` takes it,
+    // averaging the centre 2×2 of the block — the chromatic taps' own "bilinear
+    // closes the gap" reading, decimating instead of dispersing.
+    uv: vec2<f32>,
+    // False where the block centre is past the accumulator: the texel is padding
+    // and the decode writes `blur_pad()`.
+    inside: bool,
+}
+
+fn blur_src(frag: vec2<f32>) -> BlurSrc {
+    let s = max(f.disp.x, 1.0);
+    let dims = vec2<f32>(textureDimensions(back_color));
+    // `frag` is the decode texel's centre (p + 0.5), so the block centre is one
+    // multiply — which at scale 1 sits exactly on texel p.
+    let centre = frag * s;
+    var src: BlurSrc;
+    src.load = s <= 1.0;
+    src.p = vec2<i32>(floor(centre));
+    src.uv = centre / dims;
+    src.inside = centre.x < dims.x && centre.y < dims.y;
+    return src;
+}
+
+// One texel's blurred backdrop, back out of light: the un-premultiplied color in
+// **linear sRGB** (the same interface the chromatic taps use), the coverage and
+// the height.
+struct Blurred {
+    lin: vec3<f32>,
+    cov: f32,
+    h: f32,
+}
+
+// The division by the blurred border weight is the partition of unity (see
+// `blur.wesl`'s header): wherever the whole kernel saw real image it equals
+// dividing by the kernel's own sum, and at the viewport rim it renormalizes over
+// the taps that exist. The color divides by the blurred *coverage* instead — its
+// light was premultiplied by coverage on the way in, and the weight cancels —
+// so a fully-covered region's color never leans on the border math at all.
+//
+// `frag` is the fragment's own centre. At scale 1 that is one exact load; a
+// decimated frame (§21.12) interpolates the four surrounding convolution texels
+// by hand — these planes are `f32`, which no core sampler filters — *before* the
+// divisions, because the planes' lanes are the linear sums and the interpolation
+// has to happen where the algebra is linear.
+fn blur_read(frag: vec2<f32>) -> Blurred {
+    let s = max(f.disp.x, 1.0);
+    var light: vec4<f32>;
+    var aux: vec2<f32>;
+    if s <= 1.0 {
+        let p = vec2<i32>(floor(frag));
+        light = textureLoad(blur_light, p, 0);
+        aux = textureLoad(blur_aux, p, 0).xy;
+    } else {
+        let q = frag / s - 0.5;
+        let base = floor(q);
+        let t = q - base;
+        let hi = vec2<i32>(textureDimensions(blur_light)) - 1;
+        let p00 = clamp(vec2<i32>(base), vec2<i32>(0), hi);
+        let p11 = clamp(vec2<i32>(base) + 1, vec2<i32>(0), hi);
+        let p10 = vec2<i32>(p11.x, p00.y);
+        let p01 = vec2<i32>(p00.x, p11.y);
+        light = mix(
+            mix(
+                textureLoad(blur_light, p00, 0),
+                textureLoad(blur_light, p10, 0),
+                t.x,
+            ),
+            mix(
+                textureLoad(blur_light, p01, 0),
+                textureLoad(blur_light, p11, 0),
+                t.x,
+            ),
+            t.y,
+        );
+        aux = mix(
+            mix(
+                textureLoad(blur_aux, p00, 0).xy,
+                textureLoad(blur_aux, p10, 0).xy,
+                t.x,
+            ),
+            mix(
+                textureLoad(blur_aux, p01, 0).xy,
+                textureLoad(blur_aux, p11, 0).xy,
+                t.x,
+            ),
+            t.y,
+        );
+    }
+    let w = max(aux.y, 1e-6);
+    let lin = max(
+        light_to_linear(light.xyz / max(light.w, 1e-6)),
+        vec3<f32>(0.0),
+    );
+    return Blurred(lin, clamp(light.w / w, 0.0, 1.0), max(aux.x / w, 0.0));
 }

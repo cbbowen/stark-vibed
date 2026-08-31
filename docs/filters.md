@@ -535,13 +535,21 @@ nothing on screen to say where it came from.
 
 ### 21.9 Open
 
-- **The rest of the filters.** Motion blur, outline, blur, glow. A point filter is a
+- **The rest of the filters.** Motion blur, outline, glow. A point filter is a
   `Filter` variant and an arm in `filtered()`; one that reads *neighbouring* texels
-  follows the chromatic filter instead (§21.10), which already answered the two
-  questions this bullet used to hold open — a kernel stated in canvas px reaches the
+  follows the chromatic filter (§21.10), which already answered the two questions
+  this bullet used to hold open — a kernel stated in canvas px reaches the
   supersampled accumulator through the view's own linear map, per frame, and a
   neighbourhood pass branches in each space's `fs_main` where the space's decode is
-  in reach per tap.
+  in reach per tap. One whose kernel is *large* follows the focal blur instead
+  (§21.12), whose FFT machinery is kernel-shape-agnostic by construction: a motion
+  blur is `make_kernel` rasterizing a line instead of a disc, and nothing else.
+- **The aperture as an image.** The focal blur's kernel is a disc today, and the
+  disc is one compute pass of the machinery — everything after `make_kernel` is
+  shape-blind (§21.12). A user-supplied aperture (a hexagon, a heart, a cat) is
+  that pass sampling an asset instead of evaluating a distance, plus the asset
+  plumbing a brush shape already has (§6.9); the reason it is not done is the
+  reason it is easy.
 - **Radial dispersion.** The chromatic filter's axis is uniform (§21.10) because an
   infinite canvas has no centre for a lens's field to grow from. The frame (§15) is
   the obvious candidate to donate one — dispersion growing with distance from the
@@ -734,3 +742,123 @@ answer to a trace made the other way. Strength stays the layer's opacity, as
 everywhere (§21.4).
 
 ---
+
+### 21.12 The focal blur filter
+
+The fourth filter, and the second that resamples. Most applications blur with a
+Gaussian because a Gaussian is separable and cheap — and it looks like what it is:
+a wash. A lens does not wash; it spreads each point's light through the aperture's
+**circle of confusion**, so an out-of-focus highlight becomes a disc of light — a
+bokeh — with a hard rim. That difference *is* the look, and it is not a parameter
+of a Gaussian at any setting. So this filter is the real convolution:
+
+```
+out(x) = Σ_d k(d) · image(x − d),    k = the aperture, a filled disc
+```
+
+One number describes it, because one number describes the disc:
+
+```rust
+pub struct FocalBlur {
+    pub radius: f32,   // the circle of confusion's radius, canvas px; 0 the identity
+}
+```
+
+Stated in canvas px on the chromatic pair's argument (§21.10): the bokeh belongs
+to the artwork, so it scales with a zoom and holds its size in an export; the trip
+into accumulator texels is the renderer's, per frame, through the view's linear
+map. The struct is expected to grow exactly one thing — the aperture's *shape* —
+and the machinery below was built so that day changes one compute pass (§21.9).
+
+**Why an FFT.** A disc of radius `r` is `πr²` taps per texel and not separable; at
+a painterly radius that is tens of thousands of taps, and a gather loop the shape
+of the chromatic filter's dies at its first real setting. The convolution theorem
+does the whole picture in `O(N log N)` *independent of the kernel's size or
+shape*: transform the image, multiply by the kernel's own transform, transform
+back. `blur.wesl` holds the transform — a Stockham radix-2 FFT, driven as a list
+of identical compute dispatches by `gpu/composite/blur.rs`, whose plan is plain
+data with the load-bearing parity ("the inverse transform lands in the planes the
+filter pass reads") pinned by a unit test rather than trusted to arithmetic in a
+comment.
+
+**The integral runs in light — XYZ, the space light is combined in** (§18.0.4). A
+blur is a sum over displaced light, so like the chromatic integral it is bracketed
+by each space's own decode: `fs_blur_decode` in `filter_oklab.wesl` pays one
+Oklab→light trip per texel, `filter_mixbox.wesl` pays `poly(c) + r` (§6.7), and
+the blurred light re-enters the space once per output texel — for pigment, through
+the inverse LUT with the residual recomputed. Between those brackets the FFT is
+space-blind, which is why it lives in one shader. Unlike the chromatic gather the
+decode runs *once per source texel* rather than once per tap — a convolution reads
+each texel `πr²` times, and the FFT reads it once — so the bracket that was the
+gather's per-tap cost is here two fullscreen passes.
+
+**Color, coverage and height travel together**, the transport rule the chromatic
+filter established (§21.10): paint is visible only where coverage *and* height
+exist, so a bokeh past a stroke's edge carrying color alone could not be seen.
+Six real channels ride the transform — premultiplied XYZ light, coverage, height,
+and a border weight — packed as three complex planes, and the packing is exact
+rather than approximate: convolution is linear and the kernel is real, so
+`(f + i·g) ⊛ k = f⊛k + i·(g⊛k)`, each pair coming back as its two blurred halves.
+A normalized kernel conserves the height it moves, which is §6.1's demand.
+
+**The border weight is the partition of unity, generalized.** The sixth channel is
+1 on the accumulator and 0 in the padding, and every other channel is divided by
+its blurred value. Wherever the whole kernel lands on real image that division is
+by the kernel's own sum — so the kernel is *never normalized at all*, for any
+shape, with no constant to tune — and at the viewport rim it renormalizes over
+the taps that exist, the same honesty the chromatic gather buys by clamping to
+the rim. Deep inside flat paint the filter is therefore provably the identity,
+and `tests/filter.rs` pins it on a fill-flat field to one 8-bit level: the one
+assertion a broken transform cannot pass.
+
+**Strength and clip are the gather's** (§21.4.1). Unclipped, the strength mix runs
+on the raw premultiplied lanes — color, coverage and height together — so
+strength 0 is the backdrop bit for bit. Clipped, the blurred color lands over the
+coverage that was already there and the spill is simply never written: the pass
+tails through `resolve`, the point filters' own ending, and the softness grades
+the inside of the silhouette without growing it.
+
+**The plumbing is three passes threaded into the filter's one** (§21.3). The
+draw list is untouched — a focal blur is still one `Step::Filter`, one bounce of
+the same ping-pong — and the extra work is encoded ahead of the fullscreen pass:
+the space's decode lays the accumulator into the padded planes; the forward FFT,
+one frequency-domain multiply and the inverse FFT run as compute dispatches; and
+the fullscreen pass's `FILTER_FOCAL_BLUR` arm reads the result through two
+bindings every other kind leaves on 1×1 stand-ins (§6.8's pattern). The kernel's
+own transform is cached against its radius and rebuilt only when that moves —
+a settled blur pays no kernel work per frame. The eyedropper picks through all of
+it (§18.0.2): a `PreparedPick` carries a patch-sized copy of the same planes, so
+what the picker reports under a blur is the blurred paint the screen shows.
+
+**The honest edges are memory, and two rules bound it.** The planes are `f32`
+complex — `f16` loses outright, since a transform's DC term is the sum of the
+whole image — at a power-of-two padded size, five planes' worth: the largest
+scratch the application makes, and `resolve::attachment_bytes` charges the
+supersampling budget ~112 bytes a texel for it, which is the mechanism that
+keeps a blurred frame from also being a heavily supersampled one. The padding
+holds a guard band of the radius on each side so the circular convolution's
+wrap-around lands in zeros rather than carrying one edge of the picture into
+the other — and the guard is a *view-mapped* quantity, which is the second
+rule's whole reason: zooming in multiplies the on-screen radius, and a guard
+that grew with the zoom once grew the planes past the device's buffer limits
+and took the frame down. So past the knob's own ceiling on screen (128 texels
+— reachable only past 1:1, by construction) the layer **decimates** instead:
+the convolution runs at a power-of-two fraction of the accumulator's
+resolution, chosen per layer so its radius lands back inside the bound, with
+the decode averaging down and the resolve interpolating up while the transform
+between them stays scale-blind. That is the chromatic filter's tap-cap trade —
+degrade the sampling, never the picture's geometry — and it is invisible where
+it is legal, because a disc past a hundred texels wide carries nothing near
+texel frequency. The device's texture limit stays as the clamp of last resort,
+and only there does the radius itself give way — a smaller blur, never a
+wrapped one. And the FFT recomputes per frame while the filter is above live
+painting, which is what "accurate bokeh at painterly radii" costs; the recorded
+optimization path is radix-4 passes and a workgroup-memory transform, both
+invisible to everything outside `blur.wesl`.
+
+In the bar (§21.6) the blur is one track — a radius is one number with no partner
+to be a vector or a map with, so a track is the right control, by the same test
+that gave the chromatic pair a pad — through the same preview-per-sample /
+commit-once funnel as every knob. Radius 0 is the neutral, dropped from the draw
+list to the byte (§21.3), so a freshly added blur changes nothing until it is
+dialled.

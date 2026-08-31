@@ -69,7 +69,7 @@ use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
 use stark_model::color::linear_to_srgb;
 use stark_model::document::LayerId;
-use stark_model::document::{ChromaticAberration, ColorAdjust, Filter};
+use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::gradient::Gradient;
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
@@ -157,6 +157,25 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         fmt: |v| format!("{v:.2}"),
     },
 ];
+
+/// The focal blur's one knob (§21.12). A knob table rather than a picture, and
+/// honestly so: a radius is one number with no partner to be a vector or a map
+/// with, so a track is the right control — the same test that gave the chromatic
+/// pair a pad. No glyph, on [`Knob::glyph`]'s bar rule: this kind's bar has one
+/// row, and a lone mark would say less than the word.
+const BLUR_KNOBS: &[Knob<FocalBlur>] = &[Knob {
+    name: "Radius",
+    hint: "The circle of confusion's radius, in canvas pixels \u{2014} how far each \
+           point's light is spread. A true disc convolution, so lights bloom into \
+           bokeh instead of washing out (\u{a7}21.12); stated on the canvas, so \
+           the blur scales with the painting rather than with the window.",
+    glyph: None,
+    range: FocalBlur::RADIUS,
+    scale: 1.0,
+    get: |b| b.radius,
+    set: |_, v| FocalBlur { radius: v },
+    fmt: |v| format!("{v:.1} px"),
+}];
 
 /// The filter being tuned, if the **selected layer** is one.
 ///
@@ -1129,6 +1148,11 @@ pub fn FilterBar() -> Element {
         },
         Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
         Filter::GradientMap(g) => map_rows(state, info.id, g),
+        Filter::FocalBlur(b) => rsx! {
+            div { class: "filter-knob-stack",
+                {knob_rows(state, info.id, b, BLUR_KNOBS, Filter::FocalBlur, tuning)}
+            }
+        },
     };
 
     rsx! {

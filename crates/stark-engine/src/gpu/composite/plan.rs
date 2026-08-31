@@ -362,7 +362,7 @@ pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUnifo
         kind: f.kind,
         strength: f.strength,
         clip: u32::from(f.clip),
-        disp: chromatic_disp(f, view),
+        disp: view_lanes(f, view),
         params: f.params,
         params2: f.params2,
         // The gradient map's ramp, zeroed for every other kind — `disp`'s convention:
@@ -374,20 +374,35 @@ pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUnifo
     }
 }
 
-/// The chromatic filter's dispersion vector for this frame: the red-end → blue-end
-/// displacement, carried from the canvas terms the document states (`params` =
-/// spread in canvas px, angle in canvas radians) into the **accumulator texels**
-/// the pass samples in, through the view's full canvas→screen linear map — zoom,
-/// rotation and mirror alike, so the fringes stay attached to the artwork exactly
-/// as the canvas substrate does (§21.10, §6.4). Zero for every other filter kind,
-/// which is the true value rather than a stand-in: no other kind disperses.
-fn chromatic_disp(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
-    if f.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
-        return [0.0; 2];
+/// The uniform's view-derived lanes for this frame — `disp`, whose meaning is
+/// the kind's to say (`filter_common.wesl`).
+///
+/// For the **chromatic** filter: the red-end → blue-end displacement, carried
+/// from the canvas terms the document states (`params` = spread in canvas px,
+/// angle in canvas radians) into the **accumulator texels** the pass samples in,
+/// through the view's full canvas→screen linear map — zoom, rotation and mirror
+/// alike, so the fringes stay attached to the artwork exactly as the canvas
+/// substrate does (§21.10, §6.4).
+///
+/// For the **focal blur**: `.x` is the decimation scale the convolution runs at
+/// (§21.12) — the same rule [`BlurPass::prepare`] plans the transform with
+/// (`blur::scale` of the same view-mapped radius), stated once there so the
+/// decode, the transform and the resolve cannot disagree about it.
+///
+/// Zero for every other kind, which is the true value rather than a stand-in.
+///
+/// [`BlurPass::prepare`]: super::blur::BlurPass::prepare
+fn view_lanes(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
+    if f.kind == stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
+        let (spread, angle) = (f.params[0], f.params[1]);
+        let d = view.linear() * stark_model::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
+        return [d.x, d.y];
     }
-    let (spread, angle) = (f.params[0], f.params[1]);
-    let d = view.linear() * stark_model::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
-    [d.x, d.y]
+    if f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR {
+        let s = super::blur::scale(super::blur::texel_radius(f, view));
+        return [s as f32, 0.0];
+    }
+    [0.0; 2]
 }
 
 #[cfg(test)]

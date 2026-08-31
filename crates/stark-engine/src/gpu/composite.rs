@@ -42,6 +42,7 @@
 
 mod attachment;
 mod blend;
+mod blur;
 mod filter;
 mod group;
 mod guides;
@@ -68,6 +69,7 @@ use stark_model::geom::Extent2;
 
 pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchTargets};
+use blur::{BlurFrame, BlurPass};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use guides::{GuidePass, GuideUniform};
 use media::MediaPass;
@@ -274,6 +276,10 @@ pub struct CompositorPasses {
     /// layer into the paint beneath it runs this module's tile-space entry point
     /// (§14.11.7), so the merged tile comes out of the shader the screen runs.
     filter: Arc<FilterPass>,
+    /// The focal blur's FFT machinery (§21.12) — space-independent, since by the
+    /// time it runs a texel is XYZ light. The per-space halves (the decode and the
+    /// resolve arm) live in `filter`'s shader, where the space's brackets are.
+    blur: BlurPass,
     overlay: OverlayPass,
     guides: GuidePass,
     /// `media_pass`, not `media`: [`CompositorPipeline`] reaches this whole struct
@@ -306,6 +312,10 @@ pub(crate) struct PreparedPick<'a> {
     plan: Plan<'a>,
     streams: PreparedStreams<'a>,
     scratch: Option<ScratchTargets>,
+    /// The pick's own blur scratch when the document has a focal blur (§21.12) —
+    /// a patch is a handful of texels, so this is kilobytes where the screen's is
+    /// the largest scratch there is, on `scratch`'s own argument for not sharing.
+    blur: Option<BlurFrame>,
 }
 
 /// Everything about compositing that does not depend on *what is being drawn into*:
@@ -441,6 +451,12 @@ pub struct Compositor {
     // ever pays for them.
     scratch: Option<ScratchTargets>,
 
+    /// The focal blur's padded FFT planes and dispatch plan (§21.12), present
+    /// exactly while the document holds a live blur — the largest scratch there
+    /// is, so it is dropped the frame the last blur goes rather than kept
+    /// (`BlurPass::prepare`).
+    blur: Option<BlurFrame>,
+
     // Pass A's instance streams, grown to the frame's tile and matte counts.
     instances: InstanceStream<Instance>,
     matte_instances: InstanceStream<MatteInstance>,
@@ -539,6 +555,7 @@ impl CompositorPipeline {
             tiles: TilePass::new(device, color_space, formats, tile_bgl),
             blend,
             filter,
+            blur: BlurPass::new(ctx),
             overlay: OverlayPass::new(device, target_format),
             guides: GuidePass::new(device, target_format),
             media_pass: MediaPass::new(device, color_space, &screen),
@@ -674,6 +691,7 @@ impl Compositor {
             ss: 1,
             ss_target: None,
             scratch: None,
+            blur: None,
             instances: InstanceStream::new(device, "stark composite instances"),
             matte_instances: InstanceStream::new(device, "stark matte instances"),
             matte_ramps: UniformSlots::new(device, "stark matte ramp", 1),
@@ -746,6 +764,7 @@ impl Compositor {
             // where that shows: it rebuilds every frame, and holding both sets across
             // the build doubles the peak of the largest allocation the app makes.
             self.scratch = None;
+            self.blur = None;
             self.accum = None;
             self.ss_target = None;
             self.accum = Some(p.offscreen(self.size, &self.media_buf));
@@ -888,6 +907,7 @@ impl Compositor {
         plan: &Plan<'_>,
         streams: &PreparedStreams<'_>,
         scratch: Option<&ScratchTargets>,
+        blur: Option<&BlurFrame>,
         view_slot: usize,
     ) {
         // The parity claim, checked where it is relied on: whatever the plan did, the
@@ -966,13 +986,23 @@ impl Compositor {
                     out,
                     slot,
                     phase,
-                } => p.filter.encode(
-                    &p.ctx,
-                    encoder,
-                    bounce(*back, *out, *slot, *phase),
-                    &self.filter_uniforms,
-                    &p.blend.pigment,
-                ),
+                } => {
+                    // A focal blur's convolution runs ahead of its fullscreen
+                    // pass (§21.12); every other kind takes the pass alone. One
+                    // question, asked of the plan's own description.
+                    let convolve = (plan.filters[*slot as usize].kind
+                        == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR)
+                        .then_some(&p.blur);
+                    p.filter.encode(
+                        &p.ctx,
+                        encoder,
+                        bounce(*back, *out, *slot, *phase),
+                        &self.filter_uniforms,
+                        &p.blend.pigment,
+                        blur,
+                        convolve,
+                    );
+                }
             }
         }
     }
@@ -1071,10 +1101,23 @@ impl Compositor {
         // texture, and a recorded encoder is not in-flight work.
         let scratch = (!plan.scratch.is_empty())
             .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
+        // Its own blur scratch too, on the same argument — and it is kilobytes
+        // here, a patch being a handful of texels. Serially sound across patches
+        // exactly as the scratch above is: each patch's decode and round trip
+        // rewrite the planes before its resolve reads them.
+        let mut blur = None;
+        p.blur.prepare(
+            &p.ctx,
+            &mut blur,
+            view.viewport,
+            &blur::blur_radii(&plan.filters, view),
+            p.ctx.device.limits().max_texture_dimension_2d,
+        );
         PreparedPick {
             plan,
             streams,
             scratch,
+            blur,
         }
     }
 
@@ -1132,6 +1175,7 @@ impl Compositor {
             &prepared.plan,
             &prepared.streams,
             prepared.scratch.as_ref(),
+            prepared.blur.as_ref(),
             slot,
         );
     }
@@ -1177,7 +1221,12 @@ impl Compositor {
             view.viewport,
             view.zoom,
             &p.ctx.device.limits(),
-            resolve::attachment_bytes(p.formats, p.target_format, &plan.scratch),
+            resolve::attachment_bytes(
+                p.formats,
+                p.target_format,
+                &plan.scratch,
+                blur::has_blur(&plan.filters),
+            ),
         );
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
@@ -1194,6 +1243,22 @@ impl Compositor {
         self.view
             .write(&p.ctx.device, &p.ctx.queue, view_groups(p), &[view]);
         let streams = self.upload_streams(p, view, &plan);
+        // The focal blur's planes and dispatch plan (§21.12), against this frame's
+        // radii carried into accumulator texels — `view` is already supersampled,
+        // which is the whole reason this waits for it. The filter bind groups the
+        // scratch caches name the blur's planes, so a frame that grew, resized or
+        // dropped them starts those caches over.
+        let radii = blur::blur_radii(&plan.filters, view);
+        let blur_changed = p.blur.prepare(
+            &p.ctx,
+            &mut self.blur,
+            self.size,
+            &radii,
+            p.ctx.device.limits().max_texture_dimension_2d,
+        );
+        if let Some(scratch) = self.scratch.as_mut().filter(|_| blur_changed) {
+            scratch.invalidate_bind_groups();
+        }
         let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
         // Bound after everything that needs `&mut self` — and bound **per field**,
         // which is what keeps them from being one `Frame<'_>` taken from a `&self`
@@ -1243,6 +1308,7 @@ impl Compositor {
             &plan,
             &streams,
             scratch,
+            self.blur.as_ref(),
             0,
         );
 

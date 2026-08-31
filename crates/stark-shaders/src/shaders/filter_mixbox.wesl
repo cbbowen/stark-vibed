@@ -15,14 +15,16 @@
 
 import package::lib::color::{
     srgb_to_linear, linear_to_srgb, linear_srgb_to_oklab, oklab_to_linear_srgb,
+    linear_to_light,
 };
 import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::mixbox_lut::{mixbox_srgb_to_concentrations};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
-    f, FILTER_CHROMATIC, back_color, back_aux, back_samp, filtered, resolve, weigh,
-    is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    f, FILTER_CHROMATIC, FILTER_FOCAL_BLUR, back_color, back_aux, back_samp,
+    filtered, resolve, weigh, is_clipped, ca_taps, ca_s, ca_uv, ca_weight, ca_lum,
+    BlurOut, blur_pad, blur_read, blur_src,
 };
 
 // The backdrop's residual half (§6.7). **Binding 7 of group 0** — `filter_common`
@@ -173,6 +175,23 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         return out;
     }
 
+    if f.kind == FILTER_FOCAL_BLUR {
+        // The convolution already ran in light (§21.12, `blur.wesl`); what is
+        // pigment's alone is the one re-entry — the inverse LUT with the residual
+        // recomputed for the arrived-at color, exactly the gather's ending (§6.7).
+        let b = blur_read(frag.xy);
+        let l = linear_to_latent(b.lin);
+        if is_clipped() {
+            let cov = max(cb.a, COVERAGE_EPS);
+            return resolve_latent(cb, cb.rgb / cov, rb.rgb / cov, l.conc, l.res, h);
+        }
+        var out: FsOut;
+        out.color = mix(cb, vec4<f32>(l.conc * b.cov, b.cov), f.strength);
+        out.resid = mix(rb, vec4<f32>(l.res * b.cov, b.cov), f.strength);
+        out.aux = vec4<f32>(mix(h, b.h, f.strength), 0.0, 0.0, 0.0);
+        return out;
+    }
+
     // Both halves un-premultiply by the *color's* coverage — the residual target's
     // own alpha is the same number, duplicated only because the fixed-function
     // "over" that filled these targets reads each one's alpha.
@@ -182,6 +201,37 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let adjusted = lab_to_latent(filtered(latent_to_lab(chan, res)));
 
     return resolve_latent(cb, chan, res, adjusted.conc, adjusted.res, h);
+}
+
+// The focal blur's decode (§21.12): `filter_oklab.wesl`'s, with the one
+// substitution pigment always makes — a texel's light costs the polynomial plus
+// its residual (§6.7). The residual is *consumed* here and *recomputed* in
+// `fs_main`'s re-entry, so nothing of it rides the transform.
+@fragment
+fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
+    let src = blur_src(frag.xy);
+    if !src.inside {
+        return blur_pad();
+    }
+    var cb: vec4<f32>;
+    var rb: vec4<f32>;
+    var h: f32;
+    if src.load {
+        cb = textureLoad(back_color, src.p, 0);
+        rb = textureLoad(back_resid, src.p, 0);
+        h = textureLoad(back_aux, src.p, 0).x;
+    } else {
+        cb = textureSampleLevel(back_color, back_samp, src.uv, 0.0);
+        rb = textureSampleLevel(back_resid, back_samp, src.uv, 0.0);
+        h = textureSampleLevel(back_aux, back_samp, src.uv, 0.0).x;
+    }
+    let conc = cb.rgb / max(cb.a, COVERAGE_EPS);
+    let res = rb.rgb / max(cb.a, COVERAGE_EPS);
+    let light = linear_to_light(latent_to_linear(conc, res));
+    return BlurOut(
+        vec4<f32>(light * cb.a, cb.a),
+        vec4<f32>(h, 1.0, 0.0, 0.0),
+    );
 }
 
 // —— the merge (§14.11.7) ——————————————————————————————————————————————————————

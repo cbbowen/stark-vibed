@@ -153,6 +153,17 @@ impl FilterDraw {
                 params2: [0.0; 4],
                 stops: None,
             },
+            // The radius stays in canvas terms on the chromatic pair's argument;
+            // the trip into accumulator texels is the blur plan's, per frame
+            // (§21.12, `blur::blur_radii`).
+            Filter::FocalBlur(b) => Self {
+                kind: stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR,
+                strength,
+                clip,
+                params: [b.radius, 0.0, 0.0, 0.0],
+                params2: [0.0; 4],
+                stops: None,
+            },
             // The one conversion the ramp pays, here and once: stops are straight
             // sRGB in the document and Oklab in the pass, because Oklab is where
             // `Gradient::sample`'s interpolation — the thing the map *is* — is

@@ -239,6 +239,16 @@ pub fn filter_oklab() -> &'static str {
     include_wesl!("filter_oklab")
 }
 
+/// WGSL compute passes for the focal blur's FFT convolution (§21.12): the Stockham
+/// transform, the aperture kernel, and the frequency-domain multiply.
+///
+/// Takes no `resid` and no space: by the time these run, every texel is XYZ light —
+/// each space's own `fs_blur_decode` (in its filter shader) paid the decode, and
+/// its `fs_main` pays the re-entry.
+pub fn blur() -> &'static str {
+    include_wesl!("blur")
+}
+
 /// WGSL filter-layer pass for the Mixbox color space — §21. Same adjustment as
 /// [`filter_oklab`]; the round trip runs through Mixbox's pigment polynomial and its
 /// inverse LUT.
@@ -385,6 +395,7 @@ mod tests {
             #[cfg(feature = "mixbox")]
             ("blend_mixbox", blend_mixbox),
             ("blend_oklab", blend_oklab),
+            ("blur", blur),
             ("composite", || composite(false)),
             ("dynamics", || dynamics(false)),
             ("erase", || erase(false)),

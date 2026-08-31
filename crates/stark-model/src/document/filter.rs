@@ -31,7 +31,7 @@ use crate::finite_in;
 
 /// What a filter layer does to the stack beneath it (§21.2).
 ///
-/// Three variants, because three are built. The enum is the seam the rest of §21.7
+/// Four variants, because four are built. The enum is the seam the rest of §21.7
 /// lands on — motion blur, outline, glow — and per this codebase's own precedent
 /// (§1) no variant appears here before it does something to a pixel. A new one may go
 /// wherever it reads best — a variant is matched by *name*, not by position, so
@@ -53,15 +53,19 @@ pub enum Filter {
     /// spread has not left zero: a gradient map with *any* ramp is already an
     /// edit, so the only setting a freshly added one may hold is none at all.
     GradientMap(Option<crate::gradient::Gradient>),
+    /// Everything beneath spread through a lens's circle of confusion — a true
+    /// convolution of the light, not a Gaussian approximation of one (§21.12).
+    FocalBlur(FocalBlur),
 }
 
 impl Filter {
     /// Every filter this build offers, at its neutral setting — the list the "new
     /// filter" picker is built from, in the order it should offer them.
-    pub const ALL: [Filter; 3] = [
+    pub const ALL: [Filter; 4] = [
         Filter::Color(ColorAdjust::NEUTRAL),
         Filter::Chromatic(ChromaticAberration::NEUTRAL),
         Filter::GradientMap(None),
+        Filter::FocalBlur(FocalBlur::NEUTRAL),
     ];
 
     /// What this filter is called, in the panel and in the layer row.
@@ -70,6 +74,7 @@ impl Filter {
             Filter::Color(_) => "Color",
             Filter::Chromatic(_) => "Chromatic aberration",
             Filter::GradientMap(_) => "Gradient map",
+            Filter::FocalBlur(_) => "Focal blur",
         }
     }
 
@@ -91,7 +96,7 @@ impl Filter {
     pub fn resamples(&self) -> bool {
         match self {
             Filter::Color(_) | Filter::GradientMap(_) => false,
-            Filter::Chromatic(_) => true,
+            Filter::Chromatic(_) | Filter::FocalBlur(_) => true,
         }
     }
 
@@ -110,6 +115,9 @@ impl Filter {
             // even black-to-white repaints every color with its greyscale — so
             // the absence is the one neutral this kind has.
             Filter::GradientMap(g) => g.is_none(),
+            // The radius alone, on the chromatic spread's argument: at zero no
+            // light moves, and the kernel has no other knob yet.
+            Filter::FocalBlur(b) => b.radius == 0.0,
         }
     }
 
@@ -120,6 +128,7 @@ impl Filter {
             Filter::Color(_) => Filter::Color(ColorAdjust::NEUTRAL),
             Filter::Chromatic(_) => Filter::Chromatic(ChromaticAberration::NEUTRAL),
             Filter::GradientMap(_) => Filter::GradientMap(None),
+            Filter::FocalBlur(_) => Filter::FocalBlur(FocalBlur::NEUTRAL),
         }
     }
 
@@ -146,6 +155,7 @@ impl Filter {
             // knobs would go if it grew one, and the match is exhaustive for
             // `sanitized`'s usual reason.
             Filter::GradientMap(g) => Filter::GradientMap(g),
+            Filter::FocalBlur(b) => Filter::FocalBlur(b.sanitized()),
         }
     }
 }
@@ -351,6 +361,56 @@ impl Default for ChromaticAberration {
     }
 }
 
+/// Focal blur: everything beneath spread through a lens's **circle of confusion** —
+/// a true convolution of the light with the aperture's shape, computed by FFT, not a
+/// Gaussian standing in for one (§21.12). A disc for now; the shape is the knob this
+/// struct is expected to grow.
+///
+/// One number, stated **in canvas px** for the chromatic spread's reason (§21.10):
+/// the bokeh belongs to the artwork, so it scales with a zoom and holds its size in
+/// an export. The trip into accumulator texels is the renderer's, per frame, through
+/// the view's own linear map.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+pub struct FocalBlur {
+    /// The radius of the circle of confusion, in **canvas px**. `0` is the
+    /// identity: no light moves.
+    ///
+    /// A radius rather than a diameter because that is what a lens formula hands
+    /// over, and a distance rather than a unitless "amount" because that is what
+    /// the knob does to the picture — and because bounding it is what keeps the
+    /// pass's padded FFT scratch honest (§21.12).
+    pub radius: f32,
+}
+
+impl FocalBlur {
+    /// The identity: nothing spreads.
+    pub const NEUTRAL: Self = Self { radius: 0.0 };
+
+    /// The widest the radius may be dialled — the range a frontend's slider spans
+    /// and the range [`sanitized`](Self::sanitized) holds a log entry to.
+    ///
+    /// The ceiling is also a promise to the renderer, as the chromatic `SPREAD`'s
+    /// is: the FFT pads its scratch by the on-screen radius (§21.12), and this
+    /// bound is what keeps that padding affordable at working zooms.
+    pub const RADIUS: (f32, f32) = (0.0, 128.0);
+
+    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite
+    /// value falls back to the **neutral** setting, for
+    /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
+    /// the range was meant, and the identity cannot make a picture worse.
+    pub fn sanitized(self) -> Self {
+        Self {
+            radius: finite_in(self.radius, 0.0, Self::RADIUS),
+        }
+    }
+}
+
+impl Default for FocalBlur {
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +438,8 @@ mod tests {
                 wild.sanitized(),
                 Filter::Chromatic(ChromaticAberration::NEUTRAL),
             );
+            let wild = Filter::FocalBlur(FocalBlur { radius: bad });
+            assert_eq!(wild.sanitized(), Filter::FocalBlur(FocalBlur::NEUTRAL));
         }
         // …and an ordinary out-of-range value is *clamped* rather than neutralized:
         // a slider pushed past its stop still means "as far as it goes".
@@ -418,6 +480,13 @@ mod tests {
             Filter::Chromatic(ChromaticAberration {
                 spread: ChromaticAberration::SPREAD.1,
                 angle: ChromaticAberration::ANGLE.1,
+            }),
+        );
+        let deep = Filter::FocalBlur(FocalBlur { radius: 1e6 });
+        assert_eq!(
+            deep.sanitized(),
+            Filter::FocalBlur(FocalBlur {
+                radius: FocalBlur::RADIUS.1,
             }),
         );
     }

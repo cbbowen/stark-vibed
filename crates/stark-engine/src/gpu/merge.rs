@@ -352,11 +352,14 @@ impl MergeRenderer {
         // **The filter pass's own group**, built by the filter pass: a merged filter
         // runs the very pipeline the screen would (§14.11.7), so it binds the very
         // group rather than a second description of one.
+        // `None`: the blur planes' 1×1 stand-ins. A merge refuses a resampling
+        // filter (§14.11.7), so no tile pass ever reads them.
         let bg = self.filter.bind_group(
             &self.ctx.device,
             uniform.resource(),
             tile.targets(),
             &self.blend.pigment,
+            None,
         );
         pass(
             scope,

@@ -104,21 +104,34 @@ pub(super) fn supersample(
 ///   question is about, so it is counted unconditionally;
 /// - **two trios per scratch level** that isolates and one per level that only
 ///   ping-pongs, which is [`Plan::scratch`](super::plan::Plan::scratch) read as
-///   memory (§18.0.4, §21.3).
+///   memory (§18.0.4, §21.3);
+/// - the **focal blur's FFT planes** when the frame has one (§21.12), which dwarf
+///   everything above.
 ///
-/// The last is the term a pixel count cannot express, and it is the one that
-/// dominates: a single blend group more than doubles the frame's memory footprint, and in a
-/// pigment document it more than triples it.
+/// The last two are the terms a pixel count cannot express, and they dominate: a
+/// single blend group more than doubles the frame's memory footprint, and a focal
+/// blur is [`BLUR_BYTES_PER_PX`] on its own — which is the mechanism that keeps a
+/// blurred frame from also being a heavily supersampled one.
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
     target_format: wgpu::TextureFormat,
     scratch: &[bool],
+    blur: bool,
 ) -> u64 {
     let trio = formats.bytes_per_px();
     let resolve = u64::from(target_format.block_copy_size(None).unwrap_or(0));
     let scratch: u64 = scratch.iter().map(|&iso| trio * (1 + u64::from(iso))).sum();
-    trio + resolve + scratch
+    trio + resolve + scratch + if blur { BLUR_BYTES_PER_PX } else { 0 }
 }
+
+/// What one supersampled texel costs the focal blur (§21.12), as this budget
+/// counts it: the five `f32` planes — two ping-pong sets of `rgba32float` +
+/// `rg32float`, and the kernel — are 56 bytes per **padded** texel, and the
+/// power-of-two padding runs up to about double the accumulator's area before
+/// the guard band. An estimate rather than the exact figure, because the padding
+/// depends on the radius and the radius on the zoom this call is deciding — the
+/// pessimistic side of the round-up is the safe side of a memory budget.
+const BLUR_BYTES_PER_PX: u64 = 2 * (2 * (16 + 8) + 8);
 
 /// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
 /// sample count) is the *rendering* consumer's: `n` is a function of that target's
@@ -272,7 +285,7 @@ mod tests {
 
     /// A flat document: the accumulator and the resolve target, no scratch.
     fn flat() -> u64 {
-        attachment_bytes(oklab(), TARGET, &[])
+        attachment_bytes(oklab(), TARGET, &[], false)
     }
 
     #[test]
@@ -321,6 +334,31 @@ mod tests {
         assert_eq!(supersample(wide, 0.1, &limits(), flat()), 1);
     }
 
+    /// The blur term joins the scratch as a byte cost a pixel count cannot see
+    /// (§21.12), and it is the largest single one: a frame with a focal blur in
+    /// it gives up supersampling long before a flat frame does, which is the
+    /// budget doing exactly what it is for — the FFT planes and a heavy sample
+    /// count are not affordable together.
+    #[test]
+    fn a_focal_blur_gives_up_samples_before_the_planes_overrun() {
+        assert_eq!(
+            attachment_bytes(oklab(), TARGET, &[], true),
+            14 + 112,
+            "the five f32 planes at the padding estimate",
+        );
+        let window = Extent2::new(2560, 1440);
+        let at = |blur| {
+            supersample(
+                window,
+                0.1,
+                &limits(),
+                attachment_bytes(oklab(), TARGET, &[], blur),
+            )
+        };
+        assert!(at(false) > at(true), "a blurred frame must give up samples");
+        assert_eq!(at(true), 1);
+    }
+
     /// The byte budget's calibration point: a flat Oklab document sees a 16-Mpx
     /// ceiling, which is what the common zoom-out is sized against. 14 bytes a texel
     /// into 224 MiB is 16 Mpx on the nose.
@@ -339,7 +377,7 @@ mod tests {
     /// 973 MB for the third and about 1.6 GB for the fourth.
     #[test]
     fn the_blend_scratch_is_most_of_what_a_nested_frame_costs() {
-        let cost = |f, s: &[bool]| attachment_bytes(f, TARGET, s);
+        let cost = |f, s: &[bool]| attachment_bytes(f, TARGET, s, false);
         assert_eq!(cost(oklab(), &[]), 14);
         assert_eq!(cost(oklab(), &[true]), 14 + 20, "swap + iso, 10 bytes each");
         // A level whose only non-direct members are filters ping-pongs and never
