@@ -249,6 +249,28 @@ impl WarpMap {
     /// uniform grid. This is the *reference* every identity comparison is made
     /// against — frontends must start from these exact points, not re-derive
     /// their own, for "untouched" to stay bit-exact.
+    /// The same mesh shifted whole by `d` — source rect and every control point
+    /// alike, so the deformation it describes is unchanged, merely restated in
+    /// shifted coordinates ([`TransformMap::in_frame`]'s warp arm).
+    ///
+    /// Not bitwise-neutral in general: `lerp(a+d, b+d, t)` and `lerp(a, b, t)+d`
+    /// can part by an ulp in `f32`, so a shifted mesh's deviation form may carry
+    /// ulp-scale deltas an unshifted one would not. Deterministic — the shift is
+    /// a pure function of the action — which is the property replays rest on;
+    /// byte-exactness of the *identity* stays with the unshifted frame, where
+    /// every mesh lived before frames existed.
+    ///
+    /// [`TransformMap::in_frame`]: super::transform::TransformMap::in_frame
+    pub fn translated(&self, d: Vec2) -> Self {
+        Self {
+            min: self.min + d,
+            max: self.max + d,
+            cols: self.cols,
+            rows: self.rows,
+            points: self.points.iter().map(|p| *p + d).collect(),
+        }
+    }
+
     pub fn identity(min: Vec2, max: Vec2, cols: u32, rows: u32) -> Self {
         let mut points = Vec::with_capacity((cols * rows) as usize);
         for j in 0..rows {

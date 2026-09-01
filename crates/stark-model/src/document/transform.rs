@@ -51,6 +51,31 @@ impl TransformMap {
             TransformMap::Warp(w) => w.usable(),
         }
     }
+
+    /// The same map, restated in a layer frame placed at `frame` on the canvas
+    /// (§14.12): the conjugation `T(−f) ∘ M ∘ T(f)` — what the paint side of a
+    /// transform applies while the mask side keeps the canvas map. For the
+    /// rect-scoped families every defining point simply shifts, since the map
+    /// *is* its point correspondences; the affine composes, exactly for the
+    /// whole-pixel frames and translations the exactness invariants are about
+    /// (§16.4), since integer sums in `f32` are exact to 2²⁴.
+    pub fn in_frame(&self, frame: crate::geom::IVec2) -> Self {
+        if frame == crate::geom::IVec2::ZERO {
+            return self.clone();
+        }
+        let f = frame.as_vec2();
+        match self {
+            TransformMap::Affine(a) => TransformMap::Affine(
+                Affine2::from_translation(-f) * *a * Affine2::from_translation(f),
+            ),
+            TransformMap::Perspective(p) => TransformMap::Perspective(PerspectiveMap {
+                min: p.min - f,
+                max: p.max - f,
+                corners: p.corners.map(|c| c - f),
+            }),
+            TransformMap::Warp(w) => TransformMap::Warp(w.translated(-f)),
+        }
+    }
 }
 
 /// A projective transform of the selected paint inside `[min, max]` (§16.8):

@@ -40,6 +40,12 @@ struct StrokeBuilder {
     brush: BrushParams,
     layer: LayerId,
     seed: u64,
+    /// The target layer's frame at the press (§14.12). Everything in the builder
+    /// — the fitter, the tow, the assist — works on the canvas, where the hand
+    /// is; [`to_record`](Self::to_record) is the one door out, and it converts
+    /// there, so the commit, the live fold and the wire cannot disagree about
+    /// which frame the path is in.
+    frame: stark_model::geom::IVec2,
     fitter: PathFitter,
     /// What the frontend said this gesture's input resolves to (canvas px). Kept
     /// because the drawing assist prices its recognition in the same unit the fit
@@ -103,7 +109,19 @@ impl Assist {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShapeResult {
     Select(SelectionOp),
-    Fill(FillOp),
+    Fill {
+        /// The layer the fill lands on — the active layer **at the press**,
+        /// pinned beside the frame it decides. The stroke builder pins its
+        /// target the same way and for the same reason: a retarget landing
+        /// mid-drag (a peer removing the layer under the hand) must not land an
+        /// op converted into one layer's frame on another layer.
+        layer: LayerId,
+        /// In that layer's frame (§14.12) — converted where the gesture becomes
+        /// an op, so the preview, the wire and the commit take one value.
+        op: FillOp,
+        /// The frame the op was converted into, pinned at the press.
+        frame: stark_model::geom::IVec2,
+    },
 }
 
 /// What a shape gesture's action *means* against the selection it is drawn over:
@@ -170,6 +188,14 @@ struct ShapeDrag {
     points: Vec<Vec2>,
     /// The newest sample, so the marquees can span `start`..`current`.
     current: Vec2,
+    /// The active layer at the press — a **fill**'s target, pinned with the
+    /// frame below (see [`ShapeResult::Fill`]). A selecting gesture never reads
+    /// either.
+    layer: LayerId,
+    /// The active layer's frame at the press (§14.12) — what a **fill** result is
+    /// converted into. A selecting gesture never reads it: the mask lives on the
+    /// canvas, whatever any layer's frame says.
+    frame: stark_model::geom::IVec2,
 }
 
 impl ShapeDrag {
@@ -238,9 +264,19 @@ impl ShapeDrag {
             ShapeAction::Select(mode) => {
                 ShapeResult::Select(SelectionOp::new(mode, shape, self.feather))
             }
-            ShapeAction::Fill => {
-                ShapeResult::Fill(FillOp::new(shape, self.feather, self.color, self.opacity))
-            }
+            ShapeAction::Fill => ShapeResult::Fill {
+                layer: self.layer,
+                // The shape is dragged on the canvas and the paint lands in the
+                // layer's frame — one conversion, here, where the gesture becomes
+                // an op (§14.12).
+                op: FillOp::new(
+                    shape.translated(-self.frame.as_vec2()),
+                    self.feather,
+                    self.color,
+                    self.opacity,
+                ),
+                frame: self.frame,
+            },
         })
     }
 }
@@ -680,8 +716,12 @@ impl Session {
                         layer: b.layer,
                         brush: b.brush,
                         seed: b.seed,
+                        frame: b.frame,
                     }),
-                    path,
+                    // In the layer's frame, as [`to_record`] converts it — the wire
+                    // carries what a receiver's fold renders, so the two convert in
+                    // the same place or not at all.
+                    path: path_in_frame(path, b.frame),
                     // A snapped stroke has **no settled prefix**: steering it moves every
                     // control point at once, so nothing may be retired. The whole path
                     // therefore rides every frame — which it can afford to, being a shape.
@@ -696,7 +736,11 @@ impl Session {
             }
             None => self.preview_shape().map(|r| match r {
                 ShapeResult::Select(op) => GestureSource::Selection(op),
-                ShapeResult::Fill(op) => GestureSource::Fill(op),
+                // The wire's fill rides `PeerFrame::active_layer` for its target
+                // (§17.5); the pinned layer travels only in-process, so a peer's
+                // preview can drift from the commit across the retarget race the
+                // pin closes locally — a preview, not the document.
+                ShapeResult::Fill { op, frame, .. } => GestureSource::Fill { op, frame },
             }),
         }
     }
@@ -724,7 +768,15 @@ impl Session {
     /// gesture means; see [`against_selection`]. Off the *committed* document, which
     /// is the only selection this gesture can be adding to: the one thing that could
     /// change it mid-drag is this drag.
-    pub fn start_selection(&mut self, tool: Tool, pos: Vec2, has_selection: bool) {
+    /// `frame` is the active layer's frame at the press (§14.12) — read by a
+    /// gesture that resolves to a *fill*; a selecting one never consults it.
+    pub fn start_selection(
+        &mut self,
+        tool: Tool,
+        pos: Vec2,
+        has_selection: bool,
+        frame: stark_model::geom::IVec2,
+    ) {
         self.tool = tool;
         self.in_flight = None;
         // The press supersedes the hover it interrupted — and the window must
@@ -747,6 +799,8 @@ impl Session {
             start: pos,
             points: vec![pos],
             current: pos,
+            layer: self.active_layer,
+            frame,
         });
     }
 
@@ -797,6 +851,9 @@ impl Session {
     /// amount, in screen px, because wobble is a fact about the hand. `0` (or
     /// anything unusable) constructs no tow at all: the fitter is fed the raw
     /// samples, bit-identically to the pre-§6.11 path.
+    /// `frame` is the active layer's frame at the press (§14.12) — the engine's
+    /// to read, since only it holds the document; pinned here so a translate
+    /// landing mid-stroke cannot shear the record against its own gating.
     pub fn start_stroke(
         &mut self,
         tool: Tool,
@@ -804,6 +861,7 @@ impl Session {
         seed: u64,
         tolerance: f32,
         rope: f32,
+        frame: stark_model::geom::IVec2,
     ) {
         self.tool = tool;
         self.selecting = None;
@@ -825,6 +883,7 @@ impl Session {
             brush: self.brush,
             layer: self.active_layer,
             seed,
+            frame,
             fitter,
             tolerance,
             assist: None,
@@ -962,13 +1021,9 @@ impl Session {
             // cursor, so every part of it can still move.
             None => match self.preview_shape()? {
                 ShapeResult::Select(op) => (LiveGesture::Selection(op), 0),
-                ShapeResult::Fill(op) => (
-                    LiveGesture::Fill {
-                        layer: self.active_layer,
-                        op,
-                    },
-                    0,
-                ),
+                ShapeResult::Fill { layer, op, frame } => {
+                    (LiveGesture::Fill { layer, op, frame }, 0)
+                }
             },
         };
         Some(GestureView {
@@ -1199,7 +1254,12 @@ impl Session {
     /// under a selection tool, which drags a shape rather than the brush. An
     /// unpaintable active layer needs no test here: the stroke renderer refuses
     /// it exactly as a commit would.
-    pub fn hover_view(&self, actor: ActorId, seed: u64) -> Option<GestureView> {
+    pub fn hover_view(
+        &self,
+        actor: ActorId,
+        seed: u64,
+        frame: stark_model::geom::IVec2,
+    ) -> Option<GestureView> {
         if self.in_flight.is_some() || self.selecting.is_some() || self.tool.is_selection() {
             return None;
         }
@@ -1209,12 +1269,15 @@ impl Session {
             gesture: LiveGesture::Stroke(StrokeRecord {
                 layer: self.active_layer,
                 brush: self.brush,
-                path: h.path.clone(),
+                // In the layer's frame, like every record (§14.12) — `frame` is
+                // read at the fold because a probe has no press to pin it at.
+                path: path_in_frame(h.path.clone(), frame),
                 seed,
                 // The probe is the whole prediction: two synthesized samples,
                 // no run-up ahead of them, so the mark starts where its curve
                 // does — exactly as the gesture it predicts would record it.
                 start: 0.0,
+                frame,
             }),
             ordinal: h.ordinal,
             // Nothing settles: both samples move with every report, so the whole
@@ -1331,11 +1394,29 @@ impl StrokeBuilder {
         StrokeRecord {
             layer: self.layer,
             brush: self.brush,
-            path,
+            path: path_in_frame(path, self.frame),
             seed: self.seed,
             start,
+            frame: self.frame,
         }
     }
+}
+
+/// A canvas-space path brought into a layer's frame at `frame` (§14.12) — the
+/// conversion [`StrokeRecord::frame`] pairs with. A zero frame is the path
+/// untouched, bit for bit; otherwise every position drops the whole-pixel
+/// offset, exact in `f32` to the 2²⁴ the canvas already lives within.
+fn path_in_frame(
+    mut path: Vec<ControlPoint>,
+    frame: stark_model::geom::IVec2,
+) -> Vec<ControlPoint> {
+    if frame != stark_model::geom::IVec2::ZERO {
+        let f = frame.as_vec2();
+        for p in &mut path {
+            p.pos -= f;
+        }
+    }
+    path
 }
 
 #[cfg(test)]
@@ -1356,11 +1437,16 @@ mod tests {
     /// The mode a marquee dragged across `(0,0)..(10,10)` resolves to.
     fn dragged(action: ShapeAction, has_selection: bool) -> SelectionMode {
         let mut s = session(action);
-        s.start_selection(Tool::SelectRect, Vec2::ZERO, has_selection);
+        s.start_selection(
+            Tool::SelectRect,
+            Vec2::ZERO,
+            has_selection,
+            stark_model::geom::IVec2::ZERO,
+        );
         s.selection_to(Vec2::splat(10.0));
         match s.preview_shape().expect("the marquee encloses something") {
             ShapeResult::Select(op) => op.mode(),
-            ShapeResult::Fill(_) => panic!("a selecting action does not fill"),
+            ShapeResult::Fill { .. } => panic!("a selecting action does not fill"),
         }
     }
 
@@ -1395,8 +1481,13 @@ mod tests {
             assert_eq!(dragged(ShapeAction::Select(mode), false), mode);
         }
         let mut s = session(ShapeAction::Fill);
-        s.start_selection(Tool::SelectRect, Vec2::ZERO, false);
+        s.start_selection(
+            Tool::SelectRect,
+            Vec2::ZERO,
+            false,
+            stark_model::geom::IVec2::ZERO,
+        );
         s.selection_to(Vec2::splat(10.0));
-        assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill(_))));
+        assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill { .. })));
     }
 }

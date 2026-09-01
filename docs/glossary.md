@@ -88,6 +88,8 @@ these should appear in code again.
 | **coverage** | A per-texel fraction in `[0,1]`. Used for a brush shape's mask, and for the selection field every tool acts through (§6.8). | [`stark-model/src/document/selection.rs`](../crates/stark-model/src/document/selection.rs) |
 | **parcel** | *What* paint a fill lays — one color everywhere, or one that varies with canvas position (§22.4). Never *how much*: that is the fill's opacity. | [`stark-model/src/document/fill.rs`](../crates/stark-model/src/document/fill.rs) |
 | **matte** | A layer that fills a region with flat paint: the **frame** (`OutsideRect`) or the **backing** (`Everything`). One mechanism, two uses (§15). | [`stark-model/src/document/layer.rs`](../crates/stark-model/src/document/layer.rs) |
+| **layer frame** | The coordinate space a layer's tiles are keyed in, placed on the canvas by `Layer::translation` — whole pixels (§14.12). Always qualified in prose, because the bare **frame** is the matte's; in code the qualifier is the context (`Layer::translation`, an action's `frame`). | [`stark-engine/src/document/layer.rs`](../crates/stark-engine/src/document/layer.rs) |
+| **float** | The author's selection cut into a child layer at the foot of its source's stack, so a drag moves a frame instead of resampling paint (§16.12). The noun; as a verb, *to float a selection*. Not `f32`, which is never called a float in prose here. | [`stark-model/src/document/action.rs`](../crates/stark-model/src/document/action.rs) |
 | **residual** | The part of a color a three-channel latent cannot carry, kept alongside it so Mixbox round-trips exactly (§6.7). | [`stark-engine/src/gpu/composite.rs`](../crates/stark-engine/src/gpu/composite.rs) |
 
 ## The document and the log

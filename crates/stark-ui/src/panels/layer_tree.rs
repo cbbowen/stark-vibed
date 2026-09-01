@@ -296,6 +296,7 @@ mod tests {
             // nothing here draws a thumbnail, and a distinct number per row would be
             // saying something about their contents that these tests do not measure.
             content_revision: Some(0),
+            translation: stark_model::geom::IVec2::ZERO,
         }
     }
 

@@ -133,6 +133,9 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::TransformPerspective { .. }
         | ActionKind::TransformWarp { .. }
         | ActionKind::Fill { .. }
+        // Offsets and a cut: geometry and ids, nothing that travels beside the log.
+        | ActionKind::TranslateLayers { .. }
+        | ActionKind::FloatSelection { .. }
         // A guide is geometry all the way down — a camera and a lattice — so it
         // names nothing that has to travel beside the log (§20.5). It is the one
         // document entity with no content at all.
@@ -208,6 +211,7 @@ mod tests {
             path: Vec::new(),
             seed: 0,
             start: 0.0,
+            frame: crate::geom::IVec2::ZERO,
         }))
     }
 

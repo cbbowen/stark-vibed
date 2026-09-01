@@ -341,7 +341,7 @@ fn a_pixel_staircase_holds_its_heading() {
     let Some(GestureView {
         gesture: LiveGesture::Stroke(rec),
         ..
-    }) = session.hover_view(ActorId::SOLO, 0)
+    }) = session.hover_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO)
     else {
         panic!("a fed hover offers no view");
     };
@@ -433,6 +433,7 @@ fn the_run_up_conditions_the_strokes_entry() {
             0,
             DEFAULT_TOLERANCE,
             0.0,
+            stark_model::geom::IVec2::ZERO,
         );
         for m in stair(20, press, 1, after_hover + 0.016) {
             s.stroke_to(m);

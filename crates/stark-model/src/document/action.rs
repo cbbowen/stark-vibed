@@ -103,6 +103,14 @@ pub struct StrokeRecord {
     /// whole curve is the stroke, and such files replay bit-identically.
     #[serde(default)]
     pub start: f32,
+    /// Where the layer's frame sat on the canvas when this stroke was made
+    /// (§14.12): [`path`](Self::path) is in the **layer's** frame, and this is what
+    /// places the canvas-anchored inputs — the author's mask, the substrate's tooth
+    /// — into it at apply. In the action rather than read off the state, so a
+    /// stroke reads no translation and commutes with one; a file from before this
+    /// field carries zero, under which frame and canvas coincide and nothing moves.
+    #[serde(default)]
+    pub frame: crate::geom::IVec2,
 }
 
 /// What an action does to the document.
@@ -316,6 +324,12 @@ pub enum ActionKind {
     Transform {
         layer: LayerId,
         affine: crate::geom::Affine2,
+        /// The layer's frame at mint (§14.12). The affine is stated on the
+        /// **canvas** — it is what the hand did, and it is what moves the
+        /// canvas-anchored mask — and apply conjugates it into the frame for the
+        /// paint side. Zero in older files, under which the two spaces coincide.
+        #[serde(default)]
+        frame: crate::geom::IVec2,
     },
 
     /// Name a layer, or with `None` take its name away again so it falls back to
@@ -343,6 +357,11 @@ pub enum ActionKind {
     Fill {
         layer: LayerId,
         op: super::fill::FillOp,
+        /// The layer's frame at mint (§14.12): the op's geometry is in the layer's
+        /// frame, and this places the author's canvas-anchored mask into it.
+        /// [`StrokeRecord::frame`] has the full argument.
+        #[serde(default)]
+        frame: crate::geom::IVec2,
     },
 
     /// Clip a layer to the paint beneath it, or stop (§14.4).
@@ -367,6 +386,10 @@ pub enum ActionKind {
     TransformPerspective {
         layer: LayerId,
         map: super::transform::PerspectiveMap,
+        /// The layer's frame at mint (§14.12) — [`Transform`](Self::Transform)'s
+        /// field, for its reason.
+        #[serde(default)]
+        frame: crate::geom::IVec2,
     },
 
     /// Warp of the selected paint on `layer` within the mesh's source rect
@@ -380,6 +403,10 @@ pub enum ActionKind {
     TransformWarp {
         layer: LayerId,
         map: super::warp::WarpMap,
+        /// The layer's frame at mint (§14.12) — [`Transform`](Self::Transform)'s
+        /// field, for its reason.
+        #[serde(default)]
+        frame: crate::geom::IVec2,
     },
 
     /// Copy a layer — **and everything it carries** — into its own stack,
@@ -589,6 +616,55 @@ pub enum ActionKind {
         id: GuideId,
         after: Option<GuideId>,
     },
+
+    /// Put each named layer's frame at a place on the canvas (§14.12) — "move the
+    /// layer", as a property write rather than a rewrite of its tiles.
+    ///
+    /// A **list**, because translation does not inherit down the tree: a footprint
+    /// is built from the action alone and could not name the ancestors an inherited
+    /// offset would make every stroke read (§12.6). So each layer carries its own,
+    /// flat, and the gesture that moves a group names every member —
+    /// [`RemoveLayer`](Self::RemoveLayer)'s `carried`, put to work. Absolute
+    /// positions, like every other property write, so undo restores a value rather
+    /// than replaying arithmetic.
+    ///
+    /// Whole canvas pixels, for [`PlaceImage`](Self::PlaceImage)'s reason: an
+    /// integer offset moves the picture without resampling a texel, said in a type
+    /// the payload cannot hold wrongly. A matte or filter layer refuses it — a
+    /// matte's geometry already moves via [`SetMatteRect`](Self::SetMatteRect), and
+    /// a filter has nothing that sits anywhere.
+    TranslateLayers {
+        moves: Vec<(LayerId, crate::geom::IVec2)>,
+    },
+
+    /// Cut what the **author's** selection holds on `layer` into a fresh layer
+    /// `child`, carried at the foot of `layer`'s stack — the selection, reified as
+    /// the thing a drag can move for the price of a property write (§16.12).
+    ///
+    /// The child composites directly over the paint it was cut from, so the picture
+    /// does not change: the cut is §16.2's lift and the child's stacking is the
+    /// merge law run backwards (§14.11.1). Fully-covered tiles cross by handle.
+    /// The child arrives unnamed, at the identity composite params, with its
+    /// translation at `frame` — and the author's selection is **consumed**: the
+    /// float is the selection now, and an outline left behind would sit over paint
+    /// that is no longer there (§16.1's argument, answered the other way).
+    ///
+    /// `frame` is the source layer's frame at mint, [`StrokeRecord::frame`]'s field
+    /// for its reason: it places the canvas-anchored mask into the source's frame,
+    /// and it is what the child's translation is set to — from the action, so a
+    /// replay mints what the recording run minted.
+    ///
+    /// Deterministically **rejected** (the document is left unchanged) on a layer
+    /// that is not paint, under a universal or empty selection, or past the tile
+    /// caps — so peers and replays agree, and a gesture that would float nothing
+    /// floats nothing everywhere.
+    FloatSelection {
+        layer: LayerId,
+        /// The id the child takes — minted by the author through the same door
+        /// every layer id is (`Engine::commit_minting`, §17.9).
+        child: LayerId,
+        frame: crate::geom::IVec2,
+    },
 }
 
 impl ActionKind {
@@ -621,6 +697,8 @@ impl ActionKind {
             | ActionKind::AddMatte { id, .. }
             | ActionKind::AddFilter { id, .. }
             | ActionKind::PlaceImage { id, .. } => (Some(*id), &[]),
+            // A float mints the layer the cut lands on (§16.12).
+            ActionKind::FloatSelection { child, .. } => (Some(*child), &[]),
             // A duplicate mints one per layer of the subtree it copied, which is
             // why the map travels in the action (§14.8).
             ActionKind::DuplicateLayer { ids } => (None, ids),
@@ -647,6 +725,7 @@ impl ActionKind {
             | ActionKind::TransformPerspective { .. }
             | ActionKind::TransformWarp { .. }
             | ActionKind::Fill { .. }
+            | ActionKind::TranslateLayers { .. }
             // A guide mints an id of its own, and deliberately not from a counter
             // this reports for: it *is* the id of the action that added it, so
             // there is nothing to resume past (`GuideId`).
@@ -688,6 +767,7 @@ impl ActionKind {
                 } else {
                     0.0
                 },
+                frame: clamp_frame(rec.frame),
                 ..rec
             }),
             // A coverage weight every gating read multiplies by, so a NaN here would
@@ -763,12 +843,13 @@ impl ActionKind {
             // `String`s — and if it carries a float, it belongs above, or beside a
             // `usable` this comment can name.
             //
-            // A fill and a selection carry numbers and are still here, which is the
-            // shape worth noticing rather than an oversight: their fields are private
-            // and `FillOp::with_paint` / `SelectionOp::at` are the only doors,
-            // deserialization included, so an op in hand already holds its bounds.
-            ActionKind::Fill { .. }
-            | ActionKind::Select(_)
+            // A selection carries numbers and is still here, which is the shape
+            // worth noticing rather than an oversight: its fields are private and
+            // `SelectionOp::at` is the only door, deserialization included, so an
+            // op in hand already holds its bounds. (A fill's op holds itself the
+            // same way, through `FillOp::with_paint` — its arm below exists for
+            // the frame beside it, not for the op.)
+            ActionKind::Select(_)
             | ActionKind::AddLayer { .. }
             // A placement carries pixels and an integer position: no float to be
             // non-finite, no knob to be out of range. What *could* be malformed about
@@ -796,15 +877,59 @@ impl ActionKind {
             // there is nothing here to hold it to.
             | ActionKind::SetSubstrateScale(_)
             | ActionKind::InvertSelection
-            | ActionKind::Transform { .. }
-            | ActionKind::TransformPerspective { .. }
-            | ActionKind::TransformWarp { .. }
             // A guide named, moved or removed carries an id, an anchor and a
             // name; the camera is the only thing with a number in it.
             | ActionKind::RemoveGuide(_)
             | ActionKind::SetGuideName(..)
             | ActionKind::MoveGuide { .. }
             | ActionKind::Undo(_) => self,
+
+            // The maps are gated at `apply` (`usable`), like `SetMatteRect`; the
+            // frame beside each is an integer with a range of its own to hold.
+            ActionKind::Fill { layer, op, frame } => ActionKind::Fill {
+                layer,
+                op,
+                frame: clamp_frame(frame),
+            },
+            ActionKind::Transform {
+                layer,
+                affine,
+                frame,
+            } => ActionKind::Transform {
+                layer,
+                affine,
+                frame: clamp_frame(frame),
+            },
+            ActionKind::TransformPerspective { layer, map, frame } => {
+                ActionKind::TransformPerspective {
+                    layer,
+                    map,
+                    frame: clamp_frame(frame),
+                }
+            }
+            ActionKind::TransformWarp { layer, map, frame } => ActionKind::TransformWarp {
+                layer,
+                map,
+                frame: clamp_frame(frame),
+            },
+            // Whole-pixel offsets: an integer cannot be non-finite, but past
+            // `FRAME_LIMIT` it stops being exactly representable where it is
+            // spent — see `clamp_frame`.
+            ActionKind::TranslateLayers { moves } => ActionKind::TranslateLayers {
+                moves: moves
+                    .into_iter()
+                    .map(|(id, to)| (id, clamp_frame(to)))
+                    .collect(),
+            },
+            ActionKind::FloatSelection {
+                layer,
+                child,
+                frame,
+            } => ActionKind::FloatSelection {
+                layer,
+                child,
+                frame: clamp_frame(frame),
+            },
         }
     }
 
@@ -909,6 +1034,8 @@ roster! {
     SetGuide => "Perspective guide",
     SetGuideName => "Rename guide",
     MoveGuide => "Reorder guide",
+    TranslateLayers => "Move layer",
+    FloatSelection => "Float selection",
 }
 
 impl ActionTag {
@@ -920,6 +1047,27 @@ impl ActionTag {
             .position(|t| *t == self)
             .expect("every tag is in ALL, which the macro builds from one list")
     }
+}
+
+/// The farthest a layer frame — or the frame offset a paint action carries — may
+/// stand from the origin, per axis (§14.12): 2²³ canvas px.
+///
+/// An `i32` cannot be non-finite, but past this it stops being *spent* exactly:
+/// the offset meets `f32` at every seam — quad origins, mask-shift taps, the
+/// conjugated maps — and sums of two in-range values stay exact only to 2²⁴,
+/// which is the whole of the §16.4 exactness the design leans on. Clamped rather
+/// than gated at `apply`, because an offset has a nearest legal value the way an
+/// opacity does and a degenerate affine does not — and clamping here is also
+/// what keeps every downstream `i32` subtraction of two frames off the wrapping
+/// edge.
+pub const FRAME_LIMIT: i32 = 1 << 23;
+
+/// [`FRAME_LIMIT`], applied — the funnel's arm for every whole-pixel offset.
+fn clamp_frame(v: crate::geom::IVec2) -> crate::geom::IVec2 {
+    v.clamp(
+        crate::geom::IVec2::splat(-FRAME_LIMIT),
+        crate::geom::IVec2::splat(FRAME_LIMIT),
+    )
 }
 
 /// A committed document mutation with its identity.
@@ -958,6 +1106,7 @@ mod tests {
             seed: 0,
             // A marker before the curve names no place; the funnel floors it.
             start: -2.0,
+            frame: crate::geom::IVec2::ZERO,
         })
         .sanitized();
         let ActionKind::CommitStroke(rec) = &stroke else {
@@ -981,6 +1130,7 @@ mod tests {
         let fill = ActionKind::Fill {
             layer: LayerId::ROOT,
             op: op.clone(),
+            frame: crate::geom::IVec2::ZERO,
         }
         .sanitized();
         let ActionKind::Fill { op: after, .. } = &fill else {

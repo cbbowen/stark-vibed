@@ -49,6 +49,7 @@ fn drag(session: &mut Session, n: usize, f: impl Fn(f32) -> Vec2) {
         1,
         DEFAULT_TOLERANCE,
         0.0,
+        stark_model::geom::IVec2::ZERO,
     );
     for i in 1..n {
         session.stroke_to(InputSample::at(f(i as f32 / (n - 1) as f32)));
@@ -444,7 +445,12 @@ fn a_hold_with_nothing_in_flight_is_a_no_op() {
     assert!(!session.assist_stroke(&nothing()));
 
     // A shape gesture builds no stroke, and an exact marquee has nothing to snap to.
-    session.start_selection(Tool::SelectRect, Vec2::ZERO, false);
+    session.start_selection(
+        Tool::SelectRect,
+        Vec2::ZERO,
+        false,
+        stark_model::geom::IVec2::ZERO,
+    );
     session.selection_to(Vec2::new(60.0, 60.0));
     assert!(!session.assist_stroke(&nothing()));
     assert!(session.is_selecting(), "the marquee survived the hold");

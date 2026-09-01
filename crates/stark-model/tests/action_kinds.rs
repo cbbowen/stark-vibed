@@ -106,6 +106,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             path: vec![ControlPoint::at(Vec2::splat(4.0))],
             seed: 1,
             start: n,
+            frame: IVec2::new(2, -5),
         }),
         ActionKind::AddLayer {
             id,
@@ -165,6 +166,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         ActionKind::Transform {
             layer: id,
             affine: Affine2::from_scale(v),
+            frame: IVec2::new(2, -5),
         },
         ActionKind::SetLayerName(id, Some("wash".into())),
         ActionKind::Fill {
@@ -181,6 +183,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
                 }),
                 n,
             ),
+            frame: IVec2::new(2, -5),
         },
         ActionKind::SetLayerClip(id, true),
         ActionKind::TransformPerspective {
@@ -190,10 +193,12 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
                 max: v,
                 corners: rect_corners(v, v),
             },
+            frame: IVec2::new(2, -5),
         },
         ActionKind::TransformWarp {
             layer: id,
             map: WarpMap::identity(v, v, 2, 2),
+            frame: IVec2::new(2, -5),
         },
         ActionKind::DuplicateLayer {
             ids: vec![(id, LayerId::solo(9))],
@@ -229,6 +234,16 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         ActionKind::MoveGuide {
             id: guide,
             after: None,
+        },
+        // Whole-pixel offsets and ids: no float anywhere, so the poison runs have
+        // nothing to reach and the funnel nothing to hold (§14.12).
+        ActionKind::TranslateLayers {
+            moves: vec![(id, IVec2::new(-40, 8)), (other, IVec2::ZERO)],
+        },
+        ActionKind::FloatSelection {
+            layer: id,
+            child: LayerId::solo(11),
+            frame: IVec2::new(2, -5),
         },
     ]
 }

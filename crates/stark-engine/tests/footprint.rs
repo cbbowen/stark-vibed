@@ -460,6 +460,44 @@ fn every_action_touches_only_what_it_declares() {
         },
     );
 
+    // The layer frame (§14.12) and the float (§16.12) — the float made on a
+    // *translated* source, so the audit covers the mask brought into a nonzero
+    // frame, not only the zero-frame shortcut.
+    step(
+        &mut engine,
+        seen,
+        "translate a layer",
+        DocCommand::TranslateLayer {
+            layer: root,
+            to: stark_model::geom::IVec2::new(37, -13),
+        },
+    );
+    step(
+        &mut engine,
+        seen,
+        "float the selection",
+        DocCommand::FloatSelection { layer: root },
+    );
+    // Drag the float somewhere its frame differs from the source's, then merge
+    // it home — the §14.12.3 bake under the audit, and what hands `root` back
+    // as a leaf so the sibling merge below is still offered.
+    let float_child = engine.observe().active_layer;
+    step(
+        &mut engine,
+        seen,
+        "drag the float",
+        DocCommand::TranslateLayer {
+            layer: float_child,
+            to: stark_model::geom::IVec2::new(-40, 21),
+        },
+    );
+    step(
+        &mut engine,
+        seen,
+        "merge the float home",
+        DocCommand::MergeLayerDown(float_child),
+    );
+
     // …and a removal last, which takes a subtree with it.
     step(
         &mut engine,

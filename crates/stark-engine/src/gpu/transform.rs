@@ -254,6 +254,24 @@ struct Gated<'a> {
 /// quad pass writes, and the destination a combine writes.
 type Parcel = Channels;
 
+/// The tile rect spanning `base`'s keys — every coord whose gate a cut can read
+/// (sources are base tiles; a destination's mask only ever cuts base paint), so
+/// the shifted mask is built no wider (§14.12). Bounds the shift's allocation by
+/// the layer's extent where `TileRect::ALL` bounded it by the mask's.
+fn base_rect(base: &TileMap) -> stark_model::geom::TileRect {
+    let mut keys = base.keys();
+    let Some(first) = keys.next() else {
+        return stark_model::geom::TileRect::EMPTY;
+    };
+    let mut min = (first.x, first.y);
+    let mut max = min;
+    for k in keys {
+        min = (min.0.min(k.x), min.1.min(k.y));
+        max = (max.0.max(k.x), max.1.max(k.y));
+    }
+    stark_model::geom::TileRect { min, max }
+}
+
 #[derive(Clone)]
 pub struct TransformRenderer {
     ctx: GpuContext,
@@ -479,8 +497,13 @@ impl TransformRenderer {
     }
 
     /// Transform `base` (one layer's tiles) and `selection` (the author's mask)
-    /// under `map`. `None` rejects the whole action — an unusable map, or more
-    /// tiles than the caps allow — deterministically, so peers and replays agree
+    /// under `map`, stated on the canvas, against a layer whose frame sits at
+    /// `frame` (§14.12): the paint side runs the map conjugated into the frame
+    /// and gates through the mask brought into it, while the mask side moves the
+    /// canvas mask under the canvas map — so the moved paint and its outline
+    /// land together on the canvas. A zero frame is bit-for-bit the pre-frame
+    /// path. `None` rejects the whole action — an unusable map, or more tiles
+    /// than the caps allow — deterministically, so peers and replays agree
     /// (§16.1).
     pub fn apply(
         &self,
@@ -488,35 +511,170 @@ impl TransformRenderer {
         base: &TileMap,
         selection: &Selection,
         map: &TransformMap,
+        frame: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
-        match map {
-            TransformMap::Affine(affine) => self.apply_affine(pool, base, selection, *affine),
-            TransformMap::Perspective(_) | TransformMap::Warp(_) => {
-                self.apply_gated(pool, base, selection, map)
+        let local = map.in_frame(frame);
+        match (&local, map) {
+            (TransformMap::Affine(l), TransformMap::Affine(c)) => {
+                self.apply_affine(pool, base, selection, *l, *c, frame)
             }
+            _ => self.apply_gated(pool, base, selection, &local, map, frame),
         }
     }
 
-    /// The whole-plane affine (§16), untouched: one quad per selected source
-    /// tile, pure Replace on the mask.
+    /// The author's selection as it stands over a layer's frame placed at
+    /// `frame` (§14.12): a mask whose value at a frame position `p` is the
+    /// canvas mask's at `p + frame`, built only over the tiles in `within` —
+    /// everywhere else it answers with `outside`, so it may gate exactly the
+    /// tiles it was scoped to and nothing more.
+    ///
+    /// **Exact.** The frame is whole pixels, so every resample tap lands on a
+    /// texel centre (§16.4's second exactness property, which the mask pass
+    /// shares with the parcel). A zero frame — every untranslated layer — and a
+    /// universal mask are both the mask itself, by handle: no pass runs, which
+    /// is what keeps this off the cost of every ordinary stroke.
+    pub fn shifted_selection(
+        &self,
+        pool: &TilePool,
+        selection: &Selection,
+        frame: stark_model::geom::IVec2,
+        within: &[TileCoord],
+    ) -> Selection {
+        if frame == stark_model::geom::IVec2::ZERO || selection.is_universal() {
+            return selection.clone();
+        }
+        let f = Vec2::new(frame.x as f32, frame.y as f32);
+        // dest(p) = src(A⁻¹·p) is the pass's contract, and src is to be read at
+        // p + frame — so the drawn map is the *negated* translation.
+        let affine = Affine2::from_translation(-f);
+        let mut scope = self.scratch.scope(&self.ctx, "stark selection shift");
+        let mut tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> = HashTrieMap::new();
+        for coord in within {
+            let sources =
+                crate::document::transform::shifted_mask_sources(selection, *coord, frame);
+            if sources.is_empty() {
+                continue;
+            }
+            let dst = pool.acquire_mask(AllocSource::TransformMask);
+            self.render_mask(&mut scope, selection, affine, *coord, &sources, &dst);
+            tiles = tiles.insert(*coord, dst);
+            scope.tile_done();
+        }
+        scope.finish();
+        Selection::from_parts(
+            tiles,
+            selection.outside(),
+            selection.level(),
+            selection.opacity(),
+            selection.hull().map(|(lo, hi)| (lo - f, hi - f)),
+        )
+    }
+
+    /// [`Self::shifted_selection`], scoped by a tile rect instead of a coord
+    /// list: the destinations are enumerated from the mask's own tiles — a
+    /// stroke's gate stays the stroke's size however large the layer is, and a
+    /// claim of the whole layer (`TileRect::ALL`) stays the mask's.
+    pub fn shifted_selection_in(
+        &self,
+        pool: &TilePool,
+        selection: &Selection,
+        frame: stark_model::geom::IVec2,
+        rect: stark_model::geom::TileRect,
+    ) -> Selection {
+        if frame == stark_model::geom::IVec2::ZERO || selection.is_universal() {
+            return selection.clone();
+        }
+        let within = crate::document::transform::shifted_mask_cover(selection, frame, rect);
+        self.shifted_selection(pool, selection, frame, &within)
+    }
+
+    /// Cut what `selection` holds of `base` into a second map — the float's GPU
+    /// half (§16.12): `(what remains, what lifted)`. The two stack back to the
+    /// picture that was there, §14.11.1's law run backwards: the cut is §16.2's
+    /// lift, fully-covered tiles cross **by handle**, and only the boundary
+    /// tiles pay a parcel and two combines. `None` rejects the action — nothing
+    /// selected over the layer, or past the cap — deterministically.
+    pub fn float(
+        &self,
+        pool: &TilePool,
+        base: &TileMap,
+        selection: &Selection,
+        frame: stark_model::geom::IVec2,
+    ) -> Option<(TileMap, TileMap)> {
+        let plan = crate::document::transform::plan_float(base, selection, frame)?;
+        // The mask, brought into the layer's frame once — every gate below reads it.
+        let shifted = self.shifted_selection(pool, selection, frame, &plan.partial);
+
+        let mut scope = self.scratch.scope(&self.ctx, "stark float");
+        let mut from = Source::new(pool, base, &shifted);
+        // The child's combines stack their parcel over nothing: an empty base
+        // binds the 1×1 zeroes through the same door a virgin destination does.
+        let empty = TileMap::new();
+        let onto = Source::new(pool, &empty, &shifted);
+
+        let mut remaining = base.clone();
+        let mut lifted = TileMap::new();
+        for coord in &plan.full {
+            let handle = base.get(coord).expect("planned from this map").clone();
+            lifted = lifted.insert(*coord, handle);
+            remaining = remaining.remove(coord);
+        }
+        for coord in &plan.partial {
+            // The neighbours too, not the tile alone: a tile's texture reaches an
+            // apron past its interior, and under the identity that band lies in
+            // the neighbours' interiors — drawing them is what keeps the child's
+            // aprons bit-identical to its neighbours (§6.4), exactly as the
+            // affine path's `reached_tiles` arranges for every transform.
+            let sources: Vec<TileCoord> = (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                .filter_map(|(dx, dy)| {
+                    let c = TileCoord::new(coord.x.checked_add(dx)?, coord.y.checked_add(dy)?);
+                    base.get(&c).map(|_| c)
+                })
+                .collect();
+            let parcel =
+                self.render_parcel(&mut scope, &mut from, Affine2::IDENTITY, *coord, &sources);
+            // The cut: the base under its mask, no parcel stacked back (§16.2).
+            let cut = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
+            self.combine(&mut scope, &from, *coord, None, &cut, None);
+            remaining = remaining.insert(*coord, cut.into_tile());
+            // The lift: the parcel alone, over nothing.
+            let up = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
+            self.combine(&mut scope, &onto, *coord, parcel.as_ref(), &up, None);
+            lifted = lifted.insert(*coord, up.into_tile());
+            scope.tile_done();
+        }
+        scope.finish();
+        Some((remaining, lifted))
+    }
+
+    /// The whole-plane affine (§16): one quad per selected source tile, pure
+    /// Replace on the mask. `local` is the map in the layer's frame — the paint
+    /// side — and `affine` the canvas map the mask moves under; at a zero frame
+    /// the two are the same value and the path is untouched.
     fn apply_affine(
         &self,
         pool: &TilePool,
         base: &TileMap,
         selection: &Selection,
+        local: Affine2,
         affine: Affine2,
+        frame: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
-        let plan = plan_paint(base, selection, affine)?;
+        // The mask as it stands over the layer's frame — what classifies and
+        // gates every paint tile. The canvas mask stays what *moves*, below.
+        let gate = self.shifted_selection_in(pool, selection, frame, base_rect(base));
+        let plan = plan_paint(base, &gate, local)?;
         let mask_plan = plan_mask(selection, affine)?;
 
         let mut scope = self.scratch.scope(&self.ctx, "stark transform");
 
         // Source-tile bind groups are shared across every destination they reach.
-        let mut from = Source::new(pool, base, selection);
+        let mut from = Source::new(pool, base, &gate);
 
         let mut tiles = base.clone();
         for (dest, sources) in &plan.rewrites {
-            let parcel = self.render_parcel(&mut scope, &mut from, affine, *dest, sources);
+            let parcel = self.render_parcel(&mut scope, &mut from, local, *dest, sources);
             let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, None);
             tiles = tiles.insert(*dest, dst.into_tile());
@@ -526,7 +684,7 @@ impl TransformRenderer {
             tiles = tiles.remove(coord);
         }
 
-        // The mask, carried under the same affine (pure Replace — §16.1).
+        // The mask, carried under the canvas affine (pure Replace — §16.1).
         let mut mask_tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> =
             HashTrieMap::new();
         for (dest, sources) in &mask_plan.rewrites {
@@ -565,16 +723,28 @@ impl TransformRenderer {
     /// split per warp sub-cell) forward-rasterized through `vs_gated`, the cut
     /// gated by the rect's coverage, and the mask carried as
     /// `max(old · (1 − box), moved)` — the residue unioned with what landed.
+    /// `local` is `canvas` restated in the layer's frame ([`TransformMap::in_frame`]);
+    /// the paint runs under it, the mask under `canvas`, and at a zero frame the
+    /// two are the same value.
     fn apply_gated(
         &self,
         pool: &TilePool,
         base: &TileMap,
         selection: &Selection,
-        map: &TransformMap,
+        local: &TransformMap,
+        canvas: &TransformMap,
+        frame: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
-        let (rect, geo) = gated_geometry(map)?;
-        let plan = plan_gated_paint(base, selection, rect, &geo)?;
+        let (lrect, lgeo) = gated_geometry(local)?;
+        let (rect, geo) = gated_geometry(canvas)?;
+        // The mask over the layer's frame, for the cut; the canvas mask moves.
+        let gate = self.shifted_selection_in(pool, selection, frame, base_rect(base));
+        let plan = plan_gated_paint(base, &gate, lrect, &lgeo)?;
         let mask_plan = plan_gated_mask(selection, rect, &geo)?;
+        let linv = match &lgeo.kind {
+            GatedKind::Persp { inv, .. } => Some(*inv),
+            GatedKind::Warp { .. } => None,
+        };
         let inv = match &geo.kind {
             GatedKind::Persp { inv, .. } => Some(*inv),
             GatedKind::Warp { .. } => None,
@@ -582,18 +752,18 @@ impl TransformRenderer {
 
         let mut scope = self.scratch.scope(&self.ctx, "stark transform gated");
 
-        let mut from = Source::new(pool, base, selection);
+        let mut from = Source::new(pool, base, &gate);
         let paint = Gated {
             units: &plan.units,
-            inv: inv.as_ref(),
-            rect,
+            inv: linv.as_ref(),
+            rect: lrect,
         };
 
         let mut tiles = base.clone();
         for (dest, unit_idxs) in &plan.rewrites {
             let parcel = self.render_gated_parcel(&mut scope, &mut from, &paint, unit_idxs, *dest);
             let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
-            self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, Some(rect));
+            self.combine(&mut scope, &from, *dest, parcel.as_ref(), &dst, Some(lrect));
             tiles = tiles.insert(*dest, dst.into_tile());
             scope.tile_done();
         }

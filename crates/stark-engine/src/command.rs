@@ -460,6 +460,27 @@ pub enum DocCommand {
         map: TransformMap,
     },
 
+    /// Put `layer`'s frame at `to` on the canvas — "move the layer", as one
+    /// property write and no tile at all (§14.12). The engine expands the move
+    /// to the layer's whole subtree (its paint members, each by the same delta),
+    /// since a group moves as one and translation does not inherit; the release
+    /// half of the pick-and-translate drag (§16.11), whose in-flight half is
+    /// [`ViewCommand::PreviewTranslate`].
+    TranslateLayer {
+        layer: LayerId,
+        to: IVec2,
+    },
+
+    /// Cut what the author's selection holds on `layer` into a fresh child
+    /// layer at the foot of its stack — the float (§16.12) — and make the child
+    /// the paint target, since the float is what the hand is about to move.
+    /// Refused (nothing logged) when the layer is not paint, nothing is
+    /// selected, or the cut would be empty or oversized — the same answers
+    /// `apply` gives, asked before an action is spent on them.
+    FloatSelection {
+        layer: LayerId,
+    },
+
     /// Switch the canvas substrate (§6.4).
     ///
     /// Document state, not view state: which canvas a piece was painted on is part
@@ -729,6 +750,18 @@ pub enum ViewCommand {
     /// *committed* tiles, so redrawing the axis a hundred times previews one
     /// fill, never a hundred stacked glazes.
     PreviewFill(Option<(LayerId, FillOp)>),
+
+    /// Show `layer`'s frame at `to` **without logging it** — the in-flight half
+    /// of the pick-and-translate drag (§16.11, §14.12). `None` drops the preview.
+    ///
+    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity),
+    /// and made of the same stuff: a translation is presentation folded in at
+    /// the draw list, so each sample folds the very [`DocCommand::TranslateLayer`]
+    /// the release will commit — subtree expansion included — and moves no tile.
+    /// That this costs what an opacity drag costs is the entire feature: the
+    /// transform machinery this replaces resampled the layer per changed sample
+    /// (§16.6).
+    PreviewTranslate(Option<(LayerId, IVec2)>),
 
     /// Show a substrate color **without logging it** — the in-flight half of a
     /// canvas-color drag (§15.5). `None` drops the preview.

@@ -1539,6 +1539,7 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
                 path,
                 seed: 7,
                 start: 0.0,
+                frame: stark_model::geom::IVec2::ZERO,
             },
         ),
     });

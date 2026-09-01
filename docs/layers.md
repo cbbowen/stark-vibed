@@ -964,6 +964,84 @@ agreement with the compositor, and the compositor is what a render runs.
    which the fold had set to 1 — by handle, so it is exact; redo reproduces the
    merge exactly.
 
+## 14.12 A layer's frame — translation as a property
+
+Moving a layer used to be a rewrite of every tile it holds (§16). It is now a
+**property write**: each layer carries a `translation` — whole canvas pixels,
+`Layer::translation` — and its tiles are keyed in the layer's own **frame**,
+which the compositor, the pick and the bounds place onto the canvas by adding
+the offset on the way out. Dragging a layer costs what dragging its opacity
+costs, previews through the same fold (`preview_of`), and moves no tile — the
+undo of one is a number coming back.
+
+Whole pixels, for `PlaceImage`'s reason (§23): an integer offset is exact by
+type, and §16.11 had already established that a fractional move buys a
+generation of blur for a movement no eye asked for. It is **not** part of
+`CompositeParams`: it says nothing about meeting a backdrop and forces no
+isolation — a translated layer still joins a plain run, with its offset riding
+the per-tile instance origin the draw list already writes.
+
+### 14.12.1 Flat, deliberately — translation does not inherit
+
+A footprint is built from the action alone (§12.6), and an inherited offset
+would make every stroke read the translation of every ancestor — resources no
+action can name. So the field is flat, and **the gesture moves a group by
+writing every member**: `ActionKind::TranslateLayers { moves }` carries one
+`(LayerId, IVec2)` per paint layer of the subtree (`RemoveLayer`'s `carried`,
+put to work), absolute like every property write. Two consequences worth
+having anyway: carrying a layer into a translated group does not jump it, and
+a concurrent reorder cannot change what a move meant. Mattes and filters
+refuse the write — a matte's geometry already moves via `SetMatteRect` — and
+the gesture leaves them out of the list rather than logging refusals; a matte
+carried by a moved group therefore stays put, which is the one place the flat
+field shows.
+
+### 14.12.2 What an action's `frame` is for
+
+Everything a paint action says about geometry — a stroke's path, a fill's
+shape and gradient axis — is stated **in the target layer's frame**, converted
+once where the gesture becomes an op. That is what lets a stroke read no
+translation from state, so `TranslateLayers` **commutes with paint** (§12.6)
+— and it is the right concurrent meaning: a stroke rides the layer it was
+painted on.
+
+Two of a stroke's inputs stay canvas-anchored, and the action carries the
+offset that reconciles them: `frame`, the layer's translation at the mint
+(`#[serde(default)]`, so an old file's zero means what it always meant).
+The **author's mask** lives on the canvas whatever any layer's frame says, so
+apply brings it into the frame by the record's own offset — an exact
+whole-pixel resample of only the mask tiles the op can reach
+(`shifted_selection_in`), free when the frame is zero or the mask universal.
+The **substrate**, by contrast, is deliberately read in the layer's frame:
+paint already down carries its grain baked, so new paint matching *its own
+layer's* grain keeps one grain per layer, where canvas-anchored tooth would
+clash with the moved paint beside it. The transforms (§16) stay stated on the
+canvas — the hand's map, which is also what moves the canvas-anchored mask —
+and apply conjugates the paint side into the frame (`TransformMap::in_frame`).
+
+### 14.12.3 Merging across frames
+
+A merge stacks two tile maps, so the sides must share one space: when the
+frames differ, the source is restated in the destination's — a whole-pixel
+shift through the transform's own exactness invariant (§16.4), under a
+universal mask — and the survivor keeps its own frame. The merge that must not
+change the picture (§14.11) therefore does not; past the transform's tile caps
+it declines, deterministically, like every refusal there.
+
+### 14.12.4 Invariants worth a test (`tests/translate.rs`)
+
+1. A translated layer renders **bit-for-bit** as the same layer with the offset
+   baked through `Transform` — the field against the rewrite it replaces.
+2. A translate touches no tile: the content revision every thumbnail keys on
+   does not move.
+3. `preview == committed`, through the property fold.
+4. A stroke on a translated layer lands under the hand — same texels, within
+   the swept interior's own solve speckle (the sweep is solved in `f32` at the
+   shifted magnitudes, so a stored f16 bit can flip; nothing *shifts*) — and
+   gated by a selection exactly as on an untranslated one, which is the mask
+   shift earning its keep.
+5. Undo restores the frame exactly.
+
 ---
 
 ## 15. Framing, mattes, and export

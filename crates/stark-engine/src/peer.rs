@@ -64,6 +64,9 @@ pub enum LiveGesture {
     Fill {
         layer: LayerId,
         op: FillOp,
+        /// The layer's frame the op is in (§14.12) — a record carries its own,
+        /// and a fill op is not a record.
+        frame: stark_model::geom::IVec2,
     },
 }
 
@@ -473,6 +476,7 @@ mod tests {
             layer: LayerId::ROOT,
             brush: BrushParams::default(),
             seed: 7,
+            frame: stark_model::geom::IVec2::ZERO,
         })
     }
 

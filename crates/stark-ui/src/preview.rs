@@ -225,6 +225,16 @@ pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
         DocCommand::Transform { layer, map }
     });
 
+/// A layer's place on the canvas — the pick-and-translate drag (§16.11, §14.12).
+///
+/// The row that replaced the carry's use of [`TRANSFORM`]: a translation is a
+/// property write, so this preview moves no tile where that one resampled the
+/// layer per changed sample — the whole of what the frame field buys.
+pub const TRANSLATE: Preview<(LayerId, stark_model::geom::IVec2)> =
+    Preview::new(ViewCommand::PreviewTranslate, |(layer, to)| {
+        DocCommand::TranslateLayer { layer, to }
+    });
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +344,12 @@ mod tests {
             ViewCommand::PreviewTransform(Some(shown)),
             DocCommand::Transform { layer, map } => (shown, (layer, map))
         );
+        check_pair!(
+            TRANSLATE,
+            (id, stark_model::geom::IVec2::new(40, -8)),
+            ViewCommand::PreviewTranslate(Some(shown)),
+            DocCommand::TranslateLayer { layer, to } => (shown, (layer, to))
+        );
     }
 
     /// Dropping a preview is the **same command** that shows it, with nothing in
@@ -353,6 +369,10 @@ mod tests {
         assert!(matches!(
             (TRANSFORM.show)(None),
             ViewCommand::PreviewTransform(None)
+        ));
+        assert!(matches!(
+            (TRANSLATE.show)(None),
+            ViewCommand::PreviewTranslate(None)
         ));
         assert!(matches!(
             (MATTE_PAINT.show)(None),

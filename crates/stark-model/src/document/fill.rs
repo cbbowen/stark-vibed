@@ -188,6 +188,23 @@ impl FillOp {
         self.opacity
     }
 
+    /// The same fill, its geometry shifted whole by `by` — the shape and, for a
+    /// gradient, the axis the ramp is read from, which is position too (§22.4).
+    /// What brings a canvas-space gesture into the layer's frame at mint
+    /// (§14.12); feather, paint and opacity are not positions and ride through.
+    ///
+    /// Through [`Self::with_paint`], so the result holds the op's invariants
+    /// however far the shift lands — a coordinate pushed past `f32`'s horizon is
+    /// then refused by the same gates an unmeasurable shape already meets.
+    pub fn translated(&self, by: Vec2) -> Self {
+        Self::with_paint(
+            self.shape.translated(by),
+            self.feather,
+            self.paint.translated(by),
+            self.opacity,
+        )
+    }
+
     /// How far past the shape's own boundary its coverage can reach, in canvas px.
     ///
     /// The rasterizer's ramp is `clamp(0.5 − sd/w, 0, 1)` with `w = max(feather, 1)`

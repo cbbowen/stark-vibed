@@ -62,7 +62,11 @@ pub(crate) enum GestureSource {
     /// A region being dragged out to fill (§18.0.4). No layer: the
     /// frame's own [`active_layer`](stark_model::peer::PeerFrame::active_layer) is it, and
     /// a second copy could disagree with that one.
-    Fill(FillOp),
+    Fill {
+        op: FillOp,
+        /// The layer's frame the op is in (§14.12).
+        frame: stark_model::geom::IVec2,
+    },
 }
 
 /// The sending half: what this client has told the wire about its gesture.
@@ -131,10 +135,10 @@ impl GestureTx {
             }
             // A fill's region is a shape, sent whole for exactly the reasons a
             // selection's is. The layer rides `PeerFrame::active_layer`.
-            GestureSource::Fill(op) => {
+            GestureSource::Fill { op, frame } => {
                 self.sent_id = Some(id);
                 self.sent = 0;
-                Some(GestureFrame::Fill { id, op })
+                Some(GestureFrame::Fill { id, op, frame })
             }
             GestureSource::Stroke {
                 head,
@@ -269,12 +273,13 @@ impl GestureRx {
                 self.drawn = Some(LiveGesture::Selection(op));
                 true
             }
-            GestureFrame::Fill { op, .. } => {
+            GestureFrame::Fill { op, frame, .. } => {
                 self.stroke = None;
                 self.last_seq = Some(seq);
                 self.drawn = Some(LiveGesture::Fill {
                     layer: active_layer,
                     op,
+                    frame,
                 });
                 true
             }
@@ -378,6 +383,10 @@ impl GestureRx {
                     path: assembly.path.clone(),
                     seed: assembly.head.seed,
                     start: assembly.start,
+                    // The sender's, off the head: the path frames carry is in the
+                    // layer's frame, and the fold needs the very offset the
+                    // author's commit will use (§14.12).
+                    frame: assembly.head.frame,
                 }));
                 true
             }
@@ -444,6 +453,7 @@ mod tests {
                     layer: LayerId::ROOT,
                     brush: hostile,
                     seed: 0,
+                    frame: stark_model::geom::IVec2::ZERO,
                 })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
@@ -520,6 +530,7 @@ mod tests {
                         layer: LayerId::ROOT,
                         brush: ordinary,
                         seed: 0,
+                        frame: stark_model::geom::IVec2::ZERO,
                     })),
                     from: 0,
                     points: vec![ControlPoint::at(Vec2::ZERO)],
@@ -611,6 +622,7 @@ mod tests {
                     seedling,
                     DEFAULT_TOLERANCE,
                     0.0,
+                    stark_model::geom::IVec2::ZERO,
                 );
                 for step in 1..40u32 {
                     let t = f32::from(step as u16);
@@ -725,6 +737,7 @@ mod tests {
             layer,
             brush: stark_model::document::BrushParams::default(),
             seed: 7,
+            frame: stark_model::geom::IVec2::ZERO,
         };
         let stroke = |n: usize, frozen: usize| GestureSource::Stroke {
             head: Box::new(head.clone()),

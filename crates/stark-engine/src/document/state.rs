@@ -66,6 +66,35 @@ impl CanvasBounds {
             ),
         });
     }
+
+    /// The extent as it sits on the canvas once the layer's frame is placed at
+    /// `by` (§14.12) — tile-granular, rounded **outward**, since a pixel offset
+    /// that is not a multiple of the tile size lands a tile range astride two.
+    ///
+    /// Conservative in the direction bounds already are: the box is a cover, so a
+    /// tile of slack costs a slightly looser "frame to content" and nothing else.
+    /// Saturating, so a frame parked at the integer horizon clamps rather than
+    /// wraps the box to the other side of the canvas.
+    pub(crate) fn shifted(self, by: stark_model::geom::IVec2) -> Self {
+        use stark_model::geom::TILE_SIZE;
+        let t = TILE_SIZE as i32;
+        let floor = |d: i32| d.div_euclid(t);
+        let ceil = |d: i32| d.saturating_add(t - 1).div_euclid(t);
+        Self {
+            range: self.range.map(|(min, max)| {
+                (
+                    TileCoord::new(
+                        min.x.saturating_add(floor(by.x)),
+                        min.y.saturating_add(floor(by.y)),
+                    ),
+                    TileCoord::new(
+                        max.x.saturating_add(ceil(by.x)),
+                        max.y.saturating_add(ceil(by.y)),
+                    ),
+                )
+            }),
+        }
+    }
 }
 
 /// Where a layer sits in the tree: whose stack it is in, and how far up that
@@ -628,6 +657,15 @@ impl DocState {
         )
     }
 
+    /// Land a floated child at the **foot** of its source's carried stack
+    /// (§16.12) — directly over the paint it was cut from, which is what keeps
+    /// the picture unchanged (§14.1). The child arrives whole: tiles, frame and
+    /// identity params are the fold's to build, so this takes the record rather
+    /// than re-deriving it from an id.
+    pub(crate) fn insert_float(&self, source: LayerId, child: Layer) -> Self {
+        self.insert(child, Some(source), Place::Bottom)
+    }
+
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Place) -> Self {
         // **An id the document already holds is refused rather than doubled.** It
         // cannot arise from an action this engine mints — a `LayerId` *is* an action's
@@ -960,6 +998,32 @@ impl DocState {
         })
     }
 
+    /// Put each named layer's frame at a place on the canvas (§14.12) — absent
+    /// entries are skipped, like every property write on a layer that is not
+    /// there, and each entry stands alone: a concurrent removal of one member
+    /// does not strand the rest of a group mid-move.
+    ///
+    /// A no-op on a **matte or a filter**, like a stroke aimed at one (§15.7): a
+    /// matte's geometry already moves via `SetMatteRect`, and a filter has
+    /// nothing that sits anywhere. Refused here, in the fold, so a log that
+    /// contains one reads the same on every peer.
+    pub(crate) fn translate_layers(&self, moves: &[(LayerId, stark_model::geom::IVec2)]) -> Self {
+        let mut state = self.clone();
+        for (id, to) in moves {
+            state = state.map_layer(*id, |l| {
+                if l.is_paintable() {
+                    Layer {
+                        translation: *to,
+                        ..l.clone()
+                    }
+                } else {
+                    l.clone()
+                }
+            });
+        }
+        state
+    }
+
     /// Set a layer's visibility (no-op if absent).
     pub(crate) fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
         self.map_layer(id, |l| Layer {
@@ -1072,7 +1136,10 @@ impl DocState {
         let mut bounds = CanvasBounds::default();
         fn walk(layers: &Vector<Layer>, bounds: &mut CanvasBounds) {
             for l in layers.iter() {
-                bounds.union(l.bounds());
+                // Where the tiles sit on the *canvas*: the layer's own extent,
+                // placed by its frame (§14.12). Each layer's own, flat — see
+                // `Layer::translation` for why nothing accumulates down the tree.
+                bounds.union(l.bounds().shifted(l.translation));
                 walk(&l.carries, bounds);
             }
         }

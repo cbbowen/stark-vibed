@@ -55,6 +55,12 @@ pub enum Prop {
     /// reason [`Matte`](Self::Matte) is one for a region and a fill: `SetFilter`
     /// carries the filter entire, so there is no finer thing an action can write.
     Filter,
+    /// Where the layer's frame sits on the canvas (§14.12). Its own resource so a
+    /// translate commutes with a stroke on the same layer — which is sound because
+    /// paint actions never read it: their geometry is in the layer's frame, and the
+    /// offset they reconcile the canvas-anchored mask against travels in the action
+    /// (`frame`), not in the state.
+    Translation,
 }
 
 impl Prop {
@@ -66,7 +72,7 @@ impl Prop {
     /// stops compiling until a new variant is *visited* — the device
     /// `Modulations::all` uses for a struct's fields. A `Prop` missing here would
     /// make a coarse claim quietly finer than it says it is.
-    pub const ALL: [Prop; 7] = [
+    pub const ALL: [Prop; 8] = [
         Prop::Blend,
         Prop::Clip,
         Prop::Opacity,
@@ -74,6 +80,7 @@ impl Prop {
         Prop::Name,
         Prop::Matte,
         Prop::Filter,
+        Prop::Translation,
     ];
 }
 
@@ -443,6 +450,33 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 .collect(),
             writes: vec![Resource::StackOrder],
         },
+        // One write per layer moved, so a subtree translated as one gesture still
+        // commutes with a rename beside it — and, because no paint action reads
+        // `Prop::Translation`, with every stroke inside it (§14.12).
+        ActionKind::TranslateLayers { moves } => Footprint {
+            reads: moves
+                .iter()
+                .map(|(id, _)| Resource::Existence(*id))
+                .collect(),
+            writes: moves
+                .iter()
+                .map(|(id, _)| Resource::Prop(*id, Prop::Translation))
+                .collect(),
+        },
+        // The cut is bounded by the author's mask, which the footprint cannot
+        // measure, so the source's paint is claimed whole — `Transform`'s answer to
+        // the same question. The child is a minted layer, claimed the way every
+        // minted layer is; the mask is *consumed* (the float is the selection,
+        // reified), so it is a write.
+        ActionKind::FloatSelection { layer, child, .. } => Footprint {
+            reads: vec![Resource::Existence(*layer)],
+            writes: vec![
+                Resource::Paint(*layer, TileRect::ALL),
+                Resource::Layer(*child),
+                Resource::Selection(actor),
+                Resource::StackOrder,
+            ],
+        },
         ActionKind::SetLayerBlend(id, _) => prop_write(*id, Prop::Blend),
         ActionKind::SetLayerClip(id, _) => prop_write(*id, Prop::Clip),
         ActionKind::SetLayerOpacity(id, _) => prop_write(*id, Prop::Opacity),
@@ -492,17 +526,35 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // tile for the apron reach. An unusable warp (whose image is unknown)
         // falls back to the whole layer — it will be rejected by `apply`, and
         // a too-big footprint is the safe direction.
-        ActionKind::TransformPerspective { layer, map } => Footprint {
+        // The map is stated on the canvas and the claim is on the layer's tiles, so
+        // the box is brought into the layer's frame by the action's own `frame`
+        // (§14.12) — the same shift `apply` makes, from the same field, so the two
+        // cannot disagree about which tiles are meant.
+        ActionKind::TransformPerspective { layer, map, frame } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
-                Resource::Paint(*layer, gated_rect((map.min, map.max), map.image_aabb())),
+                Resource::Paint(
+                    *layer,
+                    gated_rect(
+                        (map.min - frame.as_vec2(), map.max - frame.as_vec2()),
+                        map.image_aabb()
+                            .map(|(lo, hi)| (lo - frame.as_vec2(), hi - frame.as_vec2())),
+                    ),
+                ),
                 Resource::Selection(actor),
             ],
         },
-        ActionKind::TransformWarp { layer, map } => Footprint {
+        ActionKind::TransformWarp { layer, map, frame } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
-                Resource::Paint(*layer, gated_rect((map.min, map.max), map.image_aabb())),
+                Resource::Paint(
+                    *layer,
+                    gated_rect(
+                        (map.min - frame.as_vec2(), map.max - frame.as_vec2()),
+                        map.image_aabb()
+                            .map(|(lo, hi)| (lo - frame.as_vec2(), hi - frame.as_vec2())),
+                    ),
+                ),
                 Resource::Selection(actor),
             ],
         },
@@ -510,7 +562,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // reaches — the same shape of footprint a stroke has. A fill bounded only
         // by the selection has no analytic box, so it claims the whole layer, the
         // conservative answer a transform gives for the same reason.
-        ActionKind::Fill { layer, op } => Footprint {
+        ActionKind::Fill { layer, op, .. } => Footprint {
             reads: vec![Resource::Existence(*layer), Resource::Selection(actor)],
             writes: vec![Resource::Paint(*layer, fill_rect(op))],
         },
@@ -636,6 +688,7 @@ mod tests {
                 path: vec![point(from), point(to)],
                 seed: 0,
                 start: 0.0,
+                frame: crate::geom::IVec2::ZERO,
             }),
         )
     }
@@ -662,10 +715,11 @@ mod tests {
                 | Prop::Visible
                 | Prop::Name
                 | Prop::Matte
-                | Prop::Filter => {}
+                | Prop::Filter
+                | Prop::Translation => {}
             }
         }
-        assert_eq!(Prop::ALL.len(), 7, "a new Prop needs a place in ALL");
+        assert_eq!(Prop::ALL.len(), 8, "a new Prop needs a place in ALL");
     }
 
     /// Every [`Resource`] variant is visited, and one of each meets **exactly** what
@@ -972,6 +1026,73 @@ mod tests {
         assert!(!commutes(&clip, &unclip));
     }
 
+    /// **A translate commutes with a stroke on the same layer** — the claim §14.12's
+    /// whole design exists to make true: a stroke's geometry is in the layer's frame
+    /// and its mask offset travels in the action, so neither reads what the translate
+    /// writes. Two translates of one layer still conflict, as two opacities do.
+    #[test]
+    fn a_translate_commutes_with_paint_but_not_with_itself() {
+        use crate::geom::IVec2;
+        let translate = act(
+            1,
+            ActionKind::TranslateLayers {
+                moves: vec![(LayerId::ROOT, IVec2::new(40, -8))],
+            },
+        );
+        let paint = stroke(2, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let again = act(
+            2,
+            ActionKind::TranslateLayers {
+                moves: vec![(LayerId::ROOT, IVec2::ZERO)],
+            },
+        );
+        let rename = act(2, ActionKind::SetLayerName(LayerId::ROOT, None));
+        let elsewhere = act(
+            2,
+            ActionKind::TranslateLayers {
+                moves: vec![(LayerId::solo(1), IVec2::ONE)],
+            },
+        );
+        assert!(commutes(&translate, &paint));
+        assert!(!commutes(&translate, &again));
+        assert!(commutes(&translate, &rename));
+        assert!(commutes(&translate, &elsewhere));
+        // …and not with the layer being removed, through the coarse claim.
+        let remove = act(
+            2,
+            ActionKind::RemoveLayer {
+                id: LayerId::ROOT,
+                carried: Vec::new(),
+            },
+        );
+        assert!(!commutes(&translate, &remove));
+    }
+
+    /// A float claims the source's paint whole and the child entire, so it conflicts
+    /// with paint on either side and with its author's selection edits — and still
+    /// commutes with a stroke on an unrelated layer.
+    #[test]
+    fn a_float_conflicts_with_paint_on_both_of_its_layers() {
+        use crate::geom::IVec2;
+        let child = LayerId::solo(7);
+        let float = act(
+            1,
+            ActionKind::FloatSelection {
+                layer: LayerId::ROOT,
+                child,
+                frame: IVec2::ZERO,
+            },
+        );
+        let on_source = stroke(2, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let on_child = stroke(2, child, Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        let own_select = act(1, ActionKind::InvertSelection);
+        let elsewhere = stroke(2, LayerId::solo(1), Vec2::ZERO, Vec2::splat(50.0), 8.0);
+        assert!(!commutes(&float, &on_source));
+        assert!(!commutes(&float, &on_child));
+        assert!(!commutes(&float, &own_select));
+        assert!(commutes(&float, &elsewhere));
+    }
+
     /// **A stretched tip's footprint has to grow with it** (§6.6, §12.6).
     ///
     /// A brush drawn out along its facing axis reaches `elongation` times as far as its
@@ -1021,6 +1142,7 @@ mod tests {
                 path: vec![point(Vec2::splat(600.0)), point(Vec2::splat(700.0))],
                 seed: 0,
                 start: 0.0,
+                frame: crate::geom::IVec2::ZERO,
             })
         };
         let (plain, drawn_out) = (rect(0.0), rect(0.875));
@@ -1128,6 +1250,7 @@ mod tests {
                             max: hi,
                             corners: rect_corners(lo, hi),
                         },
+                        frame: crate::geom::IVec2::ZERO,
                     },
                 );
                 assert!(claims_all(&perspective), "rect min {corner:?}");
@@ -1140,6 +1263,7 @@ mod tests {
                     ActionKind::TransformWarp {
                         layer: LayerId::ROOT,
                         map: mesh,
+                        frame: crate::geom::IVec2::ZERO,
                     },
                 );
                 assert!(claims_all(&warp), "rect max {corner:?}");
@@ -1157,10 +1281,38 @@ mod tests {
                     max: hi,
                     corners: rect_corners(lo, hi),
                 },
+                frame: crate::geom::IVec2::ZERO,
             },
         );
         assert!(!claims_all(&ordinary));
         assert!(commutes(&ordinary, &elsewhere));
+
+        // A frame moves the claim with it: the same gated map minted while the
+        // layer's frame sat elsewhere names the layer's *own* tiles, so two maps
+        // over the same canvas rect under different frames claim different boxes.
+        let framed = act(
+            1,
+            ActionKind::TransformPerspective {
+                layer: LayerId::ROOT,
+                map: PerspectiveMap {
+                    min: lo,
+                    max: hi,
+                    corners: rect_corners(lo, hi),
+                },
+                frame: crate::geom::IVec2::new(4000, 0),
+            },
+        );
+        let box_of = |a: &Action| {
+            compute_footprint(a)
+                .writes
+                .iter()
+                .find_map(|r| match r {
+                    Resource::Paint(_, rect) => Some(*rect),
+                    _ => None,
+                })
+                .expect("a gated transform claims paint")
+        };
+        assert_ne!(box_of(&ordinary), box_of(&framed));
     }
 
     /// Carrying a layer is a `MoveLayer`, so it conflicts with every other

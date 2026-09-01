@@ -39,7 +39,7 @@ pub(crate) mod selection;
 pub(crate) mod transform;
 pub(crate) mod warp;
 
-pub use action::{Action, ActionId, ActionKind, ActionTag, ActorId, StrokeRecord};
+pub use action::{Action, ActionId, ActionKind, ActionTag, ActorId, FRAME_LIMIT, StrokeRecord};
 pub use brush::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
     EraseEffect, EraseModulations, LiquifyEffect, LiquifyModulations, ModSource, Modulation,

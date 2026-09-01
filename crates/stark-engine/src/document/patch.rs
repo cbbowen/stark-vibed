@@ -61,6 +61,8 @@ enum PatchOp {
     Opacity(LayerId, f32),
     Visible(LayerId, bool),
     Name(LayerId, Option<Arc<str>>),
+    /// Where the layer's frame sat on the canvas (§14.12).
+    Translation(LayerId, stark_model::geom::IVec2),
     /// A matte's region and color together — one footprint resource.
     Matte(LayerId, MatteRegion, stark_model::document::Parcel),
     /// A filter layer's settings (§21) — one footprint resource, because the action
@@ -120,6 +122,7 @@ impl PatchOp {
             PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
             PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
             PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
+            PatchOp::Translation(id, v) => state.translate_layers(&[(*id, *v)]),
             // The *value*, not the rect: a region restored through its rect could
             // not round-trip `Everything`, which has none.
             PatchOp::Matte(id, region, paint) => state
@@ -254,6 +257,7 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
                     Some(f) => PatchOp::Filter(*id, f),
                     None => return,
                 },
+                Prop::Translation => PatchOp::Translation(*id, l.translation),
             });
         }
         // The coarse claim expands into the fine ones it stands for, so a footprint
@@ -484,6 +488,7 @@ mod tests {
         Option<Arc<str>>,
         Option<Filter>,
         Option<(MatteRegion, stark_model::document::Parcel)>,
+        stark_model::geom::IVec2,
     );
 
     fn props(l: &Layer) -> Props {
@@ -491,7 +496,14 @@ mod tests {
             LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
             LayerContent::Paint(_) | LayerContent::Filter(_) => None,
         };
-        (l.composite, l.visible, l.name.clone(), l.filter(), matte)
+        (
+            l.composite,
+            l.visible,
+            l.name.clone(),
+            l.filter(),
+            matte,
+            l.translation,
+        )
     }
 
     /// Three layers in the root stack, bottom to top: A, B, C.
@@ -553,6 +565,12 @@ mod tests {
                         }),
                     ),
                     LayerId::solo(4),
+                ),
+                Prop::Translation => (
+                    ActionKind::TranslateLayers {
+                        moves: vec![(B, stark_model::geom::IVec2::new(508, -254))],
+                    },
+                    B,
                 ),
             };
             let action = act(kind);
@@ -812,7 +830,13 @@ mod tests {
                 path: Vec::new(),
                 seed: 1,
                 start: 0.0,
+                frame: IVec2::ZERO,
             }),
+            ActionTag::FloatSelection => ActionKind::FloatSelection {
+                layer: B,
+                child: FRESH,
+                frame: IVec2::ZERO,
+            },
             ActionTag::PlaceImage => ActionKind::PlaceImage {
                 id: FRESH,
                 carrier: None,
@@ -828,6 +852,7 @@ mod tests {
             ActionTag::Transform => ActionKind::Transform {
                 layer: B,
                 affine: Affine2::IDENTITY,
+                frame: IVec2::ZERO,
             },
             ActionTag::TransformPerspective => ActionKind::TransformPerspective {
                 layer: B,
@@ -836,15 +861,23 @@ mod tests {
                     max: Vec2::splat(32.0),
                     corners: rect_corners(Vec2::ZERO, Vec2::splat(32.0)),
                 },
+                frame: IVec2::ZERO,
             },
             ActionTag::TransformWarp => ActionKind::TransformWarp {
                 layer: B,
                 map: WarpMap::identity(Vec2::ZERO, Vec2::splat(32.0), 2, 2),
+                frame: IVec2::ZERO,
             },
             ActionTag::MergeLayerDown => ActionKind::MergeLayerDown { source: C, dest: B },
             ActionTag::Fill => ActionKind::Fill {
                 layer: B,
                 op: FillOp::new(box_(), 0.0, Srgb::new([0.3, 0.6, 0.9]), 1.0),
+                frame: IVec2::ZERO,
+            },
+            // Away from wherever `B` stands (zero, in `furnished()`), so the fold
+            // moves and the round trip proves something.
+            ActionTag::TranslateLayers => ActionKind::TranslateLayers {
+                moves: vec![(B, IVec2::new(300, -40))],
             },
 
             // The ctx-free half, each aimed to actually move `furnished()` — see

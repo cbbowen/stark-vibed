@@ -282,15 +282,18 @@ fn transform_apply(
     actor: ActorId,
     layer: LayerId,
     map: &stark_model::document::TransformMap,
+    frame: stark_model::geom::IVec2,
 ) -> DocState {
     // The mask travels with the paint it gated (§16), which is what the second
-    // helper is for.
+    // helper is for. `frame` is the action's own (§14.12): the renderer runs the
+    // map conjugated into the layer's frame on the paint and the canvas map on
+    // the mask.
     paint_and_mask_edit(
         state,
         layer,
         actor,
         "transform rejected (unusable map or too many tiles); ignored",
-        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map),
+        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map, frame),
     )
 }
 
@@ -372,6 +375,40 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             let Some(upper) = paint_base(&state, source) else {
                 return state;
             };
+            // The source restated in the destination's frame (§14.12): the two
+            // sides must share one tile space before they can be stacked, and the
+            // survivor keeps its own frame. A whole-pixel shift, run through the
+            // transform's own exactness invariant (§16.4) under a universal
+            // selection — so the merge that must not change the picture does not.
+            // Declined past the transform's tile caps, deterministically, like
+            // every refusal here.
+            let frame_of = |id: LayerId| {
+                state
+                    .layer(id)
+                    .map_or(stark_model::geom::IVec2::ZERO, |l| l.translation)
+            };
+            let shift = frame_of(source) - frame_of(dest);
+            let upper = if shift == stark_model::geom::IVec2::ZERO {
+                upper
+            } else {
+                let map = stark_model::document::TransformMap::Affine(
+                    stark_model::geom::Affine2::from_translation(shift.as_vec2()),
+                );
+                let everything = super::selection::Selection::everything();
+                match ctx.transform.apply(
+                    &ctx.pool,
+                    &upper,
+                    &everything,
+                    &map,
+                    stark_model::geom::IVec2::ZERO,
+                ) {
+                    Some((tiles, _)) => tiles,
+                    None => {
+                        tracing::warn!("merge across frames exceeds the tile caps; ignored");
+                        return state;
+                    }
+                }
+            };
             let tiles = ctx.merge.apply(
                 &ctx.pool,
                 crate::gpu::merge::MergeScene {
@@ -396,6 +433,54 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             ..l.with_tiles(tiles)
         })
         .remove_layer(source)
+}
+
+/// The body of [`ActionKind::FloatSelection`] (§16.12): cut what the author's
+/// selection holds on `layer` into the minted `child`, carried at the foot of
+/// the source's stack, and consume the selection — the float *is* the selection
+/// now, and an outline left behind would sit over paint that is no longer there.
+///
+/// Every refusal is deterministic, so peers and replays agree: a matte, filter
+/// or absent source ([`paint_base`]); a child id the document already holds
+/// (two layers under one id is §17.9's failure, and half a float — the cut
+/// taken, nothing landed — would be worse than either); a universal selection
+/// (nothing is *selected*; moving everything is `TranslateLayers`); an empty or
+/// oversized cut (`plan_float`).
+fn float_apply(
+    state: DocState,
+    ctx: &ApplyCtx,
+    actor: ActorId,
+    layer: LayerId,
+    child: LayerId,
+    frame: stark_model::geom::IVec2,
+) -> DocState {
+    let Some(base) = paint_base(&state, layer) else {
+        return state;
+    };
+    if state.contains_layer(child) {
+        tracing::warn!("float names a child the document already holds; ignored");
+        return state;
+    }
+    let selection = state.selection_of(actor);
+    if selection.is_universal() {
+        tracing::warn!("float with nothing selected; ignored");
+        return state;
+    }
+    let Some((remaining, lifted)) = ctx.transform.float(&ctx.pool, &base, &selection, frame) else {
+        tracing::warn!("float rejected (empty cut or too many tiles); ignored");
+        return state;
+    };
+    // Unnamed, identity params, shown — and standing at the frame the cut was
+    // made in, which is the action's own field rather than the state's, so a
+    // replay mints what the recording run minted (§16.12).
+    let lifted = Layer {
+        translation: frame,
+        ..Layer::new(child).with_tiles(lifted)
+    };
+    state
+        .map_layer(layer, |l| l.with_tiles(remaining))
+        .insert_float(layer, lifted)
+        .with_selection(actor, super::selection::Selection::everything())
 }
 
 /// The tiles `layer` paints into, or `None` if it has none — the gate every
@@ -505,12 +590,22 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                         // comes *after* it and nothing before, on replay exactly as it
                         // did live.
                         let substrate = ctx.substrate(state.substrate());
+                        // The author's canvas mask, brought into the layer's frame
+                        // the record was made in (§14.12) — scoped to the stroke's
+                        // own claim, and the mask itself, by handle, whenever the
+                        // frame is zero.
+                        let gate = ctx.transform.shifted_selection_in(
+                            &ctx.pool,
+                            selection,
+                            rec.frame,
+                            stark_model::document::stroke_rect(rec),
+                        );
                         ctx.stroke.render(
                             crate::gpu::stroke::StrokeScene {
                                 pool: &ctx.pool,
                                 assets: &ctx.assets,
                                 base,
-                                selection,
+                                selection: &gate,
                                 substrate: &substrate,
                             },
                             rec,
@@ -592,48 +687,71 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // folded over, the actor off the action's own id. A matte or absent
         // layer refuses it, like a stroke; an unusable or oversized transform
         // is rejected deterministically, so peers and replays agree.
-        ActionKind::Transform { layer, affine } => transform_apply(
+        ActionKind::Transform {
+            layer,
+            affine,
+            frame,
+        } => transform_apply(
             state,
             ctx,
             action.id.actor,
             *layer,
             &stark_model::document::TransformMap::Affine(*affine),
+            *frame,
         ),
         // The rect-scoped siblings (§16.8, §16.9): identical shape — cut,
         // restack, carry the mask — differing only in the map handed to
         // the renderer.
-        ActionKind::TransformPerspective { layer, map } => transform_apply(
+        ActionKind::TransformPerspective { layer, map, frame } => transform_apply(
             state,
             ctx,
             action.id.actor,
             *layer,
             &stark_model::document::TransformMap::Perspective(*map),
+            *frame,
         ),
-        ActionKind::TransformWarp { layer, map } => transform_apply(
+        ActionKind::TransformWarp { layer, map, frame } => transform_apply(
             state,
             ctx,
             action.id.actor,
             *layer,
             &stark_model::document::TransformMap::Warp(map.clone()),
+            *frame,
         ),
         // Fold two layers into one without moving a pixel of the composite
         // (§14.11) — the orchestration is `merge_apply`, beside `transform_apply`
         // and for its reason.
         ActionKind::MergeLayerDown { source, dest } => merge_apply(state, ctx, *source, *dest),
+        // Reify the author's selection as a layer a drag can move for the price
+        // of a property write (§16.12) — the orchestration is `float_apply`.
+        ActionKind::FloatSelection {
+            layer,
+            child,
+            frame,
+        } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame),
         // Lay a parcel of paint through the region's coverage, gated by the
         // author's selection — the same gate a stroke passes through, so a fill
         // is clipped by a selection exactly as a brush is
         // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
         // deterministically when unbounded or oversized, so peers and replays
         // agree about a log that contains one.
-        ActionKind::Fill { layer, op } => paint_edit(
+        ActionKind::Fill { layer, op, frame } => paint_edit(
             state,
             *layer,
             action.id.actor,
             "fill rejected (unbounded region or too many tiles); ignored",
             // A fill lays paint through a mask and never moves it, which is now what
-            // taking `paint_edit` says rather than a `None` it has to pass.
-            |_, base, selection| ctx.fill.apply(&ctx.pool, base, selection, op),
+            // taking `paint_edit` says rather than a `None` it has to pass. The mask
+            // is brought into the layer's frame first, as a stroke's is (§14.12).
+            |_, base, selection| {
+                let gate = ctx.transform.shifted_selection_in(
+                    &ctx.pool,
+                    selection,
+                    *frame,
+                    stark_model::document::fill_rect(op),
+                );
+                ctx.fill.apply(&ctx.pool, base, &gate, op)
+            },
         ),
 
         // Everything that needs no renderer, written out rather than swept up by a
@@ -662,7 +780,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         | ActionKind::RemoveGuide(_)
         | ActionKind::SetGuide(..)
         | ActionKind::SetGuideName(..)
-        | ActionKind::MoveGuide { .. }) => apply_pure(kind, state, action.id.actor)
+        | ActionKind::MoveGuide { .. }
+        | ActionKind::TranslateLayers { .. }) => apply_pure(kind, state, action.id.actor)
             .expect("the kinds named here are exactly the ones `apply_pure` folds"),
     }
 }
@@ -779,7 +898,11 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         }
         ActionKind::MoveGuide { id, after } => state.move_guide(*id, *after),
 
-        // The nine whose answer is pixels, and so is a renderer's. Declined here
+        // Move layers without moving a tile (§14.12): a property write, so it
+        // belongs to this half — which is what makes its drag preview free.
+        ActionKind::TranslateLayers { moves } => state.translate_layers(moves),
+
+        // The ten whose answer is pixels, and so is a renderer's. Declined here
         // rather than absent, so that a kind added later has to say which side it is
         // on in this match too — and so that [`apply`]'s list and this one cannot
         // both quietly omit it.
@@ -791,6 +914,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         | ActionKind::TransformPerspective { .. }
         | ActionKind::TransformWarp { .. }
         | ActionKind::MergeLayerDown { .. }
+        | ActionKind::FloatSelection { .. }
         | ActionKind::Fill { .. } => return None,
     })
 }
@@ -937,6 +1061,14 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
         ActionKind::SetGuideName(id, name) => {
             state.guide(*id).is_some_and(|g| g.name.as_deref() == name.as_deref())
         }
+        // A move to where every named layer already stands. Absent answers
+        // `false` on this function's general rule; a matte or filter named with
+        // a nonzero offset answers `false` too and logs an action `apply` will
+        // no-op — `SetFilter`'s bargain, rather than a third opinion here about
+        // which layers have a frame to move.
+        ActionKind::TranslateLayers { moves } => moves
+            .iter()
+            .all(|(id, to)| layer(*id).is_some_and(|l| l.translation == *to)),
         // A move is nothing when the guide already sits directly after the anchor.
         // Asked of the roster rather than of the drag, so a row dropped back where
         // it was picked up costs no undo step however the frontend spelled it.
@@ -971,6 +1103,7 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
         | ActionKind::RemoveLayer { .. }
         | ActionKind::MergeLayerDown { .. }
         | ActionKind::MoveLayer { .. }
+        | ActionKind::FloatSelection { .. }
         // An add always changes the roster; a remove of an absent guide answers
         // `false` for the reason every other absent-target arm does.
         | ActionKind::AddGuide { .. }

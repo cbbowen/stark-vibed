@@ -8,7 +8,7 @@
 use crate::document::CompositeParams;
 use crate::gpu::tile::TilePairHandle;
 use stark_model::document::{Aperture, Filter};
-use stark_model::geom::TileCoord;
+use stark_model::geom::{TileCoord, Vec2};
 
 /// A matte layer's draw parameters (§15.4).
 // No `Debug`: the mirrored `Ramp` (§6.10) derives only what `bytemuck`
@@ -48,6 +48,12 @@ pub struct MatteDraw {
 pub enum CompositeItem {
     Tile {
         coord: TileCoord,
+        /// Where the tile's interior sits **on the canvas**: its own origin plus
+        /// the layer's translation (§14.12). Carried beside `coord` rather than
+        /// derived from it at encode, because the item builder is the one place
+        /// that knows whose layer the tile is — this is the whole of how a
+        /// translated layer reaches the screen.
+        origin: Vec2,
         handle: TilePairHandle,
         opacity: f32,
     },

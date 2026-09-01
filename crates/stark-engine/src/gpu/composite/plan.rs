@@ -297,13 +297,17 @@ impl<'a> Plan<'a> {
         for item in items {
             match item {
                 CompositeItem::Tile {
-                    coord,
+                    coord: _,
+                    origin,
                     handle,
                     opacity,
                 } => {
                     self.draws.push(Draw::Tile(self.instances.len() as u32));
                     self.instances.push(Instance {
-                        origin: coord.origin().to_array(),
+                        // The item's canvas origin — the tile's own plus the
+                        // layer's translation (§14.12), already resolved by the
+                        // one builder that knows whose layer this is.
+                        origin: origin.to_array(),
                         opacity: *opacity,
                     });
                     self.tiles.push(handle);

@@ -11,6 +11,8 @@
 //! reach it (`state::root_signal`).
 
 use super::*;
+use stark_engine::command::DocCommand;
+use stark_model::geom::IVec2;
 
 /// How far the pointer has to travel before a layer carry **engages**, in page
 /// px — the screen's own units (§16.11).
@@ -84,6 +86,13 @@ struct MoveDrag {
     dragged: bool,
     /// What the hit test answered, or that it has not yet.
     hit: Hit,
+    /// Whether a **selection** pinned the press to the active layer (§16.11), in
+    /// which case the first travel past the deadzone floats the selected paint
+    /// into a child layer and the drag carries *that* (§16.12).
+    pinned: bool,
+    /// Whether the float has been made. Latched with the commit it names, so a
+    /// drag cannot float twice.
+    floated: bool,
     /// Set once the pointer is up. The gesture is over and all it is waiting for
     /// is the answer to its own press.
     released: bool,
@@ -98,8 +107,11 @@ struct MoveDrag {
 enum Hit {
     /// The readback has not come back yet.
     Pending,
-    /// The press landed on this layer's paint.
-    Layer(LayerId),
+    /// The press landed on this layer's paint, whose frame stood at `base` when
+    /// the layer was picked (§14.12) — what the drag's delta is added to. Latched
+    /// then rather than read per move, because mid-drag the projection reports
+    /// the *previewed* frame, and a base that followed it would compound.
+    Layer { id: LayerId, base: IVec2 },
     /// Nothing the canvas is showing is under the press. The gesture stays in
     /// flight and does nothing: there is no layer to select and none to carry.
     Nothing,
@@ -115,21 +127,23 @@ enum Hit {
 /// [`stop`](Self::stop) on release or cancel — each answering *was this event
 /// mine?*.
 ///
-/// It holds no transform state of its own, deliberately: it composes the same
-/// `TransformMap::Affine` the widget composes and previews it through the same
-/// [`preview::TRANSFORM`] pair (§16.6), so what the canvas shows mid-drag is what
-/// the release will lay down, by construction.
+/// It holds no transform state of its own, deliberately: the drag is a target
+/// frame for the layer, previewed and committed through the one
+/// [`preview::TRANSLATE`] pair (§14.12), so what the canvas shows mid-drag is
+/// what the release will lay down, by construction — and both are a property
+/// write, which is why dragging a layer costs what dragging its opacity does.
 ///
 /// **What the selection does to it** is worth stating here rather than only in
-/// §16.11, because it is two separate facts. The *carry* respects the mask for
-/// free — `ActionKind::Transform` cuts under the author's own selection already
-/// (§16.1), so only the selected paint travels. The *pick* is what has to be
-/// taught: a mask in force pins the press to the active layer
-/// ([`pinned_layer`]), because a selection was drawn against paint the artist
-/// had in mind, and a press that re-targeted would carry a different layer's
-/// paint through their lasso.
+/// §16.11, because it is two separate facts. The *pick*: a mask in force pins
+/// the press to the active layer ([`pinned_layer`]), because a selection was
+/// drawn against paint the artist had in mind, and a press that re-targeted
+/// would carry a different layer's paint through their lasso. The *carry*: the
+/// first travel past the deadzone **floats** the selected paint into a child
+/// layer (§16.12, one logged action) and the drag then moves the float — so a
+/// selection drag pays the cut once, at the engage, and every move after it is
+/// the same cheap property write an unmasked carry makes.
 ///
-/// [`preview::TRANSFORM`]: crate::preview::TRANSFORM
+/// [`preview::TRANSLATE`]: crate::preview::TRANSLATE
 #[derive(Clone, Copy)]
 pub struct PickMove {
     state: AppState,
@@ -168,11 +182,19 @@ impl PickMove {
         e.prevent_default();
         e.stop_propagation();
         capture_pointer(e);
+        // A press over a press — a double-click racing its own readback, or a
+        // release the panel never heard — replaces the record below, so whatever
+        // the old one was previewing has to come down first or it is shown by
+        // nobody and cleared by nothing.
+        if (*self.drag.peek()).is_some_and(|d| d.shown.is_some()) {
+            crate::preview::TRANSLATE.clear(self.state);
+        }
         let mut presses = self.presses;
         let press = *presses.peek() + 1;
         presses.set(press);
         // A mask in force answers the press without asking the canvas.
-        let hit = pinned_layer(self.state).unwrap_or(Hit::Pending);
+        let pinned = pinned_layer(self.state);
+        let hit = pinned.unwrap_or(Hit::Pending);
         let mut drag = self.drag;
         drag.set(Some(MoveDrag {
             press,
@@ -182,6 +204,8 @@ impl PickMove {
             deadzone: carry_deadzone(e),
             dragged: false,
             hit,
+            pinned: pinned.is_some(),
+            floated: false,
             released: false,
             shown: None,
         }));
@@ -212,21 +236,28 @@ impl PickMove {
             return;
         };
         spawn_forever(async move {
-            let hit = readback.await.map_or(Hit::Nothing, Hit::Layer);
+            let answered = readback.await;
             let Some(mut in_flight) = *self.drag.peek() else {
                 return;
             };
             if in_flight.press != press {
                 return;
             }
-            in_flight.hit = hit;
             // The press's own act, and the whole of what a tap does: the layer
             // under it becomes the selected one. Before the preview below, so
             // the panel highlight and the paint move together rather than a
-            // frame apart.
-            if let Hit::Layer(id) = hit {
-                dispatch(self.state, PeerCommand::SetActiveLayer(id));
-            }
+            // frame apart — and before the base is read, so it is read off the
+            // committed document rather than any preview's echo.
+            in_flight.hit = match answered {
+                Some(id) => {
+                    dispatch(self.state, PeerCommand::SetActiveLayer(id));
+                    Hit::Layer {
+                        id,
+                        base: layer_translation(self.state, id),
+                    }
+                }
+                None => Hit::Nothing,
+            };
             // Whatever travel the drag has already accumulated is owed a
             // preview now that there is a layer to show it on.
             let in_flight = self.refresh(in_flight);
@@ -290,7 +321,10 @@ impl PickMove {
         let mut drag = self.drag;
         drag.set(None);
         if in_flight.shown.is_some() {
-            crate::preview::TRANSFORM.clear(self.state);
+            // The float, if one was made, stands: it is a committed action, and
+            // withdrawing it here would be the chrome undoing document state on
+            // its own authority. What is dropped is the unlogged translation.
+            crate::preview::TRANSLATE.clear(self.state);
         }
     }
 
@@ -304,17 +338,47 @@ impl PickMove {
         // Nothing to move, or nothing known to move yet. Either way the record
         // keeps accumulating travel: the answer may still be on its way, and it
         // is owed whatever the hand did while it was.
-        let Hit::Layer(layer) = in_flight.hit else {
+        let Hit::Layer { id, .. } = in_flight.hit else {
             return in_flight;
         };
         let delta = carry_delta(&in_flight);
+        // A pinned press that has begun to travel floats the selection first
+        // (§16.12): one committed cut, after which the drag carries the child —
+        // whose frame starts where the cut was made, read off the committed
+        // document the float just produced.
+        if in_flight.pinned && !in_flight.floated && delta != Vec2::ZERO {
+            in_flight.floated = true;
+            dispatch(self.state, DocCommand::FloatSelection { layer: id });
+            let child = self
+                .state
+                .obs
+                .peek()
+                .as_ref()
+                .map(|o| o.active_layer)
+                .filter(|active| *active != id);
+            in_flight.hit = match child {
+                Some(child) => Hit::Layer {
+                    id: child,
+                    base: layer_translation(self.state, child),
+                },
+                // The engine declined the float — the mask holds nothing of this
+                // layer — and the mask still says the press may not go looking
+                // elsewhere. The drag stays in flight and moves nothing.
+                None => Hit::Nothing,
+            };
+        }
+        let Hit::Layer { id, base } = in_flight.hit else {
+            return in_flight;
+        };
         let want = (delta != Vec2::ZERO).then_some(delta);
         if want == in_flight.shown {
             return in_flight;
         }
         match want {
-            Some(delta) => crate::preview::TRANSFORM.show(self.state, (layer, carry_map(delta))),
-            None => crate::preview::TRANSFORM.clear(self.state),
+            Some(delta) => {
+                crate::preview::TRANSLATE.show(self.state, (id, base + delta.as_ivec2()))
+            }
+            None => crate::preview::TRANSLATE.clear(self.state),
         }
         in_flight.shown = want;
         in_flight
@@ -341,31 +405,27 @@ impl PickMove {
         }
         let mut drag = self.drag;
         drag.set(None);
-        let Hit::Layer(layer) = in_flight.hit else {
+        let Hit::Layer { id, base } = in_flight.hit else {
+            // Unreachable with something shown today — a hit only ever leaves
+            // `Layer` before the first preview — but the clear is what keeps
+            // that a fact about the current flow rather than a load-bearing one.
+            if in_flight.shown.is_some() {
+                crate::preview::TRANSLATE.clear(self.state);
+            }
             return;
         };
         let delta = carry_delta(&in_flight);
         if delta == Vec2::ZERO {
             if in_flight.shown.is_some() {
-                crate::preview::TRANSFORM.clear(self.state);
+                crate::preview::TRANSLATE.clear(self.state);
             }
             return;
         }
         // One logged action for the whole drag, superseding the preview
         // engine-side — so there is no frame showing the layer back where it
         // started (`preview::Preview::commit`).
-        crate::preview::TRANSFORM.commit(self.state, (layer, carry_map(delta)));
+        crate::preview::TRANSLATE.commit(self.state, (id, base + delta.as_ivec2()));
     }
-}
-
-/// The map a carry of `delta` stands for.
-///
-/// One spelling, called from the preview and from the commit, so the two cannot
-/// be different affines — `preview::Preview` makes exactly this argument one
-/// level up, about the pair of commands, and it is worth making again about the
-/// value they carry.
-fn carry_map(delta: Vec2) -> TransformMap {
-    TransformMap::Affine(Affine2::from_translation(delta))
 }
 
 /// The layer a press must carry because a **selection** says so, or `None` where
@@ -397,10 +457,25 @@ fn pinned_layer(state: AppState) -> Option<Hit> {
             .iter()
             .find(|l| l.id == o.active_layer && l.is_paintable())
         {
-            Some(l) => Hit::Layer(l.id),
+            Some(l) => Hit::Layer {
+                id: l.id,
+                base: l.translation,
+            },
             None => Hit::Nothing,
         },
     )
+}
+
+/// Where `id`'s frame stands on the canvas, per the projection — zero for a
+/// layer the roster does not hold, which a drag then moves from the origin the
+/// engine will refuse anyway.
+fn layer_translation(state: AppState, id: LayerId) -> stark_model::geom::IVec2 {
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .and_then(|o| o.layers.iter().find(|l| l.id == id))
+        .map_or(stark_model::geom::IVec2::ZERO, |l| l.translation)
 }
 
 /// The translation a carry asks for: **whole canvas pixels**.

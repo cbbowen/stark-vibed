@@ -716,11 +716,14 @@ The press and the drag are one gesture with two halves:
   at that point becomes the active layer — `Engine::pick_layer`. A press that
   never travels is the same gesture stopped early, so tapping is how a layer
   is chosen by pointing at it rather than by finding its row.
-- **The drag carries it.** The translation previews through the same
-  `ViewCommand::PreviewTransform` bargain every family uses (§16.6) and the
-  release commits one `DocCommand::Transform` — an ordinary affine, so this
-  adds no action kind, no wire change and no second renderer. One undo step
-  for the whole drag, like Done.
+- **The drag carries it.** The carry is a **property write** now, not a
+  cut/paste: the drag previews the layer's frame (§14.12) through
+  `ViewCommand::PreviewTranslate` — the opacity slider's bargain, folding the
+  very `DocCommand::TranslateLayer` the release commits — so each sample moves
+  a number where this gesture used to resample the layer. One undo step for
+  the whole drag, like Done; a group travels whole, the engine expanding the
+  move to the subtree (§14.12.1). With a mask in force the drag floats the
+  selection first — §16.12.
 
 **Whole canvas pixels.** The translation is rounded before it is shown, which
 is the quality decision in the gesture: an integer translation resamples
@@ -810,6 +813,46 @@ chord itself); the pinned-layer rule fires for a selection anywhere on the
 canvas rather than only for a press inside it, because the projection carries
 the selection's hull and not its mask; and a clipped layer is grabbable over
 its whole extent, per above.
+
+### 16.12 The float — a selection reified as a layer
+
+Dragging a selection used to be the transform's cut/paste per commit, resampled
+into the preview slot per changed sample. It is now **one cut, then a property
+write**: the first travel past §16.11's deadzone commits
+`ActionKind::FloatSelection { layer, child, frame }`, which cuts what the
+author's mask holds on the layer into a minted **child** carried at the foot of
+the layer's own stack (§14.1), and the rest of the drag — and any drag after it
+— moves the child's frame (§14.12).
+
+**The picture does not change.** The cut is §16.2's lift and the child's
+stacking is the merge law run backwards (§14.11.1): heights and masses
+recombine exactly, so the split is invisible — within the coverage ramp's
+single recompute level at a feathered rim, and **by handle** for fully-covered
+tiles, which is the structural half and the reason floating a large region is
+cheap. The child arrives unnamed (a float is new content, not a copy — the
+`DuplicateLayer` name rule read the other way), at the identity params, its
+translation at the action's `frame`.
+
+**The selection is consumed.** §16.1 carried the mask with the paint because an
+outline left behind sits over paint that is no longer there; the float answers
+the same argument the other way — the mask has become a *layer*, the very thing
+the outline existed to stand in for. A second drag picks the float up directly
+(§16.11's press finds it on top), painting lands on it, and the gesture's
+natural ending is `MergeLayerDown`, which bakes the frame back through §14.12.3.
+Undo restores both halves at once: the paint on its source and the mask in
+force.
+
+**Refusals are `apply`'s, asked first.** A non-paint source, a universal mask
+(moving everything is `TranslateLayers`), an empty or oversized cut — each
+declines deterministically, and the command layer asks the same plan before an
+action is spent (`plan_float`), the `MergeLayerDown` shape. Footprint: the
+source's paint whole (the mask bounds the cut and a footprint cannot measure a
+mask — `Transform`'s answer), the child entire, the author's selection, the
+stack order.
+
+Invariants in `tests/translate.rs`: the float's picture within one level of the
+unselected canvas; refusal of an empty float; float + drag + merge against the
+old cut/paste path; undo restoring paint and mask together.
 
 ---
 

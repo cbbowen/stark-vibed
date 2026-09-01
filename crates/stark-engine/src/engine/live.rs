@@ -240,13 +240,21 @@ impl Preview {
                 // literally the result. Losslessly, and thrown away and redone on
                 // each move rather than accumulated, which is what keeps dragging a
                 // rectangle out from stacking a hundred glazes.
-                LiveGesture::Fill { layer, op } => {
+                LiveGesture::Fill { layer, op, frame } => {
                     // Already chained: it reads `out`, not `base`, and replaces the
                     // layer's whole tile map rather than copying tiles across.
-                    claimed.push((layer, stark_model::document::fill_rect(&op)));
+                    let rect = stark_model::document::fill_rect(&op);
+                    claimed.push((layer, rect));
                     touched.insert(layer);
                     if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
-                        let gate = base.selection_of(actor);
+                        // The author's canvas mask, in the layer's frame the op is
+                        // in — the very shift the commit makes (§14.12).
+                        let gate = ctx.transform.shifted_selection_in(
+                            &ctx.pool,
+                            &base.selection_of(actor),
+                            frame,
+                            rect,
+                        );
                         if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
                             out = out.map_layer(layer, |l| l.with_tiles(filled));
                         }
@@ -502,13 +510,20 @@ impl Engine {
         map: &stark_model::document::TransformMap,
     ) -> Option<DocState> {
         let doc = self.timeline.current();
-        let base = doc.layer(layer)?.tiles()?;
+        let target = doc.layer(layer)?;
+        // The frame the commit will stamp — the layer's, read off the same
+        // committed document (`Engine::frame_of`), so preview == committed
+        // holds for the conjugation too.
+        let frame = target.translation;
+        let base = target.tiles()?;
         let selection = doc.selection_of(self.actor());
-        let (tiles, moved) =
-            self.shared
-                .apply
-                .transform
-                .apply(&self.shared.apply.pool, base, &selection, map)?;
+        let (tiles, moved) = self.shared.apply.transform.apply(
+            &self.shared.apply.pool,
+            base,
+            &selection,
+            map,
+            frame,
+        )?;
         Some(
             doc.map_layer(layer, |l| l.with_tiles(tiles))
                 .with_selection(self.actor(), moved),
@@ -527,13 +542,24 @@ impl Engine {
         op: &stark_model::document::FillOp,
     ) -> Option<DocState> {
         let doc = self.timeline.current();
-        let base = doc.layer(layer)?.tiles()?.clone();
-        let selection = doc.selection_of(self.actor());
+        let target = doc.layer(layer)?;
+        // The op arrives on the canvas, as the command that will commit it does;
+        // both convert into the layer's frame here and at `DocCommand::Fill`
+        // through the same pair of calls (§14.12).
+        let frame = target.translation;
+        let base = target.tiles()?.clone();
+        let op = op.translated(-frame.as_vec2());
+        let gate = self.shared.apply.transform.shifted_selection_in(
+            &self.shared.apply.pool,
+            &doc.selection_of(self.actor()),
+            frame,
+            stark_model::document::fill_rect(&op),
+        );
         let tiles = self
             .shared
             .apply
             .fill
-            .apply(&self.shared.apply.pool, &base, &selection, op)?;
+            .apply(&self.shared.apply.pool, &base, &gate, &op)?;
         Some(doc.map_layer(layer, |l| l.with_tiles(tiles)))
     }
 
@@ -614,7 +640,11 @@ impl Engine {
         let mut out: Vec<GestureView> = Vec::new();
         match self.session.gesture_view(self.actor()) {
             Some(g) => out.push(g),
-            None => out.extend(self.session.hover_view(self.actor(), self.authoring.clock)),
+            None => out.extend(self.session.hover_view(
+                self.actor(),
+                self.authoring.clock,
+                self.frame_of(self.session.active_layer),
+            )),
         }
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));
         out.sort_by_key(|g| g.actor);
@@ -728,8 +758,14 @@ fn render_span_range(
     };
     // The **author's** mask, exactly as the commit will read it — which is what
     // lets one client's live stroke be reproduced faithfully on another's screen
-    // while their selections differ (§17.3).
-    let selection = base.selection_of(author);
+    // while their selections differ (§17.3). Brought into the record's frame by
+    // the record's own offset, as the commit brings it (§14.12).
+    let selection = ctx.transform.shifted_selection_in(
+        &ctx.pool,
+        &base.selection_of(author),
+        rec.frame,
+        stark_model::document::stroke_rect(rec),
+    );
     // The substrate this stroke is being laid on (§6.4) — the same texture
     // `CommitStroke`'s apply will resolve, which is what `preview == committed`
     // needs of the tooth.

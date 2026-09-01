@@ -129,6 +129,12 @@ pub struct Thumb {
     pub layer: LayerId,
     /// `LayerInfo::content_revision` at the moment it was rendered.
     pub revision: u64,
+    /// `LayerInfo::translation` at the moment it was rendered. Part of the
+    /// staleness key beside the revision, because the row is framed on the
+    /// *piece* (§14.6): moving a layer moves where its paint sits in that frame
+    /// without minting a revision (§14.12.4), and a key of the revision alone
+    /// left the row showing the paint where it used to be.
+    pub translation: stark_model::geom::IVec2,
     /// A `data:image/png` URL, or empty for a render that failed — cached as a
     /// miss so the generator cannot spin on it.
     pub url: String,
@@ -193,20 +199,26 @@ fn worth_rendering(l: &LayerInfo) -> bool {
 ///
 /// Top-down, which is the order the panel draws in: the rows a user is looking at
 /// fill first.
-fn first_stale(layers: &[LayerInfo], cache: &[Thumb]) -> Option<(LayerId, u64)> {
+fn first_stale(
+    layers: &[LayerInfo],
+    cache: &[Thumb],
+) -> Option<(LayerId, u64, stark_model::geom::IVec2)> {
     layers
         .iter()
         .rev()
         .filter(|l| worth_rendering(l))
         .find_map(|l| {
             let revision = l.content_revision?;
-            let fresh = held(cache, l.id).map(|t| t.revision) == Some(revision);
-            (!fresh).then_some((l.id, revision))
+            // The picture is a function of the tiles *and* of where the frame
+            // puts them in the piece (§14.12), so both key it.
+            let fresh = held(cache, l.id)
+                .is_some_and(|t| t.revision == revision && t.translation == l.translation);
+            (!fresh).then_some((l.id, revision, l.translation))
         })
 }
 
 /// [`first_stale`] against the live document and the live cache.
-fn next_stale(state: AppState) -> Option<(LayerId, u64)> {
+fn next_stale(state: AppState) -> Option<(LayerId, u64, stark_model::geom::IVec2)> {
     let obs = state.obs.peek();
     let cache = state.layer_thumbs.cache.peek();
     first_stale(&obs.as_ref()?.layers, &cache)
@@ -229,7 +241,7 @@ pub fn refresh(state: AppState) {
         // row rather than before each: a panel opening on a twenty-layer document
         // would otherwise take twenty settles to fill.
         sleep_ms(SETTLE_MS).await;
-        while let Some((layer, revision)) = next_stale(state) {
+        while let Some((layer, revision, translation)) = next_stale(state) {
             // Never render with a hand on the canvas. This render takes the engine's
             // own borrow, so one landing mid-stroke spends its cost exactly where it
             // is least affordable — and `canvas_active` covers strokes, marquees,
@@ -242,7 +254,7 @@ pub fn refresh(state: AppState) {
             while *state.canvas_active.peek() {
                 sleep_ms(SETTLE_MS).await;
             }
-            if !generate(state, layer, revision).await {
+            if !generate(state, layer, revision, translation).await {
                 // No renderer yet, or a lost device. The panel's effect calls
                 // `refresh` again when the renderer lands.
                 break;
@@ -256,7 +268,12 @@ pub fn refresh(state: AppState) {
 
 /// Render one layer's thumbnail and put it in the cache. `false` when there is no
 /// renderer to draw with — the one condition worth stopping the pass for.
-async fn generate(state: AppState, layer: LayerId, revision: u64) -> bool {
+async fn generate(
+    state: AppState,
+    layer: LayerId,
+    revision: u64,
+    translation: stark_model::geom::IVec2,
+) -> bool {
     // The frame the navigator frames itself against, so an overview and a row's
     // picture cannot come to disagree about where the piece is. Read before the
     // engine borrow, not inside it: `piece_frame` reads `obs`, which the borrow
@@ -304,6 +321,7 @@ async fn generate(state: AppState, layer: LayerId, revision: u64) -> bool {
     cache.push(Thumb {
         layer,
         revision,
+        translation,
         url,
     });
     true
@@ -352,6 +370,7 @@ mod tests {
             has_underlay: true,
             merge_down: None,
             content_revision: Some(revision),
+            translation: stark_model::geom::IVec2::ZERO,
         }
     }
 
@@ -359,6 +378,7 @@ mod tests {
         Thumb {
             layer: LayerId::solo(id),
             revision,
+            translation: stark_model::geom::IVec2::ZERO,
             url: format!("data:image/png;base64,r{revision}"),
         }
     }
@@ -380,11 +400,28 @@ mod tests {
     /// draws is the one the generator is asked to replace.
     #[test]
     fn but_it_is_still_the_row_to_render_next() {
+        let zero = stark_model::geom::IVec2::ZERO;
         assert_eq!(
             first_stale(&[paint(1, 8)], &[thumb(1, 7)]),
-            Some((LayerId::solo(1), 8))
+            Some((LayerId::solo(1), 8, zero))
         );
         assert_eq!(first_stale(&[paint(1, 8)], &[thumb(1, 8)]), None);
+    }
+
+    /// A translate moves no tile and mints no revision (§14.12.4), but the row is
+    /// framed on the piece — so it *is* the row to render next, at the frame it
+    /// now stands at.
+    #[test]
+    fn a_translated_layer_is_the_row_to_render_next() {
+        let d = stark_model::geom::IVec2::new(300, -40);
+        let moved = LayerInfo {
+            translation: d,
+            ..paint(1, 8)
+        };
+        assert_eq!(
+            first_stale(&[moved], &[thumb(1, 8)]),
+            Some((LayerId::solo(1), 8, d))
+        );
     }
 
     /// A hidden layer is neither re-rendered nor emptied — the picture it had when

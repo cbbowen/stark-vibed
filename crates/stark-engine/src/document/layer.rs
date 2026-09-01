@@ -13,6 +13,7 @@ use std::sync::Arc;
 use rpds::{HashTrieMap, Vector};
 
 use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel};
+use stark_model::geom::IVec2;
 
 use super::state::CanvasBounds;
 use crate::gpu::tile::TileMap;
@@ -280,6 +281,18 @@ pub struct Layer {
     /// tree is cloned per document version, so every level of it has to be
     /// persistent (§5.1).
     pub carries: Vector<Layer>,
+    /// Where this layer's frame sits on the canvas, in whole pixels (§14.12): its
+    /// tiles are keyed in the layer's own frame, and the compositor, the pick and
+    /// the bounds add this on the way out. Moving a layer is writing this field —
+    /// no tile is touched, which is the entire feature.
+    ///
+    /// **Intrinsic, and deliberately not inherited** down [`carries`](Self::carries):
+    /// a footprint is built from an action alone and could not name the ancestors an
+    /// inherited offset would make every stroke read (§12.6) — so the gesture that
+    /// moves a group writes every member instead (`ActionKind::TranslateLayers`).
+    /// Not part of [`CompositeParams`] either: it says nothing about meeting a
+    /// backdrop and forces no isolation — a translated layer still joins a plain run.
+    pub translation: IVec2,
 }
 
 impl Layer {
@@ -325,6 +338,7 @@ impl Layer {
             name: None,
             content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new())),
             carries: Vector::new(),
+            translation: IVec2::ZERO,
         }
     }
 

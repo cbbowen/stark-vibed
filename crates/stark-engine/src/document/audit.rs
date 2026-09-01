@@ -181,6 +181,7 @@ fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {
         Prop::Name => a.name != b.name,
         Prop::Matte => matte_of(a) != matte_of(b),
         Prop::Filter => a.filter() != b.filter(),
+        Prop::Translation => a.translation != b.translation,
     }
 }
 

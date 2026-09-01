@@ -1040,13 +1040,21 @@ impl Engine {
     /// there would be nothing to win.
     fn layer_items(&self, layer: &Layer, visible: Option<TileRect>) -> Vec<CompositeItem> {
         match &layer.content {
-            LayerContent::Paint(tiles) => culled(tiles.map(), visible)
-                .map(|(coord, handle)| CompositeItem::Tile {
-                    coord,
-                    handle: handle.clone(),
-                    opacity: 1.0,
-                })
-                .collect(),
+            LayerContent::Paint(tiles) => {
+                // The layer's frame (§14.12): its tiles are keyed in it, the view
+                // rect is on the canvas, and this is the one place the two meet —
+                // the cull asks in the frame, the item answers on the canvas.
+                let d = layer.translation;
+                let offset = stark_model::geom::Vec2::new(d.x as f32, d.y as f32);
+                culled(tiles.map(), visible_in_frame(visible, d))
+                    .map(|(coord, handle)| CompositeItem::Tile {
+                        coord,
+                        origin: coord.origin() + offset,
+                        handle: handle.clone(),
+                        opacity: 1.0,
+                    })
+                    .collect()
+            }
             LayerContent::Matte { region, paint } => {
                 let rect = match region.rect() {
                     Some((min, max)) => [min.x, min.y, max.x, max.y],
@@ -1258,6 +1266,35 @@ impl Engine {
 /// `None` claims everything: the box could not be measured (a non-finite view, or one
 /// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
 /// see its input must do nothing rather than guess — see [`ViewTransform::visible_tiles`].
+/// The view's tile rect, restated in a layer frame placed at `frame` on the
+/// canvas (§14.12): what is visible of a translated layer's **local** tiles.
+/// Rounded outward — a frame off the tile grid lands the rect astride tiles, and
+/// a cull may only ever keep too much. Saturating, so a frame at the integer
+/// horizon degrades to a wider rect rather than wrapping to the far side.
+fn visible_in_frame(
+    visible: Option<TileRect>,
+    frame: stark_model::geom::IVec2,
+) -> Option<TileRect> {
+    if frame == stark_model::geom::IVec2::ZERO {
+        return visible;
+    }
+    let rect = visible?;
+    let t = stark_model::geom::TILE_SIZE as i64;
+    // The rect moves by −frame: floor for the low edge, ceil for the high one.
+    // In `i64`, like `sources_in`'s spans: the frame is clamped at the funnel
+    // (`FRAME_LIMIT`), but a cull may not rest a wrap away from a value one
+    // unclamped writer could someday hand it.
+    let lo = |d: i32| (-(d as i64)).div_euclid(t);
+    let hi = |d: i32| (-(d as i64) + t - 1).div_euclid(t);
+    let edge = |base: i32, shift: i64| {
+        (base as i64 + shift).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    };
+    Some(TileRect {
+        min: (edge(rect.min.0, lo(frame.x)), edge(rect.min.1, lo(frame.y))),
+        max: (edge(rect.max.0, hi(frame.x)), edge(rect.max.1, hi(frame.y))),
+    })
+}
+
 fn culled<V>(
     map: &rpds::HashTrieMap<stark_model::geom::TileCoord, V>,
     visible: Option<TileRect>,

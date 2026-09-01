@@ -80,6 +80,18 @@ impl Parcel {
             Self::Gradient(GradientParcel { gradient, .. }) => Self::Solid(gradient.sample(0.0)),
         }
     }
+
+    /// The same paint shifted whole by `by` (§14.12): a solid has no position
+    /// and rides through; a gradient's axis is read from position and moves.
+    pub fn translated(&self, by: crate::geom::Vec2) -> Self {
+        match self {
+            Self::Solid(_) => self.clone(),
+            Self::Gradient(GradientParcel { gradient, axis }) => Self::Gradient(GradientParcel {
+                gradient: gradient.clone(),
+                axis: axis.translated(by),
+            }),
+        }
+    }
 }
 
 /// The gradient half of a [`Parcel`]: which ramp, along what axis (§22.4).
@@ -120,6 +132,21 @@ impl GradientAxis {
         match self {
             Self::Linear { from, to } => from.is_finite() && to.is_finite(),
             Self::Radial { center, radius } => center.is_finite() && radius.is_finite(),
+        }
+    }
+
+    /// The same axis shifted whole by `by` (§14.12) — position is all an axis is,
+    /// apart from the radial's radius, which is a length and stays.
+    pub fn translated(&self, by: Vec2) -> Self {
+        match self {
+            Self::Linear { from, to } => Self::Linear {
+                from: *from + by,
+                to: *to + by,
+            },
+            Self::Radial { center, radius } => Self::Radial {
+                center: *center + by,
+                radius: *radius,
+            },
         }
     }
 }

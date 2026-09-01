@@ -105,8 +105,14 @@ use crate::mirror::{Mirror, Served};
 /// and `WetModulations` gained an `add` target: a reshaping of the struct every
 /// wet stroke gossips, and a meaning change besides — the same bytes at the old
 /// shape would read a source rate as a λ multiplier. No migration — the alpha
-/// rule (§19).
-pub(crate) const ALPN: &[u8] = b"stark/collab/20";
+/// rule (§19);
+/// 21: layers gained a frame (§14.12) — `ActionKind` gained `TranslateLayers`
+/// and `FloatSelection`, every paint action and the presence stroke head and
+/// fill frame gained a `frame` offset, and paint geometry is stated in the
+/// layer's frame rather than on the canvas: a meaning change with the shape
+/// nearly untouched, since a build without the field would fold a framed
+/// stroke's path at the wrong place and gate it through an unshifted mask.
+pub(crate) const ALPN: &[u8] = b"stark/collab/21";
 
 /// The first byte of every response.
 ///

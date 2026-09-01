@@ -166,6 +166,23 @@ impl SelectionShape {
     pub fn coverage_outside(&self) -> f32 {
         if matches!(self, Self::All) { 1.0 } else { 0.0 }
     }
+
+    /// The same shape shifted whole by `by` (§14.12). [`Self::All`] has no
+    /// position and rides through; everything else moves every coordinate it has.
+    pub fn translated(&self, by: Vec2) -> Self {
+        match self {
+            Self::All => Self::All,
+            Self::Rect { min, max } => Self::Rect {
+                min: *min + by,
+                max: *max + by,
+            },
+            Self::Ellipse { center, radii } => Self::Ellipse {
+                center: *center + by,
+                radii: *radii,
+            },
+            Self::Lasso(points) => Self::Lasso(points.iter().map(|p| *p + by).collect()),
+        }
+    }
 }
 
 /// How an op combines with the selection already in force (§6.8). The

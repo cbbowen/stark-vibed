@@ -48,8 +48,8 @@ use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
-use stark_model::document::{LayerId, ShapeAction, TransformMap};
-use stark_model::geom::{Affine2, Vec2};
+use stark_model::document::{LayerId, ShapeAction};
+use stark_model::geom::Vec2;
 
 mod carry;
 mod keys;

@@ -45,7 +45,7 @@ fn classify(selection: &Selection, coord: TileCoord) -> Class {
 use stark_model::document::{
     Homography, Lattice, MAX_TRANSFORM_TILES, TransformMap, affine_usable, cell_point, rect_corners,
 };
-use stark_model::geom::{Affine2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2};
+use stark_model::geom::{Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
 
 use super::selection::Selection;
 use crate::gpu::tile::TileMap;
@@ -150,6 +150,172 @@ pub(crate) fn plan_mask(selection: &Selection, affine: Affine2) -> Option<MaskPl
     Some(MaskPlan {
         rewrites: rewrites.into_iter().collect(),
     })
+}
+
+/// The tile-level consequence of a float (§16.12) on the source layer's paint,
+/// classified against the selection as it stands over the layer's frame.
+pub(crate) struct FloatPlan {
+    /// Tiles a fraction of which moves: cut on the source, parcel on the child.
+    /// Sorted, like every plan here, so the passes encode deterministically.
+    pub partial: Vec<TileCoord>,
+    /// Fully-selected tiles: the handle crosses to the child untouched — the
+    /// byte-exact half of the cut, and the reason a float of a big region is
+    /// cheap (§16.12).
+    pub full: Vec<TileCoord>,
+}
+
+/// Plan a float of `tiles` under `selection`, whose canvas coverage meets the
+/// layer's frame at `frame`. `None` rejects the action — nothing selected over
+/// the layer, or more boundary tiles than the cap allows — deterministically.
+pub(crate) fn plan_float(
+    tiles: &TileMap,
+    selection: &Selection,
+    frame: stark_model::geom::IVec2,
+) -> Option<FloatPlan> {
+    let mut coords: Vec<TileCoord> = tiles.keys().copied().collect();
+    coords.sort();
+    let mut partial = Vec::new();
+    let mut full = Vec::new();
+    let outside = selection.outside() * selection.opacity();
+    for coord in coords {
+        // `classify`, with the mask's presence asked where the frame puts this
+        // tile on the canvas — the same question the shift pass answers with
+        // texels ([`shifted_mask_sources`]), so the plan and the gate agree.
+        let present = !shifted_mask_sources(selection, coord, frame).is_empty();
+        if present {
+            partial.push(coord);
+        } else if outside >= 1.0 {
+            full.push(coord);
+        } else if outside > 0.0 {
+            partial.push(coord);
+        }
+    }
+    if partial.len() > MAX_TRANSFORM_TILES {
+        return None;
+    }
+    if partial.is_empty() && full.is_empty() {
+        // The selection holds nothing of this layer: floating it would mint an
+        // empty child under an outline the author cannot see.
+        return None;
+    }
+    Some(FloatPlan { partial, full })
+}
+
+/// Every frame tile the mask's tiles can feed once the layer's frame is placed
+/// at `frame`, within `rect` — the destinations a scoped shift has to build
+/// ([`shifted_mask_sources`] read the other way round, and held to it by
+/// `a_cover_and_its_sources_agree` below). Bounded by the mask's own tile count
+/// times nine — the apron-inclusive rect is `TILE_TEX` against a `TILE_SIZE`
+/// stride, so a frame near the grid spans three tiles per axis — and a gate
+/// scoped to a stroke therefore stays the stroke's size.
+pub(crate) fn shifted_mask_cover(
+    selection: &Selection,
+    frame: stark_model::geom::IVec2,
+    rect: TileRect,
+) -> Vec<TileCoord> {
+    cover_of(selection.tiles().map(|(k, _)| *k), frame, rect)
+}
+
+/// [`shifted_mask_cover`] over bare coordinates — the arithmetic, testable with
+/// no mask handle in the room.
+fn cover_of(
+    keys: impl Iterator<Item = TileCoord>,
+    frame: stark_model::geom::IVec2,
+    rect: TileRect,
+) -> Vec<TileCoord> {
+    // The zero frame is [`sources_in`]'s shortcut read from this end: the two
+    // grids coincide and a tile's gate is its own mask — per-tile granularity,
+    // exactly what `gate_for` binds — so the cover is the keys themselves, not
+    // their apron neighbourhoods.
+    if frame == stark_model::geom::IVec2::ZERO {
+        let mut out: Vec<TileCoord> = keys
+            .filter(|c| {
+                c.x >= rect.min.0 && c.x <= rect.max.0 && c.y >= rect.min.1 && c.y <= rect.max.1
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        return out;
+    }
+    let t = TILE_SIZE as i64;
+    let apron = TILE_APRON as i64;
+    let tex = TILE_TEX as i64;
+    let mut out: Vec<TileCoord> = Vec::new();
+    for k in keys {
+        // Frame tiles `d` whose texture rect `[d·T − apron + f, … + TILE_TEX)`
+        // on the canvas meets this mask tile's interior `[k·T, (k+1)·T)`.
+        let span = |k: i64, f: i64| {
+            let lo = (k * t - f + apron - tex).div_euclid(t) + 1;
+            let hi = ((k + 1) * t - f + apron - 1).div_euclid(t);
+            lo..=hi
+        };
+        for dy in span(k.y as i64, frame.y as i64) {
+            for dx in span(k.x as i64, frame.x as i64) {
+                let (Ok(x), Ok(y)) = (i32::try_from(dx), i32::try_from(dy)) else {
+                    continue;
+                };
+                if x < rect.min.0 || x > rect.max.0 || y < rect.min.1 || y > rect.max.1 {
+                    continue;
+                }
+                out.push(TileCoord::new(x, y));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The selection mask tiles that feed local tile `coord`'s texture once the
+/// layer's frame is placed at `frame` (§14.12): the canvas tiles — up to nine,
+/// three per axis for a frame near the grid — whose interiors intersect the
+/// tile's apron-inclusive rect there. At a zero frame the two grids coincide
+/// and the answer is the tile's own mask, if any — the same granularity
+/// `gate_for` binds at, so presence and binding cannot part.
+pub(crate) fn shifted_mask_sources(
+    selection: &Selection,
+    coord: TileCoord,
+    frame: stark_model::geom::IVec2,
+) -> Vec<TileCoord> {
+    sources_in(coord, frame, |c| selection.tile(c).is_some())
+}
+
+/// [`shifted_mask_sources`] over a bare presence predicate — the arithmetic,
+/// testable with no mask handle in the room.
+fn sources_in(
+    coord: TileCoord,
+    frame: stark_model::geom::IVec2,
+    present: impl Fn(TileCoord) -> bool,
+) -> Vec<TileCoord> {
+    if frame == stark_model::geom::IVec2::ZERO {
+        return if present(coord) {
+            vec![coord]
+        } else {
+            Vec::new()
+        };
+    }
+    let t = TILE_SIZE as i64;
+    let apron = TILE_APRON as i64;
+    // The tile's texture rect on the canvas, in whole pixels — exact, where a
+    // float computation at large coordinates would not be.
+    let lo_x = coord.x as i64 * t - apron + frame.x as i64;
+    let lo_y = coord.y as i64 * t - apron + frame.y as i64;
+    let hi_x = lo_x + TILE_TEX as i64; // exclusive
+    let hi_y = lo_y + TILE_TEX as i64;
+    let span = |lo: i64, hi: i64| (lo.div_euclid(t))..=((hi - 1).div_euclid(t));
+    let mut out = Vec::new();
+    for ky in span(lo_y, hi_y) {
+        for kx in span(lo_x, hi_x) {
+            let (Ok(x), Ok(y)) = (i32::try_from(kx), i32::try_from(ky)) else {
+                continue;
+            };
+            let c = TileCoord::new(x, y);
+            if present(c) {
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// The rect-scoped maps, resolved for planning and rendering: the geometry that
@@ -855,5 +1021,50 @@ mod tests {
         assert!(plan.rewrites.is_empty() && plan.drops.is_empty());
         let mask = plan_mask(&sel, translation(300.0, 0.0)).unwrap();
         assert!(mask.rewrites.is_empty());
+    }
+
+    /// [`cover_of`] and [`sources_in`] are one overlap relation read from its
+    /// two ends (§14.12): every frame tile the cover names has sources, every
+    /// frame tile it omits has none — driven over frames on and off the tile
+    /// grid, both signs, and the zero frame, whose sources must be the tile's
+    /// own mask and nothing else (the granularity `gate_for` binds at).
+    #[test]
+    fn a_cover_and_its_sources_agree() {
+        let keys = [
+            TileCoord::new(0, 0),
+            TileCoord::new(1, 0),
+            TileCoord::new(-2, 3),
+        ];
+        let present = |c: TileCoord| keys.contains(&c);
+        let t = TILE_SIZE as i32;
+        for frame in [
+            stark_model::geom::IVec2::ZERO,
+            stark_model::geom::IVec2::new(37, -13),
+            stark_model::geom::IVec2::new(-t, t * 2),
+            stark_model::geom::IVec2::new(t - 1, -1),
+        ] {
+            let cover = cover_of(keys.iter().copied(), frame, TileRect::ALL);
+            // Probe a band comfortably containing every possible destination.
+            for y in -6..=6 {
+                for x in -6..=6 {
+                    let c = TileCoord::new(x, y);
+                    let fed = !sources_in(c, frame, present).is_empty();
+                    assert_eq!(
+                        cover.contains(&c),
+                        fed,
+                        "frame {frame:?}, tile {c:?}: the two ends disagree",
+                    );
+                }
+            }
+            if frame == stark_model::geom::IVec2::ZERO {
+                for c in cover {
+                    assert_eq!(
+                        sources_in(c, frame, present),
+                        vec![c],
+                        "at a zero frame a tile's gate is its own mask",
+                    );
+                }
+            }
+        }
     }
 }

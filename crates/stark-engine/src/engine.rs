@@ -489,6 +489,11 @@ pub struct LayerInfo {
     ///
     /// [`Layer::content_revision`]: crate::document::Layer::content_revision
     pub content_revision: Option<u64>,
+    /// Where the layer's frame sits on the canvas (§14.12) — what the
+    /// pick-and-translate drag adds its delta to
+    /// ([`DocCommand::TranslateLayer`](crate::command::DocCommand::TranslateLayer)).
+    /// Always zero for a matte or a filter, which have no frame to move.
+    pub translation: stark_model::geom::IVec2,
 }
 
 impl LayerInfo {
@@ -1127,6 +1132,48 @@ impl Engine {
         }
     }
 
+    /// The canvas offset of a layer's frame (§14.12) — zero for a layer that is
+    /// not there, which every action aimed at one is refused as anyway. Off the
+    /// **committed** document, which is what a mint reads and what every preview
+    /// entry point reads too, so the frame a gesture is converted into is the
+    /// frame its commit will carry.
+    pub(crate) fn frame_of(&self, layer: LayerId) -> stark_model::geom::IVec2 {
+        self.timeline
+            .current()
+            .layer(layer)
+            .map_or(stark_model::geom::IVec2::ZERO, |l| l.translation)
+    }
+
+    /// The whole move a translate gesture means (§14.12): `layer`'s subtree —
+    /// a group moves as one, and translation does not inherit — with each
+    /// **paint** member displaced by the same delta. Mattes and filters are left
+    /// out rather than named-and-refused: a move naming them would answer
+    /// "not a no-op" forever, and a drag out and back would log a step that does
+    /// nothing. Read off the committed document, like every mint.
+    fn translate_moves(
+        &self,
+        layer: LayerId,
+        to: stark_model::geom::IVec2,
+    ) -> Vec<(LayerId, stark_model::geom::IVec2)> {
+        use stark_model::document::FRAME_LIMIT;
+        // The command's `to` has not been through the funnel yet, and this
+        // arithmetic runs before the commit that would clamp it — so hold it
+        // here, where the subtraction below would otherwise be the first thing
+        // an unbounded value reaches.
+        let to = to.clamp(
+            stark_model::geom::IVec2::splat(-FRAME_LIMIT),
+            stark_model::geom::IVec2::splat(FRAME_LIMIT),
+        );
+        let doc = self.timeline.current();
+        let delta = to - self.frame_of(layer);
+        doc.subtree_ids(layer)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| doc.layer(*id).is_some_and(|l| l.is_paintable()))
+            .map(|id| (id, self.frame_of(id) + delta))
+            .collect()
+    }
+
     /// Apply one input command (§4).
     ///
     /// One-way by construction: nothing comes back. Reads go through
@@ -1163,12 +1210,14 @@ impl Engine {
                     // read at the press, so the gesture's meaning is fixed before it
                     // has drawn anything.
                     let has_selection = self.document().has_selection(self.actor());
+                    let frame = self.frame_of(self.session.active_layer);
                     self.session
-                        .start_selection(tool, sample.pos, has_selection);
+                        .start_selection(tool, sample.pos, has_selection, frame);
                 } else {
                     let seed = self.authoring.clock;
+                    let frame = self.frame_of(self.session.active_layer);
                     self.session
-                        .start_stroke(tool, sample, seed, tolerance, rope);
+                        .start_stroke(tool, sample, seed, tolerance, rope, frame);
                     self.note_debug_sample(Capture::Restart, sample);
                 }
                 self.mark_live_stale();
@@ -1213,10 +1262,12 @@ impl Engine {
                     // when the drag started (§18.0.4).
                     match self.session.end_shape() {
                         Some(ShapeResult::Select(op)) => self.commit(ActionKind::Select(op)),
-                        Some(ShapeResult::Fill(op)) => self.commit(ActionKind::Fill {
-                            layer: self.session.active_layer,
-                            op,
-                        }),
+                        // The layer the drag pinned at the press, not the active
+                        // layer now: the op was converted into *that* layer's
+                        // frame, and the two must not part (`ShapeResult::Fill`).
+                        Some(ShapeResult::Fill { layer, op, frame }) => {
+                            self.commit(ActionKind::Fill { layer, op, frame })
+                        }
                         None => {}
                     }
                 } else {
@@ -1304,7 +1355,17 @@ impl Engine {
             DocCommand::SetSelectionOpacity(opacity) => {
                 self.commit(ActionKind::SetSelectionOpacity(opacity))
             }
-            DocCommand::Fill { layer, op } => self.commit(ActionKind::Fill { layer, op }),
+            DocCommand::Fill { layer, op } => {
+                // The command's op is on the canvas, where every gesture is; the
+                // action's is in the layer's frame — the same pair of reads
+                // `preview_fill` makes, so preview == committed (§14.12).
+                let frame = self.frame_of(layer);
+                self.commit(ActionKind::Fill {
+                    layer,
+                    op: op.translated(-frame.as_vec2()),
+                    frame,
+                });
+            }
             DocCommand::Transform { layer, map } => {
                 // A degenerate or non-finite map would be rejected by `apply`
                 // anyway (deterministically — §16.1); refusing it
@@ -1313,18 +1374,56 @@ impl Engine {
                 // never carries the routing enum, only the map it named.
                 if map.usable() {
                     use stark_model::document::TransformMap;
+                    // The map stays stated on the canvas; the frame rides beside
+                    // it and `apply` conjugates (§14.12) — the same value
+                    // `preview_transform` reads.
+                    let frame = self.frame_of(layer);
                     self.commit(match map {
-                        TransformMap::Affine(affine) => ActionKind::Transform { layer, affine },
+                        TransformMap::Affine(affine) => ActionKind::Transform {
+                            layer,
+                            affine,
+                            frame,
+                        },
                         TransformMap::Perspective(map) => {
-                            ActionKind::TransformPerspective { layer, map }
+                            ActionKind::TransformPerspective { layer, map, frame }
                         }
-                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map },
+                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map, frame },
                     });
                 } else {
                     // Nothing is logged, but the gesture's preview still has to be
                     // superseded — `commit`'s bargain, made by hand because the
                     // refusal is about the map rather than about the document.
                     self.preview.set_doc(None);
+                }
+            }
+            DocCommand::TranslateLayer { layer, to } => {
+                // The very expansion the preview folded (`translate_moves`), so
+                // preview == committed holds for the subtree too. An absent layer
+                // expands to nothing, which `is_noop_on` then declines to log.
+                let moves = self.translate_moves(layer, to);
+                self.commit(ActionKind::TranslateLayers { moves });
+            }
+            DocCommand::FloatSelection { layer } => {
+                // Asked before an action is spent, exactly as `MergeLayerDown`
+                // asks its plan (§16.12): the same refusals `apply` makes, off the
+                // same committed state, so a command that would no-op logs nothing.
+                let frame = self.frame_of(layer);
+                let doc = self.timeline.current();
+                let offered = doc.layer(layer).and_then(|l| l.tiles()).is_some_and(|t| {
+                    let selection = doc.selection_of(self.actor());
+                    !selection.is_universal()
+                        && crate::document::transform::plan_float(t, &selection, frame).is_some()
+                });
+                if offered {
+                    let action = self.commit_minting(|a| ActionKind::FloatSelection {
+                        layer,
+                        child: LayerId::new(a, 0),
+                        frame,
+                    });
+                    // The float is what the hand is about to move — and it is
+                    // paint, so the next stroke has somewhere to go (`AddLayer`'s
+                    // reason).
+                    self.arm_active(LayerId::new(action, 0));
                 }
             }
             DocCommand::SetSubstrate(id) => {
@@ -1455,6 +1554,29 @@ impl Engine {
                 // asks again anyway, because a peer's action arrives without passing
                 // through here (§14.11).
                 if let Some(plan) = crate::document::merge::plan(self.document(), id) {
+                    // The frame bake's own refusal, asked here for the reason the
+                    // plan is (§14.12.3): a source too large to restate in the
+                    // destination's frame is declined by `apply`, and an offer
+                    // that outran that would log a dead action and still repoint
+                    // the brush below as if it had worked.
+                    let shift = self.frame_of(plan.source) - self.frame_of(plan.dest);
+                    if shift != stark_model::geom::IVec2::ZERO {
+                        let bakeable = self
+                            .document()
+                            .layer(plan.source)
+                            .and_then(|l| l.tiles())
+                            .is_none_or(|tiles| {
+                                crate::document::transform::plan_paint(
+                                    tiles,
+                                    &crate::document::selection::Selection::everything(),
+                                    stark_model::geom::Affine2::from_translation(shift.as_vec2()),
+                                )
+                                .is_some()
+                            });
+                        if !bakeable {
+                            return;
+                        }
+                    }
                     // Read **before** the commit, which is what makes it answerable:
                     // the commit repoints the brush off the layer it is about to fold
                     // away (§17.9), so afterwards there is nothing left to compare.
@@ -1627,6 +1749,12 @@ impl Engine {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
                 self.set_doc_preview(preview);
             }
+            ViewCommand::PreviewTranslate(set) => {
+                let kind = set.map(|(layer, to)| ActionKind::TranslateLayers {
+                    moves: self.translate_moves(layer, to),
+                });
+                self.preview_setter(kind);
+            }
             ViewCommand::PreviewFill(f) => {
                 let preview = f.and_then(|(layer, op)| self.preview_fill(layer, &op));
                 self.set_doc_preview(preview);
@@ -1704,8 +1832,15 @@ impl Engine {
         let first = it.next()?;
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device tolerance to declare.
-        self.session
-            .start_stroke(tool, *first, seed, crate::path::DEFAULT_TOLERANCE, rope);
+        let frame = self.frame_of(self.session.active_layer);
+        self.session.start_stroke(
+            tool,
+            *first,
+            seed,
+            crate::path::DEFAULT_TOLERANCE,
+            rope,
+            frame,
+        );
         for s in it {
             self.session.stroke_to(*s);
         }
@@ -1931,6 +2066,7 @@ impl Engine {
                     // tracks a drag preview's tiles rather than the committed ones
                     // behind them.
                     content_revision: l.content_revision(),
+                    translation: l.translation,
                 });
                 stack[depth].below = Some(l);
                 stack[depth].index += 1;

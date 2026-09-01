@@ -57,6 +57,13 @@ pub struct StrokeHead {
     pub layer: LayerId,
     pub brush: BrushParams,
     pub seed: u64,
+    /// The layer's frame at the press
+    /// ([`StrokeRecord::frame`](crate::document::StrokeRecord::frame)): the path
+    /// frames carry is in the layer's frame, and a receiver folding the live
+    /// stroke needs the same offset the commit will. Zero from an older sender,
+    /// under which frame and canvas coincide.
+    #[serde(default)]
+    pub frame: crate::geom::IVec2,
 }
 
 /// One gesture update on the wire (§17.5).
@@ -99,7 +106,13 @@ pub enum GestureFrame {
     /// selection is (§18.0.4). The layer is not in the payload:
     /// [`PeerFrame::active_layer`] already carries it, and a second copy could
     /// disagree with it.
-    Fill { id: u64, op: FillOp },
+    Fill {
+        id: u64,
+        op: FillOp,
+        /// The layer's frame at the press — [`StrokeHead::frame`], for a fill.
+        #[serde(default)]
+        frame: crate::geom::IVec2,
+    },
 }
 
 impl GestureFrame {
@@ -136,6 +149,7 @@ impl GestureFrame {
                         layer: head.layer,
                         brush: head.brush.sanitized(),
                         seed: head.seed,
+                        frame: head.frame,
                     })
                 }),
                 from,
@@ -269,6 +283,7 @@ mod tests {
                         ..BrushParams::default()
                     },
                     seed: 0,
+                    frame: crate::geom::IVec2::ZERO,
                 })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
