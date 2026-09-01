@@ -880,11 +880,26 @@ the dynamics loop cannot, because a load over full puts mass above the height
 carrying it and the region stores the quotient `m / h` as a per-unit opacity.
 Clamping the load at 1 is what keeps the two paths drawing the same start cap.
 
-*The axes* (`BrushDynamics` on `BrushParams` — a flat record in the action log):
+*The axes* (`BrushDynamics` on the wet effect — a flat record in the action log),
+and the **flow** that scales them (`WetEffect::flow`). The axes say what the tool
+*is* — a smudge, a knife, a blender — each quoted per pass at the neutral flow of
+1; the flow says how hard a pass works, and it scales *everything* the tool does,
+which is what keeps "Flow" one knob with one meaning across every effect: on a
+blend brush the slider blends more or less instead of laying paint, which is the
+whole reason the source axis and the rate are two numbers. Mechanically the flow
+is exposure scaling, applied on the CPU where the segment resolves its rates
+(`generate_segments_in`, `dynamics_plan`): what is linear in exposure — the `add`
+mint, the `bleed` diffusivity — takes the factor outright, and the vertical
+fractions take it on their λ exponents, `flow · ln(1 − axis)`, so a pass at flow
+½ trades exactly what half a pass at flow 1 would and the exchange still
+composes exactly across overlapping segments. The shaders never learn it exists.
 
-- `add` — lay the brush's own paint; the only inexhaustible **source**, and the
-  tool's single *amount* knob: paint height laid per unit swept optical depth. A
-  pure-`add` brush takes the swept fast path, untouched by the loop.
+- `add` — lay the brush's own paint; the only inexhaustible **source**, in
+  [0, 1]: the share of the brush's own paint in what the tool does. What lands
+  per unit swept optical depth is `add · flow`, so at `add = 1` a wet brush lays
+  exactly what `Paint` would at the same flow and the Flow slider cannot jump on
+  the switch. A pure-`add` brush takes the swept fast path, untouched by the
+  loop.
 - `lift` — vertical flux canvas → tool (an eraser when alone).
 - `deposit` — vertical flux tool → canvas (`lift`+`deposit` with `add = 0` is a
   true mass-conserving smudge).
@@ -1143,8 +1158,15 @@ mapping, one optional entry per target:
 
 ```rust
 struct Modulation { source: ModSource, floor: f32, curve: f32 }   // ModSource = Pressure | Tilt
-struct Modulations { size, flow, lift, deposit, bleed: Option<Modulation> }
+struct Modulations { size, flow, add, lift, deposit, bleed: Option<Modulation> }
 ```
+
+On a wet brush the `flow` target scales the whole loop — mapped to pressure, a
+light touch lays less *and* smears less — where the `add` target reaches the
+source share alone, for a brush that lays more under the pen without working
+the canvas harder. Two mapped targets can multiply into one rate (`add`'s, say);
+the flattener charges the steeper of the two rather than their sum, a deliberate
+under-charge in a corner where the attribute budget is already generous.
 
 **A modulation is a multiplier in [0, 1], never a remap.** The value the renderer
 sees is `param · factor(input)`, `factor(0) = floor`, `factor(1) = 1`. That bound
@@ -1165,7 +1187,10 @@ would otherwise need checking at each call site. An axis the brush leaves at zer
 is zero at every point of every stroke it could draw, so `dynamics_setup` and
 `bleed_fires` can gate on the brush's own rate and be exactly right. And a
 modulated rate is never above the brush's, so `exchange_travel` prices the worst
-case and every segment comes in under it.
+case and every segment comes in under it — the wet flow included: the plan
+scales every λ by the segment's modulated flow, which is never above the
+brush's own, so the budget charges `flow · rate` off the brush and stays a
+bound.
 
 **The response curve is rational**, `x / (m(1 − x) + 1)` with `m = 1/k − 2` and
 `k = (curve + 1)/2` — Schlick's bias, monotone from (0,0) to (1,1). Not `xᵞ`:

@@ -42,7 +42,7 @@ Status lives here and nowhere else.
 | — | Filter layers (§21) | done — the architecture and four kinds, the FFT focal blur among them (§21.12); the rest of the kinds (§21.9) remain |
 | — | Drag-and-hold drawing assist (§6.9) | done — line + ellipse; the shape-assist half of §18.1.3 |
 | — | Stroke smoothing — the towed tip (§6.11) | done — the tow, the per-brush amount, the string overlay; the pursuit-mode soft rope stays in reserve |
-| — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/lift/deposit/bleed; more sources and targets are variants away |
+| — | Brush parameter mapping (§6.2, §18.1.4) | done — pressure/tilt → size/flow/stretch/add/lift/deposit/bleed; more sources and targets are variants away |
 | — | Modifier drags — scrubby zoom, Size/Flow (§18.1.9) | done — with the size ring and the flow bar; the number beside the ring is not |
 | — | Touch (§18.1.7, §18.1.11) | done — two fingers pan/zoom/turn, the held press, tap-to-undo/redo and hold-to-pick; thumb-sized hit targets remain |
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |

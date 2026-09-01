@@ -66,7 +66,7 @@ fn main() {
             unreachable!()
         };
         rec.brush.wet_mut().expect("a wet brush").dynamics.bleed = 0.0;
-        rec.brush.wet_mut().expect("a wet brush").dynamics.flow = 0.0;
+        rec.brush.wet_mut().expect("a wet brush").dynamics.add = 0.0;
         rec.brush.wet_mut().expect("a wet brush").dynamics.charge = 1e-4;
         println!("--identity: final stroke reduced to the bare stamp loop");
     }
@@ -124,11 +124,12 @@ fn main() {
     let b = &rec.brush;
     println!(
         "last stroke: action #{last}, {} control points, radius {}, drain {}/radius, \
-         add {}, lift {}, deposit {}, charge {}, bleed {}, opacity {}",
+         flow {}, add {}, lift {}, deposit {}, charge {}, bleed {}, opacity {}",
         rec.path.len(),
         b.size,
         b.drain,
-        b.wet().expect("a wet brush").dynamics.flow,
+        b.wet().expect("a wet brush").flow,
+        b.wet().expect("a wet brush").dynamics.add,
         b.wet().expect("a wet brush").dynamics.lift,
         b.wet().expect("a wet brush").dynamics.deposit,
         b.wet().expect("a wet brush").dynamics.charge,

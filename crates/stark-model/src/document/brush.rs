@@ -81,11 +81,16 @@ pub enum OrientationSource {
 /// How a [`BrushEffect::Wet`] brush interacts with paint already on the canvas
 /// (§6.2). One **unified tool** within that effect: every axis is a flux on the
 /// single conserved quantity — paint **height** (the amount; §6.1) — and the axes
-/// compose freely. [`flow`](Self::flow) is the only *source* (the brush's own
-/// paint); the rest move paint that is already on the canvas, so with `flow = 0`
-/// the tool conserves height (it only moves paint around). The everyday flow-only
+/// compose freely. [`add`](Self::add) is the only *source* (the brush's own
+/// paint); the rest move paint that is already on the canvas, so with `add = 0`
+/// the tool conserves height (it only moves paint around). The everyday add-only
 /// brush is not a corner of this space — it is [`BrushEffect::Paint`], a separate
 /// effect that carries no fluxes at all.
+///
+/// **The axes say what the tool does; [`WetEffect::flow`] says how hard.** Every
+/// axis here is quoted at the neutral flow of 1, and the effect's flow scales the
+/// whole loop — mint, exchange and bleed together — which is what keeps "Flow"
+/// meaning the same thing on a wet brush as on every other effect (§6.2).
 ///
 /// Two axes are **vertical** flux between the canvas and a transient
 /// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
@@ -95,29 +100,31 @@ pub enum OrientationSource {
 ///
 /// One is **lateral** flux within the canvas itself, never touching the tool:
 /// - [`bleed`](Self::bleed) — the paint under the tip diffuses towards its
-///   neighbours (a blur brush alone; wet-softening under `flow`).
+///   neighbours (a blur brush alone; wet-softening under `add`).
 ///
 /// `lift`-only is a scraper — it takes paint as a knife does, by the *amount*;
 /// the tool an artist calls an eraser acts on what the eye sees instead and is
-/// [`BrushEffect::Erase`] (§6.12). `lift`+`deposit` (`flow = 0`) is a
-/// conservative smudge; `bleed`-only a blur; `flow`-only ordinary paint. All flow
+/// [`BrushEffect::Erase`] (§6.12). `lift`+`deposit` (`add = 0`) is a
+/// conservative smudge; `bleed`-only a blur; `add`-only ordinary paint. All flow
 /// runs with fixed iteration counts, so replay stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushDynamics {
-    /// The brush's own paint laid directly: the paint **height** deposited per unit of
-    /// swept optical depth (§6.1), and the tool's only source term. 0 = lays
-    /// none (pure manipulation of existing paint), 1 = a heavy full-thickness deposit.
+    /// The brush's own paint laid directly: the tool's only source term, in
+    /// [0, 1]. 0 = lays none (pure manipulation of existing paint), 1 = the full
+    /// mint — a pass at the neutral flow lays a full-thickness deposit.
+    ///
+    /// What reaches the canvas per unit of swept optical depth (§6.1) is
+    /// `add · flow` ([`WetEffect::flow`]): this axis is the *share* of the
+    /// brush's own paint in what the tool does, and the flow is how hard the
+    /// tool does all of it. At `add = 1` a wet brush lays exactly the paint
+    /// [`BrushEffect::Paint`] would at the same flow, so switching a brush
+    /// between the two laying effects does not re-interpret its Flow slider.
     ///
     /// A *rate*, not a quantity — this source never runs out on its own. For a stroke
     /// that runs dry as it travels see [`BrushParams::drain`]; for a finite carried
     /// glob that depletes as it is laid see [`charge`](Self::charge).
-    ///
-    /// **It means the same amount of paint as [`PaintEffect::flow`]** (§6.2):
-    /// the loop's `add` axis and the swept deposit share one law, so moving a
-    /// brush between [`BrushEffect::Paint`] and [`BrushEffect::Wet`] does not
-    /// re-interpret its Flow slider.
     #[serde(default)]
-    pub flow: f32,
+    pub add: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
     /// in [0, 1]: 0 = none, 1 = lift it all (scrape clean). Vertical flux canvas → tool.
     #[serde(default)]
@@ -131,7 +138,8 @@ pub struct BrushDynamics {
     /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
     /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
     /// as it [`lift`](Self::lift)s — a finite carried amount, unlike the inexhaustible
-    /// [`flow`](Self::flow) source (§6.2).
+    /// [`add`](Self::add) source (§6.2). Not scaled by [`WetEffect::flow`]:
+    /// the glob is what was scooped, not how hard the hand works it.
     #[serde(default)]
     pub charge: f32,
     /// Canvas paint **diffusing under the tip**, in [0, 1]. The one **lateral** flux,
@@ -151,7 +159,7 @@ pub struct BrushDynamics {
     /// crosses per step clips at 1 and the axis would stop meaning anything well below
     /// full crank.
     ///
-    /// Alone it is a blur brush; alongside [`flow`](Self::flow) it melts the ridges of the
+    /// Alone it is a blur brush; alongside [`add`](Self::add) it melts the ridges of the
     /// strokes being painted over instead of leaving their height profile embossed
     /// through the new paint.
     #[serde(default)]
@@ -159,10 +167,12 @@ pub struct BrushDynamics {
 }
 
 impl Default for BrushDynamics {
-    /// The everyday brush: lay the brush's own paint, manipulate nothing.
+    /// The everyday brush: lay the brush's own paint at the full share, manipulate
+    /// nothing — so what the default wet brush lays is decided by its flow alone,
+    /// exactly as a paint brush's is.
     fn default() -> Self {
         Self {
-            flow: 0.6,
+            add: 1.0,
             lift: 0.0,
             deposit: 0.0,
             charge: 0.0,
@@ -172,19 +182,19 @@ impl Default for BrushDynamics {
 }
 
 impl BrushDynamics {
-    /// Every axis a number, and the three fractions inside the `[0, 1]` their own
+    /// Every axis a number, and the four fractions inside the `[0, 1]` their own
     /// docs quote them in — see [`BrushParams::sanitized`].
     ///
-    /// `flow` and `charge` are floored but not capped, because neither has a
-    /// documented ceiling *here*: `flow` is a rate rather than a fraction (the
-    /// frontend's `MAX_FLOW` is where a slider stops, not where the quantity stops
-    /// meaning something) and `charge` is a height. A bound this crate does not
-    /// own is not a bound it may invent — clamping to one would silently rewrite
-    /// documents whose brushes were legitimately past a *slider's* end.
+    /// `charge` is floored but not capped, because it has no documented ceiling
+    /// *here*: it is a height, and a bound this crate does not own is not a bound
+    /// it may invent — clamping to one would silently rewrite documents whose
+    /// brushes were legitimately past a *slider's* end. The rate headroom a hot
+    /// brush wants lives on [`WetEffect::flow`], which is unbounded for the same
+    /// reason the other effects' rates are.
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
-            flow: at_least_zero(self.flow, d.flow),
+            add: clamp01(finite_or(self.add, d.add)),
             lift: clamp01(finite_or(self.lift, d.lift)),
             deposit: clamp01(finite_or(self.deposit, d.deposit)),
             charge: at_least_zero(self.charge, d.charge),
@@ -593,13 +603,17 @@ impl PaintModulations {
 }
 
 /// The pen mappings whose targets exist only while **working wet paint** — the
-/// four rates of [`BrushDynamics`] (§6.2). With the effect they modulate
-/// ([`WetEffect::modulation`]) for [`PaintModulations`]' reason, whose note on
-/// modulating `opacity` applies here unchanged.
+/// effect's own flow and the four rates of [`BrushDynamics`] (§6.2). With the
+/// effect they modulate ([`WetEffect::modulation`]) for [`PaintModulations`]'
+/// reason, whose note on modulating `opacity` applies here unchanged.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct WetModulations {
-    /// Scales [`BrushDynamics::flow`] — the brush's own paint, "Flow" in the UI.
+    /// Scales [`WetEffect::flow`] — the whole of what the tool does, "Flow" in
+    /// the UI: mapped to pressure, a light touch lays less *and* smears less.
     pub flow: Option<Modulation>,
+    /// Scales [`BrushDynamics::add`] — the brush's own paint alone, for a brush
+    /// that lays more under the pen without working the canvas harder.
+    pub add: Option<Modulation>,
     /// Scales [`BrushDynamics::lift`].
     pub lift: Option<Modulation>,
     /// Scales [`BrushDynamics::deposit`].
@@ -612,6 +626,9 @@ impl WetModulations {
     pub fn flow(&self, pen: PenState) -> f32 {
         mod_factor(self.flow, pen)
     }
+    pub fn add(&self, pen: PenState) -> f32 {
+        mod_factor(self.add, pen)
+    }
     pub fn lift(&self, pen: PenState) -> f32 {
         mod_factor(self.lift, pen)
     }
@@ -623,14 +640,15 @@ impl WetModulations {
     }
 
     /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
-    fn all(&self) -> [Option<Modulation>; 4] {
+    fn all(&self) -> [Option<Modulation>; 5] {
         let Self {
             flow,
+            add,
             lift,
             deposit,
             bleed,
         } = *self;
-        [flow, lift, deposit, bleed]
+        [flow, add, lift, deposit, bleed]
     }
 
     /// Whether any target is mapped.
@@ -640,9 +658,10 @@ impl WetModulations {
 
     /// Every mapped target sanitized, the unmapped ones left unmapped.
     pub fn sanitized(self) -> Self {
-        let [flow, lift, deposit, bleed] = self.all().map(|m| m.map(Modulation::sanitized));
+        let [flow, add, lift, deposit, bleed] = self.all().map(|m| m.map(Modulation::sanitized));
         Self {
             flow,
+            add,
             lift,
             deposit,
             bleed,
@@ -892,11 +911,13 @@ pub struct PaintEffect {
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
     /// The paint **height** laid per unit of swept optical depth (§6.1) —
-    /// this effect's one rate, playing exactly the role [`BrushDynamics::flow`]
-    /// plays for wet paint and [`EraseEffect::flow`] for the eraser. Its own
-    /// field rather than a reading of a [`BrushDynamics`], for the eraser's
-    /// reason: this effect has no fluxes, and a struct of knobs it would
-    /// silently veto is the shape [`BrushEffect`]'s own doc forbids.
+    /// this effect's one rate, playing exactly the role [`WetEffect::flow`]
+    /// plays for wet paint and [`EraseEffect::flow`] for the eraser: laying is
+    /// the whole of what this effect does, so its flow scales the whole effect
+    /// as every flow does. Its own field rather than a reading of a
+    /// [`BrushDynamics`], for the eraser's reason: this effect has no fluxes,
+    /// and a struct of knobs it would silently veto is the shape
+    /// [`BrushEffect`]'s own doc forbids.
     ///
     /// A *rate*, not a quantity — it never runs out on its own; see
     /// [`BrushParams::drain`] for a stroke that does.
@@ -945,7 +966,7 @@ impl PaintEffect {
     }
 
     /// The flow a brush gets when it does not say ([`flow`](Self::flow)) —
-    /// [`BrushDynamics::default`]'s own source rate, so the two effects' everyday
+    /// shared with [`WetEffect::default`], so the two effects' everyday
     /// brushes lay the same paint.
     fn default_flow() -> f32 {
         0.6
@@ -971,14 +992,37 @@ pub struct WetEffect {
     /// here by nature**: what the stroke moves it must move whole — conservation
     /// (§6.1) — and once fresh paint is smeared into the picture there is no
     /// longer a "this stroke's share" for a ceiling to scale. The knob scales
-    /// what the brush **mints** — the flow's paint and the
+    /// what the brush **mints** — the `add` paint and the
     /// [`charge`](BrushDynamics::charge)'s glob — by the same fraction, which
     /// agrees with the ceiling to first order in the amount laid and exactly
     /// at 1.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
-    /// The source rate and the four fluxes — the unified natural-media tool
-    /// (§6.2).
+    /// This effect's **overall rate** — how hard a pass of the tip works, playing
+    /// exactly the role [`PaintEffect::flow`] plays for paint and
+    /// [`EraseEffect::flow`] for the eraser: it scales *everything* the tool does
+    /// per pass. The mint is `add · flow` of height per unit swept optical depth;
+    /// the exchange runs at `flow` times its per-pass exponents, so a pass at
+    /// flow ½ lifts and lays back exactly what half a pass at flow 1 would; the
+    /// bleed diffuses `flow` times the diffusivity. 1 is the neutral pass; 0 is a
+    /// brush that does nothing at all.
+    ///
+    /// Its own field beside [`dynamics`](Self::dynamics) rather than an axis
+    /// inside it, because it is a different *kind* of number: the axes are the
+    /// tool's identity — what a smudge, a knife, a loaded brush *is* — and the
+    /// flow is the hand's intensity, the knob the Flow slider and the tuning
+    /// drag move whichever effect is in force (§6.2). On a blend brush the
+    /// slider therefore blends more or less, instead of turning a blender into
+    /// a paint brush — which is what it did while the slider wrote the source
+    /// axis.
+    ///
+    /// A *rate*, floored but not capped ([`BrushParams::sanitized`]): the
+    /// frontend's `MAX_FLOW` is where a slider stops, not where the quantity
+    /// stops meaning something.
+    #[serde(default = "PaintEffect::default_flow")]
+    pub flow: f32,
+    /// The source share and the four fluxes — the unified natural-media tool
+    /// (§6.2), quoted at the neutral flow.
     #[serde(default)]
     pub dynamics: BrushDynamics,
     /// Color dynamics — [`PaintEffect::color_dynamics`], unchanged here.
@@ -990,12 +1034,15 @@ pub struct WetEffect {
 }
 
 impl Default for WetEffect {
-    /// The everyday wet brush: black, a full stroke, the default dynamics —
-    /// which lay paint and move none until a flux is turned up.
+    /// The everyday wet brush: black, a full stroke, [`PaintEffect`]'s own
+    /// default flow over the default dynamics — which lay paint and move none
+    /// until a flux is turned up, so the two effects' everyday brushes lay the
+    /// same paint.
     fn default() -> Self {
         Self {
             color: [0.0, 0.0, 0.0],
             opacity: 1.0,
+            flow: PaintEffect::default_flow(),
             dynamics: BrushDynamics::default(),
             color_dynamics: ColorDynamics::default(),
             modulation: WetModulations::default(),
@@ -1135,8 +1182,10 @@ impl Default for BrushEffect {
 }
 
 impl BrushEffect {
-    /// A wet effect of a pigment and its axes — the shorthand a test reaches
-    /// for when the color dynamics and the pen mappings are the defaults.
+    /// A wet effect of a pigment and its axes, **at the neutral flow** — the
+    /// shorthand a test reaches for when the color dynamics and the pen mappings
+    /// are the defaults. Flow 1 rather than the default brush's, so the axes a
+    /// test states *are* the effective per-pass rates it will measure.
     ///
     /// The color is a parameter and not a default on purpose: the pigment lives
     /// *inside* the effect, so a constructor that let a caller build one
@@ -1146,6 +1195,7 @@ impl BrushEffect {
     pub fn wet_with(color: [f32; 3], dynamics: BrushDynamics) -> Self {
         Self::Wet(WetEffect {
             color,
+            flow: 1.0,
             dynamics,
             ..WetEffect::default()
         })
@@ -1157,26 +1207,30 @@ impl BrushEffect {
         Self::Paint(PaintEffect::colored(color))
     }
 
-    /// The effect's **source rate** — "Flow" in the UI, whichever effect is in
-    /// force: how much the stroke lays ([`PaintEffect::flow`],
-    /// [`BrushDynamics::flow`]) or how fast its bite builds
-    /// ([`EraseEffect::flow`]). One question with one answer per effect, which is
-    /// what lets the brush panel's Flow slider and the tuning drag tune the tool
-    /// in hand without asking which kind it is.
+    /// The effect's **overall rate** — "Flow" in the UI, whichever effect is in
+    /// force: how hard a pass of the tip works. How much a laying stroke lays
+    /// ([`PaintEffect::flow`]), how hard a wet stroke both lays and works the
+    /// canvas ([`WetEffect::flow`]), how fast an eraser's bite builds
+    /// ([`EraseEffect::flow`]), how hard a liquify stroke drags
+    /// ([`LiquifyEffect::strength`]). One meaning with one knob per effect,
+    /// which is what lets the brush panel's Flow slider and the tuning drag
+    /// tune the tool in hand without asking which kind it is — and without the
+    /// slider changing what the tool *is* (that is the effect's own knobs:
+    /// [`BrushDynamics`]' axes above all).
     pub fn flow(&self) -> f32 {
         match self {
             Self::Paint(p) => p.flow,
-            Self::Wet(w) => w.dynamics.flow,
+            Self::Wet(w) => w.flow,
             Self::Erase(e) => e.flow,
             Self::Liquify(l) => l.strength,
         }
     }
 
-    /// Write the effect's source rate — [`flow`](Self::flow)'s other half.
+    /// Write the effect's overall rate — [`flow`](Self::flow)'s other half.
     pub fn set_flow(&mut self, flow: f32) {
         match self {
             Self::Paint(p) => p.flow = flow,
-            Self::Wet(w) => w.dynamics.flow = flow,
+            Self::Wet(w) => w.flow = flow,
             Self::Erase(e) => e.flow = flow,
             Self::Liquify(l) => l.strength = flow,
         }
@@ -1245,6 +1299,9 @@ impl BrushEffect {
             Self::Wet(w) => Self::Wet(WetEffect {
                 color: w.color.map(clamp01),
                 opacity: clamp01(finite_or(w.opacity, 1.0)),
+                // Floored but not capped, for `PaintEffect::flow`'s reason: a
+                // rate, whose ceiling is a slider's.
+                flow: at_least_zero(w.flow, PaintEffect::default_flow()),
                 dynamics: w.dynamics.sanitized(),
                 color_dynamics: w.color_dynamics.sanitized(),
                 modulation: w.modulation.sanitized(),
@@ -1450,21 +1507,20 @@ impl BrushParams {
     /// shorthand a test builds a smearing brush with.
     ///
     /// What both kinds hold carries over — the pigment, the opacity, the flow
-    /// (rate and mapping), the color dynamics — and the fluxes start at zero, so
-    /// wetting a brush and touching nothing lays the paint it always laid. A
-    /// brush already wet is handed back untouched; an eraser keeps its opacity
-    /// and takes the default wet brush for the rest, having nothing else the two
-    /// share.
+    /// (rate and mapping), the color dynamics — and the fluxes start at zero
+    /// with `add` at its full share, so wetting a brush and touching nothing
+    /// lays the paint it always laid. A brush already wet is handed back
+    /// untouched; an eraser keeps its opacity and its flow — the rate means the
+    /// same thing on every effect — and takes the default wet brush for the
+    /// rest.
     pub fn make_wet(&mut self) -> &mut WetEffect {
         self.effect = match self.effect {
             BrushEffect::Wet(w) => BrushEffect::Wet(w),
             BrushEffect::Paint(p) => BrushEffect::Wet(WetEffect {
                 color: p.color,
                 opacity: p.opacity,
-                dynamics: BrushDynamics {
-                    flow: p.flow,
-                    ..BrushDynamics::default()
-                },
+                flow: p.flow,
+                dynamics: BrushDynamics::default(),
                 color_dynamics: p.color_dynamics,
                 modulation: WetModulations {
                     flow: p.modulation.flow,
@@ -1473,6 +1529,11 @@ impl BrushParams {
             }),
             BrushEffect::Erase(e) => BrushEffect::Wet(WetEffect {
                 opacity: e.opacity,
+                flow: e.flow,
+                modulation: WetModulations {
+                    flow: e.modulation.flow,
+                    ..WetModulations::default()
+                },
                 ..WetEffect::default()
             }),
             // A liquify brush shares nothing the wet effect could keep — no
@@ -1631,8 +1692,8 @@ impl BrushParams {
     /// into the document, exactly as [`Filter::sanitized`](super::Filter::sanitized)
     /// is for a filter (§21.5) and for the same two reasons.
     ///
-    /// **It clamps only where this crate already states a range.** The three pickup
-    /// axes, the tooth's *give*, either effect's *opacity*, the hardness and the color are
+    /// **It clamps only where this crate already states a range.** The wet axes
+    /// (`add` included), the tooth's *give*, either effect's *opacity*, the hardness and the color are
     /// quoted in `[0, 1]` by their own field docs, and so is the deposit
     /// [`jitter`](Self::jitter), whose gate goes negative past 1; the stretch
     /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH) by construction. Everything
@@ -1924,7 +1985,7 @@ mod tests {
             b.wet_mut().expect("just made wet")
         }
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 20] = [
+        let pokes: [Poke; 21] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("erase.opacity", |b, f| {
@@ -1947,7 +2008,8 @@ mod tests {
             ("color.r", |b, f| paint(b).color[0] = f),
             ("paint.opacity", |b, f| paint(b).opacity = f),
             ("paint.flow", |b, f| paint(b).flow = f),
-            ("wet.flow", |b, f| wet(b).dynamics.flow = f),
+            ("wet.flow", |b, f| wet(b).flow = f),
+            ("wet.add", |b, f| wet(b).dynamics.add = f),
             ("wet.lift", |b, f| wet(b).dynamics.lift = f),
             ("wet.deposit", |b, f| wet(b).dynamics.deposit = f),
             ("wet.charge", |b, f| wet(b).dynamics.charge = f),
@@ -1978,6 +2040,7 @@ mod tests {
             ];
             if let Some(w) = b.wet() {
                 v.extend([
+                    w.dynamics.add,
                     w.dynamics.lift,
                     w.dynamics.deposit,
                     w.dynamics.charge,
@@ -1994,6 +2057,7 @@ mod tests {
             if let Some(w) = b.wet() {
                 v.extend([
                     w.color[0],
+                    w.dynamics.add,
                     w.dynamics.lift,
                     w.dynamics.deposit,
                     w.dynamics.bleed,
@@ -2035,8 +2099,9 @@ mod tests {
             },
             effect: BrushEffect::Wet(WetEffect {
                 opacity: 0.85,
+                flow: 2.5, // past the frontend's slider, and legitimately so
                 dynamics: BrushDynamics {
-                    flow: 2.5, // past the frontend's slider, and legitimately so
+                    add: 0.7,
                     lift: 1.0,
                     bleed: 0.95,
                     ..BrushDynamics::default()
@@ -2066,6 +2131,44 @@ mod tests {
             ..BrushParams::default()
         };
         assert_eq!(eraser.sanitized(), eraser);
+    }
+
+    /// **Flow is one knob with one meaning on every effect** (§6.2): the overall
+    /// rate, read and written through whichever effect is in force — and carried
+    /// whole across [`BrushParams::make_wet`], so wetting a brush moves no
+    /// slider. What a wet brush *is* — its axes — is untouched by it.
+    #[test]
+    fn flow_is_the_one_overall_rate_whatever_the_effect() {
+        // Paint → Wet: the rate and its pen mapping carry, the axes start at the
+        // defaults, so the brush lays the paint it always laid.
+        let mut b = BrushParams::default();
+        b.effect.set_flow(1.7);
+        assert_eq!(b.effect.flow(), 1.7);
+        let w = b.make_wet();
+        assert_eq!(w.flow, 1.7, "wetting a brush must not move the Flow slider");
+        assert_eq!(w.dynamics, BrushDynamics::default());
+        assert_eq!(b.effect.flow(), 1.7, "…and the enum reads the same knob");
+        // The slider scales the overall rate, never the axes: a blend brush
+        // stays a blend brush at any flow.
+        let d = &mut b.wet_mut().expect("wet").dynamics;
+        d.add = 0.0;
+        d.lift = 0.5;
+        b.effect.set_flow(0.3);
+        let w = b.wet().expect("wet");
+        assert_eq!((w.dynamics.add, w.dynamics.lift), (0.0, 0.5));
+        assert_eq!(w.flow, 0.3);
+        // Erase → Wet: the rate carries there too — flow means the same thing
+        // on both sides of that switch now.
+        let mut e = BrushParams {
+            effect: BrushEffect::Erase(EraseEffect {
+                opacity: 0.5,
+                flow: 2.0,
+                ..EraseEffect::default()
+            }),
+            ..BrushParams::default()
+        };
+        let w = e.make_wet();
+        assert_eq!((w.flow, w.opacity), (2.0, 0.5));
     }
 
     /// **`radius` is a pure scale on the mark**, which is the whole of why `drain` is

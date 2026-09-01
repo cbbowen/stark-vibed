@@ -98,16 +98,17 @@ enum ModRow {
     Flow,
     Stretch,
     ToothGive,
+    Add,
     Lift,
     Deposit,
     Bleed,
 }
 
 impl ModRow {
-    /// The word on the row, which is also the word the section already used for the
-    /// parameter — "Flow" for `add`, not "Add". Takes the brush because the Flow
-    /// row *is* the in-force effect's rate, and the liquify effect's rate is not
-    /// a flow of anything: it is how hard the paint follows (§6.13).
+    /// The word on the row, which is also the word the section already used for
+    /// the parameter. Takes the brush because the Flow row *is* the in-force
+    /// effect's rate, and the liquify effect's rate is not a flow of anything:
+    /// it is how hard the paint follows (§6.13).
     fn label(self, b: &BrushConfig) -> &'static str {
         match self {
             Self::Size => "Size",
@@ -117,6 +118,7 @@ impl ModRow {
             },
             Self::Stretch => "Stretch",
             Self::ToothGive => "Tooth give",
+            Self::Add => "Add",
             Self::Lift => "Lift",
             Self::Deposit => "Deposit",
             Self::Bleed => "Bleed",
@@ -151,6 +153,9 @@ impl ModRow {
             // the substrate gates nothing, and 0 is the driest tip (§6.4). Quoted that
             // way round for the pen's sake — see `BrushParams::tooth_give`.
             Self::ToothGive => (0.0, 1.0),
+            // The full share (`BrushDynamics::add`): 1 is a wet brush laying
+            // exactly what a paint brush at the same flow would.
+            Self::Add => (0.0, 1.0),
             Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
         }
     }
@@ -158,10 +163,11 @@ impl ModRow {
     fn get(self, b: &BrushConfig) -> f32 {
         match self {
             Self::Size => b.size,
-            // The effect's own source rate, paint or eraser alike (§6.12).
+            // The effect's own overall rate, paint or eraser alike (§6.12).
             Self::Flow => b.flow(),
             Self::Stretch => b.stretch,
             Self::ToothGive => b.tooth.give,
+            Self::Add => b.wet.add,
             Self::Lift => b.wet.lift,
             Self::Deposit => b.wet.deposit,
             Self::Bleed => b.wet.bleed,
@@ -179,6 +185,7 @@ impl ModRow {
             Self::Flow => b.set_flow(v),
             Self::Stretch => b.stretch = v,
             Self::ToothGive => b.tooth.give = v,
+            Self::Add => b.wet.add = v,
             Self::Lift => b.wet.lift = v,
             Self::Deposit => b.wet.deposit = v,
             Self::Bleed => b.wet.bleed = v,
@@ -198,6 +205,7 @@ impl ModRow {
                 BrushEffectType::Erase => &mut b.erase.modulation.flow,
                 BrushEffectType::Liquify => &mut b.liquify.modulation.strength,
             },
+            Self::Add => &mut b.wet.add_modulation,
             Self::Lift => &mut b.wet.lift_modulation,
             Self::Deposit => &mut b.wet.deposit_modulation,
             Self::Bleed => &mut b.wet.bleed_modulation,
@@ -214,6 +222,7 @@ impl ModRow {
                 BrushEffectType::Erase => b.erase.modulation.flow,
                 BrushEffectType::Liquify => b.liquify.modulation.strength,
             },
+            Self::Add => b.wet.add_modulation,
             Self::Lift => b.wet.lift_modulation,
             Self::Deposit => b.wet.deposit_modulation,
             Self::Bleed => b.wet.bleed_modulation,
@@ -641,9 +650,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.opacity(),
                             oninput: move |v| edit(state, preview, move |b| b.set_opacity(v)) }
                     }
-                    // `add` is the tool's only source term (§6.2) and its only amount
-                    // knob: the paint height laid per unit swept optical depth — or,
-                    // erasing, how fast the bite builds toward its ceiling (§6.12).
+                    // The effect's overall rate (§6.2): how much a pass lays — and,
+                    // wet, how hard it works the canvas; erasing, how fast the bite
+                    // builds toward its ceiling (§6.12). Not a wet axis: what the
+                    // tool *does* per unit of this is the Wet section's business.
                     {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
                     // How far the tip settles into the canvas's own tooth (§6.4):
                     // at 1 it follows every fall, the substrate is irrelevant and the
@@ -750,9 +760,14 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         title: "Wet", desc: "Canvas paint on the move — smudge, knife, blur.",
                         glyph: icons::WET,
                         open: wet_open,
-                        // The three axes a palette knife is built out of, and the three
-                        // most worth mapping onto the pen: a knife that lifts with
-                        // pressure and lays back with tilt is those two chips
+                        // The source axis (§6.2): how much of the brush's own paint
+                        // is in the mix, as a share the shared Flow scales. At 0 the
+                        // tool only works what is there — the blender — and the Flow
+                        // slider strengthens the blend instead of laying paint.
+                        {mod_slider(state, preview, mod_open, ModRow::Add, brush)}
+                        // The three fluxes a palette knife is built out of, and the
+                        // three most worth mapping onto the pen: a knife that lifts
+                        // with pressure and lays back with tilt is those two chips
                         // (§6.2).
                         {mod_slider(state, preview, mod_open, ModRow::Lift, brush)}
                         {mod_slider(state, preview, mod_open, ModRow::Deposit, brush)}

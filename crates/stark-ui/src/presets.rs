@@ -161,10 +161,15 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     frequency: [0.05, 0.1],
                     amplitude: [0.0, 0.025, 0.05],
                 },
+                // The axes are per pass at the neutral flow (§6.2), and this
+                // brush rides at flow 3, so they are quoted low: at full crank
+                // the exchange lands where the old per-pass fractions did
+                // (1 − (1 − a)³), and a light touch — the flow mapping above —
+                // now smears less as well as laying less.
                 wet: WetDynamics {
-                    lift: 0.25,
-                    deposit: 0.75,
-                    bleed: 0.25,
+                    lift: 0.1,
+                    deposit: 0.37,
+                    bleed: 0.08,
                     ..WetDynamics::default()
                 },
                 modulation: BrushModulations {
@@ -194,10 +199,11 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     frequency: [0.05, 0.1],
                     amplitude: [0.0, 0.025, 0.05],
                 },
+                // Quoted low for the flow-3 ride, the Hard Round's argument.
                 wet: WetDynamics {
-                    lift: 0.25,
-                    deposit: 0.75,
-                    bleed: 0.5,
+                    lift: 0.1,
+                    deposit: 0.37,
+                    bleed: 0.17,
                     ..WetDynamics::default()
                 },
                 modulation: BrushModulations {
@@ -323,8 +329,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.8 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
-                flow: 0.0,
+                // The neutral rate: the Flow slider now scales the *blend* —
+                // what this change of mental model was for. What makes it a
+                // blender is `add = 0` below, which no slider moves.
+                flow: 1.0,
                 wet: WetDynamics {
+                    add: 0.0,
                     lift: 0.25,
                     deposit: 0.75,
                     bleed: 0.25,

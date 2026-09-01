@@ -126,9 +126,13 @@ fn smear(radius: f32) -> BrushParams {
         effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
         ..BrushParams::default()
     };
-    b.make_wet().dynamics.lift = 0.6;
-    b.make_wet().dynamics.deposit = 0.5;
-    b.make_wet().dynamics.flow = 0.5;
+    // At the neutral flow with the axes stated outright, so the measured rates
+    // are exactly these numbers — and the baseline survives the flow/add split.
+    let w = b.make_wet();
+    w.flow = 1.0;
+    w.dynamics.add = 0.5;
+    w.dynamics.lift = 0.6;
+    w.dynamics.deposit = 0.5;
     b
 }
 

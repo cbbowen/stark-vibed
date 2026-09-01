@@ -256,7 +256,7 @@ fn a_charged_glob_at_half_opacity_is_the_half_charge_glob() {
         let mut b = brush(RED, 24.0);
         b.drain = 0.0;
         let d = &mut b.make_wet().dynamics;
-        d.flow = 0.0;
+        d.add = 0.0;
         d.deposit = 0.6;
         d.charge = charge;
         b.effect.set_opacity(opacity);

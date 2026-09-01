@@ -179,8 +179,10 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
 
     let mut scrape = brush([0.0, 0.0, 0.0], 22.0);
     scrape.drain = 0.0;
-    scrape.paint_mut().expect("a paint brush").flow = 0.0;
-    scrape.make_wet().dynamics.lift = 1.0;
+    let w = scrape.make_wet();
+    w.flow = 1.0;
+    w.dynamics.add = 0.0;
+    w.dynamics.lift = 1.0;
     stroke_with(&mut engine, scrape, &across);
     assert!(
         is_blue(center(&engine.render_to_image())),

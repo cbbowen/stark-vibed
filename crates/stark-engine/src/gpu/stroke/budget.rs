@@ -227,7 +227,7 @@ fn bleed_reach(b: &BrushParams) -> f32 {
 fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
     b.wet().map_or(
         stark_model::document::BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.0,
             deposit: 0.0,
             charge: 0.0,
@@ -320,7 +320,10 @@ pub fn max_stretch(b: &BrushParams) -> f32 {
 /// [`MIN_SEGMENT_LEN`]. What [`flatten_tolerance`] spends, and the number the
 /// shortening warning quotes against what [`fit_len`] left of it.
 pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
-    (exchange_travel(axes(b)) * b.size).max(MIN_SEGMENT_LEN)
+    // The wet effect's own overall rate; 1 — the neutral pass — where there is
+    // no wet effect to have one, so the zero axes price alone as they always did.
+    let flow = b.wet().map_or(1.0, |w| w.flow);
+    (exchange_travel(axes(b), flow) * b.size).max(MIN_SEGMENT_LEN)
 }
 
 /// How far a liquify brush at **full strength** may travel per segment, as a
@@ -502,15 +505,22 @@ fn ln_keep(axis: f32) -> f32 {
 /// Priced off the brush's own rates, not the modulated ones. A modulation only ever
 /// scales an axis down (`document::Modulation`), which lowers the transfer a segment
 /// completes and so the error the step bounds — the brush is charged its worst case
-/// and every segment of every stroke it draws comes in under it.
-fn exchange_travel(d: BrushDynamics) -> f32 {
+/// and every segment of every stroke it draws comes in under it. `flow` is the
+/// brush's own overall rate (`WetEffect::flow`) for the same reason: the plan
+/// scales every λ by the segment's modulated flow, which is never above it, so
+/// charging the brush's puts every segment under the price.
+fn exchange_travel(d: BrushDynamics, flow: f32) -> f32 {
     // [`ln_keep`] — the very clamp [`lambda`] hands the shader, so the flattener
     // prices the rates it will actually run (an axis at 1.0 is `−∞` otherwise).
     let rate_of = |axis: f32| -ln_keep(axis);
     // `bleed` is deliberately *not* in this sum: it fires on its own travel cadence
     // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does
     // not set its step and shortening segments buys it nothing.
-    let rate = rate_of(d.lift) + rate_of(d.deposit);
+    //
+    // The flow multiplies the whole sum because it multiplies both λs (§6.2).
+    // Past 1 it can only walk the step down to the reference floor below — the
+    // same "only ever a relaxation" clamp that already catches an axis at 1.
+    let rate = flow.max(0.0) * (rate_of(d.lift) + rate_of(d.deposit));
     if rate <= 0.0 {
         return MAX_EXCHANGE_TRAVEL;
     }

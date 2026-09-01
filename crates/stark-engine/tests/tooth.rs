@@ -412,7 +412,7 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
         effect: BrushEffect::wet_with(
             RED,
             BrushDynamics {
-                flow: swept.paint().expect("a paint brush").flow,
+                add: swept.paint().expect("a paint brush").flow,
                 lift: 0.05,
                 ..Default::default()
             },
@@ -570,7 +570,7 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
         effect: BrushEffect::wet_with(
             [1.0, 0.0, 0.0],
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 0.0,
                 deposit: 0.6,
                 charge: 0.25,
@@ -804,7 +804,7 @@ fn a_toothed_smear_previews_as_it_commits() {
         effect: BrushEffect::wet_with(
             RED,
             BrushDynamics {
-                flow: 0.6,
+                add: 0.6,
                 lift: 0.6,
                 deposit: 0.95,
                 ..Default::default()

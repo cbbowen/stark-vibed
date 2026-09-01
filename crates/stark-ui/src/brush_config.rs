@@ -14,14 +14,16 @@
 //! **Shared knobs are stored once.** Paint and Wet are the two *laying* kinds,
 //! and everything they agree on — the pigment, the opacity ceiling, the flow
 //! and its pen mapping, the color dynamics — is one field here, not a copy per
-//! effect the switch would have to keep reconciled. What is left of wet is
-//! genuinely wet's alone ([`WetDynamics`]: the fluxes and their mappings), and
-//! [`params`](BrushConfig::params) assembles the model's per-effect structs
-//! from the shared fields at the boundary. The one consequence worth naming:
-//! [`effect`](BrushConfig::effect) is the user's own choice and **nothing here
-//! changes it behind their back** — a flux slider edits the wet half whether or
-//! not wet is in force, exactly as the erase half has always been editable in
-//! waiting.
+//! effect the switch would have to keep reconciled. The flow can be shared
+//! because it means the same thing on both: the overall rate, which on a wet
+//! brush scales the whole loop rather than being one of its axes (§6.2).
+//! What is left of wet is genuinely wet's alone ([`WetDynamics`]: the axes and
+//! their mappings), and [`params`](BrushConfig::params) assembles the model's
+//! per-effect structs from the shared fields at the boundary. The one
+//! consequence worth naming: [`effect`](BrushConfig::effect) is the user's own
+//! choice and **nothing here changes it behind their back** — a flux slider
+//! edits the wet half whether or not wet is in force, exactly as the erase
+//! half has always been editable in waiting.
 //!
 //! One type for all of it, so a whole-brush snapshot that lost its feel or its
 //! inactive half is unrepresentable: the live brush (`AppState::brush`) and the
@@ -35,9 +37,13 @@
 //! its mind about. The **size** and the **flow** are adjusted all day without the
 //! tool becoming a different tool — they are the two knobs on the Brush panel, the
 //! two the tuning drag moves (§18.1.9), the two a number key remembers. That is
-//! the **transient** half. Everything else — shape, tapers, dynamics, the effect
-//! and its opacity, the feel — is what the tool *is*: the **durable** half, which
-//! a preset owns and nothing else stores. A preset carries both halves, so
+//! the **transient** half, and the flow earns its place there by being the same
+//! *kind* of knob as the size on every effect: the overall rate of whatever the
+//! tool does, never a part of what it is (§6.2 — on a wet brush it scales the
+//! smear and the mint together, where the `add` axis that says *whether* the
+//! tool lays its own paint is durable). Everything else — shape, tapers,
+//! dynamics, the effect and its opacity, the feel — is what the tool *is*: the
+//! **durable** half, which a preset owns and nothing else stores. A preset carries both halves, so
 //! clicking one puts on the tool at the size and flow it was saved at; a quick
 //! slot carries a preset's *name* beside a [`Transient`] of its own, so the tool
 //! on a number is looked up live and an edit to the preset reaches every number
@@ -76,13 +82,18 @@ pub enum BrushEffectType {
     Liquify,
 }
 
-/// The **wet-only** half of the natural-media tool (§6.2): the fluxes
-/// `BrushDynamics` carries beyond the flow, beside their own pen mappings —
-/// everything a wet brush is that a paint brush is not. The knobs the two kinds
-/// share live once on [`BrushConfig`] itself.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The **wet-only** half of the natural-media tool (§6.2): the axes
+/// `BrushDynamics` carries, beside their own pen mappings — everything a wet
+/// brush is that a paint brush is not. The knobs the two kinds share live once
+/// on [`BrushConfig`] itself — the flow above all, which for a wet brush scales
+/// this whole half rather than being a member of it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WetDynamics {
+    /// The brush's own paint's share of the mix ([`BrushDynamics::add`]) —
+    /// durable, unlike the flow that scales it: a blender is a tool that adds
+    /// nothing, at any flow.
+    pub add: f32,
     /// Canvas paint lifted onto the tool per step ([`BrushDynamics::lift`]).
     pub lift: f32,
     /// Tool paint laid back per step ([`BrushDynamics::deposit`]).
@@ -91,12 +102,33 @@ pub struct WetDynamics {
     pub charge: f32,
     /// Canvas paint diffusing under the tip ([`BrushDynamics::bleed`]).
     pub bleed: f32,
+    /// The add's pen mapping (`WetModulations::add`).
+    pub add_modulation: Option<Modulation>,
     /// The lift's pen mapping (`WetModulations::lift`).
     pub lift_modulation: Option<Modulation>,
     /// The deposit's pen mapping (`WetModulations::deposit`).
     pub deposit_modulation: Option<Modulation>,
     /// The bleed's pen mapping (`WetModulations::bleed`).
     pub bleed_modulation: Option<Modulation>,
+}
+
+impl Default for WetDynamics {
+    /// The fluxes at zero and `add` at its full share ([`BrushDynamics::default`]),
+    /// so switching a fresh brush to Wet lays exactly the paint the shared flow
+    /// says — the same paint Paint was laying.
+    fn default() -> Self {
+        Self {
+            add: 1.0,
+            lift: 0.0,
+            deposit: 0.0,
+            charge: 0.0,
+            bleed: 0.0,
+            add_modulation: None,
+            lift_modulation: None,
+            deposit_modulation: None,
+            bleed_modulation: None,
+        }
+    }
 }
 
 /// The **transient** half of a brush: the size, and the flow of the effect in
@@ -163,10 +195,13 @@ pub struct BrushConfig {
     /// `WetEffect::opacity`) — shared, like the pigment. The eraser's removal
     /// ceiling is its own ([`erase`](Self::erase)).
     pub opacity: f32,
-    /// The laying side's flow — one rate for Paint and Wet, because the two
-    /// mean the same paint (`BrushDynamics::flow`'s own doc), so switching
-    /// kinds cannot jump the slider. The transient half's flow while a laying
-    /// effect is in force; the eraser's rate is its own.
+    /// The laying side's flow — one **overall rate** for Paint and Wet
+    /// (`PaintEffect::flow`, `WetEffect::flow`): how hard a pass works, which
+    /// for a wet brush scales the whole loop — smear and mint together — and
+    /// for a paint brush the laying that is the whole of what it does (§6.2).
+    /// Shared because it means the same thing on both, so switching kinds
+    /// cannot jump the slider. The transient half's flow while a laying effect
+    /// is in force; the eraser's rate is its own.
     pub flow: f32,
     /// The laying flow's pen mapping — shared for the reason the rate is.
     pub flow_modulation: Option<Modulation>,
@@ -273,8 +308,9 @@ impl BrushConfig {
                 BrushEffectType::Wet => BrushEffect::Wet(WetEffect {
                     color: self.color,
                     opacity: self.opacity,
+                    flow: self.flow,
                     dynamics: BrushDynamics {
-                        flow: self.flow,
+                        add: self.wet.add,
                         lift: self.wet.lift,
                         deposit: self.wet.deposit,
                         charge: self.wet.charge,
@@ -283,6 +319,7 @@ impl BrushConfig {
                     color_dynamics: self.color_dynamics,
                     modulation: WetModulations {
                         flow: self.flow_modulation,
+                        add: self.wet.add_modulation,
                         lift: self.wet.lift_modulation,
                         deposit: self.wet.deposit_modulation,
                         bleed: self.wet.bleed_modulation,
@@ -444,7 +481,11 @@ mod tests {
         };
         assert_eq!(
             (p.color, p.opacity, p.flow, p.color_dynamics),
-            (w.color, w.opacity, w.dynamics.flow, w.color_dynamics),
+            (w.color, w.opacity, w.flow, w.color_dynamics),
+        );
+        assert_eq!(
+            w.dynamics.add, 1.0,
+            "at the full add share, the shared flow lays the same paint wet",
         );
     }
 

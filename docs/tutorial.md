@@ -94,9 +94,9 @@ color picker, the eyedropper, a preset click and a slot release. Naming the
 ```rust
 fn brush_deed(was: &BrushParams, now: &BrushParams) -> Option<Deed> {
     let mut tuned = *was;
-    tuned.radius = now.radius;
-    tuned.dynamics.add = now.dynamics.add;
-    if tuned == *now && (was.radius != now.radius || was.dynamics.add != now.dynamics.add) {
+    tuned.size = now.size;
+    tuned.effect.set_flow(now.effect.flow());
+    if tuned == *now && (was.size != now.size || was.effect.flow() != now.effect.flow()) {
         return Some(Deed::TunedBrush);
     }
     // …the same shape again for color…

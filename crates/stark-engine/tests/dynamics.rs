@@ -59,7 +59,7 @@ fn conservative_smear_preserves_uniform_field() {
         RED,
         24.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.5,
             deposit: 0.5,
             ..Default::default()
@@ -112,7 +112,7 @@ fn smear_carries_paint_onto_bare_canvas() {
         RED,
         28.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.9,
             deposit: 0.3,
             ..Default::default()
@@ -133,6 +133,112 @@ fn smear_carries_paint_onto_bare_canvas() {
     assert!(
         (run_after[1] as i32) < run_before[1] as i32 - 15,
         "with add=0, the bare runway must gain carried paint (green drops): {run_before:?} -> {run_after:?}"
+    );
+}
+
+/// **Flow scales the whole effect on a wet brush** (§6.2): the same smudge at a
+/// lower flow carries visibly less paint per pass — the Flow slider strengthens
+/// and weakens the blend instead of turning a blender into a paint brush. The
+/// axes are untouched: what changes hands per pass, not what the tool is.
+#[test]
+fn a_wet_brushs_flow_scales_the_smear() {
+    let carried = |flow: f32| -> Option<i32> {
+        let mut engine = engine_or_skip()?;
+        let y = SIZE.height / 2;
+        let run_x = SIZE.width / 2 - 12; // bare runway past the patch
+        paint(
+            &mut engine,
+            RED,
+            40.0,
+            &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
+        );
+        let run_before = engine.render_to_image().pixel(run_x, y);
+        let mut b = dyn_brush(
+            RED,
+            28.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.9,
+                deposit: 0.3,
+                ..Default::default()
+            },
+        );
+        b.effect.set_flow(flow);
+        stroke_with(
+            &mut engine,
+            b,
+            &[
+                Vec2::new(-80.0, 0.0),
+                Vec2::new(-30.0, 0.0),
+                Vec2::new(30.0, 0.0),
+                Vec2::new(90.0, 0.0),
+            ],
+        );
+        let run_after = engine.render_to_image().pixel(run_x, y);
+        // Carried red suppresses the runway's green — the carrying test's metric.
+        Some(run_before[1] as i32 - run_after[1] as i32)
+    };
+    let (Some(full), Some(half), Some(off)) = (carried(1.0), carried(0.35), carried(0.0)) else {
+        return;
+    };
+    assert!(
+        full > half + 10,
+        "a lower flow must carry visibly less: full {full}, half {half}",
+    );
+    assert!(
+        half > off + 10,
+        "…and a token flow still more than none: half {half}, off {off}",
+    );
+    assert!(
+        off.abs() <= 2,
+        "a wet brush at flow 0 must move essentially nothing: {off}",
+    );
+}
+
+/// A wet brush at **flow 0 changes nothing, byte for byte**: every λ is scaled
+/// to the identity and the mint to nothing, so the loop's rewrite of the texels
+/// it covers must hand every one back exactly. Over a filled field rather than
+/// a stroked one, because a swept stroke's interior carries ±1-ulp f16 speckle
+/// that is about the *deposit*, not the loop under test.
+#[test]
+fn a_wet_brush_at_flow_zero_is_the_identity() {
+    use stark_model::Srgb;
+    use stark_model::document::{FillOp, SelectionShape};
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: FillOp::new(
+            SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
+            0.0,
+            Srgb::new(RED),
+            1.0,
+        ),
+    });
+    let before = engine.render_to_image();
+    let mut b = dyn_brush(
+        GREEN,
+        24.0,
+        BrushDynamics {
+            add: 0.9,
+            lift: 0.7,
+            deposit: 0.7,
+            bleed: 0.5,
+            ..Default::default()
+        },
+    );
+    b.effect.set_flow(0.0);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    assert!(
+        images_match(&before, &after, 0),
+        "a wet stroke at flow 0 rewrote the picture",
     );
 }
 
@@ -168,7 +274,7 @@ fn eraser_thins_without_retint() {
         RED,
         24.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.5,
             deposit: 0.0,
             ..Default::default()
@@ -199,7 +305,7 @@ fn smear_over_empty_canvas_adds_nothing() {
         RED,
         24.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 1.0,
             deposit: 1.0,
             ..Default::default()
@@ -245,7 +351,7 @@ fn an_eraser_takes_the_paint_it_stopped_on() {
             RED,
             45.0,
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 0.95,
                 deposit: 0.0,
                 ..Default::default()
@@ -300,7 +406,7 @@ fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
                 RED,
                 70.0,
                 BrushDynamics {
-                    flow: 0.0,
+                    add: 0.0,
                     lift: 0.0,
                     deposit: 0.12,
                     charge: 2.0,
@@ -337,7 +443,7 @@ fn charged_tool_lays_a_finite_glob() {
         RED,
         20.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             deposit: 0.12,
             charge: 2.0,
             ..Default::default()
@@ -390,7 +496,7 @@ fn dynamics_stroke_is_deterministic() {
             RED,
             16.0,
             BrushDynamics {
-                flow: 0.1,
+                add: 0.1,
                 lift: 0.5,
                 deposit: 0.5,
                 ..Default::default()
@@ -430,7 +536,7 @@ fn golden_smudge_drag() {
         RED,
         16.0,
         BrushDynamics {
-            flow: 0.1,
+            add: 0.1,
             lift: 0.5,
             deposit: 0.5,
             ..Default::default()
@@ -463,7 +569,7 @@ fn golden_self_smear() {
         RED,
         18.0,
         BrushDynamics {
-            flow: 0.5,
+            add: 0.5,
             lift: 0.6,
             deposit: 0.5,
             ..Default::default()
@@ -510,7 +616,7 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
             RED,
             60.0,
             BrushDynamics {
-                flow: 0.6,
+                add: 0.6,
                 lift: 0.2,
                 deposit: 0.9,
                 ..Default::default()
@@ -573,7 +679,7 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
             RED,
             60.0,
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 0.4,
                 deposit: 0.9,
                 ..Default::default()
@@ -648,7 +754,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         RED,
         30.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.9,
             deposit: 0.9,
             ..Default::default()
@@ -729,7 +835,7 @@ fn a_conservative_smear_does_not_destroy_paint_either() {
             RED,
             40.0,
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..Default::default()
@@ -797,7 +903,7 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
         effect: BrushEffect::wet_with(
             RED,
             BrushDynamics {
-                flow: 0.6,
+                add: 0.6,
                 lift,
                 // High enough to empty the tool every segment: with nothing lifted
                 // to refill it, whatever the source hands back is all it carries.
@@ -881,7 +987,7 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
         effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
-                flow: 1.0,
+                add: 1.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
@@ -972,7 +1078,7 @@ fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_engine::RgbaImage> {
         RED,
         34.0,
         BrushDynamics {
-            flow: add,
+            add,
             lift: 0.0,
             deposit,
             charge: 0.0,
@@ -1077,7 +1183,7 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
         GREEN,
         24.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1164,7 +1270,7 @@ fn bleed_softens_a_color_boundary() {
         RED,
         28.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1259,7 +1365,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
         RED,
         70.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1351,7 +1457,7 @@ fn bleed_reach_scales_with_the_brush() {
         RED,
         60.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1403,7 +1509,7 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         GREEN,
         40.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             bleed: 0.95,
             ..Default::default()
         },
@@ -1469,7 +1575,7 @@ fn a_bleeding_stroke_previews_as_it_commits() {
         RED,
         26.0,
         BrushDynamics {
-            flow: 0.8,
+            add: 0.8,
             bleed: 0.9,
             ..Default::default()
         },
@@ -1565,7 +1671,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
             RED,
             40.0,
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 1e-4,
                 deposit: 1e-4,
                 ..Default::default()
@@ -1652,7 +1758,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
         paint,
         64.0,
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.5,
             deposit: 0.95,
             ..Default::default()
@@ -1724,7 +1830,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
-                flow: 1.0,
+                add: 1.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
@@ -1872,10 +1978,12 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     }
 
     // Pure lateral diffusion: no source, no vertical exchange — the loop runs for
-    // the bleed alone, so every visible difference is the flux.
+    // the bleed alone, so every visible difference is the flux. At the neutral
+    // flow, so the stated axis is the effective diffusivity.
     let mut b = brush([0.0, 0.0, 0.0], 120.0);
     b.drain = 0.0;
-    b.make_wet().dynamics.flow = 0.0;
+    b.make_wet().flow = 1.0;
+    b.make_wet().dynamics.add = 0.0;
     b.make_wet().dynamics.bleed = 1.0;
     engine.process(ViewCommand::set_brush(b));
 

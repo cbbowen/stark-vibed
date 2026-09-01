@@ -71,7 +71,11 @@ pub enum GestureFrame {
         /// Per-actor ordinal, so a restart is unambiguous without a clock.
         id: u64,
         /// Present on the gesture's first frame and on every resync frame.
-        head: Option<StrokeHead>,
+        ///
+        /// Boxed for the enum's sake, not the wire's: a head carries a whole
+        /// `BrushParams`, which dwarfs every other variant, and serde sees
+        /// straight through the `Box` — the bytes are the unboxed shape's.
+        head: Option<Box<StrokeHead>>,
         /// Index of the first control point in `points`; 0 on a resync frame.
         from: u32,
         points: Vec<ControlPoint>,
@@ -127,10 +131,12 @@ impl GestureFrame {
                 // A committed stroke's brush is held to exactly this by
                 // `ActionKind::sanitized`. A live one is drawn by the same renderer
                 // and never becomes an action on the way, so nothing else would.
-                head: head.map(|head| StrokeHead {
-                    layer: head.layer,
-                    brush: head.brush.sanitized(),
-                    seed: head.seed,
+                head: head.map(|head| {
+                    Box::new(StrokeHead {
+                        layer: head.layer,
+                        brush: head.brush.sanitized(),
+                        seed: head.seed,
+                    })
                 }),
                 from,
                 // Gated already, and by the same device as the ops below: a
@@ -249,7 +255,7 @@ mod tests {
             cursor: Some(Vec2::new(f32::NAN, 3.0)),
             gesture: Some(GestureFrame::Stroke {
                 id: 1,
-                head: Some(StrokeHead {
+                head: Some(Box::new(StrokeHead {
                     layer: LayerId::ROOT,
                     brush: BrushParams {
                         size: f32::NAN,
@@ -263,7 +269,7 @@ mod tests {
                         ..BrushParams::default()
                     },
                     seed: 0,
-                }),
+                })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
                 start: f32::NAN,

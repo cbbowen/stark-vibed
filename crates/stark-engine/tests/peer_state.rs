@@ -498,11 +498,11 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
         cursor: Some(Vec2::ZERO),
         gesture: Some(GestureFrame::Stroke {
             id: 0,
-            head: Some(StrokeHead {
+            head: Some(Box::new(StrokeHead {
                 layer: LayerId::ROOT,
                 brush: common::brush(RED, 12.0),
                 seed: 1,
-            }),
+            })),
             from: 0,
             points: CROSSING
                 .iter()
@@ -544,11 +544,11 @@ fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
         cursor: None,
         gesture: (!points.is_empty()).then(|| GestureFrame::Stroke {
             id: 0,
-            head: Some(StrokeHead {
+            head: Some(Box::new(StrokeHead {
                 layer: LayerId::ROOT,
                 brush: common::brush(GREEN, 12.0),
                 seed: 1,
-            }),
+            })),
             from: 0,
             points: points
                 .iter()

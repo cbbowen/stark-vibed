@@ -509,7 +509,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
         effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 1.0,
                 deposit: 0.0,
                 charge: 0.0,

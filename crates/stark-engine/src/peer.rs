@@ -468,12 +468,12 @@ mod tests {
         }
     }
 
-    fn head() -> StrokeHead {
-        StrokeHead {
+    fn head() -> Box<StrokeHead> {
+        Box::new(StrokeHead {
             layer: LayerId::ROOT,
             brush: BrushParams::default(),
             seed: 7,
-        }
+        })
     }
 
     fn pts(n: usize) -> Vec<ControlPoint> {

@@ -234,8 +234,11 @@ fn deposit_follows_tilt_on_the_stamp_loop() {
     let b = BrushParams {
         effect: BrushEffect::Wet(WetEffect {
             color: RED,
+            // The neutral flow, so the deposit's own mapping is the only thing
+            // moving the rate the test reads.
+            flow: 1.0,
             dynamics: BrushDynamics {
-                flow: 0.0,
+                add: 0.0,
                 lift: 0.0,
                 deposit: 0.9,
                 charge: 1.5,

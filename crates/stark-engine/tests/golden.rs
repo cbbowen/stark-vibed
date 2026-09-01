@@ -212,7 +212,7 @@ fn golden_lift_end_regression() {
         effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
-                flow: 1.0,
+                add: 1.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
@@ -264,7 +264,7 @@ fn golden_heavy_smear_regression() {
             effect: BrushEffect::wet_with(
                 [0.0; 3],
                 BrushDynamics {
-                    flow: 0.0,
+                    add: 0.0,
                     lift: 0.95,
                     deposit: 0.95,
                     ..BrushDynamics::default()
@@ -294,7 +294,7 @@ fn golden_drained_brush_length_independent() {
         effect: BrushEffect::wet_with(
             [0.0; 3],
             BrushDynamics {
-                flow: 1.0,
+                add: 1.0,
                 lift: 0.95,
                 deposit: 0.95,
                 ..BrushDynamics::default()
@@ -356,7 +356,7 @@ fn golden_straight_smear_into_paint() {
             effect: BrushEffect::wet_with(
                 color,
                 BrushDynamics {
-                    flow: 0.0,
+                    add: 0.0,
                     lift: 0.5,
                     deposit: 0.95,
                     ..Default::default()
@@ -415,7 +415,7 @@ fn golden_wiggly_smear_into_paint() {
             effect: BrushEffect::wet_with(
                 color,
                 BrushDynamics {
-                    flow: 0.0,
+                    add: 0.0,
                     lift: 0.5,
                     deposit: 0.95,
                     ..Default::default()

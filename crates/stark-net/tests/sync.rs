@@ -309,11 +309,11 @@ async fn custom_shapes_replicate_mid_session() {
             cursor: Some(Vec2::new(10.0, 10.0)),
             gesture: Some(GestureFrame::Stroke {
                 id: 1,
-                head: Some(StrokeHead {
+                head: Some(Box::new(StrokeHead {
                     layer,
                     brush,
                     seed: 7,
-                }),
+                })),
                 from: 0,
                 points: vec![],
                 start: 0.0,

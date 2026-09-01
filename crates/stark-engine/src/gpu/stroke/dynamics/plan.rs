@@ -780,23 +780,31 @@ pub(super) fn dynamics_plan(
                         // bleed cadence, the exchange step — stays on the reference
                         // tip, which is what that radius is.
                         ramp: sw.ramp,
-                        lambda_lift: lambda(paint.lift),
-                        lambda_deposit: lambda(paint.deposit),
+                        // Scaled by the segment's flow (§6.2): λ rides the
+                        // exponent, so this is exposure scaling — a pass at flow f
+                        // trades exactly what f passes at flow 1 would, and the
+                        // exchange still composes exactly across overlapping
+                        // segments. `add` and `bleed`, linear in exposure, took
+                        // the factor at the segment generator instead.
+                        lambda_lift: paint.flow * lambda(paint.lift),
+                        lambda_deposit: paint.flow * lambda(paint.deposit),
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
                         drain: b.drain_px(),
-                        // The `add` source rate is passed through **unscaled**, exactly
-                        // as `stamp.wesl` takes it. A gain here would make the same
-                        // slider mean two different amounts of paint depending on
-                        // whether some *other* axis happened to be non-zero — nudging
-                        // `deposit` off zero would change the flow. Nor is one needed
-                        // to make `add = 1` lay a full-thickness deposit per pass: a
-                        // pass of the tip is `TAU_PER_PASS ≈ 6.9` of exposure, so
-                        // `add = 1` lays 6.9 of height, which the slab law reads as
-                        // 0.999 coverage. The effect's opacity is *not* folded in
-                        // either — the raw rate is exactly what the ceiling's
-                        // prefix-difference law must accumulate (§6.2,
+                        // The `add` rate as the segment resolved it — mappings and
+                        // the wet flow already folded (`generate_segments_in`) —
+                        // with **no further gain here**, exactly as `stamp.wesl`
+                        // takes it. A gain here would make the same slider mean two
+                        // different amounts of paint depending on whether some
+                        // *other* axis happened to be non-zero — nudging `deposit`
+                        // off zero would change the flow. Nor is one needed to
+                        // make an effective rate of 1 lay a full-thickness deposit
+                        // per pass: a pass of the tip is `TAU_PER_PASS ≈ 6.9` of
+                        // exposure, so a rate of 1 lays 6.9 of height, which the
+                        // slab law reads as 0.999 coverage. The effect's opacity is
+                        // *not* folded in either — the raw rate is exactly what the
+                        // ceiling's prefix-difference law must accumulate (§6.2,
                         // `dynamics.wesl::lay_parcel`), and the ceiling rides the
                         // slot's own lane.
                         //
@@ -898,10 +906,11 @@ pub(super) fn dynamics_plan(
                         // it. The rates are the *last* segment's, which is where the pen
                         // was when it left the page — the same segment this slot takes
                         // its radius and orientation from. (`travel_radii` stays at its
-                        // default 0.)
+                        // default 0.) The λs carry that segment's flow with them,
+                        // as the painting slots' do.
                         radius: sw.radius,
-                        lambda_lift: lambda(paint.lift),
-                        lambda_deposit: lambda(paint.deposit),
+                        lambda_lift: paint.flow * lambda(paint.lift),
+                        lambda_deposit: paint.flow * lambda(paint.deposit),
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,

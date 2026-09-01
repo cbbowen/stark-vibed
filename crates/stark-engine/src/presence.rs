@@ -156,7 +156,10 @@ impl GestureTx {
                 self.sent = frozen;
                 Some(GestureFrame::Stroke {
                     id,
-                    head: fresh.then_some(*head),
+                    // Already boxed here for this enum's own width, and the wire
+                    // frame boxes for the same reason — the allocation passes
+                    // straight through.
+                    head: fresh.then_some(head),
                     from: from as u32,
                     points,
                     start,
@@ -314,7 +317,7 @@ impl GestureRx {
                     // carries — and leave the name and the cursor as they arrived.
                     self.stroke = Some(StrokeAssembly {
                         id,
-                        head,
+                        head: *head,
                         path: Vec::new(),
                         frozen,
                         start,
@@ -437,11 +440,11 @@ mod tests {
             cursor: Some(Vec2::new(f32::NAN, 3.0)),
             gesture: Some(GestureFrame::Stroke {
                 id: 1,
-                head: Some(StrokeHead {
+                head: Some(Box::new(StrokeHead {
                     layer: LayerId::ROOT,
                     brush: hostile,
                     seed: 0,
-                }),
+                })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
                 start: f32::NAN,
@@ -513,11 +516,11 @@ mod tests {
                 cursor: Some(Vec2::new(2.0, 3.0)),
                 gesture: Some(GestureFrame::Stroke {
                     id: 2,
-                    head: Some(StrokeHead {
+                    head: Some(Box::new(StrokeHead {
                         layer: LayerId::ROOT,
                         brush: ordinary,
                         seed: 0,
-                    }),
+                    })),
                     from: 0,
                     points: vec![ControlPoint::at(Vec2::ZERO)],
                     start: 0.25,

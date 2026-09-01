@@ -64,9 +64,9 @@ fn marquee(engine: &mut stark_engine::Engine, action: ShapeAction, min: Vec2, ma
 fn washed(opacity: f32, deposit: f32) -> BrushParams {
     let mut b = brush(RED, 14.0);
     if deposit > 0.0 {
-        let d = &mut b.make_wet().dynamics;
-        d.flow = 2.5;
-        d.deposit = deposit;
+        let w = b.make_wet();
+        w.flow = 2.5;
+        w.dynamics.deposit = deposit;
     } else {
         b.paint_mut().expect("a paint brush").flow = 2.5;
     }
@@ -247,7 +247,7 @@ fn selection_gates_the_brush_dynamics_path() {
     b.effect = BrushEffect::wet_with(
         RED,
         BrushDynamics {
-            flow: 1.0,
+            add: 1.0,
             lift: 0.3,
             deposit: 0.8,
             charge: 0.5,
@@ -296,7 +296,7 @@ fn dynamics_brush_does_not_lift_paint_from_outside() {
     smudge.effect = BrushEffect::wet_with(
         [0.0, 0.0, 0.0],
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.9,
             deposit: 0.9,
             ..BrushDynamics::default()
@@ -1218,7 +1218,7 @@ fn golden_selection_smear() {
     smudge.effect = BrushEffect::wet_with(
         [0.0, 0.0, 0.0],
         BrushDynamics {
-            flow: 0.0,
+            add: 0.0,
             lift: 0.7,
             deposit: 0.85,
             ..BrushDynamics::default()

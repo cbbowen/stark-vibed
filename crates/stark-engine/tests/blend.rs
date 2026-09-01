@@ -809,9 +809,11 @@ const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 fn carrying_brush() -> BrushParams {
     let mut b = brush([0.0, 0.0, 0.0], 26.0);
     b.drain = 0.0;
-    b.make_wet().dynamics.flow = 0.0;
-    b.make_wet().dynamics.lift = 0.9;
-    b.make_wet().dynamics.deposit = 0.9;
+    let w = b.make_wet();
+    w.flow = 1.0;
+    w.dynamics.add = 0.0;
+    w.dynamics.lift = 0.9;
+    w.dynamics.deposit = 0.9;
     b
 }
 
