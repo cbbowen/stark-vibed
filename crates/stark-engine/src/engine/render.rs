@@ -358,11 +358,17 @@ impl Engine {
             // The document holds the guides and the session holds whose eye is
             // shut (§20.5), so what is on screen is the two combined — one filter,
             // written once, in `Session::shown_guides`.
-            Chrome::Shown => self
-                .session
-                .shown_guides(&doc)
-                .map(|g| g.camera.scene())
-                .collect(),
+            //
+            // The pointer is the session's too, and for the same reason: it is
+            // per-client, so the rays it draws through every guide are handed in
+            // here rather than being a thing a camera knows (§20.9).
+            Chrome::Shown => {
+                let cursor = self.session.cursor();
+                self.session
+                    .shown_guides(&doc)
+                    .map(|g| g.camera.scene(cursor))
+                    .collect()
+            }
         };
         // Read as a **field**, not through an accessor: a `&self` method borrows the
         // whole engine, and the compositor is borrowed mutably three lines down.

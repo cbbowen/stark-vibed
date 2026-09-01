@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn a_line_aimed_near_an_axis_snaps_onto_it() {
         let g = guide();
-        let vps = g.scene().vps;
+        let vps = g.scene(None).vps;
         let up = Scaffold::of(std::slice::from_ref(&g));
         let start = Vec2::new(-260.0, 210.0);
         for (axis, vp) in vps.iter().enumerate() {

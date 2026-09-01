@@ -17,7 +17,8 @@ use glam::{Mat3, Quat, Vec3};
 
 use super::conic::AxisPlane;
 use super::{
-    FISHEYE_LINE_EPS, GuideScene, LATTICE_EPS, LINE_EPS, Lens, PerspectiveGuide, VP_FINITE_EPS,
+    FISHEYE_LINE_EPS, GuideScene, LATTICE_EPS, LINE_EPS, Lens, PerspectiveGuide, RAY_EPS,
+    VP_FINITE_EPS,
 };
 use crate::geom::Vec2;
 
@@ -88,6 +89,26 @@ impl PerspectiveGuide {
         }
     }
 
+    /// Both **poles** of the axis direction `d`: where it vanishes going forward,
+    /// and where its negation does.
+    ///
+    /// The second is `None` under the rectilinear lens, where it is not a second
+    /// place at all — directions there are projective, so an axis and its
+    /// negation image together (§20.1) — and only the fisheye separates them,
+    /// which is the whole reason a 1-point pose reads as 5-point under it
+    /// (§20.8). Written down once here because two derivations want it and the
+    /// rule is easy to state twice slightly differently: the scene's marker
+    /// slots, and the cut that makes a cursor ray a ray ([`axis_ray`](Self::axis_ray)).
+    pub fn poles(&self, d: Vec3) -> [Option<Vec2>; 2] {
+        [
+            self.project(d),
+            match self.lens {
+                Lens::Rectilinear => None,
+                Lens::Fisheye => self.project(-d),
+            },
+        ]
+    }
+
     /// The dressed view-cone rings, canvas px: the 45° ring, and the 90° ring
     /// where the lens has one ([`Lens::ring_factors`]). What the overlay's
     /// lens-drag grabs — dragging either ring *is* setting the focal length.
@@ -96,17 +117,29 @@ impl PerspectiveGuide {
         (r45 * self.focal, r90.map(|r| r * self.focal))
     }
 
-    /// The **vanishing trace** of pair plane `k` — the plane axes `k` and
-    /// `k + 1` span — exactly as the guide pass draws it (§20.2, §20.8): the
-    /// straight vanishing line of the rectilinear lens, or the circle the
+    /// Where the plane through the eye with **unit** normal `m` images (§20.2,
+    /// §20.8): the straight line of the rectilinear lens, or the circle the
     /// fisheye bows it into.
+    ///
+    /// Every curve the overlay draws that is not a marker is one of these, and
+    /// there are two kinds of plane that produce one — a pair plane, whose image
+    /// is the vanishing trace ([`pair_trace`](Self::pair_trace)), and the plane
+    /// an axis spans with the ray under the pointer, whose image is a cursor ray
+    /// ([`axis_ray`](Self::axis_ray)). They are the same construction and so they
+    /// are one function, which is the whole of why §20.9 works under the fisheye
+    /// without knowing it exists.
+    ///
+    /// **Unit**, and the caller owes that. Both results are *projective* in `m`
+    /// — the line is normalized by `|m.xy|`, the circle's center is a ratio — so
+    /// a scaled normal names the same curve, with the one exception that decides
+    /// everything: the fisheye radius `2f|m|/|m.z|` reads the length. The two
+    /// epsilons below are stated for a unit normal too, being cosines of the
+    /// angle the plane makes with the picture plane.
     ///
     /// `None` when the trace is at infinity, which is the plane facing the
     /// camera square-on: there is no curve on the canvas, and so nothing to
     /// draw, to measure a station point against, or to grab.
-    pub fn pair_trace(&self, k: usize) -> Option<PairTrace> {
-        let dirs = self.axis_dirs();
-        let m = dirs[k % 3].cross(dirs[(k + 1) % 3]);
+    pub fn plane_trace(&self, m: Vec3) -> Option<PlaneTrace> {
         let (c, f) = (self.center, self.focal);
         let planar = Vec2::new(m.x, m.y);
         match self.lens {
@@ -117,25 +150,118 @@ impl PerspectiveGuide {
             // evaluating it *is* signed canvas-px distance.
             Lens::Rectilinear => {
                 let len = planar.length();
-                (len >= LINE_EPS).then(|| PairTrace::Line {
+                (len >= LINE_EPS).then(|| PlaneTrace::Line {
                     normal: planar / len,
                     offset: (f * m.z - planar.dot(c)) / len,
                 })
             }
             // The stereographic image of the great circle of directions in the
-            // pair plane: an exact circle — conformality's gift (§20.8) — with
+            // plane: an exact circle — conformality's gift (§20.8) — with
             // center `c + 2f·m.xy/m.z` and radius `2f/|m.z|`, from substituting
-            // the inverse projection into `m·d = 0`. A pair plane containing the
+            // the inverse projection into `m·d = 0`. A plane containing the
             // view axis (m.z ≈ 0) images straight, through the center of view.
-            Lens::Fisheye if m.z.abs() > FISHEYE_LINE_EPS => Some(PairTrace::Circle {
+            Lens::Fisheye if m.z.abs() > FISHEYE_LINE_EPS => Some(PlaneTrace::Circle {
                 center: c + planar * (2.0 * f / m.z),
                 radius: 2.0 * f / m.z.abs(),
             }),
-            Lens::Fisheye => planar.try_normalize().map(|n| PairTrace::Line {
+            Lens::Fisheye => planar.try_normalize().map(|n| PlaneTrace::Line {
                 normal: n,
                 offset: -n.dot(c),
             }),
         }
+    }
+
+    /// The **vanishing trace** of pair plane `k` — the plane axes `k` and
+    /// `k + 1` span — exactly as the guide pass draws it (§20.2, §20.8).
+    ///
+    /// The image of the parallel plane *through the eye*, whose normal is the
+    /// two axes' cross product — unit, the frame being orthonormal, which is
+    /// what [`plane_trace`](Self::plane_trace) asks of a caller.
+    pub fn pair_trace(&self, k: usize) -> Option<PlaneTrace> {
+        let dirs = self.axis_dirs();
+        self.plane_trace(dirs[k % 3].cross(dirs[(k + 1) % 3]))
+    }
+
+    /// The **cursor ray** for axis `i`: where the world line through the point
+    /// under the pointer, parallel to that axis, images (§20.9).
+    ///
+    /// The classical draughtsman's line from the vanishing point through the
+    /// hand — the direction the grid would have a stroke take *here*, shown
+    /// before the stroke is made. Its curve is derived as the image of a plane
+    /// rather than by joining two points, and that buys both of the cases a join
+    /// cannot state:
+    ///
+    /// - an axis lying in the picture plane has no vanishing point to join to,
+    ///   and its ray is the parallel line through the cursor — which falls out
+    ///   here with no branch, exactly as §20.3's fans do;
+    /// - under the **fisheye** the curve is the arc through *both* poles, because
+    ///   the plane's image is a circle and nothing else about the derivation
+    ///   changes (§20.8).
+    ///
+    /// The plane is the one the axis spans with the eye's ray through `at`, so
+    /// its normal is their cross product — which needs normalizing, unlike a
+    /// pair's, since an axis and a ray are not orthogonal. Both being unit, the
+    /// length of that product is the sine of the angle between them, and
+    /// [`RAY_EPS`] is stated in it: `None` where the hand has come to rest on
+    /// the axis's own vanishing point, and for the approach to it, where the
+    /// normal's *direction* is already noise.
+    ///
+    /// # Why it is a ray and not a line
+    ///
+    /// The trace is the whole *projective* line, and only half of it is a place
+    /// the artist can draw. A world line's points behind the eye image too —
+    /// at their opposite direction, so on the far side of the vanishing point —
+    /// and that half is a reflection of the drawing, not part of it. Cutting
+    /// there is therefore geometry rather than taste: the ray is exactly the
+    /// image of the half of the world line **in front of the eye**, and the
+    /// vanishing point is where the two halves meet because that is what the
+    /// point *is*.
+    ///
+    /// [`CursorRay::cut`] carries the half-plane that says so, oriented to keep
+    /// the cursor's side. It is `None` for a ray nothing bounds — an axis
+    /// vanishing at infinity keeps its whole line in front of the eye, and its
+    /// ray is honestly the whole parallel.
+    pub fn axis_ray(&self, i: usize, at: Vec2) -> Option<CursorRay> {
+        let axis = self.axis_dirs()[i % 3];
+        let n = axis.cross(self.ray(at));
+        if n.length() <= RAY_EPS {
+            return None;
+        }
+        let trace = self.plane_trace(n.normalize())?;
+        let [fwd, back] = self.poles(axis);
+        // The cut is the line separating the trace's two halves, and which line
+        // that is depends on how the trace closes up.
+        let cut = match (trace, fwd, back) {
+            // Bowed: the trace is a canvas circle, closed already, and the two
+            // poles are two points on it — so the two arcs are the two sides of
+            // the **chord** joining them. Exact for either arc, however the poles
+            // fall, which is what recommends it over the obvious alternative of
+            // comparing arc angles: a stereographic image does not preserve arc
+            // length, so the arc the hand is on can be the long way round, and
+            // the wrap that then has to be got right has no natural place to put
+            // its seam.
+            (PlaneTrace::Circle { .. }, Some(v), Some(w)) => cut_at(perp(w - v), v, at),
+            // Straight: the trace closes through infinity, so its two halves meet
+            // at the pole *and* out there, and the line separating them is the
+            // **perpendicular** at the pole. Whichever pole is on the canvas — an
+            // axis is unsigned (§20.1), so which of its two directions is the
+            // forward one is not a fact about the drawing.
+            //
+            // Both, under the fisheye on a plane that contains the view axis, and
+            // then one cut is one short: the honest figure is the segment between
+            // the poles and this draws it running past the far one. That pose is
+            // the *knife edge* where a fisheye trace straightens — the cursor
+            // crosses it in well under a pixel of travel — so it is a flash on the
+            // way past rather than a picture anybody reads.
+            (PlaneTrace::Line { normal, .. }, fwd, back) => {
+                fwd.or(back).and_then(|v| cut_at(perp(normal), v, at))
+            }
+            // A bowed trace with one pole is a circle of astronomical radius,
+            // both of whose ends are off any canvas (§20.8's `FISHEYE_LINE_EPS`
+            // band). Nothing to cut at, and nothing that would show if there were.
+            (PlaneTrace::Circle { .. }, _, _) => None,
+        };
+        Some(CursorRay { trace, cut })
     }
 
     /// The **horizons**, indexed by the world axis each one turns the camera
@@ -164,7 +290,7 @@ impl PerspectiveGuide {
     /// an axis, and a turn is a statement in direction space that the lens
     /// never enters (§20.8) — where a pencil would have had to promise a
     /// straight line the fisheye does not draw.
-    pub fn horizons(&self) -> [Option<PairTrace>; 3] {
+    pub fn horizons(&self) -> [Option<PlaneTrace>; 3] {
         let shown = self.opacity > 0.0;
         std::array::from_fn(|n| {
             // Pair `(n+1, n+2)` is the plane axis `n` is normal to.
@@ -261,20 +387,24 @@ impl PerspectiveGuide {
     /// Everything the guide pass draws, derived from the camera (§20.2). Cheap
     /// — a rotation and a handful of products — so it is recomputed per render
     /// rather than cached beside the state it would shadow.
-    pub fn scene(&self) -> GuideScene {
+    ///
+    /// `cursor` is where this client's pointer is on the canvas, and it is an
+    /// **argument** rather than a field for the reason the guide's eye is not one
+    /// either (§20.5): a camera is document state and a pointer is not, so the
+    /// one thing on the overlay that follows the hand is handed in by the side
+    /// holding both — which is `Session`, exactly as for the eye. `None` — off
+    /// the canvas, or a render that is not a screen — draws no rays (§20.9).
+    pub fn scene(&self, cursor: Option<Vec2>) -> GuideScene {
         let dirs = self.axis_dirs();
         let c = self.center;
         let f = self.focal;
 
-        // Vanishing points: where each axis's direction images ([`project`]).
-        // Rectilinear directions are projective, so the antipodes add nothing
-        // and stay empty; the fisheye sees both poles of every axis — which is
-        // the whole reason a 1-point pose reads as 5-point under it (§20.8).
-        let vps = dirs.map(|d| self.project(d));
-        let anti_vps = match self.lens {
-            Lens::Rectilinear => [None; 3],
-            Lens::Fisheye => dirs.map(|d| self.project(-d)),
-        };
+        // Where each axis's direction images, both ways ([`poles`]).
+        //
+        // [`poles`]: Self::poles
+        let poles = dirs.map(|d| self.poles(d));
+        let vps = poles.map(|p| p[0]);
+        let anti_vps = poles.map(|p| p[1]);
 
         // Pair k spans axes (k, k+1): its vanishing trace ([`pair_trace`], the
         // same curve the drag grabs to turn about the remaining axis) and its
@@ -298,7 +428,7 @@ impl PerspectiveGuide {
             // with no line at all — the plane facing the camera square-on — has
             // no station point either, and falls out of the same `let`.
             if self.lens == Lens::Rectilinear
-                && let Some(PairTrace::Line { normal: n, offset }) = lines[k]
+                && let Some(PlaneTrace::Line { normal: n, offset }) = lines[k]
             {
                 let s = n.dot(c) + offset;
                 let a = s.abs();
@@ -332,6 +462,14 @@ impl PerspectiveGuide {
             vps,
             anti_vps,
             stations,
+            // The rays through the hand (§20.9). Computed for every axis and
+            // left to the pass's own `axis_alpha` gate, like the vanishing
+            // points a ray runs *from* — the two are the same marker twice, one
+            // a point and one a curve, and they must appear and go together.
+            rays: match cursor {
+                Some(at) => std::array::from_fn(|i| self.axis_ray(i, at)),
+                None => [None; 3],
+            },
         }
     }
 
@@ -420,12 +558,18 @@ impl AxisPencil {
     }
 }
 
-/// The image of one pair plane's directions — a **vanishing trace**: the
-/// straight vanishing line of the rectilinear lens, or the circle the fisheye
-/// bows it into (§20.8). One curve either way, so the shader carries a kind
-/// beside four numbers rather than two pipelines.
+/// The image of the directions in one plane through the eye: the straight line
+/// of the rectilinear lens, or the circle the fisheye bows it into (§20.8). One
+/// curve either way, so the shader carries a kind beside four numbers rather
+/// than two pipelines.
+///
+/// Named for the plane rather than for either of the two things the overlay
+/// draws with it — a pair plane's **vanishing trace** (§20.2) and an axis's
+/// **cursor ray** (§20.9) — because it is one construction serving both, and a
+/// name taken from the first of them would have made the second read as a reuse
+/// of somebody else's type ([`PerspectiveGuide::plane_trace`]).
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum PairTrace {
+pub enum PlaneTrace {
     /// `normal · p + offset = 0`, with `normal` unit — evaluating is signed
     /// canvas-px distance.
     Line { normal: Vec2, offset: f32 },
@@ -433,15 +577,83 @@ pub enum PairTrace {
     Circle { center: Vec2, radius: f32 },
 }
 
-impl PairTrace {
+impl PlaneTrace {
     /// How far canvas point `p` lies from the trace, canvas px — the one
     /// number both kinds answer, which is why the shader draws them with one
     /// `stroke_cov` and the overlay hit-tests them with one comparison
     /// (§20.4, §20.5).
     pub fn distance(self, p: Vec2) -> f32 {
         match self {
-            PairTrace::Line { normal, offset } => (normal.dot(p) + offset).abs(),
-            PairTrace::Circle { center, radius } => (p.distance(center) - radius).abs(),
+            PlaneTrace::Line { normal, offset } => (normal.dot(p) + offset).abs(),
+            PlaneTrace::Circle { center, radius } => (p.distance(center) - radius).abs(),
         }
     }
+}
+
+/// Half of the canvas: the points where `normal · p + offset ≥ 0`, `normal`
+/// unit — so [`signed`](Self::signed) is distance in canvas px, as evaluating a
+/// [`PlaneTrace::Line`] is.
+///
+/// One of these is what turns a cursor ray's whole trace into a *ray*
+/// ([`CursorRay::cut`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Halfplane {
+    pub normal: Vec2,
+    pub offset: f32,
+}
+
+impl Halfplane {
+    /// Signed distance from the boundary, canvas px — positive on the half that
+    /// is kept.
+    pub fn signed(self, p: Vec2) -> f32 {
+        self.normal.dot(p) + self.offset
+    }
+}
+
+/// One axis's **cursor ray** (§20.9): the line from that axis's vanishing point
+/// through the point under the pointer, which is what the grid would have a
+/// stroke there do.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CursorRay {
+    /// The whole curve the axis's world lines through that point image into —
+    /// straight, or bowed by the fisheye
+    /// ([`plane_trace`](PerspectiveGuide::plane_trace)).
+    pub trace: PlaneTrace,
+    /// Which half of it is drawn: the half in front of the eye, which is the
+    /// cursor's own. `None` for a ray with no vanishing point to run from, whose
+    /// world line is in front of the eye along its whole length
+    /// ([`axis_ray`](PerspectiveGuide::axis_ray)).
+    pub cut: Option<Halfplane>,
+}
+
+/// The canvas normal of a line **along** `v` — a quarter turn, and the one place
+/// this file needs the operation by name.
+fn perp(v: Vec2) -> Vec2 {
+    Vec2::new(-v.y, v.x)
+}
+
+/// The half-plane whose boundary runs through `through` with normal along `n`,
+/// oriented to **keep** `keep`. `None` where `n` names no direction, or where
+/// `keep` lies exactly on the boundary and so picks no side.
+fn cut_at(n: Vec2, through: Vec2, keep: Vec2) -> Option<Halfplane> {
+    let normal = n.try_normalize()?;
+    let cut = Halfplane {
+        normal,
+        offset: -normal.dot(through),
+    };
+    let s = cut.signed(keep);
+    // The cursor is on the boundary only when it is at the vanishing point
+    // itself, which `RAY_EPS` refused before this was reached — so this is the
+    // representation declining to express a side rather than a case to handle.
+    if s == 0.0 {
+        return None;
+    }
+    Some(if s > 0.0 {
+        cut
+    } else {
+        Halfplane {
+            normal: -cut.normal,
+            offset: -cut.offset,
+        }
+    })
 }

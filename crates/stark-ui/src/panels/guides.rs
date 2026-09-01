@@ -50,7 +50,7 @@ use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
 use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::{GuideId, Lens, PairTrace, PerspectiveGuide};
+use stark_model::document::{GuideId, Lens, PerspectiveGuide, PlaneTrace};
 use stark_model::geom::Vec2;
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
@@ -923,7 +923,7 @@ struct Handles {
     /// Horizon `n` is the one that turns about axis `n`, and it is `None`
     /// where the guide does not draw it — you cannot grab a line that is not
     /// on the screen ([`PerspectiveGuide::horizons`]).
-    horizons: [Option<PairTrace>; 3],
+    horizons: [Option<PlaneTrace>; 3],
 }
 
 impl Handles {
@@ -1242,7 +1242,7 @@ mod tests {
     /// quietly aiming every press below at empty canvas.
     fn horizons_of(g: &PerspectiveGuide) -> [f32; 3] {
         std::array::from_fn(|n| match g.horizons()[n] {
-            Some(PairTrace::Line { normal, offset }) => {
+            Some(PlaneTrace::Line { normal, offset }) => {
                 let axial = normal.x + normal.y;
                 assert!(
                     (axial.abs() - 1.0).abs() < 1e-4,

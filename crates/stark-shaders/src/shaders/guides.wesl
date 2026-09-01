@@ -1,10 +1,10 @@
 // Drawing guides — the perspective-grid overlay, pass D (§20.4).
 //
 // One fullscreen pass over the finished, lit image. Every element — the three
-// fans, the vanishing lines, the 45° circle, the markers — is an analytic
-// distance field evaluated in *canvas* space and converted to *screen* pixels
-// for anti-aliasing, so the overlay is crisp at any zoom, rotation or mirror
-// and costs no geometry.
+// fans, the vanishing lines, the rays through the cursor, the 45° circle, the
+// markers — is an analytic distance field evaluated in *canvas* space and
+// converted to *screen* pixels for anti-aliasing, so the overlay is crisp at any
+// zoom, rotation or mirror and costs no geometry.
 //
 // The fans draw a **lattice** of cubic cells (§20.3), so that the cells they cut
 // on a pair plane are squares and the grid can be measured on. Each axis carries
@@ -20,7 +20,8 @@
 // Under the stereographic fisheye that map is the inverse stereographic
 // projection, and the same fan arithmetic then draws the guide lines as the
 // circles they truly image to — nothing else in the pass knows the lens
-// changed. The CPU side hands the pair traces (lines or circles), both poles'
+// changed. The CPU side hands the pair traces and the cursor rays (lines or
+// circles, one packing, because one construction derives both), both poles'
 // vanishing points, and the dressed rings already derived.
 
 import package::lib::quad::{fullscreen_clip};
@@ -58,6 +59,17 @@ struct Guide {
     vps: array<vec4<f32>, 6>,
     // Station points of pair (k, k+1): .xy canvas px, .z = valid.
     sps: array<vec4<f32>, 3>,
+    // Cursor ray of axis i: the *whole* curve the world line through the pointer
+    // parallel to that axis images into (§20.9), of which `cuts` below keeps the
+    // half that is drawn. Same kinds as `lines`, because it is the same
+    // construction — the trace of a plane through the eye, straight under one
+    // lens and bowed under the other.
+    rays: array<vec4<f32>, 3>,
+    // What makes ray i a *ray*: the half-plane `.xy·p + .z ≥ 0` it is cut down
+    // to, keeping the side the hand is on, with `.w = 1` when there is one at
+    // all. The far half of the trace images the world line *behind* the eye, so
+    // the cut lands on the vanishing point where the two halves meet.
+    cuts: array<vec4<f32>, 3>,
 }
 
 @group(0) @binding(0) var<uniform> guide: Guide;
@@ -80,11 +92,13 @@ const AXIS_Z: vec3<f32> = vec3<f32>(0.3922, 0.5631, 0.9544);
 // legible over paint of any value.
 const CHROME: vec3<f32> = vec3<f32>(0.96, 0.96, 0.96);
 const HALO: vec3<f32> = vec3<f32>(0.09, 0.09, 0.11);
+const HALO_OPACITY: f32 = 0.2;
 
 // Line half-widths, screen px.
 const FAN_HW: f32 = 0.6;
 const PAIR_HW: f32 = 0.9;
 const CIRCLE_HW: f32 = 0.8;
+const RAY_HW: f32 = 0.85;
 // Fan lines fade out as their spacing closes on the pixel grid (moiré guard),
 // fully gone below SPACING_LO screen px, fully present above SPACING_HI.
 const SPACING_LO: f32 = 3.0;
@@ -99,6 +113,10 @@ const PLANE_HI: f32 = 0.50;
 const PLANE_BASE: f32 = 0.25;
 // Dash period of the 45° circle, screen px of arc.
 const DASH: f32 = 10.0;
+// Opacity scale of the cursor rays.
+const RAY_OPACITY: f32 = 0.6;
+// Opacity of the FOV ring.
+const RING_OPACITY: f32 = 0.8;
 
 fn axis_color(i: u32) -> vec3<f32> {
     if i == 0u { return AXIS_X; }
@@ -177,6 +195,33 @@ fn fan_cov(w: f32, den: f32, dw: vec2<f32>, dden: vec2<f32>) -> f32 {
         * smoothstep(SPACING_LO, SPACING_HI, spacing);
 }
 
+/// How far `p` lies from a plane trace, screen px — one number for both kinds,
+/// which is why one `stroke_cov` draws a straight vanishing line, a bowed one
+/// and a cursor ray alike (§20.2, §20.8, §20.9).
+///
+/// `t` is the packed slot: `.w` the kind (1 = line with unit normal `.xy` and
+/// offset `.z`, 2 = circle of center `.xy` and radius `.z`), which the caller
+/// has already found non-zero.
+fn trace_dist(t: vec4<f32>, p: vec2<f32>, zoom: f32) -> f32 {
+    if t.w > 1.5 {
+        return abs(length(p - t.xy) - t.z) * zoom;
+    }
+    return abs(dot(t.xy, p) + t.z) * zoom;
+}
+
+/// How much of a cut half-plane covers `p`: 1 well inside it, 0 well outside,
+/// and an antialiased screen pixel between (§20.9).
+///
+/// `c.w = 0` is a ray with no cut, which is not "cut nowhere" needing a
+/// sentinel — it is an axis whose whole line is in front of the eye, and 1 is
+/// the honest coverage everywhere.
+fn cut_cov(c: vec4<f32>, p: vec2<f32>, zoom: f32) -> f32 {
+    if c.w < 0.5 {
+        return 1.0;
+    }
+    return smoothstep(-0.5, 0.5, (dot(c.xy, p) + c.z) * zoom);
+}
+
 /// One dashed chrome ring about the center of view — the 45° and 90° cones'
 /// images (§20.1, §20.8). A non-positive radius is a ring the lens does not
 /// have, and draws nothing.
@@ -191,9 +236,9 @@ fn ring(acc: vec4<f32>, p: vec2<f32>, cov: vec2<f32>, radius: f32, zoom: f32, ma
     // exact center texel, nowhere near the ring) from minting a NaN that
     // `0 × NaN` would carry into the accumulator.
     let arc = select(atan2(dp.y, dp.x), 0.0, rad < 0.5) * radius * zoom;
-    let duty = mix(0.35, 1.0, step(0.5, fract(arc / DASH)));
-    let haloed = over(acc, HALO, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * 0.4 * master);
-    return over(haloed, CHROME, stroke_cov(d_px, CIRCLE_HW) * duty * 0.8 * master);
+    let duty = mix(0.35, RING_OPACITY, step(0.5, fract(arc / DASH)));
+    let haloed = over(acc, HALO, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * HALO_OPACITY * master);
+    return over(haloed, CHROME, stroke_cov(d_px, CIRCLE_HW) * duty * master);
 }
 
 @vertex
@@ -291,14 +336,35 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if kind < 0.5 { continue; }
         let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
-        var d_px: f32;
-        if kind > 1.5 {
-            d_px = abs(length(p - guide.lines[k].xy) - guide.lines[k].z) * zoom;
-        } else {
-            d_px = abs(dot(guide.lines[k].xy, p) + guide.lines[k].z) * zoom;
-        }
+        let d_px = trace_dist(guide.lines[k], p, zoom);
         let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);
         acc = over(acc, rgb, stroke_cov(d_px, PAIR_HW) * 0.9 * pair_a * master);
+    }
+
+    // --- The cursor rays (§20.9): per axis, the draughtsman's line from that
+    // axis's vanishing point through the hand — where the world line through
+    // that point images, and under the fisheye the arc through both poles.
+    //
+    // A **ray** and not a line, which is what the `cuts` slot is for: the far
+    // half of the trace images the world line *behind* the eye, a reflection of
+    // the drawing rather than part of it, and the vanishing point is where the
+    // two halves meet. Cutting it away is also what keeps a ray from reading as
+    // a line of the lattice — no fan line ends anywhere.
+    //
+    // An axis's own marker, like the vanishing point it runs from, so it follows
+    // `dirs[i].w` rather than any plane's flag: a ray lies in no pair plane,
+    // being the trace of the plane the axis spans with the eye's ray. Haloed for
+    // the reason every marker is: it is drawn over paint of any value.
+    var ray_a = array<f32, 3>(0.0, 0.0, 0.0);
+    var ray_d = array<f32, 3>(0.0, 0.0, 0.0);
+    for (var i = 0u; i < 3u; i++) {
+        let t = guide.rays[i];
+        if t.w < 0.5 || guide.dirs[i].w <= 0.0 { continue; }
+        ray_a[i] = RAY_OPACITY * cut_cov(guide.cuts[i], p, zoom) * guide.dirs[i].w * master;
+        ray_d[i] = trace_dist(t, p, zoom);
+    }
+    for (var i = 0u; i < 3u; i++) {
+        acc = over(acc, axis_color(i), stroke_cov(ray_d[i], RAY_HW) * ray_a[i]);
     }
 
     // --- The view-cone rings: 45° always, 90° where the lens has one
@@ -313,7 +379,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if pair_a <= 0.0 { continue; }
         let d = length(p - guide.sps[k].xy) * zoom;
         let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);
-        acc = over(acc, HALO, stroke_cov(abs(d - 3.2), 2.0) * 0.6 * pair_a * master);
+        acc = over(acc, HALO, stroke_cov(abs(d - 3.2), 2.0) * HALO_OPACITY * pair_a * master);
         acc = over(acc, rgb, stroke_cov(abs(d - 3.2), 1.1) * pair_a * master);
         acc = over(acc, rgb, disc_cov(d, 0.9) * pair_a * master);
     }
@@ -324,7 +390,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let axis = i % 3u;
         if guide.vps[i].z <= 0.0 || guide.dirs[axis].w <= 0.0 { continue; }
         let d = length(p - guide.vps[i].xy) * zoom;
-        acc = over(acc, HALO, disc_cov(d, 5.2) * 0.6 * master);
+        acc = over(acc, HALO, disc_cov(d, 5.2) * HALO_OPACITY * master);
         acc = over(acc, axis_color(axis), disc_cov(d, 4.0) * master);
         acc = over(acc, CHROME, stroke_cov(abs(d - 4.0), 0.7) * 0.9 * master);
     }
@@ -334,7 +400,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let q = abs((p - cov) * zoom);
         let arm = 6.0;
         let cross_d = min(max(q.x - 1.6, q.y - arm), max(q.y - 1.6, q.x - arm));
-        acc = over(acc, HALO, (1.0 - smoothstep(-0.5, 0.5, cross_d)) * 0.6 * master);
+        acc = over(acc, HALO, (1.0 - smoothstep(-0.5, 0.5, cross_d)) * HALO_OPACITY * master);
         let core = min(max(q.x - 0.7, q.y - arm + 0.9), max(q.y - 0.7, q.x - arm + 0.9));
         acc = over(acc, CHROME, (1.0 - smoothstep(-0.5, 0.5, core)) * master);
     }

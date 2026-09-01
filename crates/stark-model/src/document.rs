@@ -58,7 +58,8 @@ pub use fold::{Logged, Materialize};
 /// whether two of them can be reordered.
 pub use footprint::{Footprint, Prop, Resource, compute_footprint, fill_rect, stroke_rect};
 pub use guide::{
-    AxisPencil, AxisPlane, GuideId, GuideScene, Lens, PairTrace, PerspectiveGuide, Scaffold,
+    AxisPencil, AxisPlane, CursorRay, GuideId, GuideScene, Halfplane, Lens, PerspectiveGuide,
+    PlaneTrace, Scaffold,
 };
 pub use image::{MAX_IMAGE_TILES, image_tiles};
 pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MatteRegion, Place};

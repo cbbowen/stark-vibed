@@ -927,6 +927,13 @@ pub enum PeerCommand {
     /// Where this client's pointer is, in canvas space; `None` when it leaves the
     /// canvas. Cheap at pointer rate: it writes a field, and the publish latch
     /// coalesces to one frame per tick (§17.5).
+    ///
+    /// A `PeerCommand` for what it *is* — a fact about the hand, published, in no
+    /// file and reached by no undo — and not for who reads it: this client's own
+    /// guides draw their rays through it (§20.9), the way this client's own next
+    /// stroke goes to [`SetActiveLayer`](Self::SetActiveLayer)'s layer. What that
+    /// costs the frontend is a repaint it did not owe before, and so a decision
+    /// about *when* to send this that it did not have to make (`input::point_at`).
     SetCursor(Option<Vec2>),
 
     /// This client's display name. Empty falls back to a short id-derived one, so

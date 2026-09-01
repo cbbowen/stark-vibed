@@ -93,7 +93,7 @@ mod conic;
 // The derivations' own public types, lifted so `document::guide` still means one
 // thing from outside — the split is a matter of which file to read, not of where a
 // type lives (§20.5).
-pub use camera::{AxisPencil, PairTrace};
+pub use camera::{AxisPencil, CursorRay, Halfplane, PlaneTrace};
 pub use conic::AxisPlane;
 
 /// The shortest focal length a guide may hold, canvas px (`sanitized`).
@@ -128,6 +128,29 @@ const VP_FINITE_EPS: f32 = 1e-4;
 /// plane has its vanishing line at infinity (the plane faces the camera
 /// square-on), so there is no line — and no station point — to draw.
 const LINE_EPS: f32 = 1e-4;
+
+/// How nearly the hand may point along an axis before that axis has no cursor
+/// ray (§20.9). The number is `sin θ` between the axis and the eye's ray, both
+/// unit, so it is an angle rather than a distance and means the same under
+/// either lens.
+///
+/// This is where the pointer has arrived at the axis's own vanishing point, and
+/// the ray is undefined there for a reason no tolerance can fix: *every* line of
+/// the pencil passes through that point, so there is no one line to draw. What
+/// the epsilon adds is that the *approach* is undefined too — the plane's normal
+/// is the cross product of two nearly parallel unit vectors, and its direction
+/// dissolves into rounding well before its length reaches zero, which a ray
+/// drawn off it would report as a spin through a full turn.
+///
+/// The band it retires is `RAY_EPS · f / a.z` canvas px around the vanishing
+/// point, so it grows with the focal length: a tenth of a pixel at the short end
+/// of the panel's range and a little over one at the long end (`FOCAL_RANGE` is
+/// 120–12000), always under the ten-pixel disc drawn over that point. Against
+/// the other side of the trade — the cross product of two unit vectors carries a
+/// few ulps of absolute error, so this leaves three orders of magnitude of
+/// headroom, and the residual wobble at the threshold itself is under a
+/// thousandth of a radian.
+const RAY_EPS: f32 = 1e-4;
 
 /// How far into a plane its chart reaches, in units of the plane's own distance
 /// from the eye (§20.7). Past it a point is treated as not being on the plane at
@@ -479,7 +502,7 @@ pub struct GuideScene {
     /// does that.
     pub pair_alpha: [f32; 3],
     /// Vanishing trace of pair `(k, k+1)`; `None` when it is at infinity.
-    pub lines: [Option<PairTrace>; 3],
+    pub lines: [Option<PlaneTrace>; 3],
     /// Where each axis's direction images, canvas px; `None` off the lens.
     pub vps: [Option<Vec2>; 3],
     /// Where each axis's *opposite* direction images — the second pole, which
@@ -487,6 +510,17 @@ pub struct GuideScene {
     pub anti_vps: [Option<Vec2>; 3],
     /// Station point of pair `(k, k+1)`, canvas px; rectilinear only.
     pub stations: [Option<Vec2>; 3],
+    /// The **cursor ray** of each axis: the line from that axis's vanishing
+    /// point through the point under the pointer, which is where the world line
+    /// through that point, parallel to the axis, images (§20.9). Under the
+    /// fisheye it is the arc through both poles
+    /// ([`PerspectiveGuide::axis_ray`]).
+    ///
+    /// Follows [`axis_alpha`](Self::axis_alpha), like the vanishing point it
+    /// runs from: a ray belongs to an axis alone, being a line in no pair plane.
+    /// `None` where the pointer is off the canvas, and for the one pose that has
+    /// no ray to name — the hand resting exactly on the vanishing point.
+    pub rays: [Option<CursorRay>; 3],
 }
 
 #[cfg(test)]
@@ -514,7 +548,7 @@ mod tests {
     #[test]
     fn one_point_vanishes_at_the_center_of_view() {
         let g = guide(0.0, 0.0, 0.0);
-        let s = g.scene();
+        let s = g.scene(None);
         assert!(s.vps[0].is_none(), "X should vanish at infinity");
         assert!(s.vps[1].is_none(), "Y should vanish at infinity");
         let vz = s.vps[2].expect("Z vanishes on the canvas");
@@ -530,14 +564,14 @@ mod tests {
     #[test]
     fn two_point_horizon_runs_through_the_center_of_view() {
         let g = guide(0.6, 0.0, 0.0);
-        let s = g.scene();
+        let s = g.scene(None);
         let vx = s.vps[0].expect("X finite");
         let vz = s.vps[2].expect("Z finite");
         assert!(s.vps[1].is_none(), "verticals stay parallel");
         assert!((vx.y - g.center.y).abs() < 1e-3);
         assert!((vz.y - g.center.y).abs() < 1e-3);
         // Pair 2 spans (Z, X): the ground. Its line passes through c…
-        let Some(PairTrace::Line { normal, offset }) = s.lines[2] else {
+        let Some(PlaneTrace::Line { normal, offset }) = s.lines[2] else {
             panic!("horizon should be a straight line");
         };
         assert!((normal.dot(g.center) + offset).abs() < 1e-3);
@@ -555,7 +589,7 @@ mod tests {
     #[test]
     fn the_center_of_view_is_the_orthocenter_of_the_vp_triangle() {
         let g = guide(0.5, 0.35, 0.2);
-        let s = g.scene();
+        let s = g.scene(None);
         let vp: Vec<Vec2> = s
             .vps
             .iter()
@@ -580,7 +614,7 @@ mod tests {
     #[test]
     fn station_points_see_their_vanishing_points_at_right_angles() {
         for (yaw, pitch, roll) in [(0.5, 0.35, 0.2), (0.9, -0.4, 0.0), (0.3, 0.0, 1.0)] {
-            let s = guide(yaw, pitch, roll).scene();
+            let s = guide(yaw, pitch, roll).scene(None);
             for k in 0..3 {
                 let (Some(sp), Some(vi), Some(vj)) = (s.stations[k], s.vps[k], s.vps[(k + 1) % 3])
                 else {
@@ -833,10 +867,10 @@ mod tests {
     #[test]
     fn a_lattice_at_the_eye_is_no_lattice() {
         let mut g = guide(0.5, 0.35, 0.2);
-        assert!(g.scene().lattice.is_some());
+        assert!(g.scene(None).lattice.is_some());
         g.lattice = Vec3::ZERO;
         assert!(g.corner().is_none());
-        assert!(g.scene().lattice.is_none());
+        assert!(g.scene(None).lattice.is_none());
     }
 
     /// A direction 45° off the view axis projects onto the circle of radius
@@ -858,7 +892,7 @@ mod tests {
     #[test]
     fn a_pencil_aims_at_its_vanishing_point() {
         let g = guide(0.5, 0.35, 0.2);
-        let s = g.scene();
+        let s = g.scene(None);
         for (i, pencil) in g.pencils().into_iter().enumerate() {
             let pencil = pencil.expect("every axis shown");
             let vp = s.vps[i].expect("3-point: all finite");
@@ -880,7 +914,7 @@ mod tests {
     fn a_pencil_at_infinity_is_parallel() {
         // 1-point: X and Y lie in the picture plane, so both vanish at infinity.
         let g = guide(0.0, 0.0, 0.0);
-        assert!(g.scene().vps[0].is_none());
+        assert!(g.scene(None).vps[0].is_none());
         let x = g.pencils()[0].expect("X shown");
         let far = Vec2::new(-9000.0, 4000.0);
         let (u, v) = (
@@ -949,10 +983,18 @@ mod tests {
                     if expected { "" } else { " not" }
                 );
                 assert_eq!(g.pencils()[i].is_some(), expected, "planes {pairs:?}");
-                assert_eq!(g.scene().axis_alpha[i] > 0.0, expected, "planes {pairs:?}");
+                assert_eq!(
+                    g.scene(None).axis_alpha[i] > 0.0,
+                    expected,
+                    "planes {pairs:?}"
+                );
                 // A plane answers for itself, and for nothing else.
                 assert_eq!(g.planes()[i].is_some(), pairs[i], "planes {pairs:?}");
-                assert_eq!(g.scene().pair_alpha[i] > 0.0, pairs[i], "planes {pairs:?}");
+                assert_eq!(
+                    g.scene(None).pair_alpha[i] > 0.0,
+                    pairs[i],
+                    "planes {pairs:?}"
+                );
             }
         }
     }
@@ -1123,7 +1165,7 @@ mod tests {
         );
         assert!((g2.axis_dirs()[1] - before).length() < 1e-4);
         // Still 2-point: the verticals still vanish at infinity.
-        assert!(g2.scene().vps[1].is_none());
+        assert!(g2.scene(None).vps[1].is_none());
     }
 
     /// Two locks pin the frame: the identity is the only rotation fixing two
@@ -1180,13 +1222,13 @@ mod tests {
     /// A vanishing point lying on a vanishing line is not a coincidence to be
     /// spot-checked but the definition of both: the line is the image of the
     /// pair plane's infinity, and each of the two axes spanning that plane
-    /// vanishes there. Checking it through [`PairTrace::distance`] — the same
+    /// vanishes there. Checking it through [`PlaneTrace::distance`] — the same
     /// expression the overlay hit-tests with — is what ties the index the drag
     /// uses to the curve the hand can actually reach for.
     #[test]
     fn the_horizon_of_an_axis_runs_between_the_other_two_vanishing_points() {
         let g = guide(0.5, 0.35, 0.2);
-        let s = g.scene();
+        let s = g.scene(None);
         for n in 0..3 {
             let horizon = g.horizons()[n].expect("every axis shown");
             for i in [(n + 1) % 3, (n + 2) % 3] {
@@ -1235,7 +1277,7 @@ mod tests {
         let mut held = [false; 3];
         held[1] = true;
         assert!(
-            g.dragged(from, to, held).scene().vps[1].is_none(),
+            g.dragged(from, to, held).scene(None).vps[1].is_none(),
             "2-point"
         );
     }
@@ -1305,7 +1347,7 @@ mod tests {
     #[test]
     fn one_point_through_the_fisheye_is_five_point() {
         let g = fisheye(0.0, 0.0, 0.0);
-        let s = g.scene();
+        let s = g.scene(None);
         let r90 = s.rings.1.expect("the fisheye has a 90° ring");
         assert!((r90 - 2.0 * g.focal).abs() < 1e-3);
         let vz = s.vps[2].expect("the view axis vanishes at the center");
@@ -1332,17 +1374,17 @@ mod tests {
     /// axis must.
     #[test]
     fn fisheye_traces_are_circles_except_through_the_axis() {
-        let s = fisheye(0.0, 0.0, 0.0).scene();
+        let s = fisheye(0.0, 0.0, 0.0).scene(None);
         // Pair 0 spans (X, Y): the picture plane. Its trace is the equator —
         // the 90° ring.
-        let Some(PairTrace::Circle { center, radius }) = s.lines[0] else {
+        let Some(PlaneTrace::Circle { center, radius }) = s.lines[0] else {
             panic!("the transverse pair should trace a circle");
         };
         assert!((center - s.center).length() < 1e-3);
         assert!((radius - 2.0 * s.focal).abs() < 1e-2);
         // Pairs containing the view axis trace straight lines through c.
         for k in [1, 2] {
-            let Some(PairTrace::Line { normal, offset }) = s.lines[k] else {
+            let Some(PlaneTrace::Line { normal, offset }) = s.lines[k] else {
                 panic!("pair {k} should trace a line");
             };
             assert!((normal.dot(s.center) + offset).abs() < 1e-3);
@@ -1377,6 +1419,167 @@ mod tests {
         let world = g.rotation.inverse() * g.ray(from);
         let now = g2.rotation * world;
         assert!((now.normalize() - g2.ray(to)).length() < 1e-4);
+    }
+
+    // --- the rays through the cursor (§20.9) --------------------------------
+
+    /// The ray's defining property, and the only one worth stating twice: it
+    /// passes through the hand. Every axis, every pose, both lenses — because
+    /// the plane it traces is the one the eye's ray through that point lies in,
+    /// so the point is on the curve by construction rather than by arithmetic
+    /// that could drift.
+    #[test]
+    fn a_ray_passes_through_the_cursor() {
+        for g in [guide(0.6, -0.35, 0.2), fisheye(0.6, -0.35, 0.2)] {
+            for at in [
+                g.center + Vec2::new(210.0, -160.0),
+                g.center + Vec2::new(-940.0, 620.0),
+            ] {
+                for i in 0..3 {
+                    let r = g.axis_ray(i, at).expect("a ray away from the poles");
+                    // Scaled by the focal length: a circle of radius 10⁴ px is
+                    // held to a part in 10⁶ of itself, not to a part in 10⁶ px.
+                    assert!(
+                        r.trace.distance(at) < 1e-3 * g.focal,
+                        "axis {i} at {at:?}: {}",
+                        r.trace.distance(at)
+                    );
+                    // …and on the half of it that is drawn, which is what makes
+                    // the cut's orientation a fact rather than a coin toss.
+                    assert!(
+                        r.cut.is_none_or(|c| c.signed(at) > 0.0),
+                        "axis {i} at {at:?}: the ray was cut away from the hand",
+                    );
+                }
+            }
+        }
+    }
+
+    /// And the property it is *for*: the ray runs to the vanishing point, so
+    /// the line under the hand is the line the grid would have a stroke take
+    /// there. Stated at a 3-point pose, where all three poles are finite.
+    #[test]
+    fn a_ray_runs_to_its_vanishing_point() {
+        let g = guide(0.7, 0.4, 0.0);
+        let s = g.scene(Some(g.center + Vec2::new(-260.0, 180.0)));
+        for i in 0..3 {
+            let vp = s.vps[i].expect("3-point: every axis vanishes on the canvas");
+            let r = s.rays[i].expect("and so every axis has a ray");
+            assert!(r.trace.distance(vp) < 1e-3 * g.focal, "axis {i}: {vp:?}");
+        }
+    }
+
+    /// **And stops there.** The vanishing point is where the world line's two
+    /// halves meet, and the far one is the half *behind* the eye — a reflection
+    /// of the drawing rather than part of it. So the cut lands on the vanishing
+    /// point, and the trace's far side is not drawn.
+    #[test]
+    fn a_ray_is_cut_at_its_vanishing_point() {
+        let g = guide(0.7, 0.4, 0.0);
+        let at = g.center + Vec2::new(-260.0, 180.0);
+        let s = g.scene(Some(at));
+        for i in 0..3 {
+            let vp = s.vps[i].expect("3-point: every axis vanishes on the canvas");
+            let cut = s.rays[i]
+                .expect("a ray")
+                .cut
+                .expect("with a finite pole to cut at");
+            // The boundary passes *through* the vanishing point…
+            assert!(cut.signed(vp).abs() < 1e-2, "axis {i}: cut misses the pole");
+            // …with the hand on the kept side, and the far side — the same
+            // distance along the ray, the other way — off it.
+            assert!(cut.signed(at) > 0.0, "axis {i}: the hand was cut away");
+            assert!(
+                cut.signed(vp + (vp - at)) < 0.0,
+                "axis {i}: the ray runs past the pole"
+            );
+        }
+    }
+
+    /// An axis lying in the picture plane has no vanishing point to run to, and
+    /// its ray is the parallel line through the hand — which needs no case of
+    /// its own, the trace being derived from a plane rather than from a join.
+    /// In 1-point that is a horizontal for X and a vertical for Y, whatever the
+    /// cursor.
+    #[test]
+    fn a_ray_of_an_axis_at_infinity_is_the_parallel_through_the_cursor() {
+        let g = guide(0.0, 0.0, 0.0);
+        let at = g.center + Vec2::new(137.0, -412.0);
+        let s = g.scene(Some(at));
+        assert!(s.vps[0].is_none() && s.vps[1].is_none());
+        // X runs across the picture plane and Y down it, so their rays are the
+        // horizontal and the vertical through the hand. A line's normal is
+        // across it, hence the swap.
+        for (i, across) in [(0, Vec2::X), (1, Vec2::Y)] {
+            let Some(CursorRay {
+                trace: t @ PlaneTrace::Line { normal, .. },
+                cut,
+            }) = s.rays[i]
+            else {
+                panic!("axis {i}'s ray should be a straight parallel");
+            };
+            assert!(
+                normal.dot(across).abs() < 1e-4,
+                "axis {i} runs the wrong way"
+            );
+            assert!(t.distance(at) < 1e-2, "axis {i} misses the cursor");
+            // And nothing cuts it: the whole world line is in front of the eye,
+            // there being no point on it where the eye's ray turns around.
+            assert!(cut.is_none(), "axis {i} was cut at a pole it does not have");
+        }
+    }
+
+    /// Under the fisheye a ray bows into the arc through **both** poles of its
+    /// axis — the same circle the lens draws every world line as (§20.8), and
+    /// it comes out of the identical derivation.
+    #[test]
+    fn a_fisheye_ray_is_the_arc_through_both_poles() {
+        let g = fisheye(0.55, -0.3, 0.15);
+        let at = g.center + Vec2::new(430.0, 260.0);
+        let s = g.scene(Some(at));
+        for i in 0..3 {
+            let Some(CursorRay {
+                trace: t @ PlaneTrace::Circle { .. },
+                cut,
+            }) = s.rays[i]
+            else {
+                panic!("axis {i}'s ray should bow into a circle");
+            };
+            let cut = cut.expect("two poles to cut between");
+            for pole in [s.vps[i], s.anti_vps[i]] {
+                let pole = pole.expect("the fisheye sees both poles of every axis");
+                assert!(t.distance(pole) < 1e-3 * g.focal, "axis {i} pole {pole:?}");
+                // Both poles bound the arc, so the cut — their chord — runs
+                // through both, and the hand is on the arc between them.
+                assert!(
+                    cut.signed(pole).abs() < 1e-2 * g.focal,
+                    "axis {i}: the chord misses pole {pole:?}",
+                );
+            }
+            assert!(cut.signed(at) > 0.0, "axis {i}: the hand was cut away");
+        }
+    }
+
+    /// The one pose with no ray to name: the hand resting on a vanishing point,
+    /// where every line of that axis's pencil runs through it and none of them
+    /// is *the* one. Its two neighbours are unaffected — the answer is about
+    /// one axis, not about the cursor.
+    #[test]
+    fn no_ray_at_the_vanishing_point_itself() {
+        let g = guide(0.7, 0.4, 0.0);
+        let vp = g.scene(None).vps[2].expect("Z vanishes on the canvas");
+        let s = g.scene(Some(vp));
+        assert!(s.rays[2].is_none(), "no ray at Z's own vanishing point");
+        assert!(s.rays[0].is_some() && s.rays[1].is_some());
+    }
+
+    /// No pointer, no rays. A render nobody's hand is over — an export, the
+    /// navigator's miniature — asks for the scene the same way and gets the
+    /// overlay without them.
+    #[test]
+    fn no_cursor_draws_no_rays() {
+        let s = guide(0.7, 0.4, 0.0).scene(None);
+        assert!(s.rays.iter().all(Option::is_none));
     }
 
     /// A fisheye guide puts up no scaffold: its lines are arcs, and the assist

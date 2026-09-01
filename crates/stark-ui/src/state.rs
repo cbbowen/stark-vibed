@@ -1508,12 +1508,15 @@ pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
     request_paint(state);
 }
 
-/// Apply a pointer-rate hover report: integrate and repaint, skipping the
-/// observable refresh and outbox flush [`dispatch`] does — [`dispatch_sample`]'s
-/// bargain, for its reason: the hover mark (§18.1.10) changes what the canvas
-/// shows and nothing the chrome reads. Its own door rather than that one so the
-/// timing table's `input.sample` row keeps meaning "stroke input reaching the
-/// engine" — hover work is priced on the engine's own `input.hover` row (§7.1).
+/// Apply a pointer-rate report of where the hand is: integrate and repaint,
+/// skipping the observable refresh and outbox flush [`dispatch`] does —
+/// [`dispatch_sample`]'s bargain, for its reason. The hover mark (§18.1.10) and
+/// the guide rays through the cursor (§20.9) both change what the canvas shows
+/// and nothing the chrome reads.
+///
+/// Its own door rather than [`dispatch_sample`] so the timing table's
+/// `input.sample` row keeps meaning "stroke input reaching the engine" — hover
+/// work is priced on the engine's own `input.hover` row (§7.1).
 pub fn dispatch_hover(state: AppState, command: impl Into<InputCommand>) {
     with_engine_quiet(state, |r| r.process(command));
     request_paint(state);

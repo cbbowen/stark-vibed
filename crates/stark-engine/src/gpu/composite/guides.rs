@@ -37,11 +37,18 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 /// A free function rather than an inherent `pack`: the type is generated into
 /// `stark-shaders`, and an inherent impl on another crate's type is not allowed.
 fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
-    use stark_model::document::{Lens, PairTrace};
+    use stark_model::document::{Lens, PlaneTrace};
     let inv = view.inverse_linear();
     let org = view.screen_to_canvas(stark_model::geom::Vec2::ZERO);
     let point = |v: Option<stark_model::geom::Vec2>| match v {
         Some(p) => [p.x, p.y, 1.0, 0.0],
+        None => [0.0; 4],
+    };
+    // A trace's four numbers and its kind — the packing `lines` and `rays` share
+    // because the curve is the same construction either way (`PlaneTrace`).
+    let trace = |t: Option<PlaneTrace>| match t {
+        Some(PlaneTrace::Line { normal, offset }) => [normal.x, normal.y, offset, 1.0],
+        Some(PlaneTrace::Circle { center, radius }) => [center.x, center.y, radius, 2.0],
         None => [0.0; 4],
     };
     let (r45, r90) = scene.rings;
@@ -74,11 +81,7 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
             scene.pair_alpha[2],
             0.0,
         ],
-        lines: std::array::from_fn(|i| match scene.lines[i] {
-            Some(PairTrace::Line { normal, offset }) => [normal.x, normal.y, offset, 1.0],
-            Some(PairTrace::Circle { center, radius }) => [center.x, center.y, radius, 2.0],
-            None => [0.0; 4],
-        }),
+        lines: std::array::from_fn(|i| trace(scene.lines[i])),
         // Forward poles in the first three slots, backward in the last —
         // the shader colors slot `i` by axis `i % 3`.
         vps: std::array::from_fn(|i| {
@@ -89,6 +92,14 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
             })
         }),
         sps: std::array::from_fn(|i| point(scene.stations[i])),
+        // The rays through the hand, and the cuts that make them rays (§20.9).
+        // A pointer off the canvas is the absent element it looks like: three
+        // zeroed slots, and three more beside them.
+        rays: std::array::from_fn(|i| trace(scene.rays[i].map(|r| r.trace))),
+        cuts: std::array::from_fn(|i| match scene.rays[i].and_then(|r| r.cut) {
+            Some(c) => [c.normal.x, c.normal.y, c.offset, 1.0],
+            None => [0.0; 4],
+        }),
     }
 }
 

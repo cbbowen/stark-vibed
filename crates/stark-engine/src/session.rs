@@ -365,7 +365,14 @@ pub struct Session {
     /// actor id and wants to refresh that default, but must not overwrite a name
     /// somebody typed.
     name_chosen: bool,
-    /// Hover position in canvas space; `None` when the pointer is off the canvas.
+    /// Where this client's pointer is, canvas space; `None` when it is off the
+    /// canvas.
+    ///
+    /// Below the line because peers see it (§17.4), and read on *this* side as
+    /// well, which is the shape [`active_layer`](Self::active_layer) already has:
+    /// a guide draws its rays through the hand (§20.9), so what a collaborator
+    /// watches and what this client's own overlay is hung on are one fact rather
+    /// than two that could disagree about where the pointer is.
     cursor: Option<Vec2>,
 
     in_flight: Option<StrokeBuilder>,
@@ -475,7 +482,9 @@ impl Session {
     ///
     /// **Filtered, because this one goes on the wire.** A canvas position is
     /// `screen_to_canvas`'s output and can be non-finite (`command`'s own note), and
-    /// nothing gated it between the command and the frame every peer reads.
+    /// nothing gated it between the command and the frame every peer reads. It is
+    /// also what the guide rays are drawn through (§20.9), where a non-finite one
+    /// would be three traces of `NaN`.
     pub fn set_cursor(&mut self, at: Option<Vec2>) {
         self.cursor = at.filter(|p| p.is_finite());
     }

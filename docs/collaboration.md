@@ -621,7 +621,12 @@ an action and renders at the fold, like every replay.
 
 §4's own principle — *the class is in the type, not in a comment* — is why
 `PeerCommand` exists as its own arm (§4). `SetCursor` at pointer rate is fine: it
-writes a field and marks the latch dirty, and §17.5 does the rest.
+writes a field and marks the latch dirty, and §17.5 does the rest. Its class is a
+statement about what it *is* — a fact about the hand, published, in no file and
+reached by no undo — and not about who reads it, which is why nothing moved when
+a second reader appeared on this side of the glass: a guide draws its rays
+through the same cursor (§20.9), the way this client's own next stroke goes to
+`SetActiveLayer`'s layer.
 `DocCommand::Select` does **not** move — it is logged, so it stays where it is;
 only its effect is now owner-scoped. `GestureCommand` is unchanged: it already
 built in per-client state and committed document state, which is now simply

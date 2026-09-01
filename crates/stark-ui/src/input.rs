@@ -488,6 +488,44 @@ pub fn hover_at(state: AppState, at: Vec2) {
     hover.set(Some(at));
 }
 
+/// Report where the pointer is on the canvas, or that it has left it — the
+/// cursor collaborators watch (§17.4) *and* the one this client's own guides
+/// draw their rays through (§20.9).
+///
+/// One fact with two readers, so one call — but the two want different things
+/// from this door, and the difference is a repaint:
+///
+/// - **A peer** reads it off the engine on the presence pump's own cadence
+///   (§17.5), so sending is all this owes: repainting our own canvas to show
+///   ourselves a cursor the browser is already drawing would be pure waste, and
+///   at pointer rate it would be a lot of it.
+/// - **A guide** draws chrome in the frame, and chrome only appears when a frame
+///   is painted. So a client with a guide open pays a repaint per pointer move,
+///   which is what following the hand costs and is the same bargain the hover
+///   mark already strikes ([`hover_stroke`]).
+///
+/// Hence the gate: sent when somebody is reading it, and painted only for the
+/// reader that is on this side of the glass. With no session and no guide up the
+/// value has no reader at all, and the engine borrow is skipped entirely.
+pub fn point_at(state: AppState, at: Option<Vec2>) {
+    // `peek`, not `read`: this runs per pointer move and must widen nothing that
+    // a render subscribes to (`state::gpu_lost` peeks for the same reason).
+    let drawn = state
+        .obs
+        .peek()
+        .as_ref()
+        .is_some_and(|o| o.guides.iter().any(|g| g.visible));
+    if !drawn && !state.collab.active() {
+        return;
+    }
+    let command = PeerCommand::SetCursor(at);
+    if drawn {
+        crate::state::dispatch_hover(state, command);
+    } else {
+        crate::state::dispatch_quiet(state, command);
+    }
+}
+
 /// How far ahead of the cursor the hover mark reaches, in **canvas px**
 /// (§18.1.10).
 ///

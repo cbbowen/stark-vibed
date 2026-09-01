@@ -242,7 +242,7 @@ fn a_held_line_takes_the_axis_of_a_visible_guide() {
         rotation: Quat::from_rotation_x(0.3) * Quat::from_rotation_y(0.55),
         ..Default::default()
     };
-    let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
+    let vp = guide.scene(None).vps[2].expect("Z vanishes on the canvas");
     let up = Scaffold::of(std::slice::from_ref(&guide));
 
     // Drawn from `start`, 400px toward the vanishing point but 4° off it.
@@ -296,7 +296,7 @@ fn steering_an_axis_line_stays_on_the_axis() {
         rotation: Quat::from_rotation_x(0.3) * Quat::from_rotation_y(0.55),
         ..Default::default()
     };
-    let vp = guide.scene().vps[2].expect("Z vanishes on the canvas");
+    let vp = guide.scene(None).vps[2].expect("Z vanishes on the canvas");
     let up = Scaffold::of(std::slice::from_ref(&guide));
 
     let start = Vec2::new(-240.0, 180.0);

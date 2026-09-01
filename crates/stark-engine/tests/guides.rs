@@ -17,15 +17,28 @@
 //! of this.
 //!
 //! The geometry these guides describe is `stark-model`'s own concern and is
-//! covered there; what is tested here is only where the roster lives.
+//! covered there; what is tested here is where the roster lives — and, at the
+//! foot of the file, the one part of the overlay whose two halves are on
+//! opposite sides of the crate boundary and so can only be checked by drawing
+//! it (§20.9).
 
 mod common;
 
-use common::engine_or_skip;
+use common::{engine_or_skip, engine_or_skip_sized};
 use stark_engine::Engine;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_model::document::{ActorId, GuideId, Lens, PerspectiveGuide};
-use stark_model::geom::Vec2;
+use stark_model::geom::{Extent2, Vec2};
+
+use glam::Quat;
+
+/// A viewport wide enough to hold a whole perspective — the vanishing points and
+/// the far side of every ray — which the default one is not
+/// (`the_rays_are_drawn_where_the_camera_says_they_are`).
+const VIEW: Extent2 = Extent2 {
+    width: 512,
+    height: 512,
+};
 
 /// A guide that is nothing like the default, so a roster that quietly rebuilt one
 /// from scratch would not pass for it.
@@ -420,4 +433,101 @@ fn an_eye_does_not_outlive_its_document() {
         "a guide from a freshly opened file drew itself, because its id matched one \
          the client had opened in the document before it",
     );
+}
+
+// --- the rays through the cursor (§20.9) ------------------------------------
+//
+// The one thing on a guide that a **pixel** can check, and the exception to this
+// file's opening note. Everything else the overlay draws is settled by the time
+// the camera has been read — `stark-model` states those theorems and tests them
+// there — but the rays are the one element assembled from two halves that live
+// on opposite sides of the crate boundary: the geometry from the document's
+// camera, the pointer from this client's `Session`. Between them lie the packing
+// and the shader, and neither has anything to say until something is drawn.
+
+/// **The rays land where the camera says they do**, under either lens.
+///
+/// Rendered twice — once with the pointer off the canvas, once with it on — so
+/// the difference *is* the rays: nothing else in the pass reads the cursor. Then
+/// every texel that changed is asked to lie on one of the three curves the model
+/// derived **and** on the half of it the model's cut keeps, which is the whole
+/// round trip in one assertion. A packing that swapped two lanes, a shader
+/// reading the trace kind off the wrong component, a fisheye radius left
+/// unnormalized, a cut dropped or inverted — each of those draws *something*,
+/// and each of them draws it somewhere else.
+#[test]
+fn the_rays_are_drawn_where_the_camera_says_they_are() {
+    let Some(mut e) = engine_or_skip_sized(VIEW) else {
+        return;
+    };
+    for lens in [Lens::Rectilinear, Lens::Fisheye] {
+        // The **isometric** pose, and it is chosen rather than picked: the view
+        // axis down the lattice's own corner puts all three axes at the same
+        // 54.7° off it, so all three vanishing points land at one radius — near
+        // enough, at this focal length in this viewport, that each ray's far
+        // half is on the canvas too. Without that the cut has nothing to cut
+        // here and the assertion below passes by drawing nothing (`cut_away`).
+        let camera = PerspectiveGuide {
+            center: Vec2::ZERO,
+            focal: 150.0,
+            lens,
+            rotation: Quat::from_rotation_x(0.6155)
+                * Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+            opacity: 1.0,
+            ..PerspectiveGuide::default()
+        };
+        let id = add_and_show(&mut e, camera, None);
+
+        let at = Vec2::new(34.0, -22.0);
+        e.process(PeerCommand::SetCursor(None));
+        let without = e.render_to_image();
+        e.process(PeerCommand::SetCursor(Some(at)));
+        let with = e.render_to_image();
+
+        let rays: Vec<_> = (0..3).filter_map(|i| camera.axis_ray(i, at)).collect();
+        assert_eq!(rays.len(), 3, "{lens:?}: a 3-point pose rays every axis");
+
+        let view = e.view();
+        let mut changed = 0;
+        // Texels the *whole trace* would have covered and the ray does not —
+        // the far halves, behind the vanishing points. Counted so the assertion
+        // above is known to be load-bearing: with none of these in the viewport,
+        // a cut that had been dropped or inverted would pass unremarked.
+        let mut cut_away = 0;
+        for y in 0..with.height {
+            for x in 0..with.width {
+                let p = view.screen_to_canvas(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+                if rays.iter().any(|r| r.trace.distance(p) < 3.0)
+                    && !rays.iter().any(|r| {
+                        r.trace.distance(p) < 3.0 && r.cut.is_none_or(|c| c.signed(p) > -3.0)
+                    })
+                {
+                    cut_away += 1;
+                }
+                if with.pixel(x, y) == without.pixel(x, y) {
+                    continue;
+                }
+                changed += 1;
+                // The ray is ~1.7 canvas px wide at this zoom once its halo and
+                // the antialiasing are counted; three is slack, not a target.
+                // A texel has to be near a ray's curve *and* on the half of it
+                // the cut keeps — the second is what says the ray stops at its
+                // vanishing point instead of running on through it, and the
+                // vanishing points are all inside this viewport, so a missing
+                // or inverted cut has texels here to give itself away with.
+                let on_a_ray = rays
+                    .iter()
+                    .any(|r| r.trace.distance(p) < 3.0 && r.cut.is_none_or(|c| c.signed(p) > -3.0));
+                assert!(on_a_ray, "{lens:?}: ({x}, {y}) changed off every ray");
+            }
+        }
+        assert!(changed > 100, "{lens:?}: only {changed} texels drew a ray");
+        assert!(
+            cut_away > 100,
+            "{lens:?}: only {cut_away} texels lie past a vanishing point, so this              pose does not exercise the cut at all",
+        );
+
+        // Left as this client found it, so the next lens starts from one guide.
+        e.process(DocCommand::RemoveGuide(id));
+    }
 }

@@ -1,7 +1,8 @@
 # Drawing guides
 
 The perspective grid: one projective camera, three familiar cases — §20.
-What a stroke aligns to is in §20.6 and §20.7.
+What a stroke aligns to is in §20.6 and §20.7; what the overlay shows the hand
+before it draws is in §20.9.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -290,6 +291,13 @@ The markers (CoV crosshair, VP discs in their axis's hue, station-point rings,
 the dashed 45° circle) ride in the same pass as more distance fields, packed
 as `position + valid` uniform slots so the shader branches on data, never on
 pipeline variants. Axis hues follow the X/Y/Z semantics every 3D tool taught.
+
+The **rays through the cursor** (§20.9) ride in it too, and in the *vanishing
+trace's* slots rather than in markers' — a ray's curve is one of the same kind,
+the image of a plane through the eye, so one packing and one distance test serve
+both. What it adds is a second slot beside it: the half-plane a ray is cut down
+to, which is what makes it a ray rather than a line and is one more inequality to
+evaluate. That is the whole of what the pass had to learn to draw them.
 
 ## 20.5 The roster, the edit mode, and the drag
 
@@ -753,3 +761,129 @@ points as six slots instead of three.
 describe straight lines and flat planes — offering them would snap a stroke to
 geometry the guide does not draw. Snapping strokes to the fisheye's circles is
 its own future piece of work, on the same `Scaffold` seam.
+
+## 20.9 The rays through the cursor
+
+The fans say where the grid's lines *are*. They do not say where **your** line
+goes, and that is the question actually being asked at the moment of drawing:
+this stroke, from this point, along which axis? The classical answer is drawn
+with a straightedge laid from a vanishing point to the pencil tip, and it is the
+one thing the overlay could show that the artist would otherwise construct by
+eye. So the guide draws it: for each axis it draws, the line from that axis's
+vanishing point through the point under the pointer — three rays radiating from
+their three vanishing points and crossing exactly where the hand is, each of them
+the image of the world line through that point, parallel to its axis. Krita's
+perspective assistant is where the idea comes from, and it earns its place for
+the same reason there.
+
+**One construction, and it was already written.** A cursor ray is not a new kind
+of curve. Every non-marker element of the overlay is the image of some plane
+through the eye — a pair plane's parallel gives the vanishing trace (§20.2) —
+and a ray is the image of the plane the axis spans with the eye's ray under the
+pointer, normal `a × r`. That is one cross product away from `pair_trace`'s own
+`a_i × a_j`, so both go through one `plane_trace`, and three things the feature
+would otherwise have had to state come free:
+
+- **The fisheye.** `plane_trace` already knows both lenses, so a ray bows into
+  an arc of the circle through *both* of its axis's poles, with nothing in §20.9
+  aware the lens exists — the same sentence §20.8 makes about the fans, for the
+  same structural reason.
+- **An axis at infinity.** In 1-point, two axes have no vanishing point to lay
+  a straightedge from, and a ray computed as a *join* would have needed a case.
+  Computed as a plane's image it comes out as the parallel through the cursor,
+  which is what it is (unit-tested), by the same argument that keeps §20.3's
+  fans free of vanishing points.
+- **The packing.** A ray travels to the shader in the slot a vanishing trace
+  travels in, tagged line-or-circle, drawn by the same distance test.
+
+The one thing the ray has to add is a **normalization**: two orthonormal axes
+cross to a unit normal and an axis and a ray do not, and the fisheye radius
+`2f·|m|/|m.z|` is the one place in `plane_trace` that reads the normal's length
+rather than only its direction.
+
+**Nothing at the vanishing point.** With the hand resting on an axis's own
+vanishing point, every line of that axis's pencil runs through it and none of
+them is the one — the ray is genuinely undefined, not merely hard to compute.
+`RAY_EPS` retires it slightly before that, and the reason is the approach rather
+than the point: the plane's normal is the cross product of two nearly parallel
+unit vectors, whose *direction* dissolves into rounding long before its length
+reaches zero, and a ray drawn off it would report that as a spin through a full
+turn. It is stated as an angle rather than a distance, so it means the same under
+either lens; the band it costs grows with the focal length, from a tenth of a
+canvas pixel to a little over one across the panel's whole range, and stays under
+the ten-pixel disc drawn over the vanishing point throughout. The other two axes
+are unaffected: the answer is about one axis, not about the cursor.
+
+**A ray belongs to its axis**, so it follows `axis_alpha` — the same flag its
+vanishing point follows, and for the same reason (§20.3): a ray lies in no pair
+plane, being the trace of a plane the artist never switched on or off. Switching
+a plane off dims two fans and leaves both axes ruling elsewhere, and the ray goes
+only when the axis has no plane left at all.
+
+### A ray, and not a line
+
+The trace is the whole *projective* line, and only half of it is a place the
+artist can draw. A world line's points **behind the eye** image too — at their
+opposite direction, so on the far side of the vanishing point — and that half is
+a reflection of the drawing rather than part of it. Cutting there is therefore
+geometry and not taste: what is drawn is exactly the image of the half of the
+world line in front of the eye, and the vanishing point is where the two halves
+meet because that is what a vanishing point *is*. It also settles the thing that
+would otherwise have needed settling by styling. A ray in its axis's hue at a fan
+line's weight could be mistaken for a line *of the lattice*, and the lattice is
+what §20.3 spent itself on making countable — but no fan line ends anywhere, and
+a ray ends at a vanishing point. The picture says which is which without
+anything being dressed to say it, so the rays are drawn solid.
+
+The cut is one half-plane, `normal · p + offset ≥ 0`, oriented to keep the
+cursor's side — one inequality for the shader, whichever lens is on. What differs
+between the lenses is only which line to cut along, and it follows from how the
+trace *closes up*:
+
+- **Straight trace.** It closes through infinity, so its two halves meet at the
+  vanishing point and again out there, and the line separating them is the
+  **perpendicular** at that point.
+- **Bowed trace.** It is already a closed canvas circle with both poles on it, so
+  the two arcs are the two sides of the **chord** joining them. Exact whichever
+  arc the hand is on, which is worth noting because the obvious alternative is
+  not: a stereographic image does not preserve arc length, so the arc through the
+  cursor can be the long way round and arithmetic on angles has a branch to get
+  wrong.
+
+An axis at infinity is cut at nothing, and correctly: with the vanishing point
+unreachable, the whole world line is in front of the eye and the ray honestly *is*
+the whole parallel.
+
+One pose is left approximate, deliberately. Under the fisheye a plane containing
+the view axis traces straight while still showing **two** poles, and the honest
+figure there is the segment between them — which one half-plane cannot state, so
+the ray runs past the far pole. That pose is the knife edge where a fisheye trace
+straightens (`FISHEYE_LINE_EPS`); the cursor crosses it in well under a pixel of
+travel, so it is a flash on the way past rather than a picture anybody reads. The
+exact form costs a second cut lane and a union-versus-intersection flag to buy a
+sub-pixel band, and that is the wrong trade.
+
+### Where the pointer comes from
+
+A camera has no pointer, so `PerspectiveGuide::scene` takes one — the argument
+shape §20.5 already uses for the guide's eye, and for its reason: the pointer is
+per-client, so the side holding both halves hands it in, and that side is
+`Session`. It is the **same** `Session::cursor` collaborators watch (§17.4), not
+a second copy of the same fact: what a peer sees and what this client's own rays
+hang from cannot then disagree about where the hand is. A render no hand is over
+— an export, the navigator's miniature — passes `None` and gets the overlay
+without rays, which is the same gate that already keeps chrome out of files
+(§15.6).
+
+What it costs the frontend is a decision it did not have to make before. The
+cursor used to be sent *quietly*: the browser draws our own pointer, so
+repainting at pointer rate to show ourselves nothing was pure waste, and solo the
+value had no reader at all. Now it has one on this side of the glass, and chrome
+only appears when a frame is painted — so `input::point_at` sends it when
+somebody is reading it and repaints only for the reader who is here. A client
+with no session and no guide open still pays nothing.
+
+There is no control for the rays, and that is deliberate. They appear with the
+guide and go with the pointer, which is the whole of what a toggle would have
+said; and a guide's state is document state (§20.5), so a switch for them would
+be a field in the save format bought for a preference about chrome.

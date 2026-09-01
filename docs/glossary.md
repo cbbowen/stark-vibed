@@ -41,7 +41,8 @@ these should appear in code again.
 | **`Background`** | An *export* choice: fill with the substrate, or carry the paint's own alpha out (`Transparent`). A render option, never document state. | [`stark-engine/src/engine/render.rs`](../crates/stark-engine/src/engine/render.rs) |
 | **backing** | The §15.5 underpainting: an `Everything` matte born at the bottom of the stack, under the painting. A *layer*, unlike the substrate color — paintable, movable, undoable. | [`stark-ui/src/panels/frame.rs`](../crates/stark-ui/src/panels/frame.rs) |
 | **surface** | Reserved for four things that are not the canvas: wgpu's swapchain `Surface`, the warp mesh's mathematical surface (§16), a *UI surface* (a pointer-receiving region of the chrome), and a module's *public surface*. | [`stark-ui/src/render.rs`](../crates/stark-ui/src/render.rs) |
-| **ground** | Reserved for the §20 perspective **ground plane** and for English idiom ("on the grounds that", "ground truth"). Never the canvas. | [`stark-model/src/document/guide.rs`](../crates/stark-model/src/document/guide.rs) |
+| **ground** | Reserved for the §20 perspective **ground plane** and for English idiom ("on the grounds that", "ground truth"). Never the canvas. | [`stark-model/src/document/guide/mod.rs`](../crates/stark-model/src/document/guide/mod.rs) |
+| **ray** | Two things in §20, and always qualified. The **eye's ray** is a *direction* in camera space, what a canvas point means to the camera (`PerspectiveGuide::ray`) — the one place the lens enters. A **cursor ray** is a *curve on the canvas*: where the world line through the pointer, parallel to one axis, images (§20.9). The second is derived from the first, which is why they share a word at all. | [`stark-model/src/document/guide/camera.rs`](../crates/stark-model/src/document/guide/camera.rs) |
 
 ## Input and the fitted path
 

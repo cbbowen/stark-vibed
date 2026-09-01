@@ -20,15 +20,14 @@ use crate::commands::Command;
 use crate::drags::{self, DragAction};
 use crate::input::{
     self, Landing, Nav, Paint, PickMove, Tune, elem_xy, end_interaction, hover_at, hover_gone,
-    hover_stroke, move_loupe, pick_color, sample,
+    hover_stroke, move_loupe, pick_color, point_at, sample,
 };
 use crate::modes;
 use crate::panels;
 use crate::panels::select::current_tool;
 use crate::platform::capture_pointer;
 use crate::render::CANVAS_ID;
-use crate::state::{AppState, dispatch_quiet, resize, use_obs};
-use stark_engine::command::PeerCommand;
+use crate::state::{AppState, resize, use_obs};
 
 /// The full-window painting surface (a WebGPU canvas the engine draws into).
 #[component]
@@ -374,27 +373,26 @@ pub fn Canvas() -> Element {
                         // heading from the cursor.
                         hover_stroke(state, s, &e);
                     }
-                    // Where collaborators see this client's pointer
-                    // (§17.4). Quiet: it changes nothing *this* client renders — the
-                    // browser draws our own cursor — so repainting the canvas at
-                    // pointer rate to show ourselves nothing would be pure waste.
-                    // The presence pump reads it off the engine on its own cadence.
-                    // Solo, not even that: with no session the value has no reader
-                    // at all, so the engine borrow it costs is skipped entirely.
-                    if state.collab.active() {
-                        dispatch_quiet(state, PeerCommand::SetCursor(Some(s.pos)));
-                    }
+                    // Where collaborators see this client's pointer (§17.4), and
+                    // where a guide open here draws its rays (§20.9) — one fact,
+                    // and `point_at` owns which of those two readers is asking
+                    // and therefore whether it costs a repaint.
+                    //
+                    // Outside the paint branch above on purpose: the hand is
+                    // somewhere whether or not it is painting, and the rays are
+                    // most use *during* a stroke, showing the line the grid would
+                    // have it take.
+                    point_at(state, Some(s.pos));
                 }
             },
             onpointerleave: move |_| {
                 // The hover ends where the canvas does — for the brush cursor
-                // (§18.1.10) exactly as for the cursor peers see. A finger's lift
-                // arrives here too: pointer types that cannot hover are owed a
-                // leave after every up, so a touch never strands the circle.
+                // (§18.1.10) exactly as for the cursor peers see and the guide
+                // rays hang from (§20.9). A finger's lift arrives here too:
+                // pointer types that cannot hover are owed a leave after every
+                // up, so a touch never strands the circle.
                 hover_gone(state);
-                if state.collab.active() {
-                    dispatch_quiet(state, PeerCommand::SetCursor(None));
-                }
+                point_at(state, None);
             },
             // One finger of several lifting ends nothing — the rest are still
             // navigating, and tearing down here would end the gesture on whichever
