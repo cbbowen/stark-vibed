@@ -106,6 +106,25 @@ icons! {
     // picture of all three at once, and a mark beside it would be a second, worse one.
     EXPOSURE => "sun-bold",
     CONTRAST => "circle-half-bold",
+    // The focal blur's three aperture shapes (§21.12), each drawn as the bokeh it
+    // makes — which is the one thing a lens shape has to say, and the reason these
+    // three are marks at all where the filter's other choices are words.
+    //
+    // Each is the shape at `Aperture::ALL`'s own default for it, so the mark is the
+    // picture of what the click produces: an unobstructed disc, a six-bladed iris,
+    // a 2× squeeze lying along angle 0. The doughnut and the other blade counts are
+    // knobs away and get no second glyph, for the reason the enum has no fourth
+    // variant.
+    //
+    // `APERTURE_DISC` shares [`CIRCLE`]'s file the way [`GRADIENT_RADIAL`] does — a
+    // different control wearing the same picture on purpose. The oval is composed
+    // here, like `fisheye-bold`: Phosphor has no ellipse at any weight. A stroked
+    // ellipse rather than two nested paths, because a ring cut from a squeezed
+    // ellipse is thinner along its flatter run and the disc beside it would look
+    // heavier than its own sibling.
+    APERTURE_DISC => "circle-bold",
+    APERTURE_BLADES => "hexagon-bold",
+    APERTURE_OVAL => "ellipse-bold",
     // Grouping, drawn as the move itself rather than as a picture of a group. The pair
     // has to read as one gesture and its undo, which is why it is one glyph mirrored
     // rather than two pictures — the same argument the stack pair above is built on.

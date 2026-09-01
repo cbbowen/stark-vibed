@@ -339,6 +339,18 @@ fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
     }
 }
 
+/// The mark a shape's chip wears — the bokeh itself, at the setting the chip hands
+/// out ([`icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
+/// the whole content of the choice, so the picture says more than the word does, and
+/// the run is one of the few that reads with the words gone.
+fn aperture_glyph(aperture: &Aperture) -> &'static str {
+    match aperture {
+        Aperture::Disc { .. } => icons::APERTURE_DISC,
+        Aperture::Blades { .. } => icons::APERTURE_BLADES,
+        Aperture::Oval { .. } => icons::APERTURE_OVAL,
+    }
+}
+
 /// The sentence a shape's chip carries — what the aperture *is*, since the picture
 /// it makes is the whole reason to pick one.
 fn aperture_hint(aperture: &Aperture) -> &'static str {
@@ -394,12 +406,12 @@ fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
                         let next = FocalBlur { aperture, ..blur };
                         dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
                     },
-                    // Bare text, not [`icons::label`]: these chips carry no mark, and a
-                    // word wrapped as hideable on a chip with nothing beside it is a
-                    // chip that empties in minimal mode. The same pairing [`Knob::glyph`]
-                    // enforces for a track, kept by hand here because a button has no
-                    // one field to read it off.
-                    "{want.label()}"
+                    // Mark then word, the pairing [`Knob::glyph`] enforces for a
+                    // track — kept by hand here because a button has no one field to
+                    // read it off. The word may go in minimal mode precisely because
+                    // the mark is a picture of the shape and not a symbol for it.
+                    {icon(aperture_glyph(&want))}
+                    {label(want.label())}
                 }
             }
         }
