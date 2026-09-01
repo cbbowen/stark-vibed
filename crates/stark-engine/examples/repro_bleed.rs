@@ -95,7 +95,7 @@ fn main() {
         fill.id.lamport = stroke.id.lamport.saturating_sub(1);
         fill.kind = ActionKind::Fill {
             layer: rec.layer,
-            frame: stark_model::geom::IVec2::ZERO,
+            translation: stark_model::geom::IVec2::ZERO,
             op: FillOp::new(
                 SelectionShape::rect_from_corners(lo - pad, hi + pad),
                 0.0,

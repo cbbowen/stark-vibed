@@ -830,12 +830,12 @@ mod tests {
                 path: Vec::new(),
                 seed: 1,
                 start: 0.0,
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             }),
             ActionTag::FloatSelection => ActionKind::FloatSelection {
                 layer: B,
                 child: FRESH,
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
             ActionTag::PlaceImage => ActionKind::PlaceImage {
                 id: FRESH,
@@ -852,7 +852,7 @@ mod tests {
             ActionTag::Transform => ActionKind::Transform {
                 layer: B,
                 affine: Affine2::IDENTITY,
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
             ActionTag::TransformPerspective => ActionKind::TransformPerspective {
                 layer: B,
@@ -861,18 +861,18 @@ mod tests {
                     max: Vec2::splat(32.0),
                     corners: rect_corners(Vec2::ZERO, Vec2::splat(32.0)),
                 },
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
             ActionTag::TransformWarp => ActionKind::TransformWarp {
                 layer: B,
                 map: WarpMap::identity(Vec2::ZERO, Vec2::splat(32.0), 2, 2),
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
             ActionTag::MergeLayerDown => ActionKind::MergeLayerDown { source: C, dest: B },
             ActionTag::Fill => ActionKind::Fill {
                 layer: B,
                 op: FillOp::new(box_(), 0.0, Srgb::new([0.3, 0.6, 0.9]), 1.0),
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
             // Away from wherever `B` stands (zero, in `furnished()`), so the fold
             // moves and the round trip proves something.

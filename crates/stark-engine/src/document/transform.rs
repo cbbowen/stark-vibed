@@ -170,7 +170,7 @@ pub(crate) struct FloatPlan {
 pub(crate) fn plan_float(
     tiles: &TileMap,
     selection: &Selection,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> Option<FloatPlan> {
     let mut coords: Vec<TileCoord> = tiles.keys().copied().collect();
     coords.sort();
@@ -181,7 +181,7 @@ pub(crate) fn plan_float(
         // `classify`, with the mask's presence asked where the frame puts this
         // tile on the canvas — the same question the shift pass answers with
         // texels ([`shifted_mask_sources`]), so the plan and the gate agree.
-        let present = !shifted_mask_sources(selection, coord, frame).is_empty();
+        let present = !shifted_mask_sources(selection, coord, translation).is_empty();
         if present {
             partial.push(coord);
         } else if outside >= 1.0 {
@@ -210,24 +210,24 @@ pub(crate) fn plan_float(
 /// scoped to a stroke therefore stays the stroke's size.
 pub(crate) fn shifted_mask_cover(
     selection: &Selection,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
     rect: TileRect,
 ) -> Vec<TileCoord> {
-    cover_of(selection.tiles().map(|(k, _)| *k), frame, rect)
+    cover_of(selection.tiles().map(|(k, _)| *k), translation, rect)
 }
 
 /// [`shifted_mask_cover`] over bare coordinates — the arithmetic, testable with
 /// no mask handle in the room.
 fn cover_of(
     keys: impl Iterator<Item = TileCoord>,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
     rect: TileRect,
 ) -> Vec<TileCoord> {
     // The zero frame is [`sources_in`]'s shortcut read from this end: the two
     // grids coincide and a tile's gate is its own mask — per-tile granularity,
     // exactly what `gate_for` binds — so the cover is the keys themselves, not
     // their apron neighbourhoods.
-    if frame == stark_model::geom::IVec2::ZERO {
+    if translation == stark_model::geom::IVec2::ZERO {
         let mut out: Vec<TileCoord> = keys
             .filter(|c| {
                 c.x >= rect.min.0 && c.x <= rect.max.0 && c.y >= rect.min.1 && c.y <= rect.max.1
@@ -249,8 +249,8 @@ fn cover_of(
             let hi = ((k + 1) * t - f + apron - 1).div_euclid(t);
             lo..=hi
         };
-        for dy in span(k.y as i64, frame.y as i64) {
-            for dx in span(k.x as i64, frame.x as i64) {
+        for dy in span(k.y as i64, translation.y as i64) {
+            for dx in span(k.x as i64, translation.x as i64) {
                 let (Ok(x), Ok(y)) = (i32::try_from(dx), i32::try_from(dy)) else {
                     continue;
                 };
@@ -275,19 +275,19 @@ fn cover_of(
 pub(crate) fn shifted_mask_sources(
     selection: &Selection,
     coord: TileCoord,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> Vec<TileCoord> {
-    sources_in(coord, frame, |c| selection.tile(c).is_some())
+    sources_in(coord, translation, |c| selection.tile(c).is_some())
 }
 
 /// [`shifted_mask_sources`] over a bare presence predicate — the arithmetic,
 /// testable with no mask handle in the room.
 fn sources_in(
     coord: TileCoord,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
     present: impl Fn(TileCoord) -> bool,
 ) -> Vec<TileCoord> {
-    if frame == stark_model::geom::IVec2::ZERO {
+    if translation == stark_model::geom::IVec2::ZERO {
         return if present(coord) {
             vec![coord]
         } else {
@@ -298,8 +298,8 @@ fn sources_in(
     let apron = TILE_APRON as i64;
     // The tile's texture rect on the canvas, in whole pixels — exact, where a
     // float computation at large coordinates would not be.
-    let lo_x = coord.x as i64 * t - apron + frame.x as i64;
-    let lo_y = coord.y as i64 * t - apron + frame.y as i64;
+    let lo_x = coord.x as i64 * t - apron + translation.x as i64;
+    let lo_y = coord.y as i64 * t - apron + translation.y as i64;
     let hi_x = lo_x + TILE_TEX as i64; // exclusive
     let hi_y = lo_y + TILE_TEX as i64;
     let span = |lo: i64, hi: i64| (lo.div_euclid(t))..=((hi - 1).div_euclid(t));

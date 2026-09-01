@@ -1265,8 +1265,8 @@ impl Engine {
                         // The layer the drag pinned at the press, not the active
                         // layer now: the op was converted into *that* layer's
                         // frame, and the two must not part (`ShapeResult::Fill`).
-                        Some(ShapeResult::Fill { layer, op, frame }) => {
-                            self.commit(ActionKind::Fill { layer, op, frame })
+                        Some(ShapeResult::Fill { layer, op, translation: frame }) => {
+                            self.commit(ActionKind::Fill { layer, op, translation: frame })
                         }
                         None => {}
                     }
@@ -1363,7 +1363,7 @@ impl Engine {
                 self.commit(ActionKind::Fill {
                     layer,
                     op: op.translated(-frame.as_vec2()),
-                    frame,
+                    translation: frame,
                 });
             }
             DocCommand::Transform { layer, map } => {
@@ -1382,12 +1382,12 @@ impl Engine {
                         TransformMap::Affine(affine) => ActionKind::Transform {
                             layer,
                             affine,
-                            frame,
+                            translation: frame,
                         },
                         TransformMap::Perspective(map) => {
-                            ActionKind::TransformPerspective { layer, map, frame }
+                            ActionKind::TransformPerspective { layer, map, translation: frame }
                         }
-                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map, frame },
+                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map, translation: frame },
                     });
                 } else {
                     // Nothing is logged, but the gesture's preview still has to be
@@ -1418,7 +1418,7 @@ impl Engine {
                     let action = self.commit_minting(|a| ActionKind::FloatSelection {
                         layer,
                         child: LayerId::new(a, 0),
-                        frame,
+                        translation: frame,
                     });
                     // The float is what the hand is about to move — and it is
                     // paint, so the next stroke has somewhere to go (`AddLayer`'s

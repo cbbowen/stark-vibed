@@ -511,14 +511,14 @@ impl TransformRenderer {
         base: &TileMap,
         selection: &Selection,
         map: &TransformMap,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
-        let local = map.in_frame(frame);
+        let local = map.under_translation(translation);
         match (&local, map) {
             (TransformMap::Affine(l), TransformMap::Affine(c)) => {
-                self.apply_affine(pool, base, selection, *l, *c, frame)
+                self.apply_affine(pool, base, selection, *l, *c, translation)
             }
-            _ => self.apply_gated(pool, base, selection, &local, map, frame),
+            _ => self.apply_gated(pool, base, selection, &local, map, translation),
         }
     }
 
@@ -537,13 +537,13 @@ impl TransformRenderer {
         &self,
         pool: &TilePool,
         selection: &Selection,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
         within: &[TileCoord],
     ) -> Selection {
-        if frame == stark_model::geom::IVec2::ZERO || selection.is_universal() {
+        if translation == stark_model::geom::IVec2::ZERO || selection.is_universal() {
             return selection.clone();
         }
-        let f = Vec2::new(frame.x as f32, frame.y as f32);
+        let f = Vec2::new(translation.x as f32, translation.y as f32);
         // dest(p) = src(A⁻¹·p) is the pass's contract, and src is to be read at
         // p + frame — so the drawn map is the *negated* translation.
         let affine = Affine2::from_translation(-f);
@@ -551,7 +551,7 @@ impl TransformRenderer {
         let mut tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> = HashTrieMap::new();
         for coord in within {
             let sources =
-                crate::document::transform::shifted_mask_sources(selection, *coord, frame);
+                crate::document::transform::shifted_mask_sources(selection, *coord, translation);
             if sources.is_empty() {
                 continue;
             }
@@ -578,14 +578,14 @@ impl TransformRenderer {
         &self,
         pool: &TilePool,
         selection: &Selection,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
         rect: stark_model::geom::TileRect,
     ) -> Selection {
-        if frame == stark_model::geom::IVec2::ZERO || selection.is_universal() {
+        if translation == stark_model::geom::IVec2::ZERO || selection.is_universal() {
             return selection.clone();
         }
-        let within = crate::document::transform::shifted_mask_cover(selection, frame, rect);
-        self.shifted_selection(pool, selection, frame, &within)
+        let within = crate::document::transform::shifted_mask_cover(selection, translation, rect);
+        self.shifted_selection(pool, selection, translation, &within)
     }
 
     /// Cut what `selection` holds of `base` into a second map — the float's GPU
@@ -599,11 +599,11 @@ impl TransformRenderer {
         pool: &TilePool,
         base: &TileMap,
         selection: &Selection,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) -> Option<(TileMap, TileMap)> {
-        let plan = crate::document::transform::plan_float(base, selection, frame)?;
+        let plan = crate::document::transform::plan_float(base, selection, translation)?;
         // The mask, brought into the layer's frame once — every gate below reads it.
-        let shifted = self.shifted_selection(pool, selection, frame, &plan.partial);
+        let shifted = self.shifted_selection(pool, selection, translation, &plan.partial);
 
         let mut scope = self.scratch.scope(&self.ctx, "stark float");
         let mut from = Source::new(pool, base, &shifted);
@@ -659,11 +659,11 @@ impl TransformRenderer {
         selection: &Selection,
         local: Affine2,
         affine: Affine2,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
         // The mask as it stands over the layer's frame — what classifies and
         // gates every paint tile. The canvas mask stays what *moves*, below.
-        let gate = self.shifted_selection_in(pool, selection, frame, base_rect(base));
+        let gate = self.shifted_selection_in(pool, selection, translation, base_rect(base));
         let plan = plan_paint(base, &gate, local)?;
         let mask_plan = plan_mask(selection, affine)?;
 
@@ -724,7 +724,7 @@ impl TransformRenderer {
     /// gated by the rect's coverage, and the mask carried as
     /// `max(old · (1 − box), moved)` — the residue unioned with what landed.
     /// `local` is `canvas` restated in the layer's frame ([`TransformMap::in_frame`]);
-    /// the paint runs under it, the mask under `canvas`, and at a zero frame the
+    /// the paint runs under it, the mask under `canvas`, and at a zero translation the
     /// two are the same value.
     fn apply_gated(
         &self,
@@ -733,12 +733,12 @@ impl TransformRenderer {
         selection: &Selection,
         local: &TransformMap,
         canvas: &TransformMap,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) -> Option<(TileMap, Selection)> {
         let (lrect, lgeo) = gated_geometry(local)?;
         let (rect, geo) = gated_geometry(canvas)?;
         // The mask over the layer's frame, for the cut; the canvas mask moves.
-        let gate = self.shifted_selection_in(pool, selection, frame, base_rect(base));
+        let gate = self.shifted_selection_in(pool, selection, translation, base_rect(base));
         let plan = plan_gated_paint(base, &gate, lrect, &lgeo)?;
         let mask_plan = plan_gated_mask(selection, rect, &geo)?;
         let linv = match &lgeo.kind {

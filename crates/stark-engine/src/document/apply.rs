@@ -282,7 +282,7 @@ fn transform_apply(
     actor: ActorId,
     layer: LayerId,
     map: &stark_model::document::TransformMap,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> DocState {
     // The mask travels with the paint it gated (§16), which is what the second
     // helper is for. `frame` is the action's own (§14.12): the renderer runs the
@@ -293,7 +293,7 @@ fn transform_apply(
         layer,
         actor,
         "transform rejected (unusable map or too many tiles); ignored",
-        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map, frame),
+        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map, translation),
     )
 }
 
@@ -452,7 +452,7 @@ fn float_apply(
     actor: ActorId,
     layer: LayerId,
     child: LayerId,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> DocState {
     let Some(base) = paint_base(&state, layer) else {
         return state;
@@ -466,7 +466,7 @@ fn float_apply(
         tracing::warn!("float with nothing selected; ignored");
         return state;
     }
-    let Some((remaining, lifted)) = ctx.transform.float(&ctx.pool, &base, &selection, frame) else {
+    let Some((remaining, lifted)) = ctx.transform.float(&ctx.pool, &base, &selection, translation) else {
         tracing::warn!("float rejected (empty cut or too many tiles); ignored");
         return state;
     };
@@ -474,7 +474,7 @@ fn float_apply(
     // made in, which is the action's own field rather than the state's, so a
     // replay mints what the recording run minted (§16.12).
     let lifted = Layer {
-        translation: frame,
+        translation,
         ..Layer::new(child).with_tiles(lifted)
     };
     state
@@ -597,7 +597,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                         let gate = ctx.transform.shifted_selection_in(
                             &ctx.pool,
                             selection,
-                            rec.frame,
+                            rec.translation,
                             stark_model::document::stroke_rect(rec),
                         );
                         ctx.stroke.render(
@@ -690,7 +690,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         ActionKind::Transform {
             layer,
             affine,
-            frame,
+            translation: frame,
         } => transform_apply(
             state,
             ctx,
@@ -702,7 +702,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // The rect-scoped siblings (§16.8, §16.9): identical shape — cut,
         // restack, carry the mask — differing only in the map handed to
         // the renderer.
-        ActionKind::TransformPerspective { layer, map, frame } => transform_apply(
+        ActionKind::TransformPerspective { layer, map, translation: frame } => transform_apply(
             state,
             ctx,
             action.id.actor,
@@ -710,7 +710,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             &stark_model::document::TransformMap::Perspective(*map),
             *frame,
         ),
-        ActionKind::TransformWarp { layer, map, frame } => transform_apply(
+        ActionKind::TransformWarp { layer, map, translation: frame } => transform_apply(
             state,
             ctx,
             action.id.actor,
@@ -727,7 +727,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         ActionKind::FloatSelection {
             layer,
             child,
-            frame,
+            translation: frame,
         } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame),
         // Lay a parcel of paint through the region's coverage, gated by the
         // author's selection — the same gate a stroke passes through, so a fill
@@ -735,7 +735,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
         // deterministically when unbounded or oversized, so peers and replays
         // agree about a log that contains one.
-        ActionKind::Fill { layer, op, frame } => paint_edit(
+        ActionKind::Fill { layer, op, translation: frame } => paint_edit(
             state,
             *layer,
             action.id.actor,

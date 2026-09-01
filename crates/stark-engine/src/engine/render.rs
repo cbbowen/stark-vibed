@@ -1273,9 +1273,9 @@ impl Engine {
 /// horizon degrades to a wider rect rather than wrapping to the far side.
 fn visible_in_frame(
     visible: Option<TileRect>,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> Option<TileRect> {
-    if frame == stark_model::geom::IVec2::ZERO {
+    if translation == stark_model::geom::IVec2::ZERO {
         return visible;
     }
     let rect = visible?;
@@ -1290,8 +1290,8 @@ fn visible_in_frame(
         (base as i64 + shift).clamp(i32::MIN as i64, i32::MAX as i64) as i32
     };
     Some(TileRect {
-        min: (edge(rect.min.0, lo(frame.x)), edge(rect.min.1, lo(frame.y))),
-        max: (edge(rect.max.0, hi(frame.x)), edge(rect.max.1, hi(frame.y))),
+        min: (edge(rect.min.0, lo(translation.x)), edge(rect.min.1, lo(translation.y))),
+        max: (edge(rect.max.0, hi(translation.x)), edge(rect.max.1, hi(translation.y))),
     })
 }
 

@@ -59,11 +59,11 @@ impl TransformMap {
     /// *is* its point correspondences; the affine composes, exactly for the
     /// whole-pixel frames and translations the exactness invariants are about
     /// (§16.4), since integer sums in `f32` are exact to 2²⁴.
-    pub fn in_frame(&self, frame: crate::geom::IVec2) -> Self {
-        if frame == crate::geom::IVec2::ZERO {
+    pub fn under_translation(&self, translation: crate::geom::IVec2) -> Self {
+        if translation == crate::geom::IVec2::ZERO {
             return self.clone();
         }
-        let f = frame.as_vec2();
+        let f = translation.as_vec2();
         match self {
             TransformMap::Affine(a) => TransformMap::Affine(
                 Affine2::from_translation(-f) * *a * Affine2::from_translation(f),

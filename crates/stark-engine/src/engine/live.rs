@@ -240,7 +240,7 @@ impl Preview {
                 // literally the result. Losslessly, and thrown away and redone on
                 // each move rather than accumulated, which is what keeps dragging a
                 // rectangle out from stacking a hundred glazes.
-                LiveGesture::Fill { layer, op, frame } => {
+                LiveGesture::Fill { layer, op, translation: frame } => {
                     // Already chained: it reads `out`, not `base`, and replaces the
                     // layer's whole tile map rather than copying tiles across.
                     let rect = stark_model::document::fill_rect(&op);
@@ -763,7 +763,7 @@ fn render_span_range(
     let selection = ctx.transform.shifted_selection_in(
         &ctx.pool,
         &base.selection_of(author),
-        rec.frame,
+        rec.translation,
         stark_model::document::stroke_rect(rec),
     );
     // The substrate this stroke is being laid on (§6.4) — the same texture

@@ -57,13 +57,13 @@ pub struct StrokeHead {
     pub layer: LayerId,
     pub brush: BrushParams,
     pub seed: u64,
-    /// The layer's frame at the press
-    /// ([`StrokeRecord::frame`](crate::document::StrokeRecord::frame)): the path
-    /// frames carry is in the layer's frame, and a receiver folding the live
+    /// The layer's translation at the press
+    /// ([`StrokeRecord::translation`](crate::document::StrokeRecord::translation)): the path
+    /// translations carry is relative to the layer's translation, and a receiver folding the live
     /// stroke needs the same offset the commit will. Zero from an older sender,
-    /// under which frame and canvas coincide.
+    /// under which translation and canvas coincide.
     #[serde(default)]
-    pub frame: crate::geom::IVec2,
+    pub translation: crate::geom::IVec2,
 }
 
 /// One gesture update on the wire (§17.5).
@@ -109,9 +109,9 @@ pub enum GestureFrame {
     Fill {
         id: u64,
         op: FillOp,
-        /// The layer's frame at the press — [`StrokeHead::frame`], for a fill.
+        /// The layer's translation at the press — [`StrokeHead::frame`], for a fill.
         #[serde(default)]
-        frame: crate::geom::IVec2,
+        translation: crate::geom::IVec2,
     },
 }
 
@@ -149,7 +149,7 @@ impl GestureFrame {
                         layer: head.layer,
                         brush: head.brush.sanitized(),
                         seed: head.seed,
-                        frame: head.frame,
+                        translation: head.translation,
                     })
                 }),
                 from,
@@ -283,7 +283,7 @@ mod tests {
                         ..BrushParams::default()
                     },
                     seed: 0,
-                    frame: crate::geom::IVec2::ZERO,
+                    translation: crate::geom::IVec2::ZERO,
                 })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],

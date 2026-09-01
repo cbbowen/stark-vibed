@@ -1023,7 +1023,7 @@ mod tests {
             path,
             seed: 0,
             start: 0.0,
-            frame: stark_model::geom::IVec2::ZERO,
+            translation: stark_model::geom::IVec2::ZERO,
         }
     }
 
@@ -1223,7 +1223,7 @@ mod tests {
             path,
             seed: 0,
             start: 0.0,
-            frame: stark_model::geom::IVec2::ZERO,
+            translation: stark_model::geom::IVec2::ZERO,
         };
         let segs = whole(&rec);
         assert_outline_is_continuous(&segs);
@@ -1402,7 +1402,7 @@ mod tests {
             path,
             seed: 0,
             start: 0.0,
-            frame: stark_model::geom::IVec2::ZERO,
+            translation: stark_model::geom::IVec2::ZERO,
         }
     }
 

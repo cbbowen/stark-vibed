@@ -104,7 +104,7 @@ pub(in crate::gpu::stroke) fn record(brush: BrushParams, pts: &[Vec2]) -> Stroke
         path: pts.iter().map(|p| ControlPoint::at(*p)).collect(),
         seed: 0,
         start: 0.0,
-        frame: stark_model::geom::IVec2::ZERO,
+        translation: stark_model::geom::IVec2::ZERO,
     }
 }
 

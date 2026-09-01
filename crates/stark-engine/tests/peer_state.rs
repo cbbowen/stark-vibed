@@ -502,7 +502,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
                 layer: LayerId::ROOT,
                 brush: common::brush(RED, 12.0),
                 seed: 1,
-                frame: stark_model::geom::IVec2::ZERO,
+                translation: stark_model::geom::IVec2::ZERO,
             })),
             from: 0,
             points: CROSSING
@@ -549,7 +549,7 @@ fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
                 layer: LayerId::ROOT,
                 brush: common::brush(GREEN, 12.0),
                 seed: 1,
-                frame: stark_model::geom::IVec2::ZERO,
+                translation: stark_model::geom::IVec2::ZERO,
             })),
             from: 0,
             points: points

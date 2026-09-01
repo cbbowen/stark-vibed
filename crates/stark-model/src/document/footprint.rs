@@ -530,7 +530,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // the box is brought into the layer's frame by the action's own `frame`
         // (§14.12) — the same shift `apply` makes, from the same field, so the two
         // cannot disagree about which tiles are meant.
-        ActionKind::TransformPerspective { layer, map, frame } => Footprint {
+        ActionKind::TransformPerspective { layer, map, translation: frame } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
                 Resource::Paint(
@@ -544,7 +544,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 Resource::Selection(actor),
             ],
         },
-        ActionKind::TransformWarp { layer, map, frame } => Footprint {
+        ActionKind::TransformWarp { layer, map, translation: frame } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
                 Resource::Paint(
@@ -688,7 +688,7 @@ mod tests {
                 path: vec![point(from), point(to)],
                 seed: 0,
                 start: 0.0,
-                frame: crate::geom::IVec2::ZERO,
+                translation: crate::geom::IVec2::ZERO,
             }),
         )
     }
@@ -1080,7 +1080,7 @@ mod tests {
             ActionKind::FloatSelection {
                 layer: LayerId::ROOT,
                 child,
-                frame: IVec2::ZERO,
+                translation: IVec2::ZERO,
             },
         );
         let on_source = stroke(2, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);
@@ -1142,7 +1142,7 @@ mod tests {
                 path: vec![point(Vec2::splat(600.0)), point(Vec2::splat(700.0))],
                 seed: 0,
                 start: 0.0,
-                frame: crate::geom::IVec2::ZERO,
+                translation: crate::geom::IVec2::ZERO,
             })
         };
         let (plain, drawn_out) = (rect(0.0), rect(0.875));
@@ -1250,7 +1250,7 @@ mod tests {
                             max: hi,
                             corners: rect_corners(lo, hi),
                         },
-                        frame: crate::geom::IVec2::ZERO,
+                        translation: crate::geom::IVec2::ZERO,
                     },
                 );
                 assert!(claims_all(&perspective), "rect min {corner:?}");
@@ -1263,7 +1263,7 @@ mod tests {
                     ActionKind::TransformWarp {
                         layer: LayerId::ROOT,
                         map: mesh,
-                        frame: crate::geom::IVec2::ZERO,
+                        translation: crate::geom::IVec2::ZERO,
                     },
                 );
                 assert!(claims_all(&warp), "rect max {corner:?}");
@@ -1281,7 +1281,7 @@ mod tests {
                     max: hi,
                     corners: rect_corners(lo, hi),
                 },
-                frame: crate::geom::IVec2::ZERO,
+                translation: crate::geom::IVec2::ZERO,
             },
         );
         assert!(!claims_all(&ordinary));
@@ -1299,7 +1299,7 @@ mod tests {
                     max: hi,
                     corners: rect_corners(lo, hi),
                 },
-                frame: crate::geom::IVec2::new(4000, 0),
+                translation: crate::geom::IVec2::new(4000, 0),
             },
         );
         let box_of = |a: &Action| {

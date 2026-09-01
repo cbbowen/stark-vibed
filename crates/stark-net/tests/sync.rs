@@ -313,7 +313,7 @@ async fn custom_shapes_replicate_mid_session() {
                     layer,
                     brush,
                     seed: 7,
-                    frame: stark_model::geom::IVec2::ZERO,
+                    translation: stark_model::geom::IVec2::ZERO,
                 })),
                 from: 0,
                 points: vec![],

@@ -40,12 +40,12 @@ struct StrokeBuilder {
     brush: BrushParams,
     layer: LayerId,
     seed: u64,
-    /// The target layer's frame at the press (§14.12). Everything in the builder
+    /// The target layer's translation at the press (§14.12). Everything in the builder
     /// — the fitter, the tow, the assist — works on the canvas, where the hand
     /// is; [`to_record`](Self::to_record) is the one door out, and it converts
     /// there, so the commit, the live fold and the wire cannot disagree about
     /// which frame the path is in.
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
     fitter: PathFitter,
     /// What the frontend said this gesture's input resolves to (canvas px). Kept
     /// because the drawing assist prices its recognition in the same unit the fit
@@ -119,8 +119,8 @@ pub enum ShapeResult {
         /// In that layer's frame (§14.12) — converted where the gesture becomes
         /// an op, so the preview, the wire and the commit take one value.
         op: FillOp,
-        /// The frame the op was converted into, pinned at the press.
-        frame: stark_model::geom::IVec2,
+        /// The translation of the layer, pinned at the press.
+        translation: stark_model::geom::IVec2,
     },
 }
 
@@ -192,10 +192,10 @@ struct ShapeDrag {
     /// frame below (see [`ShapeResult::Fill`]). A selecting gesture never reads
     /// either.
     layer: LayerId,
-    /// The active layer's frame at the press (§14.12) — what a **fill** result is
+    /// The active layer's translation at the press (§14.12) — what a **fill** result is
     /// converted into. A selecting gesture never reads it: the mask lives on the
-    /// canvas, whatever any layer's frame says.
-    frame: stark_model::geom::IVec2,
+    /// canvas, whatever any layer's translation says.
+    translation: stark_model::geom::IVec2,
 }
 
 impl ShapeDrag {
@@ -270,12 +270,12 @@ impl ShapeDrag {
                 // layer's frame — one conversion, here, where the gesture becomes
                 // an op (§14.12).
                 op: FillOp::new(
-                    shape.translated(-self.frame.as_vec2()),
+                    shape.translated(-self.translation.as_vec2()),
                     self.feather,
                     self.color,
                     self.opacity,
                 ),
-                frame: self.frame,
+                translation: self.translation,
             },
         })
     }
@@ -716,12 +716,12 @@ impl Session {
                         layer: b.layer,
                         brush: b.brush,
                         seed: b.seed,
-                        frame: b.frame,
+                        translation: b.translation,
                     }),
                     // In the layer's frame, as [`to_record`] converts it — the wire
                     // carries what a receiver's fold renders, so the two convert in
                     // the same place or not at all.
-                    path: path_in_frame(path, b.frame),
+                    path: path_in_frame(path, b.translation),
                     // A snapped stroke has **no settled prefix**: steering it moves every
                     // control point at once, so nothing may be retired. The whole path
                     // therefore rides every frame — which it can afford to, being a shape.
@@ -740,7 +740,7 @@ impl Session {
                 // (§17.5); the pinned layer travels only in-process, so a peer's
                 // preview can drift from the commit across the retarget race the
                 // pin closes locally — a preview, not the document.
-                ShapeResult::Fill { op, frame, .. } => GestureSource::Fill { op, frame },
+                ShapeResult::Fill { op, translation: frame, .. } => GestureSource::Fill { op, translation: frame },
             }),
         }
     }
@@ -775,7 +775,7 @@ impl Session {
         tool: Tool,
         pos: Vec2,
         has_selection: bool,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) {
         self.tool = tool;
         self.in_flight = None;
@@ -800,7 +800,7 @@ impl Session {
             points: vec![pos],
             current: pos,
             layer: self.active_layer,
-            frame,
+            translation,
         });
     }
 
@@ -861,7 +861,7 @@ impl Session {
         seed: u64,
         tolerance: f32,
         rope: f32,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) {
         self.tool = tool;
         self.selecting = None;
@@ -883,7 +883,7 @@ impl Session {
             brush: self.brush,
             layer: self.active_layer,
             seed,
-            frame,
+            translation,
             fitter,
             tolerance,
             assist: None,
@@ -1021,8 +1021,8 @@ impl Session {
             // cursor, so every part of it can still move.
             None => match self.preview_shape()? {
                 ShapeResult::Select(op) => (LiveGesture::Selection(op), 0),
-                ShapeResult::Fill { layer, op, frame } => {
-                    (LiveGesture::Fill { layer, op, frame }, 0)
+                ShapeResult::Fill { layer, op, translation: frame } => {
+                    (LiveGesture::Fill { layer, op, translation: frame }, 0)
                 }
             },
         };
@@ -1258,7 +1258,7 @@ impl Session {
         &self,
         actor: ActorId,
         seed: u64,
-        frame: stark_model::geom::IVec2,
+        translation: stark_model::geom::IVec2,
     ) -> Option<GestureView> {
         if self.in_flight.is_some() || self.selecting.is_some() || self.tool.is_selection() {
             return None;
@@ -1271,13 +1271,13 @@ impl Session {
                 brush: self.brush,
                 // In the layer's frame, like every record (§14.12) — `frame` is
                 // read at the fold because a probe has no press to pin it at.
-                path: path_in_frame(h.path.clone(), frame),
+                path: path_in_frame(h.path.clone(), translation),
                 seed,
                 // The probe is the whole prediction: two synthesized samples,
                 // no run-up ahead of them, so the mark starts where its curve
                 // does — exactly as the gesture it predicts would record it.
                 start: 0.0,
-                frame,
+                translation,
             }),
             ordinal: h.ordinal,
             // Nothing settles: both samples move with every report, so the whole
@@ -1394,10 +1394,10 @@ impl StrokeBuilder {
         StrokeRecord {
             layer: self.layer,
             brush: self.brush,
-            path: path_in_frame(path, self.frame),
+            path: path_in_frame(path, self.translation),
             seed: self.seed,
             start,
-            frame: self.frame,
+            translation: self.translation,
         }
     }
 }
@@ -1408,10 +1408,10 @@ impl StrokeBuilder {
 /// offset, exact in `f32` to the 2²⁴ the canvas already lives within.
 fn path_in_frame(
     mut path: Vec<ControlPoint>,
-    frame: stark_model::geom::IVec2,
+    translation: stark_model::geom::IVec2,
 ) -> Vec<ControlPoint> {
-    if frame != stark_model::geom::IVec2::ZERO {
-        let f = frame.as_vec2();
+    if translation != stark_model::geom::IVec2::ZERO {
+        let f = translation.as_vec2();
         for p in &mut path {
             p.pos -= f;
         }
