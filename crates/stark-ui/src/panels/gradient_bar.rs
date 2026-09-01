@@ -31,7 +31,7 @@ use crate::commands::{self, Command};
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::modes::Composing;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
@@ -374,17 +374,12 @@ pub fn GradientBar() -> Element {
 
     rsx! {
         div {
+            class: "selection-bar gradient-fill-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             // The composing register (`mode-bar`) comes off with the mode:
             // parked, this is a shelved gesture behind the trace's bar, not
             // the thing the canvas answers to.
-            class: chrome_class(
-                state,
-                if parked {
-                    "selection-bar gradient-fill-bar recessed"
-                } else {
-                    "selection-bar gradient-fill-bar mode-bar"
-                },
-            ),
+            class: if parked { "recessed" } else { "mode-bar" },
             // The library's mark: the bar is that library's ramp being
             // put to work, so it wears the library's glyph.
             span { class: "bar-label",

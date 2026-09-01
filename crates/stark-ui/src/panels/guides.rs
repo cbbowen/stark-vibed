@@ -41,7 +41,7 @@ use dioxus::prelude::*;
 use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::modes::Composing;
 use crate::panels::reorder::{self, Grab, Motion, Slide};
 use crate::platform::{capture_pointer, guide_boxes, select_all};
@@ -506,16 +506,13 @@ fn GuideRow(
     let visible = guide.visible;
     // The row's transform, written by `Motion` so every declaration is stated on
     // every render — including the ones that are "off" (see `reorder::Motion::css`).
-    let class = format!(
-        "guide-row{}{}",
-        if active { " active" } else { "" },
-        motion.class()
-    );
     let shift = motion.css();
 
     rsx! {
         div {
-            class: "{class}",
+            class: "guide-row",
+            class: if active { "active" },
+            class: if motion.lifted { "dragging" },
             style: "{shift}",
             // Which row this element is, for `platform::guide_boxes` to read back.
             // A *position*, not the guide's id, and deliberately: what the drag
@@ -694,7 +691,9 @@ pub fn PerspectiveGuideBar() -> Element {
         // shaped live (§20.5), so there is nothing uncommitted for a cancel to
         // keep back — Esc and Done are one act, and the bar says so by offering
         // it once.
-        div { class: chrome_class(state, "guide-bar mode-bar"),
+        div {
+            class: "guide-bar mode-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             // The Guides panel's own mark, on the bar its rows raise — and the reason
             // the words here can be the guide's *name*: the glyph says what kind of
             // thing is being shaped, so the text is free to say which one.

@@ -94,7 +94,7 @@
 //!
 //! One card at a time, anchored beside the thing it describes and pointing at it.
 //! It is ordinary floating chrome: it wears
-//! [`chrome_class`], so it fades out mid-stroke and
+//! [`chrome_dimmed`], so it fades out mid-stroke and
 //! back when the hand lifts like every other box over the painting, and it never
 //! takes a press meant for the canvas.
 //!
@@ -111,7 +111,7 @@ use dioxus::prelude::*;
 use crate::anchor::{self, GAP};
 use crate::brush_editor::BrushPart;
 use crate::icons::{self, icon};
-use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_class, open_panel, panel_key};
+use crate::layout::{ChromeHiding, PanelId, PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::{AppState, root_signal};
 use crate::storage::Store;
@@ -1948,14 +1948,11 @@ pub fn TutorCard() -> Element {
         ),
     };
 
-    let mut base = format!("tutor-card {side}");
-    if lesson.anchor.inside_dialog() {
-        base.push_str(" over-dialog");
-    }
-
     rsx! {
         div {
-            class: chrome_class(state, &base),
+            class: "tutor-card chrome {side}",
+            class: if chrome_dimmed(state) { "dimmed" },
+            class: if lesson.anchor.inside_dialog() { "over-dialog" },
             style: "{place}",
             div { class: "tutor-head",
                 span { class: "tutor-mark", {icon(icons::TOUR)} }

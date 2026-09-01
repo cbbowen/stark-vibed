@@ -25,7 +25,7 @@ use crate::commands::Command;
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::platform::{capture_pointer, select_all};
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
@@ -275,7 +275,9 @@ pub fn TraceBar() -> Element {
     let state = use_context::<AppState>();
     rsx! {
         if gradients::armed(state) {
-            div { class: chrome_class(state, "selection-bar trace-bar mode-bar"),
+            div {
+                class: "selection-bar trace-bar mode-bar chrome",
+                class: if chrome_dimmed(state) { "dimmed" },
                 span { class: "bar-label",
                     {icon(icons::GRADIENT)}
                     {label("Trace")}

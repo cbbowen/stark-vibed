@@ -365,29 +365,23 @@ fn app() -> Element {
         });
     });
 
-    // Two modes that the whole tree is inside of, so both ride the root element and
-    // the stylesheet does the rest — one rule each, rather than every control learning
-    // about a state it does not own.
-    //
-    // Timeline mode reserves the foot of the window for its bar, and the stylesheet
-    // lifts the bottom-bars column clear of it. Minimal mode hides the `.label` spans
-    // the chrome marks its words with (`icons::label`); it is a class here rather than
-    // a prop for the same reason — a boolean threaded through the tree would have to
-    // reach every control, and the one that failed to pass it on would be the one that
-    // kept its word.
-    let mut root_class = String::from("app-root");
-    if (state.timeline.open)() {
-        root_class.push_str(" timeline-mode");
-    }
-    if (state.minimal)() {
-        root_class.push_str(" minimal");
-    }
-
     rsx! {
         document::Stylesheet { href: STARK_CSS }
 
         div {
-            class: root_class,
+            class: "app-root",
+            // Two modes that the whole tree is inside of, so both ride the root element
+            // and the stylesheet does the rest — one rule each, rather than every
+            // control learning about a state it does not own.
+            //
+            // Timeline mode reserves the foot of the window for its bar, and the
+            // stylesheet lifts the bottom-bars column clear of it. Minimal mode hides
+            // the `.label` spans the chrome marks its words with (`icons::label`); it
+            // is a class here rather than a prop for the same reason — a boolean
+            // threaded through the tree would have to reach every control, and the one
+            // that failed to pass it on would be the one that kept its word.
+            class: if (state.timeline.open)() { "timeline-mode" },
+            class: if (state.minimal)() { "minimal" },
             // A panel resize by the bottom-edge grip is driven here — events bubble up even
             // over the canvas, so it keeps tracking wherever the pointer goes, and leaving
             // the window ends it so it cannot get stuck. A no-op unless armed.

@@ -32,7 +32,7 @@ use stark_model::document::GradientParcel;
 use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::page_xy;
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
@@ -330,10 +330,9 @@ pub fn FrameBar() -> Element {
 
     rsx! {
         div {
-            class: chrome_class(
-                state,
-                if composing { "frame-bar recessed" } else { "frame-bar" },
-            ),
+            class: "frame-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
+            class: if composing { "recessed" },
             // The glyph rides the bar's *label*, not one of its buttons: no single
             // control here is "crop" — sizing to an aspect, fitting to the art and
             // fitting to the view are three ways of doing it — so what the mark
@@ -687,7 +686,8 @@ pub fn FrameOverlay() -> Element {
 
     rsx! {
         div {
-            class: chrome_class(state, "frame-overlay"),
+            class: "frame-overlay chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             style: "{box_style}",
 
             for grip in Grip::ALL {

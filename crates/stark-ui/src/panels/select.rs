@@ -9,7 +9,7 @@ use stark_model::Srgb;
 
 use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider, slider_fill};
@@ -273,10 +273,9 @@ pub fn SelectionBar() -> Element {
     rsx! {
         if active {
             div {
-                class: chrome_class(
-                    state,
-                    if composing { "selection-bar recessed" } else { "selection-bar" },
-                ),
+                class: "selection-bar chrome",
+                class: if chrome_dimmed(state) { "dimmed" },
+                class: if composing { "recessed" },
                 // The Select panel's own mark, on the bar the panel's gestures raise —
                 // the bar is *this panel's* state made visible, so it says so with the
                 // panel's glyph rather than a second picture of a marquee.

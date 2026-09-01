@@ -58,7 +58,7 @@ use dioxus::prelude::*;
 
 use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::panels::color::ab_field_data_url;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
@@ -1397,10 +1397,9 @@ pub fn FilterBar() -> Element {
 
     rsx! {
         div {
-            class: chrome_class(
-                state,
-                if composing { "filter-bar recessed" } else { "filter-bar" },
-            ),
+            class: "filter-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
+            class: if composing { "recessed" },
             // The glyph rides the bar's *label*, as the frame bar's crop marks do:
             // no single slider here is "the filter", so what the mark identifies is
             // the bar, and through it the layer you are tuning.

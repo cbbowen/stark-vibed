@@ -17,7 +17,7 @@ use dioxus::prelude::*;
 use crate::commands::Command;
 use crate::drags::{self, DragAction};
 use crate::icons::{self, icon, label};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::panels::select::current_tool;
 use crate::state::{AppState, PickScope};
 use crate::widgets::CommandButton;
@@ -57,7 +57,9 @@ pub fn PickBar() -> Element {
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
-        div { class: chrome_class(state, "pick-bar"),
+        div {
+            class: "pick-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             // The tool Alt has just armed, drawn as well as named. This bar exists to
             // make a modifier binding discoverable (see the module docs), and a picture
             // of the eyedropper appearing beside the cursor is the shortest version of

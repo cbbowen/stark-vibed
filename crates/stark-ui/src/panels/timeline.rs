@@ -25,7 +25,7 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon, label};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch, use_obs_opt};
 use stark_engine::command::DocCommand;
@@ -230,7 +230,9 @@ pub fn TimelineBar() -> Element {
     // nothing.
     let Some((at, total)) = range() else {
         return rsx! {
-            div { class: chrome_class(state, "timeline-bar"),
+            div {
+                class: "timeline-bar chrome",
+                class: if chrome_dimmed(state) { "dimmed" },
                 span { class: "bar-label",
                     {icon(icons::TIMELINE)}
                     {label("Timeline")}
@@ -289,7 +291,9 @@ pub fn TimelineBar() -> Element {
     };
 
     rsx! {
-        div { class: chrome_class(state, "timeline-bar"),
+        div {
+            class: "timeline-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             button {
                 class: "chip timeline-play",
                 title: "{play_title}",

@@ -82,7 +82,7 @@ use dioxus::prelude::*;
 
 use crate::brush_config::{BrushConfig, Transient};
 use crate::icons::{self, icon};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::presets::{self, PresetEntry};
 use crate::state::AppState;
 use crate::storage::{self, Store};
@@ -498,7 +498,7 @@ pub fn release_all(state: AppState) {
 ///   it is how the number gets its first brush — while a standing rack of empty
 ///   rows would be a column of controls that do nothing.
 ///
-/// It **fades with the rest of the floating chrome** (`layout::chrome_class`),
+/// It **fades with the rest of the floating chrome** (`layout::chrome_dimmed`),
 /// which goes to nothing while a canvas gesture is in flight: it stands over the
 /// painting like the panels and the bars, and while a stroke is being laid the
 /// screen goes back to being the painting. What makes that safe on something
@@ -615,12 +615,11 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
             .collect()
     };
 
-    let mut class = chrome_class(state, "slot-overlay");
-    if pinned {
-        class.push_str(" pinned");
-    }
     rsx! {
-        div { class,
+        div {
+            class: "slot-overlay chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
+            class: if pinned { "pinned" },
             for (slot, brush, stored, label) in rows {
                 {
                     // The brush as a stroke, filling the row as its background —

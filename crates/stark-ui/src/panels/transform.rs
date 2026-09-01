@@ -43,7 +43,7 @@ use crate::gesture::{
 };
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
@@ -279,7 +279,9 @@ pub fn TransformBar() -> Element {
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
-        div { class: chrome_class(state, "transform-bar mode-bar"),
+        div {
+            class: "transform-bar mode-bar chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             // The same mark the selection bar's Transform chip wears — this bar stands
             // in for that one for the gesture's duration, so it carries the glyph of
             // the button that raised it.
@@ -649,7 +651,8 @@ fn affine_ellipse(state: AppState, ts: TransformState, view: ViewTransform) -> E
     );
     rsx! {
         div {
-            class: chrome_class(state, "transform-ellipse"),
+            class: "transform-ellipse chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             style: "{ellipse_style}",
             // The north dot rides the same CSS transform as its parent, so it
             // marks the reference ellipse's "up" wherever the deformation has
@@ -706,7 +709,8 @@ fn quad_overlay(state: AppState, p: PerspectiveUi, view: ViewTransform) -> Eleme
 
     rsx! {
         svg {
-            class: chrome_class(state, "transform-svg"),
+            class: "transform-svg chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             width: "{w}",
             height: "{h}",
             view_box: "0 0 {w} {h}",
@@ -755,7 +759,8 @@ fn mesh_overlay(state: AppState, w: WarpUi, view: ViewTransform) -> Element {
 
     rsx! {
         svg {
-            class: chrome_class(state, "transform-svg"),
+            class: "transform-svg chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             width: "{vw}",
             height: "{vh}",
             view_box: "0 0 {vw} {vh}",

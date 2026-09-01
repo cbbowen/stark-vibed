@@ -407,41 +407,29 @@ impl From<ChromeHiding> for String {
     }
 }
 
-/// The class list for a floating-chrome container (the panel stack, the command rail,
-/// the selection bar): its own class plus `chrome`, and `dimmed` while a canvas gesture
-/// is in flight *and* this browser has asked for that ([`ChromeHiding`]).
+/// Whether a floating-chrome container (the panel stack, the command rail, the
+/// selection bar) is faded out of the way right now — a canvas gesture is in flight
+/// *and* this browser has asked for that ([`ChromeHiding`]), since "Always show" is
+/// the answer no to both.
 ///
 /// Every one of them sits over the canvas and none of them is what the user is looking
 /// at mid-stroke, so they all fade together — the screen goes back to being the
 /// painting, and comes back the moment the gesture ends. The fade is CSS
 /// ([`crate::state::Signals::canvas_active`] only toggles the class), so the chrome
 /// stays laid out where it was and nothing reflows on the way in or out.
-pub fn chrome_class(state: AppState, base: &str) -> String {
-    dim_class(base, fading(state))
-}
-
-/// Whether a gesture is taking the chrome with it right now — the gesture and the
-/// setting together, since "Always show" is the answer no to both.
+///
+/// A container wears `chrome` unconditionally and `dimmed` under this, as a second
+/// `class:` attribute — rsx merges same-named attributes with a space, so the two
+/// names stay literals in the markup that shows them.
 ///
 /// The gesture is read first, so chrome standing idle subscribes to nothing else: the
 /// setting cannot change what an idle container looks like, and every container in the
 /// app calls this.
-fn fading(state: AppState) -> bool {
+pub fn chrome_dimmed(state: AppState) -> bool {
     (state.canvas_active)() && (state.chrome_hiding)().fades()
 }
 
-/// `base`, plus `chrome`, plus `dimmed` when it is `out` of the way. The two class
-/// names the fade is written against, stated once — there are two reasons a container
-/// can be faded now (see [`stack_class`]) and they must not each spell it.
-fn dim_class(base: &str, out: bool) -> String {
-    if out {
-        format!("{base} chrome dimmed")
-    } else {
-        format!("{base} chrome")
-    }
-}
-
-/// [`chrome_class`] for the panel stack, which fades for a second reason: it stays
+/// [`chrome_dimmed`] for the panel stack, which fades for a second reason: it stays
 /// out of the way after the gesture ends, until the pointer reaches into its column
 /// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep)).
 ///
@@ -449,8 +437,8 @@ fn dim_class(base: &str, out: bool) -> String {
 /// about the stack (it is not what the screen is for right now), and giving the second
 /// one a class of its own would be two ways to be invisible for the stylesheet to keep
 /// in step.
-fn stack_class(state: AppState) -> String {
-    dim_class("panel-stack", fading(state) || standing_down(state))
+fn stack_dimmed(state: AppState) -> bool {
+    chrome_dimmed(state) || standing_down(state)
 }
 
 /// Whether the stack is out of the way **and nothing is holding it up** — the
@@ -756,7 +744,8 @@ pub fn PanelStack() -> Element {
             }
         }
         div {
-            class: stack_class(state),
+            class: "panel-stack chrome",
+            class: if stack_dimmed(state) { "dimmed" },
             // Where the rail's numbers come from. The scroll event is the browser
             // telling us it moved the column — a wheel, a keystroke, the thumb below
             // — and the pointer arriving is the one moment a rail that is about to be
@@ -827,17 +816,17 @@ fn PanelScrollbar() -> Element {
         return rsx! {};
     }
     let (top, height) = scroll.thumb();
-    // Fades with the rest of the floating chrome, and for its reason: mid-gesture the
-    // screen goes back to being the painting. `chrome` also stops it taking the
-    // pointer while faded, so a stroke that strays into the column cannot be caught by
-    // a bar the artist cannot see.
-    let mut class = chrome_class(state, "panel-scroll");
-    if dragging {
-        class.push_str(" dragging");
-    }
     rsx! {
         div {
-            class,
+            // Fades with the rest of the floating chrome, and for its reason:
+            // mid-gesture the screen goes back to being the painting. `chrome` also
+            // stops it taking the pointer while faded, so a stroke that strays into the
+            // column cannot be caught by a bar the artist cannot see.
+            class: "panel-scroll chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
+            // A drag keeps the rail up whatever the pointer is over: a thumb that
+            // vanished mid-drag would leave the hand steering something it cannot see.
+            class: if dragging { "dragging" },
             style: "top: {PANEL_INSET}px; height: {scroll.view}px;",
             div {
                 class: "panel-scroll-thumb",
@@ -903,24 +892,6 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
         .map(|d| layout.heights.read().get(&id).copied().unwrap_or(d));
     let resizing = height.is_some() && layout.resize.read().is_some_and(|r| r.id == id);
 
-    let mut class = String::from("panel");
-    if height.is_some() {
-        class.push_str(" resizable");
-    }
-    if folded {
-        class.push_str(" collapsed");
-    }
-    class.push_str(motion.class());
-    if resizing {
-        class.push_str(" resizing");
-    }
-    if slot == 0 {
-        class.push_str(" stack-first");
-    }
-    if slot + 1 == count {
-        class.push_str(" stack-last");
-    }
-
     // **Every declaration, every render, including the ones that are "off".**
     //
     // Inline styles are applied property by property, not by replacing the attribute, so a
@@ -941,7 +912,13 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
     let style = format!("order: {slot}; height: {h}; {}", motion.css());
     rsx! {
         div {
-            class,
+            class: "panel",
+            class: if height.is_some() { "resizable" },
+            class: if folded { "collapsed" },
+            class: if motion.lifted { "dragging" },
+            class: if resizing { "resizing" },
+            class: if slot == 0 { "stack-first" },
+            class: if slot + 1 == count { "stack-last" },
             style,
             // Which panel this element is, for `platform::panel_boxes` to read back. The
             // drag measures the DOM and writes `order`, so it needs the two to agree; this

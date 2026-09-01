@@ -293,7 +293,8 @@ pub struct Motion {
     /// Where to draw this row relative to where it belongs, in px.
     pub shift: (f32, f32),
     /// In the travelling block: this row is one of the ones being carried by the
-    /// pointer, so it tracks the hand 1:1 and slides for nobody.
+    /// pointer, so it tracks the hand 1:1 and slides for nobody. `.dragging` in the
+    /// markup — the hook every reorderable list's stylesheet hangs the lift on.
     pub lifted: bool,
     /// A drag is in flight, so a row that is *not* lifted eases into its new place
     /// rather than jumping there.
@@ -318,12 +319,6 @@ impl Motion {
             "none".to_string()
         };
         format!("transform: translate({dx}px, {dy}px); transition: {ease};")
-    }
-
-    /// `" dragging"` for a row in flight, to be appended to its class list — the
-    /// hook both panels' stylesheets hang the lift on.
-    pub fn class(self) -> &'static str {
-        if self.lifted { " dragging" } else { "" }
     }
 }
 

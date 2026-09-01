@@ -198,7 +198,7 @@ pub struct Signals {
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
     /// or a run of wheel zooming). The floating chrome fades out while it is set,
     /// handing the screen back to the painting — see
-    /// [`chrome_class`](crate::layout::chrome_class).
+    /// [`chrome_dimmed`](crate::layout::chrome_dimmed).
     pub canvas_active: Signal<bool>,
     /// Whether the panel stack is **asleep**: still out of the way after the gesture
     /// that faded it, until the pointer reaches into the column it lives in
@@ -213,7 +213,7 @@ pub struct Signals {
     /// a panel (`layout::open_panel`), which would otherwise be a command with
     /// nothing to show for itself.
     ///
-    /// **The stack alone sleeps**, not everything [`chrome_class`] dims. The rest of
+    /// **The stack alone sleeps**, not everything [`chrome_dimmed`] dims. The rest of
     /// the floating chrome is either a mode's — a bar with the Done button on it, the
     /// handles a transform is dragged by — or the rail every menu is behind, and all
     /// of it lives somewhere other than this column: latched off until the pointer
@@ -221,14 +221,14 @@ pub struct Signals {
     /// for them. The stack is what there is a lot of, and it is the thing whose
     /// coming back over the painting was worth waiting for.
     ///
-    /// [`chrome_class`]: crate::layout::chrome_class
+    /// [`chrome_dimmed`]: crate::layout::chrome_dimmed
     pub panels_asleep: Signal<bool>,
     /// Whether the chrome gets out of the way at all, and for how long — this
     /// browser's own choice (`layout::ChromeHiding`, §11), set in the ⚙ dialog and
     /// stored with the other preferences.
     ///
     /// Read by the two functions that decide what the fade means
-    /// ([`chrome_class`](crate::layout::chrome_class) and `layout::sleep_panels`), and
+    /// ([`chrome_dimmed`](crate::layout::chrome_dimmed) and `layout::sleep_panels`), and
     /// deliberately *not* by the gestures: `canvas_active` above still says the canvas
     /// is in hand whatever this holds, because half a dozen other things ask that
     /// question for their own reasons (a thumbnail deferring its work, the eyedropper

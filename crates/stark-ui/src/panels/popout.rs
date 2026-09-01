@@ -22,7 +22,7 @@
 use dioxus::prelude::*;
 
 use crate::anchor;
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::platform::{self, ElementBox};
 use crate::state::AppState;
 use crate::widgets::{PopoutId, close_popout};
@@ -110,7 +110,8 @@ pub fn StackPopouts() -> Element {
 
     rsx! {
         div {
-            class: chrome_class(state, "stack-popout"),
+            class: "stack-popout chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             style: "{place}",
             match id {
                 PopoutId::SubstrateColor => rsx! { super::lighting::SubstrateColorPicker {} },

@@ -27,7 +27,7 @@ use crate::commands::{self, Command, VisibilityToggle};
 use crate::credits::CreditsModal;
 use crate::icons::{self, icon, icon_large};
 use crate::input::accel;
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::platform;
 use crate::settings::SettingsModal;
 use crate::state::{AppState, use_obs_opt};
@@ -66,7 +66,8 @@ pub fn CommandRail() -> Element {
 
     rsx! {
         div {
-            class: chrome_class(state, "command-rail"),
+            class: "command-rail chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             // The rail is a menubar and its three entries are its items, which is
             // what the two flyouts' triggers and the ⚙ below each say for
             // themselves — a well-formed menubar rather than a column of buttons.

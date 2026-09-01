@@ -71,7 +71,7 @@ use dioxus::prelude::*;
 // (§18.1.7): "how square is square enough" has to mean one thing however the canvas
 // is being turned.
 use crate::input::{elem_xy, shortest_turn, snap_quarter};
-use crate::layout::chrome_class;
+use crate::layout::chrome_dimmed;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
@@ -366,7 +366,9 @@ pub fn NavigatorOverlay() -> Element {
         // A wrapper around the frame rather than the frame itself, because the fade
         // has to out-specify the pointer-events the corner hands back — see
         // `.navigator-overlay` in the stylesheet, which is where that argument is.
-        div { class: chrome_class(state, "navigator-overlay"),
+        div {
+            class: "navigator-overlay chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
             div {
                 class: "nav-frame",
                 // The mirror chord is printed from its own binding

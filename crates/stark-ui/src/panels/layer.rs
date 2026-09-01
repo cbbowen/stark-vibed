@@ -638,42 +638,6 @@ pub fn LayerRow(
             _ => "background-image: none;".to_string(),
         }
     });
-    // One selection, one highlight. A matte is selected exactly the way a paint
-    // layer is (§15.7) — selecting it raises the frame bar and its
-    // on-canvas handles, and the brush simply has nowhere to go until a paint layer
-    // is selected again. Because there is only one thing to highlight, "exactly one
-    // row is highlighted" is a consequence rather than a rule to keep — and because
-    // `active` arrives as a prop resolved once by the panel, it is a consequence of
-    // one comparison rather than of one per row.
-    //
-    // Three kinds of row, and the two that are not paint wear their own substrate: a
-    // frame is dashed (§15.7) and a filter is ruled (§21.6), because in both cases
-    // "the brush has nowhere to go here" is the thing to see before reaching for it.
-    // A filter's mark is a *line* rather than a dash: a frame bounds the piece, and a
-    // filter runs across everything under it.
-    let kind = if matte {
-        " matte"
-    } else if filter {
-        " filter"
-    } else {
-        ""
-    };
-    let row_class = format!("layer-row{kind}{}", if active { " active" } else { "" });
-    // Membership is an indent; clipping is a rail. Two marks, because they are two
-    // facts (§14.6) — and a row can wear one without the other, which
-    // is the state Photoshop's single arrow cannot express.
-    let mut row_class = if info.clip {
-        format!("{row_class} clipped")
-    } else {
-        row_class
-    };
-    // The layer that would carry what is being dropped. Marked while a drag is over
-    // it because that is the one part of the landing the indent leaves to be inferred
-    // — the seam says *where*, the block's own indent says *how deep*, and this says
-    // *whose stack that depth is*.
-    if carrying {
-        row_class.push_str(" carrying");
-    }
     let indent = info.depth * INDENT;
     let is_group = info.is_group;
     let collapsed = row.collapsed;
@@ -725,7 +689,6 @@ pub fn LayerRow(
     // The row's transform, written by `Motion` so that every declaration is stated on
     // every render — including the ones that are "off", which is the whole of that
     // rule (see `reorder::Motion::css`).
-    let item_class = format!("layer-item{}", motion.class());
     let shift = motion.css();
 
     rsx! {
@@ -735,7 +698,8 @@ pub fn LayerRow(
         // `--indent` for the stylesheet's stratum band, which paints exactly the
         // gutter the padding opens (`.layer-item::before`) — one value, two hands.
         div {
-            class: "{item_class}",
+            class: "layer-item",
+            class: if motion.lifted { "dragging" },
             style: "--indent:{indent}px; padding-left:{indent}px; {shift}",
             // Which layer this element is, for `platform::layer_boxes` to read back.
             // A drag measures the DOM and then talks about rows, so the two have to
@@ -766,7 +730,32 @@ pub fn LayerRow(
                 }
             }
             div {
-                class: "{row_class} row",
+                class: "layer-row row",
+                // Three kinds of row, and the two that are not paint wear their own
+                // substrate: a frame is dashed (§15.7) and a filter is ruled (§21.6),
+                // because in both cases "the brush has nowhere to go here" is the thing
+                // to see before reaching for it. A filter's mark is a *line* rather than
+                // a dash: a frame bounds the piece, and a filter runs across everything
+                // under it.
+                class: if matte { "matte" } else if filter { "filter" },
+                // One selection, one highlight. A matte is selected exactly the way a
+                // paint layer is (§15.7) — selecting it raises the frame bar and its
+                // on-canvas handles, and the brush simply has nowhere to go until a
+                // paint layer is selected again. Because there is only one thing to
+                // highlight, "exactly one row is highlighted" is a consequence rather
+                // than a rule to keep — and because `active` arrives as a prop resolved
+                // once by the panel, it is a consequence of one comparison rather than
+                // of one per row.
+                class: if active { "active" },
+                // Membership is an indent; clipping is a rail. Two marks, because they
+                // are two facts (§14.6) — and a row can wear one without the other,
+                // which is the state Photoshop's single arrow cannot express.
+                class: if info.clip { "clipped" },
+                // The layer that would carry what is being dropped. Marked while a drag
+                // is over it because that is the one part of the landing the indent
+                // leaves to be inferred — the seam says *where*, the block's own indent
+                // says *how deep*, and this says *whose stack that depth is*.
+                class: if carrying { "carrying" },
                 // Only a group gets a triangle, and it sits centred on the row's top
                 // edge, aimed at what it carries — which this panel draws *above* the
                 // base (§14.6). Which way the caret points therefore says nothing; what
