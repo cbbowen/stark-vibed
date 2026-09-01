@@ -43,7 +43,7 @@ use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
 
-use crate::brush_config::{BrushConfig, BrushEffectType};
+use crate::brush_config::{BrushConfig, BrushEffectType, Transient};
 use crate::commands::{self, Command};
 use crate::icons::{self, icon};
 use crate::panels::brush::{
@@ -81,7 +81,7 @@ const PREVIEW_STROKE_SEED: u64 = 0x5747_1CED_57A2_4B11;
 const EDIT_THROTTLE_MS: i32 = 50;
 
 /// A deferred brush mutation: the latest slider edit during a throttle window.
-type BrushEdit = Box<dyn FnOnce(&mut BrushConfig)>;
+type BrushEdit = Box<dyn FnOnce(&mut BrushConfig, &mut Transient)>;
 
 /// The parameters the pen can drive (§6.2) — one variant per modulation
 /// target the brush carries, and the addressing for the one open mapping row.
@@ -128,8 +128,10 @@ impl ModRow {
     /// The base slider's range, for the brush being edited. The three wet fluxes
     /// stop at 0.95 for the reason they always did — λ diverges at 1 (§6.2).
     ///
-    /// Takes the brush because one row's top is not a constant: see `Stretch`.
-    fn range(self, b: &BrushConfig) -> (f32, f32) {
+    /// Takes both halves because one row's top is not a constant: the Flow
+    /// row's is the in-force effect's, and `Stretch`'s asks the engine about
+    /// the tip the transient sizes.
+    fn range(self, b: &BrushConfig, t: Transient) -> (f32, f32) {
         match self {
             Self::Size => (MIN_RADIUS, MAX_RADIUS),
             // The in-force effect's own range (`BrushConfig::max_flow`) — the
@@ -148,7 +150,7 @@ impl ModRow {
             // silently stops lifting and depositing altogether. A slider that
             // offered one would be offering a broken brush, and no note beside it
             // would make that better than not offering it.
-            Self::Stretch => (0.0, stark_engine::max_stretch(&b.params())),
+            Self::Stretch => (0.0, stark_engine::max_stretch(&b.params(t))),
             // Full range, and it reads right-to-left: 1 is all the give there is, so
             // the substrate gates nothing, and 0 is the driest tip (§6.4). Quoted that
             // way round for the pen's sake — see `BrushParams::tooth_give`.
@@ -160,11 +162,12 @@ impl ModRow {
         }
     }
 
-    fn get(self, b: &BrushConfig) -> f32 {
+    fn get(self, b: &BrushConfig, t: Transient) -> f32 {
         match self {
-            Self::Size => b.size,
-            // The effect's own overall rate, paint or eraser alike (§6.12).
-            Self::Flow => b.flow(),
+            Self::Size => t.size,
+            // The overall rate of whichever effect is in force (§6.2, §6.12)
+            // — the transient's, like the size beside it.
+            Self::Flow => t.flow,
             Self::Stretch => b.stretch,
             Self::ToothGive => b.tooth.give,
             Self::Add => b.wet.add,
@@ -179,10 +182,10 @@ impl ModRow {
     /// [`edit`] defers its closure a throttle window — lands on the remembered
     /// wet half instead of being dropped. The effect switch is the user's own
     /// and never moves under an edit (`BrushConfig::effect`).
-    fn set(self, b: &mut BrushConfig, v: f32) {
+    fn set(self, b: &mut BrushConfig, t: &mut Transient, v: f32) {
         match self {
-            Self::Size => b.size = v,
-            Self::Flow => b.set_flow(v),
+            Self::Size => t.size = v,
+            Self::Flow => t.flow = v,
             Self::Stretch => b.stretch = v,
             Self::ToothGive => b.tooth.give = v,
             Self::Add => b.wet.add = v,
@@ -202,8 +205,8 @@ impl ModRow {
             Self::ToothGive => &mut b.modulation.tooth_give,
             Self::Flow => match b.effect {
                 BrushEffectType::Paint | BrushEffectType::Wet => &mut b.flow_modulation,
-                BrushEffectType::Erase => &mut b.erase.modulation.flow,
-                BrushEffectType::Liquify => &mut b.liquify.modulation.strength,
+                BrushEffectType::Erase => &mut b.erase.flow_modulation,
+                BrushEffectType::Liquify => &mut b.liquify.strength_modulation,
             },
             Self::Add => &mut b.wet.add_modulation,
             Self::Lift => &mut b.wet.lift_modulation,
@@ -219,8 +222,8 @@ impl ModRow {
             Self::ToothGive => b.modulation.tooth_give,
             Self::Flow => match b.effect {
                 BrushEffectType::Paint | BrushEffectType::Wet => b.flow_modulation,
-                BrushEffectType::Erase => b.erase.modulation.flow,
-                BrushEffectType::Liquify => b.liquify.modulation.strength,
+                BrushEffectType::Erase => b.erase.flow_modulation,
+                BrushEffectType::Liquify => b.liquify.strength_modulation,
             },
             Self::Add => b.wet.add_modulation,
             Self::Lift => b.wet.lift_modulation,
@@ -362,9 +365,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // calls, not components, and because "one at a time" is the behaviour wanted.
     let mod_open = use_signal(|| None::<ModRow>);
 
-    // The frontend's own brush signal (`state::AppState::brush`): the dialog's
-    // rows are the brush, and they wake for brush edits and nothing else.
+    // The frontend's own signals (`state::AppState::{brush, transient}`): the
+    // dialog's rows are the brush, and they wake for brush edits and nothing
+    // else.
     let brush = (state.brush)();
+    let tune = (state.transient)();
     let is_round = matches!(brush.shape, BrushShape::Round { .. });
     // Which effect the brush is (§6.2, §6.12) — what gates the laying-only
     // sections below, what the effect chips read, and what the effect section
@@ -419,7 +424,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // of the library, the name in hand and the brush as they are *now* — so the
     // button wakes with the first edit that moves the brush off its preset.
     let in_hand = (state.preset_in_hand)();
-    let verdict = presets::overwrite(&state.presets.read(), in_hand.as_deref(), &brush);
+    let verdict = presets::overwrite(&state.presets.read(), in_hand.as_deref(), &(brush, tune));
     let overwrite_ready = matches!(verdict, presets::Overwrite::Ready(_));
     let overwrite_title = match &verdict {
         presets::Overwrite::Nothing => {
@@ -566,13 +571,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                 "Pen angle" }
                         }
                     }
-                    {mod_slider(state, preview, mod_open, ModRow::Size, brush)}
+                    {mod_slider(state, preview, mod_open, ModRow::Size, brush, tune)}
                     // How far the footprint is drawn out along the axis above
                     // (§6.6). Pointed at Tilt with "Pen angle" this is the pencil:
                     // lean the pen and the contact patch elongates along the lean,
                     // the way a real conical tip's does. Held at a value with no
                     // mapping it is a chisel nib, off a plain round tip.
-                    {mod_slider(state, preview, mod_open, ModRow::Stretch, brush)}
+                    {mod_slider(state, preview, mod_open, ModRow::Stretch, brush, tune)}
                     // Stretching along the *tangent* is a coherent thing to ask
                     // for — the tip lays more paint per unit travel — but it is not
                     // the one people reach for this slider wanting, and the
@@ -585,13 +590,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // Why the slider stopped short of where it stops on a smaller
                     // brush. Said only when it actually did: below ~110 px the
                     // whole range is there and there is nothing to explain.
-                    if stark_engine::max_stretch(&brush.params()) < BrushParams::MAX_STRETCH {
+                    if stark_engine::max_stretch(&brush.params(tune)) < BrushParams::MAX_STRETCH {
                         div { class: "be-note",
                             "This tip is too big to draw out any further — a stroke                                  that lifts and deposits works over a copy of the canvas                                  beneath it, and that has a size limit. Lower Size to                                  stretch it more." }
                     }
                     if let BrushShape::Round { hardness } = brush.shape {
                         Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
-                            oninput: move |v| edit(state, preview, move |b| {
+                            oninput: move |v| edit(state, preview, move |b, _| {
                                 if let BrushShape::Round { hardness } = &mut b.shape {
                                     *hardness = v;
                                 }
@@ -601,16 +606,16 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // point (§6.2). In *radii*, so a taper keeps its shape as the
                     // brush is resized, which is why the labels say so.
                     Slider { label: "Start taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.start_taper_length,
-                        oninput: move |v| edit(state, preview, move |b| b.start_taper_length = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.start_taper_length = v) }
                     Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
-                        oninput: move |v| edit(state, preview, move |b| b.end_taper_length = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.end_taper_length = v) }
                     // Stroke smoothing (§6.11): the towed tip. The one
                     // slider here whose knob never reaches the engine — the
                     // stored path already embodies it, so the amount is the
                     // frontend's own (`BrushConfig::smoothing`), riding
                     // presets and the rack with the rest of the brush.
                     Slider { label: "Smoothing", min: 0.0, max: 1.0, value: brush.smoothing,
-                        oninput: move |v| edit(state, preview, move |b| b.smoothing = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.smoothing = v) }
                 }
 
                 Section {
@@ -648,13 +653,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // shown and vetoed (`BrushConfig::set_opacity`).
                     if !liquifies {
                         Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.opacity(),
-                            oninput: move |v| edit(state, preview, move |b| b.set_opacity(v)) }
+                            oninput: move |v| edit(state, preview, move |b, _| b.set_opacity(v)) }
                     }
                     // The effect's overall rate (§6.2): how much a pass lays — and,
                     // wet, how hard it works the canvas; erasing, how fast the bite
                     // builds toward its ceiling (§6.12). Not a wet axis: what the
                     // tool *does* per unit of this is the Wet section's business.
-                    {mod_slider(state, preview, mod_open, ModRow::Flow, brush)}
+                    {mod_slider(state, preview, mod_open, ModRow::Flow, brush, tune)}
                     // How far the tip settles into the canvas's own tooth (§6.4):
                     // at 1 it follows every fall, the substrate is irrelevant and the
                     // mark is solid; turned *down* the paint catches on the
@@ -666,7 +671,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // down, so quoting the knob as the give is what makes a pressure
                     // mapping the charcoal — light touch dry, borne down solid —
                     // instead of its opposite (`ToothParams::give`).
-                    {mod_slider(state, preview, mod_open, ModRow::ToothGive, brush)}
+                    {mod_slider(state, preview, mod_open, ModRow::ToothGive, brush, tune)}
                     // ...and how *abruptly* it meets the grain, which is the other
                     // half of contact and a different question (§6.4). Narrow and the mark is
                     // a level set of the grain — the faces print and the valleys do
@@ -678,7 +683,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // omission: the pen presses a tip harder, it does not make it out
                     // of something else (`BrushModulations::tooth_give`).
                     Slider { label: "Tooth softness", min: 0.0, max: MAX_TOOTH_SOFTNESS, value: brush.tooth.softness,
-                        oninput: move |v| edit(state, preview, move |b| b.tooth.softness = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.tooth.softness = v) }
                     // The substrate is the *document's*, not the brush's — a pencil
                     // and a loaded brush on one canvas see one tooth — so on a
                     // smooth canvas this knob has nothing to bite and says so,
@@ -698,7 +703,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // is only noise, and a ceiling the model does not own belongs to
                     // the slider's end rather than to the quantity.
                     Slider { label: "Jitter", min: 0.0, max: 0.2, value: brush.jitter,
-                        oninput: move |v| edit(state, preview, move |b| b.jitter = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.jitter = v) }
                     // Depletion per *radius* travelled — the stroke runs dry. 0 is
                     // what a pen or a digital brush wants; not behind "Show more",
                     // because it is the only knob that decides whether a tool runs
@@ -708,7 +713,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // on a small tip and a stub on a large one, which is the whole
                     // of why `radius` had to be read as something other than scale.
                     Slider { label: "Drain", min: 0.0, max: 0.5, value: brush.drain,
-                        oninput: move |v| edit(state, preview, move |b| b.drain = v) }
+                        oninput: move |v| edit(state, preview, move |b, _| b.drain = v) }
                 }
 
                 // Pigment wander is a property of laying pigment, so the whole
@@ -728,7 +733,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                                 button {
                                     key: "{noise_label(kind)}",
                                     class: chip(cd.noise == kind),
-                                    onclick: move |_| edit(state, preview, move |b| b.color_dynamics.noise = kind),
+                                    onclick: move |_| edit(state, preview, move |b, _| b.color_dynamics.noise = kind),
                                     "{noise_label(kind)}"
                                 }
                             }
@@ -736,16 +741,16 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // How far each color channel wanders (± in the channel's units).
                         for i in 0..3 {
                             Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
-                                oninput: move |v| edit(state, preview, move |b| b.color_dynamics.amplitude[i] = v) }
+                                oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.amplitude[i] = v) }
                         }
                         // How fast it wanders along each lookup axis; the modulation
                         // sliders live only while some channel is active (no effect at 0).
                         if cd.amplitude.iter().any(|a| *a > 0.0) {
                             div { class: "be-sub",
                                 Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
-                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[0] = v) }
+                                    oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.frequency[0] = v) }
                                 Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
-                                    oninput: move |v| edit(state, preview, move |b| b.color_dynamics.frequency[1] = v) }
+                                    oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.frequency[1] = v) }
                             }
                         }
                     }
@@ -764,22 +769,22 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         // is in the mix, as a share the shared Flow scales. At 0 the
                         // tool only works what is there — the blender — and the Flow
                         // slider strengthens the blend instead of laying paint.
-                        {mod_slider(state, preview, mod_open, ModRow::Add, brush)}
+                        {mod_slider(state, preview, mod_open, ModRow::Add, brush, tune)}
                         // The three fluxes a palette knife is built out of, and the
                         // three most worth mapping onto the pen: a knife that lifts
                         // with pressure and lays back with tilt is those two chips
                         // (§6.2).
-                        {mod_slider(state, preview, mod_open, ModRow::Lift, brush)}
-                        {mod_slider(state, preview, mod_open, ModRow::Deposit, brush)}
+                        {mod_slider(state, preview, mod_open, ModRow::Lift, brush, tune)}
+                        {mod_slider(state, preview, mod_open, ModRow::Deposit, brush, tune)}
                         // The lateral axis: the paint under the tip diffuses towards its
                         // neighbours (§6.2). Alone it is a blur brush; under `add` it
                         // melts the ridges of the strokes being painted over. Capped at
                         // 0.95 like the two vertical rates — the λ diverges at 1.
-                        {mod_slider(state, preview, mod_open, ModRow::Bleed, brush)}
+                        {mod_slider(state, preview, mod_open, ModRow::Bleed, brush, tune)}
                         More { open: wet_more,
                             // The finite glob pre-loaded on the tool (palette knife, §6.2).
                             Slider { label: "Charge", min: 0.0, max: 2.0, value: charge,
-                                oninput: move |v| edit(state, preview, move |b| b.wet.charge = v) }
+                                oninput: move |v| edit(state, preview, move |b, _| b.wet.charge = v) }
                         }
                     }
                 }
@@ -812,9 +817,10 @@ fn mod_slider(
     open: Signal<Option<ModRow>>,
     row: ModRow,
     brush: BrushConfig,
+    tune: Transient,
 ) -> Element {
     let mut open = open;
-    let (min, max) = row.range(&brush);
+    let (min, max) = row.range(&brush, tune);
     let m = row.of(&brush);
     let expanded = open() == Some(row);
     // The chip says what is driving the parameter, which is the one thing a glance
@@ -827,8 +833,8 @@ fn mod_slider(
 
     rsx! {
         div { class: "mod-slider",
-            Slider { label: row.label(&brush).to_string(), min, max, value: row.get(&brush),
-                oninput: move |v| edit(state, preview, move |b| row.set(b, v)) }
+            Slider { label: row.label(&brush).to_string(), min, max, value: row.get(&brush, tune),
+                oninput: move |v| edit(state, preview, move |b, t| row.set(b, t, v)) }
             button {
                 class: chip_class,
                 title: "What the pen drives this with",
@@ -864,7 +870,7 @@ fn mod_slider(
                             // is what makes a tilt-driven brush usable with a mouse,
                             // which reports no tilt at all.
                             Slider { label: "At zero".to_string(), min: 0.0, max: 1.0, value: m.floor,
-                                oninput: move |v| edit(state, preview, move |b| {
+                                oninput: move |v| edit(state, preview, move |b, _| {
                                     if let Some(m) = row.slot(b) { m.floor = v; }
                                 }) }
                             // Negative = late, positive = early; 0 is linear,
@@ -874,7 +880,7 @@ fn mod_slider(
                             // track this narrow.
                             Slider { label: "Response".to_string(),
                                 min: -1.0, max: 1.0, value: m.curve,
-                                oninput: move |v| edit(state, preview, move |b| {
+                                oninput: move |v| edit(state, preview, move |b, _| {
                                     if let Some(m) = row.slot(b) { m.curve = v; }
                                 }) }
                         }
@@ -902,13 +908,13 @@ fn noise_label(kind: NoiseKind) -> &'static str {
 /// across dialog closes, preset swaps and sessions alike, where the stash this
 /// replaced remembered only for the dialog's own length.
 fn set_effect(state: AppState, preview: Preview, kind: BrushEffectType) {
-    edit(state, preview, move |b| b.effect = kind);
+    edit(state, preview, move |b, _| b.effect = kind);
 }
 
 /// Set (or clear) a row's mapping source, keeping the shape it already had — so
 /// switching pressure → tilt is one edit rather than three.
 fn set_source(state: AppState, preview: Preview, row: ModRow, source: Option<ModSource>) {
-    edit(state, preview, move |b| {
+    edit(state, preview, move |b, _| {
         let held = row.of(b);
         *row.slot(b) = source.map(|source| Modulation {
             source,
@@ -1280,6 +1286,7 @@ fn restroke(state: AppState, mut preview: Preview) {
         return;
     }
     let mut brush = *state.brush.peek();
+    let tune = *state.transient.peek();
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the effect's own opacity (the Opacity slider) is left
     // untouched. A stamp shape needs no handing over: the preview engine shares
@@ -1294,7 +1301,7 @@ fn restroke(state: AppState, mut preview: Preview) {
         r.process(DocCommand::Undo);
     }
     r.process(ViewCommand::SetBrush {
-        brush: brush.params(),
+        brush: brush.params(tune),
         color: brush.color(),
     });
     // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
@@ -1328,7 +1335,11 @@ fn restroke(state: AppState, mut preview: Preview) {
 /// `spawn_forever`) is correct. Don't move the slider rows into a child
 /// `#[component]`: the task would then die on a section fold with `cooling`
 /// stuck at `true`, gating all further edits.
-fn edit(state: AppState, mut preview: Preview, f: impl FnOnce(&mut BrushConfig) + 'static) {
+fn edit(
+    state: AppState,
+    mut preview: Preview,
+    f: impl FnOnce(&mut BrushConfig, &mut Transient) + 'static,
+) {
     if *preview.cooling.peek() {
         preview.pending.set(Some(Box::new(f)));
         return;

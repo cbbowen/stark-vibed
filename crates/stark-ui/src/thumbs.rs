@@ -52,7 +52,7 @@ use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};
 
-use crate::brush_config::BrushConfig;
+use crate::brush_config::{BrushConfig, Transient};
 use crate::platform::base64_encode;
 use crate::state::{AppState, root_signal};
 
@@ -83,9 +83,10 @@ const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 /// generation runs in `spawn_forever` tasks that outlive whichever panel asked.
 #[derive(Clone, Copy)]
 pub struct ThumbState {
-    /// Finished thumbnails: a `data:image/png` URL per brush snapshot, found by
-    /// comparing the snapshot itself ([`lookup`]).
-    pub cache: Signal<Vec<(BrushConfig, String)>>,
+    /// Finished thumbnails: a `data:image/png` URL per brush snapshot — both
+    /// halves, since a slot's tune is part of its picture — found by comparing
+    /// the snapshot itself ([`lookup`]).
+    pub cache: Signal<Vec<((BrushConfig, Transient), String)>>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
@@ -142,8 +143,8 @@ pub struct Rig {
 /// structs is cheaper than one of those serializations, so nothing was bought with
 /// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
 /// reason.
-fn lookup(state: AppState, w: &BrushConfig) -> Option<String> {
-    let key = keyed(w);
+fn lookup(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
+    let key = (keyed(w), t);
     state
         .thumbs
         .cache
@@ -168,18 +169,19 @@ fn lookup(state: AppState, w: &BrushConfig) -> Option<String> {
 ///
 /// The effect's opacity is deliberately untouched: it is the brush's own — the
 /// stroke really is laid under it (§6.2) — so two brushes that differ in it are
-/// two pictures and keep two entries. So are the size and flow, for the same
-/// reason: a slot tuned off its preset is a different stroke, and gets one.
+/// two pictures and keep two entries. So is the transient half beside the
+/// config in the key, for the same reason: a slot tuned off its preset is a
+/// different stroke, and gets one.
 fn keyed(w: &BrushConfig) -> BrushConfig {
     let mut w = *w;
     w.color = STROKE_COLOR;
     w
 }
 
-/// The thumbnail for `w`, if it has been generated. Subscribes, so a row showing
-/// a placeholder re-renders when its image lands.
-pub fn url(state: AppState, w: &BrushConfig) -> Option<String> {
-    lookup(state, w)
+/// The thumbnail for `w` at `t`, if it has been generated. Subscribes, so a row
+/// showing a placeholder re-renders when its image lands.
+pub fn url(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
+    lookup(state, w, t)
 }
 
 /// Make sure every brush that has a picture to show has a thumbnail, generating
@@ -196,8 +198,8 @@ pub fn refresh(state: AppState) {
     let mut busy = state.thumbs.busy;
     busy.set(true);
     spawn_forever(async move {
-        while let Some(w) = next_missing(state) {
-            if !generate(state, w).await {
+        while let Some((w, t)) = next_missing(state) {
+            if !generate(state, w, t).await {
                 // No engine to render with (startup, or a lost device). The
                 // library effect calls `refresh` again when the renderer lands.
                 break;
@@ -210,7 +212,7 @@ pub fn refresh(state: AppState) {
             // in the app can produce one (sliders clamp, and JSON cannot even carry
             // it), so this is a guarantee of termination rather than a case that
             // happens — the loop cannot spin, whatever is in the library.
-            if lookup(state, &w).is_none() {
+            if lookup(state, &w, t).is_none() {
                 tracing::warn!(
                     "a brush parameter does not compare equal to itself; \
                                 skipping the rest of the thumbnails"
@@ -234,13 +236,13 @@ pub fn refresh(state: AppState) {
 /// looking at fills in before the rack they have to hold a key to see — and a
 /// slot still at its preset's own size costs nothing here, since the two are one
 /// key.
-fn next_missing(state: AppState) -> Option<BrushConfig> {
+fn next_missing(state: AppState) -> Option<(BrushConfig, Transient)> {
     let cache = state.thumbs.cache.peek();
     let presets = state.presets.peek();
     let rack = state.slots.brushes.peek();
     presets
         .iter()
-        .map(|e| e.brush)
+        .map(|e| (e.brush, e.transient))
         .chain(
             rack.iter()
                 .flatten()
@@ -249,8 +251,8 @@ fn next_missing(state: AppState) -> Option<BrushConfig> {
         // Asked on the same terms the cache answers on ([`keyed`]) — and it has
         // to be, or a brush filed under its rendered color would be reported
         // missing forever and `refresh` would never finish its scan.
-        .find(|w| {
-            let key = keyed(w);
+        .find(|(w, t)| {
+            let key = (keyed(w), *t);
             !cache.iter().any(|(cached, _)| *cached == key)
         })
 }
@@ -259,7 +261,7 @@ fn next_missing(state: AppState) -> Option<BrushConfig> {
 /// renderer to share an engine from yet — the one condition worth stopping for;
 /// a preset whose render fails for its own reasons is skipped by caching a blank
 /// entry rather than retried forever.
-async fn generate(state: AppState, w: BrushConfig) -> bool {
+async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
@@ -286,7 +288,7 @@ async fn generate(state: AppState, w: BrushConfig) -> bool {
             });
         }
         let rig = guard.as_mut().expect("just built");
-        let view = thumb_view(w.size);
+        let view = thumb_view(t.size);
         // The scene, in stack order: the two paint slabs the stroke acts on —
         // the whole substrate is paint, so smearing, lifting and bleeding read
         // everywhere along the run — then the stroke itself, towed through the
@@ -315,7 +317,7 @@ async fn generate(state: AppState, w: BrushConfig) -> bool {
         // is laid with: one statement of "the color a thumbnail is painted in".
         let keyed_brush = keyed(&w);
         rig.engine.process(ViewCommand::SetBrush {
-            brush: keyed_brush.params(),
+            brush: keyed_brush.params(t),
             color: keyed_brush.color(),
         });
         let rope = crate::input::rope_in(view, w.smoothing);
@@ -353,7 +355,7 @@ async fn generate(state: AppState, w: BrushConfig) -> bool {
         Err(_) => String::new(),
     };
     let mut cache = state.thumbs.cache;
-    cache.write().push((keyed(&w), url));
+    cache.write().push(((keyed(&w), t), url));
     true
 }
 

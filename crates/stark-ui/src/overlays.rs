@@ -98,7 +98,7 @@ pub fn BrushCursor() -> Element {
     // The memo ahead of the early returns — a hook, like any `use_*`.
     // The size half comes off the frontend's own brush signal; the projection
     // supplies what only the engine knows (the zoom, the layer, the tool).
-    let size = (state.brush)().size;
+    let size = (state.transient)().size;
     let look = use_obs(state, |o| {
         let paintable = o
             .layers

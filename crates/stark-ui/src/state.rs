@@ -279,17 +279,26 @@ pub struct Signals {
     /// bracket tap or a wheel notch resizes the circle where it stands, with no
     /// pointer move needed to notice.
     pub brush_cursor: Signal<Option<Vec2>>,
-    /// The live brush, as this frontend configures it
+    /// The live brush's **durable** half, as this frontend configures it
     /// ([`BrushConfig`](crate::brush_config::BrushConfig)): the shared tip
-    /// knobs, **both** effects with the switch between them — so toggling
+    /// knobs, **every** effect with the switch between them — so toggling
     /// Paint ↔ Erase forgets nothing, the hand's color above all — and the
-    /// stroke-smoothing feel (§6.11).
+    /// stroke-smoothing feel (§6.11). The size and flow it is being worked
+    /// at are [`transient`](Self::transient), the other half of the pair.
     ///
     /// **The source of truth.** The engine holds only the projection, sent
     /// through [`update_brush`] — the one door — so nothing here reads a brush
     /// back off the observable, and what the engine cannot represent (the
     /// inactive effect, the feel) never has to round-trip through it.
     pub brush: Signal<crate::brush_config::BrushConfig>,
+    /// The live brush's **transient** half — the size and flow the hand is
+    /// working the tool at (`brush_config::Transient`, §18.1.9). Its own
+    /// signal beside [`brush`](Self::brush) rather than a pair of fields on
+    /// it, so a tuning drag at pointer rate wakes only what shows a number,
+    /// never the chrome that shows the tool — and so "the same tool" is plain
+    /// equality on the durable half (`presets::same_tool`). Written through
+    /// [`update_brush`], the same one door.
+    pub transient: Signal<crate::brush_config::Transient>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
     /// canvas element's own px — `None` when there is nothing to show. Its own
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
@@ -794,6 +803,7 @@ impl AppState {
                 color: crate::panels::color::INITIAL_COLOR,
                 ..Default::default()
             }),
+            transient: root_signal(crate::brush_config::Transient::default),
             tow: root_signal(|| None),
             assist: AssistState::new(),
             shape_tool: root_signal(|| Tool::SelectRect),
@@ -1597,19 +1607,25 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 /// cheaper trade by a wide margin: most of the thirty callers are `oninput` handlers
 /// where a returned value stops the closure coercing to the `Callback` the prop wants,
 /// so answering would cost a discarded value at every one of them.
-pub fn update_brush(state: AppState, f: impl FnOnce(&mut crate::brush_config::BrushConfig)) {
+pub fn update_brush(
+    state: AppState,
+    f: impl FnOnce(&mut crate::brush_config::BrushConfig, &mut crate::brush_config::Transient),
+) {
     let mut config = *state.brush.peek();
-    f(&mut config);
-    hold_the_tip_drawable(&mut config);
+    let mut tune = *state.transient.peek();
+    f(&mut config, &mut tune);
+    hold_the_tip_drawable(&mut config, tune);
     dispatch(
         state,
         ViewCommand::SetBrush {
-            brush: config.params(),
+            brush: config.params(tune),
             color: config.color(),
         },
     );
     let mut sig = state.brush;
     sig.set(config);
+    let mut sig = state.transient;
+    sig.set(tune);
 }
 
 /// Keep the brush inside what the renderer can actually draw: a tip reaching
@@ -1629,8 +1645,11 @@ pub fn update_brush(state: AppState, f: impl FnOnce(&mut crate::brush_config::Br
 /// what three of those four writers exist to move; a size drag that quietly shrank
 /// itself would be a fight. Stretch giving way is visible instead — the slider's own
 /// top moves with it, and the editor says why (`ModRow::range`).
-fn hold_the_tip_drawable(b: &mut crate::brush_config::BrushConfig) {
-    b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params()));
+fn hold_the_tip_drawable(
+    b: &mut crate::brush_config::BrushConfig,
+    t: crate::brush_config::Transient,
+) {
+    b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params(t)));
 }
 
 #[cfg(test)]
@@ -1661,23 +1680,23 @@ mod tests {
         ] {
             for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0, 0.6] {
-                    let mut b = crate::brush_config::BrushConfig {
+                    let t = crate::brush_config::Transient {
                         size,
+                        ..Default::default()
+                    };
+                    let mut b = crate::brush_config::BrushConfig {
                         stretch: knob,
                         ..Default::default()
                     };
                     b.effect = crate::brush_config::BrushEffectType::Wet;
                     b.wet.bleed = bleed;
-                    hold_the_tip_drawable(&mut b);
-                    let reach = b.size * BrushParams::elongation(b.stretch);
+                    hold_the_tip_drawable(&mut b, t);
+                    let reach = t.size * BrushParams::elongation(b.stretch);
                     assert!(
-                        reach <= stark_engine::max_tip_reach(&b.params()),
+                        reach <= stark_engine::max_tip_reach(&b.params(t)),
                         "size {size}, stretch {knob}, bleed {bleed}: a reach of \
                          {reach} survived the clamp",
                     );
-                    // The size the caller asked for is the size it gets — the
-                    // clamp spends the stretch, never the size (its own doc).
-                    assert_eq!(b.size, size, "the clamp moved the size");
                 }
             }
         }
@@ -1695,18 +1714,20 @@ mod tests {
     #[test]
     fn the_clamp_leaves_a_small_tip_alone() {
         for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0, 250.0, 400.0] {
-            let mut b = crate::brush_config::BrushConfig {
+            let t = crate::brush_config::Transient {
                 size,
+                ..Default::default()
+            };
+            let mut b = crate::brush_config::BrushConfig {
                 stretch: BrushParams::MAX_STRETCH,
                 ..Default::default()
             };
-            hold_the_tip_drawable(&mut b);
+            hold_the_tip_drawable(&mut b, t);
             assert_eq!(
                 b.stretch,
                 BrushParams::MAX_STRETCH,
                 "a {size} px tip should keep the whole stretch range",
             );
-            assert_eq!(b.size, size, "…and its size untouched");
         }
     }
 

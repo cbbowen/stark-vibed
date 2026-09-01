@@ -38,7 +38,7 @@ pub fn ColorPanel() -> Element {
             init,
             seed,
             onchange: move |rgb: [f32; 3]| {
-                update_brush(state, move |br| br.color = rgb);
+                update_brush(state, move |br, _| br.color = rgb);
             },
         }
     }

@@ -53,28 +53,31 @@ pub const MAX_TOOTH_SOFTNESS: f32 = 1.0;
 #[component]
 pub fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
-    // The brush signal is the frontend's own (`state::AppState::brush`), so the
-    // sliders wake for brush edits and nothing else — the engine's projection
-    // never carries a brush back.
+    // The signals are the frontend's own (`state::AppState::{brush, transient}`),
+    // so the sliders wake for brush edits and nothing else — the engine's
+    // projection never carries a brush back. The config is read only for the
+    // Flow slider's range, which is the in-force effect's.
     let brush = (state.brush)();
+    let tune = (state.transient)();
 
     rsx! {
-        // The panel's two sliders are the two knobs a hand reaches for without looking
-        // away from the canvas, which is what earns them their marks (`icons::SIZE`).
+        // The panel's two sliders are the transient half — the two knobs a hand
+        // reaches for without looking away from the canvas, which is what earns
+        // them their marks (`icons::SIZE`).
         //
-        // They are the *live* brush's, which while a number is held is that
+        // They are the *live* pair's, which while a number is held is that
         // number's (§18.1.8) — the panel needs no line of code that knows about
         // slots, and the rack draws itself over the canvas while the key is down
         // (`slots::SlotOverlay`) rather than keeping a row of chips here.
-        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: brush.size,
-            oninput: move |v| update_brush(state, move |b| b.size = v) }
-        // "Flow" is the effect's own source rate — how much a paint brush lays,
-        // how fast an eraser's bite builds (§6.12), how hard a liquify brush's
-        // paint follows (§6.13) — so the slider tunes the tool in hand
-        // whichever it is (`BrushEffect::flow`), over that effect's own range
+        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: tune.size,
+            oninput: move |v| update_brush(state, move |_, t| t.size = v) }
+        // "Flow" is the overall rate of whichever effect is in force — how much
+        // a pass lays and how hard a wet pass works the canvas (§6.2), how
+        // fast an eraser's bite builds (§6.12), how hard a liquify brush's
+        // paint follows (§6.13) — one knob, over that effect's own range
         // (`BrushConfig::max_flow`).
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: brush.max_flow(), value: brush.flow(),
-            oninput: move |v| update_brush(state, move |b| b.set_flow(v)) }
+        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: brush.max_flow(), value: tune.flow,
+            oninput: move |v| update_brush(state, move |_, t| t.flow = v) }
         // The panel's one door: the dialog where the brush is adjusted — and kept.
         // Saving a preset is the editor's act (its "Overwrite preset" and "Save new
         // preset"), because the brush worth keeping is the one that has just been
@@ -149,7 +152,7 @@ fn PresetSection() -> Element {
                         // thumbnail, and a stale declaration on this reused node
                         // would keep showing the old brush while the new one
                         // renders (inline style merges per property).
-                        let bg = match crate::thumbs::url(state, &entry.brush) {
+                        let bg = match crate::thumbs::url(state, &entry.brush, entry.transient) {
                             Some(url) if !url.is_empty() => {
                                 format!("background-image: url({url});")
                             }
@@ -313,10 +316,10 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
 
 /// Switch to a shape, also setting a sensible default spacing for it.
 pub fn set_shape(state: AppState, shape: BrushShape) {
-    update_brush(state, move |b| b.shape = shape);
+    update_brush(state, move |b, _| b.shape = shape);
 }
 
 /// Set what orients the brush shape as it sweeps (§6.6).
 pub fn set_orientation(state: AppState, orientation: OrientationSource) {
-    update_brush(state, move |b| b.orientation = orientation);
+    update_brush(state, move |b, _| b.orientation = orientation);
 }

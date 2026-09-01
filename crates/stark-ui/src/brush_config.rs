@@ -1,5 +1,11 @@
-//! The brush as **this frontend** carries it: [`BrushConfig`], and the
-//! **transient** half of it a quick slot keeps of its own ([`Transient`]).
+//! The brush as **this frontend** carries it: the **durable** half
+//! ([`BrushConfig`] — what the tool *is*) and the **transient** half
+//! ([`Transient`] — the size and flow the hand is working it at). Two types,
+//! because they are two different kinds of state with different owners: a
+//! preset stores both, a quick slot stores a [`Transient`] beside a preset's
+//! *name*, and the live pair sits in two signals (`AppState::brush`,
+//! `AppState::transient`) so a tuning drag at pointer rate wakes nothing that
+//! only shows the tool.
 //!
 //! The engine's [`BrushParams`] is shaped for what a stroke's record needs —
 //! the shared tip knobs and *the* effect in force, with each effect carrying
@@ -13,55 +19,46 @@
 //!
 //! **Shared knobs are stored once.** Paint and Wet are the two *laying* kinds,
 //! and everything they agree on — the pigment, the opacity ceiling, the flow
-//! and its pen mapping, the color dynamics — is one field here, not a copy per
-//! effect the switch would have to keep reconciled. The flow can be shared
-//! because it means the same thing on both: the overall rate, which on a wet
-//! brush scales the whole loop rather than being one of its axes (§6.2).
-//! What is left of wet is genuinely wet's alone ([`WetDynamics`]: the axes and
-//! their mappings), and [`params`](BrushConfig::params) assembles the model's
-//! per-effect structs from the shared fields at the boundary. The one
+//! mapping, the color dynamics — is one field here, not a copy per effect the
+//! switch would have to keep reconciled. What is left of wet is genuinely wet's
+//! alone ([`WetDynamics`]: the axes and their mappings), and
+//! [`params`](BrushConfig::params) assembles the model's per-effect structs
+//! from the shared fields and the transient at the boundary. The one
 //! consequence worth naming: [`effect`](BrushConfig::effect) is the user's own
 //! choice and **nothing here changes it behind their back** — a flux slider
 //! edits the wet half whether or not wet is in force, exactly as the erase
 //! half has always been editable in waiting.
 //!
-//! One type for all of it, so a whole-brush snapshot that lost its feel or its
-//! inactive half is unrepresentable: the live brush (`AppState::brush`) and the
-//! preset library (`crate::presets`) both traffic in this. The engine never sees
-//! it — [`params`](BrushConfig::params) is the one projection down, and
-//! `state::update_brush` the one door that sends it.
+//! The engine never sees either type — [`params`](BrushConfig::params) is the
+//! one projection down, and `state::update_brush` the one door that sends it.
 //!
 //! # Durable and transient
 //!
-//! The brush has two halves, and the line between them is what a hand changes
-//! its mind about. The **size** and the **flow** are adjusted all day without the
-//! tool becoming a different tool — they are the two knobs on the Brush panel, the
-//! two the tuning drag moves (§18.1.9), the two a number key remembers. That is
-//! the **transient** half, and the flow earns its place there by being the same
-//! *kind* of knob as the size on every effect: the overall rate of whatever the
-//! tool does, never a part of what it is (§6.2 — on a wet brush it scales the
-//! smear and the mint together, where the `add` axis that says *whether* the
-//! tool lays its own paint is durable). Everything else — shape, tapers,
-//! dynamics, the effect and its opacity, the feel — is what the tool *is*: the
-//! **durable** half, which a preset owns and nothing else stores. A preset carries both halves, so
-//! clicking one puts on the tool at the size and flow it was saved at; a quick
-//! slot carries a preset's *name* beside a [`Transient`] of its own, so the tool
-//! on a number is looked up live and an edit to the preset reaches every number
-//! bound to it (§18.1.8, `crate::slots`).
+//! The line between the halves is what a hand changes its mind about. The
+//! **size** and the **flow** are adjusted all day without the tool becoming a
+//! different tool — they are the two knobs on the Brush panel, the two the
+//! tuning drag moves (§18.1.9), the two a number key remembers. The flow earns
+//! its place there by being the same *kind* of knob as the size on every
+//! effect: the overall rate of whatever the tool does, never a part of what it
+//! is (§6.2 — on a wet brush it scales the smear and the mint together, where
+//! the `add` axis that says *whether* the tool lays its own paint is durable).
+//! So the transient applies to **whichever effect is in force** — one rate,
+//! carried across the switch exactly as the size always was: an eraser picked
+//! up mid-session bites at the flow the hand was just painting at, which is
+//! what "the hand's intensity" means. Everything else — shape, tapers,
+//! dynamics, the effect and its opacity, the feel — is [`BrushConfig`]:
+//! what the tool *is*, which a preset owns and nothing else stores.
 //!
-//! The transient half is a type and the durable half is not, on purpose: the
-//! in-force flow still has two homes — the laying side's
-//! ([`flow`](BrushConfig::flow), which Paint and Wet share) and the eraser's own
-//! (`EraseEffect::flow`) — so [`Transient`] is a *view* of the brush, read off
-//! it and written back ([`transient`](BrushConfig::transient),
-//! [`set_transient`](BrushConfig::set_transient)), and "the durable half" is
-//! the brush with that view set aside (`presets::same_tool`).
+//! Neither half holds the other, on purpose: "the same tool at another size"
+//! is now plain equality on [`BrushConfig`] (`presets::same_tool`), and a
+//! snapshot that accidentally froze the tune into the tool — the bug the old
+//! `with_transient` shuffle existed to paper over — is unrepresentable.
 
 use serde::{Deserialize, Serialize};
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
-    EraseEffect, LiquifyEffect, Modulation, OrientationSource, PaintEffect, PaintModulations,
-    ToothParams, WetEffect, WetModulations,
+    EraseEffect, EraseModulations, LiquifyEffect, LiquifyModulations, Modulation,
+    OrientationSource, PaintEffect, PaintModulations, ToothParams, WetEffect, WetModulations,
 };
 
 /// Which effect a stroke of the brush has — the user's own choice, beside the
@@ -131,26 +128,84 @@ impl Default for WetDynamics {
     }
 }
 
-/// The **transient** half of a brush: the size, and the flow of the effect in
-/// force — the two knobs a hand adjusts without changing its mind about the tool
-/// (see the module doc). What a quick slot keeps of its own beside the name of
-/// the preset it is bound to (`slots::QuickBrush`, §18.1.8).
+/// The **transient** half of a brush: the size, and the flow — the two knobs a
+/// hand adjusts without changing its mind about the tool (see the module doc).
+/// A value of its own, not a view of the config: the live one rides
+/// `AppState::transient`, a preset keeps one beside its [`BrushConfig`], and a
+/// quick slot keeps one beside the name of the preset it is bound to
+/// (`slots::QuickBrush`, §18.1.8).
 ///
-/// A view of a [`BrushConfig`] rather than a piece of it: read off with
-/// [`BrushConfig::transient`], written back with [`BrushConfig::set_transient`].
-/// Serde because the rack stores it; no `#[serde(default)]`, since a stored slot
-/// that lacks half of its tune is a damaged entry and not a slot at some size.
+/// Serde because the rack and the preset store keep it; no `#[serde(default)]`,
+/// since a stored entry that lacks half of its tune is a damaged entry and not
+/// a tune at some size.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Transient {
-    /// Stamp radius in canvas pixels at full pressure ([`BrushConfig::size`]).
+    /// Stamp radius in canvas pixels at full pressure (`BrushParams::size`).
     pub size: f32,
-    /// The in-force effect's source rate ([`BrushConfig::flow`]).
+    /// The overall rate of whichever effect is in force (`BrushEffect::flow`,
+    /// §6.2): how much a pass lays, how hard a wet pass works the canvas,
+    /// how fast an eraser's bite builds, how hard a liquify stroke drags —
+    /// clamped to the strength's own 1 there ([`BrushConfig::params`]).
     pub flow: f32,
 }
 
-/// A whole brush, as edited: the shared tip knobs, the laying side's shared
-/// knobs, the wet-only and erase-only halves, the switch that says which effect
-/// is in force, and the feel. See the module doc.
+impl Default for Transient {
+    /// The engine's own default brush's tune, so the untouched pair projects
+    /// `BrushParams::default()` exactly (the test below holds it to that).
+    fn default() -> Self {
+        let d = BrushParams::default();
+        Self {
+            size: d.size,
+            flow: d.effect.flow(),
+        }
+    }
+}
+
+/// The **erase-only** half (§6.12): what an eraser *is*, beyond the tip —
+/// its ceiling and its pen response. Its rate is not here, being the
+/// transient's ([`Transient::flow`]); the model's `EraseEffect` is assembled
+/// from the two at the boundary ([`BrushConfig::params`]).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EraseConfig {
+    /// How much of the visible opacity a saturated stroke removes
+    /// (`EraseEffect::opacity`) — the eraser's own ceiling, apart from the
+    /// laying side's ([`BrushConfig::opacity`]) because removing and laying
+    /// are different intents a hand sets separately.
+    pub opacity: f32,
+    /// The erase flow's pen mapping (`EraseModulations::flow`) — the eraser's
+    /// own, where the laying side shares [`BrushConfig::flow_modulation`]: how
+    /// *this* tool responds to the pen is part of what it is.
+    pub flow_modulation: Option<Modulation>,
+}
+
+impl Default for EraseConfig {
+    /// The plain full eraser (`EraseEffect::default`), less the rate that is
+    /// the transient's.
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            flow_modulation: None,
+        }
+    }
+}
+
+/// The **liquify-only** half (§6.13): the drag's pen response. The strength
+/// itself is the transient flow, clamped to its quoted 1 at the projection —
+/// so the one knob the effect has left to own is how the pen drives it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiquifyConfig {
+    /// The strength's pen mapping (`LiquifyModulations::strength`).
+    pub strength_modulation: Option<Modulation>,
+}
+
+/// The **durable** half of a brush, as edited: the shared tip knobs, the
+/// laying side's shared knobs, the wet-, erase- and liquify-only halves, the
+/// switch that says which effect is in force, and the feel — everything the
+/// tool *is*, and nothing about how hard or how large the hand is working it
+/// (that is [`Transient`], which [`params`](Self::params) takes). See the
+/// module doc.
 ///
 /// Serde, because this is what the preset library stores. `#[serde(default)]`
 /// on the container: the store skips a damaged entry outright, so a field a
@@ -159,9 +214,6 @@ pub struct Transient {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrushConfig {
-    /// Stamp radius in canvas pixels at full pressure (`BrushParams::size`).
-    /// Transient — see the module doc.
-    pub size: f32,
     /// Brush tip shape (§6.6).
     pub shape: BrushShape,
     /// Elongation along the facing axis (`BrushParams::stretch`).
@@ -195,28 +247,22 @@ pub struct BrushConfig {
     /// `WetEffect::opacity`) — shared, like the pigment. The eraser's removal
     /// ceiling is its own ([`erase`](Self::erase)).
     pub opacity: f32,
-    /// The laying side's flow — one **overall rate** for Paint and Wet
-    /// (`PaintEffect::flow`, `WetEffect::flow`): how hard a pass works, which
-    /// for a wet brush scales the whole loop — smear and mint together — and
-    /// for a paint brush the laying that is the whole of what it does (§6.2).
-    /// Shared because it means the same thing on both, so switching kinds
-    /// cannot jump the slider. The transient half's flow while a laying effect
-    /// is in force; the eraser's rate is its own.
-    pub flow: f32,
-    /// The laying flow's pen mapping — shared for the reason the rate is.
+    /// The laying flow's pen mapping — shared by Paint and Wet, since the rate
+    /// it scales ([`Transient::flow`]) means the same thing on both (§6.2).
+    /// The eraser's own response is [`EraseConfig::flow_modulation`], the
+    /// liquify drag's [`LiquifyConfig::strength_modulation`]: the rate is the
+    /// hand's, but how a tool responds to the pen is the tool's.
     pub flow_modulation: Option<Modulation>,
     /// Color dynamics (§6.2) — the laying side's, shared like the pigment.
     pub color_dynamics: ColorDynamics,
     /// The wet-only fluxes and their mappings — held whether or not wet is in
     /// force, so a flux tuned while painting is waiting when the user switches.
     pub wet: WetDynamics,
-    /// The erasing effect's configuration — held whether or not it is in force.
-    /// Its `flow` is the transient half's flow while erase is in force.
-    pub erase: EraseEffect,
-    /// The liquify effect's configuration (§6.13) — held whether or not it is
-    /// in force, like the eraser's. Its `strength` is the transient half's flow
-    /// while liquify is in force.
-    pub liquify: LiquifyEffect,
+    /// The erase-only half — held whether or not it is in force.
+    pub erase: EraseConfig,
+    /// The liquify-only half (§6.13) — held whether or not it is in force,
+    /// like the eraser's.
+    pub liquify: LiquifyConfig,
     /// Stroke smoothing, 0..=1 (§6.11) — the knob, not the rope. The rope
     /// is derived at gesture start (`input::rope`), because the knob is
     /// denominated in the hand's own screen px and only a live view converts
@@ -236,10 +282,11 @@ fn stored_smoothing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Er
 }
 
 impl Default for BrushConfig {
-    /// The engine's own default brush, unsmoothed — and
-    /// [`params`](Self::params) of this **is** `BrushParams::default()`, which
-    /// a test below keeps true: the brush the app shows before anything is
-    /// applied is the one the session already holds.
+    /// The engine's own default brush's durable half, unsmoothed — and
+    /// [`params`](Self::params) of this at [`Transient::default`] **is**
+    /// `BrushParams::default()`, which a test below keeps true: the brush the
+    /// app shows before anything is applied is the one the session already
+    /// holds.
     fn default() -> Self {
         let d = BrushParams::default();
         let p = match d.effect {
@@ -249,7 +296,6 @@ impl Default for BrushConfig {
             }
         };
         Self {
-            size: d.size,
             shape: d.shape,
             stretch: d.stretch,
             start_taper_length: d.start_taper_length,
@@ -262,30 +308,36 @@ impl Default for BrushConfig {
             effect: BrushEffectType::Paint,
             color: p.color,
             opacity: p.opacity,
-            flow: p.flow,
             flow_modulation: p.modulation.flow,
             color_dynamics: p.color_dynamics,
             wet: WetDynamics::default(),
-            erase: EraseEffect::default(),
-            liquify: LiquifyEffect::default(),
+            erase: EraseConfig::default(),
+            liquify: LiquifyConfig::default(),
             smoothing: 0.0,
         }
     }
 }
 
 impl BrushConfig {
-    /// The engine's view of this brush: the shared knobs assembled into the
-    /// effect in force — the inactive effects and the feel deliberately do not
-    /// survive the projection, and the hand's color rides down *beside* the
-    /// result (`ViewCommand::SetBrush`), not inside an erasing brush.
+    /// The engine's view of this brush at `t`: the shared knobs and the
+    /// transient assembled into the effect in force — the inactive effects and
+    /// the feel deliberately do not survive the projection, and the hand's
+    /// color rides down *beside* the result (`ViewCommand::SetBrush`), not
+    /// inside an erasing brush.
+    ///
+    /// The transient is a parameter rather than a pair of fields, because it is
+    /// not this type's to hold (the module doc): `t.size` is the tip, and
+    /// `t.flow` is the rate of **whichever effect is in force** — the one knob
+    /// with one meaning the flow/add split bought (§6.2), clamped to the
+    /// liquify strength's own load-bearing 1 where that is the effect.
     ///
     /// Written out field by field with no `..` on purpose, the effect structs
     /// included: a field added to `BrushParams` or to an effect fails to
     /// compile here, which is what keeps this type from silently dropping a
     /// knob the engine grew.
-    pub fn params(&self) -> BrushParams {
+    pub fn params(&self, t: Transient) -> BrushParams {
         BrushParams {
-            size: self.size,
+            size: t.size,
             shape: self.shape,
             stretch: self.stretch,
             start_taper_length: self.start_taper_length,
@@ -299,7 +351,7 @@ impl BrushConfig {
                 BrushEffectType::Paint => BrushEffect::Paint(PaintEffect {
                     color: self.color,
                     opacity: self.opacity,
-                    flow: self.flow,
+                    flow: t.flow,
                     color_dynamics: self.color_dynamics,
                     modulation: PaintModulations {
                         flow: self.flow_modulation,
@@ -308,7 +360,7 @@ impl BrushConfig {
                 BrushEffectType::Wet => BrushEffect::Wet(WetEffect {
                     color: self.color,
                     opacity: self.opacity,
-                    flow: self.flow,
+                    flow: t.flow,
                     dynamics: BrushDynamics {
                         add: self.wet.add,
                         lift: self.wet.lift,
@@ -325,8 +377,23 @@ impl BrushConfig {
                         bleed: self.wet.bleed_modulation,
                     },
                 }),
-                BrushEffectType::Erase => BrushEffect::Erase(self.erase),
-                BrushEffectType::Liquify => BrushEffect::Liquify(self.liquify),
+                BrushEffectType::Erase => BrushEffect::Erase(EraseEffect {
+                    opacity: self.erase.opacity,
+                    flow: t.flow,
+                    modulation: EraseModulations {
+                        flow: self.erase.flow_modulation,
+                    },
+                }),
+                BrushEffectType::Liquify => BrushEffect::Liquify(LiquifyEffect {
+                    // `min`, not `clamp`: the quoted 1 is a renderer invariant
+                    // (`LiquifyEffect::strength`), the slider already stops
+                    // there ([`max_flow`](Self::max_flow)), and `f32::min`
+                    // hands a NaN's place to the 1 where `clamp` would keep it.
+                    strength: t.flow.min(1.0),
+                    modulation: LiquifyModulations {
+                        strength: self.liquify.strength_modulation,
+                    },
+                }),
             },
         }
     }
@@ -336,25 +403,6 @@ impl BrushConfig {
     /// rather than a field that happens to hold it.
     pub fn color(&self) -> [f32; 3] {
         self.color
-    }
-
-    /// The effect's **source rate** — `BrushEffect::flow`, read off whichever
-    /// side is in force: the laying side's shared rate, or the eraser's own.
-    pub fn flow(&self) -> f32 {
-        match self.effect {
-            BrushEffectType::Paint | BrushEffectType::Wet => self.flow,
-            BrushEffectType::Erase => self.erase.flow,
-            BrushEffectType::Liquify => self.liquify.strength,
-        }
-    }
-
-    /// Write the effect's source rate — [`flow`](Self::flow)'s other half.
-    pub fn set_flow(&mut self, flow: f32) {
-        match self.effect {
-            BrushEffectType::Paint | BrushEffectType::Wet => self.flow = flow,
-            BrushEffectType::Erase => self.erase.flow = flow,
-            BrushEffectType::Liquify => self.liquify.strength = flow,
-        }
     }
 
     /// The effect's **opacity** — the ceiling on what a saturated stroke does
@@ -392,33 +440,6 @@ impl BrushConfig {
             _ => crate::panels::brush::MAX_FLOW,
         }
     }
-
-    /// The transient half — the size, and the in-force effect's flow (see the
-    /// module doc). What a quick slot keeps of its own.
-    pub fn transient(&self) -> Transient {
-        Transient {
-            size: self.size,
-            flow: self.flow(),
-        }
-    }
-
-    /// Write the transient half back: the size, and the flow of the effect in
-    /// force. The eraser's own rate is not touched while a laying effect is in
-    /// force, and the other way round — each is its side's, waiting for the
-    /// switch.
-    pub fn set_transient(&mut self, t: Transient) {
-        self.size = t.size;
-        self.set_flow(t.flow);
-    }
-
-    /// This brush at another size and flow — [`set_transient`](Self::set_transient)
-    /// by value, for the sites that build one: a quick slot resolved against its
-    /// preset (`slots::resolve`), and the "same tool" test that sets the halves
-    /// apart (`presets::same_tool`).
-    pub fn with_transient(mut self, t: Transient) -> Self {
-        self.set_transient(t);
-        self
-    }
 }
 
 #[cfg(test)]
@@ -429,7 +450,10 @@ mod tests {
     /// the brush the chrome shows is the brush the session already holds.
     #[test]
     fn the_default_config_projects_the_default_params() {
-        assert_eq!(BrushConfig::default().params(), BrushParams::default());
+        assert_eq!(
+            BrushConfig::default().params(Transient::default()),
+            BrushParams::default()
+        );
     }
 
     /// Switching away and back forgets nothing — the reason this type exists.
@@ -446,10 +470,9 @@ mod tests {
         let held = c;
         c.effect = BrushEffectType::Erase;
         c.set_opacity(0.25);
-        c.set_flow(2.0);
         assert_eq!(
-            (c.color, c.opacity, c.flow, c.wet),
-            (held.color, held.opacity, held.flow, held.wet),
+            (c.color, c.opacity, c.wet),
+            (held.color, held.opacity, held.wet),
             "erase edits must not reach the laying side",
         );
         c.effect = BrushEffectType::Paint;
@@ -468,15 +491,18 @@ mod tests {
         let mut c = BrushConfig {
             color: [0.9, 0.2, 0.1],
             opacity: 0.7,
-            flow: 1.3,
             ..BrushConfig::default()
         };
+        let t = Transient {
+            size: 40.0,
+            flow: 1.3,
+        };
         c.effect = BrushEffectType::Paint;
-        let BrushEffect::Paint(p) = c.params().effect else {
+        let BrushEffect::Paint(p) = c.params(t).effect else {
             panic!("paint in force projects Paint");
         };
         c.effect = BrushEffectType::Wet;
-        let BrushEffect::Wet(w) = c.params().effect else {
+        let BrushEffect::Wet(w) = c.params(t).effect else {
             panic!("wet in force projects Wet");
         };
         assert_eq!(
@@ -489,28 +515,33 @@ mod tests {
         );
     }
 
-    /// The transient half is the in-force effect's flow and nothing of the
-    /// other's: a slot's tune written onto a paint brush leaves the eraser's
-    /// own rate for the switch to find, which is what keeps the halves from
-    /// undoing what the switch promises above.
+    /// The transient is the rate of **whichever effect is in force** — one
+    /// knob carried across the switch, exactly as the size is (§6.2). The
+    /// liquify strength alone clamps to its quoted 1, which is a renderer
+    /// invariant and where its slider stops ([`BrushConfig::max_flow`]).
     #[test]
-    fn the_transient_half_is_the_in_force_flow() {
+    fn the_transient_drives_every_effects_rate() {
         let mut c = BrushConfig::default();
-        c.erase.flow = 2.0;
-        c.set_transient(Transient {
+        let t = Transient {
             size: 40.0,
-            flow: 0.5,
-        });
+            flow: 2.0,
+        };
+        for effect in [
+            BrushEffectType::Paint,
+            BrushEffectType::Wet,
+            BrushEffectType::Erase,
+        ] {
+            c.effect = effect;
+            let p = c.params(t);
+            assert_eq!(p.size, 40.0);
+            assert_eq!(p.effect.flow(), 2.0, "{effect:?} takes the hand's rate");
+        }
+        c.effect = BrushEffectType::Liquify;
         assert_eq!(
-            c.transient(),
-            Transient {
-                size: 40.0,
-                flow: 0.5
-            }
+            c.params(t).effect.flow(),
+            1.0,
+            "the strength's 1 is load-bearing (§6.13)",
         );
-        assert_eq!(c.flow, 0.5, "paint is in force, so the laying flow moved");
-        assert_eq!(c.erase.flow, 2.0, "the eraser keeps its own");
-        c.effect = BrushEffectType::Erase;
-        assert_eq!(c.transient().flow, 2.0, "…and it is the transient half now");
+        assert_eq!(c.params(Transient { flow: 0.4, ..t }).effect.flow(), 0.4);
     }
 }

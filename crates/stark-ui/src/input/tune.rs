@@ -165,7 +165,7 @@ impl Tune {
         let Some(view) = view_of(self.state) else {
             return false;
         };
-        let radius = self.state.brush.peek().size;
+        let radius = self.state.transient.peek().size;
         e.prevent_default();
         e.stop_propagation();
         capture_pointer(e);
@@ -228,7 +228,7 @@ impl Tune {
                 let travel = p.x - in_flight.from.x;
                 let radius = (in_flight.was * (travel / SIZE_DRAG_DOUBLE).exp2())
                     .clamp(MIN_RADIUS, MAX_RADIUS);
-                update_brush(self.state, |b| b.size = radius);
+                update_brush(self.state, |_, t| t.size = radius);
                 // The ring follows the *clamp* rather than the pointer, so a drag that
                 // has run past the largest brush stops growing where the brush did.
                 self.show_ring(&in_flight, radius);
@@ -239,15 +239,15 @@ impl Tune {
                 // Carried out of the write: this knob is a rate, so what the brush
                 // ends up carrying is only known inside that closure.
                 let mut fill = None;
-                update_brush(self.state, |b| {
-                    // The effect's own rate, paint or eraser or liquify alike — the
-                    // drag tunes the tool in hand (`BrushEffect::flow`, §6.12,
-                    // §6.13) — against that effect's own range
-                    // (`BrushConfig::max_flow`), so a full drag is a full knob
-                    // whichever it is.
+                update_brush(self.state, |b, t| {
+                    // The one overall rate, paint or eraser or liquify alike —
+                    // the drag tunes the tool in hand (`Transient::flow`,
+                    // §6.2, §6.12, §6.13) — against the in-force effect's
+                    // own range (`BrushConfig::max_flow`), so a full drag is a
+                    // full knob whichever it is.
                     let max = b.max_flow();
-                    let stepped = (b.flow() - step.y * max / FLOW_DRAG_SPAN).clamp(0.0, max);
-                    b.set_flow(stepped);
+                    let stepped = (t.flow - step.y * max / FLOW_DRAG_SPAN).clamp(0.0, max);
+                    t.flow = stepped;
                     fill = Some(stepped / max);
                 });
                 // The ring does not have to be taken down first. It was the *size*

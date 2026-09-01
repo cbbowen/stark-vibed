@@ -251,7 +251,7 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
             persist(&entries.read());
         }
         seed_session(state, id, canonical);
-        update_brush(state, |b| b.shape = BrushShape::Stamp(id));
+        update_brush(state, |b, _| b.shape = BrushShape::Stamp(id));
         notice.set(match (known, inverted) {
             (true, _) => Some(format!(
                 "“{name}” is already in your library — selected it."
@@ -293,7 +293,7 @@ pub fn id_hex(id: AssetId) -> String {
 /// makes a repeat import free).
 pub fn select(state: AppState, id: AssetId) {
     if let Some(actual) = ensure(state, id) {
-        update_brush(state, |b| b.shape = BrushShape::Stamp(actual));
+        update_brush(state, |b, _| b.shape = BrushShape::Stamp(actual));
     }
 }
 
@@ -372,7 +372,7 @@ pub fn remove(state: AppState, id: AssetId) {
 
     let selected = state.brush.peek().shape == BrushShape::Stamp(id);
     if selected {
-        update_brush(state, |b| b.shape = BrushShape::default());
+        update_brush(state, |b, _| b.shape = BrushShape::default());
     }
 }
 

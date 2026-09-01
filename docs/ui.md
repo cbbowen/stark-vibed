@@ -43,13 +43,15 @@ which the engine draws into directly. DOM chrome surrounds it.
   all — an erasing or liquify brush carries no
   pigment of its own), and the stroke-smoothing feel (§6.11) travels with the
   brush though the record must not carry it. `brush_config::BrushConfig` is that
-  editing shape, held in `AppState::brush`; the preset library stores it whole,
-  the quick-brush rack stores a preset's name beside the **transient** half
+  editing shape — the **durable** half alone, what the tool *is* — held in
+  `AppState::brush` beside `AppState::transient`, the **transient** half
   (`brush_config::Transient` — the size and flow, the two knobs a hand adjusts
-  without changing its mind about the tool; §18.1.8 has the split), and
-  `state::update_brush` is the one door down
-  — it writes the signal and dispatches `ViewCommand::SetBrush` with the
-  projection (`BrushConfig::params`) and the hand's color beside it, which is
+  without changing its mind about the tool; §18.1.8 has the split). The preset
+  library stores both halves; the quick-brush rack stores a preset's name
+  beside a transient of its own; and `state::update_brush` is the one door down
+  — it writes the two signals and dispatches `ViewCommand::SetBrush` with the
+  projection (`BrushConfig::params`, which takes the transient) and the hand's
+  color beside it, which is
   what a fill lays even mid-erase (`Session::color`). Nothing reads a brush back
   off `ObservableState`: what the engine cannot represent never has to
   round-trip through it. `input::Nav` owns every

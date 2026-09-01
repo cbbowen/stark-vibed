@@ -140,14 +140,14 @@ pub fn empty_rack() -> Rack {
 /// stored rack naming something this build does not ship) can only ever do
 /// nothing; `presets::remove` empties such slots outright ([`unbind`]) so the
 /// case stays a guard and not a state.
-pub fn resolve(library: &[PresetEntry], slot: &QuickBrush) -> Option<BrushConfig> {
-    presets::find(library, &slot.preset).map(|e| e.brush.with_transient(slot.transient))
+pub fn resolve(library: &[PresetEntry], slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
+    presets::find(library, &slot.preset).map(|e| (e.brush, slot.transient))
 }
 
 /// [`resolve`] against the app's library, for the callers that have only the
 /// state: its own statement so the library's read guard is dropped before the
 /// caller goes on to dispatch (`presets::wear` rewrites signals under it).
-fn resolve_in(state: AppState, slot: &QuickBrush) -> Option<BrushConfig> {
+fn resolve_in(state: AppState, slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
     let library = state.presets.peek();
     resolve(&library, slot)
 }
@@ -212,8 +212,9 @@ pub struct Held {
     /// The digit being held.
     pub slot: usize,
     grip: Grip,
-    /// The brush the hold displaced — what comes back when it ends.
-    base: BrushConfig,
+    /// The brush the hold displaced — both halves, what comes back when it
+    /// ends.
+    base: (BrushConfig, Transient),
     /// The preset `base` was taken from (`AppState::preset_in_hand`), put back
     /// with it. Carried rather than re-derived at the release, because `base`
     /// may have been edited off its preset — and a hold is a loan of the hand,
@@ -289,7 +290,7 @@ impl Held {
         &self,
         current: Transient,
         from: Option<&str>,
-    ) -> (Option<QuickBrush>, Option<BrushConfig>) {
+    ) -> (Option<QuickBrush>, Option<(BrushConfig, Transient)>) {
         let changed = self.claimed || current != self.entered;
         let kept = changed
             .then(|| {
@@ -351,14 +352,14 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
     // slot's own size and flow. A binding the library cannot answer is an empty
     // slot, and an empty slot is held without a swap.
     if let Some(bound) = bound
-        && let Some(brush) = resolve_in(state, &bound)
+        && let Some((brush, tune)) = resolve_in(state, &bound)
     {
-        presets::wear(state, brush, Some(bound.preset));
+        presets::wear(state, brush, tune, Some(bound.preset));
     }
     // Read back rather than assumed: `wear` resolves the stamp and clamps what the
     // renderer cannot draw, so what the app now holds is not necessarily what was
     // handed to it — and it is what the release has to compare against.
-    let entered = presets::worn(state).transient();
+    let entered = presets::worn(state).1;
     held.set(Some(Held {
         slot,
         grip,
@@ -405,7 +406,7 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
         return;
     }
     held.set(None);
-    let current = presets::worn(state).transient();
+    let current = presets::worn(state).1;
     // The tool the number would be bound to: whatever preset is in hand at the
     // release — the one a click under the hold put on, or the slot's own.
     let from = state.preset_in_hand.peek().clone();
@@ -417,8 +418,8 @@ pub fn release(state: AppState, slot: usize, grip: Grip) {
     // the hand, and a preset chosen *during* it went to the slot, not to this.
     // Or not back at all, for a double-tap's hold, whose whole point is that the
     // swap stands.
-    if let Some(back) = back {
-        presets::wear(state, back, h.base_from);
+    if let Some((back, back_tune)) = back {
+        presets::wear(state, back, back_tune, h.base_from);
     }
 }
 
@@ -569,9 +570,10 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     let held = holding.as_ref().map(|h| h.slot);
     let rack = (state.slots.brushes)();
     // The whole tool, feel and inactive effect included, off the frontend's own
-    // brush signal — so the lit row tracks a smoothing drag exactly as it tracks
+    // signals — so the lit row tracks a smoothing drag exactly as it tracks
     // a radius one, and wakes for brush edits and nothing else.
     let live = (state.brush)();
+    let live_tune = (state.transient)();
     // The preset in hand is the tool a held digit is about to be bound to
     // (`Held::would_keep`); it moves only when a whole tool arrives.
     let in_hand = (state.preset_in_hand)();
@@ -579,7 +581,16 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     // the library is where the name becomes a brush ([`resolve`]) — so no read
     // guard is alive while the rows below read the thumbnail cache one by one.
     // A subscribing read, since an overwritten preset is a changed row.
-    let rows: Vec<(usize, Option<BrushConfig>, Option<BrushConfig>, String)> = {
+    #[expect(
+        clippy::type_complexity,
+        reason = "one local's shape, read two lines down"
+    )]
+    let rows: Vec<(
+        usize,
+        Option<(BrushConfig, Transient)>,
+        Option<(BrushConfig, Transient)>,
+        String,
+    )> = {
         let library = state.presets.read();
         // The digits in the order they sit on the keyboard, with the eraser's own
         // slot last — where the `0` key is, and where a tenth of anything goes.
@@ -600,7 +611,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                 let binding = holding
                     .as_ref()
                     .filter(|h| h.slot == slot)
-                    .and_then(|h| h.would_keep(live.transient(), in_hand.as_deref()))
+                    .and_then(|h| h.would_keep(live_tune, in_hand.as_deref()))
                     .or_else(|| rack[slot].clone());
                 let brush = binding.as_ref().and_then(|b| resolve(&library, b));
                 // The row's name is its binding's — the preset the digit holds,
@@ -638,8 +649,8 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                     // rather than blinking empty for the length of a drag — while
                     // a preset clicked mid-hold lands instantly, its thumbnail
                     // being the one the library is already showing.
-                    let thumb = |b: Option<BrushConfig>| {
-                        b.and_then(|b| crate::thumbs::url(state, &b))
+                    let thumb = |b: Option<(BrushConfig, Transient)>| {
+                        b.and_then(|(b, t)| crate::thumbs::url(state, &b, t))
                             .filter(|url| !url.is_empty())
                     };
                     let bg = match thumb(brush).or_else(|| thumb(stored)) {
@@ -665,7 +676,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                             // own. Held wins in the stylesheet: it is what the user is
                             // doing right now rather than a state they are in.
                             class: if brush.is_none() { "empty" }
-                                   else if brush.is_some_and(|b| presets::same_brush(&live, &b)) { "active" },
+                                   else if brush.is_some_and(|b| presets::same_brush(&(live, live_tune), &b)) { "active" },
                             class: if Some(slot) == held { "held" },
                             style: "{bg}",
                             title,
@@ -792,11 +803,11 @@ pub fn pick(state: AppState, slot: usize) {
     let Some(bound) = bound else { return };
     // A binding the library cannot answer is an empty row, and an empty row's
     // click puts on nothing.
-    let Some(brush) = resolve_in(state, &bound) else {
+    let Some((brush, tune)) = resolve_in(state, &bound) else {
         return;
     };
     claim(state);
-    presets::wear(state, brush, Some(bound.preset));
+    presets::wear(state, brush, tune, Some(bound.preset));
 }
 
 /// Pin the rack up or put it away, and remember it — **the only thing that writes
@@ -940,7 +951,7 @@ pub fn seed_defaults(state: AppState) {
         if let Some(slot) = entry.slot.filter(|s| *s < COUNT) {
             rack[slot] = Some(QuickBrush {
                 preset: entry.name.clone(),
-                transient: entry.brush.transient(),
+                transient: entry.transient,
             });
         }
     }
@@ -1016,7 +1027,7 @@ mod tests {
         Held {
             slot: 3,
             grip: Grip::Key,
-            base,
+            base: (base, entered),
             base_from: None,
             entered,
             claimed: false,
@@ -1034,10 +1045,11 @@ mod tests {
     #[test]
     fn a_hold_that_changed_nothing_keeps_nothing() {
         let brush = BrushConfig::default();
-        let h = held(brush.transient(), brush);
-        let (kept, back) = h.settle(brush.transient(), Some("Pen"));
+        let entered = Transient::default();
+        let h = held(entered, brush);
+        let (kept, back) = h.settle(entered, Some("Pen"));
         assert_eq!(kept, None, "an unused hold must not claim the slot");
-        assert_eq!(back, Some(brush));
+        assert_eq!(back, Some((brush, entered)));
     }
 
     #[test]
@@ -1048,7 +1060,11 @@ mod tests {
         let entered = tune(40.0, 1.0);
         let (kept, back) = held(entered, base).settle(tune(64.0, 1.0), Some("Pen"));
         assert_eq!(kept, bound("Pen", tune(64.0, 1.0)));
-        assert_eq!(back, Some(base), "the brush in hand comes back untouched");
+        assert_eq!(
+            back,
+            Some((base, entered)),
+            "the pair in hand comes back untouched"
+        );
         let (kept, _) = held(entered, base).settle(tune(40.0, 0.2), Some("Pen"));
         assert_eq!(
             kept,
@@ -1064,13 +1080,12 @@ mod tests {
         // half, so none of them is a change the number can keep. The preset is
         // where those go (the module doc), and the release finds nothing to do.
         let base = BrushConfig::default();
-        let entered = base.transient();
-        let mut thinned = base;
-        thinned.set_opacity(0.4);
-        thinned.color = [0.9, 0.1, 0.2];
-        let (kept, back) = held(entered, base).settle(thinned.transient(), Some("Pen"));
+        let entered = Transient::default();
+        // An opacity moved and a color picked change the config alone: the
+        // tune the release reads is exactly the one the hold entered on.
+        let (kept, back) = held(entered, base).settle(entered, Some("Pen"));
         assert_eq!(kept, None);
-        assert_eq!(back, Some(base));
+        assert_eq!(back, Some((base, entered)));
     }
 
     #[test]
@@ -1079,17 +1094,18 @@ mod tests {
         // preset you are already painting with. Nothing changes, and the slot has
         // to end up bound to it all the same.
         let brush = BrushConfig::default();
+        let entered = Transient::default();
         let h = Held {
             claimed: true,
-            ..held(brush.transient(), brush)
+            ..held(entered, brush)
         };
-        let (kept, back) = h.settle(brush.transient(), Some("Pen"));
+        let (kept, back) = h.settle(entered, Some("Pen"));
         assert_eq!(
             kept,
-            bound("Pen", brush.transient()),
+            bound("Pen", entered),
             "the tool was chosen, not inferred"
         );
-        assert_eq!(back, Some(brush));
+        assert_eq!(back, Some((brush, entered)));
     }
 
     #[test]
@@ -1101,7 +1117,7 @@ mod tests {
         let entered = tune(40.0, 1.0);
         let (kept, back) = held(entered, base).settle(tune(64.0, 1.0), None);
         assert_eq!(kept, None);
-        assert_eq!(back, Some(base));
+        assert_eq!(back, Some((base, entered)));
         let h = Held {
             claimed: true,
             ..held(entered, base)
@@ -1121,7 +1137,7 @@ mod tests {
         };
         let (kept, back) = h.settle(entered, Some("Pen"));
         assert_eq!(kept, bound("Pen", entered));
-        assert_eq!(back, Some(base));
+        assert_eq!(back, Some((base, entered)));
     }
 
     #[test]
@@ -1164,13 +1180,13 @@ mod tests {
         // name today, and only the size and flow are the slot's. A name the
         // library does not have is an empty slot.
         let pen = BrushConfig {
-            size: 18.0,
             smoothing: 0.5,
             ..BrushConfig::default()
         };
         let library = vec![PresetEntry {
             name: "Pen".into(),
             brush: pen,
+            transient: tune(18.0, 1.0),
             slot: None,
             builtin: false,
         }];
@@ -1178,10 +1194,10 @@ mod tests {
             preset: "Pen".into(),
             transient: tune(64.0, 0.2),
         };
-        let resolved = resolve(&library, &slot).expect("the library has the name");
-        assert_eq!(resolved.transient(), tune(64.0, 0.2), "the slot's own tune");
+        let (tool, tune) = resolve(&library, &slot).expect("the library has the name");
+        assert_eq!(tune, self::tune(64.0, 0.2), "the slot's own tune");
         assert!(
-            presets::same_tool(&resolved, &pen),
+            presets::same_tool(&tool, &pen),
             "…on the preset's tool, feel included"
         );
         let gone = QuickBrush {

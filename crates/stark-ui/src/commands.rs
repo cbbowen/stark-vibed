@@ -1446,8 +1446,8 @@ const SIZE_STEP: f32 = 1.1;
 /// the slider this shadows is not refused mid-playback either — the keyboard
 /// says what the panel says.
 fn step_radius(state: AppState, factor: f32) {
-    update_brush(state, move |b| {
-        b.size = (b.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
+    update_brush(state, move |_, t| {
+        t.size = (t.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
     });
 }
 

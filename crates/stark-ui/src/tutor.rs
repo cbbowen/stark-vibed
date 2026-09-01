@@ -1274,7 +1274,8 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
             // The brush still held: `update_brush` dispatches before it moves
             // the signal, so this read is the *previous* configuration.
             let held = *state.brush.peek();
-            brush_deed(&held.params(), held.color(), brush, *color)
+            let tune = *state.transient.peek();
+            brush_deed(&held.params(tune), held.color(), brush, *color)
                 .into_iter()
                 .collect()
         }

@@ -44,20 +44,23 @@
 use dioxus::prelude::*;
 
 use stark_model::document::{
-    BrushModulations, BrushShape, ColorDynamics, EraseEffect, EraseModulations, LiquifyEffect,
-    LiquifyModulations, ModSource, Modulation, NoiseKind, OrientationSource, ToothParams,
+    BrushModulations, BrushShape, ColorDynamics, ModSource, Modulation, NoiseKind,
+    OrientationSource, ToothParams,
 };
 
-use crate::brush_config::{BrushConfig, BrushEffectType, WetDynamics};
+use crate::brush_config::{
+    BrushConfig, BrushEffectType, EraseConfig, LiquifyConfig, Transient, WetDynamics,
+};
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
 
-/// The live brush, snapshotted — [`BrushConfig`] is the frontend's own whole-brush
-/// type, so a snapshot is a copy of the signal and nothing needs assembling.
-pub fn worn(state: AppState) -> BrushConfig {
-    *state.brush.peek()
+/// The live brush, snapshotted: both halves — the tool ([`BrushConfig`]) and
+/// the tune it is being worked at (`Transient`) — copies of the two signals,
+/// with nothing to assemble.
+pub fn worn(state: AppState) -> (BrushConfig, Transient) {
+    (*state.brush.peek(), *state.transient.peek())
 }
 
 /// One named preset in the library.
@@ -66,8 +69,12 @@ pub struct PresetEntry {
     /// Display name; unique in the library (saving under a taken name
     /// overwrites, and a name the app has already taken is refused).
     pub name: String,
-    /// The snapshot applied by clicking the preset.
+    /// The tool applied by clicking the preset — the durable half.
     pub brush: BrushConfig,
+    /// The size and flow it was saved at — the transient half, carried so that
+    /// clicking a preset puts the tool on at the tune it was kept at, while a
+    /// quick slot substitutes a tune of its own (`slots::resolve`).
+    pub transient: Transient,
     /// The digit this preset **ships on**, if any — how a fresh quick-brush rack
     /// is filled (§18.1.8; `slots::seed_defaults`).
     ///
@@ -136,25 +143,34 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     // what a tool *is*: the inker leans on the string, the pencil keeps every
     // tremor because tremor is what a pencil is for — its own argument rather
     // than a field in the definitions below, so no definition can forget to say.
-    let shipped =
-        |name: &str, slot: Option<usize>, smoothing: f32, brush: BrushConfig| PresetEntry {
-            name: name.to_string(),
-            brush: BrushConfig { smoothing, ..brush },
-            slot,
-            builtin: true,
-        };
+    // `size` and `flow` are the transient half every preset carries
+    // (`PresetEntry::transient`) — arguments for the same reason, since a
+    // definition cannot say them anywhere else now that the config is the
+    // durable half alone.
+    let shipped = |name: &str,
+                   slot: Option<usize>,
+                   smoothing: f32,
+                   size: f32,
+                   flow: f32,
+                   brush: BrushConfig| PresetEntry {
+        name: name.to_string(),
+        brush: BrushConfig { smoothing, ..brush },
+        transient: Transient { size, flow },
+        slot,
+        builtin: true,
+    };
     vec![
         shipped(
             "Hard Round",
             Some(1),
             0.15,
+            100.0,
+            3.0,
             BrushConfig {
-                size: 100.0,
                 drain: 0.1,
                 shape: BrushShape::Round { hardness: 0.98 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
-                flow: 3.0,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 color_dynamics: ColorDynamics {
                     noise: NoiseKind::Simplex,
@@ -187,12 +203,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Bristles",
             None,
             0.15,
+            100.0,
+            3.0,
             BrushConfig {
-                size: 100.0,
                 shape: shapes.bristles,
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
-                flow: 3.0,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 color_dynamics: ColorDynamics {
                     noise: NoiseKind::Simplex,
@@ -224,12 +240,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Pen",
             Some(2),
             0.5,
+            18.0,
+            1.0,
             BrushConfig {
-                size: 18.0,
                 shape: BrushShape::Round { hardness: 1.0 },
                 start_taper_length: 5.0,
                 end_taper_length: 11.0,
-                flow: 1.0,
                 ..BrushConfig::default()
             },
         ),
@@ -256,8 +272,9 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Pencil",
             Some(3),
             0.0,
+            30.0,
+            0.4,
             BrushConfig {
-                size: 30.0,
                 shape: shapes.pencil,
                 jitter: 0.1,
                 tooth: ToothParams {
@@ -280,7 +297,6 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..BrushModulations::default()
                 },
                 opacity: 1.0,
-                flow: 0.4,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 color_dynamics: ColorDynamics {
                     noise: NoiseKind::White,
@@ -294,8 +310,9 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Airbrush",
             Some(4),
             0.1,
+            500.0,
+            0.1,
             BrushConfig {
-                size: 500.0,
                 shape: BrushShape::Round { hardness: 0.5 },
                 modulation: BrushModulations {
                     size: Some(Modulation {
@@ -306,7 +323,6 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     ..BrushModulations::default()
                 },
                 opacity: 1.0,
-                flow: 0.1,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 color_dynamics: ColorDynamics {
                     noise: NoiseKind::Simplex,
@@ -320,8 +336,9 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Blender",
             Some(5),
             0.1,
+            100.0,
+            1.0,
             BrushConfig {
-                size: 100.0,
                 tooth: ToothParams {
                     give: 0.5,
                     ..ToothParams::default()
@@ -329,10 +346,9 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.8 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
-                // The neutral rate: the Flow slider now scales the *blend* —
-                // what this change of mental model was for. What makes it a
-                // blender is `add = 0` below, which no slider moves.
-                flow: 1.0,
+                // The Flow slider scales the *blend* — what the flow/add split
+                // was for. What makes it a blender is `add = 0` below, which no
+                // slider moves.
                 wet: WetDynamics {
                     add: 0.0,
                     lift: 0.25,
@@ -355,27 +371,26 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
         ),
         // The eraser the pen's other end starts life holding (§18.1.8). An
         // eraser is the `Erase` effect (§6.12) — it removes what the eye
-        // sees, so a half-pressure pass really is a lighter erase — with its own
-        // flow as the rate, which is where the pressure mapping points: light
-        // touch feathers the coverage in, borne down it walks to the full bite.
+        // sees, so a half-pressure pass really is a lighter erase — and the
+        // hand's flow is its rate, which is where the pressure mapping points:
+        // light touch feathers the coverage in, borne down it walks to the
+        // full bite.
         shipped(
             "Soft Eraser",
             Some(slots::ERASER),
             0.0,
+            80.0,
+            1.0,
             BrushConfig {
-                size: 80.0,
                 shape: BrushShape::Round { hardness: 0.25 },
                 effect: BrushEffectType::Erase,
-                erase: EraseEffect {
+                erase: EraseConfig {
                     opacity: 1.0,
-                    flow: 1.0,
-                    modulation: EraseModulations {
-                        flow: Some(Modulation {
-                            source: ModSource::Pressure,
-                            floor: 0.0,
-                            curve: 1.0,
-                        }),
-                    },
+                    flow_modulation: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.0,
+                        curve: 1.0,
+                    }),
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
@@ -388,22 +403,20 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Hard Eraser",
             None,
             0.0,
+            40.0,
+            // Enough that one pass saturates the bite to the tip's very
+            // shoulder — the hard edge the name promises.
+            2.0,
             BrushConfig {
-                size: 40.0,
                 shape: BrushShape::Round { hardness: 0.95 },
                 effect: BrushEffectType::Erase,
-                erase: EraseEffect {
+                erase: EraseConfig {
                     opacity: 1.0,
-                    // Enough that one pass saturates the bite to the tip's very
-                    // shoulder — the hard edge the name promises.
-                    flow: 2.0,
-                    modulation: EraseModulations {
-                        flow: Some(Modulation {
-                            source: ModSource::Pressure,
-                            floor: 0.25,
-                            curve: 0.0,
-                        }),
-                    },
+                    flow_modulation: Some(Modulation {
+                        source: ModSource::Pressure,
+                        floor: 0.25,
+                        curve: 0.0,
+                    }),
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
@@ -423,15 +436,13 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             "Liquify",
             None,
             0.2,
+            90.0,
+            1.0,
             BrushConfig {
-                size: 90.0,
                 shape: BrushShape::Round { hardness: 0.35 },
                 effect: BrushEffectType::Liquify,
-                liquify: LiquifyEffect {
-                    strength: 1.0,
-                    modulation: LiquifyModulations {
-                        strength: Some(Modulation::linear(ModSource::Pressure)),
-                    },
+                liquify: LiquifyConfig {
+                    strength_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 },
                 modulation: BrushModulations::default(),
                 ..BrushConfig::default()
@@ -515,11 +526,12 @@ pub fn apply(state: AppState, name: &str) {
     // nothing, which is exactly the case of filling a slot with the brush already
     // in hand. Said here rather than in [`wear`], which the hold uses itself.
     slots::claim(state);
-    wear(state, entry.brush, Some(entry.name));
+    wear(state, entry.brush, entry.transient, Some(entry.name));
 }
 
-/// Put `brush` on: make it the live brush, **keeping the painting color** and
-/// resolving its stamp — and record which preset it came `from`, which is what
+/// Put `brush` on at `tune`: make the pair the live brush, **keeping the
+/// painting color** and resolving the stamp — and record which preset it came
+/// `from`, which is what
 /// [`Signals::preset_in_hand`](crate::state::Signals::preset_in_hand) takes.
 ///
 /// The rule this module's docs state, as a function, because it is not only the
@@ -544,7 +556,7 @@ pub fn apply(state: AppState, name: &str) {
 /// A stamp shape whose bytes are no longer anywhere (removed from the shape
 /// library, unseen by this document) falls back to the round tip rather than
 /// pointing at an asset the engine would silently substitute.
-pub fn wear(state: AppState, brush: BrushConfig, from: Option<String>) {
+pub fn wear(state: AppState, brush: BrushConfig, tune: Transient, from: Option<String>) {
     // A whole tool arriving is not an adjustment of the one you had — not even in
     // the case where it differs in nothing but its size, which the tour would
     // otherwise read as somebody reaching for the size slider (§24.2). This is the
@@ -559,13 +571,14 @@ pub fn wear(state: AppState, brush: BrushConfig, from: Option<String>) {
             .unwrap_or_default(),
         round @ BrushShape::Round { .. } => round,
     };
-    update_brush(state, move |b| {
+    update_brush(state, move |b, t| {
         // The hand's color survives the swap — a tool is everything but it
         // (§18.1.8), and the whole configuration around it moves as one,
-        // the feel (§6.11) and the inactive effect included.
+        // the feel (§6.11), the inactive effect and the tune included.
         let rgb = b.color;
         *b = brush;
         b.color = rgb;
+        *t = tune;
     });
     crate::tutor::not_reaching(state, false);
     let mut in_hand = state.preset_in_hand;
@@ -596,7 +609,7 @@ pub fn apply_first(state: AppState) {
 /// Refusing here as well as in the dialog because this is the function that
 /// would have to be right if a second caller ever appeared.
 pub fn save_current(state: AppState, name: String) {
-    let brush = worn(state);
+    let (brush, transient) = worn(state);
     // Its own statement, not inline in the `if`: a `peek` guard in a condition
     // stays borrowed through the body, and the body of the next one writes the
     // very signal being read.
@@ -608,10 +621,14 @@ pub fn save_current(state: AppState, name: String) {
     {
         let mut list = entries.write();
         match list.iter_mut().find(|e| e.name == name) {
-            Some(e) => e.brush = brush,
+            Some(e) => {
+                e.brush = brush;
+                e.transient = transient;
+            }
             None => list.push(PresetEntry {
                 name: name.clone(),
                 brush,
+                transient,
                 // The user's own: no home on the rack, and storage's to keep.
                 slot: None,
                 builtin: false,
@@ -670,18 +687,22 @@ pub fn find<'a>(entries: &'a [PresetEntry], name: &str) -> Option<&'a PresetEntr
 }
 
 /// Whether the live brush is still **this tool** — the preset in every durable
-/// knob, with the transient half (size and flow, `brush_config::Transient`) and
-/// the painting color set aside. What the preset rows light on: a tool put on
-/// and then sized up is the same tool at another size, so the row stays lit,
-/// while the smoothing amount is one of the knobs (§6.11) and a preset worn and
-/// then smoothed differently is no longer that preset. The effect's own opacity
-/// is durable too — part of what the tool does (§6.2) — so the row goes out
+/// knob, with the painting color set aside. The transient half is not here to
+/// set aside any more: [`BrushConfig`] *is* the durable half, so this is plain
+/// equality with the color forgiven — which is the whole of what the split
+/// bought this test. What the preset rows light on: a tool put on and then
+/// sized up is the same tool at another size, so the row stays lit, while the
+/// smoothing amount is one of the knobs (§6.11) and a preset worn and then
+/// smoothed differently is no longer that preset. The effect's own opacity is
+/// durable too — part of what the tool does (§6.2) — so the row goes out
 /// the moment it moves.
 ///
 /// Exact equality on the rest, on purpose: the row says the brush still *is*
 /// the preset, not that it resembles one.
 pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
-    same_brush(&current.with_transient(preset.transient()), preset)
+    let mut preset = *preset;
+    preset.color = current.color;
+    preset == *current
 }
 
 /// Whether two brushes are **the same brush** — equal in both halves, the
@@ -690,10 +711,8 @@ pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
 /// quick slot's brush is the one in hand (`slots::SlotOverlay`), and whether
 /// writing the brush back over its preset would change anything
 /// ([`Overwrite::Unchanged`]), since a preset carries the transient half too.
-pub fn same_brush(a: &BrushConfig, b: &BrushConfig) -> bool {
-    let mut b = *b;
-    b.color = a.color;
-    b == *a
+pub fn same_brush(a: &(BrushConfig, Transient), b: &(BrushConfig, Transient)) -> bool {
+    same_tool(&a.0, &b.0) && a.1 == b.1
 }
 
 /// What "Overwrite preset" can do with the brush in hand. The brush editor's
@@ -717,15 +736,20 @@ pub enum Overwrite {
     Ready(String),
 }
 
-/// Decide [`Overwrite`] for the brush in hand.
-pub fn overwrite(entries: &[PresetEntry], in_hand: Option<&str>, brush: &BrushConfig) -> Overwrite {
+/// Decide [`Overwrite`] for the brush in hand — both halves of it, since a
+/// preset carries both.
+pub fn overwrite(
+    entries: &[PresetEntry],
+    in_hand: Option<&str>,
+    brush: &(BrushConfig, Transient),
+) -> Overwrite {
     let Some(entry) = in_hand.and_then(|name| find(entries, name)) else {
         return Overwrite::Nothing;
     };
     let name = entry.name.clone();
     if entry.builtin {
         Overwrite::Builtin(name)
-    } else if same_brush(brush, &entry.brush) {
+    } else if same_brush(brush, &(entry.brush, entry.transient)) {
         Overwrite::Unchanged(name)
     } else {
         Overwrite::Ready(name)
@@ -763,17 +787,19 @@ pub fn overwrite_in_hand(state: AppState) {
 // provenance, and a stored copy of either would be a second opinion about a question
 // the code already answers.
 
-/// One stored preset: a name and a whole brush ([`BrushConfig`], which the rack
-/// stores too).
+/// One stored preset: a name and a whole brush — both halves, the tool and the
+/// tune it was saved at.
 ///
 /// A type of its own rather than [`PresetEntry`] with two fields skipped, because
 /// provenance is the point: everything storage holds is the user's by definition, so
 /// `builtin: false` is settled where the entry is *made* rather than carried in the
-/// record and trusted.
+/// record and trusted. No `#[serde(default)]` on `transient`: a stored preset
+/// that lacks its tune is a damaged entry, which the store already skips.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredPreset {
     name: String,
     brush: BrushConfig,
+    transient: Transient,
 }
 
 impl storage::Entry for StoredPreset {
@@ -787,6 +813,7 @@ fn persist(entries: &[PresetEntry]) {
         .map(|e| StoredPreset {
             name: e.name.clone(),
             brush: e.brush,
+            transient: e.transient,
         })
         .collect();
     storage::save_list(&stored);
@@ -802,6 +829,7 @@ fn read_storage() -> Option<Vec<PresetEntry>> {
             .map(|e| PresetEntry {
                 name: e.name,
                 brush: e.brush,
+                transient: e.transient,
                 slot: None,
                 builtin: false,
             })
@@ -860,7 +888,8 @@ mod tests {
     fn the_shipped_eraser_erases() {
         // What makes it an eraser at all (§6.12) — there is no eraser *tool* to
         // check for, only these two numbers: the dial that routes the stroke
-        // through the erase pass, and the flow that is that pass's one rate.
+        // through the erase pass, and the transient flow that is that pass's
+        // rate now that the rate is the hand's (§6.2).
         let e = shipped()
             .into_iter()
             .find(|e| e.slot == Some(slots::ERASER))
@@ -870,10 +899,12 @@ mod tests {
             BrushEffectType::Erase,
             "the pen's tail must erase, not paint"
         );
-        let erase = e.brush.erase;
-        assert!(erase.opacity > 0.0, "an eraser at no strength does nothing");
         assert!(
-            erase.flow > 0.0,
+            e.brush.erase.opacity > 0.0,
+            "an eraser at no strength does nothing"
+        );
+        assert!(
+            e.transient.flow > 0.0,
             "flow is the erase pass's rate; at zero the eraser would do nothing"
         );
     }
@@ -887,19 +918,15 @@ mod tests {
         assert_ne!(first.slot, Some(slots::ERASER));
     }
 
-    /// The line between the halves, as the preset rows light on it: the transient
-    /// half and the color are set aside, and every other knob counts.
+    /// The line between the halves, as the preset rows light on it: the color is
+    /// set aside, every durable knob counts — and the transient cannot count,
+    /// being a different value entirely now ([`same_tool`] takes only configs).
     #[test]
     fn the_same_tool_is_the_preset_at_any_size_and_flow() {
         let preset = BrushConfig {
-            size: 33.0,
+            drain: 0.2,
             ..BrushConfig::default()
         };
-        let mut resized = preset;
-        resized.set_transient(crate::brush_config::Transient {
-            size: 80.0,
-            flow: 0.2,
-        });
         let mut recolored = preset;
         recolored.color = [0.9, 0.1, 0.2];
         let mut thinned = preset;
@@ -913,14 +940,15 @@ mod tests {
             ..preset
         };
 
-        assert!(same_tool(&resized, &preset), "size and flow are transient");
         assert!(same_tool(&recolored, &preset), "color is the hand's");
         assert!(!same_tool(&thinned, &preset), "opacity is the tool's");
         assert!(!same_tool(&smoothed, &preset), "the feel is the tool's");
         assert!(!same_tool(&erasing, &preset), "the effect is the tool");
-        // The stricter test counts the size.
-        assert!(same_brush(&recolored, &preset));
-        assert!(!same_brush(&resized, &preset));
+        // The stricter test counts the tune.
+        let tune = Transient::default();
+        let resized = Transient { size: 80.0, ..tune };
+        assert!(same_brush(&(recolored, tune), &(preset, tune)));
+        assert!(!same_brush(&(preset, resized), &(preset, tune)));
     }
 
     #[test]
@@ -933,17 +961,22 @@ mod tests {
         // is: a preset keeps the transient half, so a resize is a write.
         let mut entries = shipped();
         let mine = BrushConfig {
-            size: 33.0,
+            drain: 0.2,
             ..BrushConfig::default()
+        };
+        let tune = Transient {
+            size: 33.0,
+            ..Transient::default()
         };
         entries.push(PresetEntry {
             name: "Mine".into(),
             brush: mine,
+            transient: tune,
             slot: None,
             builtin: false,
         });
         let builtin = entries[0].name.clone();
-        let edited = BrushConfig { size: 34.0, ..mine };
+        let edited = (mine, Transient { size: 34.0, ..tune });
         let mut recolored = mine;
         recolored.color = [0.9, 0.1, 0.2];
 
@@ -957,11 +990,11 @@ mod tests {
             Overwrite::Builtin(builtin)
         );
         assert_eq!(
-            overwrite(&entries, Some("Mine"), &mine),
+            overwrite(&entries, Some("Mine"), &(mine, tune)),
             Overwrite::Unchanged("Mine".into())
         );
         assert_eq!(
-            overwrite(&entries, Some("Mine"), &recolored),
+            overwrite(&entries, Some("Mine"), &(recolored, tune)),
             Overwrite::Unchanged("Mine".into())
         );
         assert_eq!(
