@@ -492,7 +492,8 @@ pub struct LayerInfo {
     /// Where the layer's frame sits on the canvas (§14.12) — what the
     /// pick-and-translate drag adds its delta to
     /// ([`DocCommand::TranslateLayer`](crate::command::DocCommand::TranslateLayer)).
-    /// Always zero for a matte or a filter, which have no frame to move.
+    /// A matte stands in its frame like paint (§15.2); only a filter has no
+    /// frame to move, and its row here is always zero.
     pub translation: stark_model::geom::IVec2,
 }
 
@@ -508,7 +509,9 @@ impl LayerInfo {
 /// A matte layer's geometry and fill, for the frame chrome (§15.7).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatteInfo {
-    /// The rect the region is defined against, in canvas px. For a frame this is
+    /// The rect the region is defined against, in canvas px — the stored rect
+    /// placed by the layer's translation (§14.12), so the chrome reads it where
+    /// it shows. For a frame this is
     /// the *hole* — the piece — which is what the handles resize and what export
     /// frames against (§15.6). `None` for a region defined against no rect
     /// ([`MatteRegion::Everything`](stark_model::document::MatteRegion::Everything)): the handle box, the aspect readout and the
@@ -1146,10 +1149,11 @@ impl Engine {
 
     /// The whole move a translate gesture means (§14.12): `layer`'s subtree —
     /// a group moves as one, and translation does not inherit — with each
-    /// **paint** member displaced by the same delta. Mattes and filters are left
-    /// out rather than named-and-refused: a move naming them would answer
-    /// "not a no-op" forever, and a drag out and back would log a step that does
-    /// nothing. Read off the committed document, like every mint.
+    /// member that has a frame to move ([`Layer::is_translatable`]: paint and
+    /// mattes) displaced by the same delta. Filters are left out rather than
+    /// named-and-refused: a move naming one would answer "not a no-op" forever,
+    /// and a drag out and back would log a step that does nothing. Read off the
+    /// committed document, like every mint.
     fn translate_moves(
         &self,
         layer: LayerId,
@@ -1169,7 +1173,7 @@ impl Engine {
         doc.subtree_ids(layer)
             .unwrap_or_default()
             .into_iter()
-            .filter(|id| doc.layer(*id).is_some_and(|l| l.is_paintable()))
+            .filter(|id| doc.layer(*id).is_some_and(|l| l.is_translatable()))
             .map(|id| (id, self.frame_of(id) + delta))
             .collect()
     }
@@ -1265,9 +1269,15 @@ impl Engine {
                         // The layer the drag pinned at the press, not the active
                         // layer now: the op was converted into *that* layer's
                         // frame, and the two must not part (`ShapeResult::Fill`).
-                        Some(ShapeResult::Fill { layer, op, translation: frame }) => {
-                            self.commit(ActionKind::Fill { layer, op, translation: frame })
-                        }
+                        Some(ShapeResult::Fill {
+                            layer,
+                            op,
+                            translation: frame,
+                        }) => self.commit(ActionKind::Fill {
+                            layer,
+                            op,
+                            translation: frame,
+                        }),
                         None => {}
                     }
                 } else {
@@ -1384,10 +1394,16 @@ impl Engine {
                             affine,
                             translation: frame,
                         },
-                        TransformMap::Perspective(map) => {
-                            ActionKind::TransformPerspective { layer, map, translation: frame }
-                        }
-                        TransformMap::Warp(map) => ActionKind::TransformWarp { layer, map, translation: frame },
+                        TransformMap::Perspective(map) => ActionKind::TransformPerspective {
+                            layer,
+                            map,
+                            translation: frame,
+                        },
+                        TransformMap::Warp(map) => ActionKind::TransformWarp {
+                            layer,
+                            map,
+                            translation: frame,
+                        },
                     });
                 } else {
                     // Nothing is logged, but the gesture's preview still has to be
@@ -1509,10 +1525,17 @@ impl Engine {
                 self.commit(ActionKind::SetFilter(id, filter));
             }
             DocCommand::SetMatteRect(id, min, max) => {
-                self.commit(ActionKind::SetMatteRect(id, min, max))
+                // The command's rect is on the canvas, where the handles live;
+                // the action's is in the layer's frame — `DocCommand::Fill`'s
+                // conversion, made where the gesture becomes an action (§14.12).
+                let d = self.frame_of(id).as_vec2();
+                self.commit(ActionKind::SetMatteRect(id, min - d, max - d))
             }
             DocCommand::SetMattePaint(id, paint) => {
-                self.commit(ActionKind::SetMattePaint(id, paint))
+                // A gradient's axis is geometry too, and the same conversion
+                // carries it into the frame; a solid rides through.
+                let d = self.frame_of(id).as_vec2();
+                self.commit(ActionKind::SetMattePaint(id, paint.translated(-d)))
             }
             DocCommand::SetSubstrateColor(rgb) => self.commit(ActionKind::SetSubstrateColor(rgb)),
             DocCommand::DuplicateLayer(source) => {
@@ -1711,9 +1734,14 @@ impl Engine {
                 self.preview_setter(drag.map(|(id, guide)| ActionKind::SetGuide(id, guide)));
             }
             ViewCommand::PreviewMatteRect(drag) => {
-                self.preview_setter(
-                    drag.map(|(id, min, max)| ActionKind::SetMatteRect(id, min, max)),
-                );
+                // The drag reports canvas corners; the fold wants the layer's
+                // frame — the commit's own conversion, so preview == committed
+                // (§14.12).
+                let kind = drag.map(|(id, min, max)| {
+                    let d = self.frame_of(id).as_vec2();
+                    ActionKind::SetMatteRect(id, min - d, max - d)
+                });
+                self.preview_setter(kind);
             }
             ViewCommand::PreviewSubstrateColor(rgb) => {
                 self.preview_setter(rgb.map(ActionKind::SetSubstrateColor));
@@ -1729,7 +1757,13 @@ impl Engine {
                 self.preview_setter(scale.map(ActionKind::SetSubstrateScale));
             }
             ViewCommand::PreviewParcel(pick) => {
-                self.preview_setter(pick.map(|(id, paint)| ActionKind::SetMattePaint(id, paint)));
+                // Into the layer's frame, as the commit converts — see
+                // `PreviewMatteRect`.
+                let kind = pick.map(|(id, paint)| {
+                    let d = self.frame_of(id).as_vec2();
+                    ActionKind::SetMattePaint(id, paint.translated(-d))
+                });
+                self.preview_setter(kind);
             }
             ViewCommand::PreviewSelectionOpacity(opacity) => {
                 self.preview_setter(opacity.map(ActionKind::SetSelectionOpacity));
@@ -2024,10 +2058,19 @@ impl Engine {
                     has_backdrop: !layers.is_empty(),
                     name: l.name.clone(),
                     matte: match &l.content {
-                        LayerContent::Matte { region, paint } => Some(MatteInfo {
-                            rect: region.rect(),
-                            paint: paint.clone(),
-                        }),
+                        // On the canvas, where the chrome lives: the region and
+                        // its paint are stated in the layer's frame (§15.2), and
+                        // the projection places them the way the compositor does
+                        // — the mint takes the same offset back out
+                        // (`DocCommand::SetMatteRect`), so the handles never do
+                        // frame arithmetic.
+                        LayerContent::Matte { region, paint } => {
+                            let d = l.translation.as_vec2();
+                            Some(MatteInfo {
+                                rect: region.translated(d).rect(),
+                                paint: paint.translated(d),
+                            })
+                        }
                         LayerContent::Paint(_) | LayerContent::Filter(_) => None,
                     },
                     filter: l.filter(),

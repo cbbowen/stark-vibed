@@ -1056,7 +1056,12 @@ impl Engine {
                     .collect()
             }
             LayerContent::Matte { region, paint } => {
-                let rect = match region.rect() {
+                // The layer's frame again (§14.12): the rect and the gradient
+                // axis are stated in it, and this is where both land on the
+                // canvas.
+                let d = layer.translation;
+                let offset = stark_model::geom::Vec2::new(d.x as f32, d.y as f32);
+                let rect = match region.translated(offset).rect() {
                     Some((min, max)) => [min.x, min.y, max.x, max.y],
                     // The whole plane: the shader never reads the rect (`flags`
                     // routes past it), so zeros rather than sentinels.
@@ -1084,13 +1089,13 @@ impl Engine {
                         let mut ramp = stark_shaders::mirror::matte::Ramp::default();
                         let stops = gradient.stops();
                         ramp.p[0] = stops.len() as f32;
-                        ramp.axis = match axis {
+                        ramp.axis = match axis.translated(offset) {
                             stark_model::document::GradientAxis::Linear { from, to } => {
                                 [from.x, from.y, to.x, to.y]
                             }
                             stark_model::document::GradientAxis::Radial { center, radius } => {
                                 ramp.p[1] = 1.0;
-                                [center.x, center.y, *radius, 0.0]
+                                [center.x, center.y, radius, 0.0]
                             }
                         };
                         // Indexed by the stop's own position, and bounded by
@@ -1189,11 +1194,12 @@ impl Engine {
         // An `Everything` matte has no rect and so defines no frame: naming one
         // falls through to the painted bounds, the same answer as no frame at
         // all — a substrate is under the picture, not a crop of it (§15.6).
+        // The rect is placed by the layer's translation (§14.12), so export
+        // frames the hole where the compositor draws it.
         if let Some(id) = frame
             && let Some(rect) = doc
                 .layer(id)
-                .and_then(|l| l.matte_region())
-                .and_then(|r| r.rect())
+                .and_then(|l| l.matte_region()?.translated(l.translation.as_vec2()).rect())
         {
             return Some(rect);
         }
@@ -1290,8 +1296,14 @@ fn visible_in_frame(
         (base as i64 + shift).clamp(i32::MIN as i64, i32::MAX as i64) as i32
     };
     Some(TileRect {
-        min: (edge(rect.min.0, lo(translation.x)), edge(rect.min.1, lo(translation.y))),
-        max: (edge(rect.max.0, hi(translation.x)), edge(rect.max.1, hi(translation.y))),
+        min: (
+            edge(rect.min.0, lo(translation.x)),
+            edge(rect.min.1, lo(translation.y)),
+        ),
+        max: (
+            edge(rect.max.0, hi(translation.x)),
+            edge(rect.max.1, hi(translation.y)),
+        ),
     })
 }
 

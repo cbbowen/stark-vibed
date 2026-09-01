@@ -1003,15 +1003,17 @@ impl DocState {
     /// there, and each entry stands alone: a concurrent removal of one member
     /// does not strand the rest of a group mid-move.
     ///
-    /// A no-op on a **matte or a filter**, like a stroke aimed at one (§15.7): a
-    /// matte's geometry already moves via `SetMatteRect`, and a filter has
-    /// nothing that sits anywhere. Refused here, in the fold, so a log that
-    /// contains one reads the same on every peer.
+    /// A no-op on a **filter**, like a stroke aimed at one (§21.4): it has
+    /// nothing that sits anywhere. A matte moves like paint — its rect and
+    /// gradient axis are stated in the layer's frame (§15.2), so the write
+    /// carries them with it. Refused here, in the fold
+    /// ([`Layer::is_translatable`]), so a log that contains one reads the same
+    /// on every peer.
     pub(crate) fn translate_layers(&self, moves: &[(LayerId, stark_model::geom::IVec2)]) -> Self {
         let mut state = self.clone();
         for (id, to) in moves {
             state = state.map_layer(*id, |l| {
-                if l.is_paintable() {
+                if l.is_translatable() {
                     Layer {
                         translation: *to,
                         ..l.clone()

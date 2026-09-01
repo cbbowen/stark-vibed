@@ -173,7 +173,8 @@ pub enum LayerContent {
     /// channels at composite time, so the log stays independent of whether the
     /// document is Oklab or Mixbox. A matte has no alpha of its own: its
     /// transparency *is* its layer opacity, which is the whole point of it
-    /// being a layer.
+    /// being a layer. Both halves state their geometry in the layer's frame,
+    /// placed by [`Layer::translation`] on the way out (§14.12, §15.2).
     ///
     /// Physically this is a flat, opaque *coat of paint*: the compositor gives it
     /// a constant thickness, so its interior lights flat (zero height gradient —
@@ -283,8 +284,10 @@ pub struct Layer {
     pub carries: Vector<Layer>,
     /// Where this layer's frame sits on the canvas, in whole pixels (§14.12): its
     /// tiles are keyed in the layer's own frame, and the compositor, the pick and
-    /// the bounds add this on the way out. Moving a layer is writing this field —
-    /// no tile is touched, which is the entire feature.
+    /// the bounds add this on the way out. A matte's geometry — its rect and its
+    /// gradient axis — is stated in the same frame (§15.2), so a matte moves the
+    /// same way. Moving a layer is writing this field — no tile is touched, which
+    /// is the entire feature.
     ///
     /// **Intrinsic, and deliberately not inherited** down [`carries`](Self::carries):
     /// a footprint is built from an action alone and could not name the ancestors an
@@ -423,6 +426,22 @@ impl Layer {
     /// swallowed or magically rasterized (§15.7, §21.4).
     pub fn is_paintable(&self) -> bool {
         matches!(self.content, LayerContent::Paint(_))
+    }
+
+    /// Whether this layer has a frame to move — whether writing
+    /// [`translation`](Self::translation) places anything (§14.12). Paint stands
+    /// somewhere and so does a matte, whose rect and gradient axis are stated in
+    /// the layer's frame (§15.2); a filter has nothing that sits anywhere (§21).
+    ///
+    /// One predicate rather than two matches, because the fold and the gesture's
+    /// subtree expansion must leave out exactly the same layers
+    /// (`DocState::translate_layers`, `Engine::translate_moves`) — the
+    /// [`is_shown`](Self::is_shown) lesson, caught before the copies existed.
+    pub fn is_translatable(&self) -> bool {
+        match &self.content {
+            LayerContent::Paint(_) | LayerContent::Matte { .. } => true,
+            LayerContent::Filter(_) => false,
+        }
     }
 
     /// The same layer with its painted tiles replaced. A no-op on anything with no

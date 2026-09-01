@@ -293,7 +293,10 @@ fn transform_apply(
         layer,
         actor,
         "transform rejected (unusable map or too many tiles); ignored",
-        |base, selection| ctx.transform.apply(&ctx.pool, base, selection, map, translation),
+        |base, selection| {
+            ctx.transform
+                .apply(&ctx.pool, base, selection, map, translation)
+        },
     )
 }
 
@@ -466,7 +469,10 @@ fn float_apply(
         tracing::warn!("float with nothing selected; ignored");
         return state;
     }
-    let Some((remaining, lifted)) = ctx.transform.float(&ctx.pool, &base, &selection, translation) else {
+    let Some((remaining, lifted)) = ctx
+        .transform
+        .float(&ctx.pool, &base, &selection, translation)
+    else {
         tracing::warn!("float rejected (empty cut or too many tiles); ignored");
         return state;
     };
@@ -702,7 +708,11 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // The rect-scoped siblings (§16.8, §16.9): identical shape — cut,
         // restack, carry the mask — differing only in the map handed to
         // the renderer.
-        ActionKind::TransformPerspective { layer, map, translation: frame } => transform_apply(
+        ActionKind::TransformPerspective {
+            layer,
+            map,
+            translation: frame,
+        } => transform_apply(
             state,
             ctx,
             action.id.actor,
@@ -710,7 +720,11 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             &stark_model::document::TransformMap::Perspective(*map),
             *frame,
         ),
-        ActionKind::TransformWarp { layer, map, translation: frame } => transform_apply(
+        ActionKind::TransformWarp {
+            layer,
+            map,
+            translation: frame,
+        } => transform_apply(
             state,
             ctx,
             action.id.actor,
@@ -735,7 +749,11 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
         // deterministically when unbounded or oversized, so peers and replays
         // agree about a log that contains one.
-        ActionKind::Fill { layer, op, translation: frame } => paint_edit(
+        ActionKind::Fill {
+            layer,
+            op,
+            translation: frame,
+        } => paint_edit(
             state,
             *layer,
             action.id.actor,
@@ -1061,11 +1079,12 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
         ActionKind::SetGuideName(id, name) => {
             state.guide(*id).is_some_and(|g| g.name.as_deref() == name.as_deref())
         }
-        // A move to where every named layer already stands. Absent answers
-        // `false` on this function's general rule; a matte or filter named with
-        // a nonzero offset answers `false` too and logs an action `apply` will
-        // no-op — `SetFilter`'s bargain, rather than a third opinion here about
-        // which layers have a frame to move.
+        // A move to where every named layer already stands — a matte included,
+        // whose frame moves like paint's (§15.2). Absent answers `false` on
+        // this function's general rule; a filter named with a nonzero offset
+        // answers `false` too and logs an action `apply` will no-op —
+        // `SetFilter`'s bargain, rather than a third opinion here about which
+        // layers have a frame to move (`Layer::is_translatable`).
         ActionKind::TranslateLayers { moves } => moves
             .iter()
             .all(|(id, to)| layer(*id).is_some_and(|l| l.translation == *to)),

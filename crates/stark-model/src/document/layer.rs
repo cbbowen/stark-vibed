@@ -460,6 +460,14 @@ impl BlendMode {
 /// value at infinity — which is what makes the frame case (fill everywhere except
 /// a rect) expressible at all, and expressible without a mask.
 ///
+/// Its geometry is stated **in the layer's frame** (§14.12), like every fact a
+/// paint action states about geometry: the layer's `translation` places it on the
+/// canvas, added by the compositor, the export framing and the projection on the
+/// way out — which is what lets a matte answer `TranslateLayers` with the same
+/// property write a paint layer does. `SetMatteRect` writes this frame's
+/// coordinates; the canvas-space handles are the command tier's business, converted
+/// where the gesture becomes an action, exactly as a fill's shape is.
+///
 /// It is stored as **geometry, not a rasterized mask**: the fill is evaluated
 /// analytically from a signed distance at canvas position, exactly as
 /// `selection.wesl` does (§6.8). That costs no tiles (a 4000² frame would
@@ -474,7 +482,8 @@ impl BlendMode {
 /// per §1, no variant appears here before it does something.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MatteRegion {
-    /// Everything *outside* this canvas-space rect — the frame / mat board.
+    /// Everything *outside* this rect — the frame / mat board. In the layer's
+    /// frame (§14.12); see the enum docs.
     OutsideRect { min: Vec2, max: Vec2 },
     /// The whole plane — a backing / underpainting, made to sit at the bottom of
     /// the stack (§15.5). It has no rect: it frames nothing, so it
@@ -484,7 +493,8 @@ pub enum MatteRegion {
 }
 
 impl MatteRegion {
-    /// The rect this region is defined against, in canvas px — for
+    /// The rect this region is defined against, in the layer's frame
+    /// (canvas-px units, §14.12) — for
     /// [`OutsideRect`](Self::OutsideRect) the *hole*, the piece, which is what
     /// export frames against (§15.6). `None` for a region that is not defined
     /// against one: an [`Everything`](Self::Everything) matte frames nothing,
@@ -525,6 +535,21 @@ impl MatteRegion {
     pub fn with_rect(&self, min: Vec2, max: Vec2) -> Self {
         match self {
             Self::OutsideRect { .. } => Self::OutsideRect { min, max },
+            Self::Everything => Self::Everything,
+        }
+    }
+
+    /// The same region shifted whole by `by` (§14.12): what places a frame-stated
+    /// rect on the canvas, and — negated — a canvas-space gesture into the frame
+    /// at the mint, [`Parcel::translated`](super::Parcel::translated)'s pair.
+    /// [`Everything`](Self::Everything) has no position and rides through, the
+    /// reading that same pair gives a solid.
+    pub fn translated(&self, by: Vec2) -> Self {
+        match self {
+            Self::OutsideRect { min, max } => Self::OutsideRect {
+                min: *min + by,
+                max: *max + by,
+            },
             Self::Everything => Self::Everything,
         }
     }

@@ -987,14 +987,16 @@ A footprint is built from the action alone (§12.6), and an inherited offset
 would make every stroke read the translation of every ancestor — resources no
 action can name. So the field is flat, and **the gesture moves a group by
 writing every member**: `ActionKind::TranslateLayers { moves }` carries one
-`(LayerId, IVec2)` per paint layer of the subtree (`RemoveLayer`'s `carried`,
-put to work), absolute like every property write. Two consequences worth
+`(LayerId, IVec2)` per member of the subtree with a frame to move
+(`Layer::is_translatable`: paint and mattes — `RemoveLayer`'s `carried`, put
+to work), absolute like every property write. Two consequences worth
 having anyway: carrying a layer into a translated group does not jump it, and
-a concurrent reorder cannot change what a move meant. Mattes and filters
-refuse the write — a matte's geometry already moves via `SetMatteRect` — and
-the gesture leaves them out of the list rather than logging refusals; a matte
-carried by a moved group therefore stays put, which is the one place the flat
-field shows.
+a concurrent reorder cannot change what a move meant. A matte moves because
+its geometry — the rect and the gradient axis — is stated in the layer's
+frame like every other geometry (§15.2), so the write carries them with it
+and a matte carried by a moved group rides along. Filters refuse the write —
+a filter has nothing that sits anywhere — and the gesture leaves them out of
+the list rather than logging refusals.
 
 ### 14.12.2 What an action's `frame` is for
 
@@ -1041,6 +1043,9 @@ it declines, deterministically, like every refusal there.
    gated by a selection exactly as on an untranslated one, which is the mask
    shift earning its keep.
 5. Undo restores the frame exactly.
+6. A translated matte renders identically to one *made* at the shifted rect —
+   gradient axis included — and export frames the moved hole
+   (`tests/matte.rs`, beside the matte's own claims).
 
 ---
 
@@ -1085,7 +1090,9 @@ constant-cost operation on this representation.
 
 ```rust
 pub enum MatteRegion {
-    /// Everything outside this canvas-space rect — the frame.
+    /// Everything outside this rect — the frame. In the layer's frame (§14.12):
+    /// the layer's translation places it on the canvas, so a matte answers
+    /// `TranslateLayers` with the same property write paint does.
     OutsideRect { min: Vec2, max: Vec2 },
     /// The whole plane — the backing (§15.5). No rect: it frames nothing,
     /// so export, the aspect readout and the handles all stand down
@@ -1093,6 +1100,17 @@ pub enum MatteRegion {
     Everything,
 }
 ```
+
+The geometry — the rect, and a gradient paint's axis beside it — is stated **in
+the layer's frame** and placed by `Layer::translation` on the way out, at the
+same three seams paint crosses (§14.12): the compositor's matte draw, export's
+`piece_rect`, and the projection, whose `MatteInfo` reports canvas coordinates so
+the chrome never does frame arithmetic. The commands stay canvas-space too —
+`DocCommand::SetMatteRect` and `SetMattePaint` take what the handles show, and
+the engine converts into the frame where the gesture becomes an action, exactly
+as a fill's shape is converted. The placement is whole-pixel `f32` addition,
+exact until coordinates approach 2²⁴ — near the frame limit the round trip can
+part by an ulp, the same bargain every paint conversion strikes (§16.4).
 
 `LayerContent` has a third variant beside `Paint` and `Matte` — `Filter`, §21 — and it
 is worth reading the two together, because the matte is the argument this model is
@@ -1395,7 +1413,8 @@ nine passing export tests.
 Three decisions that go with it:
 
 - **Scale** is a property of the output, not the artwork. The frame stores a
-  canvas-space rect only; the export offers 1× / 2× / explicit pixel dimensions.
+  rect in canvas-px units only, stated in the layer's frame (§15.2); the export
+  offers 1× / 2× / explicit pixel dimensions.
 - **Transparent background** skips the media pass's substrate composite — a real
   branch, not merely an alpha. Compositing over the substrate and *then* zeroing
   alpha would leave every bare-canvas texel carrying substrate color at zero

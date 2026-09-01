@@ -705,3 +705,254 @@ fn an_everything_matte_defines_no_export_frame() {
         "a rect-less matte must fall back to the painted bounds"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The matte stands in the layer's frame (§14.12, §15.2): `TranslateLayers`
+// moves it with the same property write that moves paint.
+// ---------------------------------------------------------------------------
+
+use stark_model::geom::IVec2;
+
+/// A move that is not tile-aligned, so a grid confusion would show.
+const D: IVec2 = IVec2::new(37, -13);
+
+/// The core claim (§14.12.4): a frame translated by [`D`] renders identically
+/// to a frame *made* at the shifted rect — the rect is stated in the layer's
+/// frame and the compositor places it — and export frames the moved hole.
+#[test]
+fn a_translated_matte_is_the_frame_made_at_the_shifted_rect() {
+    let Some(mut a) = engine_or_skip() else {
+        return;
+    };
+    let Some(mut b) = engine_or_skip() else {
+        return;
+    };
+    for e in [&mut a, &mut b] {
+        paint(e, RED, 30.0, WIDE_STROKE);
+    }
+    add_frame(&mut a);
+    let moved = a.observe().layers.last().expect("matte").id;
+    a.process(DocCommand::TranslateLayer {
+        layer: moved,
+        to: D,
+    });
+    b.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Top,
+        region: HOLE.translated(D.as_vec2()),
+        paint: Parcel::Solid(Srgb::new(BLACK)),
+    });
+    let made = b.observe().layers.last().expect("matte").id;
+    assert!(
+        images_match(&a.render_to_image(), &b.render_to_image(), 0),
+        "a moved frame and a frame made where it moved to are the same picture"
+    );
+    let plan = |e: &Engine, id| {
+        let p = e
+            .export_plan(Some(id), stark_engine::ExportScale::Factor(1.0))
+            .expect("plan");
+        (p.min, p.max)
+    };
+    assert_eq!(
+        plan(&a, moved),
+        plan(&b, made),
+        "export frames the hole where it shows"
+    );
+}
+
+/// The paint moves with it (§22.4 meets §14.12): a gradient matte's axis is
+/// stated in the same frame as the rect, so the wash rides the move instead of
+/// the frame sliding out from under it.
+#[test]
+fn a_translated_gradient_matte_carries_its_axis() {
+    let Some(mut a) = engine_or_skip() else {
+        return;
+    };
+    let Some(mut b) = engine_or_skip() else {
+        return;
+    };
+    let axis = GradientAxis::Linear {
+        from: Vec2::new(-100.0, 0.0),
+        to: Vec2::new(100.0, 0.0),
+    };
+    a.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Top,
+        region: HOLE,
+        paint: MP::Gradient(GradientParcel {
+            gradient: red_blue(),
+            axis,
+        }),
+    });
+    let moved = a.observe().layers.last().expect("matte").id;
+    a.process(DocCommand::TranslateLayer {
+        layer: moved,
+        to: D,
+    });
+    b.process(DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Top,
+        region: HOLE.translated(D.as_vec2()),
+        paint: MP::Gradient(GradientParcel {
+            gradient: red_blue(),
+            axis: axis.translated(D.as_vec2()),
+        }),
+    });
+    assert!(
+        images_match(&a.render_to_image(), &b.render_to_image(), 0),
+        "the axis moves with the frame"
+    );
+}
+
+/// The one `Everything` behavior the move makes reachable (§15.5): a graded
+/// backing has no rect, so its region rides the write unchanged — and its wash
+/// still moves, because the axis is the half of the matte with a position.
+#[test]
+fn a_translated_gradient_backing_carries_its_wash() {
+    let Some(mut a) = engine_or_skip() else {
+        return;
+    };
+    let Some(mut b) = engine_or_skip() else {
+        return;
+    };
+    let axis = GradientAxis::Linear {
+        from: Vec2::new(-100.0, 0.0),
+        to: Vec2::new(100.0, 0.0),
+    };
+    let backing = |axis| DocCommand::AddMatte {
+        carrier: None,
+        at: Place::Bottom,
+        region: MatteRegion::Everything,
+        paint: MP::Gradient(GradientParcel {
+            gradient: red_blue(),
+            axis,
+        }),
+    };
+    a.process(backing(axis));
+    let moved = a
+        .observe()
+        .layers
+        .first()
+        .expect("the backing is at the bottom")
+        .id;
+    a.process(DocCommand::TranslateLayer {
+        layer: moved,
+        to: D,
+    });
+    b.process(backing(axis.translated(D.as_vec2())));
+    assert!(
+        images_match(&a.render_to_image(), &b.render_to_image(), 0),
+        "a graded backing's wash rides the move"
+    );
+}
+
+/// The canvas-space bargain at the seams (§15.2): the projection reports the
+/// rect where it shows, `SetMatteRect` takes canvas corners back, and either
+/// way the chrome never does frame arithmetic — on a translated matte exactly
+/// as on an untranslated one.
+#[test]
+fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    add_frame(&mut engine);
+    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let framed = engine.render_to_image();
+    engine.process(DocCommand::TranslateLayer {
+        layer: matte_id,
+        to: D,
+    });
+    let row = |e: &Engine| e.observe().layers.last().expect("matte").clone();
+    let shown = HOLE.translated(D.as_vec2()).rect();
+    assert_eq!(row(&engine).translation, D, "a matte's frame really moves");
+    assert_eq!(
+        row(&engine).matte.as_ref().and_then(|m| m.rect),
+        shown,
+        "the projection places the rect where the compositor draws it"
+    );
+
+    // Committing the rect it already shows is not an edit.
+    let revision = engine.observe().doc_revision;
+    let (min, max) = shown.expect("a frame has a rect");
+    engine.process(DocCommand::SetMatteRect(matte_id, min, max));
+    assert_eq!(
+        engine.observe().doc_revision,
+        revision,
+        "the rect it already shows logs nothing"
+    );
+
+    // A drag lands where the hand put it: preview and commit convert alike.
+    let d = Vec2::new(-15.0, 10.0);
+    engine.process(ViewCommand::PreviewMatteRect(Some((
+        matte_id,
+        min + d,
+        max + d,
+    ))));
+    let dragging = engine.render_to_image();
+    engine.process(DocCommand::SetMatteRect(matte_id, min + d, max + d));
+    assert_eq!(
+        row(&engine).matte.as_ref().and_then(|m| m.rect),
+        Some((min + d, max + d)),
+        "the commit lands at the canvas corners the drag showed"
+    );
+    assert!(
+        images_match(&dragging, &engine.render_to_image(), 2),
+        "preview == committed through the frame conversion"
+    );
+
+    // Undo walks back through both property writes to the untranslated frame.
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Undo);
+    assert!(
+        images_match(&framed, &engine.render_to_image(), 2),
+        "undo restores the rect, then the move"
+    );
+}
+
+/// A matte carried by a moved group rides along (§14.12.1) — the gesture's
+/// subtree expansion includes everything with a frame to move — while a filter
+/// member is left out of the list rather than named-and-refused.
+#[test]
+fn a_matte_carried_by_a_moved_group_rides_along() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    let base = engine.observe().active_layer;
+    engine.process(DocCommand::AddMatte {
+        carrier: Some(base),
+        at: Place::Top,
+        region: HOLE,
+        paint: Parcel::Solid(Srgb::new(BLACK)),
+    });
+    engine.process(DocCommand::AddFilter {
+        carrier: Some(base),
+        above: None,
+        filter: stark_model::document::Filter::ALL[0].clone(),
+    });
+    engine.process(DocCommand::TranslateLayer { layer: base, to: D });
+    let o = engine.observe();
+    let translation = |l: &stark_engine::LayerInfo| l.translation;
+    let of = |want: fn(&stark_engine::LayerInfo) -> bool| {
+        o.layers
+            .iter()
+            .find(|l| l.carrier == Some(base) && want(l))
+            .expect("the member is on the roster")
+    };
+    assert_eq!(
+        o.layers.iter().find(|l| l.id == base).map(translation),
+        Some(D),
+        "the base moved"
+    );
+    assert_eq!(
+        translation(of(|l| l.matte.is_some())),
+        D,
+        "the carried matte rides along"
+    );
+    assert_eq!(
+        translation(of(|l| l.filter.is_some())),
+        IVec2::ZERO,
+        "the carried filter has no frame to move"
+    );
+}

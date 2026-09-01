@@ -111,8 +111,13 @@ use crate::mirror::{Mirror, Served};
 /// fill frame gained a `frame` offset, and paint geometry is stated in the
 /// layer's frame rather than on the canvas: a meaning change with the shape
 /// nearly untouched, since a build without the field would fold a framed
-/// stroke's path at the wrong place and gate it through an unshifted mask.
-pub(crate) const ALPN: &[u8] = b"stark/collab/21";
+/// stroke's path at the wrong place and gate it through an unshifted mask;
+/// 22: mattes joined the frame (§15.2) — `TranslateLayers` moves a matte, and a
+/// matte's rect and gradient axis are stated in the layer's frame rather than
+/// on the canvas: a meaning change with no shape change at all, since a build
+/// without it folds the move as a no-op and reads a translated matte's
+/// `SetMatteRect` at the wrong place.
+pub(crate) const ALPN: &[u8] = b"stark/collab/22";
 
 /// The first byte of every response.
 ///
