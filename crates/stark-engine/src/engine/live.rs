@@ -240,7 +240,11 @@ impl Preview {
                 // literally the result. Losslessly, and thrown away and redone on
                 // each move rather than accumulated, which is what keeps dragging a
                 // rectangle out from stacking a hundred glazes.
-                LiveGesture::Fill { layer, op, translation: frame } => {
+                LiveGesture::Fill {
+                    layer,
+                    op,
+                    translation: frame,
+                } => {
                     // Already chained: it reads `out`, not `base`, and replaces the
                     // layer's whole tile map rather than copying tiles across.
                     let rect = stark_model::document::fill_rect(&op);

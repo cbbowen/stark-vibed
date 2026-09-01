@@ -723,7 +723,8 @@ impl TransformRenderer {
     /// split per warp sub-cell) forward-rasterized through `vs_gated`, the cut
     /// gated by the rect's coverage, and the mask carried as
     /// `max(old · (1 − box), moved)` — the residue unioned with what landed.
-    /// `local` is `canvas` restated in the layer's frame ([`TransformMap::in_frame`]);
+    /// `local` is `canvas` restated in the layer's frame
+    /// ([`TransformMap::under_translation`]);
     /// the paint runs under it, the mask under `canvas`, and at a zero translation the
     /// two are the same value.
     fn apply_gated(

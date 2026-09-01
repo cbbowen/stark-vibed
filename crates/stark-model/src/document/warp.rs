@@ -251,7 +251,7 @@ impl WarpMap {
     /// their own, for "untouched" to stay bit-exact.
     /// The same mesh shifted whole by `d` — source rect and every control point
     /// alike, so the deformation it describes is unchanged, merely restated in
-    /// shifted coordinates ([`TransformMap::in_frame`]'s warp arm).
+    /// shifted coordinates ([`TransformMap::under_translation`]'s warp arm).
     ///
     /// Not bitwise-neutral in general: `lerp(a+d, b+d, t)` and `lerp(a, b, t)+d`
     /// can part by an ulp in `f32`, so a shifted mesh's deviation form may carry
@@ -260,7 +260,7 @@ impl WarpMap {
     /// byte-exactness of the *identity* stays with the unshifted frame, where
     /// every mesh lived before frames existed.
     ///
-    /// [`TransformMap::in_frame`]: super::transform::TransformMap::in_frame
+    /// [`TransformMap::under_translation`]: super::transform::TransformMap::under_translation
     pub fn translated(&self, d: Vec2) -> Self {
         Self {
             min: self.min + d,

@@ -135,10 +135,17 @@ impl GestureTx {
             }
             // A fill's region is a shape, sent whole for exactly the reasons a
             // selection's is. The layer rides `PeerFrame::active_layer`.
-            GestureSource::Fill { op, translation: frame } => {
+            GestureSource::Fill {
+                op,
+                translation: frame,
+            } => {
                 self.sent_id = Some(id);
                 self.sent = 0;
-                Some(GestureFrame::Fill { id, op, translation: frame })
+                Some(GestureFrame::Fill {
+                    id,
+                    op,
+                    translation: frame,
+                })
             }
             GestureSource::Stroke {
                 head,
@@ -273,7 +280,11 @@ impl GestureRx {
                 self.drawn = Some(LiveGesture::Selection(op));
                 true
             }
-            GestureFrame::Fill { op, translation: frame, .. } => {
+            GestureFrame::Fill {
+                op,
+                translation: frame,
+                ..
+            } => {
                 self.stroke = None;
                 self.last_seq = Some(seq);
                 self.drawn = Some(LiveGesture::Fill {

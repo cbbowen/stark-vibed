@@ -740,7 +740,14 @@ impl Session {
                 // (§17.5); the pinned layer travels only in-process, so a peer's
                 // preview can drift from the commit across the retarget race the
                 // pin closes locally — a preview, not the document.
-                ShapeResult::Fill { op, translation: frame, .. } => GestureSource::Fill { op, translation: frame },
+                ShapeResult::Fill {
+                    op,
+                    translation: frame,
+                    ..
+                } => GestureSource::Fill {
+                    op,
+                    translation: frame,
+                },
             }),
         }
     }
@@ -1021,9 +1028,18 @@ impl Session {
             // cursor, so every part of it can still move.
             None => match self.preview_shape()? {
                 ShapeResult::Select(op) => (LiveGesture::Selection(op), 0),
-                ShapeResult::Fill { layer, op, translation: frame } => {
-                    (LiveGesture::Fill { layer, op, translation: frame }, 0)
-                }
+                ShapeResult::Fill {
+                    layer,
+                    op,
+                    translation: frame,
+                } => (
+                    LiveGesture::Fill {
+                        layer,
+                        op,
+                        translation: frame,
+                    },
+                    0,
+                ),
             },
         };
         Some(GestureView {
@@ -1403,7 +1419,7 @@ impl StrokeBuilder {
 }
 
 /// A canvas-space path brought into a layer's frame at `frame` (§14.12) — the
-/// conversion [`StrokeRecord::frame`] pairs with. A zero frame is the path
+/// conversion [`StrokeRecord::translation`] pairs with. A zero frame is the path
 /// untouched, bit for bit; otherwise every position drops the whole-pixel
 /// offset, exact in `f32` to the 2²⁴ the canvas already lives within.
 fn path_in_frame(

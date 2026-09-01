@@ -530,7 +530,11 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // the box is brought into the layer's frame by the action's own `frame`
         // (§14.12) — the same shift `apply` makes, from the same field, so the two
         // cannot disagree about which tiles are meant.
-        ActionKind::TransformPerspective { layer, map, translation: frame } => Footprint {
+        ActionKind::TransformPerspective {
+            layer,
+            map,
+            translation: frame,
+        } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
                 Resource::Paint(
@@ -544,7 +548,11 @@ pub fn compute_footprint(action: &Action) -> Footprint {
                 Resource::Selection(actor),
             ],
         },
-        ActionKind::TransformWarp { layer, map, translation: frame } => Footprint {
+        ActionKind::TransformWarp {
+            layer,
+            map,
+            translation: frame,
+        } => Footprint {
             reads: vec![Resource::Existence(*layer)],
             writes: vec![
                 Resource::Paint(

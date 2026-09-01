@@ -109,7 +109,7 @@ pub enum GestureFrame {
     Fill {
         id: u64,
         op: FillOp,
-        /// The layer's translation at the press — [`StrokeHead::frame`], for a fill.
+        /// The layer's translation at the press — [`StrokeHead::translation`], for a fill.
         #[serde(default)]
         translation: crate::geom::IVec2,
     },

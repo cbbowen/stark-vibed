@@ -644,12 +644,13 @@ pub enum ActionKind {
     /// The child composites directly over the paint it was cut from, so the picture
     /// does not change: the cut is §16.2's lift and the child's stacking is the
     /// merge law run backwards (§14.11.1). Fully-covered tiles cross by handle.
-    /// The child arrives unnamed, at the identity composite params, with its
-    /// translation at `frame` — and the author's selection is **consumed**: the
+    /// The child arrives unnamed, at the identity composite params, standing at
+    /// `translation` — and the author's selection is **consumed**: the
     /// float is the selection now, and an outline left behind would sit over paint
     /// that is no longer there (§16.1's argument, answered the other way).
     ///
-    /// `frame` is the source layer's frame at mint, [`StrokeRecord::frame`]'s field
+    /// `translation` is the source layer's frame at mint,
+    /// [`StrokeRecord::translation`]'s field
     /// for its reason: it places the canvas-anchored mask into the source's frame,
     /// and it is what the child's translation is set to — from the action, so a
     /// replay mints what the recording run minted.
