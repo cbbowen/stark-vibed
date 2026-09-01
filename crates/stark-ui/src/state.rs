@@ -799,11 +799,11 @@ impl AppState {
             // at mount, before any engine exists, and the first stroke has to
             // lay the color the marker shows (`main` pushes the same
             // configuration to the engine once one is up).
-            brush: root_signal(|| crate::brush_config::BrushConfig {
+            brush: root_signal(crate::brush_config::BrushConfig::default),
+            transient: root_signal(|| crate::brush_config::Transient {
                 color: crate::panels::color::INITIAL_COLOR,
                 ..Default::default()
             }),
-            transient: root_signal(crate::brush_config::Transient::default),
             tow: root_signal(|| None),
             assist: AssistState::new(),
             shape_tool: root_signal(|| Tool::SelectRect),
@@ -1619,7 +1619,7 @@ pub fn update_brush(
         state,
         ViewCommand::SetBrush {
             brush: config.params(tune),
-            color: config.color(),
+            color: tune.color,
         },
     );
     let mut sig = state.brush;

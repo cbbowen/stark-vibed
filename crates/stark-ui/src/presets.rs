@@ -2,9 +2,10 @@
 //! section at the foot of the Brush panel.
 //!
 //! A preset is a whole brush **except the painting color**: applying one keeps
-//! the current RGB (color belongs to the Color panel) while everything else —
-//! including the effect's own opacity (§6.2) — comes from the preset
-//! ([`wear`]). Both halves of the brush, that is: the durable half, which is
+//! the current RGB (color belongs to the Color panel — [`wear`] writes the
+//! hand's back over whatever the stored tune carries) while everything else —
+//! including the effect's own opacity (§6.2) — comes from the preset.
+//! Both halves of the brush, that is: the durable half, which is
 //! what the tool *is* and which nothing but a preset stores, and the transient
 //! half — the size and flow it was saved at (`brush_config::Transient`). The
 //! quick-brush rack (`crate::slots`) holds no brush of its own: a slot names a
@@ -155,7 +156,13 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                    brush: BrushConfig| PresetEntry {
         name: name.to_string(),
         brush: BrushConfig { smoothing, ..brush },
-        transient: Transient { size, flow },
+        transient: Transient {
+            size,
+            flow,
+            // The color a preset's tune carries is never applied ([`wear`]
+            // keeps the hand's), so the definitions do not say one.
+            ..Transient::default()
+        },
         slot,
         builtin: true,
     };
@@ -573,12 +580,14 @@ pub fn wear(state: AppState, brush: BrushConfig, tune: Transient, from: Option<S
     };
     update_brush(state, move |b, t| {
         // The hand's color survives the swap — a tool is everything but it
-        // (§18.1.8), and the whole configuration around it moves as one,
-        // the feel (§6.11), the inactive effect and the tune included.
-        let rgb = b.color;
+        // (§18.1.8), and this door is where that rule lives now that the
+        // color rides the transient: the whole configuration moves as one,
+        // the feel (§6.11), the inactive effect and the tune included, and
+        // the one field written back is the color the hand already held.
+        let rgb = t.color;
         *b = brush;
-        b.color = rgb;
         *t = tune;
+        t.color = rgb;
     });
     crate::tutor::not_reaching(state, false);
     let mut in_hand = state.preset_in_hand;
@@ -687,32 +696,33 @@ pub fn find<'a>(entries: &'a [PresetEntry], name: &str) -> Option<&'a PresetEntr
 }
 
 /// Whether the live brush is still **this tool** — the preset in every durable
-/// knob, with the painting color set aside. The transient half is not here to
-/// set aside any more: [`BrushConfig`] *is* the durable half, so this is plain
-/// equality with the color forgiven — which is the whole of what the split
-/// bought this test. What the preset rows light on: a tool put on and then
+/// knob. Nothing is set aside any more: with the transient — the color
+/// included — a value of its own, [`BrushConfig`] *is* the durable half and
+/// this is plain equality, which is the whole of what the split bought this
+/// test. What the preset rows light on: a tool put on and then
 /// sized up is the same tool at another size, so the row stays lit, while the
 /// smoothing amount is one of the knobs (§6.11) and a preset worn and then
 /// smoothed differently is no longer that preset. The effect's own opacity is
 /// durable too — part of what the tool does (§6.2) — so the row goes out
 /// the moment it moves.
 ///
-/// Exact equality on the rest, on purpose: the row says the brush still *is*
-/// the preset, not that it resembles one.
+/// Exact equality, on purpose: the row says the brush still *is*
+/// the preset, not that it resembles one. Kept as a named function rather
+/// than an `==` at the call sites, because it is the *rule* the rows light on
+/// and the place its docs live.
 pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
-    let mut preset = *preset;
-    preset.color = current.color;
-    preset == *current
+    current == preset
 }
 
 /// Whether two brushes are **the same brush** — equal in both halves, the
-/// painting color alone set aside, since [`apply`] deliberately leaves it. The
+/// painting color alone set aside ([`Transient::same_tune`]), since [`apply`]
+/// deliberately leaves it. The
 /// stricter of the two tests, for the questions a size counts in: whether a
 /// quick slot's brush is the one in hand (`slots::SlotOverlay`), and whether
 /// writing the brush back over its preset would change anything
 /// ([`Overwrite::Unchanged`]), since a preset carries the transient half too.
 pub fn same_brush(a: &(BrushConfig, Transient), b: &(BrushConfig, Transient)) -> bool {
-    same_tool(&a.0, &b.0) && a.1 == b.1
+    same_tool(&a.0, &b.0) && a.1.same_tune(&b.1)
 }
 
 /// What "Overwrite preset" can do with the brush in hand. The brush editor's
@@ -918,17 +928,16 @@ mod tests {
         assert_ne!(first.slot, Some(slots::ERASER));
     }
 
-    /// The line between the halves, as the preset rows light on it: the color is
-    /// set aside, every durable knob counts — and the transient cannot count,
-    /// being a different value entirely now ([`same_tool`] takes only configs).
+    /// The line between the halves, as the preset rows light on it: every
+    /// durable knob counts, and neither half of the hand's state can — the
+    /// transient, color included, is a different value entirely now
+    /// ([`same_tool`] takes only configs).
     #[test]
     fn the_same_tool_is_the_preset_at_any_size_and_flow() {
         let preset = BrushConfig {
             drain: 0.2,
             ..BrushConfig::default()
         };
-        let mut recolored = preset;
-        recolored.color = [0.9, 0.1, 0.2];
         let mut thinned = preset;
         thinned.set_opacity(0.4);
         let smoothed = BrushConfig {
@@ -940,14 +949,18 @@ mod tests {
             ..preset
         };
 
-        assert!(same_tool(&recolored, &preset), "color is the hand's");
         assert!(!same_tool(&thinned, &preset), "opacity is the tool's");
         assert!(!same_tool(&smoothed, &preset), "the feel is the tool's");
         assert!(!same_tool(&erasing, &preset), "the effect is the tool");
-        // The stricter test counts the tune.
+        // The stricter test counts the tune — its color set aside, which is
+        // the Color panel's (`Transient::same_tune`).
         let tune = Transient::default();
         let resized = Transient { size: 80.0, ..tune };
-        assert!(same_brush(&(recolored, tune), &(preset, tune)));
+        let recolored = Transient {
+            color: [0.9, 0.1, 0.2],
+            ..tune
+        };
+        assert!(same_brush(&(preset, recolored), &(preset, tune)));
         assert!(!same_brush(&(preset, resized), &(preset, tune)));
     }
 
@@ -977,8 +990,10 @@ mod tests {
         });
         let builtin = entries[0].name.clone();
         let edited = (mine, Transient { size: 34.0, ..tune });
-        let mut recolored = mine;
-        recolored.color = [0.9, 0.1, 0.2];
+        let recolored = Transient {
+            color: [0.9, 0.1, 0.2],
+            ..tune
+        };
 
         assert_eq!(overwrite(&entries, None, &edited), Overwrite::Nothing);
         assert_eq!(
@@ -994,7 +1009,7 @@ mod tests {
             Overwrite::Unchanged("Mine".into())
         );
         assert_eq!(
-            overwrite(&entries, Some("Mine"), &(recolored, tune)),
+            overwrite(&entries, Some("Mine"), &(mine, recolored)),
             Overwrite::Unchanged("Mine".into())
         );
         assert_eq!(

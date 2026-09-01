@@ -112,7 +112,10 @@ pub struct QuickBrush {
     /// The preset's name (`PresetEntry::name`) — the library's key, and the one
     /// a preset keeps through every overwrite.
     pub preset: String,
-    /// The size and flow the number keeps of its own.
+    /// The size and flow the number keeps of its own. The color the tune also
+    /// carries is dead weight here — a slot never changes the color you are
+    /// painting with (`presets::wear` keeps the hand's), and a color picked
+    /// mid-hold does not rebind ([`Held::settle`], `Transient::same_tune`).
     pub transient: Transient,
 }
 
@@ -291,7 +294,11 @@ impl Held {
         current: Transient,
         from: Option<&str>,
     ) -> (Option<QuickBrush>, Option<(BrushConfig, Transient)>) {
-        let changed = self.claimed || current != self.entered;
+        // `same_tune`, not `==`: the tune carries the hand's color now, and a
+        // color picked mid-hold is the Color panel's act — the one thing a
+        // slot is defined not to keep (the module doc). Size and flow are what
+        // "did anything change?" is asked of.
+        let changed = self.claimed || !current.same_tune(&self.entered);
         let kept = changed
             .then(|| {
                 from.map(|preset| QuickBrush {
@@ -1020,7 +1027,11 @@ mod tests {
     use super::*;
 
     fn tune(size: f32, flow: f32) -> Transient {
-        Transient { size, flow }
+        Transient {
+            size,
+            flow,
+            ..Transient::default()
+        }
     }
 
     fn held(entered: Transient, base: BrushConfig) -> Held {
@@ -1075,16 +1086,19 @@ mod tests {
 
     #[test]
     fn a_change_to_the_tool_alone_is_not_the_numbers_to_keep() {
-        // The number holds a binding and a tune: an opacity moved under the hold,
-        // a color picked, a hardness changed — none of them reaches the transient
-        // half, so none of them is a change the number can keep. The preset is
-        // where those go (the module doc), and the release finds nothing to do.
+        // The number keeps its binding and the two knobs of the tune: an
+        // opacity moved under the hold or a hardness changed reach the config
+        // alone, and a **color picked reaches the tune but is the Color
+        // panel's act** (`Transient::same_tune`) — so none of them is a change
+        // the number can keep, and the release finds nothing to do.
         let base = BrushConfig::default();
         let entered = Transient::default();
-        // An opacity moved and a color picked change the config alone: the
-        // tune the release reads is exactly the one the hold entered on.
-        let (kept, back) = held(entered, base).settle(entered, Some("Pen"));
-        assert_eq!(kept, None);
+        let recolored = Transient {
+            color: [0.9, 0.1, 0.2],
+            ..entered
+        };
+        let (kept, back) = held(entered, base).settle(recolored, Some("Pen"));
+        assert_eq!(kept, None, "a color picked mid-hold binds nothing");
         assert_eq!(back, Some((base, entered)));
     }
 

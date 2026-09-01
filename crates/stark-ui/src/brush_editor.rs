@@ -1285,14 +1285,14 @@ fn restroke(state: AppState, mut preview: Preview) {
     if *preview.drawing.peek() {
         return;
     }
-    let mut brush = *state.brush.peek();
-    let tune = *state.transient.peek();
+    let brush = *state.brush.peek();
+    let mut tune = *state.transient.peek();
     // Force the test stroke to the fixed preview blue so it reads over the red
     // reference stroke; the effect's own opacity (the Opacity slider) is left
     // untouched. A stamp shape needs no handing over: the preview engine shares
     // the main engine's content-addressed asset store, so whatever the brush
     // holds is already here.
-    brush.color = PREVIEW_STROKE_COLOR;
+    tune.color = PREVIEW_STROKE_COLOR;
     let samples = preview.samples.peek().clone();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
@@ -1302,7 +1302,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     }
     r.process(ViewCommand::SetBrush {
         brush: brush.params(tune),
-        color: brush.color(),
+        color: tune.color,
     });
     // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
     // test stroke is a hand, and replaying it through the tow is what lets the

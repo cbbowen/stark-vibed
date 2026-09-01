@@ -28,7 +28,7 @@ pub fn ColorPanel() -> Element {
     // The hand's is the paint side's, whatever effect is in force — which is
     // what lets a color picked while the eraser is held land somewhere
     // (`BrushConfig::paint`).
-    let init = state.brush.peek().color();
+    let init = state.transient.peek().color;
     // Read reactively, unlike the color: this is how a pick — which sets the color
     // from outside the picker — gets the markers to move (see `AppState::color_epoch`).
     let seed = (state.color_epoch)();
@@ -38,7 +38,7 @@ pub fn ColorPanel() -> Element {
             init,
             seed,
             onchange: move |rgb: [f32; 3]| {
-                update_brush(state, move |br, _| br.color = rgb);
+                update_brush(state, move |_, t| t.color = rgb);
             },
         }
     }

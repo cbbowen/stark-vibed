@@ -244,7 +244,7 @@ fn flow_bar(bar: FlowBar) -> Element {
 #[component]
 pub fn PickLoupe() -> Element {
     let state = use_context::<AppState>();
-    let color = (state.brush)().color();
+    let color = (state.transient)().color;
     let Some(at) = (state.pick.loupe)() else {
         return rsx! {};
     };

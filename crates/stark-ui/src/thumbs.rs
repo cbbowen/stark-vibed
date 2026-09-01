@@ -144,7 +144,7 @@ pub struct Rig {
 /// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
 /// reason.
 fn lookup(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
-    let key = (keyed(w), t);
+    let key = (*w, keyed(t));
     state
         .thumbs
         .cache
@@ -154,28 +154,28 @@ fn lookup(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
         .map(|(_, url)| url.clone())
 }
 
-/// The brush **as the thumbnail paints it**: the test stroke's own gray in place
+/// The tune **as the thumbnail paints it**: the test stroke's own gray in place
 /// of the painting color. Both the render and the cache key go through it, so
 /// the key cannot come to disagree with the picture about what a thumbnail is.
 ///
 /// The picture ignores the RGB it is handed — every thumbnail is drawn in
-/// [`STROKE_COLOR`], over the same two grays — so two brushes differing only in
-/// painting color are one picture, and keying on the raw snapshot would file
-/// that one picture under a fresh name for every color a preset happened to be
-/// saved in: a preset carries the color the hand held when it was written
-/// (`presets::wear` keeps the live one on the way back in, §18.1.8), so one
-/// tool saved twice in two colors would be rendered twice for one row's worth
-/// of picture.
+/// [`STROKE_COLOR`], over the same two grays — so two tunes differing only in
+/// color are one picture, and keying on the raw snapshot would file
+/// that one picture under a fresh name for every color a tune happened to be
+/// saved at: a stored tune carries the color the hand held when the snapshot
+/// was taken (`presets::wear` keeps the live one on the way back in,
+/// §18.1.8), so one tool saved twice in two colors would be rendered twice
+/// for one row's worth of picture.
 ///
 /// The effect's opacity is deliberately untouched: it is the brush's own — the
-/// stroke really is laid under it (§6.2) — so two brushes that differ in it are
-/// two pictures and keep two entries. So is the transient half beside the
-/// config in the key, for the same reason: a slot tuned off its preset is a
-/// different stroke, and gets one.
-fn keyed(w: &BrushConfig) -> BrushConfig {
-    let mut w = *w;
-    w.color = STROKE_COLOR;
-    w
+/// stroke really is laid under it (§6.2) — and so are the size and flow beside
+/// the color, for the same reason: a slot tuned off its preset is a different
+/// stroke, and gets one.
+fn keyed(t: Transient) -> Transient {
+    Transient {
+        color: STROKE_COLOR,
+        ..t
+    }
 }
 
 /// The thumbnail for `w` at `t`, if it has been generated. Subscribes, so a row
@@ -252,7 +252,7 @@ fn next_missing(state: AppState) -> Option<(BrushConfig, Transient)> {
         // to be, or a brush filed under its rendered color would be reported
         // missing forever and `refresh` would never finish its scan.
         .find(|(w, t)| {
-            let key = (keyed(w), *t);
+            let key = (*w, keyed(*t));
             !cache.iter().any(|(cached, _)| *cached == key)
         })
 }
@@ -313,12 +313,12 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
                 ),
             });
         }
-        // The brush the cache will file this under, which is the brush the stroke
-        // is laid with: one statement of "the color a thumbnail is painted in".
-        let keyed_brush = keyed(&w);
+        // The tune the cache will file this under, which is the tune the stroke
+        // is laid at: one statement of "the color a thumbnail is painted in".
+        let keyed_tune = keyed(t);
         rig.engine.process(ViewCommand::SetBrush {
-            brush: keyed_brush.params(t),
-            color: keyed_brush.color(),
+            brush: w.params(keyed_tune),
+            color: keyed_tune.color,
         });
         let rope = crate::input::rope_in(view, w.smoothing);
         rig.engine
@@ -355,7 +355,7 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
         Err(_) => String::new(),
     };
     let mut cache = state.thumbs.cache;
-    cache.write().push(((keyed(&w), t), url));
+    cache.write().push(((w, keyed(t)), url));
     true
 }
 
@@ -425,31 +425,31 @@ fn test_stroke(view: &ViewTransform) -> Vec<InputSample> {
 mod tests {
     use super::*;
 
-    fn brush(color: [f32; 3]) -> BrushConfig {
-        BrushConfig {
+    fn tune(color: [f32; 3]) -> Transient {
+        Transient {
             color,
             ..Default::default()
         }
     }
 
-    /// The second render this key exists to rule out: a preset carries the color
-    /// it was saved in and `presets::wear` keeps the live one over it (§18.1.8),
-    /// so one tool saved twice in two colors is one picture — the thumbnail is
-    /// painted in its own gray either way — and must not cost two.
+    /// The second render this key exists to rule out: a stored tune carries the
+    /// color the hand held and `presets::wear` keeps the live one over it
+    /// (§18.1.8), so one tool saved twice in two colors is one picture — the
+    /// thumbnail is painted in its own gray either way — and must not cost two.
     #[test]
     fn two_painting_colors_of_one_brush_are_one_thumbnail() {
-        assert_eq!(
-            keyed(&brush([0.9, 0.1, 0.1])),
-            keyed(&brush([0.1, 0.2, 0.9]))
-        );
+        assert_eq!(keyed(tune([0.9, 0.1, 0.1])), keyed(tune([0.1, 0.2, 0.9])));
     }
 
-    /// Opacity is the brush's own — the stroke really is laid under it (§6.2) —
-    /// so two of them are two pictures and keep two entries.
+    /// The size and flow are the tune's other two knobs, and they really are the
+    /// picture's — a slot tuned off its preset is a different stroke (§6.2) —
+    /// so the key normalizes the color alone.
     #[test]
-    fn the_brush_opacity_is_part_of_the_picture_though() {
-        let mut thin = brush([0.9, 0.1, 0.1]);
-        thin.set_opacity(0.3);
-        assert_ne!(keyed(&brush([0.9, 0.1, 0.1])), keyed(&thin));
+    fn the_tune_is_part_of_the_picture_though() {
+        let resized = Transient {
+            size: 80.0,
+            ..tune([0.9, 0.1, 0.1])
+        };
+        assert_ne!(keyed(tune([0.9, 0.1, 0.1])), keyed(resized));
     }
 }

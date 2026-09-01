@@ -1,11 +1,12 @@
 //! The brush as **this frontend** carries it: the **durable** half
 //! ([`BrushConfig`] — what the tool *is*) and the **transient** half
-//! ([`Transient`] — the size and flow the hand is working it at). Two types,
-//! because they are two different kinds of state with different owners: a
-//! preset stores both, a quick slot stores a [`Transient`] beside a preset's
-//! *name*, and the live pair sits in two signals (`AppState::brush`,
-//! `AppState::transient`) so a tuning drag at pointer rate wakes nothing that
-//! only shows the tool.
+//! ([`Transient`] — the hand's own state: the size and flow it is working the
+//! tool at, and the color it is painting in). Two types, because they are two
+//! different kinds of state with different owners: a preset stores both, a
+//! quick slot stores a [`Transient`] beside a preset's *name*, and the live
+//! pair sits in two signals (`AppState::brush`, `AppState::transient`) so a
+//! tuning drag or an eyedropper sweep at pointer rate wakes nothing that only
+//! shows the tool.
 //!
 //! The engine's [`BrushParams`] is shaped for what a stroke's record needs —
 //! the shared tip knobs and *the* effect in force, with each effect carrying
@@ -13,12 +14,13 @@
 //! needs a different shape, because a brush is *edited* across those lines:
 //! every effect stays configured while only one is in force, so switching
 //! between Paint, Wet and Erase forgets nothing — the color above all, which
-//! the Color panel writes whatever the hand holds (§18.1.8) — and the
+//! survives every switch by not being the tool's at all
+//! ([`Transient::color`], §18.1.8) — and the
 //! stroke-smoothing **feel** (§6.11) travels with the brush even though the
 //! stored path already embodies it and the record must not carry it.
 //!
 //! **Shared knobs are stored once.** Paint and Wet are the two *laying* kinds,
-//! and everything they agree on — the pigment, the opacity ceiling, the flow
+//! and everything they agree on — the opacity ceiling, the flow
 //! mapping, the color dynamics — is one field here, not a copy per effect the
 //! switch would have to keep reconciled. What is left of wet is genuinely wet's
 //! alone ([`WetDynamics`]: the axes and their mappings), and
@@ -45,7 +47,9 @@
 //! So the transient applies to **whichever effect is in force** — one rate,
 //! carried across the switch exactly as the size always was: an eraser picked
 //! up mid-session bites at the flow the hand was just painting at, which is
-//! what "the hand's intensity" means. Everything else — shape, tapers,
+//! what "the hand's intensity" means. The **color** is the third of the
+//! hand's knobs, with one rule of its own ([`Transient`]'s doc): it never
+//! arrives with a tool. Everything else — shape, tapers,
 //! dynamics, the effect and its opacity, the feel — is [`BrushConfig`]:
 //! what the tool *is*, which a preset owns and nothing else stores.
 //!
@@ -128,15 +132,24 @@ impl Default for WetDynamics {
     }
 }
 
-/// The **transient** half of a brush: the size, and the flow — the two knobs a
-/// hand adjusts without changing its mind about the tool (see the module doc).
-/// A value of its own, not a view of the config: the live one rides
-/// `AppState::transient`, a preset keeps one beside its [`BrushConfig`], and a
-/// quick slot keeps one beside the name of the preset it is bound to
-/// (`slots::QuickBrush`, §18.1.8).
+/// The **transient** half of a brush — the hand's own state, adjusted all day
+/// without the tool becoming a different tool (see the module doc): the size,
+/// the flow, and the color. A value of its own, not a view of the config: the
+/// live one rides `AppState::transient`, a preset keeps one beside its
+/// [`BrushConfig`], and a quick slot keeps one beside the name of the preset
+/// it is bound to (`slots::QuickBrush`, §18.1.8).
+///
+/// The color is the transient with one rule the other two knobs do not have:
+/// **it never arrives with a tool.** A preset or a slot put on keeps the color
+/// the hand already held (`presets::wear`, the one door every swap comes
+/// through), and a slot decides "did the hold change anything?" with the color
+/// set aside ([`same_tune`](Self::same_tune)) — a color picked mid-hold is the
+/// Color panel's act, not the number's to keep. So the color a stored tune
+/// carries is simply the color the hand held when the snapshot was taken;
+/// nothing reads it back.
 ///
 /// Serde because the rack and the preset store keep it; no `#[serde(default)]`,
-/// since a stored entry that lacks half of its tune is a damaged entry and not
+/// since a stored entry that lacks part of its tune is a damaged entry and not
 /// a tune at some size.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Transient {
@@ -147,17 +160,37 @@ pub struct Transient {
     /// how fast an eraser's bite builds, how hard a liquify stroke drags —
     /// clamped to the strength's own 1 there ([`BrushConfig::params`]).
     pub flow: f32,
+    /// The **hand's** color (§18.1.8), and the laying side's pigment — one
+    /// home: the Color panel and the eyedropper write it whatever effect is in
+    /// force, a fill lays it even while the eraser is held (the projection
+    /// sends it beside the params — `ViewCommand::SetBrush`), and Paint and
+    /// Wet cannot disagree about it because neither carries a copy. Straight
+    /// sRGB, components in [0, 1].
+    pub color: [f32; 3],
 }
 
 impl Default for Transient {
     /// The engine's own default brush's tune, so the untouched pair projects
     /// `BrushParams::default()` exactly (the test below holds it to that).
+    /// Black included — the app's own opening color is the state's to choose
+    /// (`AppState::new`), not this type's.
     fn default() -> Self {
         let d = BrushParams::default();
         Self {
             size: d.size,
             flow: d.effect.flow(),
+            color: d.pigment().unwrap_or([0.0; 3]),
         }
+    }
+}
+
+impl Transient {
+    /// Whether two tunes agree on **what a number keeps**: the size and the
+    /// flow, with the color set aside — the color is the Color panel's, so a
+    /// slot must neither rebind for a color picked mid-hold (`slots::Held`)
+    /// nor go out over one (`presets::same_brush`).
+    pub fn same_tune(&self, other: &Transient) -> bool {
+        self.size == other.size && self.flow == other.flow
     }
 }
 
@@ -236,16 +269,11 @@ pub struct BrushConfig {
     /// else moves it. The other effects keep their configuration below, which
     /// is the whole reason this type exists.
     pub effect: BrushEffectType,
-    /// The **hand's** color (§18.1.8), and the laying side's pigment — one
-    /// home: the Color panel and the eyedropper write it whatever
-    /// [`effect`](Self::effect) says, a preset or a slot leaves it alone on the
-    /// way in, a fill lays it even while the eraser is held (the projection
-    /// sends it beside the params — `ViewCommand::SetBrush`), and Paint and Wet
-    /// cannot disagree about it because neither carries a copy.
-    pub color: [f32; 3],
     /// The laying side's opacity ceiling (`PaintEffect::opacity`,
-    /// `WetEffect::opacity`) — shared, like the pigment. The eraser's removal
-    /// ceiling is its own ([`erase`](Self::erase)).
+    /// `WetEffect::opacity`) — shared, one field for the two laying kinds. The
+    /// eraser's removal ceiling is its own ([`erase`](Self::erase)). The
+    /// pigment is not beside it any more: the color is the hand's
+    /// ([`Transient::color`]), not the tool's.
     pub opacity: f32,
     /// The laying flow's pen mapping — shared by Paint and Wet, since the rate
     /// it scales ([`Transient::flow`]) means the same thing on both (§6.2).
@@ -306,7 +334,6 @@ impl Default for BrushConfig {
             orientation: d.orientation,
             modulation: d.modulation,
             effect: BrushEffectType::Paint,
-            color: p.color,
             opacity: p.opacity,
             flow_modulation: p.modulation.flow,
             color_dynamics: p.color_dynamics,
@@ -349,7 +376,7 @@ impl BrushConfig {
             modulation: self.modulation,
             effect: match self.effect {
                 BrushEffectType::Paint => BrushEffect::Paint(PaintEffect {
-                    color: self.color,
+                    color: t.color,
                     opacity: self.opacity,
                     flow: t.flow,
                     color_dynamics: self.color_dynamics,
@@ -358,7 +385,7 @@ impl BrushConfig {
                     },
                 }),
                 BrushEffectType::Wet => BrushEffect::Wet(WetEffect {
-                    color: self.color,
+                    color: t.color,
                     opacity: self.opacity,
                     flow: t.flow,
                     dynamics: BrushDynamics {
@@ -396,13 +423,6 @@ impl BrushConfig {
                 }),
             },
         }
-    }
-
-    /// The hand's color — [`color`](Self::color), whatever effect is in force
-    /// (§18.1.8). Kept as a method so the Color panel's sites read the rule
-    /// rather than a field that happens to hold it.
-    pub fn color(&self) -> [f32; 3] {
-        self.color
     }
 
     /// The effect's **opacity** — the ceiling on what a saturated stroke does
@@ -462,7 +482,6 @@ mod tests {
     #[test]
     fn the_inactive_effect_survives_the_switch() {
         let mut c = BrushConfig {
-            color: [0.3, 0.5, 0.7],
             opacity: 0.85,
             ..BrushConfig::default()
         };
@@ -471,8 +490,8 @@ mod tests {
         c.effect = BrushEffectType::Erase;
         c.set_opacity(0.25);
         assert_eq!(
-            (c.color, c.opacity, c.wet),
-            (held.color, held.opacity, held.wet),
+            (c.opacity, c.wet),
+            (held.opacity, held.wet),
             "erase edits must not reach the laying side",
         );
         c.effect = BrushEffectType::Paint;
@@ -483,19 +502,19 @@ mod tests {
     }
 
     /// The shared laying knobs really are shared: what Paint projects and what
-    /// Wet projects agree on the pigment, the opacity, the flow and the color
-    /// dynamics, with nothing to reconcile — the wet projection differs from
-    /// the paint one only by the fluxes.
+    /// Wet projects agree on the pigment — the hand's — the opacity, the flow
+    /// and the color dynamics, with nothing to reconcile — the wet projection
+    /// differs from the paint one only by the fluxes.
     #[test]
     fn paint_and_wet_project_the_same_shared_knobs() {
         let mut c = BrushConfig {
-            color: [0.9, 0.2, 0.1],
             opacity: 0.7,
             ..BrushConfig::default()
         };
         let t = Transient {
             size: 40.0,
             flow: 1.3,
+            color: [0.9, 0.2, 0.1],
         };
         c.effect = BrushEffectType::Paint;
         let BrushEffect::Paint(p) = c.params(t).effect else {
@@ -509,10 +528,26 @@ mod tests {
             (p.color, p.opacity, p.flow, p.color_dynamics),
             (w.color, w.opacity, w.flow, w.color_dynamics),
         );
+        assert_eq!(p.color, [0.9, 0.2, 0.1], "…and the pigment is the hand's");
         assert_eq!(
             w.dynamics.add, 1.0,
             "at the full add share, the shared flow lays the same paint wet",
         );
+    }
+
+    /// [`Transient::same_tune`] is the slot's question — did the hold change
+    /// what a number keeps? — so the color is set aside: a color picked
+    /// mid-hold is the Color panel's act (§18.1.8).
+    #[test]
+    fn the_tune_comparison_sets_the_color_aside() {
+        let a = Transient::default();
+        let recolored = Transient {
+            color: [0.9, 0.1, 0.2],
+            ..a
+        };
+        let resized = Transient { size: 80.0, ..a };
+        assert!(a.same_tune(&recolored), "color is not the number's to keep");
+        assert!(!a.same_tune(&resized), "the size is");
     }
 
     /// The transient is the rate of **whichever effect is in force** — one
@@ -525,6 +560,7 @@ mod tests {
         let t = Transient {
             size: 40.0,
             flow: 2.0,
+            ..Transient::default()
         };
         for effect in [
             BrushEffectType::Paint,

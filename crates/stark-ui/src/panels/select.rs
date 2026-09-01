@@ -82,7 +82,7 @@ pub fn SelectPanel() -> Element {
     let filling = action == ShapeAction::Fill;
     // The hand's color, off the frontend's own brush signal — a fill lays it
     // whatever effect the brush held has (`BrushConfig::color`).
-    let brush_color = (state.brush)().color();
+    let brush_color = (state.transient)().color;
 
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     // *Which* tool is armed is deliberately not in the memo above: the three
@@ -255,7 +255,7 @@ pub fn SelectionBar() -> Element {
     let active = has_selection || armed;
     // What a settled drag of the mask's opacity would lay (`preview::settle`).
     let dimming = use_signal(|| None::<f32>);
-    let brush_color = (state.brush)().color();
+    let brush_color = (state.transient)().color;
     // While any mode is composing, its own bar stands in for this one: the
     // whole-selection commands would fight the gesture (deselecting mid-transform
     // would move the wrong region on "Done"). Every mode, not the two that hold a
@@ -393,7 +393,7 @@ pub fn fill_selection(state: AppState) {
     let Some(layer) = state.obs.peek().as_ref().map(|o| o.active_layer) else {
         return;
     };
-    let [r, g, b] = state.brush.peek().color();
+    let [r, g, b] = state.transient.peek().color;
     dispatch(
         state,
         DocCommand::Fill {

@@ -45,8 +45,10 @@ which the engine draws into directly. DOM chrome surrounds it.
   brush though the record must not carry it. `brush_config::BrushConfig` is that
   editing shape — the **durable** half alone, what the tool *is* — held in
   `AppState::brush` beside `AppState::transient`, the **transient** half
-  (`brush_config::Transient` — the size and flow, the two knobs a hand adjusts
-  without changing its mind about the tool; §18.1.8 has the split). The preset
+  (`brush_config::Transient` — the hand's own state: the size, the flow and
+  the painting color, adjusted without changing its mind about the tool;
+  §18.1.8 has the split, and the color's own rule — it never arrives with a
+  tool — lives at `presets::wear`). The preset
   library stores both halves; the quick-brush rack stores a preset's name
   beside a transient of its own; and `state::update_brush` is the one door down
   — it writes the two signals and dispatches `ViewCommand::SetBrush` with the
