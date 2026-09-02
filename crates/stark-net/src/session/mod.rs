@@ -175,6 +175,12 @@ impl CollabSession {
         // converges.
         let bootstrap = ticket.members.iter().map(|member| member.id).collect();
         let mut sub = bound.gossip.subscribe(ticket.topic, bootstrap).await?;
+        // Two trades made when the dial walk merged into one fetch after the
+        // subscribe: a dead link now costs this wait *before* its dials start
+        // failing, and gossip's bootstrap to bare-id members leans on `learn` +
+        // address lookup alone rather than a pre-subscribe catch-up dial having
+        // taught one of them. Both are judged affordable — the failure path is
+        // rare and the answer unchanged, and a live link behaves identically.
         if n0_future::time::timeout(JOIN_TIMEOUT, sub.joined())
             .await
             .is_err()

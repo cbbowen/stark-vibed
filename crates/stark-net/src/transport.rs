@@ -6,7 +6,7 @@
 //! WebRTC *paths*, which every protocol on it (gossip, catch-up) then rides.
 //!
 //! [`Direct`] is the whole surface the backend sees: one type, two cfg'd
-//! definitions. With the feature it is [`direct`]'s handle around the custom
+//! definitions. With the feature it is the gated `direct` module's handle around the custom
 //! transport; without, the stand-in below, whose every method is the identity
 //! or nothing — so the backend carries no feature awareness at all.
 

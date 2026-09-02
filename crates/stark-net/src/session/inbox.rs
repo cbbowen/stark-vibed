@@ -8,7 +8,6 @@
 //! peer lacks is parked on the [`Waitlist`] and released by the resolver that
 //! fetches it; everything else keeps flowing past.
 
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver};
@@ -31,9 +30,11 @@ pub(super) struct Inbox {
 impl Inbox {
     /// One decoded gossip payload's whole decision. A fetch it requires is
     /// handed back rather than started — only the caller holds the endpoints to
-    /// ask and the spawn hook ([`Wiring::spawn_resolver`]).
-    /// [`ControlFlow::Break`] means the engine is gone and the loop should end.
-    fn on_payload(&self, stamped: Stamped) -> ControlFlow<(), Option<MustFetch>> {
+    /// ask and the spawn hook ([`Wiring::spawn_resolver`]). Nothing here ends
+    /// the loop: the engine's channel closing means the engine stopped
+    /// listening, not that the session is over, and the mirror must keep
+    /// seeing the flood either way — only the session's `Cancel` ends this.
+    fn on_payload(&self, stamped: Stamped) -> Option<MustFetch> {
         let Stamped {
             origin,
             asset: asset_hash,
@@ -58,16 +59,20 @@ impl Inbox {
                 // late is one the engine rejects as stale anyway.
                 if !self.presence.reserve() {
                     tracing::trace!("presence frame dropped; the engine is behind");
-                    return ControlFlow::Continue(fetch);
+                    return fetch;
                 }
                 let event = RemoteEvent::Presence {
                     actor: actor_from_endpoint_id(origin),
                     frame,
                 };
                 if self.tx.send(event).is_err() {
-                    return ControlFlow::Break(());
+                    // The engine is gone; the frame is droppable by design. The
+                    // slot reserved above must come back, though — nothing will
+                    // ever `recv` this frame to release it.
+                    self.presence.release();
+                    tracing::trace!("presence frame dropped; the engine is gone");
                 }
-                return ControlFlow::Continue(fetch);
+                return fetch;
             }
         };
 
@@ -87,7 +92,7 @@ impl Inbox {
                 actor = ?action.id.actor,
                 "dropping an action whose author does not match its sender"
             );
-            return ControlFlow::Continue(None);
+            return None;
         }
 
         // Whatever the action references has to reach the engine first, so the
@@ -95,7 +100,7 @@ impl Inbox {
         // awaited here, so nothing else in the session waits with it
         // ([`Waitlist::admit`]). The origin authored the action and so
         // definitely holds the content; the neighbour that forwarded it may not.
-        ControlFlow::Continue(self.waitlist.admit(action, asset_hash))
+        self.waitlist.admit(action, asset_hash)
     }
 }
 
@@ -162,12 +167,8 @@ pub(super) async fn recv_loop(
             }
         };
         let (origin, from) = (stamped.origin, message.delivered_from);
-        match inbox.on_payload(stamped) {
-            ControlFlow::Continue(Some(fetch)) => {
-                wiring.spawn_resolver(fetch.need, fetch.hash, origin, from);
-            }
-            ControlFlow::Continue(None) => {}
-            ControlFlow::Break(()) => return,
+        if let Some(fetch) = inbox.on_payload(stamped) {
+            wiring.spawn_resolver(fetch, origin, from);
         }
     }
 }
@@ -279,7 +280,7 @@ mod tests {
 
         assert_eq!(
             inbox.on_payload(stamped(origin, None, Wire::Action(forged.clone()))),
-            ControlFlow::Continue(None)
+            None
         );
         assert!(
             events.try_recv().is_none(),
@@ -295,7 +296,7 @@ mod tests {
         let owned = action_by(honest, 2);
         assert_eq!(
             inbox.on_payload(stamped(origin, None, Wire::Action(owned.clone()))),
-            ControlFlow::Continue(None)
+            None
         );
         assert!(matches!(events.try_recv(), Some(RemoteEvent::Action(a)) if a.id == owned.id));
     }
@@ -310,13 +311,10 @@ mod tests {
         let presence = |seq: u64| stamped(origin, None, Wire::Presence(frame(seq)));
 
         for seq in 0..PRESENCE_QUEUE as u64 {
-            assert_eq!(inbox.on_payload(presence(seq)), ControlFlow::Continue(None));
+            assert_eq!(inbox.on_payload(presence(seq)), None);
         }
         // Full: the next frame is dropped, not queued behind stale ones.
-        assert_eq!(
-            inbox.on_payload(presence(1_000)),
-            ControlFlow::Continue(None)
-        );
+        assert_eq!(inbox.on_payload(presence(1_000)), None);
 
         // Taking one event releases exactly one slot...
         assert!(matches!(
@@ -324,14 +322,8 @@ mod tests {
             Some(RemoteEvent::Presence { .. })
         ));
         // ...so one more frame fits, and the one after is dropped again.
-        assert_eq!(
-            inbox.on_payload(presence(1_001)),
-            ControlFlow::Continue(None)
-        );
-        assert_eq!(
-            inbox.on_payload(presence(1_002)),
-            ControlFlow::Continue(None)
-        );
+        assert_eq!(inbox.on_payload(presence(1_001)), None);
+        assert_eq!(inbox.on_payload(presence(1_002)), None);
 
         let mut received = 1;
         while events.try_recv().is_some() {
@@ -360,10 +352,10 @@ mod tests {
         let flow = inbox.on_payload(stamped(origin, Some(hash), Wire::Action(needing.clone())));
         assert_eq!(
             flow,
-            ControlFlow::Continue(Some(MustFetch {
+            Some(MustFetch {
                 need: AssetNeed::Brush(AssetId([7; 32])),
                 hash,
-            })),
+            }),
             "the caller is told to start the fetch"
         );
         assert!(events.try_recv().is_none(), "parked, not surfaced");
@@ -382,7 +374,7 @@ mod tests {
         let plain = action_by(actor, 2);
         assert_eq!(
             inbox.on_payload(stamped(origin, None, Wire::Action(plain.clone()))),
-            ControlFlow::Continue(None)
+            None
         );
         assert!(matches!(events.try_recv(), Some(RemoteEvent::Action(a)) if a.id == plain.id));
     }

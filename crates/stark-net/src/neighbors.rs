@@ -36,7 +36,8 @@ impl Neighbors {
     /// load-bearing twice: a ticket's text changes only when its members do
     /// (the frontend re-mints on a cadence and rewrites the invitation only on
     /// change), and the reconciler's rotation visits every member instead of
-    /// chasing hash order, which moves as the set changes.
+    /// chasing hash order, which moves as the set changes. The link badges take
+    /// it too, so a polled roster keeps one order between polls.
     pub fn snapshot_sorted(&self) -> Vec<EndpointId> {
         let mut ids = self.snapshot();
         ids.sort_unstable_by_key(|id| *id.as_bytes());

@@ -30,7 +30,7 @@ use crate::wire::{StampedRef, WireRef};
 /// so it has a length budget — a member costs tens of bytes, of which the spelling
 /// (`ticket`: deflated, then base64url) gives back most but not all — and a joiner
 /// pays up to [`DIAL_TIMEOUT`](super::join::DIAL_TIMEOUT) per dead name in it.
-pub(super) const TICKET_NEIGHBORS: usize = 3;
+const TICKET_NEIGHBORS: usize = 3;
 
 /// How a direct connection to a session member currently travels. Gossip
 /// links may migrate (relay first, then direct once hole punching or a WebRTC

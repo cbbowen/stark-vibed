@@ -33,9 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
-use iroh_blobs::Hash;
 use n0_future::task;
-use stark_model::AssetNeed;
 use stark_model::document::ActionId;
 use tokio::sync::Notify;
 
@@ -44,7 +42,7 @@ use crate::backend::Dialer;
 use crate::cancel::Cancel;
 use crate::content::Resolver;
 use crate::neighbors::Neighbors;
-use crate::waitlist::Waitlist;
+use crate::waitlist::{MustFetch, Waitlist};
 use crate::wire::{RECOVER_BATCH, Recovered, Request};
 
 /// How long a quiet session waits before comparing logs with a neighbour.
@@ -109,14 +107,11 @@ impl Wiring {
 
     /// The one door a resolver goes out through — detached, ended by the
     /// session's [`Cancel`]. A method so the call sites cannot drift.
-    pub fn spawn_resolver(
-        &self,
-        need: AssetNeed,
-        hash: Hash,
-        origin: EndpointId,
-        from: EndpointId,
-    ) {
-        task::spawn(self.resolver().resolve(need, hash, origin, from));
+    pub fn spawn_resolver(&self, fetch: MustFetch, origin: EndpointId, from: EndpointId) {
+        task::spawn(
+            self.resolver()
+                .resolve(fetch.need, fetch.hash, origin, from),
+        );
     }
 }
 
@@ -223,8 +218,7 @@ impl Reconciler {
                 // this peer can actually reach, and the resolver widens to the rest of
                 // the swarm from its second round anyway.
                 if let Some(fetch) = self.wiring.waitlist.admit(action, hash) {
-                    self.wiring
-                        .spawn_resolver(fetch.need, fetch.hash, partner, partner);
+                    self.wiring.spawn_resolver(fetch, partner, partner);
                 }
             }
         }

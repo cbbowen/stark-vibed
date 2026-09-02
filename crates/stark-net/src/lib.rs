@@ -50,8 +50,9 @@ pub use ticket::SessionTicket;
 /// store it belongs in — [`stark_model::AssetNeed`], re-exported so a frontend
 /// pumping this transport does not need to name two crates for one idea.
 ///
-/// It lives in the engine because the engine is what has the two stores, and
-/// because loading a file asks the same question a joining peer does.
+/// It lives in the model because it is a fact about the document (§2:
+/// `Serialize` ⇒ model) — the *stores* it routes to are the engine's, and
+/// loading a file asks the same question a joining peer does.
 pub use stark_model::AssetNeed;
 
 // Re-exports so frontends don't need a direct iroh dependency for the basics.
