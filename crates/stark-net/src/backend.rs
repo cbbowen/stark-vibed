@@ -13,6 +13,8 @@
 //! — which is what gives the *web* direct connections.
 
 use std::collections::HashMap;
+#[cfg(feature = "webrtc")]
+use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,10 +63,14 @@ pub(crate) struct Bound {
     pub dialer: Dialer,
     pub gossip: Gossip,
     pub shutdown: Shutdown,
+    /// The session's stop signal, minted with the stack it stops: the session's
+    /// lifetime starts at bind, so its [`Cancel`] does too.
+    pub cancel: Cancel,
 }
 
 pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
     let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
+    let cancel = Cancel::default();
     // The WebRTC custom transport rides the same endpoint; peers derive
     // its addr from our endpoint id (see transport::direct).
     #[cfg(feature = "webrtc")]
@@ -93,7 +99,7 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
     #[cfg(feature = "webrtc")]
     let router = router.accept(
         crate::transport::direct::SIGNALING_ALPN,
-        crate::transport::direct::JsepProto::new(endpoint.clone(), webrtc.clone()),
+        crate::transport::direct::JsepProto::new(endpoint.clone(), webrtc.clone(), cancel.clone()),
     );
     let router = router.spawn();
 
@@ -104,9 +110,14 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
             blob_conns: Arc::default(),
             #[cfg(feature = "webrtc")]
             webrtc,
+            #[cfg(feature = "webrtc")]
+            cancel: cancel.clone(),
+            #[cfg(feature = "webrtc")]
+            bootstrapping: Arc::default(),
         },
         gossip,
         shutdown: Shutdown { endpoint, router },
+        cancel,
     })
 }
 
@@ -130,6 +141,14 @@ pub(crate) struct Dialer {
     blob_conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
     #[cfg(feature = "webrtc")]
     webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
+    /// The session's stop signal, for the bootstraps [`ensure_direct`](Dialer::ensure_direct) spawns.
+    #[cfg(feature = "webrtc")]
+    cancel: Cancel,
+    /// Peers with a WebRTC bootstrap in flight. Two quick NeighborUp events for
+    /// one peer must not race two tasks — the same structural rule-out the
+    /// waitlist uses for fetches.
+    #[cfg(feature = "webrtc")]
+    bootstrapping: Arc<Mutex<HashSet<EndpointId>>>,
 }
 
 impl Dialer {
@@ -142,9 +161,22 @@ impl Dialer {
     /// neighbor; connections migrate onto the channel once it attaches.
     pub fn ensure_direct(&self, remote: EndpointId) {
         #[cfg(feature = "webrtc")]
-        crate::transport::direct::ensure_direct(&self.endpoint, &self.webrtc, remote);
+        crate::transport::direct::ensure_direct(
+            &self.endpoint,
+            &self.webrtc,
+            remote,
+            &self.cancel,
+            &self.bootstrapping,
+        );
         #[cfg(not(feature = "webrtc"))]
         let _ = remote;
+    }
+
+    /// Whether the endpoint has closed — how a teardown test observes that the
+    /// stack a dropped session spawned actually died.
+    #[cfg(test)]
+    pub fn is_closed(&self) -> bool {
+        self.endpoint.is_closed()
     }
 
     /// The address traffic to `remote` currently travels over — the remote
@@ -363,6 +395,18 @@ impl Cancel {
 
     pub fn stopped(&self) -> bool {
         self.0.stopped.load(Ordering::Relaxed)
+    }
+
+    /// Pend until the session ends — what a loop races against its own work,
+    /// where [`sleep`](Cancel::sleep) is what a backoff waits out.
+    pub async fn stopped_wait(&self) {
+        // Registered before the check, for the same race `sleep` closes.
+        let woken = self.0.woken.notified();
+        if self.stopped() {
+            return;
+        }
+        // Only `stop` notifies, and it sets the flag first.
+        woken.await;
     }
 
     /// Sleep, unless the session ends first — `false` if it did.

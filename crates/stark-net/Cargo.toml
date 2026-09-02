@@ -76,6 +76,12 @@ tracing = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["sync"] }
 data-encoding = "2"
 
+# `rt` on native only, for `Handle::try_current` in `CollabSession`'s Drop: a
+# Drop that can panic aborts mid-unwind, so it must know whether it may spawn
+# its shutdown. wasm's spawn is spawn_local and needs no runtime handle.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", default-features = false, features = ["rt"] }
+
 [dev-dependencies]
 # Only the tests drive a real engine — they paint, render and compare pixels to
 # prove a session converges. The library itself never sees one.

@@ -30,7 +30,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
-use n0_future::task;
 use stark_model::document::ActionId;
 use tokio::sync::Notify;
 
@@ -179,12 +178,7 @@ impl Reconciler {
                     Admission::Ready => self.wiring.waitlist.accept(action),
                     Admission::Waiting => {}
                     Admission::Fetching { need, hash } => {
-                        task::spawn(
-                            self.wiring
-                                .resolver
-                                .clone()
-                                .resolve(need, hash, partner, partner),
-                        );
+                        self.wiring.spawn_resolver(need, hash, partner, partner);
                     }
                 }
             }
@@ -210,7 +204,11 @@ impl Reconciler {
     }
 
     fn alive(&self) -> bool {
-        !self.wiring.cancel.stopped() && self.wiring.waitlist.is_live()
+        // Only the session's end stops repair: the mirror this loop keeps
+        // complete serves joiners and sweeping peers, so it outlives the local
+        // engine's listener — a UI that stopped pumping must not quietly
+        // degrade the mirror to flood-only completeness.
+        !self.wiring.cancel.stopped()
     }
 }
 

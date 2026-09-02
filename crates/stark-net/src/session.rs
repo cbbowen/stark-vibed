@@ -142,12 +142,37 @@ pub enum RemoteEvent {
 pub struct Events {
     rx: mpsc::UnboundedReceiver<RemoteEvent>,
     presence: Arc<PresenceQuota>,
+    /// The session's stop signal — what makes `recv`'s "once the session has
+    /// ended" a fact it can see rather than infer from the channel.
+    cancel: Cancel,
 }
 
 impl Events {
     /// The next remote event, or `None` once the session has ended.
+    ///
+    /// Ending does not discard what already arrived: events queued when the
+    /// session ended are still handed out, and `None` comes only once they are
+    /// drained. Never hangs after the end — the stop arm of the race completes
+    /// immediately once the signal is up.
     pub async fn recv(&mut self) -> Option<RemoteEvent> {
-        let event = self.rx.recv().await?;
+        let rx = &mut self.rx;
+        let cancel = &self.cancel;
+        let received = n0_future::future::race(rx.recv(), async {
+            cancel.stopped_wait().await;
+            None
+        })
+        .await;
+        // `None` is the stop signal (or every sender gone): close the channel
+        // so the end is terminal — a straggling sender now fails fast instead
+        // of queueing into the void and un-ending the stream — while what was
+        // already queued still drains first.
+        let event = match received {
+            Some(event) => event,
+            None => {
+                rx.close();
+                rx.recv().await?
+            }
+        };
         self.took(&event);
         Some(event)
     }
@@ -303,8 +328,9 @@ impl CollabSession {
     pub async fn host(doc: DocumentFile, opts: NetOptions) -> Result<(Self, Events)> {
         let served = Served::default();
         let bound = backend::bind(served.clone(), &opts).await?;
+        let cancel = bound.cancel.clone();
         let shutdown = bound.shutdown.clone();
-        closing_on_error(shutdown, Self::hosting(bound, served, doc, &opts)).await
+        closing_on_error(cancel, shutdown, Self::hosting(bound, served, doc, &opts)).await
     }
 
     /// Join an existing session from a ticket.
@@ -315,8 +341,14 @@ impl CollabSession {
     pub async fn join(ticket: &SessionTicket, opts: NetOptions) -> Result<Joined> {
         let served = Served::default();
         let bound = backend::bind(served.clone(), &opts).await?;
+        let cancel = bound.cancel.clone();
         let shutdown = bound.shutdown.clone();
-        closing_on_error(shutdown, Self::joining(bound, served, ticket, &opts)).await
+        closing_on_error(
+            cancel,
+            shutdown,
+            Self::joining(bound, served, ticket, &opts),
+        )
+        .await
     }
 
     /// Everything about hosting that can fail after the endpoint exists.
@@ -435,7 +467,10 @@ impl CollabSession {
         resolvable: &[AssetId],
     ) -> Result<(Self, Events)> {
         let Bound {
-            dialer, shutdown, ..
+            dialer,
+            shutdown,
+            cancel,
+            ..
         } = bound;
         let local_id = dialer.local_id();
         let (sender, receiver) = sub.split();
@@ -464,7 +499,6 @@ impl CollabSession {
         let waitlist = Arc::new(Waitlist::new(mirror, tx.clone(), resolvable));
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
-        let cancel = Cancel::default();
         let wiring = Wiring {
             resolver: Resolver::new(
                 dialer.clone(),
@@ -482,7 +516,7 @@ impl CollabSession {
             prompt: Prompt::default(),
         };
         let (outgoing, queue) = mpsc::unbounded_channel();
-        task::spawn(send_loop(sender.clone(), queue));
+        task::spawn(send_loop(cancel.clone(), sender.clone(), queue));
         task::spawn(Reconciler::new(wiring.clone()).run());
         task::spawn(recv_loop(wiring, receiver, presence.clone(), tx));
         let session = Self {
@@ -497,9 +531,16 @@ impl CollabSession {
                 ticket_addr,
             },
             shutdown,
-            cancel,
+            cancel: cancel.clone(),
         };
-        Ok((session, Events { rx, presence }))
+        Ok((
+            session,
+            Events {
+                rx,
+                presence,
+                cancel,
+            },
+        ))
     }
 
     /// The ticket others use to join — every member can hand one out, so the
@@ -564,6 +605,28 @@ impl CollabSession {
     pub async fn shutdown(self) {
         self.cancel.stop();
         self.shutdown.run().await;
+    }
+}
+
+/// Dropping the session ends it: the same signal-then-stack pair as
+/// [`CollabSession::shutdown`], with the stack spawned because drop cannot
+/// block. `shutdown` consumes `self`, so the graceful path runs the pair a
+/// second time here — both halves are idempotent, and this is why they are.
+impl Drop for CollabSession {
+    fn drop(&mut self) {
+        self.cancel.stop();
+        // Spawning needs a runtime, and Drop can run without one — a session
+        // moved to a plain thread, or a process on its way out. A Drop that
+        // can panic aborts mid-unwind, so degrade instead: the stop signal
+        // alone still ends every loop at its next cancel check, and only the
+        // endpoint's explicit close is lost — which the exiting process does
+        // anyway. wasm's spawn is spawn_local and needs no runtime handle.
+        #[cfg(not(target_family = "wasm"))]
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let shutdown = self.shutdown.clone();
+        task::spawn(async move { shutdown.run().await });
     }
 }
 
@@ -739,8 +802,22 @@ pub(crate) struct Wiring {
     pub prompt: Prompt,
 }
 
-/// Run the fallible tail of session setup, closing the stack if it does not
-/// finish.
+impl Wiring {
+    /// The one door a resolver goes out through — detached, ended by the
+    /// session's [`Cancel`]. A method so the call sites cannot drift.
+    pub fn spawn_resolver(
+        &self,
+        need: AssetNeed,
+        hash: Hash,
+        origin: EndpointId,
+        from: EndpointId,
+    ) {
+        task::spawn(self.resolver.clone().resolve(need, hash, origin, from));
+    }
+}
+
+/// Run the fallible tail of session setup, stopping and closing the stack if it
+/// does not finish.
 ///
 /// Every step that can fail — dialling the ticket's members, subscribing, fetching
 /// and decoding the snapshot, minting the ticket address — happens *after* the
@@ -749,13 +826,19 @@ pub(crate) struct Wiring {
 /// expected failures are the ones that repeat (a link from another build, a host
 /// that has gone), so without this a user retrying accumulates a stack per
 /// attempt — in a browser tab with a hard ceiling.
+///
+/// The stop signal goes first, as in [`CollabSession::shutdown`]: an
+/// answering-side WebRTC bootstrap accepted during setup already holds the
+/// session's [`Cancel`], and its retries must not outlive the stack they dial on.
 async fn closing_on_error<T>(
+    cancel: Cancel,
     shutdown: Shutdown,
     setup: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     match setup.await {
         Ok(ready) => Ok(ready),
         Err(e) => {
+            cancel.stop();
             shutdown.run().await;
             Err(e)
         }
@@ -853,8 +936,20 @@ async fn fetch_snapshot(
 /// so the next member to sweep collects it ([`reconcile`](crate::reconcile)) — and
 /// retrying in place would hold every action behind it up for a peer that is about
 /// to ask for it anyway.
-async fn send_loop(sender: GossipSender, mut queue: mpsc::UnboundedReceiver<Bytes>) {
-    while let Some(bytes) = queue.recv().await {
+async fn send_loop(
+    cancel: Cancel,
+    sender: GossipSender,
+    mut queue: mpsc::UnboundedReceiver<Bytes>,
+) {
+    loop {
+        // Raced against the stop signal: what is still queued when the session
+        // ends is already mirrored, so a peer's sweep recovers it.
+        let bytes = n0_future::future::race(queue.recv(), async {
+            cancel.stopped_wait().await;
+            None
+        })
+        .await;
+        let Some(bytes) = bytes else { return };
         if let Err(e) = sender.broadcast(bytes).await {
             tracing::warn!("broadcast failed: {e}; a peer's sweep will recover it");
         }
@@ -874,15 +969,17 @@ async fn recv_loop(
     presence: Arc<PresenceQuota>,
     tx: mpsc::UnboundedSender<RemoteEvent>,
 ) {
-    let Wiring {
-        dialer,
-        neighbors,
-        waitlist,
-        resolver,
-        prompt,
-        ..
-    } = wiring;
-    while let Some(event) = gossip.next().await {
+    loop {
+        // Raced against the stop signal: the stream on its own ends only as a
+        // side effect of the endpoint closing, which teardown must not wait on.
+        let next = n0_future::future::race(gossip.next(), async {
+            wiring.cancel.stopped_wait().await;
+            None
+        })
+        .await;
+        let Some(event) = next else {
+            return;
+        };
         let message = match event {
             Ok(GossipEvent::Received(message)) => message,
             Ok(GossipEvent::Lagged) => {
@@ -893,18 +990,26 @@ async fn recv_loop(
                 // *presence* stream needs no recovery at all — the author re-sends
                 // its whole gesture on the next resync frame (§17.5).
                 tracing::warn!("gossip lagged; reconciling to recover what was missed");
-                prompt.raise();
+                wiring.prompt.raise();
                 continue;
             }
             Ok(GossipEvent::NeighborUp(peer)) => {
                 tracing::debug!(%peer, "gossip neighbor up");
-                neighbors.lock().expect("neighbors poisoned").insert(peer);
-                dialer.ensure_direct(peer);
+                wiring
+                    .neighbors
+                    .lock()
+                    .expect("neighbors poisoned")
+                    .insert(peer);
+                wiring.dialer.ensure_direct(peer);
                 continue;
             }
             Ok(GossipEvent::NeighborDown(peer)) => {
                 tracing::debug!(%peer, "gossip neighbor down");
-                neighbors.lock().expect("neighbors poisoned").remove(&peer);
+                wiring
+                    .neighbors
+                    .lock()
+                    .expect("neighbors poisoned")
+                    .remove(&peer);
                 continue;
             }
             Err(e) => {
@@ -940,9 +1045,9 @@ async fn recv_loop(
                 // resolver rather than starting a second one.
                 if let Some(need) = referenced_presence_asset(&frame)
                     && let Some(hash) = hash_or_warn(need, asset_hash)
-                    && waitlist.claim_detached(need)
+                    && wiring.waitlist.claim_detached(need)
                 {
-                    task::spawn(resolver.clone().resolve(need, hash, origin, from));
+                    wiring.spawn_resolver(need, hash, origin, from);
                 }
                 // Dropped rather than queued when the engine is already
                 // `PRESENCE_QUEUE` frames behind: a frame the UI would reach
@@ -986,16 +1091,10 @@ async fn recv_loop(
         // awaited here, so nothing else in the session waits with it. The origin
         // authored the action and so definitely holds the content; the neighbour
         // that forwarded it may not.
-        match Admission::of(&action, asset_hash, &waitlist) {
-            Admission::Ready => waitlist.accept(action),
-            Admission::Waiting => continue,
-            Admission::Fetching { need, hash } => {
-                task::spawn(resolver.clone().resolve(need, hash, origin, from));
-                continue;
-            }
-        }
-        if !waitlist.is_live() {
-            return;
+        match Admission::of(&action, asset_hash, &wiring.waitlist) {
+            Admission::Ready => wiring.waitlist.accept(action),
+            Admission::Waiting => {}
+            Admission::Fetching { need, hash } => wiring.spawn_resolver(need, hash, origin, from),
         }
     }
 }
@@ -1071,5 +1170,51 @@ impl std::fmt::Debug for CollabSession {
             .field("topic", &self.broadcaster.topic)
             .field("endpoint", &self.broadcaster.local_id)
             .finish_non_exhaustive()
+    }
+}
+
+/// Teardown is the [`Cancel`], not a convention: a session that is merely
+/// dropped must still end. The graceful path is what the integration tests
+/// exercise; this is the other end of the session's life.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dropping a `CollabSession` without `shutdown()` ends the session:
+    /// `Events::recv` delivers its documented `None`, and the stack the session
+    /// spawned dies — observed as the endpoint closing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_the_session_ends_it() {
+        let (session, mut events) =
+            CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
+                .await
+                .expect("host");
+        // The one fact drop cannot report: whether the stack actually died.
+        let dialer = session.broadcaster.dialer.clone();
+
+        drop(session);
+
+        // (a) The event stream drains and ends rather than hanging.
+        let ended = tokio::time::timeout(Duration::from_secs(10), async {
+            while events.recv().await.is_some() {}
+        })
+        .await;
+        assert!(
+            ended.is_ok(),
+            "Events::recv must yield None once the session has ended"
+        );
+        assert!(events.try_recv().is_none());
+
+        // (b) The teardown drop spawned closes the endpoint.
+        let closed = tokio::time::timeout(Duration::from_secs(10), async {
+            while !dialer.is_closed() {
+                n0_future::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "dropping the session must close the endpoint"
+        );
     }
 }

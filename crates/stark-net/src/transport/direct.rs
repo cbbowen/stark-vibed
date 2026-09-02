@@ -28,7 +28,8 @@
 //! peer without the feature, handshake failure), connections simply stay on
 //! the paths they already have.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ::iroh::endpoint::Connection;
@@ -38,6 +39,8 @@ use iroh_base::CustomAddr;
 use iroh_webrtc_transport::{
     AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data,
 };
+
+use crate::backend::Cancel;
 
 /// JSEP signaling for the session's WebRTC channels, distinct from the gossip
 /// and catch-up ALPNs.
@@ -123,6 +126,7 @@ async fn negotiate_answer(
 async fn answer_one(
     endpoint: &Endpoint,
     transport: &Arc<WebRtcTransport>,
+    cancel: &Cancel,
     conn: &Connection,
 ) -> anyhow::Result<()> {
     let remote = conn.remote_id();
@@ -131,7 +135,7 @@ async fn answer_one(
     let peer = negotiate_answer(&mut sig).await?;
     transport.attach_data_channel(peer, custom_addr_for(remote), AttachOptions::default())?;
     tracing::debug!(remote = %remote.fmt_short(), "webrtc channel attached (answerer)");
-    announce(endpoint.clone(), remote);
+    announce(endpoint.clone(), remote, cancel.clone());
     Ok(())
 }
 
@@ -142,14 +146,16 @@ async fn answer_one(
 pub(crate) struct JsepProto {
     endpoint: Endpoint,
     transport: Arc<WebRtcTransport>,
+    cancel: Cancel,
 }
 
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl JsepProto {
-    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>) -> Self {
+    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>, cancel: Cancel) -> Self {
         Self {
             endpoint,
             transport,
+            cancel,
         }
     }
 }
@@ -157,9 +163,21 @@ impl JsepProto {
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl ProtocolHandler for JsepProto {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        answer_one(&self.endpoint, &self.transport, &conn)
-            .await
-            .map_err(|e| AcceptError::from_boxed(e.into()))?;
+        // Bounded: a stuck offerer must not hold an accept task open for the
+        // session's life. Quiet on timeout — bootstrap is not the data path —
+        // and returning drops `conn`, which closes it.
+        let answered = n0_future::time::timeout(
+            ATTEMPT_TIMEOUT,
+            answer_one(&self.endpoint, &self.transport, &self.cancel, &conn),
+        )
+        .await;
+        match answered {
+            Ok(result) => result.map_err(|e| AcceptError::from_boxed(e.into()))?,
+            Err(_) => {
+                tracing::debug!(remote = %conn.remote_id().fmt_short(), "webrtc answer timed out");
+                return Ok(());
+            }
+        }
         // Hold the signaling connection open until the offerer closes it; it
         // is their signal that bootstrap (attach + addr announcement) is done.
         conn.closed().await;
@@ -179,14 +197,23 @@ pub(crate) struct JsepProto {
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 impl JsepProto {
-    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>) -> Self {
+    pub fn new(endpoint: Endpoint, transport: Arc<WebRtcTransport>, cancel: Cancel) -> Self {
         let (worker, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Arc<Connection>>();
         // Exits when the router (and with it every JsepProto clone) is
-        // dropped. Sequential is fine: one channel per peer, rarely.
+        // dropped. Sequential is fine: one channel per peer, rarely — but only
+        // because each answer is bounded, or one stuck offerer would starve
+        // every later bootstrap for the session's life.
         n0_future::task::spawn(async move {
             while let Some(conn) = inbox.recv().await {
-                if let Err(e) = answer_one(&endpoint, &transport, &conn).await {
-                    tracing::debug!("webrtc answer failed: {e:#}");
+                let answered = n0_future::time::timeout(
+                    ATTEMPT_TIMEOUT,
+                    answer_one(&endpoint, &transport, &cancel, &conn),
+                )
+                .await;
+                match answered {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::debug!("webrtc answer failed: {e:#}"),
+                    Err(_) => tracing::debug!("webrtc answer timed out"),
                 }
             }
         });
@@ -215,6 +242,8 @@ pub(crate) fn ensure_direct(
     endpoint: &Endpoint,
     transport: &Arc<WebRtcTransport>,
     remote: EndpointId,
+    cancel: &Cancel,
+    in_flight: &Arc<Mutex<HashSet<EndpointId>>>,
 ) {
     // Exactly one side offers — the smaller endpoint id — the other answers
     // via [`JsepProto`]. Gossip neighbor links are mutual, so the offerer
@@ -225,35 +254,89 @@ pub(crate) fn ensure_direct(
     if transport.is_attached(&custom_addr_for(remote)) {
         return;
     }
+    if cancel.stopped() {
+        return;
+    }
+    // Two quick NeighborUp events for one peer must not race two bootstraps:
+    // the insert is the claim, and the guard's drop the release — held by the
+    // task so even a panic inside it frees the slot, rather than leaving the
+    // peer marked in-flight and never bootstrapped again.
+    let Some(claim) = Claim::take(in_flight, remote) else {
+        return;
+    };
     let endpoint = endpoint.clone();
     let transport = transport.clone();
+    let cancel = cancel.clone();
     n0_future::task::spawn(async move {
-        for delay in ATTEMPT_DELAYS {
-            if !delay.is_zero() {
-                n0_future::time::sleep(delay).await;
-            }
-            if transport.is_attached(&custom_addr_for(remote)) {
+        let _claim = claim;
+        offer(&endpoint, &transport, remote, &cancel).await;
+    });
+}
+
+/// A peer's slot in the in-flight bootstrap set, released on drop.
+struct Claim {
+    set: Arc<Mutex<HashSet<EndpointId>>>,
+    peer: EndpointId,
+}
+
+impl Claim {
+    /// `None` when a bootstrap to `peer` is already in flight.
+    fn take(set: &Arc<Mutex<HashSet<EndpointId>>>, peer: EndpointId) -> Option<Self> {
+        set.lock()
+            .expect("bootstraps poisoned")
+            .insert(peer)
+            .then(|| Self {
+                set: set.clone(),
+                peer,
+            })
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .expect("bootstraps poisoned")
+            .remove(&self.peer);
+    }
+}
+
+/// The offerer's bounded attempts, ending with the channel attached, the
+/// retries spent, or the session over.
+async fn offer(
+    endpoint: &Endpoint,
+    transport: &Arc<WebRtcTransport>,
+    remote: EndpointId,
+    cancel: &Cancel,
+) {
+    for delay in ATTEMPT_DELAYS {
+        if !delay.is_zero() && !cancel.sleep(delay).await {
+            return;
+        }
+        if cancel.stopped() {
+            return;
+        }
+        if transport.is_attached(&custom_addr_for(remote)) {
+            return;
+        }
+        let attempt = bootstrap(endpoint, transport, remote, cancel);
+        match n0_future::time::timeout(ATTEMPT_TIMEOUT, attempt).await {
+            Ok(Ok(())) => {
+                tracing::debug!(remote = %remote.fmt_short(), "webrtc channel attached (offerer)");
                 return;
             }
-            let attempt = bootstrap(&endpoint, &transport, remote);
-            match n0_future::time::timeout(ATTEMPT_TIMEOUT, attempt).await {
-                Ok(Ok(())) => {
-                    tracing::debug!(remote = %remote.fmt_short(), "webrtc channel attached (offerer)");
-                    return;
-                }
-                Ok(Err(e)) => {
-                    tracing::debug!(remote = %remote.fmt_short(), "webrtc bootstrap attempt failed: {e:#}");
-                }
-                Err(_) => {
-                    tracing::debug!(remote = %remote.fmt_short(), "webrtc bootstrap attempt timed out");
-                }
+            Ok(Err(e)) => {
+                tracing::debug!(remote = %remote.fmt_short(), "webrtc bootstrap attempt failed: {e:#}");
+            }
+            Err(_) => {
+                tracing::debug!(remote = %remote.fmt_short(), "webrtc bootstrap attempt timed out");
             }
         }
-        tracing::debug!(
-            remote = %remote.fmt_short(),
-            "webrtc bootstrap gave up; traffic stays on existing paths"
-        );
-    });
+    }
+    tracing::debug!(
+        remote = %remote.fmt_short(),
+        "webrtc bootstrap gave up; traffic stays on existing paths"
+    );
 }
 
 /// One bootstrap attempt: dial JSEP, negotiate as offerer, attach, announce.
@@ -261,6 +344,7 @@ async fn bootstrap(
     endpoint: &Endpoint,
     transport: &Arc<WebRtcTransport>,
     remote: EndpointId,
+    cancel: &Cancel,
 ) -> anyhow::Result<()> {
     // Deliberately dialed WITHOUT the custom addr: introducing it before the
     // channel is attached makes iroh open the path immediately, whose
@@ -276,7 +360,7 @@ async fn bootstrap(
     let peer = negotiate_offer(&mut sig).await?;
     transport.attach_data_channel(peer, custom_addr_for(remote), AttachOptions::default())?;
     conn.close(0u32.into(), b"signaling done");
-    announce(endpoint.clone(), remote);
+    announce(endpoint.clone(), remote, cancel.clone());
     Ok(())
 }
 
@@ -298,17 +382,25 @@ const ANNOUNCE_RETRY_DELAYS: [Duration; 3] = [
 /// addr can be known from an earlier session) ignores the first announcement
 /// while that stale path is still failing validation, and accepts a re-open
 /// only after it is abandoned.
-fn announce(endpoint: Endpoint, remote: EndpointId) {
+fn announce(endpoint: Endpoint, remote: EndpointId, cancel: Cancel) {
     n0_future::task::spawn(async move {
+        if cancel.stopped() {
+            return;
+        }
         let mixed = with_custom_addr(EndpointAddr::new(remote));
         endpoint.add_addr(mixed.clone()).await;
         for delay in ANNOUNCE_RETRY_DELAYS {
-            n0_future::time::sleep(delay).await;
+            if !cancel.sleep(delay).await {
+                return;
+            }
             let selected = endpoint
                 .remote_info(remote)
                 .await
                 .and_then(|info| info.selected_addr().cloned());
             if matches!(selected, Some(::iroh::TransportAddr::Custom(_))) {
+                return;
+            }
+            if cancel.stopped() {
                 return;
             }
             endpoint.add_addr(mixed.clone()).await;
@@ -373,7 +465,7 @@ mod tests {
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(
                 SIGNALING_ALPN,
-                JsepProto::new(endpoint.clone(), webrtc.clone()),
+                JsepProto::new(endpoint.clone(), webrtc.clone(), Cancel::default()),
             )
             .spawn();
         TestPeer {
@@ -421,11 +513,13 @@ mod tests {
         let mut joined_tx = Some(joined_tx);
         let endpoint = peer.endpoint.clone();
         let webrtc = peer.webrtc.clone();
+        let cancel = Cancel::default();
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
         tokio::spawn(async move {
             while let Some(Ok(event)) = receiver.next().await {
                 match event {
                     GossipEvent::NeighborUp(id) => {
-                        ensure_direct(&endpoint, &webrtc, id);
+                        ensure_direct(&endpoint, &webrtc, id, &cancel, &in_flight);
                         if let Some(joined) = joined_tx.take() {
                             let _ = joined.send(());
                         }
