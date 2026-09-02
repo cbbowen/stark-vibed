@@ -152,6 +152,9 @@ cargo clippy --workspace --all-targets --no-default-features \
   --features stark-net/webrtc -- -D warnings
 cargo check -p stark-ui --target wasm32-unknown-unknown \
   --no-default-features --features stark-net/webrtc
+# both rounds above put `stark-net/webrtc` back, so this crate's feature-OFF
+# shape — the no-op transport facade included — is compiled by no other gate.
+cargo check -p stark-net --no-default-features
 # the licence claim, stated against the build graph itself: with the feature off,
 # the vendored crate is not among those compiled. Prints nothing when it holds.
 cargo tree -p stark-engine --no-default-features -e normal | grep -i mixbox

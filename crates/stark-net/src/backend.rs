@@ -9,13 +9,12 @@
 //! rides its relay (WebSocket) transport. With the **`webrtc`** feature the
 //! endpoint additionally carries a WebRTC custom transport: connections
 //! establish over whatever works and migrate onto a WebRTC path once a data
-//! channel is bootstrapped (see [`transport::direct`](crate::transport::direct))
-//! — which is what gives the *web* direct connections.
+//! channel is bootstrapped — which is what gives the *web* direct connections.
+//! All of it reaches this file as [`transport::Direct`](crate::transport::Direct),
+//! whose feature-off twin no-ops, so nothing here is cfg'd on the feature.
 
 use std::collections::HashMap;
-#[cfg(feature = "webrtc")]
-use std::collections::HashSet;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,7 +31,9 @@ use crate::cancel::Cancel;
 use crate::content::ContentSource;
 use crate::events::NetOptions;
 use crate::mirror::Served;
+use crate::neighbors::Neighbors;
 use crate::proto::{self, CollabProto};
+use crate::transport;
 use crate::wire::{self, Request};
 
 /// How long to wait for relay/publish readiness before minting a ticket.
@@ -72,18 +73,15 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
     let secret = opts.secret.clone().unwrap_or_else(SecretKey::generate);
     let cancel = Cancel::default();
     // The WebRTC custom transport rides the same endpoint; peers derive
-    // its addr from our endpoint id (see transport::direct).
-    #[cfg(feature = "webrtc")]
-    let webrtc = crate::transport::direct::make_transport(secret.public());
+    // its addr from our endpoint id (see `transport`).
+    let direct = transport::Direct::new(secret.public(), cancel.clone());
 
     let builder = if opts.local_only {
         Endpoint::builder(presets::Minimal).secret_key(secret)
     } else {
         Endpoint::builder(presets::N0).secret_key(secret)
     };
-    #[cfg(feature = "webrtc")]
-    let builder = builder.add_custom_transport(webrtc.clone());
-    let endpoint = builder.bind().await?;
+    let endpoint = direct.install(builder).bind().await?;
 
     let gossip = Gossip::builder()
         .max_message_size(MAX_MESSAGE_SIZE)
@@ -96,24 +94,14 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
         .accept(wire::ALPN, CollabProto { served });
-    #[cfg(feature = "webrtc")]
-    let router = router.accept(
-        crate::transport::direct::SIGNALING_ALPN,
-        crate::transport::direct::JsepProto::new(endpoint.clone(), webrtc.clone(), cancel.clone()),
-    );
-    let router = router.spawn();
+    let router = direct.register(router, &endpoint).spawn();
 
     Ok(Bound {
         dialer: Dialer {
             endpoint: endpoint.clone(),
             blobs,
             blob_conns: Arc::default(),
-            #[cfg(feature = "webrtc")]
-            webrtc,
-            #[cfg(feature = "webrtc")]
-            cancel: cancel.clone(),
-            #[cfg(feature = "webrtc")]
-            bootstrapping: Arc::default(),
+            direct,
         },
         gossip,
         shutdown: Shutdown { endpoint, router },
@@ -139,16 +127,9 @@ pub(crate) struct Dialer {
     /// because a fetch resumes — the next round requests just the ranges still
     /// missing, so nothing already transferred is paid for twice.
     blob_conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
-    #[cfg(feature = "webrtc")]
-    webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
-    /// The session's stop signal, for the bootstraps [`ensure_direct`](Dialer::ensure_direct) spawns.
-    #[cfg(feature = "webrtc")]
-    cancel: Cancel,
-    /// Peers with a WebRTC bootstrap in flight. Two quick NeighborUp events for
-    /// one peer must not race two tasks — the same structural rule-out the
-    /// waitlist uses for fetches.
-    #[cfg(feature = "webrtc")]
-    bootstrapping: Arc<Mutex<HashSet<EndpointId>>>,
+    /// The WebRTC facade: bootstraps, the dial-time addr upgrade, the
+    /// re-bootstrap sweep. A no-op without the `webrtc` feature.
+    direct: transport::Direct,
 }
 
 impl Dialer {
@@ -160,16 +141,14 @@ impl Dialer {
     /// exists (or we are the answering side). Called on every gossip
     /// neighbor; connections migrate onto the channel once it attaches.
     pub fn ensure_direct(&self, remote: EndpointId) {
-        #[cfg(feature = "webrtc")]
-        crate::transport::direct::ensure_direct(
-            &self.endpoint,
-            &self.webrtc,
-            remote,
-            &self.cancel,
-            &self.bootstrapping,
-        );
-        #[cfg(not(feature = "webrtc"))]
-        let _ = remote;
+        self.direct.ensure_direct(&self.endpoint, remote);
+    }
+
+    /// The WebRTC re-bootstrap sweep, spawned per session beside the
+    /// reconciler — what makes "relay kept as fallback" true over time rather
+    /// than at bootstrap only (`transport::Direct::maintain`).
+    pub async fn maintain_direct(self, neighbors: Neighbors) {
+        self.direct.maintain(&self.endpoint, neighbors).await;
     }
 
     /// Whether the endpoint has closed — how a teardown test observes that the
@@ -190,20 +169,11 @@ impl Dialer {
             .cloned()
     }
 
-    /// If a WebRTC channel to this peer is already attached, add its
-    /// (derived) custom addr so the connection starts direct. Never before
-    /// it attaches: a custom path opened against an unattached channel
-    /// fails validation and blocks the later real open (see
-    /// transport::direct::bootstrap).
+    /// The dialable form of `addr`: plus the WebRTC custom addr when — and
+    /// only when — that channel is already attached
+    /// (`transport::Direct::dial_addr` holds the why).
     fn dial_addr(&self, addr: EndpointAddr) -> EndpointAddr {
-        #[cfg(feature = "webrtc")]
-        if self
-            .webrtc
-            .is_attached(&crate::transport::direct::custom_addr_for(addr.id))
-        {
-            return crate::transport::direct::with_custom_addr(addr);
-        }
-        addr
+        self.direct.dial_addr(addr)
     }
 
     /// Teach the endpoint how to reach a session member a link names, without
@@ -213,7 +183,7 @@ impl Dialer {
     /// Custom (WebRTC) hops are dropped rather than taught. `add_addr` opens
     /// custom addrs as paths on any live connection to that remote, and a custom
     /// path opened before this side's channel attaches fails validation and
-    /// blocks the later real open (see `transport::direct::bootstrap`). Minting
+    /// blocks the later real open (see `transport::direct`'s `Direct::bootstrap`). Minting
     /// already leaves them off a ticket's extra members — a peer derives one
     /// from the endpoint id itself — so this holds the same line for links
     /// minted by anyone else.
@@ -271,7 +241,7 @@ impl Dialer {
         // Local-only is native-only: a browser has no UDP sockets to
         // advertise, so there it yields a bare-id ticket that only
         // same-machine tests could ever have used anyway.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         {
             let mut addr = EndpointAddr::new(self.endpoint.id());
             for sock in self.endpoint.bound_sockets() {
@@ -289,7 +259,7 @@ impl Dialer {
             }
             Ok(addr)
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
         Ok(EndpointAddr::new(self.endpoint.id()))
     }
 }

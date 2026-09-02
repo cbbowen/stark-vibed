@@ -273,6 +273,11 @@ impl CollabSession {
         let (outgoing, queue) = mpsc::unbounded_channel();
         task::spawn(send_loop(cancel.clone(), sender.clone(), queue));
         task::spawn(Reconciler::new(wiring.clone()).run());
+        // The WebRTC re-bootstrap sweep: NeighborUp fires once, but a direct
+        // channel can die later with gossip still flowing on the relay — this
+        // is what makes "relay kept as fallback" true over time rather than at
+        // bootstrap only.
+        task::spawn(dialer.clone().maintain_direct(neighbors.clone()));
         task::spawn(recv_loop(wiring, receiver, presence.clone(), tx));
         let session = Self {
             broadcaster: Broadcaster {

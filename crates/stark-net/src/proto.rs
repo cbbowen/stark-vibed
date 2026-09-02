@@ -1,5 +1,5 @@
 //! The catch-up/asset endpoint: answering the wire's [`Request`]s from the
-//! shared [`Mirror`] (§12.4).
+//! shared [`Mirror`](crate::mirror::Mirror) (§12.4).
 //!
 //! The vocabulary — the message formats, the [`ALPN`](crate::wire::ALPN) and its
 //! version ledger — is [`wire`](crate::wire)'s; this module is the *serving* of
@@ -23,7 +23,7 @@ use crate::wire::{Recovered, Request, Tag};
 /// action (bounded by the gossip message ceiling) always fits.
 const MAX_RECOVER_RESPONSE: usize = 8 * 1024 * 1024;
 
-/// Answer one request from the shared [`Mirror`] — every peer is a provider, so
+/// Answer one request from the shared [`Mirror`](crate::mirror::Mirror) — every peer is a provider, so
 /// the session survives the original sharer leaving. `None` while this peer is
 /// still joining and has no session of its own to serve (see [`Served`]).
 ///
