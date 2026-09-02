@@ -22,7 +22,7 @@
 //!   sync — see [`reconcile`].
 //!
 //! The UI glue is a small pump: drain `Engine::take_outbox`
-//! into [`CollabSession::broadcast`], and feed the [`RemoteEvent`]s the session's
+//! into [`Broadcaster::broadcast`], and feed the [`RemoteEvent`]s the session's
 //! [`Events`] stream yields into
 //! `Engine::merge_remote` /
 //! `Engine::import_brush`.
@@ -33,6 +33,7 @@ mod codec;
 mod content;
 mod events;
 mod mirror;
+mod neighbors;
 mod proto;
 mod reconcile;
 mod session;
@@ -97,10 +98,18 @@ pub enum NetError {
     /// ask a different one, not to give up.
     #[error("that session member is still joining; ask another")]
     NotReady,
+    /// A member the link names did not answer the dial within its bound —
+    /// walked past, so the link's other members get their turn
+    /// (`session::join`'s `DIAL_TIMEOUT`).
+    #[error("no answer from session member {}", .member.fmt_short())]
+    NoAnswer { member: EndpointId },
+    /// A response opened with a tag byte this build does not know — a newer
+    /// peer's vocabulary, which the [`ALPN`](crate::wire::ALPN) should have
+    /// kept from meeting this one.
+    #[error("response tagged {tag}, which this build does not know")]
+    UnknownTag { tag: u8 },
     #[error("bad ticket: {0}")]
     Ticket(#[from] TicketError),
-    #[error("{0}")]
-    Other(String),
 }
 
 /// Why a pasted link could not be read.

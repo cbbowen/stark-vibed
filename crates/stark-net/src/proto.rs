@@ -6,13 +6,11 @@
 //! it. [`answer`] maps one request onto the mirror, and the iroh plumbing at the
 //! bottom moves the bytes.
 
-use std::sync::Mutex;
-
 use bytes::Bytes;
 use stark_model::AssetId;
 
-use crate::mirror::{Mirror, Served};
-use crate::wire::{Recovered, Request};
+use crate::mirror::{Served, SharedMirror};
+use crate::wire::{Recovered, Request, Tag};
 
 /// Upper bound on an encoded [`Request::Actions`] answer.
 ///
@@ -48,17 +46,18 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
             have.dedup();
             snapshot_bytes(mirror, &have)?
         }
-        // Both cheap enough to answer under the lock: one walks the log's keys,
-        // the other looks up as many actions as the asker found it was missing.
+        // Neither is answered under the lock: the receive loop takes it per
+        // arriving action, and a full-log id walk or per-action clones under it
+        // stall this peer's painting. The lock covers a [`LogView`] — a
+        // refcount bump — and the walk happens off it.
         Request::Ids => {
-            let ids = mirror.lock().expect("mirror poisoned").action_ids();
-            crate::codec::encode(&ids)?.into()
+            let view = mirror.lock().log_view();
+            crate::codec::encode(&view.action_ids())?.into()
         }
         Request::Actions(ids) => {
-            // The mirror answers in plain pairs; the wire's shape is spelled here.
-            let mut actions: Vec<Recovered> = mirror
-                .lock()
-                .expect("mirror poisoned")
+            let view = mirror.lock().log_view();
+            // The view answers in plain pairs; the wire's shape is spelled here.
+            let mut actions: Vec<Recovered> = view
                 .recover(&ids)
                 .into_iter()
                 .map(|(action, hash)| Recovered { action, hash })
@@ -81,9 +80,9 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
 /// container owns its bytes) and
 /// encodes the lot. A joiner arriving mid-session must not stall this peer's
 /// receive loop for the length of that, and the next joiner should not repeat it.
-fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Bytes> {
+fn snapshot_bytes(mirror: &SharedMirror, have: &[AssetId]) -> crate::Result<Bytes> {
     let snapshot = {
-        let mirror = mirror.lock().expect("mirror poisoned");
+        let mirror = mirror.lock();
         match mirror.encoded_for(have) {
             Some(bytes) => return Ok(bytes),
             None => mirror.snapshot(),
@@ -91,16 +90,25 @@ fn snapshot_bytes(mirror: &Mutex<Mirror>, have: &[AssetId]) -> crate::Result<Byt
     };
     let revision = snapshot.revision;
     let bytes = Bytes::from(snapshot.without(have).into_file().to_bytes()?);
-    mirror
-        .lock()
-        .expect("mirror poisoned")
-        .remember(revision, have, bytes.clone());
+    mirror.lock().remember(revision, have, bytes.clone());
     Ok(bytes)
 }
 
 /// Decode a request received over any transport.
 pub(crate) fn decode_request(bytes: &[u8]) -> crate::Result<Request> {
     Ok(crate::codec::decode(bytes)?)
+}
+
+/// What a response's first byte says: `Ok` when the answer follows, or the
+/// typed refusal it spells. The one reading of the tag byte, so an unknown
+/// value has one answer — [`NetError::UnknownTag`](crate::NetError::UnknownTag)
+/// — whichever transport read it.
+fn interpret_tag(tag: u8) -> crate::Result<()> {
+    match tag {
+        Tag::OK => Ok(()),
+        Tag::NOT_READY => Err(crate::NetError::NotReady),
+        tag => Err(crate::NetError::UnknownTag { tag }),
+    }
 }
 
 /// The iroh plumbing: the protocol handler and the client-side request call.
@@ -121,6 +129,22 @@ mod tests {
     use super::*;
     use crate::backend::{self, Bound};
     use crate::events::NetOptions;
+    use crate::mirror::Mirror;
+
+    /// The tag protocol byte by byte: the two known values, and a typed refusal
+    /// of everything else so the far end's message can name the byte.
+    #[test]
+    fn interpret_tag_knows_exactly_two_bytes() {
+        assert!(interpret_tag(Tag::OK).is_ok());
+        assert!(matches!(
+            interpret_tag(Tag::NOT_READY),
+            Err(crate::NetError::NotReady)
+        ));
+        assert!(matches!(
+            interpret_tag(7),
+            Err(crate::NetError::UnknownTag { tag: 7 })
+        ));
+    }
 
     async fn bound(served: Served) -> Bound {
         backend::bind(served, &NetOptions::local())
@@ -195,8 +219,8 @@ mod tests {
     #[test]
     fn the_encode_cache_hits_across_permuted_have_lists() {
         let served = Served::default();
-        served.publish(std::sync::Arc::new(Mutex::new(Mirror::from_file(
-            &DocumentFile::new(vec![action(1)]),
+        served.publish(SharedMirror::new(Mirror::from_file(&DocumentFile::new(
+            vec![action(1)],
         ))));
         let (a, b, c) = (AssetId([1; 32]), AssetId([2; 32]), AssetId([3; 32]));
 
@@ -234,7 +258,7 @@ mod tests {
         let served = Served::default();
         let member = bound(served.clone()).await;
         let file = DocumentFile::new(vec![action(1)]);
-        served.publish(std::sync::Arc::new(Mutex::new(Mirror::from_file(&file))));
+        served.publish(SharedMirror::new(Mirror::from_file(&file)));
         let bytes = ask(&asker, &member)
             .await
             .expect("a published member serves");
@@ -337,12 +361,7 @@ mod iroh_wire {
         send.finish()?;
         let mut tag = [0u8; 1];
         recv.read_exact(&mut tag).await?;
-        match tag[0] {
-            Tag::OK => Ok(recv.read_to_end(MAX_RESPONSE).await?),
-            Tag::NOT_READY => Err(crate::NetError::NotReady),
-            other => Err(crate::NetError::Other(format!(
-                "response tagged {other}, which this build does not know"
-            ))),
-        }
+        super::interpret_tag(tag[0])?;
+        Ok(recv.read_to_end(MAX_RESPONSE).await?)
     }
 }

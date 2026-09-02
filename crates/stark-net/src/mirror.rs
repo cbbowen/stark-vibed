@@ -4,7 +4,7 @@
 //! peer fetches; the mirror's copy is what snapshots bundle.
 //!
 //! The mirror sees every action exactly once — the initial snapshot, local
-//! commits via [`CollabSession::broadcast`](crate::CollabSession::broadcast),
+//! commits via [`Broadcaster::broadcast`](crate::Broadcaster::broadcast),
 //! and remote actions from gossip — so any peer can bootstrap any other.
 //!
 //! Content is held as [`Bytes`], which is what lets the mirror's copy, the blob
@@ -17,9 +17,11 @@
 //! refcount bump; copying the actions out of it, copying the asset payloads into a
 //! [`DocumentFile`] and encoding the result all happen off the lock, and the result
 //! is remembered so the next joiner asking the same question pays for none of it.
+//! Reconciliation answers go the same way: a [`LogView`] is taken under the lock
+//! and the id walks and action clones happen off it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
@@ -41,12 +43,12 @@ use stark_model::{AssetId, AssetNeed, BuildId, CanvasMeta, DocumentFile};
 /// is taken there is nothing here to mistake for a session. The joiner turned away
 /// asks another member — every one of them is an entry point (§12.4).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Served(Arc<OnceLock<Arc<Mutex<Mirror>>>>);
+pub(crate) struct Served(Arc<OnceLock<SharedMirror>>);
 
 impl Served {
     /// Hand the session's mirror to the catch-up server — the moment this peer
     /// starts being a member rather than becoming one.
-    pub fn publish(&self, mirror: Arc<Mutex<Mirror>>) {
+    pub fn publish(&self, mirror: SharedMirror) {
         assert!(
             self.0.set(mirror).is_ok(),
             "one session, one published mirror"
@@ -54,8 +56,25 @@ impl Served {
     }
 
     /// The mirror to answer from, or `None` while this peer is still joining.
-    pub fn get(&self) -> Option<&Mutex<Mirror>> {
-        self.0.get().map(|mirror| &**mirror)
+    pub fn get(&self) -> Option<&SharedMirror> {
+        self.0.get()
+    }
+}
+
+/// The shared handle to a session's [`Mirror`]: clones see one mirror, and
+/// [`lock`](Self::lock) is the only door through it.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedMirror(Arc<Mutex<Mirror>>);
+
+impl SharedMirror {
+    pub fn new(mirror: Mirror) -> Self {
+        Self(Arc::new(Mutex::new(mirror)))
+    }
+
+    /// The one lock site, so the poison policy is stated once: nothing under
+    /// this lock runs code that can panic short of a bug in this crate.
+    pub fn lock(&self) -> MutexGuard<'_, Mirror> {
+        self.0.lock().expect("mirror poisoned")
     }
 }
 
@@ -75,18 +94,12 @@ pub(crate) struct Mirror {
     /// spend `Rc`, while this one is shared between the receive loop, the catch-up
     /// server and every resolver.
     actions: RedBlackTreeMapSync<ActionId, Action>,
-    assets: HashMap<AssetId, Bytes>,
-    /// The canvas substrates the log names, as canonical height maps (§6.4).
-    ///
-    /// Kept apart from `assets` for the reason the save file keeps them apart: the
-    /// two are both grayscale PNGs and both content-addressed, but a brush mask
-    /// decodes as luminance × alpha and a substrate as channel 0, so one bag would hand
-    /// each store the other's bytes to reinterpret.
-    substrates: HashMap<AssetId, Bytes>,
-    /// The pictures the log places (§23). A third map for the second one's reason:
-    /// the three decode differently, so a single bag would hand each store the
-    /// others' bytes to reinterpret.
-    pictures: HashMap<AssetId, Bytes>,
+    /// Every piece of content the log names, keyed by the [`AssetNeed`] that
+    /// says which store its bytes belong in — the same bag the save file keeps
+    /// (`DocumentFile::content`, §8). The kind rides the key: a brush mask and
+    /// a substrate are both grayscale PNGs that decode differently, and the key
+    /// is what stops one store being handed the other's bytes to reinterpret.
+    content: HashMap<AssetNeed, Bytes>,
     /// The blob hash each piece of content transfers under.
     ///
     /// An [`AssetId`] names the *decoded coverage* (encoding-independent), so it is
@@ -127,9 +140,7 @@ pub(crate) struct Snapshot {
     build: BuildId,
     canvas: CanvasMeta,
     actions: RedBlackTreeMapSync<ActionId, Action>,
-    assets: Vec<(AssetId, Bytes)>,
-    substrates: Vec<(AssetId, Bytes)>,
-    pictures: Vec<(AssetId, Bytes)>,
+    content: Vec<(AssetNeed, Bytes)>,
     /// What the mirror stood at when this was taken — the key its encoding is
     /// remembered under.
     pub revision: u64,
@@ -147,14 +158,13 @@ impl Snapshot {
         if have.is_empty() {
             return self;
         }
-        let have: std::collections::HashSet<&AssetId> = have.iter().collect();
-        let omit = |id: &AssetId| have.contains(id);
-        let before = self.assets.len() + self.substrates.len() + self.pictures.len();
-        self.assets.retain(|(id, _)| !omit(id));
-        self.substrates.retain(|(id, _)| !omit(id));
-        self.pictures.retain(|(id, _)| !omit(id));
-        let spared: usize =
-            before - (self.assets.len() + self.substrates.len() + self.pictures.len());
+        let have: std::collections::HashSet<AssetId> = have.iter().copied().collect();
+        let before = self.content.len();
+        // By the id the bytes are named under, whichever kind carries it — the
+        // promise is a list of content ids, not needs.
+        self.content
+            .retain(|(need, _)| !have.contains(&need.content()));
+        let spared = before - self.content.len();
         if spared > 0 {
             tracing::debug!(spared, "omitted content the joiner can resolve locally");
         }
@@ -165,40 +175,15 @@ impl Snapshot {
         let mut file = DocumentFile::new(self.actions.iter().map(|(_, a)| a.clone()).collect());
         file.app_build = self.build;
         file.canvas = self.canvas;
-        // The container's bundle is one bag keyed by [`AssetNeed`] (§8); the mirror
-        // keeps the three apart because the transport fetches them from three stores.
-        // This is the one place the two shapes meet, and the key is what says which
-        // is which.
+        // The container owns its payloads, so this is the per-asset copy the
+        // mirror's lock must not cover. The bag's shape is already the file's (§8).
         file.content = self
-            .assets
+            .content
             .into_iter()
-            .map(|(id, b)| (AssetNeed::Brush(id), b.to_vec()))
-            .chain(
-                self.substrates
-                    .into_iter()
-                    .map(|(id, b)| (AssetNeed::Substrate(id), b.to_vec())),
-            )
-            .chain(
-                self.pictures
-                    .into_iter()
-                    .map(|(id, b)| (AssetNeed::Picture(id), b.to_vec())),
-            )
+            .map(|(need, b)| (need, b.to_vec()))
             .collect();
         file
     }
-}
-
-/// The bundle entries of one kind, by content id — [`Mirror::from_file`]'s way of
-/// taking a bag keyed by [`AssetNeed`] apart into the three stores the transport
-/// fetches from.
-fn by_kind(
-    file: &DocumentFile,
-    which: impl Fn(&AssetNeed) -> Option<AssetId>,
-) -> HashMap<AssetId, Bytes> {
-    file.content
-        .iter()
-        .filter_map(|(need, bytes)| Some((which(need)?, Bytes::from(bytes.clone()))))
-        .collect()
 }
 
 impl Mirror {
@@ -207,23 +192,14 @@ impl Mirror {
             build: file.app_build.clone(),
             canvas: file.canvas.clone(),
             actions: file.actions.iter().map(|a| (a.id, a.clone())).collect(),
-            // One bag in, three stores out — the need's own kind is what sorts them,
-            // where this used to read three separately-keyed fields. A `Flat`
-            // substrate cannot appear: it names no content, so `AssetNeed` has no
-            // variant for it (`AssetNeed::for_substrate`), which is the same thing
-            // the old `filter_map` was doing by hand.
-            assets: by_kind(file, |need| match need {
-                AssetNeed::Brush(id) => Some(*id),
-                _ => None,
-            }),
-            substrates: by_kind(file, |need| match need {
-                AssetNeed::Substrate(id) => Some(*id),
-                _ => None,
-            }),
-            pictures: by_kind(file, |need| match need {
-                AssetNeed::Picture(id) => Some(*id),
-                _ => None,
-            }),
+            // The bundle is already keyed by [`AssetNeed`] (§8), so the bag moves
+            // over whole. A `Flat` substrate cannot appear: it names no content,
+            // so `AssetNeed` has no variant for it (`AssetNeed::for_substrate`).
+            content: file
+                .content
+                .iter()
+                .map(|(need, bytes)| (*need, Bytes::from(bytes.clone())))
+                .collect(),
             hashes: HashMap::new(),
             revision: 0,
             encoded: None,
@@ -231,22 +207,16 @@ impl Mirror {
     }
 
     /// The full session snapshot (§8 == §12.4's join payload): total-ordered
-    /// actions + every known brush asset and canvas substrate.
+    /// actions + every piece of content the log names.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             build: self.build.clone(),
             canvas: self.canvas.clone(),
             actions: self.actions.clone(),
-            assets: self.assets.iter().map(|(id, b)| (*id, b.clone())).collect(),
-            substrates: self
-                .substrates
+            content: self
+                .content
                 .iter()
-                .map(|(id, b)| (*id, b.clone()))
-                .collect(),
-            pictures: self
-                .pictures
-                .iter()
-                .map(|(id, b)| (*id, b.clone()))
+                .map(|(need, b)| (*need, b.clone()))
                 .collect(),
             revision: self.revision,
         }
@@ -292,14 +262,69 @@ impl Mirror {
     /// of course (it is a flood), and a duplicate's clone would be dropped by the
     /// line after the one that made it.
     pub fn insert_cloned(&mut self, action: &Action) -> bool {
-        if self.actions.contains_key(&action.id) {
-            return false;
-        }
-        self.actions.insert_mut(action.id, action.clone());
-        self.revision = self.revision.wrapping_add(1);
-        true
+        !self.actions.contains_key(&action.id) && self.insert(action.clone())
     }
 
+    /// What the reconciliation queries read, snapshotted under the lock: the
+    /// log handle is a refcount bump and the hash table a small copy, where the
+    /// queries themselves walk the whole log or clone actions — the work the
+    /// module header forbids under a lock the receive loop shares per action.
+    pub fn log_view(&self) -> LogView {
+        LogView {
+            actions: self.actions.clone(),
+            hashes: self.hashes.clone(),
+        }
+    }
+
+    /// Record content a peer may ask for, under the need that names it and the
+    /// hash it transfers under.
+    pub fn insert_content(&mut self, need: AssetNeed, bytes: Bytes, hash: Hash) {
+        self.content.insert(need, bytes);
+        self.hashes.insert(need.content(), hash);
+        // A snapshot bundles payloads, so this moves what one would say.
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Whether this peer already holds what `need` names — the test that decides
+    /// whether an arriving action has to wait on a fetch.
+    pub fn has(&self, need: AssetNeed) -> bool {
+        self.content.contains_key(&need)
+    }
+
+    /// The hash content transfers under, for a broadcast to attach so receivers
+    /// that lack it know what to fetch.
+    pub fn transfer_hash(&self, id: AssetId) -> Option<Hash> {
+        self.hashes.get(&id).copied()
+    }
+
+    /// Hand every piece of content this peer already holds to the blob store, and
+    /// record what it transfers under — the session-start seed, from the hosted
+    /// document or a joiner's snapshot alike.
+    ///
+    /// Every kind goes in, keyed by its content hash: a substrate's transfer id
+    /// is the [`AssetId`] inside its [`SubstrateId`](stark_model::SubstrateId), because both are the same BLAKE3
+    /// of the same canonical bytes. The blob store only ever moves bytes, so it has
+    /// no need to know which kind it is holding — that is the receiver's question,
+    /// answered by the action that referenced them.
+    pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
+        let hashes: Vec<(AssetId, Hash)> = self
+            .content
+            .iter()
+            .map(|(need, bytes)| (need.content(), add(bytes.clone())))
+            .collect();
+        self.hashes.extend(hashes);
+    }
+}
+
+/// The log as reconciliation reads it, detached from the mirror's lock
+/// ([`Mirror::log_view`]). The queries here are the ones too expensive for the
+/// lock: a full-log id walk, an O(m log n) diff, per-action clones.
+pub(crate) struct LogView {
+    actions: RedBlackTreeMapSync<ActionId, Action>,
+    hashes: HashMap<AssetId, Hash>,
+}
+
+impl LogView {
     /// Every action id held, in total order — this peer's half of a
     /// reconciliation digest.
     pub fn action_ids(&self) -> Vec<ActionId> {
@@ -329,65 +354,69 @@ impl Mirror {
                 (
                     action.clone(),
                     stark_model::action_content(action)
-                        .and_then(|need| self.transfer_hash(need.content())),
+                        .and_then(|need| self.hashes.get(&need.content()).copied()),
                 )
             })
             .collect()
     }
+}
 
-    /// Record content a peer may ask for, under the id that names it and the
-    /// hash it transfers under.
-    pub fn insert_content(&mut self, need: AssetNeed, bytes: Bytes, hash: Hash) {
-        match need {
-            AssetNeed::Brush(id) => {
-                self.assets.insert(id, bytes);
-            }
-            AssetNeed::Substrate(id) => {
-                self.substrates.insert(id, bytes);
-            }
-            AssetNeed::Picture(id) => {
-                self.pictures.insert(id, bytes);
-            }
-        }
-        self.hashes.insert(need.content(), hash);
-        // A snapshot bundles payloads, so this moves what one would say.
-        self.revision = self.revision.wrapping_add(1);
+/// The collapsed content bag: one map keyed by [`AssetNeed`], round-tripping
+/// through the same-shaped bag the save file carries.
+#[cfg(test)]
+mod tests {
+    use stark_model::Srgb;
+    use stark_model::document::{ActionKind, ActorId};
+
+    use super::*;
+
+    fn file_with_content() -> DocumentFile {
+        let action = Action {
+            id: ActionId {
+                lamport: 1,
+                actor: ActorId(1),
+            },
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
+        };
+        let mut file = DocumentFile::new(vec![action]);
+        file.content = vec![
+            (AssetNeed::Brush(AssetId([1; 32])), vec![1, 2, 3]),
+            (AssetNeed::Substrate(AssetId([2; 32])), vec![4, 5]),
+            (AssetNeed::Picture(AssetId([3; 32])), vec![6]),
+        ];
+        file
     }
 
-    /// Whether this peer already holds what `need` names — the test that decides
-    /// whether an arriving action has to wait on a fetch.
-    pub fn has(&self, need: AssetNeed) -> bool {
-        match need {
-            AssetNeed::Brush(id) => self.assets.contains_key(&id),
-            AssetNeed::Substrate(id) => self.substrates.contains_key(&id),
-            AssetNeed::Picture(id) => self.pictures.contains_key(&id),
-        }
+    /// What a file bundles, one entry per kind, is what a snapshot of the
+    /// mirror built from it hands the next joiner — nothing dropped, nothing
+    /// reinterpreted, however the map iterates.
+    #[test]
+    fn the_content_bag_survives_file_to_snapshot_to_file() {
+        let file = file_with_content();
+
+        let back = Mirror::from_file(&file).snapshot().into_file();
+
+        assert_eq!(back.actions.len(), 1);
+        let mut content = back.content;
+        content.sort_unstable_by_key(|(need, _)| *need);
+        assert_eq!(content, file.content);
     }
 
-    /// The hash content transfers under, for a broadcast to attach so receivers
-    /// that lack it know what to fetch.
-    pub fn transfer_hash(&self, id: AssetId) -> Option<Hash> {
-        self.hashes.get(&id).copied()
-    }
+    /// The promise subtracts by content id across every kind, and takes only
+    /// payloads — the log still names what was omitted.
+    #[test]
+    fn without_drops_exactly_the_promised_ids() {
+        let file = file_with_content();
 
-    /// Hand every piece of content this peer already holds to the blob store, and
-    /// record what it transfers under — the session-start seed, from the hosted
-    /// document or a joiner's snapshot alike.
-    ///
-    /// Both kinds go in, keyed by their common content hash: a substrate's transfer id
-    /// is the [`AssetId`] inside its [`SubstrateId`](stark_model::SubstrateId), because both are the same BLAKE3
-    /// of the same canonical bytes. The blob store only ever moves bytes, so it has
-    /// no need to know which kind it is holding — that is the receiver's question,
-    /// answered by the action that referenced them.
-    pub fn seed_blobs(&mut self, add: impl Fn(Bytes) -> Hash) {
-        let assets = self.assets.iter().map(|(id, b)| (*id, b.clone()));
-        let substrates = self.substrates.iter().map(|(id, b)| (*id, b.clone()));
-        let pictures = self.pictures.iter().map(|(id, b)| (*id, b.clone()));
-        let hashes: Vec<(AssetId, Hash)> = assets
-            .chain(substrates)
-            .chain(pictures)
-            .map(|(id, bytes)| (id, add(bytes)))
-            .collect();
-        self.hashes.extend(hashes);
+        let trimmed = Mirror::from_file(&file)
+            .snapshot()
+            .without(&[AssetId([2; 32]), AssetId([3; 32])])
+            .into_file();
+
+        assert_eq!(
+            trimmed.content,
+            vec![(AssetNeed::Brush(AssetId([1; 32])), vec![1, 2, 3])]
+        );
+        assert_eq!(trimmed.actions.len(), 1, "only payloads go; the log stays");
     }
 }

@@ -90,15 +90,16 @@ pub fn share(state: AppState) {
         };
         match CollabSession::host(doc, opts).await {
             Ok((session, events)) => {
+                let tx = session.broadcaster();
                 // Seed every locally-imported brush so peers can fetch any the
                 // snapshot didn't already bundle (§12.4). The substrates need no
                 // equivalent: the snapshot carries every one the log names, and
                 // hosting seeds the blob store from it — a substrate imported *later*
                 // is seeded by `substrates::select` before its `SetSubstrate` goes out.
                 for (id, bytes) in assets {
-                    session.add_content(AssetNeed::Brush(id), bytes);
+                    tx.add_content(AssetNeed::Brush(id), bytes);
                 }
-                let ticket_text = session.ticket().await.to_string();
+                let ticket_text = tx.ticket().await.to_string();
                 install(state, session, events, ticket_text);
             }
             Err(e) => {
@@ -188,10 +189,11 @@ pub fn join(state: AppState, ticket_text: String) {
                         return;
                     }
                 };
+                let tx = session.broadcaster();
                 for (id, bytes) in assets {
-                    session.add_content(AssetNeed::Brush(id), bytes);
+                    tx.add_content(AssetNeed::Brush(id), bytes);
                 }
-                let ticket_text = session.ticket().await.to_string();
+                let ticket_text = tx.ticket().await.to_string();
                 install(state, session, events, ticket_text);
             }
             Err(e) => {

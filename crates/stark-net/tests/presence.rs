@@ -14,6 +14,7 @@ use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionT
 
 async fn ticket_of(session: &CollabSession) -> SessionTicket {
     session
+        .broadcaster()
         .ticket()
         .await
         .to_string()

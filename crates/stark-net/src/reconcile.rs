@@ -29,8 +29,7 @@
 //! partner legitimately forwards other authors' actions — so a future
 //! authentication pass has two doors to cover, not one.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
@@ -44,6 +43,7 @@ use crate::Result;
 use crate::backend::Dialer;
 use crate::cancel::Cancel;
 use crate::content::Resolver;
+use crate::neighbors::Neighbors;
 use crate::waitlist::Waitlist;
 use crate::wire::{RECOVER_BATCH, Recovered, Request};
 
@@ -88,14 +88,25 @@ impl Prompt {
 #[derive(Clone)]
 pub(crate) struct Wiring {
     pub dialer: Dialer,
-    pub neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    pub neighbors: Neighbors,
     pub waitlist: Arc<Waitlist>,
-    pub resolver: Resolver<Dialer>,
     pub cancel: Cancel,
     pub prompt: Prompt,
 }
 
 impl Wiring {
+    /// A resolver over the session's handles. Built per fetch rather than
+    /// stored: it is cloned into every spawned fetch anyway, and it holds
+    /// nothing the wiring does not.
+    fn resolver(&self) -> Resolver<Dialer> {
+        Resolver::new(
+            self.dialer.clone(),
+            self.neighbors.clone(),
+            self.waitlist.clone(),
+            self.cancel.clone(),
+        )
+    }
+
     /// The one door a resolver goes out through — detached, ended by the
     /// session's [`Cancel`]. A method so the call sites cannot drift.
     pub fn spawn_resolver(
@@ -105,7 +116,7 @@ impl Wiring {
         origin: EndpointId,
         from: EndpointId,
     ) {
-        task::spawn(self.resolver.clone().resolve(need, hash, origin, from));
+        task::spawn(self.resolver().resolve(need, hash, origin, from));
     }
 }
 
@@ -222,16 +233,12 @@ impl Reconciler {
     }
 
     /// The next neighbour to compare against, or `None` when there are none.
+    /// Sorted ([`Neighbors::snapshot_sorted`]) so the rotation covers the swarm.
     fn partner(&mut self) -> Option<EndpointId> {
-        let neighbors = self.wiring.neighbors.lock().expect("neighbors poisoned");
-        if neighbors.is_empty() {
+        let ids = self.wiring.neighbors.snapshot_sorted();
+        if ids.is_empty() {
             return None;
         }
-        // Sorted, so the rotation visits every member rather than following the
-        // hash set's iteration order, which moves as the set changes.
-        let mut ids: Vec<EndpointId> = neighbors.iter().copied().collect();
-        drop(neighbors);
-        ids.sort_by_key(|id| *id.as_bytes());
         let index = self.next % ids.len();
         self.next = self.next.wrapping_add(1);
         Some(ids[index])
@@ -265,7 +272,7 @@ mod tests {
     use super::*;
     use crate::backend::{self, Bound};
     use crate::events::{NetOptions, RemoteEvent};
-    use crate::mirror::{Mirror, Served};
+    use crate::mirror::{Mirror, Served, SharedMirror};
 
     fn action(lamport: u64) -> Action {
         Action {
@@ -278,12 +285,12 @@ mod tests {
     }
 
     /// A bound member serving `log`.
-    async fn member(log: Vec<Action>) -> (Bound, Arc<Mutex<Mirror>>) {
+    async fn member(log: Vec<Action>) -> (Bound, SharedMirror) {
         let served = Served::default();
         let bound = backend::bind(served.clone(), &NetOptions::local())
             .await
             .expect("bind");
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(&DocumentFile::new(log))));
+        let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(log)));
         served.publish(mirror.clone());
         (bound, mirror)
     }
@@ -294,24 +301,16 @@ mod tests {
     /// sweep dials by bare id.
     async fn reconciler_between(
         us: &Bound,
-        ours: &Arc<Mutex<Mirror>>,
+        ours: &SharedMirror,
         them: &Bound,
     ) -> (Reconciler, mpsc::UnboundedReceiver<RemoteEvent>) {
         let (tx, events) = mpsc::unbounded_channel();
         let waitlist = Arc::new(Waitlist::new(ours.clone(), tx, &[]));
-        let cancel = Cancel::default();
-        let neighbors = Arc::new(Mutex::new(HashSet::from([them.dialer.local_id()])));
         let reconciler = Reconciler::new(Wiring {
-            resolver: Resolver::new(
-                us.dialer.clone(),
-                neighbors.clone(),
-                waitlist.clone(),
-                cancel.clone(),
-            ),
             dialer: us.dialer.clone(),
-            neighbors,
+            neighbors: Neighbors::from_iter([them.dialer.local_id()]),
             waitlist,
-            cancel,
+            cancel: Cancel::default(),
             prompt: Prompt::default(),
         });
         let addr = them

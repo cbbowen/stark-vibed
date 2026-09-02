@@ -57,10 +57,7 @@ pub(super) async fn closing_on_error<T>(
 async fn try_open(dialer: &Dialer, member: &EndpointAddr) -> Result<Catchup> {
     match n0_future::time::timeout(DIAL_TIMEOUT, dialer.open(member.clone())).await {
         Ok(result) => result,
-        Err(_) => Err(NetError::Other(format!(
-            "no answer from session member {}",
-            member.id.fmt_short()
-        ))),
+        Err(_) => Err(NetError::NoAnswer { member: member.id }),
     }
 }
 

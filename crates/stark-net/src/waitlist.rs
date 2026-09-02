@@ -42,7 +42,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
@@ -51,7 +51,7 @@ use stark_model::{AssetId, AssetNeed};
 use tokio::sync::mpsc;
 
 use crate::events::RemoteEvent;
-use crate::mirror::Mirror;
+use crate::mirror::SharedMirror;
 
 /// What one claim decided — the parking primitive [`Waitlist::admit`] composes.
 /// Arriving traffic goes through `admit`; this is also how the resolver's tests
@@ -75,7 +75,7 @@ pub(crate) struct MustFetch {
 }
 
 pub(crate) struct Waitlist {
-    mirror: Arc<Mutex<Mirror>>,
+    mirror: SharedMirror,
     /// Needs with a resolver in flight, and the actions parked behind each. An
     /// empty vec is a live fetch nothing is waiting on — a presence head's.
     parked: Mutex<HashMap<AssetNeed, Vec<Action>>>,
@@ -89,7 +89,7 @@ pub(crate) struct Waitlist {
 
 impl Waitlist {
     pub fn new(
-        mirror: Arc<Mutex<Mirror>>,
+        mirror: SharedMirror,
         events: mpsc::UnboundedSender<RemoteEvent>,
         resolvable: &[AssetId],
     ) -> Self {
@@ -110,7 +110,7 @@ impl Waitlist {
     /// Whether the content has arrived since — how a resolver finds out that the
     /// frontend made good on [`RemoteEvent::ResolveLocally`].
     pub fn holds(&self, need: AssetNeed) -> bool {
-        self.mirror.lock().expect("mirror poisoned").has(need)
+        self.mirror.lock().has(need)
     }
 
     /// Ask the frontend for content it said it could produce.
@@ -168,7 +168,7 @@ impl Waitlist {
     pub fn admit_detached(&self, need: AssetNeed, hash: Option<Hash>) -> Option<MustFetch> {
         let hash = hash_or_warn(need, hash)?;
         let mut parked = self.parked.lock().expect("waitlist poisoned");
-        if self.mirror.lock().expect("mirror poisoned").has(need) {
+        if self.mirror.lock().has(need) {
             return None;
         }
         match parked.entry(need) {
@@ -188,7 +188,7 @@ impl Waitlist {
     /// [`admit`]: Self::admit
     pub fn claim(&self, need: AssetNeed, action: &Action) -> Admit {
         let mut parked = self.parked.lock().expect("waitlist poisoned");
-        if self.mirror.lock().expect("mirror poisoned").has(need) {
+        if self.mirror.lock().has(need) {
             return Admit::Ready;
         }
         match parked.entry(need) {
@@ -230,10 +230,7 @@ impl Waitlist {
 
     /// The hash content transfers under, for a broadcast to attach.
     pub fn transfer_hash(&self, id: AssetId) -> Option<Hash> {
-        self.mirror
-            .lock()
-            .expect("mirror poisoned")
-            .transfer_hash(id)
+        self.mirror.lock().transfer_hash(id)
     }
 
     /// Nothing could be fetched: release the parked actions to whatever fallback
@@ -258,13 +255,18 @@ impl Waitlist {
     /// Parked counts as held: reporting it missing would only park another copy.
     /// It does not count for serving — it is not in the mirror until released.
     pub fn missing_from(&self, theirs: &[ActionId]) -> Vec<ActionId> {
-        let parked = self.parked.lock().expect("waitlist poisoned");
-        let mut missing = self
-            .mirror
-            .lock()
-            .expect("mirror poisoned")
-            .missing_from(theirs);
-        missing.retain(|id| !parked.values().flatten().any(|a| a.id == *id));
+        // Each lock in the file's order and neither across the diff: the walk is
+        // O(m log n) over a member's whole digest, and the mirror's lock is one
+        // the receive loop takes per arriving action. An action that lands
+        // between the two snapshots is reported missing at worst, and a
+        // re-claimed copy de-duplicates by id ([`claim`](Self::claim)).
+        let parked: Vec<ActionId> = {
+            let parked = self.parked.lock().expect("waitlist poisoned");
+            parked.values().flatten().map(|a| a.id).collect()
+        };
+        let view = self.mirror.lock().log_view();
+        let mut missing = view.missing_from(theirs);
+        missing.retain(|id| !parked.contains(id));
         missing
     }
 
@@ -272,17 +274,14 @@ impl Waitlist {
     /// peer can serve it to a joiner, and hand nothing to the engine — it
     /// authored the action and has applied it already.
     pub fn published(&self, action: Action) {
-        self.mirror.lock().expect("mirror poisoned").insert(action);
+        self.mirror.lock().insert(action);
     }
 
     /// Record content, if any, and detach everything parked behind `need`.
     fn take_parked(&self, need: AssetNeed, content: Option<(Bytes, Hash)>) -> Vec<Action> {
         let mut parked = self.parked.lock().expect("waitlist poisoned");
         if let Some((bytes, hash)) = content {
-            self.mirror
-                .lock()
-                .expect("mirror poisoned")
-                .insert_content(need, bytes, hash);
+            self.mirror.lock().insert_content(need, bytes, hash);
         }
         parked.remove(&need).unwrap_or_default()
     }
@@ -294,11 +293,7 @@ impl Waitlist {
     /// one no reconciliation from here can fill (§12).
     fn release(&self, actions: Vec<Action>) {
         for action in actions {
-            let fresh = self
-                .mirror
-                .lock()
-                .expect("mirror poisoned")
-                .insert_cloned(&action);
+            let fresh = self.mirror.lock().insert_cloned(&action);
             if fresh {
                 let _ = self.events.send(RemoteEvent::Action(action));
             }
@@ -334,6 +329,7 @@ mod tests {
     use stark_model::geom::IVec2;
 
     use super::*;
+    use crate::mirror::Mirror;
 
     fn setup() -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
         with_resolvable(&[])
@@ -341,9 +337,7 @@ mod tests {
 
     /// A waitlist whose frontend claims it can produce `resolvable` itself.
     fn with_resolvable(resolvable: &[AssetId]) -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(
-            &DocumentFile::new(Vec::new()),
-        )));
+        let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(Vec::new())));
         let (tx, rx) = mpsc::unbounded_channel();
         (Waitlist::new(mirror, tx, resolvable), rx)
     }

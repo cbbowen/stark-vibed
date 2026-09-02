@@ -61,7 +61,7 @@ pub enum RemoteEvent {
     /// ([`NetOptions::resolvable`]) — the promise being called in.
     ///
     /// Read the bytes from wherever you promised they were and hand them back
-    /// with [`CollabSession::add_content`](crate::CollabSession::add_content);
+    /// with [`Broadcaster::add_content`](crate::Broadcaster::add_content);
     /// the action waiting on them is released
     /// when you do. Nothing else is expected of you and nothing is on fire.
     ///

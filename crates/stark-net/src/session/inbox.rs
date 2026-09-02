@@ -139,21 +139,13 @@ pub(super) async fn recv_loop(
             }
             Ok(GossipEvent::NeighborUp(peer)) => {
                 tracing::debug!(%peer, "gossip neighbor up");
-                wiring
-                    .neighbors
-                    .lock()
-                    .expect("neighbors poisoned")
-                    .insert(peer);
+                wiring.neighbors.insert(peer);
                 wiring.dialer.ensure_direct(peer);
                 continue;
             }
             Ok(GossipEvent::NeighborDown(peer)) => {
                 tracing::debug!(%peer, "gossip neighbor down");
-                wiring
-                    .neighbors
-                    .lock()
-                    .expect("neighbors poisoned")
-                    .remove(&peer);
+                wiring.neighbors.remove(peer);
                 continue;
             }
             Err(e) => {
@@ -188,7 +180,7 @@ pub(super) async fn recv_loop(
 /// about the network that normally delivers the payload.
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use bytes::Bytes;
     use iroh::{EndpointId, SecretKey};
@@ -204,7 +196,7 @@ mod tests {
     use super::*;
     use crate::cancel::Cancel;
     use crate::events::{Events, PRESENCE_QUEUE};
-    use crate::mirror::Mirror;
+    use crate::mirror::{Mirror, SharedMirror};
 
     fn endpoint(tag: u8) -> EndpointId {
         SecretKey::from_bytes(&[tag; 32]).public()
@@ -213,9 +205,7 @@ mod tests {
     /// An inbox over an empty mirror, and the [`Events`] stream its decisions
     /// surface on — the same pair `finish` wires, minus the swarm.
     fn setup() -> (Inbox, Events) {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(
-            &DocumentFile::new(Vec::new()),
-        )));
+        let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(Vec::new())));
         let (tx, rx) = mpsc::unbounded_channel();
         let presence = Arc::new(PresenceQuota::default());
         let inbox = Inbox {

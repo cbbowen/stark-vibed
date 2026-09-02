@@ -433,7 +433,7 @@ mod tests {
         assert!(matches!(err, TicketError::Empty), "{err}");
     }
 
-    /// A link shaped like the ones a session actually mints (`CollabSession::ticket`):
+    /// A link shaped like the ones a session actually mints (`Broadcaster::ticket`):
     /// the minter with everything known about how to reach it, then the handful of
     /// neighbors it vouches for, each by the one path its traffic rides right now.
     fn a_realistic_ticket() -> SessionTicket {

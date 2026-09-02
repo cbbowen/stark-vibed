@@ -15,8 +15,7 @@
 //! because an action arriving out of order is exactly what makes the timeline
 //! resync (§12.6).
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -27,6 +26,7 @@ use stark_model::AssetNeed;
 
 use crate::Result;
 use crate::cancel::Cancel;
+use crate::neighbors::Neighbors;
 use crate::waitlist::Waitlist;
 
 /// Rounds spent fetching a *brush* image before giving up and letting the stroke
@@ -90,7 +90,7 @@ pub(crate) struct Resolver<S> {
     source: S,
     /// This peer's gossip neighbors, live — the swarm a widening search reaches
     /// past the two peers that named the content. See [`Resolver::providers`].
-    neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    neighbors: Neighbors,
     waitlist: Arc<Waitlist>,
     cancel: Cancel,
 }
@@ -106,12 +106,7 @@ enum Outcome {
 }
 
 impl<S: ContentSource> Resolver<S> {
-    pub fn new(
-        source: S,
-        neighbors: Arc<Mutex<HashSet<EndpointId>>>,
-        waitlist: Arc<Waitlist>,
-        cancel: Cancel,
-    ) -> Self {
+    pub fn new(source: S, neighbors: Neighbors, waitlist: Arc<Waitlist>, cancel: Cancel) -> Self {
         Self {
             source,
             neighbors,
@@ -239,13 +234,11 @@ impl<S: ContentSource> Resolver<S> {
             ids.push(from);
         }
         if round > 0 {
-            let neighbors = self.neighbors.lock().expect("neighbors poisoned");
-            let swarm: Vec<EndpointId> = neighbors
-                .iter()
-                .copied()
-                .filter(|id| !ids.contains(id))
-                .collect();
-            ids.extend(swarm);
+            for peer in self.neighbors.snapshot() {
+                if !ids.contains(&peer) {
+                    ids.push(peer);
+                }
+            }
         }
         ids
     }
@@ -267,6 +260,7 @@ impl<S: ContentSource> Resolver<S> {
 mod tests {
     use stark_model::Srgb;
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use iroh::SecretKey;
@@ -277,7 +271,7 @@ mod tests {
 
     use super::*;
     use crate::events::RemoteEvent;
-    use crate::mirror::Mirror;
+    use crate::mirror::{Mirror, SharedMirror};
     use crate::waitlist::Admit;
 
     /// A peer whose blob store holds `content` — after `fails_first` refusals.
@@ -345,17 +339,17 @@ mod tests {
             if stalls {
                 std::future::pending::<()>().await;
             }
+            // Any refusal will do for a scripted failure; `NotReady` is the one
+            // variant that carries nothing to invent.
             let mut peers = self.peers.lock().unwrap();
             let Some(peer) = peers.get_mut(&provider) else {
-                return Err(crate::NetError::Other("no such peer".into()));
+                return Err(crate::NetError::NotReady);
             };
             if peer.fails_first > 0 {
                 peer.fails_first -= 1;
-                return Err(crate::NetError::Other("not yet".into()));
+                return Err(crate::NetError::NotReady);
             }
-            peer.content
-                .clone()
-                .ok_or_else(|| crate::NetError::Other("nothing here".into()))
+            peer.content.clone().ok_or(crate::NetError::NotReady)
         }
 
         fn evict(&self, provider: EndpointId) {
@@ -380,19 +374,17 @@ mod tests {
     struct Harness {
         resolver: Resolver<Fake>,
         fake: Fake,
-        neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+        neighbors: Neighbors,
         waitlist: Arc<Waitlist>,
         cancel: Cancel,
         events: mpsc::UnboundedReceiver<RemoteEvent>,
     }
 
     fn harness(resolvable: &[AssetId]) -> Harness {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(
-            &DocumentFile::new(Vec::new()),
-        )));
+        let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(Vec::new())));
         let (tx, events) = mpsc::unbounded_channel();
         let waitlist = Arc::new(Waitlist::new(mirror, tx, resolvable));
-        let neighbors = Arc::new(Mutex::new(HashSet::new()));
+        let neighbors = Neighbors::default();
         let fake = Fake::default();
         let cancel = Cancel::default();
         Harness {
@@ -501,7 +493,7 @@ mod tests {
         h.waitlist.claim(substrate(), &action(1));
         // The author and the forwarder are gone. A third member was there.
         h.fake.holding(endpoint(3), &bytes, 0);
-        h.neighbors.lock().unwrap().insert(endpoint(3));
+        h.neighbors.insert(endpoint(3));
 
         h.resolver
             .clone()

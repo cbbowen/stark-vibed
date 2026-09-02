@@ -6,7 +6,7 @@
 //! the reconciler — and talks to the engine through two thin streams:
 //!
 //! ```text
-//! engine.take_outbox() ──────────► session.broadcast(action) ──► gossip
+//! engine.take_outbox() ──────► broadcaster.broadcast(action) ──► gossip
 //! gossip/ALPN ──► RemoteEvent ──► engine.merge_remote / import_brush
 //! ```
 //!
@@ -27,23 +27,21 @@ mod publish;
 
 pub use publish::{Broadcaster, LinkKind, PeerLink};
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use bytes::Bytes;
-use iroh::{EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, SecretKey};
 use iroh_gossip::proto::TopicId;
 use n0_future::task;
-use stark_model::document::{Action, ActorId};
+use stark_model::document::ActorId;
 use stark_model::{AssetId, AssetNeed, DocumentFile};
 use tokio::sync::mpsc;
 
 use crate::Result;
 use crate::backend::{self, Bound, Shutdown};
 use crate::cancel::Cancel;
-use crate::content::Resolver;
 use crate::events::{Events, NetOptions, PresenceQuota, actor_from_endpoint_id};
-use crate::mirror::{Mirror, Served};
+use crate::mirror::{Mirror, Served, SharedMirror};
+use crate::neighbors::Neighbors;
 use crate::reconcile::{Prompt, Reconciler, Wiring};
 use crate::ticket::SessionTicket;
 use crate::waitlist::Waitlist;
@@ -81,9 +79,12 @@ pub struct Joined {
     pub owed: Vec<AssetNeed>,
 }
 
-/// A live shared session: broadcasts local actions, serves joiners and asset
-/// requests, and delivers remote edits as
-/// [`RemoteEvent`](crate::RemoteEvent)s.
+/// A live shared session: its lifecycle — the spawned loops, the stop signal,
+/// the teardown. Everything sent *into* it (actions, content, presence) and
+/// everything asked *of* it (tickets, link kinds) goes through the
+/// [`Broadcaster`] handle [`broadcaster`](Self::broadcaster) clones out; remote
+/// edits arrive as [`RemoteEvent`](crate::RemoteEvent)s on the [`Events`]
+/// stream handed out at setup.
 pub struct CollabSession {
     /// Everything publishing needs, which is everything the session needs but
     /// two — so the session holds one rather than assembling one per call.
@@ -134,7 +135,7 @@ impl CollabSession {
         doc: DocumentFile,
         opts: &NetOptions,
     ) -> Result<(Self, Events)> {
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(&doc)));
+        let mirror = SharedMirror::new(Mirror::from_file(&doc));
         // A fresh random 32-byte topic — a secret key is a convenient CSPRNG.
         let topic = TopicId::from_bytes(SecretKey::generate().to_bytes());
         // The first member starts the swarm alone; joiners bootstrap from it.
@@ -201,7 +202,7 @@ impl CollabSession {
         // the same question loading a document off disk asks, and one definition
         // of "what does this log need" is what stops the two drifting.
         let owed = file.unbundled_content();
-        let mirror = Arc::new(Mutex::new(Mirror::from_file(&file)));
+        let mirror = SharedMirror::new(Mirror::from_file(&file));
 
         let ticket_addr = bound.dialer.ticket_addr(opts).await?;
         let (session, events) = Self::finish(
@@ -226,7 +227,7 @@ impl CollabSession {
         served: Served,
         topic: TopicId,
         sub: iroh_gossip::api::GossipTopic,
-        mirror: Arc<Mutex<Mirror>>,
+        mirror: SharedMirror,
         ticket_addr: EndpointAddr,
         resolvable: &[AssetId],
     ) -> Result<(Self, Events)> {
@@ -240,20 +241,16 @@ impl CollabSession {
         let (sender, receiver) = sub.split();
         // Seed with the neighbors met before the receive loop takes over
         // (typically the bootstrap peer a joiner already awaited).
-        let neighbors: HashSet<EndpointId> = receiver.neighbors().collect();
-        for &peer in &neighbors {
+        let neighbors: Neighbors = receiver.neighbors().collect();
+        for peer in neighbors.snapshot() {
             dialer.ensure_direct(peer);
         }
-        let neighbors = Arc::new(Mutex::new(neighbors));
         // Every piece of content already known (the hosted document's, or the
         // joiner's snapshot's) enters the blob store so this peer can serve it, and
         // its transfer hash is recorded so this peer's own actions referencing it can
         // broadcast one. Brush images and canvas substrates alike — both are content an
         // action can be waiting on.
-        mirror
-            .lock()
-            .expect("mirror poisoned")
-            .seed_blobs(|bytes| dialer.add_blob(bytes));
+        mirror.lock().seed_blobs(|bytes| dialer.add_blob(bytes));
         // Only now is there a session to serve, and only now does the catch-up
         // protocol have anything to answer with: seeded, so what a snapshot names
         // can also be fetched piecemeal afterwards.
@@ -264,12 +261,6 @@ impl CollabSession {
         // The receive loop is the only thing that dials afterwards (to fetch
         // brush assets and bootstrap WebRTC), so it takes the dialer with it.
         let wiring = Wiring {
-            resolver: Resolver::new(
-                dialer.clone(),
-                neighbors.clone(),
-                waitlist.clone(),
-                cancel.clone(),
-            ),
             dialer: dialer.clone(),
             neighbors: neighbors.clone(),
             waitlist: waitlist.clone(),
@@ -307,60 +298,17 @@ impl CollabSession {
         ))
     }
 
-    /// The ticket others use to join — every member can hand one out, so the
-    /// session survives the host leaving.
-    ///
-    /// It names *this* peer first, then up to
-    /// [`TICKET_NEIGHBORS`](publish::TICKET_NEIGHBORS) members it is
-    /// connected to right now — so the link also survives this peer leaving
-    /// between the minting and the pasting: a joiner tries members in order, and
-    /// any one of them admits it. Minted per call rather than stored, because
-    /// the insurance is only as good as it is current.
-    pub async fn ticket(&self) -> SessionTicket {
-        self.broadcaster.ticket().await
-    }
-
     /// The author id this session's identity maps to.
     pub fn actor_id(&self) -> ActorId {
         actor_from_endpoint_id(self.broadcaster.local_id)
     }
 
-    /// A cheap, `Clone` handle for feeding the session from elsewhere (e.g. a
-    /// UI task that can't borrow the session across an `await`).
+    /// A cheap, `Clone` handle for feeding the session — the whole sending and
+    /// asking surface ([`Broadcaster::broadcast`], [`Broadcaster::add_content`],
+    /// [`Broadcaster::ticket`], [`Broadcaster::links`]) lives on it, so a UI
+    /// task never has to borrow the session across an `await`.
     pub fn broadcaster(&self) -> Broadcaster {
         self.broadcaster.clone()
-    }
-
-    /// Broadcast one locally-committed action (from
-    /// `Engine::take_outbox`) to the swarm.
-    ///
-    /// Returns once the action is mirrored and queued; the session's one send task
-    /// puts it on the wire. That task is what makes the wire order the order things
-    /// were committed in — a caller spawning a send per dispatch raced two of them
-    /// onto the same sender, and every inversion cost a timeline resync on every
-    /// receiver.
-    pub fn broadcast(&self, action: Action) -> Result<()> {
-        self.broadcaster.broadcast(action)
-    }
-
-    /// Register content so joiners can be served and peers can fetch it — a brush
-    /// image alongside
-    /// `Engine::import_brush`, a canvas substrate
-    /// alongside `Engine::import_substrate`.
-    ///
-    /// Call it *before* committing an action that references the content: the
-    /// broadcast attaches a transfer hash looked up here, and an action that goes out
-    /// without one leaves receivers unable to fetch what it needs. Getting that order
-    /// wrong logs an error naming the content, from the client that committed it —
-    /// the fault is only visible there, since what it produces at the far end is
-    /// indistinguishable from content that has not arrived yet.
-    pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
-        self.broadcaster.add_content(need, bytes);
-    }
-
-    /// See [`Broadcaster::links`].
-    pub async fn links(&self) -> Vec<PeerLink> {
-        self.broadcaster.links().await
     }
 
     /// Leave the session gracefully.

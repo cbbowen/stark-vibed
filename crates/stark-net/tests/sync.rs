@@ -114,8 +114,9 @@ fn drain_events(events: &mut Events, engine: &mut Engine) -> usize {
 
 /// Broadcast everything the engine committed since the last pump.
 async fn flush_outbox(engine: &mut Engine, session: &CollabSession) {
+    let tx = session.broadcaster();
     for action in engine.take_outbox() {
-        session.broadcast(action).expect("broadcast");
+        tx.broadcast(action).expect("broadcast");
     }
 }
 
@@ -164,6 +165,7 @@ async fn two_peers_converge_over_iroh() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -267,6 +269,7 @@ async fn custom_shapes_replicate_mid_session() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -286,7 +289,7 @@ async fn custom_shapes_replicate_mid_session() {
 
     // --- live-preview path: a stroke head names a shape the peer lacks ---
     let live = host.import_brush(&blob_png(96)).expect("import live shape");
-    host_session.add_content(
+    host_session.broadcaster().add_content(
         AssetNeed::Brush(live),
         host.asset_bytes(live).expect("canonical bytes"),
     );
@@ -335,7 +338,7 @@ async fn custom_shapes_replicate_mid_session() {
     let committed = host
         .import_brush(&blob_png(64))
         .expect("import committed shape");
-    host_session.add_content(
+    host_session.broadcaster().add_content(
         AssetNeed::Brush(committed),
         host.asset_bytes(committed).expect("canonical bytes"),
     );
@@ -396,6 +399,7 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -417,7 +421,7 @@ async fn a_peer_paints_on_a_substrate_it_has_never_seen() {
     let rough = host
         .import_substrate(&stark_testdata::assets::rough())
         .expect("the rough height map imports");
-    host_session.add_content(
+    host_session.broadcaster().add_content(
         AssetNeed::for_substrate(rough).expect("the rough substrate is an image"),
         host.substrate_bytes(rough).expect("canonical bytes"),
     );
@@ -488,6 +492,7 @@ async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -561,7 +566,12 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
     .expect("host session");
 
     let ticket = async |s: &CollabSession| -> SessionTicket {
-        s.ticket().await.to_string().parse().expect("ticket text")
+        s.broadcaster()
+            .ticket()
+            .await
+            .to_string()
+            .parse()
+            .expect("ticket text")
     };
     let Joined {
         session: middle_session,
@@ -577,7 +587,7 @@ async fn a_shape_reaches_a_peer_that_joined_through_an_intermediary() {
 
     // The host paints with a shape imported mid-session; `middle` fetches it.
     let shape = host.import_brush(&blob_png(72)).expect("import shape");
-    host_session.add_content(
+    host_session.broadcaster().add_content(
         AssetNeed::Brush(shape),
         host.asset_bytes(shape).expect("canonical bytes"),
     );
@@ -680,6 +690,7 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -769,6 +780,7 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     .await
     .expect("host session");
     let ticket: SessionTicket = host_session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -799,7 +811,7 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     let rough = host
         .import_substrate(&rough_bytes)
         .expect("import substrate");
-    host_session.add_content(
+    host_session.broadcaster().add_content(
         AssetNeed::for_substrate(rough).expect("an image substrate"),
         host.substrate_bytes(rough).expect("canonical bytes"),
     );
@@ -851,7 +863,9 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     // which releases the `SetSubstrate` parked on it.
     peer.accept_substrate(asked.substrate().expect("a substrate"), &rough_bytes)
         .expect("install locally");
-    peer_session.add_content(asked, rough_bytes.clone());
+    peer_session
+        .broadcaster()
+        .add_content(asked, rough_bytes.clone());
 
     // The `SetSubstrate` and the stroke, less whatever landed before we were asked.
     wait_for_actions(&mut peer_events, &mut peer, 2 - merged).await;

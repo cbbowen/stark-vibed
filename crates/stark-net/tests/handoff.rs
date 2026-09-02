@@ -21,6 +21,7 @@ fn action(actor: ActorId, lamport: u64) -> Action {
 
 async fn ticket_of(session: &CollabSession) -> SessionTicket {
     session
+        .broadcaster()
         .ticket()
         .await
         .to_string()
@@ -54,7 +55,9 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
             .await
             .expect("host session");
     let marker = action(host.actor_id(), 1);
-    host.broadcast(marker.clone()).expect("broadcast");
+    host.broadcaster()
+        .broadcast(marker.clone())
+        .expect("broadcast");
 
     // A second peer joins the founder, the normal way.
     let Joined {
@@ -89,7 +92,10 @@ async fn a_newcomer_can_join_through_any_member_after_the_founder_leaves() {
 
     // And the newcomer is a full participant, not just a reader.
     let fresh = action(newcomer.actor_id(), 2);
-    newcomer.broadcast(fresh.clone()).expect("broadcast");
+    newcomer
+        .broadcaster()
+        .broadcast(fresh.clone())
+        .expect("broadcast");
     assert_eq!(next_action(&mut peer_events).await.id, fresh.id);
 
     newcomer.shutdown().await;
@@ -108,7 +114,9 @@ async fn a_link_outlives_its_minter() {
             .expect("host session");
     let host_id = ticket_of(&host).await.members[0].id;
     let marker = action(host.actor_id(), 1);
-    host.broadcast(marker.clone()).expect("broadcast");
+    host.broadcaster()
+        .broadcast(marker.clone())
+        .expect("broadcast");
 
     let Joined { session: peer, .. } =
         CollabSession::join(&ticket_of(&host).await, NetOptions::local())
@@ -153,7 +161,10 @@ async fn a_link_outlives_its_minter() {
 
     // And is in the live swarm through that member, not just snapshotted.
     let fresh = action(newcomer.actor_id(), 2);
-    newcomer.broadcast(fresh.clone()).expect("broadcast");
+    newcomer
+        .broadcaster()
+        .broadcast(fresh.clone())
+        .expect("broadcast");
     assert_eq!(next_action(&mut host_events).await.id, fresh.id);
 
     newcomer.shutdown().await;

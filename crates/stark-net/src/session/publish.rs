@@ -2,8 +2,7 @@
 //! session's one [`send_loop`] task, which is what makes the wire order the
 //! commit order.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
@@ -18,6 +17,7 @@ use crate::Result;
 use crate::backend::Dialer;
 use crate::cancel::Cancel;
 use crate::events::actor_from_endpoint_id;
+use crate::neighbors::Neighbors;
 use crate::ticket::SessionTicket;
 use crate::waitlist::Waitlist;
 use crate::wire::{StampedRef, WireRef};
@@ -76,7 +76,7 @@ pub struct Broadcaster {
     /// makes their wire order the order they were committed in.
     pub(super) outgoing: mpsc::UnboundedSender<Bytes>,
     pub(super) dialer: Dialer,
-    pub(super) neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    pub(super) neighbors: Neighbors,
     pub(super) waitlist: Arc<Waitlist>,
     pub(super) topic: TopicId,
     /// How this peer is reached, minted at bind time — the first name on every
@@ -85,7 +85,14 @@ pub struct Broadcaster {
 }
 
 impl Broadcaster {
-    /// See [`CollabSession::broadcast`](crate::CollabSession::broadcast).
+    /// Broadcast one locally-committed action (from
+    /// `Engine::take_outbox`) to the swarm.
+    ///
+    /// Returns once the action is mirrored and queued; the session's one send task
+    /// puts it on the wire. That task is what makes the wire order the order things
+    /// were committed in — a caller spawning a send per dispatch raced two of them
+    /// onto the same sender, and every inversion cost a timeline resync on every
+    /// receiver.
     pub fn broadcast(&self, action: Action) -> Result<()> {
         let need = stark_model::action_content(&action);
         let bytes = self.encode(WireRef::Action(&action), need)?;
@@ -147,7 +154,17 @@ impl Broadcaster {
         Ok(crate::codec::encode_stamped_ref(&stamped)?.into())
     }
 
-    /// See [`CollabSession::add_content`](crate::CollabSession::add_content).
+    /// Register content so joiners can be served and peers can fetch it — a brush
+    /// image alongside
+    /// `Engine::import_brush`, a canvas substrate
+    /// alongside `Engine::import_substrate`.
+    ///
+    /// Call it *before* committing an action that references the content: the
+    /// broadcast attaches a transfer hash looked up here, and an action that goes out
+    /// without one leaves receivers unable to fetch what it needs. Getting that order
+    /// wrong logs an error naming the content, from the client that committed it —
+    /// the fault is only visible there, since what it produces at the far end is
+    /// indistinguishable from content that has not arrived yet.
     pub fn add_content(&self, need: AssetNeed, bytes: impl Into<Bytes>) {
         let bytes = bytes.into();
         let hash = self.dialer.add_blob(bytes.clone());
@@ -157,19 +174,17 @@ impl Broadcaster {
         self.waitlist.imported(need, bytes, hash);
     }
 
-    /// See [`CollabSession::ticket`](crate::CollabSession::ticket).
+    /// The ticket others use to join — every member can hand one out, so the
+    /// session survives the host leaving.
+    ///
+    /// It names *this* peer first, then up to [`TICKET_NEIGHBORS`] members it is
+    /// connected to right now — so the link also survives this peer leaving
+    /// between the minting and the pasting: a joiner tries members in order, and
+    /// any one of them admits it. Minted per call rather than stored, because
+    /// the insurance is only as good as it is current. Sorted
+    /// ([`Neighbors::snapshot_sorted`]) so one membership always spells one link.
     pub async fn ticket(&self) -> SessionTicket {
-        let mut neighbors: Vec<EndpointId> = self
-            .neighbors
-            .lock()
-            .expect("neighbors poisoned")
-            .iter()
-            .copied()
-            .collect();
-        // Sorted so one membership always spells one link: the frontend re-mints
-        // on a cadence and rewrites the invitation only when its text changes,
-        // and a set iterated in hash order would change the text every poll.
-        neighbors.sort_unstable_by_key(|id| *id.as_bytes());
+        let neighbors = self.neighbors.snapshot_sorted();
         let mut members = vec![self.ticket_addr.clone()];
         for id in neighbors.into_iter().take(TICKET_NEIGHBORS) {
             // The proven path only — the one this peer's traffic rides right
@@ -198,13 +213,7 @@ impl Broadcaster {
     /// migrates from relay to direct when hole punching or a WebRTC bootstrap
     /// lands, so poll rather than cache.
     pub async fn links(&self) -> Vec<PeerLink> {
-        let neighbors: Vec<EndpointId> = self
-            .neighbors
-            .lock()
-            .expect("neighbors poisoned")
-            .iter()
-            .copied()
-            .collect();
+        let neighbors = self.neighbors.snapshot_sorted();
         let mut links = Vec::with_capacity(neighbors.len());
         for id in neighbors {
             let kind = match self.dialer.selected_addr(id).await {
