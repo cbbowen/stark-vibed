@@ -17,6 +17,9 @@ publish = false
 # data channel attaches — with the relay path kept open as fallback. Works
 # identically on native (str0m) and wasm (RTCPeerConnection), so the whole
 # flow is testable in `cargo test`.
+#
+# `iroh/unstable-custom-transports` is listed for intent only: the `iroh`
+# dependency below already enables it unconditionally (see the comment there).
 webrtc = ["dep:iroh-webrtc-transport", "dep:anyhow", "iroh/unstable-custom-transports"]
 # There is no `mixbox` feature here any more, and its absence is the point (§2).
 # It existed only to forward `stark-engine/mixbox`: this crate depended on the

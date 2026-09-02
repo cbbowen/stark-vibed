@@ -45,6 +45,14 @@ gpu = { max-threads = 16 }
 filter = 'package(stark-engine) and kind(test)'
 test-group = 'gpu'
 
+# stark-net's integration tests too: a convergence test builds two or three headless
+# engines, so each holds two or three devices at once. The whole binary rather than
+# the GPU-using tests by name, for the same reason as above — and the handshake and
+# presence tests swept in hold a slot only briefly. Over-inclusion is the safe side.
+[[profile.default.overrides]]
+filter = 'package(stark-net) and kind(test)'
+test-group = 'gpu'
+
 # And the unit tests under `gpu::`, of which only `gpu::context` and `gpu::submit`
 # actually build a context today. The module tree rather than those two, because the
 # two costs are not symmetric: a pure-arithmetic test swept in holds a slot for the

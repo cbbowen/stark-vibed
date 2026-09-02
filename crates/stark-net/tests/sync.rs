@@ -26,13 +26,10 @@ const SIZE: Extent2 = Extent2 {
 };
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 fn engine_or_skip() -> Option<Engine> {
-    match pollster::block_on(headless_engine(TARGET, SIZE)) {
-        Ok(e) => Some(e),
-        Err(e) => {
-            eprintln!("skipping GPU test: {e}");
-            None
-        }
-    }
+    stark_engine::testing::or_skip(
+        pollster::block_on(headless_engine(TARGET, SIZE)),
+        "a stark-net convergence test",
+    )
 }
 
 fn paint(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
@@ -733,7 +730,7 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
 
     assert!(
         identical(&host.render_to_image(), &peer.render_to_image()),
-        "the peer replayed a toothed stroke against a substrate it resolved locally and          landed somewhere else — the omission is not sound"
+        "the peer replayed a toothed stroke against a substrate it resolved locally and landed somewhere else — the omission is not sound"
     );
 
     host_session.shutdown().await;

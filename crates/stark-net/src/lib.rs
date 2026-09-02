@@ -128,7 +128,7 @@ pub enum TicketError {
     /// different shape, so anything else this could say about them would be about
     /// the wrong shape.
     #[error(
-        "this link is version {found}; this build speaks {expected} —          both ends need the same version of Stark"
+        "this link is version {found}; this build speaks {expected} — both ends need the same version of Stark"
     )]
     Version { found: u8, expected: u8 },
     /// The link decoded, and a member it names is not a valid endpoint id.
