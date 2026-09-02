@@ -53,7 +53,9 @@ use tokio::sync::mpsc;
 use crate::mirror::Mirror;
 use crate::session::{AssetNeed, RemoteEvent};
 
-/// What the receive loop should do with an action that references content.
+/// What one claim decided — the parking primitive [`Waitlist::admit`] composes.
+/// Arriving traffic goes through `admit`; this is also how the resolver's tests
+/// park a fixture without a wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Admit {
     /// The content is already here — apply the action now.
@@ -62,6 +64,14 @@ pub(crate) enum Admit {
     Waiting,
     /// Parked, and this caller must start the resolver.
     Fetch,
+}
+
+/// A fetch [`Waitlist::admit`] cannot start itself: only the caller has the
+/// endpoints to ask (the author, the delivering neighbour) and the spawn hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MustFetch {
+    pub need: AssetNeed,
+    pub hash: Hash,
 }
 
 pub(crate) struct Waitlist {
@@ -114,9 +124,68 @@ impl Waitlist {
         !self.events.is_closed()
     }
 
-    /// Decide what to do with `action`, which references `need`. Borrowed, and
-    /// cloned only into the park: the common answer is [`Admit::Ready`], where
-    /// the caller keeps the action it already had.
+    /// The one door an arriving action goes through: decide what must happen
+    /// before it can be applied, and do all of it except start a fetch.
+    ///
+    /// One place decides, because two ways in must not decide differently. An
+    /// action off the gossip flood and one recovered by
+    /// [`reconcile`](crate::reconcile) need the same thing: a `SetSubstrate`
+    /// applied before its substrate has landed bakes a smooth deposit into
+    /// stored tiles that no later arrival un-bakes (§6.4), and it does not
+    /// matter which door it came through.
+    ///
+    /// `None` is handled — accepted, or parked behind a resolver already in
+    /// flight and released with it. Accepted covers an action that references
+    /// nothing *and* one that arrived without a transfer hash: there is nothing
+    /// to fetch, so parking would be parking forever, and the kind's fallback
+    /// is the best available. [`Some`] means parked, and this caller must start
+    /// the resolver — only it knows which endpoints to ask.
+    #[must_use = "a dropped MustFetch is a fetch that never starts, and a parked action never released"]
+    pub fn admit(&self, action: Action, hash: Option<Hash>) -> Option<MustFetch> {
+        let Some(need) = stark_model::action_content(&action) else {
+            self.accept(action);
+            return None;
+        };
+        let Some(hash) = hash_or_warn(need, hash) else {
+            self.accept(action);
+            return None;
+        };
+        match self.claim(need, &action) {
+            Admit::Ready => {
+                self.accept(action);
+                None
+            }
+            Admit::Waiting => None,
+            Admit::Fetch => Some(MustFetch { need, hash }),
+        }
+    }
+
+    /// [`admit`](Self::admit) for content nothing will wait on — a live
+    /// gesture's brush image, which must never block on a fetch (§17.5): the
+    /// preview degrades to the round tip and upgrades when the bytes land.
+    /// [`Some`] when this caller must start the resolver.
+    #[must_use = "a dropped MustFetch is a fetch that never starts"]
+    pub fn admit_detached(&self, need: AssetNeed, hash: Option<Hash>) -> Option<MustFetch> {
+        let hash = hash_or_warn(need, hash)?;
+        let mut parked = self.parked.lock().expect("waitlist poisoned");
+        if self.mirror.lock().expect("mirror poisoned").has(need) {
+            return None;
+        }
+        match parked.entry(need) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(slot) => {
+                slot.insert(Vec::new());
+                Some(MustFetch { need, hash })
+            }
+        }
+    }
+
+    /// Decide what to do with `action`, which references `need` — [`admit`]'s
+    /// parking primitive. Borrowed, and cloned only into the park: the common
+    /// answer is [`Admit::Ready`], where the caller keeps the action it already
+    /// had.
+    ///
+    /// [`admit`]: Self::admit
     pub fn claim(&self, need: AssetNeed, action: &Action) -> Admit {
         let mut parked = self.parked.lock().expect("waitlist poisoned");
         if self.mirror.lock().expect("mirror poisoned").has(need) {
@@ -136,24 +205,6 @@ impl Waitlist {
             Entry::Vacant(slot) => {
                 slot.insert(vec![action.clone()]);
                 Admit::Fetch
-            }
-        }
-    }
-
-    /// The same decision for content nothing is waiting on — a live gesture's
-    /// brush image, which must never block on a fetch (§17.5): the preview
-    /// degrades to the round tip and upgrades when the bytes land. `true` when
-    /// this caller must start the resolver.
-    pub fn claim_detached(&self, need: AssetNeed) -> bool {
-        let mut parked = self.parked.lock().expect("waitlist poisoned");
-        if self.mirror.lock().expect("mirror poisoned").has(need) {
-            return false;
-        }
-        match parked.entry(need) {
-            Entry::Occupied(_) => false,
-            Entry::Vacant(slot) => {
-                slot.insert(Vec::new());
-                true
             }
         }
     }
@@ -255,6 +306,16 @@ impl Waitlist {
     }
 }
 
+/// The transfer hash for referenced content, or a warning: without it the bytes
+/// cannot be fetched (a sender from before its own import completed — which
+/// `add_content` ordering prevents — or a version mismatch).
+fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
+    if hash.is_none() {
+        tracing::warn!("missing {need:?} arrived without a transfer hash");
+    }
+    hash
+}
+
 /// The parking mechanism, without a network under it.
 ///
 /// These are here rather than in an integration test because the properties
@@ -267,7 +328,10 @@ mod tests {
     use stark_model::AssetId;
     use stark_model::DocumentFile;
     use stark_model::Srgb;
-    use stark_model::document::{ActionId, ActionKind, ActorId};
+    use stark_model::document::{
+        ActionId, ActionKind, ActorId, BrushParams, BrushShape, LayerId, StrokeRecord,
+    };
+    use stark_model::geom::IVec2;
 
     use super::*;
 
@@ -284,13 +348,37 @@ mod tests {
         (Waitlist::new(mirror, tx, resolvable), rx)
     }
 
+    fn id(lamport: u64) -> ActionId {
+        ActionId {
+            lamport,
+            actor: ActorId(1),
+        }
+    }
+
+    /// An action that references no content at all.
     fn action(lamport: u64) -> Action {
         Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(1),
-            },
+            id: id(lamport),
             kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
+        }
+    }
+
+    /// An action naming the brush behind `need(tag)` — the door derives the
+    /// need from the action, so a test cannot pair them inconsistently.
+    fn action_needing(lamport: u64, tag: u8) -> Action {
+        Action {
+            id: id(lamport),
+            kind: ActionKind::CommitStroke(StrokeRecord {
+                layer: LayerId::ROOT,
+                brush: BrushParams {
+                    shape: BrushShape::Stamp(AssetId([tag; 32])),
+                    ..BrushParams::default()
+                },
+                path: Vec::new(),
+                seed: 0,
+                start: 0.0,
+                translation: IVec2::ZERO,
+            }),
         }
     }
 
@@ -315,13 +403,20 @@ mod tests {
     #[test]
     fn an_action_waits_for_its_content_and_arrives_behind_it() {
         let (waitlist, mut rx) = setup();
-        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
+        let (bytes, hash) = content(1);
+        assert_eq!(
+            waitlist.admit(action_needing(1, 1), Some(hash)),
+            Some(MustFetch {
+                need: need(1),
+                hash
+            }),
+            "the first claimant is told to start the fetch"
+        );
         assert!(
             drain(&mut rx).is_empty(),
             "nothing reaches the engine while parked"
         );
 
-        let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
 
         // The order is the whole point: applying the action first is what bakes a
@@ -331,16 +426,22 @@ mod tests {
             matches!(events[0], RemoteEvent::Asset { .. }),
             "asset first"
         );
-        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == id(1)));
         assert_eq!(events.len(), 2);
     }
 
     #[test]
     fn content_already_held_does_not_park_at_all() {
-        let (waitlist, _rx) = setup();
+        let (waitlist, mut rx) = setup();
         let (bytes, hash) = content(1);
         waitlist.imported(need(1), bytes, hash);
-        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Ready));
+        assert_eq!(waitlist.admit(action_needing(1, 1), Some(hash)), None);
+        let events = drain(&mut rx);
+        assert!(
+            matches!(&events[0], RemoteEvent::Action(a) if a.id == id(1)),
+            "admitted straight through"
+        );
+        assert_eq!(events.len(), 1);
     }
 
     /// A live gesture's head and the commit it becomes name the same shape, and
@@ -348,20 +449,20 @@ mod tests {
     #[test]
     fn a_second_claimant_rides_the_first_resolver() {
         let (waitlist, mut rx) = setup();
+        let (bytes, hash) = content(1);
         assert!(
-            waitlist.claim_detached(need(1)),
+            waitlist.admit_detached(need(1), Some(hash)).is_some(),
             "the head starts the fetch"
         );
         assert!(
-            !waitlist.claim_detached(need(1)),
+            waitlist.admit_detached(need(1), Some(hash)).is_none(),
             "a repeated head starts nothing further"
         );
-        assert!(matches!(
-            waitlist.claim(need(1), &action(1)),
-            Admit::Waiting
-        ));
+        assert!(
+            waitlist.admit(action_needing(1, 1), Some(hash)).is_none(),
+            "the commit parks behind the head's resolver"
+        );
 
-        let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
         assert_eq!(drain(&mut rx).len(), 2, "one asset, one released action");
     }
@@ -372,14 +473,14 @@ mod tests {
     #[test]
     fn a_local_import_releases_what_was_waiting_on_it() {
         let (waitlist, mut rx) = setup();
-        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
-
         let (bytes, hash) = content(1);
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_some());
+
         waitlist.imported(need(1), bytes, hash);
 
         // No `Asset` event: the engine did the importing, so it already holds them.
         let events = drain(&mut rx);
-        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == id(1)));
         assert_eq!(events.len(), 1);
     }
 
@@ -388,19 +489,28 @@ mod tests {
     #[test]
     fn abandoning_a_fetch_releases_to_the_fallback() {
         let (waitlist, mut rx) = setup();
-        waitlist.claim(need(1), &action(1));
+        let (_, hash) = content(1);
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_some());
         waitlist.abandoned(need(1));
 
         let events = drain(&mut rx);
-        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert!(matches!(&events[0], RemoteEvent::Action(a) if a.id == id(1)));
         assert_eq!(events.len(), 1);
     }
 
     #[test]
     fn parking_one_need_does_not_hold_up_another() {
         let (waitlist, mut rx) = setup();
-        waitlist.claim(need(1), &action(1));
-        waitlist.claim(need(2), &action(2));
+        assert!(
+            waitlist
+                .admit(action_needing(1, 1), Some(content(1).1))
+                .is_some()
+        );
+        assert!(
+            waitlist
+                .admit(action_needing(2, 2), Some(content(2).1))
+                .is_some()
+        );
 
         let (bytes, hash) = content(2);
         waitlist.resolved(need(2), bytes, hash);
@@ -412,7 +522,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(ids, vec![action(2).id], "only the resolved need released");
+        assert_eq!(ids, vec![id(2)], "only the resolved need released");
     }
 
     /// Gossip delivers the same action more than once, and a duplicate that
@@ -421,15 +531,36 @@ mod tests {
     #[test]
     fn a_duplicate_action_surfaces_once() {
         let (waitlist, mut rx) = setup();
-        waitlist.claim(need(1), &action(1));
-        waitlist.claim(need(1), &action(1));
-
         let (bytes, hash) = content(1);
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_some());
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_none());
+
         waitlist.resolved(need(1), bytes, hash);
         assert_eq!(drain(&mut rx).len(), 2, "one asset, one action");
 
-        waitlist.accept(action(1));
+        waitlist.accept(action_needing(1, 1));
         assert!(drain(&mut rx).is_empty(), "and never again");
+    }
+
+    /// An action naming content the mirror lacks, arriving with no transfer
+    /// hash: admitted anyway. There is nothing to fetch, parking would be
+    /// parking forever, and the kind's fallback is the best available. Pinned
+    /// here because the only other pin was a GPU integration test.
+    #[test]
+    fn no_transfer_hash_admits_rather_than_parks_forever() {
+        let (waitlist, mut rx) = setup();
+        assert_eq!(
+            waitlist.admit(action_needing(1, 1), None),
+            None,
+            "nothing for the caller to start"
+        );
+
+        let events = drain(&mut rx);
+        assert!(
+            matches!(&events[0], RemoteEvent::Action(a) if a.id == id(1)),
+            "released to the kind's fallback, not parked"
+        );
+        assert_eq!(events.len(), 1);
     }
 
     /// A parked action is not in the mirror yet, so without the subtraction a
@@ -438,22 +569,19 @@ mod tests {
     #[test]
     fn a_reclaimed_parked_action_parks_once_and_counts_as_held() {
         let (waitlist, mut rx) = setup();
-        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
-        assert!(matches!(
-            waitlist.claim(need(1), &action(1)),
-            Admit::Waiting
-        ));
+        let (bytes, hash) = content(1);
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_some());
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_none());
 
         assert!(
-            waitlist.missing_from(&[action(1).id]).is_empty(),
+            waitlist.missing_from(&[id(1)]).is_empty(),
             "parked counts as held: reporting it missing is what re-claims it"
         );
 
-        let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
         let events = drain(&mut rx);
         assert!(matches!(events[0], RemoteEvent::Asset { .. }));
-        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == id(1)));
         assert_eq!(events.len(), 2, "one asset, one action — not one per claim");
     }
 
@@ -463,22 +591,20 @@ mod tests {
     #[test]
     fn a_closed_channel_still_mirrors_what_is_released() {
         let (waitlist, rx) = setup();
-        waitlist.claim(need(1), &action(1));
-        waitlist.claim(need(1), &action(2));
+        let (bytes, hash) = content(1);
+        assert!(waitlist.admit(action_needing(1, 1), Some(hash)).is_some());
+        assert!(waitlist.admit(action_needing(2, 1), Some(hash)).is_none());
         drop(rx);
 
-        let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
         assert!(
-            waitlist
-                .missing_from(&[action(1).id, action(2).id])
-                .is_empty(),
+            waitlist.missing_from(&[id(1), id(2)]).is_empty(),
             "the whole batch entered the mirror with no one listening"
         );
 
-        waitlist.accept(action(3));
+        assert!(waitlist.admit(action(3), None).is_none());
         assert!(
-            waitlist.missing_from(&[action(3).id]).is_empty(),
+            waitlist.missing_from(&[id(3)]).is_empty(),
             "and so does an action that never had to park"
         );
     }

@@ -24,7 +24,10 @@
 //! through the same door as one off the flood — parked if it names content this
 //! peer lacks, released when that content lands — because a `SetSubstrate` recovered
 //! and applied against the flat stand-in would be a divergence created by the
-//! machinery meant to remove one (§6.4).
+//! machinery meant to remove one (§6.4). The one gossip-door check with no analogue
+//! here is dropping an action whose author does not match its sender — a sweep
+//! partner legitimately forwards other authors' actions — so a future
+//! authentication pass has two doors to cover, not one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,7 +38,7 @@ use tokio::sync::Notify;
 
 use crate::Result;
 use crate::proto::{RECOVER_BATCH, Recovered, Request};
-use crate::session::{Admission, Wiring};
+use crate::session::Wiring;
 
 /// How long a quiet session waits before comparing logs with a neighbour.
 ///
@@ -174,12 +177,9 @@ impl Reconciler {
                 // `partner` stands in for both the author and the deliverer: it is who
                 // this peer can actually reach, and the resolver widens to the rest of
                 // the swarm from its second round anyway.
-                match Admission::of(&action, hash, &self.wiring.waitlist) {
-                    Admission::Ready => self.wiring.waitlist.accept(action),
-                    Admission::Waiting => {}
-                    Admission::Fetching { need, hash } => {
-                        self.wiring.spawn_resolver(need, hash, partner, partner);
-                    }
+                if let Some(fetch) = self.wiring.waitlist.admit(action, hash) {
+                    self.wiring
+                        .spawn_resolver(fetch.need, fetch.hash, partner, partner);
                 }
             }
         }

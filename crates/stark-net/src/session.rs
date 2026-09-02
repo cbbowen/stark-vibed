@@ -34,8 +34,8 @@ pub use iroh_gossip::proto::TopicId;
 use n0_future::{StreamExt, task};
 use stark_model::AssetId;
 use stark_model::DocumentFile;
-use stark_model::document::{Action, ActorId, BrushShape};
-use stark_model::peer::{GestureFrame, PeerFrame};
+use stark_model::document::{Action, ActorId};
+use stark_model::peer::PeerFrame;
 use tokio::sync::mpsc;
 
 use crate::backend::{self, Bound, Cancel, Catchup, Dialer, Shutdown};
@@ -44,7 +44,7 @@ use crate::mirror::{Mirror, Served};
 use crate::proto::{Request, Stamped, StampedRef, Wire, WireRef};
 use crate::reconcile::{Prompt, Reconciler};
 use crate::ticket::SessionTicket;
-use crate::waitlist::{Admit, Waitlist};
+use crate::waitlist::Waitlist;
 use crate::{NetError, Result, TicketError};
 
 /// How long a joiner waits to meet the swarm before fetching the snapshot.
@@ -674,7 +674,7 @@ impl Broadcaster {
     /// best-effort — a frame that cannot be sent is dropped rather than retried,
     /// because the next one supersedes it anyway.
     pub async fn publish(&self, frame: PeerFrame) -> Result<()> {
-        let need = referenced_presence_asset(&frame);
+        let need = stark_model::presence_content(&frame);
         let bytes = self.encode(WireRef::Presence(&frame), need)?;
         Ok(self.sender.broadcast(bytes).await?)
     }
@@ -1037,17 +1037,16 @@ async fn recv_loop(
             // so it is never served to a joiner and never reaches a file.
             Wire::Presence(frame) => {
                 // A live stroke's head names its brush image just like the
-                // eventual commit will. Claimed detached — presence must never
+                // eventual commit will. Admitted detached — presence must never
                 // wait on a fetch — so the rest of the gesture renders with the
                 // real shape as soon as the bytes land; until then the
                 // receiver's preview degrades to the round tip. The commit that
                 // follows names the same content and parks behind *this*
                 // resolver rather than starting a second one.
-                if let Some(need) = referenced_presence_asset(&frame)
-                    && let Some(hash) = hash_or_warn(need, asset_hash)
-                    && wiring.waitlist.claim_detached(need)
+                if let Some(fetch) = stark_model::presence_content(&frame)
+                    .and_then(|need| wiring.waitlist.admit_detached(need, asset_hash))
                 {
-                    wiring.spawn_resolver(need, hash, origin, from);
+                    wiring.spawn_resolver(fetch.need, fetch.hash, origin, from);
                 }
                 // Dropped rather than queued when the engine is already
                 // `PRESENCE_QUEUE` frames behind: a frame the UI would reach
@@ -1088,79 +1087,12 @@ async fn recv_loop(
 
         // Whatever the action references has to reach the engine first, so the
         // engine can apply it faithfully. The action waits for it — parked, not
-        // awaited here, so nothing else in the session waits with it. The origin
-        // authored the action and so definitely holds the content; the neighbour
-        // that forwarded it may not.
-        match Admission::of(&action, asset_hash, &wiring.waitlist) {
-            Admission::Ready => wiring.waitlist.accept(action),
-            Admission::Waiting => {}
-            Admission::Fetching { need, hash } => wiring.spawn_resolver(need, hash, origin, from),
+        // awaited here, so nothing else in the session waits with it
+        // ([`Waitlist::admit`]). The origin authored the action and so
+        // definitely holds the content; the neighbour that forwarded it may not.
+        if let Some(fetch) = wiring.waitlist.admit(action, asset_hash) {
+            wiring.spawn_resolver(fetch.need, fetch.hash, origin, from);
         }
-    }
-}
-
-/// The transfer hash for referenced content, or a warning: without it the bytes
-/// cannot be fetched (a sender from before its own import completed — which
-/// `add_content` ordering prevents — or a version mismatch).
-fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
-    if hash.is_none() {
-        tracing::warn!("missing {need:?} arrived without a transfer hash");
-    }
-    hash
-}
-
-/// What has to happen before an arriving action can be applied.
-///
-/// One place decides, because two ways in must not decide differently. An action
-/// off the gossip flood and one recovered by
-/// [`reconcile`](crate::reconcile) need the same thing: a `SetSubstrate` applied
-/// before its substrate has landed bakes a smooth deposit into stored tiles that no
-/// later arrival un-bakes (§6.4), and it does not matter which door it came
-/// through.
-pub(crate) enum Admission {
-    /// Nothing is missing — apply it. The caller keeps the action, the way
-    /// [`Admit`] leaves it with them.
-    Ready,
-    /// Parked behind a fetch already in flight; it is released with that one.
-    Waiting,
-    /// Parked, and the caller must start the fetch.
-    Fetching { need: AssetNeed, hash: Hash },
-}
-
-impl Admission {
-    /// Decide, parking the action if it has to wait.
-    ///
-    /// [`Ready`](Admission::Ready) covers both an action that references nothing
-    /// and one that arrived without a transfer hash: there is nothing to fetch, so
-    /// parking would be parking forever, and the kind's fallback is the best
-    /// available.
-    pub fn of(action: &Action, hash: Option<Hash>, waitlist: &Waitlist) -> Self {
-        let Some(need) = stark_model::action_content(action) else {
-            return Self::Ready;
-        };
-        let Some(hash) = hash_or_warn(need, hash) else {
-            return Self::Ready;
-        };
-        match waitlist.claim(need, action) {
-            Admit::Ready => Self::Ready,
-            Admit::Waiting => Self::Waiting,
-            Admit::Fetch => Self::Fetching { need, hash },
-        }
-    }
-}
-
-/// The brush image a *live* remote gesture depends on, if any: a stroke's head
-/// frame carries the full `BrushParams` (§17.5). Only head/resync
-/// frames name it — delta frames extend the path of a head already seen.
-fn referenced_presence_asset(frame: &PeerFrame) -> Option<AssetNeed> {
-    match &frame.gesture {
-        Some(GestureFrame::Stroke {
-            head: Some(head), ..
-        }) => match head.brush.shape {
-            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
-            BrushShape::Round { .. } => None,
-        },
-        _ => None,
     }
 }
 

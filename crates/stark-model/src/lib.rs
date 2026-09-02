@@ -43,7 +43,7 @@ pub mod substrate;
 // public path, and lifting a subset again would give those two.
 pub use color::Srgb;
 pub use colorspace::ColorSpaceId;
-pub use content::{AssetNeed, action_content};
+pub use content::{AssetNeed, action_content, presence_content};
 pub use error::{DocError, Result};
 pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2};
 pub use gradient::{Gradient, GradientStop};

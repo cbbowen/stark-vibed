@@ -19,6 +19,7 @@ use crate::AssetId;
 use crate::SubstrateId;
 use crate::document::{Action, ActionKind, BrushShape};
 use crate::io::DocumentFile;
+use crate::peer::{GestureFrame, PeerFrame};
 
 /// Content a document needs before it can be replayed faithfully, and which store
 /// it belongs in.
@@ -145,6 +146,28 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::SetGuideName(..)
         | ActionKind::MoveGuide { .. }
         | ActionKind::Undo(_) => None,
+    }
+}
+
+/// The content one presence frame depends on, if any — [`action_content`]'s twin
+/// for the half of the wire that is not the log (§17.5): a live stroke's head
+/// frame carries the full brush, so it names the shape the eventual commit will.
+/// Only head/resync frames name it — a delta frame extends the path of a head
+/// already seen.
+///
+/// **Exhaustive, with no `_` arm**, for [`action_content`]'s reason: a wildcard
+/// would answer "nothing" for a gesture added later carrying an id, whose
+/// preview would then silently degrade. Adding a variant stops this function
+/// compiling instead.
+pub fn presence_content(frame: &PeerFrame) -> Option<AssetNeed> {
+    match frame.gesture.as_ref()? {
+        GestureFrame::Stroke { head, .. } => match head.as_deref()?.brush.shape {
+            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
+            BrushShape::Round { .. } => None,
+        },
+        // Geometry and paint carried whole — nothing that travels beside the
+        // log, matching their committed twins above.
+        GestureFrame::Selection { .. } | GestureFrame::Fill { .. } => None,
     }
 }
 
