@@ -23,9 +23,10 @@ use bytes::Bytes;
 use iroh::EndpointId;
 use iroh_blobs::Hash;
 
+use stark_model::AssetNeed;
+
 use crate::Result;
-use crate::backend::Cancel;
-use crate::session::AssetNeed;
+use crate::cancel::Cancel;
 use crate::waitlist::Waitlist;
 
 /// Rounds spent fetching a *brush* image before giving up and letting the stroke
@@ -275,8 +276,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::events::RemoteEvent;
     use crate::mirror::Mirror;
-    use crate::session::RemoteEvent;
     use crate::waitlist::Admit;
 
     /// A peer whose blob store holds `content` — after `fails_first` refusals.

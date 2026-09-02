@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,13 +26,14 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_blobs::store::mem::MemStore;
 use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_gossip::net::Gossip;
-use tokio::sync::Notify;
 
 use crate::Result;
+use crate::cancel::Cancel;
 use crate::content::ContentSource;
+use crate::events::NetOptions;
 use crate::mirror::Served;
-use crate::proto::{self, CollabProto, Request};
-use crate::session::NetOptions;
+use crate::proto::{self, CollabProto};
+use crate::wire::{self, Request};
 
 /// How long to wait for relay/publish readiness before minting a ticket.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -95,7 +95,7 @@ pub(crate) async fn bind(served: Served, opts: &NetOptions) -> Result<Bound> {
     let router = Router::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
-        .accept(proto::ALPN, CollabProto { served });
+        .accept(wire::ALPN, CollabProto { served });
     #[cfg(feature = "webrtc")]
     let router = router.accept(
         crate::transport::direct::SIGNALING_ALPN,
@@ -239,7 +239,7 @@ impl Dialer {
     pub async fn open(&self, addr: EndpointAddr) -> Result<Catchup> {
         let conn = self
             .endpoint
-            .connect(self.dial_addr(addr), proto::ALPN)
+            .connect(self.dial_addr(addr), wire::ALPN)
             .await?;
         Ok(Catchup { conn })
     }
@@ -362,72 +362,6 @@ impl Catchup {
 
     pub async fn close(self) {
         self.conn.close(0u8.into(), b"done");
-    }
-}
-
-/// A session's stop signal, held by everything it spawned.
-///
-/// What this replaces is an inference. The unbounded retries used to key off
-/// `Waitlist::is_live` — "does the UI still hold the `Events` receiver" — which is
-/// a frontend convention standing in for a session fact, and left
-/// [`CollabSession::shutdown`](crate::CollabSession::shutdown) cancelling nothing
-/// it had spawned. Both facts are real and either one ends the work, so the
-/// resolver now asks both; this is the one that shutting down actually controls.
-///
-/// [`sleep`](Cancel::sleep) is the reason it carries a `Notify` rather than being
-/// a bare flag: a substrate's backoff widens to half a minute, and a session that has
-/// ended should not wait out the rest of one.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Cancel(Arc<CancelInner>);
-
-#[derive(Debug, Default)]
-struct CancelInner {
-    stopped: AtomicBool,
-    woken: Notify,
-}
-
-impl Cancel {
-    /// End the session's background work. Idempotent.
-    pub fn stop(&self) {
-        self.0.stopped.store(true, Ordering::Relaxed);
-        self.0.woken.notify_waiters();
-    }
-
-    pub fn stopped(&self) -> bool {
-        self.0.stopped.load(Ordering::Relaxed)
-    }
-
-    /// Pend until the session ends — what a loop races against its own work,
-    /// where [`sleep`](Cancel::sleep) is what a backoff waits out.
-    pub async fn stopped_wait(&self) {
-        // Registered before the check, for the same race `sleep` closes.
-        let woken = self.0.woken.notified();
-        if self.stopped() {
-            return;
-        }
-        // Only `stop` notifies, and it sets the flag first.
-        woken.await;
-    }
-
-    /// Sleep, unless the session ends first — `false` if it did.
-    pub async fn sleep(&self, duration: Duration) -> bool {
-        // Registered before the check, so a `stop` racing this cannot slip between
-        // the two and leave the sleeper waiting on a notification already sent.
-        let woken = self.0.woken.notified();
-        if self.stopped() {
-            return false;
-        }
-        n0_future::future::race(
-            async {
-                n0_future::time::sleep(duration).await;
-                true
-            },
-            async {
-                woken.await;
-                false
-            },
-        )
-        .await
     }
 }
 

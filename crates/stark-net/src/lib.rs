@@ -28,8 +28,10 @@
 //! `Engine::import_brush`.
 
 mod backend;
+mod cancel;
 mod codec;
 mod content;
+mod events;
 mod mirror;
 mod proto;
 mod reconcile;
@@ -37,15 +39,25 @@ mod session;
 mod ticket;
 mod transport;
 mod waitlist;
+mod wire;
 
-pub use session::{
-    AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, PeerLink,
-    RemoteEvent, actor_from_endpoint_id,
-};
+pub use events::{Events, NetOptions, RemoteEvent, actor_from_endpoint_id};
+pub use session::{Broadcaster, CollabSession, Joined, LinkKind, PeerLink};
 pub use ticket::SessionTicket;
 
+/// Content a remote action needs before it can be applied faithfully, and which
+/// store it belongs in — [`stark_model::AssetNeed`], re-exported so a frontend
+/// pumping this transport does not need to name two crates for one idea.
+///
+/// It lives in the engine because the engine is what has the two stores, and
+/// because loading a file asks the same question a joining peer does.
+pub use stark_model::AssetNeed;
+
 // Re-exports so frontends don't need a direct iroh dependency for the basics.
+// `TopicId` is among them because it is [`SessionTicket::topic`]'s type, which a
+// consumer could not otherwise name.
 pub use iroh::{EndpointId, SecretKey};
+pub use iroh_gossip::proto::TopicId;
 
 /// Errors from session setup and the wire.
 #[derive(Debug, thiserror::Error)]

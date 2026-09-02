@@ -24,11 +24,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use bytes::Bytes;
 use iroh_blobs::Hash;
 use rpds::RedBlackTreeMapSync;
-use stark_model::AssetId;
 use stark_model::document::{Action, ActionId};
-use stark_model::{BuildId, CanvasMeta, DocumentFile};
-
-use crate::session::AssetNeed;
+use stark_model::{AssetId, AssetNeed, BuildId, CanvasMeta, DocumentFile};
 
 /// The mirror as the catch-up server sees it: absent until this peer is a session
 /// member.
@@ -322,13 +319,18 @@ impl Mirror {
     /// The named actions, each with the hash its content transfers under, for a
     /// member recovering what the flood dropped. Ids not held are skipped — the
     /// asker's digest may be older than this peer's own trimming of it.
-    pub fn recover(&self, ids: &[ActionId]) -> Vec<crate::proto::Recovered> {
+    ///
+    /// Plain pairs rather than the wire's shape: the store answers the question,
+    /// and [`proto::answer`](crate::proto::answer) spells it for the wire.
+    pub fn recover(&self, ids: &[ActionId]) -> Vec<(Action, Option<Hash>)> {
         ids.iter()
             .filter_map(|id| self.actions.get(id))
-            .map(|action| crate::proto::Recovered {
-                action: action.clone(),
-                hash: stark_model::action_content(action)
-                    .and_then(|need| self.transfer_hash(need.content())),
+            .map(|action| {
+                (
+                    action.clone(),
+                    stark_model::action_content(action)
+                        .and_then(|need| self.transfer_hash(need.content())),
+                )
             })
             .collect()
     }

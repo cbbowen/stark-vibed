@@ -46,12 +46,12 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use iroh_blobs::Hash;
-use stark_model::AssetId;
 use stark_model::document::{Action, ActionId};
+use stark_model::{AssetId, AssetNeed};
 use tokio::sync::mpsc;
 
+use crate::events::RemoteEvent;
 use crate::mirror::Mirror;
-use crate::session::{AssetNeed, RemoteEvent};
 
 /// What one claim decided — the parking primitive [`Waitlist::admit`] composes.
 /// Arriving traffic goes through `admit`; this is also how the resolver's tests

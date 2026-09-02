@@ -8,7 +8,7 @@
 //!   that has never heard of it (`stark_model::DocumentFile`, §8). It has to: a file is
 //!   a message to the future, and the future cannot be asked to agree.
 //! - A **message** does not. Both ends encode against their own copy, and the
-//!   [ALPN](crate::proto) is what makes a disagreement fail to *meet* rather than decode
+//!   [ALPN](crate::wire) is what makes a disagreement fail to *meet* rather than decode
 //!   wrong. A live session is a meeting of builds, and a meeting may require agreement —
 //!   which buys back the schema, and that is not a small thing here: a blob's header
 //!   spends a varint per column, an `Action`'s schema is some four hundred columns wide,
@@ -29,7 +29,7 @@ use carbonite::{Schema, Serializer, StaticSchema};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::proto::{Stamped, StampedRef};
+use crate::wire::{Stamped, StampedRef};
 
 /// Encode one message against its own compile-time schema.
 ///
@@ -82,7 +82,7 @@ mod tests {
     use stark_model::document::ActionId;
 
     use super::*;
-    use crate::proto::{Recovered, Request};
+    use crate::wire::{Recovered, Request};
 
     /// The borrowed spelling of a broadcast describes the same shape as the owned one.
     ///

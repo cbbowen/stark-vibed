@@ -29,16 +29,23 @@
 //! partner legitimately forwards other authors' actions — so a future
 //! authentication pass has two doors to cover, not one.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
+use iroh_blobs::Hash;
+use n0_future::task;
+use stark_model::AssetNeed;
 use stark_model::document::ActionId;
 use tokio::sync::Notify;
 
 use crate::Result;
-use crate::proto::{RECOVER_BATCH, Recovered, Request};
-use crate::session::Wiring;
+use crate::backend::Dialer;
+use crate::cancel::Cancel;
+use crate::content::Resolver;
+use crate::waitlist::Waitlist;
+use crate::wire::{RECOVER_BATCH, Recovered, Request};
 
 /// How long a quiet session waits before comparing logs with a neighbour.
 ///
@@ -72,6 +79,33 @@ impl Prompt {
     /// Something was dropped — reconcile soon rather than on the slow cadence.
     pub fn raise(&self) {
         self.0.notify_one();
+    }
+}
+
+/// The handles a session's background work runs on — what the receive loop and the
+/// reconciler both need, assembled once by `finish` instead of threaded to each of
+/// them a field at a time.
+#[derive(Clone)]
+pub(crate) struct Wiring {
+    pub dialer: Dialer,
+    pub neighbors: Arc<Mutex<HashSet<EndpointId>>>,
+    pub waitlist: Arc<Waitlist>,
+    pub resolver: Resolver<Dialer>,
+    pub cancel: Cancel,
+    pub prompt: Prompt,
+}
+
+impl Wiring {
+    /// The one door a resolver goes out through — detached, ended by the
+    /// session's [`Cancel`]. A method so the call sites cannot drift.
+    pub fn spawn_resolver(
+        &self,
+        need: AssetNeed,
+        hash: Hash,
+        origin: EndpointId,
+        from: EndpointId,
+    ) {
+        task::spawn(self.resolver.clone().resolve(need, hash, origin, from));
     }
 }
 
@@ -165,7 +199,7 @@ impl Reconciler {
             "recovering actions the flood dropped"
         );
         // Batched under the server's request ceiling: one ask naming every id a
-        // far-behind peer lacks blows [`MAX_REQUEST`](crate::proto::MAX_REQUEST),
+        // far-behind peer lacks blows [`MAX_REQUEST`](crate::wire::MAX_REQUEST),
         // and the next sweep would rebuild it identically — repair would never
         // complete. Each batch is admitted as it lands, so a failure partway
         // keeps what already arrived.
@@ -228,15 +262,10 @@ mod tests {
     use stark_model::document::{Action, ActionKind, ActorId};
     use tokio::sync::mpsc;
 
-    use std::collections::HashSet;
-    use std::sync::Mutex;
-
     use super::*;
-    use crate::backend::{self, Bound, Cancel};
-    use crate::content::Resolver;
+    use crate::backend::{self, Bound};
+    use crate::events::{NetOptions, RemoteEvent};
     use crate::mirror::{Mirror, Served};
-    use crate::session::{NetOptions, RemoteEvent};
-    use crate::waitlist::Waitlist;
 
     fn action(lamport: u64) -> Action {
         Action {
@@ -334,7 +363,7 @@ mod tests {
     }
 
     /// A peer that fell *far* behind still repairs completely. 5,000 missing ids
-    /// encode past the server's request ceiling ([`crate::proto::MAX_REQUEST`]),
+    /// encode past the server's request ceiling ([`crate::wire::MAX_REQUEST`]),
     /// so a single `Request::Actions` naming them all was refused — and rebuilt
     /// identically every sweep, so repair never finished.
     #[tokio::test(flavor = "multi_thread")]

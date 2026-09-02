@@ -40,7 +40,7 @@ use iroh_webrtc_transport::{
     AttachOptions, QuicSignaling, WebRtcTransport, custom_addr_from_opaque_data,
 };
 
-use crate::backend::Cancel;
+use crate::cancel::Cancel;
 
 /// JSEP signaling for the session's WebRTC channels, distinct from the gossip
 /// and catch-up ALPNs.
