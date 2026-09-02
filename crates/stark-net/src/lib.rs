@@ -153,6 +153,15 @@ pub enum TicketError {
         "this link is version {found}; this build speaks {expected} — both ends need the same version of Stark"
     )]
     Version { found: u8, expected: u8 },
+    /// The link parsed, and it is for a build speaking a different wire protocol
+    /// (`wire::PROTO`) — the by-far-most-common mismatch, and the one the version
+    /// byte cannot see: the ticket's shape holds still while the ALPN moves.
+    /// Named at the parse, where the person who pasted the link is still looking,
+    /// instead of dying at `connect` as a transport error.
+    #[error(
+        "this link is for a Stark speaking protocol {found}; this build speaks {expected} — both ends need the same version of Stark"
+    )]
+    Protocol { found: u32, expected: u32 },
     /// The link decoded, and a member it names is not a valid endpoint id.
     ///
     /// Its own case because it is the one damaged-link failure that gets *past* the

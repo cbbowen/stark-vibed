@@ -40,8 +40,10 @@ const PREFIX: &str = "stark";
 /// against its own compile-time schema, so the moment the body's shape changes, a
 /// version field inside that shape is unreadable by exactly the build that needed it.
 /// Version 0 kept it as the body's first field and paid for that here, when the shape
-/// first changed (one member became several) and the byte moved out.
-const VERSION: u8 = 1;
+/// first changed (one member became several) and the byte moved out. Version 2 is the
+/// body gaining the wire protocol it is *for* ([`TicketBody::proto`]) — a shape change
+/// like any other, even though what the new field carries is a guard of its own.
+const VERSION: u8 = 2;
 
 /// The ceiling on what a pasted link may inflate to.
 ///
@@ -70,6 +72,12 @@ const MAX_BODY: u64 = 64 * 1024;
 /// relay URL *is* on a link anyway.
 #[derive(Debug, Clone, Serialize, Deserialize, carbonite::Schema)]
 pub(crate) struct TicketBody {
+    /// The wire protocol ([`crate::wire::PROTO`]) the minting build speaks — what
+    /// the link is *for*, where [`VERSION`] guards only what the link *is*. A
+    /// mismatch here would otherwise surface as an ALPN transport error at
+    /// `connect`, nowhere near the person who pasted the link; checked at the
+    /// parse instead, where they are still looking.
+    proto: u32,
     /// The members a joiner may enter through, in the order to try them —
     /// whoever minted the link first.
     members: Vec<Member>,
@@ -129,6 +137,7 @@ impl From<&SessionTicket> for TicketBody {
             })
             .collect();
         TicketBody {
+            proto: crate::wire::PROTO,
             members,
             topic: *ticket.topic.as_bytes(),
         }
@@ -277,7 +286,17 @@ impl FromStr for SessionTicket {
                 expected: VERSION,
             });
         }
-        crate::codec::decode::<TicketBody>(&inflate(deflated)?)?.try_into()
+        let body = crate::codec::decode::<TicketBody>(&inflate(deflated)?)?;
+        // After the decode — the shape is this build's, only the number inside
+        // disagrees — and before the conversion, so the mismatch is named
+        // rather than surfacing later as a transport error at `connect`.
+        if body.proto != crate::wire::PROTO {
+            return Err(TicketError::Protocol {
+                found: body.proto,
+                expected: crate::wire::PROTO,
+            });
+        }
+        body.try_into()
     }
 }
 
@@ -404,11 +423,50 @@ mod tests {
             .parse::<SessionTicket>()
             .expect_err("a version this build does not speak");
         assert!(
-            matches!(err, TicketError::Version { found: 2, .. }),
+            matches!(err, TicketError::Version { found, .. } if found == VERSION + 1),
             "{err}"
         );
         // And it says which, because the person reading it pasted a link.
-        assert!(err.to_string().contains("version 2"), "{err}");
+        assert!(
+            err.to_string()
+                .contains(&format!("version {}", VERSION + 1)),
+            "{err}"
+        );
+    }
+
+    /// The by-far-most-common mismatch is not the ticket's own shape but the
+    /// wire behind it: the version byte holds still while the ALPN moves, so a
+    /// foreign build's link parses perfectly and the join dies at `connect` as
+    /// a transport error. The protocol number in the body is what turns that
+    /// into an answer at the parse, where the person who pasted is looking.
+    #[test]
+    fn a_ticket_for_another_protocol_says_so() {
+        let mut body = TicketBody::from(&a_realistic_ticket());
+        body.proto += 1;
+        let foreign = body.proto;
+        let link = wrap(
+            VERSION,
+            &crate::codec::encode(&body).expect("encode the body"),
+        )
+        .expect("wrap");
+
+        let err = link
+            .parse::<SessionTicket>()
+            .expect_err("a protocol this build does not speak");
+        assert!(
+            matches!(err, TicketError::Protocol { found, expected }
+                if found == foreign && expected == crate::wire::PROTO),
+            "{err}"
+        );
+        // And it says which, in the same voice as a version mismatch.
+        assert!(
+            err.to_string().contains(&format!("protocol {foreign}")),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("the same version of Stark"),
+            "{err}"
+        );
     }
 
     /// A link that names nobody is refused whole rather than joined nowhere:
@@ -417,6 +475,7 @@ mod tests {
     #[test]
     fn a_link_naming_nobody_is_refused() {
         let body = crate::codec::encode(&TicketBody {
+            proto: crate::wire::PROTO,
             members: Vec::new(),
             topic: [1u8; 32],
         })
