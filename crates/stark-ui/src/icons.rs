@@ -298,6 +298,9 @@ icons! {
     // is not there. What the four arrows say instead is that the paint is about to be
     // moved and reshaped, which is true of all three of the mode's gestures.
     TRANSFORM => "arrows-out-cardinal-bold",
+    // The float (§16.12): the selected paint cut loose from its layer, hovering
+    // over where it came from — lifted, tethered, and one merge from settling back.
+    FLOAT => "balloon-bold",
     PERSPECTIVE => "perspective-bold",
     // The transform bar's Warp family (§16.9). A curve with its control
     // points, which is what the gesture *is*: a smooth surface bent by the

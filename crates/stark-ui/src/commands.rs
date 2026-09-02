@@ -265,6 +265,11 @@ pub enum Command {
     SetPickScope(PickScope),
     /// Pick the selected paint up into the transform widget (§16.6).
     Transform,
+    /// Cut what the selection holds on the active layer into a floating child
+    /// layer (§16.12) — the act the pinned drag commits on its first travel
+    /// (`input::carry`), reachable as a click. The selection is consumed: the
+    /// mask has become a layer, the thing the outline stood in for.
+    FloatSelection,
     /// Fill the selection with the brush's paint (§18.0.4). The color comes off
     /// the brush — a fill lays the paint you have in hand, so the Color panel
     /// is already its setting — and the selection's own coverage bounds it
@@ -695,6 +700,7 @@ pub const ALL: &[Command] = &[
     Command::Deselect,
     Command::InvertSelection,
     Command::Transform,
+    Command::FloatSelection,
     Command::FillSelection,
     Command::GradientFill,
     Command::AddLayer,
@@ -918,6 +924,7 @@ impl Command {
             Command::EditBrush => "Edit brush\u{2026}",
             Command::SavePreset => "Save preset\u{2026}",
             Command::Transform => "Transform",
+            Command::FloatSelection => "Float selection",
             Command::FillSelection => "Fill selection",
             Command::GradientFill => "Gradient fill",
             Command::AddLayer => "Add layer",
@@ -967,6 +974,7 @@ impl Command {
     pub fn word(self) -> &'static str {
         match self {
             Command::InvertSelection => "Invert",
+            Command::FloatSelection => "Float",
             // The shape alone: the panel these three sit in is headed
             // "Selection", and the bar their gesture raises is too.
             Command::SelectRect => "Rect",
@@ -1034,6 +1042,9 @@ impl Command {
             Command::Credits => &["About"],
             Command::EditBrush => &["Brush settings", "Brush studio"],
             Command::Transform => &["Free transform"],
+            // Photoshop's spelling of the cut half, and the plainer phrase a
+            // hand that has never seen "float" would try first.
+            Command::FloatSelection => &["Layer via cut", "Cut to layer"],
             Command::FillSelection => &["Paint bucket"],
             Command::AddLayer => &["New layer"],
             // The frame is where cropping went (§15.7): it marks the piece's
@@ -1095,6 +1106,7 @@ impl Command {
             Command::EditBrush => icons::EDIT_BRUSH,
             Command::SavePreset => icons::SAVE,
             Command::Transform => icons::TRANSFORM,
+            Command::FloatSelection => icons::FLOAT,
             Command::FillSelection => icons::PAINT_BUCKET,
             Command::GradientFill => icons::GRADIENT,
             Command::AddLayer => icons::ADD_LAYER,
@@ -1159,6 +1171,10 @@ impl Command {
             Command::EditBrush => "Open the full brush editor",
             Command::SavePreset => "Save the current brush as a preset",
             Command::Transform => "Move, scale, flip, perspective or warp the selected paint (§16)",
+            Command::FloatSelection => {
+                "Cut the selected paint into a floating layer of its own \u{2014} \
+                 move it, paint on it, merge it back down (§16.12)"
+            }
             Command::FillSelection => "Fill the selection with the brush's paint",
             Command::GradientFill => {
                 "Fill the selection with a gradient \u{2014} pick or \
@@ -1264,6 +1280,7 @@ impl Command {
             Command::Deselect
             | Command::InvertSelection
             | Command::Transform
+            | Command::FloatSelection
             | Command::FillSelection
             | Command::GradientFill => o.is_some_and(|o| o.has_selection),
             _ => true,
@@ -1353,6 +1370,11 @@ impl Command {
             Command::Transform => {
                 if may_edit(state) {
                     crate::panels::transform::begin_transform(state);
+                }
+            }
+            Command::FloatSelection => {
+                if may_edit(state) {
+                    crate::panels::select::float_selection(state);
                 }
             }
             Command::FillSelection => {

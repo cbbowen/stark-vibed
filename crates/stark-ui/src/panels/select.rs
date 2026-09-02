@@ -345,6 +345,10 @@ pub fn SelectionBar() -> Element {
                 // selected are all the registry's, so the bar cannot say one
                 // thing about an act the menu says another about.
                 CommandButton { command: Command::Transform }
+                // The float's click route (§16.12): the same cut the pinned
+                // drag commits on its first travel (`input::carry`), for a hand
+                // that wants the layer without having to move it yet.
+                CommandButton { command: Command::FloatSelection }
                 // The other reach for Fill's word. With a selection in force the
                 // region is already drawn, so a fill needs no gesture at all —
                 // which is also the one case `FillOp::of_selection` is defined for:
@@ -401,6 +405,17 @@ pub fn fill_selection(state: AppState) {
             op: FillOp::of_selection(Srgb::new([r, g, b])),
         },
     );
+}
+
+/// Cut what the selection holds on the active layer into a floating child
+/// layer (§16.12). The engine plans before it spends an action, so a cut that
+/// would be empty — or a layer that is not paint — declines with nothing
+/// logged (`plan_float`).
+pub fn float_selection(state: AppState) {
+    let Some(layer) = state.obs.peek().as_ref().map(|o| o.active_layer) else {
+        return;
+    };
+    dispatch(state, DocCommand::FloatSelection { layer });
 }
 
 /// The selection mode a gesture's modifier keys ask for, or `None` to keep the
