@@ -38,6 +38,16 @@ const BRUSH_ATTEMPTS: u32 = 5;
 const ASSET_RETRY_DELAY: Duration = Duration::from_millis(300);
 const ASSET_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
+/// The most one attempt may take. A provider that accepts and then drips would
+/// otherwise hold the whole round open — no widening to other providers, and no
+/// cancellation either, because `wanted` is polled only between fetches.
+///
+/// Load-bearing behind this bound: blobs *resumes*. A fetch requests only the
+/// ranges the local store lacks, so a slow-but-live provider cut off here still
+/// made progress the next round keeps — without that, a transfer slower than
+/// this ceiling would restart forever and never land.
+const FETCH_ATTEMPT: Duration = Duration::from_secs(20);
+
 /// How long a resolver waits for the frontend to make good on
 /// [`RemoteEvent::ResolveLocally`](crate::RemoteEvent::ResolveLocally) before
 /// dialling a peer anyway.
@@ -66,6 +76,11 @@ pub(crate) trait ContentSource: Clone + 'static {
         provider: EndpointId,
         hash: Hash,
     ) -> impl std::future::Future<Output = Result<Bytes>>;
+
+    /// An attempt against `provider` was cut off at [`FETCH_ATTEMPT`]: drop any
+    /// cached transport state, so the next round re-dials rather than reusing
+    /// the stalled path. Nothing to drop, by default.
+    fn evict(&self, _provider: EndpointId) {}
 }
 
 /// Everything a fetch needs except what it is fetching. Cloned per resolver.
@@ -105,7 +120,7 @@ impl<S: ContentSource> Resolver<S> {
     }
 
     /// Fetch missing content, mirror it and record its transfer hash (so this peer
-    /// can serve and announce it onward), substrate it to the engine, and release
+    /// can serve and announce it onward), hand it to the engine, and release
     /// every action parked behind it.
     ///
     /// `origin` authored the message and so definitely holds the content; `from`
@@ -156,8 +171,9 @@ impl<S: ContentSource> Resolver<S> {
 
     /// Try each source in turn on a widening backoff (a source may still be
     /// fetching the content itself). `attempts` caps the rounds; `None` retries
-    /// until the content arrives or the session ends. The transfer is
-    /// hash-verified by blobs.
+    /// until the content arrives or the session ends. Each attempt is bounded by
+    /// [`FETCH_ATTEMPT`], so one stalled provider cannot hold the round open.
+    /// The transfer is hash-verified by blobs.
     async fn fetch(
         &self,
         hash: Hash,
@@ -172,9 +188,20 @@ impl<S: ContentSource> Resolver<S> {
                 if !self.wanted() {
                     return Outcome::Cancelled;
                 }
-                match self.source.fetch_blob(provider, hash).await {
-                    Ok(bytes) => return Outcome::Got(bytes),
-                    Err(e) => tracing::debug!("asset fetch round {round} failed: {e}"),
+                let attempt = self.source.fetch_blob(provider, hash);
+                match n0_future::time::timeout(FETCH_ATTEMPT, attempt).await {
+                    Ok(Ok(bytes)) => return Outcome::Got(bytes),
+                    Ok(Err(e)) => tracing::debug!(
+                        provider = %provider.fmt_short(),
+                        "asset fetch round {round} failed: {e}"
+                    ),
+                    Err(_) => {
+                        tracing::debug!(
+                            provider = %provider.fmt_short(),
+                            "asset fetch round {round}: provider stalled past the attempt bound"
+                        );
+                        self.source.evict(provider);
+                    }
                 }
             }
             round = round.saturating_add(1);
@@ -257,6 +284,7 @@ mod tests {
     struct Peer {
         content: Option<Bytes>,
         fails_first: usize,
+        stalls: bool,
     }
 
     /// A source with a script. Counts what it was asked, so a test can assert the
@@ -266,6 +294,7 @@ mod tests {
         peers: Arc<Mutex<HashMap<EndpointId, Peer>>>,
         asked: Arc<Mutex<Vec<EndpointId>>>,
         rounds: Arc<AtomicUsize>,
+        evicted: Arc<Mutex<Vec<EndpointId>>>,
     }
 
     impl Fake {
@@ -275,6 +304,19 @@ mod tests {
                 Peer {
                     content: Some(bytes.clone()),
                     fails_first,
+                    stalls: false,
+                },
+            );
+            self
+        }
+
+        /// A peer that accepts the request and then never answers.
+        fn stalling(&self, id: EndpointId) -> &Self {
+            self.peers.lock().unwrap().insert(
+                id,
+                Peer {
+                    stalls: true,
+                    ..Peer::default()
                 },
             );
             self
@@ -283,12 +325,25 @@ mod tests {
         fn asked(&self) -> Vec<EndpointId> {
             self.asked.lock().unwrap().clone()
         }
+
+        fn evicted(&self) -> Vec<EndpointId> {
+            self.evicted.lock().unwrap().clone()
+        }
     }
 
     impl ContentSource for Fake {
         async fn fetch_blob(&self, provider: EndpointId, _hash: Hash) -> Result<Bytes> {
             self.asked.lock().unwrap().push(provider);
             self.rounds.fetch_add(1, Ordering::Relaxed);
+            let stalls = self
+                .peers
+                .lock()
+                .unwrap()
+                .get(&provider)
+                .is_some_and(|peer| peer.stalls);
+            if stalls {
+                std::future::pending::<()>().await;
+            }
             let mut peers = self.peers.lock().unwrap();
             let Some(peer) = peers.get_mut(&provider) else {
                 return Err(crate::NetError::Other("no such peer".into()));
@@ -300,6 +355,10 @@ mod tests {
             peer.content
                 .clone()
                 .ok_or_else(|| crate::NetError::Other("nothing here".into()))
+        }
+
+        fn evict(&self, provider: EndpointId) {
+            self.evicted.lock().unwrap().push(provider);
         }
     }
 
@@ -465,6 +524,38 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, RemoteEvent::Asset { .. }))
         );
+    }
+
+    /// A provider may accept the request and then drip nothing. Without a bound
+    /// on the attempt that one connection holds the whole round open: no widening
+    /// to other providers, and no cancellation, because `wanted` is polled only
+    /// between fetches.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_provider_is_timed_out_and_the_round_moves_on() {
+        let mut h = harness(&[]);
+        let (bytes, hash) = payload();
+        h.waitlist.claim(substrate(), &action(1));
+        // The author stalls; the forwarder answers.
+        h.fake.stalling(endpoint(1)).holding(endpoint(2), &bytes, 0);
+
+        h.resolver
+            .clone()
+            .resolve(substrate(), hash, endpoint(1), endpoint(2))
+            .await;
+
+        assert_eq!(
+            h.fake.asked(),
+            vec![endpoint(1), endpoint(2)],
+            "the stall costs one attempt bound, not the round"
+        );
+        assert_eq!(
+            h.fake.evicted(),
+            vec![endpoint(1)],
+            "and its cached connection, so the next round re-dials"
+        );
+        let events = drain(&mut h.events);
+        assert!(matches!(&events[0], RemoteEvent::Asset { .. }));
+        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
     }
 
     /// A substrate retries without limit, so the stop signal is the only thing that

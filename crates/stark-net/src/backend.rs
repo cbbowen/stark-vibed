@@ -121,8 +121,12 @@ pub(crate) struct Dialer {
     /// QUIC handshake per round, forever. The retry exists for the case where the
     /// provider is slow, which is exactly when handshaking again costs most.
     ///
-    /// A connection that errors is dropped rather than kept: the next round should
-    /// re-establish it, not keep asking down a path that has already failed.
+    /// A connection that errors — or stalls past the resolver's attempt bound —
+    /// is dropped rather than kept: the next round should re-establish it, not
+    /// keep asking down a path that has already failed. That re-handshake lands
+    /// on the slow path this cache exists to spare, and is affordable only
+    /// because a fetch resumes — the next round requests just the ranges still
+    /// missing, so nothing already transferred is paid for twice.
     blob_conns: Arc<Mutex<HashMap<EndpointId, Connection>>>,
     #[cfg(feature = "webrtc")]
     webrtc: Arc<iroh_webrtc_transport::WebRtcTransport>,
@@ -267,17 +271,27 @@ impl ContentSource for Dialer {
     async fn fetch_blob(&self, provider: EndpointId, hash: Hash) -> Result<bytes::Bytes> {
         let conn = self.blob_conn(provider).await?;
         if let Err(e) = self.blobs.remote().fetch(conn, hash).await {
-            self.blob_conns
-                .lock()
-                .expect("blob connections poisoned")
-                .remove(&provider);
+            self.evict_blob_conn(provider);
             return Err(e.into());
         }
         Ok(self.blobs.get_bytes(hash).await?)
     }
+
+    fn evict(&self, provider: EndpointId) {
+        self.evict_blob_conn(provider);
+    }
 }
 
 impl Dialer {
+    /// Drop the cached blob connection to `provider`, so the next round
+    /// re-establishes instead of reusing a path that failed or stalled.
+    fn evict_blob_conn(&self, provider: EndpointId) {
+        self.blob_conns
+            .lock()
+            .expect("blob connections poisoned")
+            .remove(&provider);
+    }
+
     /// The blob connection to `provider`, reused if one is still open.
     async fn blob_conn(&self, provider: EndpointId) -> Result<Connection> {
         let cached = self
