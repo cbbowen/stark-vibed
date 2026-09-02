@@ -124,7 +124,13 @@ impl Waitlist {
         }
         match parked.entry(need) {
             Entry::Occupied(mut slot) => {
-                slot.get_mut().push(action.clone());
+                // The flood redelivers, and a recovered copy can race the park
+                // (`missing_from` subtracts parked ids only when the next sweep
+                // asks, so a copy already in flight still lands here): the same
+                // action must not park twice however many doors it comes through.
+                if slot.get().iter().all(|a| a.id != action.id) {
+                    slot.get_mut().push(action.clone());
+                }
                 Admit::Waiting
             }
             Entry::Vacant(slot) => {
@@ -153,12 +159,14 @@ impl Waitlist {
     }
 
     /// Content fetched off a peer: hand it to the engine, then release
-    /// everything parked behind it — in that order, which is the point.
+    /// everything parked behind it — in that order, which is the point. The
+    /// engine having dropped its receiver changes none of the mirroring: the
+    /// content and the actions are recorded either way, so this peer can still
+    /// serve them onward.
     pub fn resolved(&self, need: AssetNeed, bytes: Bytes, hash: Hash) {
         let parked = self.take_parked(need, Some((bytes.clone(), hash)));
-        if self.events.send(RemoteEvent::Asset { need, bytes }).is_ok() {
-            self.release(parked);
-        }
+        let _ = self.events.send(RemoteEvent::Asset { need, bytes });
+        self.release(parked);
     }
 
     /// Content this client imported locally. The engine already holds it, so
@@ -179,14 +187,14 @@ impl Waitlist {
 
     /// Nothing could be fetched: release the parked actions to whatever fallback
     /// their kind has. Only ever reached for a brush — a substrate is not given up
-    /// on (see `resolve_asset`).
+    /// on (see [`Resolver::resolve`](crate::content::Resolver::resolve)).
     pub fn abandoned(&self, need: AssetNeed) {
         let parked = self.take_parked(need, None);
         self.release(parked);
     }
 
-    /// A remote action arriving with everything it needs: mirror it and substrate
-    /// it to the engine, unless it has been seen before.
+    /// A remote action arriving with everything it needs: mirror it and hand it
+    /// to the engine, unless it has been seen before.
     pub fn accept(&self, action: Action) {
         self.release(vec![action]);
     }
@@ -195,16 +203,23 @@ impl Waitlist {
     /// asking (see [`reconcile`](crate::reconcile)). Routed through here rather
     /// than off a second mirror handle, so this file stays the only one holding
     /// one and the lock order stays a fact about one file.
+    ///
+    /// Parked counts as held: reporting it missing would only park another copy.
+    /// It does not count for serving — it is not in the mirror until released.
     pub fn missing_from(&self, theirs: &[ActionId]) -> Vec<ActionId> {
-        self.mirror
+        let parked = self.parked.lock().expect("waitlist poisoned");
+        let mut missing = self
+            .mirror
             .lock()
             .expect("mirror poisoned")
-            .missing_from(theirs)
+            .missing_from(theirs);
+        missing.retain(|id| !parked.values().flatten().any(|a| a.id == *id));
+        missing
     }
 
     /// A locally-committed action on its way out to the swarm: mirror it so this
-    /// peer can serve it to a joiner, and substrate nothing — the engine authored
-    /// it and has applied it already.
+    /// peer can serve it to a joiner, and hand nothing to the engine — it
+    /// authored the action and has applied it already.
     pub fn published(&self, action: Action) {
         self.mirror.lock().expect("mirror poisoned").insert(action);
     }
@@ -221,7 +236,11 @@ impl Waitlist {
         parked.remove(&need).unwrap_or_default()
     }
 
-    /// Mirror actions and substrate them in order, skipping ones already seen.
+    /// Mirror actions and hand them to the engine in order, skipping ones
+    /// already seen. Mirroring never depends on the channel: the engine having
+    /// stopped listening is not the session being over, and an action dropped
+    /// short of the mirror is a hole in every log this peer serves a joiner —
+    /// one no reconciliation from here can fill (§12).
     fn release(&self, actions: Vec<Action>) {
         for action in actions {
             let fresh = self
@@ -229,8 +248,8 @@ impl Waitlist {
                 .lock()
                 .expect("mirror poisoned")
                 .insert_cloned(&action);
-            if fresh && self.events.send(RemoteEvent::Action(action)).is_err() {
-                return;
+            if fresh {
+                let _ = self.events.send(RemoteEvent::Action(action));
             }
         }
     }
@@ -297,7 +316,10 @@ mod tests {
     fn an_action_waits_for_its_content_and_arrives_behind_it() {
         let (waitlist, mut rx) = setup();
         assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
-        assert!(drain(&mut rx).is_empty(), "nothing substrates while parked");
+        assert!(
+            drain(&mut rx).is_empty(),
+            "nothing reaches the engine while parked"
+        );
 
         let (bytes, hash) = content(1);
         waitlist.resolved(need(1), bytes, hash);
@@ -394,7 +416,8 @@ mod tests {
     }
 
     /// Gossip delivers the same action more than once, and a duplicate that
-    /// parked would otherwise substrate a second time when its content landed.
+    /// parked would otherwise reach the engine a second time when its content
+    /// landed.
     #[test]
     fn a_duplicate_action_surfaces_once() {
         let (waitlist, mut rx) = setup();
@@ -407,6 +430,57 @@ mod tests {
 
         waitlist.accept(action(1));
         assert!(drain(&mut rx).is_empty(), "and never again");
+    }
+
+    /// A parked action is not in the mirror yet, so without the subtraction a
+    /// reconcile sweep reports it missing, re-claims it, and parks another copy
+    /// — one per sweep for as long as the fetch stalls.
+    #[test]
+    fn a_reclaimed_parked_action_parks_once_and_counts_as_held() {
+        let (waitlist, mut rx) = setup();
+        assert!(matches!(waitlist.claim(need(1), &action(1)), Admit::Fetch));
+        assert!(matches!(
+            waitlist.claim(need(1), &action(1)),
+            Admit::Waiting
+        ));
+
+        assert!(
+            waitlist.missing_from(&[action(1).id]).is_empty(),
+            "parked counts as held: reporting it missing is what re-claims it"
+        );
+
+        let (bytes, hash) = content(1);
+        waitlist.resolved(need(1), bytes, hash);
+        let events = drain(&mut rx);
+        assert!(matches!(events[0], RemoteEvent::Asset { .. }));
+        assert!(matches!(&events[1], RemoteEvent::Action(a) if a.id == action(1).id));
+        assert_eq!(events.len(), 2, "one asset, one action — not one per claim");
+    }
+
+    /// The engine dropping its receiver is not the session ending: what arrives
+    /// must still enter the mirror, or a joiner served by this peer gets a log
+    /// with holes no reconciliation from here can fill.
+    #[test]
+    fn a_closed_channel_still_mirrors_what_is_released() {
+        let (waitlist, rx) = setup();
+        waitlist.claim(need(1), &action(1));
+        waitlist.claim(need(1), &action(2));
+        drop(rx);
+
+        let (bytes, hash) = content(1);
+        waitlist.resolved(need(1), bytes, hash);
+        assert!(
+            waitlist
+                .missing_from(&[action(1).id, action(2).id])
+                .is_empty(),
+            "the whole batch entered the mirror with no one listening"
+        );
+
+        waitlist.accept(action(3));
+        assert!(
+            waitlist.missing_from(&[action(3).id]).is_empty(),
+            "and so does an action that never had to park"
+        );
     }
 
     /// The promise is per-id, not a blanket setting: content the frontend did not
