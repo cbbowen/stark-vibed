@@ -27,7 +27,6 @@
 //! machinery meant to remove one (§6.4).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
@@ -36,7 +35,7 @@ use stark_model::document::ActionId;
 use tokio::sync::Notify;
 
 use crate::Result;
-use crate::proto::{Recovered, Request};
+use crate::proto::{RECOVER_BATCH, Recovered, Request};
 use crate::session::{Admission, Wiring};
 
 /// How long a quiet session waits before comparing logs with a neighbour.
@@ -56,6 +55,12 @@ const SWEEP: Duration = Duration::from_secs(120);
 /// behind.
 const AFTER_LOSS: Duration = Duration::from_secs(5);
 
+/// Consecutive failed sweeps before the failure log escalates to a warning.
+///
+/// One failure is routine — the partner may have left between the neighbour set
+/// and the dial — but a run of them means repair is not happening at all.
+const ESCALATE_AFTER: u32 = 5;
+
 /// Raised when something is known to have been lost, so the next sweep does not
 /// wait out [`SWEEP`].
 #[derive(Debug, Clone, Default)]
@@ -73,19 +78,22 @@ pub(crate) struct Reconciler {
     /// Which neighbour to ask next. Rotating rather than random: over a few sweeps
     /// it covers the swarm, which random selection only does in expectation, and it
     /// needs no source of randomness on a target that has to be careful about them.
-    next: AtomicUsize,
+    next: usize,
+    /// Consecutive failed sweeps — see [`ESCALATE_AFTER`]. Reset by any success.
+    failures: u32,
 }
 
 impl Reconciler {
     pub fn new(wiring: Wiring) -> Self {
         Self {
             wiring,
-            next: AtomicUsize::new(0),
+            next: 0,
+            failures: 0,
         }
     }
 
     /// Sweep until the session ends.
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         loop {
             let prompted = self.wait().await;
             if !self.alive() {
@@ -94,11 +102,23 @@ impl Reconciler {
             if prompted && !self.wiring.cancel.sleep(AFTER_LOSS).await {
                 return;
             }
-            if let Err(e) = self.sweep().await {
-                // Expected often enough not to be a warning: the partner may have
-                // left between the neighbour set and the dial, or may itself still
-                // be joining. The next sweep picks someone else.
-                tracing::debug!("reconciliation with a neighbour failed: {e}");
+            match self.sweep().await {
+                Ok(()) => self.failures = 0,
+                Err(e) => {
+                    self.failures += 1;
+                    if self.failures >= ESCALATE_AFTER {
+                        tracing::warn!(
+                            consecutive = self.failures,
+                            "reconciliation keeps failing; losses are going unrepaired: {e}"
+                        );
+                    } else {
+                        // Expected often enough not to be a warning: the partner
+                        // may have left between the neighbour set and the dial, or
+                        // may itself still be joining. The next sweep picks
+                        // someone else.
+                        tracing::debug!("reconciliation with a neighbour failed: {e}");
+                    }
+                }
             }
         }
     }
@@ -121,7 +141,7 @@ impl Reconciler {
     }
 
     /// One exchange: ask a neighbour what it has, take what this peer does not.
-    async fn sweep(&self) -> Result<()> {
+    async fn sweep(&mut self) -> Result<()> {
         let Some(partner) = self.partner() else {
             // Alone in the swarm — nothing to compare against, and nothing lost
             // that anyone else could return.
@@ -142,33 +162,39 @@ impl Reconciler {
             partner = %partner.fmt_short(),
             "recovering actions the flood dropped"
         );
-        let recovered: Vec<Recovered> =
-            crate::codec::decode(&catchup.request(Request::Actions(missing)).await?)?;
-        catchup.close().await;
-
-        for Recovered { action, hash } in recovered {
-            // The same door the flood's actions go through, for the same reasons.
-            // `partner` stands in for both the author and the deliverer: it is who
-            // this peer can actually reach, and the resolver widens to the rest of
-            // the swarm from its second round anyway.
-            match Admission::of(&action, hash, &self.wiring.waitlist) {
-                Admission::Ready => self.wiring.waitlist.accept(action),
-                Admission::Waiting => {}
-                Admission::Fetching { need, hash } => {
-                    task::spawn(
-                        self.wiring
-                            .resolver
-                            .clone()
-                            .resolve(need, hash, partner, partner),
-                    );
+        // Batched under the server's request ceiling: one ask naming every id a
+        // far-behind peer lacks blows [`MAX_REQUEST`](crate::proto::MAX_REQUEST),
+        // and the next sweep would rebuild it identically — repair would never
+        // complete. Each batch is admitted as it lands, so a failure partway
+        // keeps what already arrived.
+        for chunk in missing.chunks(RECOVER_BATCH) {
+            let recovered: Vec<Recovered> =
+                crate::codec::decode(&catchup.request(Request::Actions(chunk.to_vec())).await?)?;
+            for Recovered { action, hash } in recovered {
+                // The same door the flood's actions go through, for the same reasons.
+                // `partner` stands in for both the author and the deliverer: it is who
+                // this peer can actually reach, and the resolver widens to the rest of
+                // the swarm from its second round anyway.
+                match Admission::of(&action, hash, &self.wiring.waitlist) {
+                    Admission::Ready => self.wiring.waitlist.accept(action),
+                    Admission::Waiting => {}
+                    Admission::Fetching { need, hash } => {
+                        task::spawn(
+                            self.wiring
+                                .resolver
+                                .clone()
+                                .resolve(need, hash, partner, partner),
+                        );
+                    }
                 }
             }
         }
+        catchup.close().await;
         Ok(())
     }
 
     /// The next neighbour to compare against, or `None` when there are none.
-    fn partner(&self) -> Option<EndpointId> {
+    fn partner(&mut self) -> Option<EndpointId> {
         let neighbors = self.wiring.neighbors.lock().expect("neighbors poisoned");
         if neighbors.is_empty() {
             return None;
@@ -178,7 +204,8 @@ impl Reconciler {
         let mut ids: Vec<EndpointId> = neighbors.iter().copied().collect();
         drop(neighbors);
         ids.sort_by_key(|id| *id.as_bytes());
-        let index = self.next.fetch_add(1, Ordering::Relaxed) % ids.len();
+        let index = self.next % ids.len();
+        self.next = self.next.wrapping_add(1);
         Some(ids[index])
     }
 
@@ -234,15 +261,16 @@ mod tests {
         (bound, mirror)
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_sweep_recovers_what_the_flood_dropped() {
-        // One member painted four strokes; the other saw the first and the third.
-        // Exactly the state a lost gossip message leaves behind, and one nothing
-        // on either canvas reveals.
-        let (them, _theirs) = member((1..=4).map(action).collect()).await;
-        let (us, ours) = member(vec![action(1), action(3)]).await;
-
-        let (tx, mut events) = mpsc::unbounded_channel();
+    /// A reconciler for `ours` wired to sweep against `them`, and the event
+    /// stream its recoveries surface on. Also teaches the endpoint how to reach
+    /// them, the way gossip's membership exchange does in a live session — the
+    /// sweep dials by bare id.
+    async fn reconciler_between(
+        us: &Bound,
+        ours: &Arc<Mutex<Mirror>>,
+        them: &Bound,
+    ) -> (Reconciler, mpsc::UnboundedReceiver<RemoteEvent>) {
+        let (tx, events) = mpsc::unbounded_channel();
         let waitlist = Arc::new(Waitlist::new(ours.clone(), tx, &[]));
         let cancel = Cancel::default();
         let neighbors = Arc::new(Mutex::new(HashSet::from([them.dialer.local_id()])));
@@ -259,29 +287,41 @@ mod tests {
             cancel,
             prompt: Prompt::default(),
         });
-
-        // Teach the endpoint how to reach them, the way gossip's membership
-        // exchange does in a live session — the sweep dials by bare id.
         let addr = them
             .dialer
             .ticket_addr(&NetOptions::local())
             .await
             .expect("their address");
         us.dialer.open(addr).await.expect("dial").close().await;
+        (reconciler, events)
+    }
+
+    /// Every recovered action's lamport, in the order it surfaced.
+    fn recovered_lamports(events: &mut mpsc::UnboundedReceiver<RemoteEvent>) -> Vec<u64> {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|e| match e {
+                RemoteEvent::Action(a) => Some(a.id.lamport),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sweep_recovers_what_the_flood_dropped() {
+        // One member painted four strokes; the other saw the first and the third.
+        // Exactly the state a lost gossip message leaves behind, and one nothing
+        // on either canvas reveals.
+        let (them, _theirs) = member((1..=4).map(action).collect()).await;
+        let (us, ours) = member(vec![action(1), action(3)]).await;
+        let (mut reconciler, mut events) = reconciler_between(&us, &ours, &them).await;
 
         tokio::time::timeout(Duration::from_secs(20), reconciler.sweep())
             .await
             .expect("the sweep finishes")
             .expect("and succeeds");
 
-        let recovered: Vec<u64> = std::iter::from_fn(|| events.try_recv().ok())
-            .filter_map(|e| match e {
-                RemoteEvent::Action(a) => Some(a.id.lamport),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            recovered,
+            recovered_lamports(&mut events),
             vec![2, 4],
             "the two that were dropped, and only those"
         );
@@ -289,6 +329,32 @@ mod tests {
         // A second sweep finds nothing: recovery is not a source of duplicates.
         reconciler.sweep().await.expect("a second sweep");
         assert!(events.try_recv().is_err());
+
+        for stack in [&us, &them] {
+            stack.shutdown.run().await;
+        }
+    }
+
+    /// A peer that fell *far* behind still repairs completely. 5,000 missing ids
+    /// encode past the server's request ceiling ([`crate::proto::MAX_REQUEST`]),
+    /// so a single `Request::Actions` naming them all was refused — and rebuilt
+    /// identically every sweep, so repair never finished.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sweep_recovers_more_actions_than_one_request_can_name() {
+        let (them, _theirs) = member((1..=5_000).map(action).collect()).await;
+        let (us, ours) = member(Vec::new()).await;
+        let (mut reconciler, mut events) = reconciler_between(&us, &ours, &them).await;
+
+        tokio::time::timeout(Duration::from_secs(30), reconciler.sweep())
+            .await
+            .expect("the sweep finishes")
+            .expect("and succeeds");
+
+        assert_eq!(
+            recovered_lamports(&mut events),
+            (1..=5_000).collect::<Vec<u64>>(),
+            "all five thousand, in total order"
+        );
 
         for stack in [&us, &them] {
             stack.shutdown.run().await;

@@ -282,7 +282,7 @@ pub struct Joined {
 }
 
 /// A live shared session: broadcasts local actions, serves joiners and asset
-/// requests, and substrates remote edits as [`RemoteEvent`]s.
+/// requests, and delivers remote edits as [`RemoteEvent`]s.
 pub struct CollabSession {
     /// Everything publishing needs, which is everything the session needs but
     /// two — so the session holds one rather than assembling one per call.
@@ -382,7 +382,13 @@ impl CollabSession {
         let request = if opts.resolvable.is_empty() {
             Request::Snapshot
         } else {
-            Request::SnapshotWithout(opts.resolvable.clone())
+            // The canonical order the server also imposes — what lets every
+            // joiner running the same build hit the host's encode cache instead
+            // of costing it a re-encode, however its catalog was enumerated.
+            let mut have = opts.resolvable.clone();
+            have.sort_unstable();
+            have.dedup();
+            Request::SnapshotWithout(have)
         };
         let snapshot = fetch_snapshot(
             &bound.dialer,

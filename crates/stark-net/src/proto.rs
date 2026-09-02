@@ -119,6 +119,28 @@ use crate::mirror::{Mirror, Served};
 /// `SetMatteRect` at the wrong place.
 pub(crate) const ALPN: &[u8] = b"stark/collab/22";
 
+/// Upper bound on an encoded request, over any transport.
+///
+/// A request carries the joiner's list of resolvable content ids, 32 bytes each,
+/// so the ceiling has to clear a catalog that grows rather than the variant tag
+/// alone: 64 KiB is two thousand of them.
+pub(crate) const MAX_REQUEST: usize = 64 * 1024;
+
+/// How many missing actions a reconciling member names per [`Request::Actions`]
+/// — sized against [`MAX_REQUEST`]: an `ActionId` is two u64s, encoded
+/// fixed-width, so 2048 × 16 B = 32 KiB < 64 KiB.
+pub(crate) const RECOVER_BATCH: usize = 2048;
+
+/// Upper bound on an encoded [`Request::Actions`] answer.
+///
+/// [`RECOVER_BATCH`] caps how many actions are *asked for*, but their encoded
+/// size is unbounded — a stroke-heavy backlog could blow the read ceiling and
+/// fail identically every sweep. Truncated rather than refused: the asker
+/// treats ids not answered as still missing and re-asks next sweep, so a short
+/// answer self-heals where a refusal repeats. Sized so even the largest single
+/// action (bounded by the gossip message ceiling) always fits.
+const MAX_RECOVER_RESPONSE: usize = 8 * 1024 * 1024;
+
 /// The first byte of every response.
 ///
 /// A refusal has to be distinguishable from an answer *in the payload*, because
@@ -282,7 +304,17 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
     };
     Ok(Some(match req {
         Request::Snapshot => snapshot_bytes(mirror, &[])?,
-        Request::SnapshotWithout(have) => snapshot_bytes(mirror, &have)?,
+        Request::SnapshotWithout(mut have) => {
+            // No length guard: [`MAX_REQUEST`] already bounds the list — an
+            // `AssetId` is 32 bytes, so a list long enough to matter is refused
+            // at the read, two layers before it could reach here.
+            // Canonical order before anything reads the list: the encode cache
+            // compares it verbatim, and two joiners enumerating the same catalog
+            // in different orders are asking the same question.
+            have.sort_unstable();
+            have.dedup();
+            snapshot_bytes(mirror, &have)?
+        }
         // Both cheap enough to answer under the lock: one walks the log's keys,
         // the other looks up as many actions as the asker found it was missing.
         Request::Ids => {
@@ -290,8 +322,13 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
             crate::codec::encode(&ids)?.into()
         }
         Request::Actions(ids) => {
-            let actions = mirror.lock().expect("mirror poisoned").recover(&ids);
-            crate::codec::encode(&actions)?.into()
+            let mut actions = mirror.lock().expect("mirror poisoned").recover(&ids);
+            let mut bytes = crate::codec::encode(&actions)?;
+            while bytes.len() > MAX_RECOVER_RESPONSE && actions.len() > 1 {
+                actions.truncate(actions.len() / 2);
+                bytes = crate::codec::encode(&actions)?;
+            }
+            bytes.into()
         }
     }))
 }
@@ -461,6 +498,33 @@ mod tests {
         assert_eq!(mirror.encoded_for(&have), None);
     }
 
+    /// Two joiners enumerating the same catalog in different orders are asking
+    /// the same question, and the second must not pay for a second encode —
+    /// [`answer`] canonicalizes the list before the cache compares it.
+    #[test]
+    fn the_encode_cache_hits_across_permuted_have_lists() {
+        let served = Served::default();
+        served.publish(std::sync::Arc::new(Mutex::new(Mirror::from_file(
+            &DocumentFile::new(vec![action(1)]),
+        ))));
+        let (a, b, c) = (AssetId([1; 32]), AssetId([2; 32]), AssetId([3; 32]));
+
+        let first = answer(&served, Request::SnapshotWithout(vec![c, a, b]))
+            .expect("encode")
+            .expect("published");
+        // Permuted, and with a duplicate — the other way one catalog spells
+        // two questions.
+        let second = answer(&served, Request::SnapshotWithout(vec![b, c, a, c]))
+            .expect("encode")
+            .expect("published");
+        assert_eq!(first, second);
+        assert_eq!(
+            first.as_ptr(),
+            second.as_ptr(),
+            "the second answer is the remembered allocation, not a re-encode"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_member_still_joining_refuses_rather_than_serving_an_empty_session() {
         let asker = bound(Served::default()).await;
@@ -496,21 +560,20 @@ mod iroh_wire {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler};
 
-    use super::{Request, Tag, answer, decode_request};
+    use super::{MAX_REQUEST, Request, Tag, answer, decode_request};
     use crate::mirror::Served;
 
-    /// Upper bound on an encoded request.
-    ///
-    /// A request carries the joiner's list of resolvable content ids, 32 bytes each,
-    /// so the ceiling has to clear a catalog that grows rather than the variant tag
-    /// alone: 64 KiB is two thousand of them.
-    const MAX_REQUEST: usize = 64 * 1024;
     /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
     /// A session that outgrows it stops accepting new members, so crossing most
     /// of the way there is worth saying out loud while joining still works.
     const MAX_RESPONSE: usize = 64 * 1024 * 1024;
     /// Fraction of [`MAX_RESPONSE`] a snapshot may reach before it is reported.
     const RESPONSE_WARN_AT: usize = MAX_RESPONSE / 2;
+    /// Snapshot requests served per connection before it is closed. Each answer
+    /// is up to [`MAX_RESPONSE`] on a peer that is also painting, and a
+    /// legitimate re-join opens a fresh connection — so the bound only cuts off
+    /// a peer re-asking on one.
+    const SNAPSHOTS_PER_CONN: u32 = 8;
 
     /// Serves [`Request`]s over iroh connections.
     #[derive(Debug, Clone)]
@@ -521,6 +584,7 @@ mod iroh_wire {
     impl ProtocolHandler for CollabProto {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
             // Serve requests until the peer closes the connection.
+            let mut snapshots: u32 = 0;
             loop {
                 let Ok((mut send, mut recv)) = connection.accept_bi().await else {
                     return Ok(());
@@ -530,6 +594,17 @@ mod iroh_wire {
                     .await
                     .map_err(AcceptError::from_err)?;
                 let req = decode_request(&req).map_err(AcceptError::from_err)?;
+                if matches!(req, Request::Snapshot | Request::SnapshotWithout(_)) {
+                    snapshots += 1;
+                    if snapshots > SNAPSHOTS_PER_CONN {
+                        tracing::warn!(
+                            limit = SNAPSHOTS_PER_CONN,
+                            "closing a connection that keeps asking for snapshots"
+                        );
+                        connection.close(0u32.into(), b"snapshot budget spent");
+                        return Ok(());
+                    }
+                }
                 // A refusal is a complete, well-formed response — the requester
                 // has to be able to tell "nothing yet" from "nothing in it".
                 let Some(response) = answer(&self.served, req).map_err(AcceptError::from_err)?
