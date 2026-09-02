@@ -29,6 +29,8 @@ use rpds::RedBlackTreeMapSync;
 use stark_model::document::{Action, ActionId};
 use stark_model::{AssetId, AssetNeed, BuildId, CanvasMeta, DocumentFile};
 
+use crate::wire::LogDigest;
+
 /// The mirror as the catch-up server sees it: absent until this peer is a session
 /// member.
 ///
@@ -43,21 +45,39 @@ use stark_model::{AssetId, AssetNeed, BuildId, CanvasMeta, DocumentFile};
 /// is taken there is nothing here to mistake for a session. The joiner turned away
 /// asks another member — every one of them is an entry point (§12.4).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Served(Arc<OnceLock<SharedMirror>>);
+pub(crate) struct Served {
+    mirror: Arc<OnceLock<SharedMirror>>,
+    /// Requests [`answer`](crate::proto::answer) has fielded — how a test tells
+    /// a digest-only sweep from one that fell through to the id list.
+    #[cfg(test)]
+    requests: Arc<std::sync::atomic::AtomicU32>,
+}
 
 impl Served {
     /// Hand the session's mirror to the catch-up server — the moment this peer
     /// starts being a member rather than becoming one.
     pub fn publish(&self, mirror: SharedMirror) {
         assert!(
-            self.0.set(mirror).is_ok(),
+            self.mirror.set(mirror).is_ok(),
             "one session, one published mirror"
         );
     }
 
     /// The mirror to answer from, or `None` while this peer is still joining.
     pub fn get(&self) -> Option<&SharedMirror> {
-        self.0.get()
+        self.mirror.get()
+    }
+
+    /// Count one request fielded — see `requests`.
+    #[cfg(test)]
+    pub fn count_request(&self) {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub fn requests_fielded(&self) -> u32 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -94,6 +114,10 @@ pub(crate) struct Mirror {
     /// spend `Rc`, while this one is shared between the receive loop, the catch-up
     /// server and every resolver.
     actions: RedBlackTreeMapSync<ActionId, Action>,
+    /// XOR of the BLAKE3 of every held action id — this peer's half of the
+    /// sweep pre-check ([`LogDigest`]). Folded on insertion; ids are never
+    /// removed, so nothing ever needs un-folding.
+    ids_digest: [u8; 32],
     /// Every piece of content the log names, keyed by the [`AssetNeed`] that
     /// says which store its bytes belong in — the same bag the save file keeps
     /// (`DocumentFile::content`, §8). The kind rides the key: a brush mask and
@@ -186,12 +210,38 @@ impl Snapshot {
     }
 }
 
+/// XOR `id`'s BLAKE3 into `digest`. Sound as a *set* digest because ids enter a
+/// log at most once and never leave it: XOR commutes, so insertion order
+/// cancels out, and nothing ever needs un-folding.
+///
+/// The byte layout (`lamport` LE ‖ `actor` LE) is compared across peers, so it
+/// is part of what the ALPN pins: changing it without a bump would not corrupt
+/// anything, but every pre-check against unchanged builds would mismatch
+/// forever and the sweep would silently pay the full path it exists to avoid.
+fn fold_id(digest: &mut [u8; 32], id: ActionId) {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&id.lamport.to_le_bytes());
+    bytes[8..].copy_from_slice(&id.actor.0.to_le_bytes());
+    for (d, h) in digest.iter_mut().zip(Hash::new(bytes).as_bytes()) {
+        *d ^= h;
+    }
+}
+
 impl Mirror {
     pub fn from_file(file: &DocumentFile) -> Self {
+        let actions: RedBlackTreeMapSync<ActionId, Action> =
+            file.actions.iter().map(|a| (a.id, a.clone())).collect();
+        // Over the map's keys rather than the file's list, so a duplicated id
+        // cannot fold twice and cancel itself out.
+        let mut ids_digest = [0u8; 32];
+        for id in actions.keys() {
+            fold_id(&mut ids_digest, *id);
+        }
         Self {
             build: file.app_build.clone(),
             canvas: file.canvas.clone(),
-            actions: file.actions.iter().map(|a| (a.id, a.clone())).collect(),
+            actions,
+            ids_digest,
             // The bundle is already keyed by [`AssetNeed`] (§8), so the bag moves
             // over whole. A `Flat` substrate cannot appear: it names no content,
             // so `AssetNeed` has no variant for it (`AssetNeed::for_substrate`).
@@ -250,9 +300,20 @@ impl Mirror {
         if self.actions.contains_key(&action.id) {
             return false;
         }
+        fold_id(&mut self.ids_digest, action.id);
         self.actions.insert_mut(action.id, action);
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// The log's identity in 40 bytes — what a sweep compares before paying
+    /// for the id list ([`Request::Digest`](crate::wire::Request::Digest)).
+    /// Cheap enough for the lock: a count and a 32-byte copy.
+    pub fn digest(&self) -> LogDigest {
+        LogDigest {
+            count: self.actions.size() as u64,
+            xor: self.ids_digest,
+        }
     }
 
     /// The same, for a caller that keeps its own copy — the receive loop, which
@@ -400,6 +461,57 @@ mod tests {
         let mut content = back.content;
         content.sort_unstable_by_key(|(need, _)| *need);
         assert_eq!(content, file.content);
+    }
+
+    fn action_by(lamport: u64, actor: u64) -> Action {
+        Action {
+            id: ActionId {
+                lamport,
+                actor: ActorId(actor),
+            },
+            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
+        }
+    }
+
+    /// Two logs holding the same actions must agree on the digest whatever
+    /// order they arrived in — a sweep compares digests across peers whose
+    /// floods delivered differently — and it must move the moment a log does.
+    #[test]
+    fn the_digest_is_order_independent_and_moves_with_the_log() {
+        let all: Vec<Action> = (1..=8).map(|l| action_by(l, l % 3)).collect();
+
+        let mut forward = Mirror::from_file(&DocumentFile::new(Vec::new()));
+        for a in &all {
+            assert!(forward.insert(a.clone()));
+        }
+        let mut backward = Mirror::from_file(&DocumentFile::new(Vec::new()));
+        for a in all.iter().rev() {
+            assert!(backward.insert(a.clone()));
+        }
+        assert_eq!(
+            forward.digest(),
+            backward.digest(),
+            "insertion order must cancel out"
+        );
+        assert_eq!(forward.digest().count, 8);
+
+        // The construction fold agrees with the insertion fold — including
+        // from a file carrying a duplicated id, which must fold once, not
+        // twice-and-cancel.
+        let mut with_duplicate = all.clone();
+        with_duplicate.push(all[0].clone());
+        let from_file = Mirror::from_file(&DocumentFile::new(with_duplicate));
+        assert_eq!(from_file.digest(), forward.digest());
+
+        // A new action moves it; a duplicate moves nothing — not the count,
+        // and not the xor (a fold before the dedup check would XOR the id
+        // back out and leave the count telling the truth alone).
+        assert!(forward.insert(action_by(9, 0)));
+        assert_ne!(forward.digest(), backward.digest());
+        let before_duplicate = forward.digest();
+        assert!(!forward.insert(action_by(9, 0)));
+        assert_eq!(forward.digest(), before_duplicate);
+        assert_eq!(forward.digest().count, 9);
     }
 
     /// The promise subtracts by content id across every kind, and takes only

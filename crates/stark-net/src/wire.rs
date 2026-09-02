@@ -115,8 +115,22 @@ use iroh::EndpointId;
 /// matte's rect and gradient axis are stated in the layer's frame rather than
 /// on the canvas: a meaning change with no shape change at all, since a build
 /// without it folds the move as a no-op and reads a translated matte's
-/// `SetMatteRect` at the wrong place.
-pub(crate) const ALPN: &[u8] = b"stark/collab/22";
+/// `SetMatteRect` at the wrong place;
+/// 23: sweeps gained a digest pre-check (§12.5) — `Request` gained `Digest`,
+/// answered with a [`LogDigest`] (count + XOR of per-id BLAKE3), so a sweep
+/// between identical logs costs tens of bytes instead of the id list — and
+/// the client's read ceiling became per-request
+/// ([`Request::response_ceiling`]). Inserted beside the [`Ids`](Request::Ids)
+/// it pre-checks, which shifts the index of every variant after it — an older
+/// peer would decode `Digest` as its `Ids` and answer with the megabyte id
+/// list the digest exists to avoid.
+pub(crate) const ALPN: &[u8] = b"stark/collab/23";
+
+/// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
+/// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
+/// [`ALPN`] by a test rather than by building the byte-string from it: two
+/// tokens side by side are not worth the compile-time ceremony.
+pub(crate) const PROTO: u32 = 23;
 
 /// Upper bound on an encoded request, over any transport.
 ///
@@ -129,6 +143,12 @@ pub(crate) const MAX_REQUEST: usize = 64 * 1024;
 /// — sized against [`MAX_REQUEST`]: an `ActionId` is two u64s, encoded
 /// fixed-width, so 2048 × 16 B = 32 KiB < 64 KiB.
 pub(crate) const RECOVER_BATCH: usize = 2048;
+
+/// Upper bound on a snapshot response: a whole session (log + content
+/// payloads). A session that outgrows it stops accepting new members, so
+/// crossing most of the way there is worth saying out loud while joining still
+/// works (`proto`'s warn).
+pub(crate) const MAX_SNAPSHOT_RESPONSE: usize = 64 * 1024 * 1024;
 
 /// The first byte of every response.
 ///
@@ -248,7 +268,12 @@ pub(crate) enum Request {
     /// have these loaded". The joiner has to make it good before replaying, and
     /// the blob fetch is what catches it if it cannot.
     SnapshotWithout(Vec<AssetId>),
-    /// Every action id this member holds, in total order — the digest half of
+    /// This member's whole log, summarized for equality — the pre-check that lets
+    /// a sweep between identical logs close for tens of bytes instead of
+    /// [`Ids`](Request::Ids)' megabyte-class answer (see
+    /// [`reconcile`](crate::reconcile)). Answered with an encoded [`LogDigest`].
+    Digest,
+    /// Every action id this member holds, in total order — the full half of
     /// reconciliation (see [`reconcile`](crate::reconcile)). Answered with an encoded
     /// `Vec<ActionId>`.
     ///
@@ -261,6 +286,45 @@ pub(crate) enum Request {
     /// The named actions, for the ids a reconciling member found it was missing.
     /// Answered with an encoded `Vec<`[`Recovered`]`>`.
     Actions(Vec<ActionId>),
+}
+
+impl Request {
+    /// What the client-side read accepts as this request's answer (`proto`'s
+    /// `request`). Per request, because the honest answers differ by six orders
+    /// of magnitude, and one ceiling sized for the snapshot would let a digest
+    /// answer be 64 MiB of something else.
+    pub(crate) fn response_ceiling(&self) -> usize {
+        match self {
+            Request::Snapshot | Request::SnapshotWithout(_) => MAX_SNAPSHOT_RESPONSE,
+            // Recovery batches; the server truncates its answers well under
+            // this (`proto`'s `MAX_RECOVER_RESPONSE` is defined as a fraction
+            // of it, so the two cannot invert), so the headroom is free.
+            Request::Actions(_) => MAX_ACTIONS_RESPONSE,
+            // Half a million ids at 16 B each — five times the design target.
+            Request::Ids => 8 * 1024 * 1024,
+            // 40 bytes of digest plus framing.
+            Request::Digest => 1024,
+        }
+    }
+}
+
+/// The client-side read ceiling on a [`Request::Actions`] answer. Named so the
+/// server's truncation bound can be defined against it — a truncation past the
+/// read ceiling would turn every large recovery into a client-side error,
+/// rebuilt identically each sweep.
+pub(crate) const MAX_ACTIONS_RESPONSE: usize = 32 * 1024 * 1024;
+
+/// A member's action log, summarized for equality: how many ids it holds and
+/// the XOR of the BLAKE3 of each. Ids are inserted once and never removed, so
+/// XOR is a sound set digest — order-independent, with nothing to un-fold
+/// ([`Mirror`](crate::mirror::Mirror) maintains it per insertion). `count`
+/// guards the honest XOR collision; against *chosen* ids the digest is only as
+/// trustworthy as the self-declared ids themselves (§12.5 defers
+/// authentication), so it is an optimization, never an integrity check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
+pub(crate) struct LogDigest {
+    pub count: u64,
+    pub xor: [u8; 32],
 }
 
 /// An action as it travels during reconciliation: the action, and the transfer
@@ -346,5 +410,18 @@ mod tests {
         let back: Stamped = crate::codec::decode(&bytes).expect("decode the borrowed form");
         assert_eq!(back.origin, origin);
         assert!(matches!(back.wire, Wire::Action(a) if a.id == action.id));
+    }
+
+    /// [`PROTO`] is the number [`ALPN`] ends with — with its separator, so a
+    /// one-digit `PROTO` cannot pass by matching the tail of a longer number.
+    /// The test is what keeps the two from drifting (see [`PROTO`]).
+    #[test]
+    fn the_alpn_ends_with_proto() {
+        let tail = format!("/{PROTO}");
+        assert!(
+            ALPN.ends_with(tail.as_bytes()),
+            "ALPN {:?} does not end with {tail:?}",
+            std::str::from_utf8(ALPN),
+        );
     }
 }

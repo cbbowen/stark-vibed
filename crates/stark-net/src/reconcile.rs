@@ -43,7 +43,7 @@ use crate::cancel::Cancel;
 use crate::content::Resolver;
 use crate::neighbors::Neighbors;
 use crate::waitlist::{MustFetch, Waitlist};
-use crate::wire::{RECOVER_BATCH, Recovered, Request};
+use crate::wire::{LogDigest, RECOVER_BATCH, Recovered, Request};
 
 /// How long a quiet session waits before comparing logs with a neighbour.
 ///
@@ -190,6 +190,14 @@ impl Reconciler {
             return Ok(());
         };
         let catchup = self.wiring.dialer.open(EndpointAddr::new(partner)).await?;
+        // Equality first: most sweeps find nothing missing, and the id list is
+        // ~1.6 MB at the design target where the digest is tens of bytes —
+        // which is also what makes a `Lagged`-prompted burst of sweeps cheap.
+        let digest: LogDigest = crate::codec::decode(&catchup.request(Request::Digest).await?)?;
+        if digest == self.wiring.waitlist.log_digest() {
+            catchup.close().await;
+            return Ok(());
+        }
         let theirs: Vec<ActionId> = crate::codec::decode(&catchup.request(Request::Ids).await?)?;
         let missing = self.wiring.waitlist.missing_from(&theirs);
         if missing.is_empty() {
@@ -278,15 +286,16 @@ mod tests {
         }
     }
 
-    /// A bound member serving `log`.
-    async fn member(log: Vec<Action>) -> (Bound, SharedMirror) {
+    /// A bound member serving `log`. The [`Served`] handle comes back too, for
+    /// its request count.
+    async fn member(log: Vec<Action>) -> (Bound, SharedMirror, Served) {
         let served = Served::default();
         let bound = backend::bind(served.clone(), &NetOptions::local())
             .await
             .expect("bind");
         let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(log)));
         served.publish(mirror.clone());
-        (bound, mirror)
+        (bound, mirror, served)
     }
 
     /// A reconciler for `ours` wired to sweep against `them`, and the event
@@ -331,8 +340,8 @@ mod tests {
         // One member painted four strokes; the other saw the first and the third.
         // Exactly the state a lost gossip message leaves behind, and one nothing
         // on either canvas reveals.
-        let (them, _theirs) = member((1..=4).map(action).collect()).await;
-        let (us, ours) = member(vec![action(1), action(3)]).await;
+        let (them, _theirs, _) = member((1..=4).map(action).collect()).await;
+        let (us, ours, _) = member(vec![action(1), action(3)]).await;
         let (mut reconciler, mut events) = reconciler_between(&us, &ours, &them).await;
 
         tokio::time::timeout(Duration::from_secs(20), reconciler.sweep())
@@ -355,14 +364,40 @@ mod tests {
         }
     }
 
+    /// The steady state — two identical logs — costs the digest exchange and
+    /// nothing further: no id list, nothing recovered, one request fielded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sweep_between_identical_logs_exchanges_only_the_digest() {
+        let log: Vec<Action> = (1..=4).map(action).collect();
+        let (them, _theirs, served) = member(log.clone()).await;
+        let (us, ours, _) = member(log).await;
+        let (mut reconciler, mut events) = reconciler_between(&us, &ours, &them).await;
+
+        tokio::time::timeout(Duration::from_secs(20), reconciler.sweep())
+            .await
+            .expect("the sweep finishes")
+            .expect("and succeeds");
+
+        assert!(events.try_recv().is_err(), "nothing surfaced to the engine");
+        assert_eq!(
+            served.requests_fielded(),
+            1,
+            "the digest request, and nothing after it"
+        );
+
+        for stack in [&us, &them] {
+            stack.shutdown.run().await;
+        }
+    }
+
     /// A peer that fell *far* behind still repairs completely. 5,000 missing ids
     /// encode past the server's request ceiling ([`crate::wire::MAX_REQUEST`]),
     /// so a single `Request::Actions` naming them all was refused — and rebuilt
     /// identically every sweep, so repair never finished.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_sweep_recovers_more_actions_than_one_request_can_name() {
-        let (them, _theirs) = member((1..=5_000).map(action).collect()).await;
-        let (us, ours) = member(Vec::new()).await;
+        let (them, _theirs, _) = member((1..=5_000).map(action).collect()).await;
+        let (us, ours, _) = member(Vec::new()).await;
         let (mut reconciler, mut events) = reconciler_between(&us, &ours, &them).await;
 
         tokio::time::timeout(Duration::from_secs(30), reconciler.sweep())

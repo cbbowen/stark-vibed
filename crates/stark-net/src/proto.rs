@@ -20,8 +20,9 @@ use crate::wire::{Recovered, Request, Tag};
 /// fail identically every sweep. Truncated rather than refused: the asker
 /// treats ids not answered as still missing and re-asks next sweep, so a short
 /// answer self-heals where a refusal repeats. Sized so even the largest single
-/// action (bounded by the gossip message ceiling) always fits.
-const MAX_RECOVER_RESPONSE: usize = 8 * 1024 * 1024;
+/// action (bounded by the gossip message ceiling) always fits — and as a
+/// fraction of the client's read ceiling, so the two cannot invert.
+const MAX_RECOVER_RESPONSE: usize = crate::wire::MAX_ACTIONS_RESPONSE / 4;
 
 /// Answer one request from the shared [`Mirror`](crate::mirror::Mirror) — every peer is a provider, so
 /// the session survives the original sharer leaving. `None` while this peer is
@@ -29,6 +30,8 @@ const MAX_RECOVER_RESPONSE: usize = 8 * 1024 * 1024;
 ///
 /// This is the whole protocol; the transports below only move the bytes.
 pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Bytes>> {
+    #[cfg(test)]
+    served.count_request();
     let Some(mirror) = served.get() else {
         return Ok(None);
     };
@@ -45,6 +48,12 @@ pub(crate) fn answer(served: &Served, req: Request) -> crate::Result<Option<Byte
             have.sort_unstable();
             have.dedup();
             snapshot_bytes(mirror, &have)?
+        }
+        // The lock covers only the digest copy — a count and 32 bytes, kept
+        // current by every insert; the encode runs off it.
+        Request::Digest => {
+            let digest = mirror.lock().digest();
+            crate::codec::encode(&digest)?.into()
         }
         // Neither is answered under the lock: the receive loop takes it per
         // arriving action, and a full-log id walk or per-action clones under it
@@ -277,16 +286,13 @@ mod iroh_wire {
 
     use super::{answer, decode_request};
     use crate::mirror::Served;
-    use crate::wire::{MAX_REQUEST, Request, Tag};
+    use crate::wire::{MAX_REQUEST, MAX_SNAPSHOT_RESPONSE, Request, Tag};
 
-    /// Upper bound on a response: a whole session snapshot (log + brush PNGs).
-    /// A session that outgrows it stops accepting new members, so crossing most
-    /// of the way there is worth saying out loud while joining still works.
-    const MAX_RESPONSE: usize = 64 * 1024 * 1024;
-    /// Fraction of [`MAX_RESPONSE`] a snapshot may reach before it is reported.
-    const RESPONSE_WARN_AT: usize = MAX_RESPONSE / 2;
+    /// Fraction of [`MAX_SNAPSHOT_RESPONSE`] a snapshot may reach before it is
+    /// reported.
+    const RESPONSE_WARN_AT: usize = MAX_SNAPSHOT_RESPONSE / 2;
     /// Snapshot requests served per connection before it is closed. Each answer
-    /// is up to [`MAX_RESPONSE`] on a peer that is also painting, and a
+    /// is up to [`MAX_SNAPSHOT_RESPONSE`] on a peer that is also painting, and a
     /// legitimate re-join opens a fresh connection — so the bound only cuts off
     /// a peer re-asking on one.
     const SNAPSHOTS_PER_CONN: u32 = 8;
@@ -334,7 +340,7 @@ mod iroh_wire {
                 if response.len() > RESPONSE_WARN_AT {
                     tracing::warn!(
                         bytes = response.len(),
-                        limit = MAX_RESPONSE,
+                        limit = MAX_SNAPSHOT_RESPONSE,
                         "session snapshot is approaching the response ceiling; past \
                          it no new member can join"
                     );
@@ -362,6 +368,8 @@ mod iroh_wire {
         let mut tag = [0u8; 1];
         recv.read_exact(&mut tag).await?;
         super::interpret_tag(tag[0])?;
-        Ok(recv.read_to_end(MAX_RESPONSE).await?)
+        // Per request, because the answers are not the same order of thing: a
+        // digest is tens of bytes, a snapshot the whole session.
+        Ok(recv.read_to_end(req.response_ceiling()).await?)
     }
 }

@@ -52,6 +52,7 @@ use tokio::sync::mpsc;
 
 use crate::events::RemoteEvent;
 use crate::mirror::SharedMirror;
+use crate::wire::LogDigest;
 
 /// What one claim decided — the parking primitive [`Waitlist::admit`] composes.
 /// Arriving traffic goes through `admit`; this is also how the resolver's tests
@@ -268,6 +269,20 @@ impl Waitlist {
         let mut missing = view.missing_from(theirs);
         missing.retain(|id| !parked.contains(id));
         missing
+    }
+
+    /// This peer's half of a sweep's digest pre-check (see
+    /// [`reconcile`](crate::reconcile)). Routed through here for
+    /// [`missing_from`](Self::missing_from)'s reason: one file holds the mirror.
+    ///
+    /// Parked actions are not in it — they are not in the mirror until released
+    /// — so against a partner that holds them mirrored, a stalled fetch reads
+    /// as a mismatch and takes the full path, where
+    /// [`missing_from`](Self::missing_from) subtracts them. (Against a partner
+    /// in the same state the digests match, correctly: it has nothing servable
+    /// either.)
+    pub fn log_digest(&self) -> LogDigest {
+        self.mirror.lock().digest()
     }
 
     /// A locally-committed action on its way out to the swarm: mirror it so this
