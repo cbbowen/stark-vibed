@@ -4,12 +4,14 @@ Vendored from <https://github.com/anchalshivank/iroh-webrtc-transport.git>,
 commit `a982968c07536b6033be0ca5e69e5c151b1410ac` (2026), repo root (this
 upstream is a single crate, unlike SuddenlyHazel's workspace).
 
-This is a **second** crate named `iroh-webrtc-transport` in `vendor/`. It is a
-different project by a different author than `vendor/iroh-webrtc-transport`
-(SuddenlyHazel's), which stark-net currently depends on. The two share a name
-and a goal but no code or architecture:
+This crate arrived as a **second** vendoring under the same name, beside a
+SuddenlyHazel-derived facade that stark-net depended on at the time. That
+sibling is gone: the spike in `tests/` settled the question in this crate's
+favour, and **this is now stark-net's production dependency** —
+`crates/stark-net/Cargo.toml` points its default-on `webrtc` feature at this
+path. The two shared a name and a goal but no code or architecture:
 
-| | SuddenlyHazel (current) | anchalshivank (this one) |
+| | SuddenlyHazel (replaced) | anchalshivank (this one) |
 |---|---|---|
 | Integration | Facade owning TWO endpoints (relay + relay-cleared webrtc) + its own dial/accept API | ONE ordinary `Endpoint` with `add_custom_transport` + `path_selector` |
 | WebRTC stack (native) | webrtc-rs | str0m (sans-IO) + local UDP socket |
@@ -27,7 +29,7 @@ unchanged. Our 2026-07-24 spike (see
 single-endpoint migration was a dead end — but that spike predates using
 iroh 1.0.2's public `path_selector` API, which this upstream's examples are
 built around (via the 0.97-era `transport_bias`, since removed). The spike in
-`tests/` here re-litigates that question.
+`tests/` here re-litigated that question — and won it; see the results below.
 
 ## What was vendored
 
@@ -53,7 +55,8 @@ the same `WebRtcTunnel` via a wasm `WebRtcTransport::attach_data_channel`
 handles loss; outbound: `spawn_local` pump with `bufferedamountlow`
 backpressure at 1 MiB/256 KiB water marks; the pump owns the
 `RtcPeerConnection` so it is not GC'd). Event-handling patterns follow the
-browser-verified code in `vendor/iroh-webrtc-transport`. `Signaling` and its
+browser-verified code of the SuddenlyHazel facade this crate replaced.
+`Signaling` and its
 impls are `#[async_trait(?Send)]` on wasm (single-threaded; iroh's wasm stream
 types are not `Send`). Compile-checked for `wasm32-unknown-unknown`; NOT yet
 run in a browser.
@@ -78,8 +81,10 @@ run in a browser.
 ## ⚠ License
 
 Upstream has **no LICENSE file and no `license` field** at the vendored commit.
-Fine for a private experiment; must be resolved with the author (or the code
-rewritten) before any release that includes it.
+That was tolerable while this was a private experiment; now that the crate is
+stark-net's default transport it is in every default build, so this **blocks
+any release of Stark**, not merely of this crate. It must be resolved with the
+author (or the code rewritten) first.
 
 ## Spike results (2026-07-29, iroh 1.0.3 — `tests/single_endpoint_direct_and_fallback.rs`)
 
@@ -136,5 +141,5 @@ fallback (dead custom addr) is unaffected.
   already hole-punches; WebRTC is for browsers, where the browser does ICE.
 - ~~No wasm/browser implementation of the custom transport yet.~~ RESOLVED by
   `src/web_peer.rs` (see Local additions) — though real-browser verification
-  is still pending. That iroh's wasm build accepts custom transports is
-  already proven in production by the sibling crate's facade.
+  is still pending. That iroh's wasm build accepts custom transports was
+  already proven in production by the facade this crate replaced.

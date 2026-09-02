@@ -90,12 +90,14 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
   seen them — so pre-share strokes stay undoable.
 - **Live edits:** `iroh-gossip` broadcasts each newly committed `Action` (small — a
   fitted path, not pixels) on the session's random `TopicId`. The message ceiling is
-  raised (256 KiB) so long strokes fit. A broadcast carries **no schema**, unlike a
+  raised so long strokes fit — the constant (`stark-net`'s `MAX_MESSAGE_SIZE`)
+  owns the figure and the reasoning. A broadcast carries **no schema**, unlike a
   saved file (§8): both ends encode against their own, and the ALPN below is what makes
   a mismatch fail to meet rather than decode wrong — see `stark-net`'s `codec` for why a
   flooded channel cannot afford to carry one.
-- **Join / catch-up:** a joining peer connects over the `stark/collab/1` ALPN and
-  requests a **snapshot** — the save-format container (§8), assets and substrates
+- **Join / catch-up:** a joining peer connects over the versioned catch-up ALPN
+  (`stark/collab/N` — the counter moves with the wire, and its ledger lives on
+  the constant in `stark-net`'s `wire`) and requests a **snapshot** — the save-format container (§8), assets and substrates
   bundled — then rides the gossip tail. It joins the topic *before* fetching, so
   the snapshot/gossip overlap covers the seam (dedup by id). Every member serves
   snapshots from a session **mirror** (log + assets + substrates, CPU-side), so
@@ -190,10 +192,25 @@ hooks (`start_collaboration` / `join_collaboration` / `merge_remote` /
 ### 12.5 What is deliberately deferred
 
 Authentication/permissions (anyone with a ticket can write), large-session
-scaling (gossip fan-out, log compaction/GC of fully-superseded tiles), recovery
-from gossip loss (a lagged receiver warns; a re-join resnapshots), and
-offline-merge UX. None perturb the convergence model; they layer on top of it.
-See also §17.13.
+scaling (gossip fan-out, log compaction/GC of fully-superseded tiles), and
+offline-merge UX. Mirror growth is on the list too: every member's session
+mirror keeps the whole log and every asset payload in RAM and nothing trims it
+— deliberately, because the structure holding it (a persistent log, a
+revision-keyed encode cache, request variants matched by name) will absorb a
+trimmed-mirror change without surgery when sessions grow long enough to need
+one. None perturb the convergence model; they layer on top of it.
+See also §17.12.
+
+One item has come off this list. **Recovery from gossip loss is built**
+(`stark-net`'s `reconcile`): every member mirrors the whole total-ordered log,
+and on a slow cadence — promptly, once the swarm reports a lagged receiver —
+compares logs with a rotating neighbour over the catch-up ALPN and pulls the
+actions it lacks. A cheap digest pre-check keeps the no-loss exchange, which is
+almost every exchange, nearly free. What comes back takes no shortcut: a
+recovered action goes through the same admission door as one off the flood —
+parked until any content it names has landed — because a repair that applied a
+`SetSubstrate` against the flat stand-in would create the very divergence it
+exists to remove (§6.4).
 
 ### 12.6 Commutation fast paths — undo and late merges without replay
 
@@ -449,37 +466,53 @@ partition:
 
 ```rust
 pub struct PeerFrame {
+    /// Which run of this client published the frame; orders before `seq`,
+    /// which restarts at zero when the client does.
+    pub boot: u64,
     pub seq: u64,
     pub name: Option<String>,          // sent on change and on resync
     pub active_layer: LayerId,
     pub cursor: Option<Vec2>,
     pub gesture: Option<GestureFrame>,
+    /// A graceful exit; everything else in the frame is ignored.
+    pub leaving: bool,
 }
 
-pub struct GestureFrame {
-    pub id: GestureId,                 // (actor, ordinal) — a restart is unambiguous
-    /// The invariant part: tool, brush, layer, seed. Present on the gesture's
-    /// first frame and re-sent on every resync frame.
-    pub head: Option<GestureHead>,
-    /// Index of the first control point in `points`; 0 on a resync frame.
-    pub from: u32,
-    /// Everything frozen since the last frame, plus the provisional knot under
-    /// the cursor.
-    pub points: Vec<ControlPoint>,
-    /// Where on the assembled curve the stroke begins (`StrokeRecord::start`,
-    /// §6.2). Per frame, not in the head: a curve *parameter* names a
-    /// different place as the path grows, and it refines until the entry
-    /// spans freeze — after which it is final before any cached head bakes it.
-    pub start: f32,
+pub enum GestureFrame {
+    /// A stroke in flight — the append-only case the frozen prefix makes exact.
+    Stroke {
+        /// Per-actor ordinal, so a restart is unambiguous without a clock.
+        id: u64,
+        /// The invariant part (`StrokeHead`): layer, brush, seed, the layer's
+        /// translation at the press. Present on the gesture's first frame and
+        /// re-sent on every resync frame.
+        head: Option<Box<StrokeHead>>,
+        /// Index of the first control point in `points`; 0 on a resync frame.
+        from: u32,
+        /// Everything frozen since the last frame, plus the provisional knot
+        /// under the cursor.
+        points: Vec<ControlPoint>,
+        /// Where on the assembled curve the stroke begins (`StrokeRecord::start`,
+        /// §6.2). Per frame, not in the head: a curve *parameter* names a
+        /// different place as the path grows, and it refines until the entry
+        /// spans freeze — after which it is final before any cached head bakes it.
+        start: f32,
+    },
+    /// A marquee or lasso being dragged (§6.8) — sent whole: its closing edge
+    /// moves with the cursor, so its tail is not append-only.
+    Selection { id: u64, op: SelectionOp },
+    /// A region dragged out to fill — sent whole for the same reason.
+    Fill { id: u64, op: FillOp, translation: IVec2 },
 }
 ```
 
 - **The receiver** does `path.truncate(from); path.extend(points)` — valid
   because frozen points never change, which is a property of the fitter, not an
   assumption about the network.
-- **A gap** (`from > path.len()`, or a `MeshEvent::Lagged` for that origin) drops
-  that peer's live gesture and waits. Nothing is requested and nothing is
-  retransmitted on demand: the next **resync frame** repairs it.
+- **A gap** (`from > path.len()` — including one left behind when the gossip
+  stream lags, which names no origin) drops that peer's live gesture and waits.
+  Nothing is requested and nothing is retransmitted on demand: the next
+  **resync frame** repairs it.
 - **Resync frames** carry `head` and the full path (`from = 0`) at ~1 Hz. A
   stroke rarely outlives a few seconds, so this bounds worst-case repair latency
   at about a second while costing roughly 1 KB/s — and it is exactly what a
@@ -643,11 +676,19 @@ untouched:
 
 - **Presence never enters the `Mirror`, a snapshot, or a file.** One rule, and
   the save format and catch-up protocol need no changes at all.
-- **Presence is dropped, never resynced.** `MeshEvent::Lagged { origin }` already
-  reports loss per origin; for actions it means "resync", for presence it means
-  "drop this peer's gesture and wait for their next resync frame".
-- **Presence is shed first under congestion**, and is rate-capped per origin,
-  since it is the only traffic a peer can generate without limit.
+- **Presence is dropped, never resynced.** iroh-gossip's `Lagged` event names no
+  origin — it says only that the swarm outran this receiver — and the two kinds
+  of traffic part ways on what that costs: for actions it raises the reconcile
+  prompt (§12.5), while for presence nothing is done at all, because a gesture
+  with a hole in it repairs through its author's next resync frame or expires
+  on its own (§17.4, §17.5).
+- **Presence is shed first under congestion**, since it is the only traffic a
+  peer can generate without limit. The built cap is a staleness quota at the
+  engine's door, not a rate: a bounded number of frames may sit queued for the
+  engine across all peers (`PRESENCE_QUEUE`), and a frame arriving past it is
+  dropped — everything queued behind the newest is work the UI would do and
+  throw away. A per-origin rate cap would tighten this against one hostile
+  peer; it is not built.
 
 The UI pump gains one symmetric line each way:
 

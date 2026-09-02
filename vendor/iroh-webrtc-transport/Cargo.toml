@@ -7,10 +7,11 @@
 # peer + attach path (`src/web_peer.rs`, browser RTCPeerConnection — upstream
 # has no browser-side custom transport at all). See VENDORING.md.
 #
-# NOTE: this is a second, EXPERIMENTAL vendoring of a crate by the same name;
-# vendor/iroh-webrtc-transport (SuddenlyHazel's) is the one stark-net currently
-# uses. This one is standalone (workspace-excluded, not a path dep of anything)
-# until the experiment in tests/ decides its fate.
+# NOTE: this arrived as a second, experimental vendoring beside a
+# SuddenlyHazel-derived crate of the same name. The experiment in tests/
+# settled its fate: that sibling is gone, and THIS crate is stark-net's
+# production dependency (crates/stark-net/Cargo.toml, behind the default-on
+# `webrtc` feature). Workspace-excluded like the rest of vendor/.
 [package]
 name = "iroh-webrtc-transport"
 version = "0.1.0"
