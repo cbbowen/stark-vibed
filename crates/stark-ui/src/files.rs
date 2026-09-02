@@ -92,7 +92,7 @@ fn shown_revision(state: AppState) -> Option<u64> {
 ///
 /// The revision is passed rather than read here, because the two writers hold it at
 /// different moments, and for one of them reading it at this point would be reading
-/// it too late — see [`export_png`].
+/// it too late — see [`export_image`].
 fn mark_written(state: AppState, revision: u64) {
     let mut written = state.written_revision;
     written.set(revision);
@@ -245,12 +245,36 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
 /// frame's canvas size is the piece, and everything else is a resampling of it.
 const SCALES: [(&str, f32); 4] = [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)];
 
-/// The export dialog: pick a resolution and a substrate, see the pixel size you will
-/// get, and write the PNG.
+/// The two pictures export can write (§15.6). PNG is lossless and can carry
+/// transparency; JPG is smaller and always stands on the substrate.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ExportFormat {
+    Png,
+    Jpg,
+}
+
+impl ExportFormat {
+    /// The word on the chip and in the subtitle.
+    fn label(self) -> &'static str {
+        match self {
+            ExportFormat::Png => "PNG",
+            ExportFormat::Jpg => "JPG",
+        }
+    }
+}
+
+/// Fixed rather than asked in the dialog: 90 is the lowest quality at which the
+/// encoder keeps full chroma (4:4:4) — below it, subsampling smears exactly the
+/// colored edges a painting is made of.
+const JPEG_QUALITY: u8 = 90;
+
+/// The export dialog: pick a format, a resolution and a substrate, see the pixel
+/// size you will get, and write the picture.
 #[component]
 pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     let mut scale = use_signal(|| 1.0f32);
+    let mut format = use_signal(|| ExportFormat::Png);
     let mut transparent = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     // A full-resolution readback is not instant, and the button is the only place
@@ -289,15 +313,35 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
         None => ("\u{2014}".to_string(), None),
     };
     let blocked = plan_error.is_some();
+    let format_name = format().label();
 
     rsx! {
         Modal { on_close,
             div { class: "modal-title", "Export image" }
             div { class: "modal-subtitle",
                 if frame.is_some() {
-                    "Writes the frame as a PNG. This is a picture, not the painting \u{2014} use Save to keep an editable document."
+                    "Writes the frame as a {format_name}. This is a picture, not the painting \u{2014} use Save to keep an editable document."
                 } else {
                     "No frame, so everything painted is exported. Add a frame to choose the crop."
+                }
+            }
+
+            div { class: "modal-section-label", "FORMAT" }
+            div { class: "tool-row",
+                button {
+                    class: if format() == ExportFormat::Png { "chip active" } else { "chip" },
+                    onclick: move |_| format.set(ExportFormat::Png),
+                    "PNG"
+                }
+                button {
+                    class: if format() == ExportFormat::Jpg { "chip active" } else { "chip" },
+                    onclick: move |_| {
+                        format.set(ExportFormat::Jpg);
+                        // JPEG has no alpha, so "Transparent" stops being on
+                        // offer — put the choice back where the chips say it is.
+                        transparent.set(false);
+                    },
+                    "JPG"
                 }
             }
 
@@ -328,6 +372,9 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                 }
                 button {
                     class: if transparent() { "chip active" } else { "chip" },
+                    // Dead rather than hidden while JPG is picked: the option
+                    // still exists, it is the format that cannot take it.
+                    disabled: format() == ExportFormat::Jpg,
                     onclick: move |_| transparent.set(true),
                     "Transparent"
                 }
@@ -355,7 +402,8 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                         // dialog therefore cancels the export, which is also
                         // what dismissing it should mean.
                         spawn(async move {
-                            let result = export_png(state, frame, scale(), transparent()).await;
+                            let result =
+                                export_image(state, frame, scale(), transparent(), format()).await;
                             busy.set(false);
                             match result {
                                 Ok(()) => on_close.call(()),
@@ -373,14 +421,20 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// Render the frame and hand the PNG to the browser.
-async fn export_png(
+/// Render the frame and hand the picture to the browser.
+async fn export_image(
     state: AppState,
     frame: Option<LayerId>,
     scale: f32,
     transparent: bool,
+    format: ExportFormat,
 ) -> Result<(), String> {
-    let background = if transparent {
+    // JPEG cannot say "nothing here": encoding drops alpha, which would bake
+    // whatever straight color sits under a transparent texel into the picture.
+    // So a JPG stands on the substrate whatever the chips were doing — the
+    // dialog already disables Transparent for it, and this makes the pair a
+    // fact of the export rather than of the chrome (`RgbaImage::to_jpeg`).
+    let background = if transparent && format == ExportFormat::Png {
         Background::Transparent
     } else {
         Background::Substrate
@@ -388,7 +442,7 @@ async fn export_png(
     // The revision this picture will be of, taken **before** the readback rather
     // than after it. The render below is encoded synchronously; the await that
     // follows it is a full-resolution copy off the GPU and is not instant, and a
-    // commit landing during that copy is work the PNG does not show. Recording the
+    // commit landing during that copy is work the picture does not show. Recording the
     // later revision as written would leave the unload guard silent about exactly
     // that work; recording this one costs at worst a prompt over a change already
     // in the file.
@@ -414,12 +468,12 @@ async fn export_png(
         .map_err(|e| e.to_string())
     })
     .ok_or("the canvas is not ready yet")??;
-    let png = readback
-        .await
-        .map_err(|e| e.to_string())?
-        .to_png()
-        .map_err(|e| e.to_string())?;
-    download_bytes(&png, "painting.png", "image/png")?;
+    let image = readback.await.map_err(|e| e.to_string())?;
+    let (encoded, name, mime) = match format {
+        ExportFormat::Png => (image.to_png(), "painting.png", "image/png"),
+        ExportFormat::Jpg => (image.to_jpeg(JPEG_QUALITY), "painting.jpg", "image/jpeg"),
+    };
+    download_bytes(&encoded.map_err(|e| e.to_string())?, name, mime)?;
     if let Some(revision) = rendered {
         mark_written(state, revision);
     }

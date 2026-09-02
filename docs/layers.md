@@ -1425,6 +1425,17 @@ Three decisions that go with it:
   silently leaked the selection outline into every opaque PNG.
   `export_omits_the_selection_outline` is the regression.
 
+**Two encodings leave by this door** (`RgbaImage::to_png` / `to_jpeg`): PNG,
+lossless with alpha written straight, and JPEG at a fixed quality of 90 — the
+lowest setting at which the encoder keeps full chroma (4:4:4), below which
+subsampling smears exactly the colored edges a painting is made of. JPEG has no
+alpha, so the dialog deadens its Transparent chip and `export_image` pins the
+substrate background regardless: encoding a transparent render would bake
+whatever straight color sits under its alpha-0 texels into the picture. And
+JPEG's dimension field is 16 bits — a limit of the *format*, so a side past
+65535 px is refused as its own `JpegTooLarge` rather than dressed up as the
+device limit above.
+
 Export is safe at any scale because the relief is already zoom-normalized:
 `strength = m.light.w / m.surf_a.z` divides the screen-space gradient by the
 canvas px it spans, so a 2× export has the same slope, resolved finer.

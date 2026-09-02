@@ -72,12 +72,13 @@ pub enum EngineError {
 /// make sense, or the encoder refusing what it was handed.
 ///
 /// A type rather than a `String` because the two halves want different answers.
-/// [`TooSmall`](Self::TooSmall), [`OverLimit`](Self::OverLimit) and
-/// [`UnusableView`](Self::UnusableView) are all "ask for something else", and a
-/// frontend that wants to *say* what else — clamp the scale, offer the device's
-/// limit — needs the numbers rather than a sentence containing them.
-/// [`Encode`](Self::Encode) is not answerable by asking differently at all, and is
-/// the one arm carrying somebody else's error.
+/// [`TooSmall`](Self::TooSmall), [`OverLimit`](Self::OverLimit),
+/// [`UnusableView`](Self::UnusableView) and [`JpegTooLarge`](Self::JpegTooLarge)
+/// are all "ask for something else", and a frontend that wants to *say* what else
+/// — clamp the scale, offer the device's limit — needs the numbers rather than a
+/// sentence containing them. [`Encode`](Self::Encode) and
+/// [`EncodeJpeg`](Self::EncodeJpeg) are not answerable by asking differently at
+/// all, and are the arms carrying somebody else's error.
 #[derive(Debug, Error)]
 pub enum ExportError {
     /// The frame has no area to render: an empty or non-finite bound (§15.6).
@@ -102,10 +103,18 @@ pub enum ExportError {
     #[error("view must be finite")]
     UnusableView,
 
-    /// The PNG encoder refused the image — the one arm that is not about the
-    /// request.
+    /// JPEG stores each dimension in 16 bits — a limit of the format, not of this
+    /// device, which is why it is not an [`OverLimit`](Self::OverLimit).
+    #[error("{width} × {height} px does not fit in a JPEG (65535 px a side at most)")]
+    JpegTooLarge { width: u32, height: u32 },
+
+    /// The PNG encoder refused the image — an arm that is not about the request.
     #[error("PNG encoding failed: {0}")]
     Encode(#[from] png::EncodingError),
+
+    /// The JPEG encoder refused the image — the other such arm.
+    #[error("JPEG encoding failed: {0}")]
+    EncodeJpeg(#[from] jpeg_encoder::EncodingError),
 }
 
 /// Which of the two things a size limit was measured against, so

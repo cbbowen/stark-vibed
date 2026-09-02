@@ -15,6 +15,7 @@ history = { workspace = true }
 serde = { workspace = true }
 flate2 = { workspace = true }
 png = { workspace = true }
+jpeg-encoder = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
 # Where a frame's time goes (`timing`, §7.1). A regular dependency, not a dev one:

@@ -147,6 +147,8 @@ futures-channel = { version = "0.3", default-features = false, features = ["std"
 wesl = "0.4"
 history = { git = "https://github.com/cbbowen/history" }
 png = "0.18"
+# The other export encoder (§15.6). Pure Rust, so it builds for wasm like `png`.
+jpeg-encoder = "0.6"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 # The action log's encoding, on disk and on the wire (§8). Columnar, with the

@@ -89,10 +89,72 @@ impl RgbaImage {
         }
         Ok(out)
     }
+
+    /// Encode as a JPEG at `quality` (1–100) — the other export format (§15.6).
+    ///
+    /// The alpha channel is dropped: JPEG has nowhere to put it. So the *caller*
+    /// decides what stands where nothing was painted, by rendering onto the
+    /// substrate rather than onto transparency — encoding a transparent render
+    /// would bake in whatever straight color sits under its alpha-0 texels.
+    ///
+    /// At 90 and above the encoder keeps full chroma (4:4:4); below that it
+    /// subsamples, which smears exactly the colored edges a painting is made of.
+    pub fn to_jpeg(&self, quality: u8) -> crate::Result<Vec<u8>> {
+        use crate::error::ExportError;
+        let (Ok(width), Ok(height)) = (u16::try_from(self.width), u16::try_from(self.height))
+        else {
+            return Err(ExportError::JpegTooLarge {
+                width: self.width,
+                height: self.height,
+            }
+            .into());
+        };
+        let mut out = Vec::new();
+        let encoder = jpeg_encoder::Encoder::new(&mut out, quality);
+        encoder
+            .encode(&self.pixels, width, height, jpeg_encoder::ColorType::Rgba)
+            .map_err(ExportError::EncodeJpeg)?;
+        Ok(out)
+    }
 }
 
 impl std::fmt::Debug for RgbaImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RgbaImage({}x{})", self.width, self.height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RgbaImage;
+    use crate::error::{EngineError, ExportError};
+
+    #[test]
+    fn jpeg_encodes_a_complete_stream() {
+        let img = RgbaImage::new(2, 2, vec![255; 16]);
+        let bytes = img.to_jpeg(90).expect("a 2x2 image must encode");
+        // SOI at the front, EOI at the back — a decoder refuses anything less.
+        assert_eq!(&bytes[..2], [0xFF, 0xD8], "JPEG must start with SOI");
+        assert_eq!(
+            &bytes[bytes.len() - 2..],
+            [0xFF, 0xD9],
+            "JPEG must end with EOI"
+        );
+    }
+
+    #[test]
+    fn jpeg_refuses_a_dimension_past_its_format() {
+        // One texel past what 16 bits can say. PNG would take this; JPEG cannot.
+        let img = RgbaImage::new(65536, 1, vec![0; 65536 * 4]);
+        assert!(
+            matches!(
+                img.to_jpeg(90),
+                Err(EngineError::Export(ExportError::JpegTooLarge {
+                    width: 65536,
+                    ..
+                }))
+            ),
+            "a 65536-wide image must be refused as JpegTooLarge"
+        );
     }
 }
