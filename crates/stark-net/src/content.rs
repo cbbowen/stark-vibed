@@ -258,20 +258,18 @@ impl<S: ContentSource> Resolver<S> {
 /// waited for it would be measuring `tokio::time` rather than the retry.
 #[cfg(test)]
 mod tests {
-    use stark_model::Srgb;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use iroh::SecretKey;
     use stark_model::AssetId;
     use stark_model::DocumentFile;
-    use stark_model::document::{Action, ActionId, ActionKind, ActorId};
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::events::RemoteEvent;
     use crate::mirror::{Mirror, SharedMirror};
+    use crate::testutil::{action, drain, endpoint};
     use crate::waitlist::Admit;
 
     /// A peer whose blob store holds `content` — after `fails_first` refusals.
@@ -357,20 +355,6 @@ mod tests {
         }
     }
 
-    fn endpoint(tag: u8) -> EndpointId {
-        SecretKey::from_bytes(&[tag; 32]).public()
-    }
-
-    fn action(lamport: u64) -> Action {
-        Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
-    }
-
     struct Harness {
         resolver: Resolver<Fake>,
         fake: Fake,
@@ -400,14 +384,6 @@ mod tests {
             cancel,
             events,
         }
-    }
-
-    fn drain(rx: &mut mpsc::UnboundedReceiver<RemoteEvent>) -> Vec<RemoteEvent> {
-        let mut out = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            out.push(event);
-        }
-        out
     }
 
     fn brush() -> AssetNeed {

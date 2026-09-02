@@ -4,46 +4,23 @@
 //! These run over real iroh endpoints on loopback but need no GPU: they work on
 //! the action log and the catch-up protocol directly.
 
+mod util;
+
 use std::time::Duration;
 
 use stark_model::DocumentFile;
-use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
-use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
+use stark_model::document::Action;
+use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent};
 
-/// A cheap, uniquely identifiable action — the content is irrelevant, only that
-/// it propagates.
-fn action(actor: ActorId, lamport: u64) -> Action {
-    Action {
-        id: ActionId { lamport, actor },
-        kind: ActionKind::SetLayerVisible(LayerId::solo(1), true),
-    }
-}
-
-async fn ticket_of(session: &CollabSession) -> SessionTicket {
-    session
-        .broadcaster()
-        .ticket()
-        .await
-        .to_string()
-        .parse()
-        .expect("ticket round-trips")
-}
+use util::{action, next_matching, ticket_of};
 
 /// Wait (bounded) for one remote action to arrive.
 async fn next_action(events: &mut Events) -> Action {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Some(RemoteEvent::Action(action))) => return action,
-            Ok(Some(
-                RemoteEvent::Asset { .. }
-                | RemoteEvent::Presence { .. }
-                | RemoteEvent::ResolveLocally { .. },
-            )) => continue,
-            Ok(None) => panic!("event stream ended"),
-            Err(_) => panic!("timed out waiting for a remote action"),
-        }
-    }
+    next_matching(events, |event| match event {
+        RemoteEvent::Action(action) => Some(action),
+        _ => None,
+    })
+    .await
 }
 
 /// The reported failure: with the founder gone, can a newcomer still join

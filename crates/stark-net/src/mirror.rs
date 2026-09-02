@@ -426,20 +426,13 @@ impl LogView {
 /// through the same-shaped bag the save file carries.
 #[cfg(test)]
 mod tests {
-    use stark_model::Srgb;
-    use stark_model::document::{ActionKind, ActorId};
+    use stark_model::document::ActorId;
 
     use super::*;
+    use crate::testutil::{action, action_by};
 
     fn file_with_content() -> DocumentFile {
-        let action = Action {
-            id: ActionId {
-                lamport: 1,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        };
-        let mut file = DocumentFile::new(vec![action]);
+        let mut file = DocumentFile::new(vec![action(1)]);
         file.content = vec![
             (AssetNeed::Brush(AssetId([1; 32])), vec![1, 2, 3]),
             (AssetNeed::Substrate(AssetId([2; 32])), vec![4, 5]),
@@ -463,22 +456,12 @@ mod tests {
         assert_eq!(content, file.content);
     }
 
-    fn action_by(lamport: u64, actor: u64) -> Action {
-        Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(actor),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
-    }
-
     /// Two logs holding the same actions must agree on the digest whatever
     /// order they arrived in — a sweep compares digests across peers whose
     /// floods delivered differently — and it must move the moment a log does.
     #[test]
     fn the_digest_is_order_independent_and_moves_with_the_log() {
-        let all: Vec<Action> = (1..=8).map(|l| action_by(l, l % 3)).collect();
+        let all: Vec<Action> = (1..=8).map(|l| action_by(ActorId(l % 3), l)).collect();
 
         let mut forward = Mirror::from_file(&DocumentFile::new(Vec::new()));
         for a in &all {
@@ -506,10 +489,10 @@ mod tests {
         // A new action moves it; a duplicate moves nothing — not the count,
         // and not the xor (a fold before the dedup check would XOR the id
         // back out and leave the count telling the truth alone).
-        assert!(forward.insert(action_by(9, 0)));
+        assert!(forward.insert(action_by(ActorId(0), 9)));
         assert_ne!(forward.digest(), backward.digest());
         let before_duplicate = forward.digest();
-        assert!(!forward.insert(action_by(9, 0)));
+        assert!(!forward.insert(action_by(ActorId(0), 9)));
         assert_eq!(forward.digest(), before_duplicate);
         assert_eq!(forward.digest().count, 9);
     }

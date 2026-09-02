@@ -480,6 +480,7 @@ fn announce(endpoint: Endpoint, remote: EndpointId, cancel: Cancel) {
 /// the protocol is the same).
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
 
     use ::iroh::address_lookup::MemoryLookup;
@@ -488,7 +489,7 @@ mod tests {
     use ::iroh::test_utils::run_relay_server;
     use ::iroh::tls::CaTlsConfig;
     use ::iroh::{RelayMap, RelayMode, SecretKey, Watcher};
-    use iroh_gossip::api::{Event as GossipEvent, GossipSender};
+    use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
     use iroh_gossip::net::Gossip;
     use iroh_gossip::proto::TopicId;
     use n0_future::StreamExt;
@@ -655,5 +656,154 @@ mod tests {
         let _ = b.router.shutdown().await;
         a.endpoint.close().await;
         b.endpoint.close().await;
+    }
+
+    /// The endpoint's bound sockets as a dialable loopback addr — what
+    /// `backend`'s local ticket path builds, for peers with no relay.
+    fn loopback_addr(endpoint: &Endpoint) -> EndpointAddr {
+        let mut addr = EndpointAddr::new(endpoint.id());
+        for sock in endpoint.bound_sockets() {
+            let sock = if sock.ip().is_unspecified() {
+                let loopback: IpAddr = if sock.is_ipv4() {
+                    Ipv4Addr::LOCALHOST.into()
+                } else {
+                    Ipv6Addr::LOCALHOST.into()
+                };
+                SocketAddr::new(loopback, sock.port())
+            } else {
+                sock
+            };
+            addr = addr.with_ip_addr(sock);
+        }
+        addr
+    }
+
+    /// The next broadcast payload off a raw gossip receiver, bounded.
+    async fn next_received(recv: &mut GossipReceiver) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match recv.next().await {
+                    Some(Ok(GossipEvent::Received(message))) => return message.content.to_vec(),
+                    Some(Ok(_)) => continue,
+                    other => panic!("gossip receiver ended: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for a gossip payload")
+    }
+
+    /// A neighbor that does not speak the signaling ALPN — an older build, or
+    /// one without the feature — costs the offerer only its bounded attempts:
+    /// the give-up path releases the in-flight claim, nothing attaches, and
+    /// gossip keeps flowing on the paths it already had.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_without_signaling_fails_bootstrap_and_gossip_keeps_flowing() {
+        // The smaller endpoint id is the side that offers, so the full stack
+        // must hold it — sort two fresh keys rather than hoping.
+        let (a, b) = (SecretKey::generate(), SecretKey::generate());
+        let (offer_secret, deaf_secret) = if a.public().as_bytes() < b.public().as_bytes() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+
+        // The offerer: transport installed, signaling registered.
+        let direct = Direct::new(offer_secret.public(), Cancel::default());
+        let offer_ep = direct
+            .install(Endpoint::builder(presets::Minimal).secret_key(offer_secret))
+            .bind()
+            .await
+            .expect("bind the offerer");
+        let offer_gossip = Gossip::builder().spawn(offer_ep.clone());
+        let offer_router = direct
+            .register(
+                Router::builder(offer_ep.clone()).accept(iroh_gossip::ALPN, offer_gossip.clone()),
+                &offer_ep,
+            )
+            .spawn();
+
+        // The deaf peer: gossip only — no signaling ALPN, no custom transport.
+        let deaf_ep = Endpoint::builder(presets::Minimal)
+            .secret_key(deaf_secret)
+            .bind()
+            .await
+            .expect("bind the deaf peer");
+        let deaf_gossip = Gossip::builder().spawn(deaf_ep.clone());
+        let deaf_router = Router::builder(deaf_ep.clone())
+            .accept(iroh_gossip::ALPN, deaf_gossip.clone())
+            .spawn();
+
+        offer_ep.add_addr(loopback_addr(&deaf_ep)).await;
+        deaf_ep.add_addr(loopback_addr(&offer_ep)).await;
+        let mut offer_sub = offer_gossip
+            .subscribe(TOPIC, vec![])
+            .await
+            .expect("subscribe the offerer");
+        let mut deaf_sub = deaf_gossip
+            .subscribe(TOPIC, vec![offer_ep.id()])
+            .await
+            .expect("subscribe the deaf peer");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            deaf_sub.joined().await.expect("the deaf side meets");
+            offer_sub.joined().await.expect("the offerer meets");
+        })
+        .await
+        .expect("timed out forming the swarm");
+
+        // The claim is taken synchronously, so asserting it rules out the
+        // early returns (id order, already attached) passing for a give-up.
+        direct.ensure_direct(&offer_ep, deaf_ep.id());
+        assert!(
+            direct
+                .bootstrapping
+                .lock()
+                .expect("bootstraps poisoned")
+                .contains(&deaf_ep.id()),
+            "the offerer must actually attempt the bootstrap"
+        );
+
+        // Give-up: every attempt spent, the claim released, nothing attached.
+        let mut released = false;
+        for _ in 0..600 {
+            if direct
+                .bootstrapping
+                .lock()
+                .expect("bootstraps poisoned")
+                .is_empty()
+            {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            released,
+            "the give-up path must release the in-flight claim"
+        );
+        assert!(
+            !direct.transport.is_attached(&custom_addr_for(deaf_ep.id())),
+            "no channel can attach to a peer without the ALPN"
+        );
+
+        // And the session is healthy: gossip still flows, both ways.
+        let (offer_send, mut offer_recv) = offer_sub.split();
+        let (deaf_send, mut deaf_recv) = deaf_sub.split();
+        offer_send
+            .broadcast(bytes::Bytes::from_static(b"from the offerer"))
+            .await
+            .expect("broadcast");
+        assert_eq!(next_received(&mut deaf_recv).await, b"from the offerer");
+        deaf_send
+            .broadcast(bytes::Bytes::from_static(b"from the deaf peer"))
+            .await
+            .expect("broadcast");
+        assert_eq!(next_received(&mut offer_recv).await, b"from the deaf peer");
+
+        for router in [offer_router, deaf_router] {
+            let _ = router.shutdown().await;
+        }
+        offer_ep.close().await;
+        deaf_ep.close().await;
     }
 }

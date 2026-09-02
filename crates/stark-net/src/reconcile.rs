@@ -264,39 +264,16 @@ impl Reconciler {
 /// message is precisely one gossip never delivers.
 #[cfg(test)]
 mod tests {
-    use stark_model::Srgb;
     use std::time::Duration;
 
-    use stark_model::DocumentFile;
-    use stark_model::document::{Action, ActionKind, ActorId};
+    use stark_model::document::Action;
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::backend::{self, Bound};
+    use crate::backend::Bound;
     use crate::events::{NetOptions, RemoteEvent};
-    use crate::mirror::{Mirror, Served, SharedMirror};
-
-    fn action(lamport: u64) -> Action {
-        Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([lamport as f32 / 8.0; 3])),
-        }
-    }
-
-    /// A bound member serving `log`. The [`Served`] handle comes back too, for
-    /// its request count.
-    async fn member(log: Vec<Action>) -> (Bound, SharedMirror, Served) {
-        let served = Served::default();
-        let bound = backend::bind(served.clone(), &NetOptions::local())
-            .await
-            .expect("bind");
-        let mirror = SharedMirror::new(Mirror::from_file(&DocumentFile::new(log)));
-        served.publish(mirror.clone());
-        (bound, mirror, served)
-    }
+    use crate::mirror::SharedMirror;
+    use crate::testutil::{action, member};
 
     /// A reconciler for `ours` wired to sweep against `them`, and the event
     /// stream its recoveries surface on. Also teaches the endpoint how to reach

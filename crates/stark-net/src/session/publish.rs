@@ -181,31 +181,23 @@ impl Broadcaster {
     /// connected to right now — so the link also survives this peer leaving
     /// between the minting and the pasting: a joiner tries members in order, and
     /// any one of them admits it. Minted per call rather than stored, because
-    /// the insurance is only as good as it is current. Sorted
-    /// ([`Neighbors::snapshot_sorted`]) so one membership always spells one link.
+    /// the insurance is only as good as it is current. The sampling is here;
+    /// the policy — order, cap, which hops travel — is [`mint`]'s.
     pub async fn ticket(&self) -> SessionTicket {
-        let neighbors = self.neighbors.snapshot_sorted();
-        let mut members = vec![self.ticket_addr.clone()];
-        for id in neighbors.into_iter().take(TICKET_NEIGHBORS) {
+        let mut neighbors = Vec::new();
+        for id in self
+            .neighbors
+            .snapshot_sorted()
+            .into_iter()
+            .take(TICKET_NEIGHBORS)
+        {
             // The proven path only — the one this peer's traffic rides right
             // now. Wrong is worse than missing here: a bare id still resolves
             // through address lookup on a WAN session, while a joiner spends
             // [`DIAL_TIMEOUT`] discovering that a stale address does not answer.
-            // Custom (WebRTC) addrs are left off for the reason `Dialer::learn`
-            // drops them: a peer derives one from the endpoint id itself, so a
-            // link gains nothing by fixing in where a channel happened to be
-            // attached at minting time.
-            let hops = self
-                .dialer
-                .selected_addr(id)
-                .await
-                .filter(|addr| !matches!(addr, TransportAddr::Custom(_)));
-            members.push(EndpointAddr::from_parts(id, hops));
+            neighbors.push((id, self.dialer.selected_addr(id).await));
         }
-        SessionTicket {
-            members,
-            topic: self.topic,
-        }
+        mint(self.ticket_addr.clone(), &neighbors, self.topic)
     }
 
     /// How each gossip-neighbor session member is reached right now — direct
@@ -229,6 +221,37 @@ impl Broadcaster {
         }
         links
     }
+}
+
+/// The minting policy, pure: assemble a link from this peer's address, the
+/// neighbors sampled beside it — each with the one path its traffic was riding
+/// — and the topic.
+///
+/// Three decisions live here, where a test can hold them still:
+///
+/// - **One membership spells one link.** Neighbors are sorted by key bytes and
+///   capped at [`TICKET_NEIGHBORS`], so re-minting over an unchanged set yields
+///   byte-identical text — the frontend re-mints on a cadence and rewrites the
+///   invitation only on change.
+/// - **Custom (WebRTC) addrs are left off** the extra members, for the reason
+///   `Dialer::learn` drops them: a peer derives one from the endpoint id
+///   itself, so a link gains nothing by fixing in where a channel happened to
+///   be attached at minting time.
+/// - **The minter comes first**, addrs untouched — it is the member most
+///   recently known alive.
+pub(crate) fn mint(
+    local: EndpointAddr,
+    neighbors: &[(EndpointId, Option<TransportAddr>)],
+    topic: TopicId,
+) -> SessionTicket {
+    let mut named = neighbors.to_vec();
+    named.sort_unstable_by_key(|(id, _)| *id.as_bytes());
+    let mut members = vec![local];
+    for (id, addr) in named.into_iter().take(TICKET_NEIGHBORS) {
+        let hops = addr.filter(|addr| !matches!(addr, TransportAddr::Custom(_)));
+        members.push(EndpointAddr::from_parts(id, hops));
+    }
+    SessionTicket { members, topic }
 }
 
 /// The session's one send task: committed actions reach the wire in the order they
@@ -255,5 +278,101 @@ pub(super) async fn send_loop(
         if let Err(e) = sender.broadcast(bytes).await {
             tracing::warn!("broadcast failed: {e}; a peer's sweep will recover it");
         }
+    }
+}
+
+/// The minting policy ([`mint`]), without an endpoint under it.
+#[cfg(test)]
+mod tests {
+    use iroh_base::CustomAddr;
+
+    use super::*;
+    use crate::testutil::endpoint;
+
+    const TOPIC: TopicId = TopicId::from_bytes([7u8; 32]);
+
+    fn ip(port: u16) -> TransportAddr {
+        TransportAddr::Ip(format!("127.0.0.1:{port}").parse().expect("a socket"))
+    }
+
+    fn local() -> EndpointAddr {
+        EndpointAddr::from_parts(endpoint(9), [ip(4433)])
+    }
+
+    /// One membership spells one link: however the neighbor set was enumerated,
+    /// a re-mint over the same members is byte-identical text — the frontend
+    /// rewrites the invitation only when the text moves.
+    #[test]
+    fn a_remint_of_an_unchanged_membership_spells_the_same_link() {
+        let neighbors = [
+            (endpoint(3), Some(ip(1))),
+            (endpoint(1), Some(ip(2))),
+            (endpoint(2), None),
+        ];
+        let mut permuted = neighbors.clone();
+        permuted.rotate_left(1);
+
+        let first = mint(local(), &neighbors, TOPIC);
+        let again = mint(local(), &permuted, TOPIC);
+        assert_eq!(first.to_string(), again.to_string());
+
+        // The minter is first; the rest follow in key order.
+        assert_eq!(first.members[0].id, endpoint(9));
+        let mut sorted = vec![endpoint(1), endpoint(2), endpoint(3)];
+        sorted.sort_unstable_by_key(|id| *id.as_bytes());
+        let named: Vec<_> = first.members[1..].iter().map(|m| m.id).collect();
+        assert_eq!(named, sorted);
+    }
+
+    /// A link has a length budget, so it names at most [`TICKET_NEIGHBORS`]
+    /// members besides its minter — the first of the sorted set, so which ones
+    /// survive the cap is a fact of the membership rather than of enumeration.
+    #[test]
+    fn a_link_names_at_most_its_cap_of_neighbors() {
+        let neighbors: Vec<_> = (1..=TICKET_NEIGHBORS as u8 + 2)
+            .map(|tag| (endpoint(tag), None))
+            .collect();
+
+        let ticket = mint(local(), &neighbors, TOPIC);
+        assert_eq!(ticket.members.len(), 1 + TICKET_NEIGHBORS);
+
+        let mut sorted: Vec<_> = neighbors.iter().map(|(id, _)| *id).collect();
+        sorted.sort_unstable_by_key(|id| *id.as_bytes());
+        let named: Vec<_> = ticket.members[1..].iter().map(|m| m.id).collect();
+        assert_eq!(named, sorted[..TICKET_NEIGHBORS]);
+    }
+
+    /// A WebRTC addr is derived from the endpoint id, so fixing one into a link
+    /// buys nothing and can wedge a dial (`Dialer::learn`): an extra member
+    /// riding one travels as a bare id, while a proven IP or relay path is kept
+    /// — and the minter's own addrs are not the policy's to touch.
+    #[test]
+    fn a_webrtc_addr_is_left_off_the_extra_members() {
+        let custom = TransportAddr::Custom(CustomAddr::from_parts(7, b"a data channel"));
+        let neighbors = [(endpoint(1), Some(custom)), (endpoint(2), Some(ip(1)))];
+
+        let ticket = mint(local(), &neighbors, TOPIC);
+        for member in &ticket.members {
+            assert!(
+                !member
+                    .addrs
+                    .iter()
+                    .any(|addr| matches!(addr, TransportAddr::Custom(_))),
+                "a custom addr was minted into the link"
+            );
+        }
+        let by_id = |tag: u8| {
+            ticket
+                .members
+                .iter()
+                .find(|m| m.id == endpoint(tag))
+                .expect("named")
+        };
+        assert!(by_id(1).addrs.is_empty(), "bare id, not a stale channel");
+        assert_eq!(by_id(2).addrs.len(), 1, "the proven path is kept");
+        assert!(
+            !ticket.members[0].addrs.is_empty(),
+            "the minter keeps its own"
+        );
     }
 }

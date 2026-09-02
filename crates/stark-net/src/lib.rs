@@ -37,6 +37,8 @@ mod neighbors;
 mod proto;
 mod reconcile;
 mod session;
+#[cfg(test)]
+pub(crate) mod testutil;
 mod ticket;
 mod transport;
 mod waitlist;

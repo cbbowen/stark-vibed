@@ -365,12 +365,16 @@ impl std::fmt::Debug for CollabSession {
 
 /// Teardown is the [`Cancel`], not a convention: a session that is merely
 /// dropped must still end. The graceful path is what the integration tests
-/// exercise; this is the other end of the session's life.
+/// exercise; this is the other end of the session's life. Beside it, the other
+/// thing only a raw endpoint can do: put bytes on the topic that decode as
+/// nothing.
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::testutil;
+    use crate::wire::{Stamped, Wire};
 
     /// Dropping a `CollabSession` without `shutdown()` ends the session:
     /// `Events::recv` delivers its documented `None`, and the stack the session
@@ -408,5 +412,76 @@ mod tests {
             closed.is_ok(),
             "dropping the session must close the endpoint"
         );
+    }
+
+    /// Anyone holding the ticket can put bytes on the topic, including bytes
+    /// that decode as nothing. The receive loop's whole obligation is to drop
+    /// them and keep going — a junk payload must cost one warning, not the
+    /// session: an honest action broadcast after it still arrives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn junk_on_the_topic_does_not_kill_the_receive_loop() {
+        let (host, mut host_events) =
+            CollabSession::host(DocumentFile::new(Vec::new()), NetOptions::local())
+                .await
+                .expect("host session");
+        let ticket = host.broadcaster().ticket().await;
+
+        // A third party on the raw topic: an ordinary iroh endpoint speaking
+        // gossip and nothing of this crate's session machinery.
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .expect("bind a raw endpoint");
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let router = iroh::protocol::Router::builder(endpoint.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
+        endpoint.add_addr(ticket.members[0].clone()).await;
+        let mut sub = gossip
+            .subscribe(ticket.topic, vec![ticket.members[0].id])
+            .await
+            .expect("subscribe to the session topic");
+        tokio::time::timeout(Duration::from_secs(20), sub.joined())
+            .await
+            .expect("timed out meeting the session")
+            .expect("meet the session");
+        let (sender, _receiver) = sub.split();
+
+        // Junk first, then an honest action on the same wire — authored by the
+        // raw endpoint so the origin check is not what saves the day.
+        sender
+            .broadcast(bytes::Bytes::from_static(b"not a stamped payload"))
+            .await
+            .expect("broadcast junk");
+        let honest = testutil::action_by(actor_from_endpoint_id(endpoint.id()), 1);
+        let stamped = crate::codec::encode(&Stamped {
+            origin: endpoint.id(),
+            asset: None,
+            wire: Wire::Action(honest.clone()),
+        })
+        .expect("encode the honest action");
+        sender
+            .broadcast(stamped.into())
+            .await
+            .expect("broadcast the honest action");
+
+        // The loop survived the junk, or this never arrives.
+        let arrived = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match host_events.recv().await.expect("event stream ended") {
+                    crate::RemoteEvent::Action(action) => return action,
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("the receive loop did not deliver the action after the junk");
+        assert_eq!(arrived.id, honest.id);
+
+        host.shutdown().await;
+        if let Err(e) = router.shutdown().await {
+            tracing::warn!("raw router shutdown: {e}");
+        }
+        endpoint.close().await;
     }
 }

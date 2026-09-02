@@ -5,22 +5,14 @@
 //! Over real iroh endpoints on loopback, but with no GPU: the properties under test
 //! are all about the wire and the mirror.
 
-use std::time::Duration;
+mod util;
 
 use stark_model::DocumentFile;
 use stark_model::document::{Action, ActionId, ActionKind, ActorId, LayerId};
 use stark_model::peer::PeerFrame;
-use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket};
+use stark_net::{CollabSession, Events, Joined, NetOptions, RemoteEvent};
 
-async fn ticket_of(session: &CollabSession) -> SessionTicket {
-    session
-        .broadcaster()
-        .ticket()
-        .await
-        .to_string()
-        .parse()
-        .expect("ticket round-trips")
-}
+use util::{next_matching, ticket_of};
 
 fn frame(seq: u64, name: &str) -> PeerFrame {
     PeerFrame {
@@ -36,15 +28,11 @@ fn frame(seq: u64, name: &str) -> PeerFrame {
 
 /// Wait (bounded) for one presence frame.
 async fn next_presence(events: &mut Events) -> (ActorId, PeerFrame) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Some(RemoteEvent::Presence { actor, frame })) => return (actor, frame),
-            Ok(Some(_)) => continue,
-            Ok(None) => panic!("event stream ended"),
-            Err(_) => panic!("timed out waiting for presence"),
-        }
-    }
+    next_matching(events, |event| match event {
+        RemoteEvent::Presence { actor, frame } => Some((actor, frame)),
+        _ => None,
+    })
+    .await
 }
 
 /// Presence crosses the mesh, and the receiver attributes it to the **sender's**

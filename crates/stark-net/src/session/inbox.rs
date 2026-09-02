@@ -184,24 +184,18 @@ mod tests {
     use std::sync::Arc;
 
     use bytes::Bytes;
-    use iroh::{EndpointId, SecretKey};
+    use iroh::EndpointId;
     use iroh_blobs::Hash;
-    use stark_model::document::{
-        Action, ActionId, ActionKind, ActorId, BrushParams, BrushShape, LayerId, StrokeRecord,
-    };
-    use stark_model::geom::IVec2;
+    use stark_model::document::{ActorId, LayerId};
     use stark_model::peer::PeerFrame;
-    use stark_model::{AssetId, AssetNeed, DocumentFile, Srgb};
+    use stark_model::{AssetId, AssetNeed, DocumentFile};
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::cancel::Cancel;
     use crate::events::{Events, PRESENCE_QUEUE};
     use crate::mirror::{Mirror, SharedMirror};
-
-    fn endpoint(tag: u8) -> EndpointId {
-        SecretKey::from_bytes(&[tag; 32]).public()
-    }
+    use crate::testutil::{action_by, action_needing_by, endpoint};
 
     /// An inbox over an empty mirror, and the [`Events`] stream its decisions
     /// surface on — the same pair `finish` wires, minus the swarm.
@@ -220,32 +214,6 @@ mod tests {
             cancel: Cancel::default(),
         };
         (inbox, events)
-    }
-
-    /// An action that references no content at all.
-    fn action_by(actor: ActorId, lamport: u64) -> Action {
-        Action {
-            id: ActionId { lamport, actor },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
-    }
-
-    /// An action naming the brush `AssetId([tag; 32])`.
-    fn action_needing(actor: ActorId, lamport: u64, tag: u8) -> Action {
-        Action {
-            id: ActionId { lamport, actor },
-            kind: ActionKind::CommitStroke(StrokeRecord {
-                layer: LayerId::ROOT,
-                brush: BrushParams {
-                    shape: BrushShape::Stamp(AssetId([tag; 32])),
-                    ..BrushParams::default()
-                },
-                path: Vec::new(),
-                seed: 0,
-                start: 0.0,
-                translation: IVec2::ZERO,
-            }),
-        }
     }
 
     fn stamped(origin: EndpointId, asset: Option<Hash>, wire: Wire) -> Stamped {
@@ -345,7 +313,7 @@ mod tests {
         let (inbox, mut events) = setup();
         let origin = endpoint(1);
         let actor = actor_from_endpoint_id(origin);
-        let needing = action_needing(actor, 1, 7);
+        let needing = action_needing_by(actor, 1, 7);
         let bytes = Bytes::from_static(b"a brush image");
         let hash = Hash::new(&bytes);
 

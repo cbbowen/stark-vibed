@@ -337,14 +337,10 @@ fn hash_or_warn(need: AssetNeed, hash: Option<Hash>) -> Option<Hash> {
 mod tests {
     use stark_model::AssetId;
     use stark_model::DocumentFile;
-    use stark_model::Srgb;
-    use stark_model::document::{
-        ActionId, ActionKind, ActorId, BrushParams, BrushShape, LayerId, StrokeRecord,
-    };
-    use stark_model::geom::IVec2;
 
     use super::*;
     use crate::mirror::Mirror;
+    use crate::testutil::{action, action_needing, content, drain, id};
 
     fn setup() -> (Waitlist, mpsc::UnboundedReceiver<RemoteEvent>) {
         with_resolvable(&[])
@@ -357,56 +353,8 @@ mod tests {
         (Waitlist::new(mirror, tx, resolvable), rx)
     }
 
-    fn id(lamport: u64) -> ActionId {
-        ActionId {
-            lamport,
-            actor: ActorId(1),
-        }
-    }
-
-    /// An action that references no content at all.
-    fn action(lamport: u64) -> Action {
-        Action {
-            id: id(lamport),
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
-    }
-
-    /// An action naming the brush behind `need(tag)` — the door derives the
-    /// need from the action, so a test cannot pair them inconsistently.
-    fn action_needing(lamport: u64, tag: u8) -> Action {
-        Action {
-            id: id(lamport),
-            kind: ActionKind::CommitStroke(StrokeRecord {
-                layer: LayerId::ROOT,
-                brush: BrushParams {
-                    shape: BrushShape::Stamp(AssetId([tag; 32])),
-                    ..BrushParams::default()
-                },
-                path: Vec::new(),
-                seed: 0,
-                start: 0.0,
-                translation: IVec2::ZERO,
-            }),
-        }
-    }
-
     fn need(tag: u8) -> AssetNeed {
         AssetNeed::Brush(AssetId([tag; 32]))
-    }
-
-    fn content(tag: u8) -> (Bytes, Hash) {
-        let bytes = Bytes::from(vec![tag; 16]);
-        let hash = Hash::new(&bytes);
-        (bytes, hash)
-    }
-
-    fn drain(rx: &mut mpsc::UnboundedReceiver<RemoteEvent>) -> Vec<RemoteEvent> {
-        let mut out = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            out.push(event);
-        }
-        out
     }
 
     #[test]

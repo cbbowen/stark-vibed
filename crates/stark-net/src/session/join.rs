@@ -109,3 +109,60 @@ pub(super) async fn fetch_snapshot(
     }
     Err(failure)
 }
+
+/// The walk, over real endpoints: what a joiner does with a link whose first
+/// name answers and still cannot serve.
+#[cfg(test)]
+mod tests {
+    use stark_model::DocumentFile;
+
+    use crate::events::NetOptions;
+    use crate::mirror::Served;
+    use crate::session::CollabSession;
+    use crate::testutil::{action, bound};
+    use crate::ticket::SessionTicket;
+
+    /// Every member is an entry point (§12.4), including when the first one a
+    /// link names is itself still joining: it answers the dial and refuses with
+    /// [`NotReady`](crate::NetError::NotReady) rather than serving an empty
+    /// session, and the walk treats that as "ask the next" — so the join still
+    /// lands on the member with a session to serve.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_join_walks_past_a_member_that_is_still_joining() {
+        // The member with a session: a real host, so the walk's success is the
+        // whole join path and not just the fetch.
+        let marker = action(1);
+        let (host, _host_events) =
+            CollabSession::host(DocumentFile::new(vec![marker.clone()]), NetOptions::local())
+                .await
+                .expect("host session");
+        let minted = host.broadcaster().ticket().await;
+
+        // A member that is bound — the ALPN answers — but never published:
+        // a joiner between its endpoint coming up and its own snapshot
+        // arriving (the same state proto's NotReady test pins).
+        let joining = bound(Served::default()).await;
+        let joining_addr = joining
+            .dialer
+            .ticket_addr(&NetOptions::local())
+            .await
+            .expect("the not-ready member's address");
+
+        // A link naming the not-ready member first: the walk must get past it.
+        let ticket = SessionTicket {
+            members: vec![joining_addr, minted.members[0].clone()],
+            topic: minted.topic,
+        };
+        let joined = CollabSession::join(&ticket, NetOptions::local())
+            .await
+            .expect("join through the second member the link names");
+        assert!(
+            joined.document.actions.iter().any(|a| a.id == marker.id),
+            "the snapshot is the serving member's, not an empty stand-in"
+        );
+
+        joined.session.shutdown().await;
+        host.shutdown().await;
+        joining.shutdown.run().await;
+    }
+}

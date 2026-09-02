@@ -132,13 +132,12 @@ pub(crate) use iroh_wire::{CollabProto, request};
 #[cfg(test)]
 mod tests {
     use stark_model::DocumentFile;
-    use stark_model::Srgb;
-    use stark_model::document::{Action, ActionId, ActionKind, ActorId};
 
     use super::*;
-    use crate::backend::{self, Bound};
+    use crate::backend::Bound;
     use crate::events::NetOptions;
     use crate::mirror::Mirror;
+    use crate::testutil::{action, bound, member};
 
     /// The tag protocol byte by byte: the two known values, and a typed refusal
     /// of everything else so the far end's message can name the byte.
@@ -155,12 +154,6 @@ mod tests {
         ));
     }
 
-    async fn bound(served: Served) -> Bound {
-        backend::bind(served, &NetOptions::local())
-            .await
-            .expect("bind a local endpoint")
-    }
-
     /// Ask `host` for a snapshot, the way a joiner does.
     async fn ask(asker: &Bound, host: &Bound) -> crate::Result<Vec<u8>> {
         let addr = host
@@ -172,16 +165,6 @@ mod tests {
         let answer = catchup.request(Request::Snapshot).await;
         catchup.close().await;
         answer
-    }
-
-    fn action(lamport: u64) -> Action {
-        Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
     }
 
     /// The encode cache answers the question it was asked, or none at all. Serving
@@ -264,17 +247,14 @@ mod tests {
         // The contrast is the point: the refusal above has to be the *state*
         // talking, not a server that never worked. Same call, same empty log,
         // published this time.
-        let served = Served::default();
-        let member = bound(served.clone()).await;
-        let file = DocumentFile::new(vec![action(1)]);
-        served.publish(SharedMirror::new(Mirror::from_file(&file)));
-        let bytes = ask(&asker, &member)
+        let (serving, _mirror, _served) = member(vec![action(1)]).await;
+        let bytes = ask(&asker, &serving)
             .await
             .expect("a published member serves");
         let served_back = DocumentFile::from_bytes(&bytes).expect("decode the snapshot");
         assert_eq!(served_back.actions.len(), 1);
 
-        for stack in [&asker, &joining, &member] {
+        for stack in [&asker, &joining, &serving] {
             stack.shutdown.run().await;
         }
     }

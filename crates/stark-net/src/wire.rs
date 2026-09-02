@@ -348,20 +348,8 @@ pub(crate) struct Recovered {
 
 #[cfg(test)]
 mod tests {
-    use stark_model::Srgb;
-    use stark_model::document::{ActionId, ActionKind, ActorId};
-
     use super::*;
-
-    fn action(lamport: u64) -> Action {
-        Action {
-            id: ActionId {
-                lamport,
-                actor: ActorId(1),
-            },
-            kind: ActionKind::SetSubstrateColor(Srgb::new([0.0; 3])),
-        }
-    }
+    use crate::testutil::action;
 
     /// [`StampedRef`] is a second spelling of [`Stamped`], and what makes a second
     /// spelling safe is that the two encode identically — asserted here, and checked
