@@ -1,9 +1,9 @@
 # The frontend
 
-The Dioxus app and the wgpu surface it wraps, and the native wgpui frontend
-beside it — §11 — and the chrome's registries: commands, chords, drag bindings,
-the browser-local store and the shape of a dialog, which a new UI feature joins
-and how — §25.
+The Dioxus app and the wgpu surface it wraps, the native wgpui frontend beside
+it, and the plan for the crate between them — §11 — and the chrome's registries:
+commands, chords, drag bindings, the browser-local store and the shape of a
+dialog, which a new UI feature joins and how — §25.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
@@ -675,6 +675,193 @@ all. See `vendor/wgpui/VENDORING.md`; the patch is the missing declaration and
 nothing else.
 
 [wgpui]: https://github.com/muktidaya/wgpui
+
+### 11.2 Parity, and the crate between the two frontends
+
+§11.1 is a canvas and one brush. This is the plan from there to a native app an
+artist could work in — and, because the two frontends will otherwise grow two
+copies of every rule, the crate that stops them.
+
+Status for each stage is in [§13](roadmap.md); the design is here.
+
+#### What parity means, and four things it does not
+
+Parity is of **acts**, not of appearance. The native app should be able to do what
+the web one can do; it should not look like it.
+
+- **Styling is not ported.** The web chrome's stylesheet is a web artefact. Native
+  should read native, and the visual half of §25.7 and §25.9 — what a dialog and a
+  run of buttons owe — carries over as *rules* (a dialog owes a way out; a run of
+  buttons owes one visual weight per role) and not as CSS.
+- **No minimal-UI mode.** The web app spends real design on fitting words into a
+  narrow column — `Command::word`'s chip abbreviations, the panel fade during a
+  stroke. Native gets icons plus hover tooltips, which is the same information in
+  less space, so the abbreviation column is carried for the *other* frontend's
+  benefit rather than used here.
+- **No tour (§24).** Someone installing a native build has already met the web
+  app. `tutor.rs` stays a web-only reader hung off that frontend's own `dispatch`,
+  and the native seam does not grow a hook for it.
+- **No browser-shaped affordances.** A session ticket rides the URL fragment
+  because a link is how a browser is handed anything (§12); native exchanges the
+  same string by paste. Likewise `on_before_unload`, the service worker and the
+  installability half of §11 have no native counterpart and want none.
+
+#### The seam, and the fact that it is already drawn
+
+The rule that decides where a line of the web frontend goes is mechanical, and it
+is the shape §2 already uses for model-versus-engine:
+
+> If it names a `dioxus::` type or holds a `Signal`, it is **chrome** and stays in
+> its frontend. If it is arithmetic over `ObservableState`, `BrushParams`,
+> `ViewTransform` or a pointer report, it is the **frontend's model** and belongs
+> below both of them.
+
+The evidence that this is a real line and not a hopeful one is that the web
+frontend has already drawn it twice, for its own reasons. `gesture.rs` opens with
+"Nothing here knows about signals, dioxus, or the browser" and says it is a file
+of its own because *it is the part that could be tested* — 18 of the crate's tests
+are in it. `panels/layer_tree.rs` says the same thing in the same words for the
+Layers panel's arithmetic, and holds ten more. Both splits are this crate
+boundary, drawn one file early. `panels/reorder.rs` is a third, drawn between two
+panels rather than between two frontends.
+
+So the test for "does this belong below" has a cheap proxy: **code with tests has
+already moved.**
+
+#### The crate: `stark-chrome`
+
+`frontend → chrome → engine → model`, and it must compile to wasm, because the web
+app is one of its two consumers. Its invariant is `stark-net`'s, one level up:
+**it never names a `dioxus::` or `wgpui::` type.** That is checkable by grep and
+worth a test that greps.
+
+Named for the docs' own word for the UI around the canvas (§11 passim, and the
+glossary's `surface` row). `stark-ui` came free two commits ago and is
+deliberately not reused: it meant *a* frontend until then, and a name that means
+two things one week apart is exactly what the glossary rule exists to stop.
+
+**Tier A — moves as it stands** (no `dioxus` in it today):
+
+| module | lines | what it is |
+|---|---|---|
+| `brush_config.rs` | 594 | the durable/transient brush and `params()`, the one projection down to `BrushParams` |
+| `gesture.rs` | 868 | the transform algebra (§16.6, §16.8, §16.9) + 18 tests |
+| `panels/layer_tree.rs` | 549 | what the Layers panel draws and what a drop means (§14.6, §14.8) + 10 tests |
+| `library.rs` | 180 | the thumbnail cache both asset libraries share (§6.4, §6.6) |
+| `identity.rs` | 95 | this client's durable actor key and boot counter (§17) |
+| `panels.rs`, `layout::PanelId` | — | the register vocabulary only: the enums, not the frames |
+
+**Tier B — moves after one decoupling each**, named:
+
+| module | lines | what has to give |
+|---|---|---|
+| `storage.rs` | 633 | six `platform::` calls become a `Backend` trait (below) |
+| `commands.rs` | 2462 | `Command`'s ~35 variants and every descriptive method (`name`, `word`, `aliases`, `icon`, `hint`, `tooltip`, `shortcut`, `rebindable`, `enabled`) plus `Chord`/`Bindings`/`search` go down; `active` and `run` take `AppState` and stay |
+| `drags.rs` | 1343 | everything but `Mods::of(dioxus::html::Modifiers)`, which becomes a constructor each frontend feeds |
+| `icons.rs` | 607 | the `include_str!` table goes down; the `Element`-returning helper stays |
+| `panels/reorder.rs` | 465 | wants the pointer report (below) |
+| `presets.rs`, `slots.rs`, `prefs.rs`, `visibility.rs`, `modes.rs` | 3133 | each is a record plus a policy plus a signal-shaped shell; the shell stays |
+| `input/` + `input.rs` | 3017 | the thresholds and the decisions go down — `TOUCH_SLOP`, `nav::MIN_SPAN`, the tune commit distance, the tolerance and rope maps, `is_contact`/`is_eraser`, the tap/pinch/hold discrimination. The five `Copy` hook carriers stay: they *are* signals |
+| `panels/brush.rs`'s bounds | — | `MIN_RADIUS`, `MAX_RADIUS`, `MAX_FLOW` sit in a markup module and are read by `input::Tune` and `BrushConfig::max_flow`. They are brush vocabulary and belong beside `brush_config` (their doc comments still say `BrushParams::radius`, renamed to `size` — the move is when that gets fixed) |
+
+**Tier C — stays in each frontend, twice**: everything under `panels/` that is
+markup, `layout.rs`, `widgets.rs`, `rail.rs`, `overlays.rs`, `navigator.rs`,
+`brush_editor.rs`, `settings.rs`, `canvas.rs`, `main.rs`, each `render.rs`, each
+`platform.rs`, and `tutor.rs` by decision.
+
+#### The two abstractions this needs, and no more
+
+Both already have a shape in the tree, which is the argument that they are the
+right two.
+
+**`PointerReport`** — what `input::sample` reads off a `dioxus::Event<PointerData>`
+and what `canvas::sample_at` reads off a `wgpui::MouseMoveEvent`: position,
+pressure, tilt, time, pointer kind, buttons, modifiers, and the coalesced list
+behind it. `platform::Coalesced` is already this struct less the modifiers.
+
+One rule keeps it honest: **a report is in the units of its own surface's
+viewport.** The web canvas sizes its drawing buffer in CSS px and the native one
+in device px (§11.1), so the scale factor is applied at the edge, by the frontend,
+and nothing below ever asks which frontend it is in.
+
+**`storage::Backend`** — `get`/`set`/`remove` over text and `get_many`/`put`/
+`delete` over blobs, the blob half async. Exactly the six `platform::` calls
+`storage.rs` funnels to today, so this is a six-method trait with one impl per
+frontend and no design left to do.
+
+#### What a native platform layer owes
+
+`platform.rs` is 1778 lines of web answers to a shorter list of questions. The
+native ones:
+
+| capability | web today | native |
+|---|---|---|
+| text store | `localStorage`, ~5 MB/origin | one JSON file in the config dir |
+| blob store | IndexedDB by content id | files in a cache dir, named by id |
+| open / save / export | `<input type=file>`, `<a download>` | wgpui's path dialogs |
+| clipboard | `navigator.clipboard`, paste event | wgpui (arboard) |
+| image decode + normalize | the browser decodes anything it can show | the `image` crate — narrower, and the difference should be *stated* rather than discovered on an unsupported file |
+| scale factor | `devicePixelRatio` | `Window::scale_factor` |
+| monotonic clock | `performance.now()` | `quanta` (already, §11.1) |
+| coalesced pointer reports | `getCoalescedEvents` | winit delivers one per event; the list is length 1 and the fitter is unaffected |
+| session ticket in | URL fragment | paste |
+| file-launch / drop | `launchQueue`, paste event | winit file-drop, argv |
+
+#### Stages
+
+Each names what lands, what moves down with it, and one thing you can then *do* —
+the exit criterion is an act, not a diff.
+
+- **N0 — the crate, empty of opinion.** Create `stark-chrome`; move Tier A's five
+  pure modules behind `pub use` shims in the web frontend. Nothing else changes.
+  *Exit:* the web app is untouched and those 28 tests run from the new crate.
+- **N1 — persistence.** `storage::Backend`; the native impl over a config dir and
+  a cache dir; `identity`, `prefs` and `visibility` records move. *Exit:* the
+  native app comes back with the same actor id and the same window.
+- **N2 — the brush in hand.** `brush_config` in use natively; a brush panel with
+  size, flow, effect, hardness and colour; `presets`' records move. *Exit:* paint
+  with any shipped preset, tuned, instead of one hard-coded `BrushParams`.
+- **N3 — the two registries.** `Command`'s descriptive half, `Chord`, `Bindings`,
+  `search`; `drags` and `Mods`. A native dispatcher over wgpui actions and a
+  native `armed`. *Exit:* Ctrl+Z undoes, a chord rebound in one frontend is
+  honoured by the other's table, and a modifier-drag tunes the brush.
+- **N4 — layers.** `layer_tree` + `reorder` drive a native list. *Exit:* add,
+  remove, reorder, group, clip, set opacity and blend, all from the native app.
+- **N5 — documents on disk.** `files` splits; save, open and export through the
+  native dialogs. *Exit:* a `.stark` file round-trips between the two frontends,
+  history intact.
+- **N6 — selection, fill, transform.** Tool arming, the marquee, the fill parcel,
+  and `gesture` (already down since N0) behind a native transform overlay.
+  *Exit:* select, fill, and commit a transform.
+- **N7 — the asset libraries.** Shapes and substrates over `library` and the blob
+  backend; native decode. *Exit:* import a brush shape and a canvas substrate.
+- **N8 — the long tail.** Guides (§20), gradients (§22), filters (§21), frames and
+  export (§15), the navigator, timeline mode. One panel at a time; each is a Tier
+  B move plus native markup.
+- **N9 — collaboration.** `collab`'s two pumps move down; the ticket is pasted
+  rather than linked. *Exit:* the two frontends paint on one document.
+
+N0–N3 are the ones with leverage: after them every later stage is markup over
+rules that already exist and are already tested. N8 is the only stage that is
+mostly typing.
+
+#### What to expect this to find
+
+§11.1's `GpuContext` was not a lucky catch — it is what a second consumer is
+*for*, and the drift has already started. `stark-wgpui-frontend`'s `canvas.rs`
+carries its own `ROPE_MAX_SCREEN_PX = 160.0` and its own copy of the quadratic
+smoothing map, because `input::rope_in` was not reachable; the same brush at the
+same smoothing is therefore towed by two constants that nothing holds together.
+That is one file old and already the exact failure §25 was written to prevent —
+"one authority, so what the keyboard answers and what a row claims cannot drift
+apart" — and it is the first thing N2 should delete.
+
+The other candidates already visible: the brush bounds sitting in a markup module
+(above); `render::PeerInfo`, a chrome-facing projection of a peer that is
+deliberately not the engine's `Peer` and that both frontends will want; and every
+threshold in `input/` that two gestures read and one file owns. Each is the same
+shape as the adapter — parked on the nearest wall rather than the right one, and
+invisible while there was only one wall.
 
 ## 25. Commands and drag bindings
 

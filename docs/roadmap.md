@@ -48,6 +48,7 @@ Status lives here and nowhere else.
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | — | The guided tour (§24) | done — five lessons off the `dispatch` seam; a lesson is a row in one table |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
+| N | Native frontend to parity (§11.2) | N0–N9 **not started**; §11.1's canvas + one brush is the ground it starts from |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
 collapsed into **one tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux
@@ -62,6 +63,13 @@ storing a zero until then. ("Tooth-revealed canvas" is now the deposition gate,
 
 Each step is independently testable through `stark-engine` before any UI exists,
 which is exactly the leverage the frontend/backend split was meant to provide.
+
+Step N is the one numbered row that is not engine work, and it is staged in
+§11.2 rather than here: ten stages that carry `stark-wgpui-frontend` from a
+canvas and one brush to the acts the web app can do, most of them a move of
+frontend code down into a `stark-chrome` both consume. It is listed at all
+because status lives in this file — the design, the tiers and the exit criteria
+are §11.2's.
 
 ### Nice-to-have (not scheduled)
 
