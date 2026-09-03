@@ -81,8 +81,9 @@ pub(super) enum Carried {
     /// The erase pass's accumulated extent (§6.12).
     Erase(ParcelCarry),
     /// The swept deposit's accumulated parcel (§6.2), carried only below
-    /// full opacity — the one setting under which that path stops being
-    /// stateless, because a scaled parcel is not composable per piece.
+    /// full opacity or under a pen-driven ceiling — the settings under which
+    /// that path stops being stateless, because a scaled parcel is not
+    /// composable per piece.
     Sweep(ParcelCarry),
 }
 
@@ -146,8 +147,9 @@ pub(super) struct LoopCarry {
     pub(super) reservoir: Reservoir,
     /// The canvas-local half: per touched tile, the opacity ceiling's running
     /// **raw mint totals** — the region aux whose `.yz` lanes the capped mint
-    /// budgets against (`dynamics.wesl::lay_parcel`), cut per tile exactly as
-    /// the write-back cuts paint. Empty at full opacity, where the lanes are
+    /// budgets against, and whose `.w` is the ceiling lane a pen-driven opacity
+    /// claims coverage in (`dynamics.wesl::lay_parcel`) — cut per tile exactly
+    /// as the write-back cuts paint. Empty at full opacity, where the lanes are
     /// never read: the identity ceiling needs no budget, and the common case
     /// carries and copies nothing.
     ///
@@ -165,6 +167,11 @@ pub(super) struct LoopCarry {
     /// and the tiles they end up in come from the region write-back rather than
     /// from a landing pass.
     pub(super) fresh: BTreeMap<TileCoord, Arc<Kept>>,
+    /// The ceiling lane over the same tiles (§6.2): the gated mass and moment sums
+    /// a pen-driven opacity claims coverage with, drawn into the region per
+    /// segment and cut per tile exactly as `fresh` is. Empty unless the pen drives
+    /// the ceiling.
+    pub(super) levels: BTreeMap<TileCoord, Arc<Kept>>,
 }
 
 /// The loop's tool reservoir (§6.2).

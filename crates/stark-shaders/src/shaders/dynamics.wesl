@@ -84,7 +84,9 @@ import package::lib::latent::{
     Latent, latent_add, latent_any, latent_blend, latent_div, latent_lerp, latent_of,
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
 };
-import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS};
+import package::lib::paint_common::{
+    substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
+};
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
 
@@ -273,6 +275,18 @@ struct Stamp {
     // the stroke's own seed for it.
     jitter_eps: f32,
     jitter_seed: u32,
+    // The ceiling's modulation factor for this slot (§6.2): the pen's share of the
+    // dial above, on a stroke whose ceiling it drives. Read only where
+    // `ceiling_lane` says so; 1 — a scale's neutral — everywhere else. Here at
+    // the tail with its flag rather than beside `opacity`, where a scalar after
+    // the `vec3` lanes' filler would open a 16-byte hole.
+    opacity_mod: f32,
+    // Whether the stroke's ceiling is pen-driven (§6.2): 1 routes the mint through
+    // the ceiling lane the region aux's `.w` carries (`lay_parcel`), reading
+    // `opacity_mod` per slot; 0 is the dial's own law, bit for bit. A stroke
+    // constant, like `opacity` — every slot of a stroke says the same, since which
+    // lane a texel's claim lives in cannot change segment to segment.
+    ceiling_lane: u32,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -293,10 +307,12 @@ fn deposit_rate() -> f32 { return -st.lambda_deposit; }
 fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 
 // The stroke's canvas region: premultiplied color (latent·op, op) + wide aux
-// (height, raw mint height, raw mint mass, _) — the `.yz` lanes are the opacity
-// ceiling's running raw totals (§6.2, `lay_parcel`), zero at full opacity and
-// on every composited texel, carried across pieces by the host (`run.rs`).
-// Read by `snapshot` (textureLoad) and `exchange` (bilinear).
+// (height, raw mint height, raw mint mass, raw mint moment) — the `.yz` lanes
+// are the opacity ceiling's running raw totals and `.w` the moment of the raw
+// mass over the pen's ceiling factor, the ceiling lane's companion (§6.2,
+// `lay_parcel`); zero at full opacity and on every composited texel, carried
+// across pieces by the host (`run.rs`). Read by `snapshot` (textureLoad) and
+// `exchange` (bilinear).
 @group(0) @binding(1) var region_color: texture_2d<f32>;
 @group(0) @binding(2) var region_aux: texture_2d<f32>;
 // Extent snapshot targets (written by `snapshot`).
@@ -429,6 +445,14 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // *read the same texel*, so there is nothing left to argue about.
 @group(0) @binding(37) var bleed_w_w: texture_storage_2d<r32float, write>;
 @group(0) @binding(38) var bleed_w: texture_2d<f32>;
+// The ceiling lane over the region (§6.2, `paint_common::level_sums`): the mass
+// and moment above each ceiling level, region-sized, **drawn** rather than
+// storage-written — the host runs `stamp.wesl::fs_levels` over each painting
+// segment between its deposit and the next's, so a texel's read here is the sum
+// over every segment before the one depositing, and no snapshot is needed.
+// Read by `lay_parcel` on a stroke whose ceiling the pen drives; the kit's 1×1
+// zero otherwise.
+@group(0) @binding(39) var region_levels: texture_2d<f32>;
 // (The prefix-τ volume rides at group(1) binding(0) via the stamp_common import.)
 
 const TAU: f32 = 6.283185307179586;
@@ -1550,6 +1574,54 @@ fn capped_h(fh: f32, fm: f32, o: f32) -> f32 {
     return fh * cap_ratio(fm, o);
 }
 
+// ---- …and under the pen (§6.2) ---------------------------------------------------
+//
+// When the pen drives the ceiling there is no one `o` for the capped law above to
+// run at: what a texel may show is the largest ceiling any of its paint asked for,
+// averaged over the texel — `paint_common::claimed_coverage`, read from the raw
+// mass, its moment over the factor, and the gated sums of the **ceiling lane**.
+// The swept sweep accumulates those sums in a fourth target; this loop has them
+// drawn into `region_levels` per segment by the host, and keeps the moment in the
+// region aux's `.w` beside the raw totals. The mint is then the prefix difference
+// of the claimed law — the mass a claim `v` lands as under the dial `o`,
+// `−ln(1 − o·v)/K`, `integrate.wesl`'s arithmetic on its read of the lane — and
+// telescopes as the dial's own does, so a brush routed here by a whisper of some
+// other axis still lays what the fast path lays. A claim can fall by a hair
+// where paint at two factors in one third of the dial averages, and the
+// difference then un-mints — the loop follows the fast path down, as far as the
+// texel's own paint allows.
+
+// The claimed law: the mass a claimed coverage `v` lands as under the ceiling `o`,
+// capped at the raw total `f` it was claimed from — a claim is at most the
+// coverage the raw mass reached, so what the ceiling admits is at most what the
+// source attempted, and a saturated claim (`t` at or under the raw total's own
+// transmittance, both possibly 0) lands the whole of it rather than asking the log.
+// A series below `CLAIM_SERIES_MAX_X`, where `1 − o·v` has lost most of its digits
+// to the subtraction.
+fn claimed_m(v: f32, f: f32, o: f32) -> f32 {
+    let x = o * v;
+    if x < CLAIM_SERIES_MAX_X {
+        return x * (1.0 + x * (0.5 + x / 3.0)) / OPACITY_K;
+    }
+    let t = 1.0 - x;
+    if t <= exp(-OPACITY_K * f) {
+        return f;
+    }
+    return -log(t) / OPACITY_K;
+}
+const CLAIM_SERIES_MAX_X: f32 = 0.05;
+
+// The claimed law's height ratio, `M/f` — `cap_ratio` for a claimed mass, with
+// `cap_ratio`'s own value where the raw total is 0: the only mint with no mass is
+// a drained one, and the drain only ever falls at a texel, so a texel that reads 0
+// here reads it at every later segment and books the same height either way.
+fn claim_ratio(cm: f32, f: f32, o: f32) -> f32 {
+    if f == 0.0 {
+        return o;
+    }
+    return cm / f;
+}
+
 // The shared tail: the lift, the parcel this slot lays, and the store.
 //
 // Everything here is per texel *by model* and stays so at either resolution — the
@@ -1641,7 +1713,37 @@ fn lay_parcel(
     let o = st.opacity * sel;
     var add_h = st.add * drain * ex.add_w;
     var add_m = own_op * add_h;
-    if o != 1.0 {
+    // The raw mass's moment over the pen's factor so far — the ceiling lane's
+    // companion, on a stroke whose ceiling the pen drives; stored back as it was
+    // read, zero, on every other.
+    var moment = u.a.w;
+    if st.ceiling_lane != 0u {
+        // `e_src = 0` makes both differences exactly 0, so the guarded quotient
+        // never decides anything — it only keeps the 0/0 out.
+        let survive = ex.add_w / max(e_src, PAINT_EPS);
+        // The claim before this slot, from the lane as the host drew it up to the
+        // previous segment, and after it, with this slot's own share added —
+        // the very sums `fs_levels` will draw for it once this dispatch is done.
+        let fresh = f_m - u.a.z;
+        let lv0 = textureLoad(region_levels, rt, 0);
+        let lv1 = lv0 + level_sums(st.opacity_mod, fresh);
+        let moment1 = moment + st.opacity_mod * fresh;
+        let v0 = claimed_coverage(u.a.z, moment, lv0);
+        let v1 = claimed_coverage(f_m, moment1, lv1);
+        let cm1 = claimed_m(v1, f_m, o);
+        let cm0 = claimed_m(v0, u.a.z, o);
+        // A difference below zero **un-mints**: the claim fell — paint at two
+        // factors in one third of the dial averaged — and the swept integrate
+        // will show less than it showed a segment ago, so this slot takes back
+        // the brush's own paint to match. Never more than the texel holds: a
+        // lift may already have carried some of it away.
+        add_m = max((cm1 - cm0) * survive, -(m + tool_op * dep_h));
+        add_h = max(
+            (f_h * claim_ratio(cm1, f_m, o) - u.a.y * claim_ratio(cm0, u.a.z, o)) * survive,
+            -(h + dep_h),
+        );
+        moment = moment1;
+    } else if o != 1.0 {
         // `e_src = 0` makes both differences exactly 0, so the guarded quotient
         // never decides anything — it only keeps the 0/0 out.
         let survive = ex.add_w / max(e_src, PAINT_EPS);
@@ -1693,7 +1795,8 @@ fn lay_parcel(
     // The raw totals advance in the store's own lanes by the whole attempt,
     // whatever the coverage: they are what the source tried, and the ceiling
     // above — not the lanes — is where the coverage decides what shows (§6.8).
-    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, f_h, f_m, 0.0)));
+    // The moment rides in `.w` beside them.
+    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, f_h, f_m, moment)));
     // Premultiplied by the same `op` — the residual is stored exactly as the color
     // beside it is.
     @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, 0.0)));

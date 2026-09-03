@@ -60,6 +60,8 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// 1×1 zero. Such a slot carries `lambda_bleed = 0` and never reads it, so this is
     /// the §6.8 stand-in pattern rather than a case the shader has to branch on.
     pub(in crate::gpu::stroke) bleed_placeholder: wgpu::TextureView,
+    /// The ceiling lane's 1×1 zero (§6.2), bound where a stroke has no lane.
+    pub(in crate::gpu::stroke) levels_placeholder: wgpu::TextureView,
     /// The tool's own side of one segment's transfer — the complement of every share
     /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(in crate::gpu::stroke) exchange_pipeline: wgpu::ComputePipeline,
@@ -342,6 +344,13 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         d::BLEED_W_W.storage_format(),
         "stark dynamics bleed w 1x1",
     );
+    // The same stand-in for the ceiling lane (§6.2): a stroke whose ceiling the
+    // pen does not drive carries `ceiling_lane = 0` and never reads it.
+    let levels_placeholder = desc::zero_texture(
+        ctx,
+        crate::gpu::stroke::swept::CEILING_FORMAT,
+        "stark dynamics levels 1x1",
+    );
 
     DynamicsKit {
         composite_pipeline,
@@ -353,6 +362,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         bleed_weight_pipeline,
         bleed_weight_bgl,
         bleed_placeholder,
+        levels_placeholder,
         exchange_pipeline,
         exchange_bgl,
         bake_pipeline,

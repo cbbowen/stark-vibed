@@ -10,7 +10,7 @@ use crate::gpu::channels::Targets;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use stark_model::document::StrokeRecord;
-use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord};
+use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
@@ -51,9 +51,10 @@ pub(super) const NOISE_SLOTS: &[Slot] = &[
 ];
 
 /// The integrate pass (`integrate.wesl`, §6.2/§6.1): the layer's resident paint, the
-/// stroke's scratch parcel, the selection each is gated by, and the paint
+/// stroke's scratch parcel, the selection each is gated by, the paint
 /// effect's opacity — bound on every stroke, exactly 1 (the shader's identity
-/// branch) on the unscaled path.
+/// branch) on the unscaled path — and the ceiling lane, which is the parcel's
+/// fourth lane under a pen-driven opacity and the 1×1 zero everywhere else.
 const INTEGRATE_SLOTS: &[Slot] = &[
     Slot::at(id::BASE_COLOR),
     Slot::at(id::BASE_AUX),
@@ -63,6 +64,7 @@ const INTEGRATE_SLOTS: &[Slot] = &[
     Slot::at(id::IG),
     Slot::at(id::BASE_RESID),
     Slot::at(id::SCRATCH_RESID),
+    Slot::at(id::SCRATCH_CEILING),
 ];
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
@@ -145,6 +147,17 @@ pub(super) struct SweptKit {
     /// pair, with the per-tile transform at group 0, the prefix-τ volume at group 1
     /// and the noise + substrate fields at group 2.
     pub(super) pipeline: wgpu::RenderPipeline,
+    /// The same sweep with the **ceiling lane** as a fourth target (§6.2): the
+    /// pipeline a stroke whose opacity the pen drives takes. Its own pipeline
+    /// because a target list is fixed at pipeline creation, and its own artifact
+    /// because the shader's output is `@if(ceiling)` — every other stroke never
+    /// pays the lane's two bytes a fragment.
+    pub(super) pipeline_ceiling: wgpu::RenderPipeline,
+    /// The ceiling lane **alone** (`stamp.wesl::fs_levels`): what the stamp loop
+    /// draws per painting segment into its region, so its claim advances by the
+    /// sweep's own sums (§6.2). Over the same three layouts, so the loop binds
+    /// the brush exactly as the swept path does.
+    pub(super) levels_pipeline: wgpu::RenderPipeline,
     pub(super) uniform_bgl: wgpu::BindGroupLayout,
     pub(super) prefix_bgl: wgpu::BindGroupLayout,
     pub(super) noise_bgl: wgpu::BindGroupLayout,
@@ -157,30 +170,56 @@ pub(super) struct SweptKit {
     pub(super) integrate_bgl: wgpu::BindGroupLayout,
 }
 
-/// Compile `stamp.wesl` for `color_space` (§6.2, §6.7).
+/// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the
+/// ceiling lane, the two artifacts `stark_shaders::stamp` chooses between.
 ///
-/// **Once per renderer, lent to both kits.** The erase pass builds its own pipeline
-/// over the very same module (§6.12) — only the fragment entry point and the target
-/// list differ — so a second `create_shader_module` was a second parse and a second
-/// translation of source already in hand, which on the web is startup the artist
-/// waits through. A module is immutable and entry points are resolved per pipeline,
-/// so lending it is all there is to it.
+/// **Once per renderer per variant, lent to both kits.** The erase pass builds its
+/// own pipelines over the very same modules (§6.12) — only the fragment entry point
+/// and the target list differ — so a second `create_shader_module` was a second
+/// parse and a second translation of source already in hand, which on the web is
+/// startup the artist waits through. A module is immutable and entry points are
+/// resolved per pipeline, so lending it is all there is to it.
 pub(super) fn stamp_module(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
+    ceiling: bool,
 ) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark stamp"),
-        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader().into()),
+        label: Some(if ceiling {
+            "stark stamp ceiling"
+        } else {
+            "stark stamp"
+        }),
+        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(ceiling).into()),
     })
 }
 
+/// The format of the ceiling lane (§6.2, `paint_common::level_sums`): the parcel's
+/// mass above each of two ceiling levels and its moment above each — four sums,
+/// f16 for the reason the aux's own mass is: the interesting range is a few times
+/// `OPAQUE_MASS`, and past f16's mantissa the coverage they decide is 1 anyway.
+pub(super) const CEILING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The ceiling lane as a sweep target: **additive**, like the aux, because every
+/// one of its four channels is a sum over segments. That is the whole reason the
+/// law is stated in gated sums (`paint_common::claimed_coverage`): a max is not
+/// something fixed-function blending can take of a running quantity, but the mass
+/// above a level is a sum a blend can accumulate, and the point-wise max of the
+/// ceilings falls out of two of them and their moments. For the erase sweep too,
+/// which attaches the same lane by the same rule (§6.12), and for the stamp loop's
+/// per-segment draw of it over its region (`fs_levels`).
+pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::ColorTargetState> {
+    desc::blended_target(CEILING_FORMAT, Some(color_space.aux_blend()))
+}
+
 /// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
-/// group layouts, and the integrate that lands its scratch on the base.
+/// group layouts — twice, with and without the ceiling lane — and the integrate
+/// that lands its scratch on the base.
 pub(super) fn build_swept_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
     shader: &wgpu::ShaderModule,
+    shader_ceiling: &wgpu::ShaderModule,
 ) -> SweptKit {
     let frag = wgpu::ShaderStages::FRAGMENT;
     // One slot per affected tile, selected by a dynamic offset
@@ -212,36 +251,67 @@ pub(super) fn build_swept_kit(
         "stark sweep layout",
         &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
     );
-    let pipeline = desc::render_pipeline(
-        device,
-        desc::RenderPipe {
-            label: "stark sweep pipeline",
-            layout: &layout,
-            module: shader,
-            vs: "vs_main",
-            fs: "fs_main",
-            primitive: desc::QUAD_STRIP,
-            buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
-                wgpu::VertexStepMode::Instance,
-            ))],
-            targets: &[
-                desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
-                // The stamp renders into a *scratch* tile, whose aux is the wide
-                // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
-                // blend across overlapping segments.
-                desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-                // The parcel's residual (§6.7), over-blended by the color's rule
-                // because it is the rest of the same color.
-                color_space
-                    .resid_format()
-                    .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
-            ][..2 + usize::from(color_space.has_resid())],
-        },
+    let targets = [
+        desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
+        // The stamp renders into a *scratch* tile, whose aux is the wide
+        // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
+        // blend across overlapping segments.
+        desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
+        // The parcel's residual (§6.7), over-blended by the color's rule
+        // because it is the rest of the same color.
+        color_space
+            .resid_format()
+            .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
+        // The ceiling lane (§6.2), additive (`ceiling_target`). At the shader's
+        // location 3 whether or not the space has a residual at 2, so the plain
+        // list stops short of it and the ceiling list carries the hole
+        // (`accum::MAX_LANES`).
+        ceiling_target(color_space),
+    ];
+    let sweep_pipeline = |label, module, fs, targets: &[Option<wgpu::ColorTargetState>]| {
+        desc::render_pipeline(
+            device,
+            desc::RenderPipe {
+                label,
+                layout: &layout,
+                module,
+                vs: "vs_main",
+                fs,
+                primitive: desc::QUAD_STRIP,
+                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+                    wgpu::VertexStepMode::Instance,
+                ))],
+                targets,
+            },
+        )
+    };
+    let pipeline = sweep_pipeline(
+        "stark sweep pipeline",
+        shader,
+        "fs_main",
+        &targets[..2 + usize::from(color_space.has_resid())],
+    );
+    let pipeline_ceiling = sweep_pipeline(
+        "stark sweep ceiling pipeline",
+        shader_ceiling,
+        "fs_main",
+        &targets,
+    );
+    // The lane alone, for the stamp loop's per-segment draw of it (§6.2) — over
+    // the plain module, since `fs_levels` is not `@if(ceiling)`-gated: it writes
+    // nothing else.
+    let levels_pipeline = sweep_pipeline(
+        "stark sweep levels pipeline",
+        shader,
+        "fs_levels",
+        &[ceiling_target(color_space)],
     );
 
     let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space);
     SweptKit {
         pipeline,
+        pipeline_ceiling,
+        levels_pipeline,
         uniform_bgl,
         prefix_bgl,
         noise_bgl,
@@ -292,6 +362,10 @@ impl StrokeRenderer {
         // under the whole of it (`accum::ParcelCarry`). A branch on the brush and on
         // the mask, so a live tail and its commit make the same choice for free.
         //
+        // Under a pen-driven ceiling too, whatever the dial: the ceiling lane is
+        // a claim the pieces of a stroke build up together, and the coverage it
+        // admits is below 1 wherever the pen was light.
+        //
         // On the mask as well as the dial, because the mask is the ceiling's other
         // factor *per texel* (§6.8): every selection has a rim at least a pixel
         // soft, and a texel under it scales the parcel exactly as a dial below 1
@@ -307,7 +381,7 @@ impl StrokeRenderer {
         // pristine paint each piece is what makes the resolve exact whatever the
         // pointer's cadence, and it is why the ring below never supersamples.
         let ss = super::budget::supersample_scale(&rec.brush);
-        if k.opacity < 1.0 || selection.is_active() || ss > 1 {
+        if k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1 {
             return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume, tip, ss);
         }
 
@@ -324,8 +398,9 @@ impl StrokeRenderer {
         let draws = sweep_draws(self, &mut scope, rec, &k, &segments, 1);
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
-        // keeps this path bit-for-bit what it was.
-        let opacity_buf = opacity_uniform(&mut scope, 1.0, 1);
+        // keeps this path bit-for-bit what it was. No ceiling lane either — a
+        // stroke that has one never comes this way.
+        let opacity_buf = opacity_uniform(&mut scope, 1.0, 1, false);
         let SweepDraws {
             coords,
             runs,
@@ -411,8 +486,14 @@ impl StrokeRenderer {
             // The coverage alone: the mask's opacity is in `k.opacity` already
             // (`stroke_constants`), which the integrate multiplies this by.
             let mask_view = self.selection.mask_for(selection, *coord);
-            let integrate_bg =
-                integrate_bind_group(self, base_t, scratch.targets(), &mask_view, &opacity_buf);
+            let integrate_bg = integrate_bind_group(
+                self,
+                base_t,
+                scratch.targets(),
+                &mask_view,
+                &opacity_buf,
+                &self.zeroes.aux,
+            );
             {
                 let int_targets = dst.targets();
                 let int_att = int_targets.attachments(desc::CLEAR);
@@ -484,7 +565,7 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);
-        let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss);
+        let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
 
         // The carried parcel's lanes, in the order `stamp.wesl`'s deposit declares
         // its targets — the same three channels at the same formats the unscaled
@@ -492,18 +573,27 @@ impl StrokeRenderer {
         // coming from the scratch pool rather than the tile pool, since nothing
         // here ever becomes a document tile). A space with no residual builds two
         // lanes and binds two, the `[..2 + has_resid]` count every list of these
-        // takes (§6.7). A supersampled stroke's lanes are the same trio at `ss`
-        // texels per px — the one place the 4× memory is paid, and it is transient:
-        // no document tile ever holds a subsample.
-        let keys: Vec<Key> = [
+        // takes (§6.7) — unless the stroke carries the ceiling lane, which sits at
+        // the shader's location 3 and leaves the residual's slot a hole
+        // (`accum::MAX_LANES`). A supersampled stroke's lanes are the same set at
+        // `ss` texels per px — the one place the 4× memory is paid, and it is
+        // transient: no document tile ever holds a subsample.
+        let mut keys: Vec<Option<Key>> = vec![
             Some(parcel_key(self.color_space.color_format())),
             Some(parcel_key(SCRATCH_AUX_FORMAT)),
-            self.color_space.resid_format().map(parcel_key),
-        ]
-        .into_iter()
-        .flatten()
-        .map(|key| key.scaled(ss))
-        .collect();
+        ];
+        match self.color_space.resid_format() {
+            Some(f) => keys.push(Some(parcel_key(f))),
+            None if k.ceiling_lane => keys.push(None),
+            None => {}
+        }
+        if k.ceiling_lane {
+            keys.push(Some(parcel_key(CEILING_FORMAT)));
+        }
+        let keys: Vec<Option<Key>> = keys
+            .into_iter()
+            .map(|key| key.map(|key| key.scaled(ss)))
+            .collect();
 
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
@@ -516,7 +606,11 @@ impl StrokeRenderer {
         .run(
             &Sweep {
                 label: "stark sweep pass",
-                pipeline: &self.swept.pipeline,
+                pipeline: if k.ceiling_lane {
+                    &self.swept.pipeline_ceiling
+                } else {
+                    &self.swept.pipeline
+                },
                 draws: &draws,
                 prefix: &prefix_bg,
                 noise: &noise_bg,
@@ -533,7 +627,12 @@ impl StrokeRenderer {
                     aux: l.parcel.lane(AUX),
                     resid: l.base.resid.is_some().then(|| l.parcel.lane(RESID)),
                 };
-                integrate_bind_group(self, l.base, parcel, l.mask, &opacity_buf)
+                let ceiling = if k.ceiling_lane {
+                    l.parcel.lane(CEILING)
+                } else {
+                    &self.zeroes.aux
+                };
+                integrate_bind_group(self, l.base, parcel, l.mask, &opacity_buf, ceiling)
             },
         );
 
@@ -552,10 +651,12 @@ impl StrokeRenderer {
 /// The carried parcel's lanes (`render_swept_scaled`), named beside the keys that
 /// build them so the attach order and the bind order stay one list
 /// ([`Parcel`](super::accum::Parcel)) — and in the order `stamp.wesl` declares its
-/// own targets, which is what the sweep attaches them as.
+/// own targets, which is what the sweep attaches them as. The ceiling is at 3
+/// with or without a residual at 2: the index is the shader's `@location`.
 const COLOR: usize = 0;
 const AUX: usize = 1;
 const RESID: usize = 2;
+const CEILING: usize = 3;
 
 /// One carried-parcel lane's pool key — [`lane_key`]'s usages, at the parcel's own
 /// formats. One label for the three: they are one purpose, and the formats already
@@ -658,14 +759,17 @@ pub(super) fn sweep_binds(
 ///
 /// `ss` rides beside it: how many subsample texels per canvas px the scratch
 /// holds (§6.2), which is what tells the shader to box-resolve the parcel — 1,
-/// the plain 1:1 load, everywhere the sweep did not supersample.
+/// the plain 1:1 load, everywhere the sweep did not supersample. And `lane`,
+/// whether the ceiling lane bound beside the parcel is real — the stroke's
+/// opacity is pen-driven — or the 1×1 zero the shader must not read.
 pub(super) fn opacity_uniform(
     scope: &mut crate::gpu::scratch::SubmitScope,
     opacity: f32,
     ss: u32,
+    lane: bool,
 ) -> wgpu::Buffer {
     let u = stark_shaders::mirror::integrate::Integrate {
-        params: [opacity, ss as f32, 0.0, 0.0],
+        params: [opacity, ss as f32, f32::from(u8::from(lane)), 0.0],
     };
     let buf = scope.take_run_buffer(BufKey {
         size: std::mem::size_of_val(&u) as u64,
@@ -744,27 +848,7 @@ pub(super) fn sweep_draws(
     let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
     for idx in touched.values() {
         let from = instances.len() as u32;
-        instances.extend(idx.iter().map(|&i| {
-            let Segment { sweep, paint } = &segments[i as usize];
-            SegmentInstance {
-                start: sweep.start.to_array(),
-                dir: sweep.dir.to_array(),
-                // The tip's radius, which is the frame brush-local coordinates
-                // are read in (§6.6, [`Sweep::radius`]) — the ramp rides beside
-                // it unscaled, that being the point of its being *relative*.
-                geom: [sweep.radius, sweep.length, sweep.ramp],
-                extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
-                tooth_give: paint.tooth_give,
-                // The solved stretch map (§6.6). Unscaled for the ramp's reason:
-                // it acts on brush-local coordinates, which are already the
-                // frame's own units.
-                stretch: [
-                    sweep.stretch.travel,
-                    sweep.stretch.shear,
-                    sweep.stretch.lateral,
-                ],
-            }
-        }));
+        instances.extend(idx.iter().map(|&i| segment_instance(&segments[i as usize])));
         runs.push(from..instances.len() as u32);
     }
     // Leased and written through the scope (`SubmitScope::write_lease`), never
@@ -795,35 +879,13 @@ pub(super) fn sweep_draws(
     let mut xform_data = vec![0u8; coords.len() * XFORM_STRIDE as usize];
     for (i, coord) in coords.iter().enumerate() {
         let origin = coord.origin();
-        let xform = TileXform {
-            params: [
-                origin.x - apron,
-                origin.y - apron,
-                2.0 / TILE_TEX as f32,
-                // Half the deposit's own footprint in canvas px (§6.2): the box
-                // filter's half-window at 1×, and each subsample's own share of
-                // the pixel when the sweep supersamples. The canvas→NDC scale
-                // beside it does *not* move — a supersampled target covers the
-                // same canvas extent; only the rasterizer's grid is finer.
-                0.5 / ss as f32,
-            ],
-            color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
-            resid: k.resid,
-            paint: [
-                rec.brush.drain_px(),
-                k.substrate_uv_scale,
-                k.tooth_softness,
-                0.0,
-            ],
-            noise_freq: k.nfreq,
-            noise_amp: k.namp,
-            jitter_eps: k.jitter_eps,
-            jitter_seed: k.jitter_seed,
-            // The struct's own trailing padding, generated because the two
-            // scalars above end 8 bytes short of the uniform's 16-byte round
-            // (§6.10).
-            _pad_8: [0; 8],
-        };
+        let xform = tile_xform(
+            rec,
+            k,
+            origin - Vec2::splat(apron),
+            (TILE_TEX as f32, TILE_TEX as f32),
+            ss,
+        );
         let at = i * XFORM_STRIDE as usize;
         xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
     }
@@ -861,6 +923,101 @@ pub(super) fn sweep_draws(
     }
 }
 
+/// One segment as the sweep is instanced with — the same record for every draw of
+/// the swept extent, the stamp loop's lane draw included (§6.2).
+pub(super) fn segment_instance(segment: &Segment) -> SegmentInstance {
+    let Segment { sweep, paint } = segment;
+    SegmentInstance {
+        start: sweep.start.to_array(),
+        dir: sweep.dir.to_array(),
+        // The tip's radius, which is the frame brush-local coordinates are read in
+        // (§6.6, [`Sweep::radius`]) — the ramp rides beside it unscaled, that being
+        // the point of its being *relative*.
+        geom: [sweep.radius, sweep.length, sweep.ramp],
+        extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
+        tooth_give: paint.tooth_give,
+        // The ceiling's factor here (§6.2) — 1 unless the pen drives it, and read
+        // by no pipeline but the ceiling lane's.
+        opacity: paint.opacity,
+        // The solved stretch map (§6.6). Unscaled for the ramp's reason: it acts on
+        // brush-local coordinates, which are already the frame's own units.
+        stretch: [
+            sweep.stretch.travel,
+            sweep.stretch.shear,
+            sweep.stretch.lateral,
+        ],
+    }
+}
+
+/// The sweep's per-target uniform (§6.2): the target's top-left in canvas px and
+/// its size — a tile texture's, apron included, or the stamp loop's region's — with
+/// the stroke constants every fragment reads. `ss` is the supersampling factor the
+/// target is rasterized at.
+pub(super) fn tile_xform(
+    rec: &StrokeRecord,
+    k: &super::StrokeConstants,
+    origin: Vec2,
+    size: (f32, f32),
+    ss: u32,
+) -> TileXform {
+    TileXform {
+        params: [
+            origin.x,
+            origin.y,
+            0.0,
+            // Half the deposit's own footprint in canvas px (§6.2): the box
+            // filter's half-window at 1×, and each subsample's own share of
+            // the pixel when the sweep supersamples. The canvas→NDC scale
+            // below does *not* move — a supersampled target covers the
+            // same canvas extent; only the rasterizer's grid is finer.
+            0.5 / ss as f32,
+        ],
+        color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
+        resid: k.resid,
+        paint: [
+            rec.brush.drain_px(),
+            k.substrate_uv_scale,
+            k.tooth_softness,
+            0.0,
+        ],
+        noise_freq: k.nfreq,
+        noise_amp: k.namp,
+        jitter_eps: k.jitter_eps,
+        jitter_seed: k.jitter_seed,
+        ndc: [2.0 / size.0, 2.0 / size.1],
+    }
+}
+
+/// One [`TileXform`] bound as the sweep's group 0 — for a draw over a single
+/// target, the stamp loop's lane draw (§6.2), where [`sweep_draws`] builds a slot
+/// per tile.
+pub(super) fn xform_group(
+    r: &StrokeRenderer,
+    scope: &mut crate::gpu::scratch::SubmitScope,
+    xform: &TileXform,
+) -> wgpu::BindGroup {
+    let buf = scope.take_piece_buffer(BufKey {
+        size: XFORM_SLOT,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        label: "stark sweep region xform",
+    });
+    scope.write_lease(&buf, bytemuck::bytes_of(xform));
+    desc::bind_group_for(
+        &r.ctx.device,
+        "stark sweep region bg",
+        &r.swept.uniform_bgl,
+        XFORM_SLOTS,
+        false,
+        |_| {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buf,
+                offset: 0,
+                size: wgpu::BufferSize::new(XFORM_SLOT),
+            })
+        },
+    )
+}
+
 /// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
 /// fullscreen pass with four sampled tiles (base/scratch color/aux), writing the
 /// color+aux MRT of a fresh tile.
@@ -892,7 +1049,10 @@ pub(super) fn build_integrate_pipeline(
 }
 
 /// The integrate pass's bind group: the pristine paint under a tile, the parcel the
-/// stroke laid over it, the selection coverage and the stroke's opacity ceiling.
+/// stroke laid over it, the selection coverage, the stroke's opacity ceiling, and
+/// the ceiling lane — the parcel's own under a pen-driven opacity, the 1×1 zero
+/// otherwise (the uniform says which, and the shader reads the lane only when
+/// it does).
 ///
 /// **One derivation for both swept paths.** The unscaled loop and the scaled
 /// accumulator each spelled these eight slots out — the same list, the same
@@ -913,6 +1073,7 @@ fn integrate_bind_group(
     parcel: Targets<'_>,
     mask: &wgpu::TextureView,
     opacity: &wgpu::Buffer,
+    ceiling: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     desc::bind_group_for(
         &r.ctx.device,
@@ -927,6 +1088,7 @@ fn integrate_bind_group(
             ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(parcel.aux),
             ib::SELECTION => wgpu::BindingResource::TextureView(mask),
             ib::IG => opacity.as_entire_binding(),
+            ib::SCRATCH_CEILING => wgpu::BindingResource::TextureView(ceiling),
             ib::BASE_RESID => {
                 wgpu::BindingResource::TextureView(base.resid.expect("a residual build has one"))
             }

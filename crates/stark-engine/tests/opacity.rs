@@ -18,7 +18,7 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
-use stark_model::document::{BrushParams, FillOp, SelectionShape};
+use stark_model::document::{BrushParams, FillOp, ModSource, Modulation, SelectionShape};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -280,5 +280,238 @@ fn a_charged_glob_at_half_opacity_is_the_half_charge_glob() {
     assert!(
         apart(d, h) <= 2,
         "the dialed glob {d:?} must deliver the half glob {h:?}"
+    );
+}
+
+// ---- the ceiling under the pen (§6.2) ---------------------------------------------
+
+/// [`washed`] with its ceiling under the pen: opacity mapped to pressure,
+/// linearly, so the pen's share of the dial *is* its pressure.
+fn under_the_pen(opacity: f32, radius: f32) -> BrushParams {
+    let mut b = washed(opacity, radius);
+    b.paint_mut().expect("a paint brush").modulation.opacity =
+        Some(Modulation::linear(ModSource::Pressure));
+    b
+}
+
+/// **A pen that never moves is the dial.** Mapped to pressure and pressed home
+/// throughout, the ceiling lane holds the plain coverage and the stroke is the
+/// unmapped one — through the other sweep pipeline, a fourth carried lane and
+/// the lane's own inversion, so the agreement is to the lane's f16 rather than
+/// to the bit. The mouse's case, since a mouse reports 1: a pressure-mapped
+/// preset under one is the preset.
+#[test]
+fn a_pen_driven_ceiling_pressed_home_is_the_dial() {
+    let path = [Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)];
+    let Some(mut mapped) = engine_or_skip() else {
+        return;
+    };
+    stroke_with(&mut mapped, under_the_pen(0.5, 24.0), &path);
+    let mapped = mapped.render_to_image();
+
+    let mut plain = engine_or_skip().expect("the adapter answered once already");
+    stroke_with(&mut plain, washed(0.5, 24.0), &path);
+    let plain = plain.render_to_image();
+
+    // The core, and the shoulder — where the coverage is below 1 and the lane's
+    // claim is a fraction rather than the saturated 1.
+    for p in [
+        Vec2::ZERO,
+        Vec2::new(-40.0, 0.0),
+        Vec2::new(40.0, 0.0),
+        Vec2::new(0.0, 20.0),
+    ] {
+        let (m, u) = (texel(&mapped, p), texel(&plain, p));
+        assert!(
+            apart(m, u) <= 2,
+            "at {p:?} the pressed-home mapped stroke {m:?} must be the dial's {u:?}"
+        );
+    }
+}
+
+/// A straight leg along `y` from `x0` to `x1`, reported every 10 px at one
+/// `pressure` — dense enough that the fit holds the pressure along the leg
+/// rather than smoothing a neighbouring leg's into it.
+fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
+    let n = 16;
+    (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            (Vec2::new(x0 + (x1 - x0) * t, y), pressure)
+        })
+        .collect()
+}
+
+/// **The larger ceiling wins** (§6.2), one way round: a light pass back over a
+/// heavy mark, within one stroke, leaves the mark as it was — the property a
+/// pen-driven ceiling has to have in the stroke's own time, because a live
+/// stroke that took paint away as it went on would read as an eraser.
+///
+/// At a dial below 1, where the claim's inversion is exact. At exactly 1 a
+/// saturated claim rounds to f16's 1 and the integrate lands the whole parcel —
+/// the light pass's mass included, as impasto — which is what the unmodulated
+/// brush at dial 1 does too, and is a claim about height rather than the one
+/// made here.
+#[test]
+fn a_light_pass_back_over_a_heavy_mark_leaves_it() {
+    // Both legs reported every 10 px, so the fit pins each leg's pressure to
+    // its own — and the drop from one to the other happens on an excursion
+    // away from the band, many knots from either leg. The fitted pressure is a
+    // smoothed spline, and a step in it ripples back along the curve: with the
+    // drop at the hairpin itself the heavy leg's factor sat a few percent under
+    // 1 for its whole length, which the ceiling lane read faithfully and this
+    // test is not about.
+    let heavy = leg(-80.0, 80.0, 0.0, 1.0);
+    let light = leg(80.0, -80.0, 0.25, 0.15);
+    let excursion: Vec<(Vec2, f32)> = (1..=6)
+        .map(|i| (Vec2::new(80.0, 10.0 * i as f32), 1.0))
+        .chain((0..=6).map(|i| {
+            let t = i as f32 / 6.0;
+            (Vec2::new(80.0, 60.0 - 60.0 * t), 1.0 - 0.85 * t)
+        }))
+        .collect();
+
+    let Some(mut doubled) = engine_or_skip() else {
+        return;
+    };
+    // Out heavy, and back light over the same band — one stroke.
+    let both: Vec<(Vec2, f32)> = heavy
+        .iter()
+        .chain(&excursion)
+        .chain(&light)
+        .copied()
+        .collect();
+    stroke_pressed(&mut doubled, under_the_pen(0.8, 20.0), &both);
+    let doubled = doubled.render_to_image();
+
+    let mut once = engine_or_skip().expect("the adapter answered once already");
+    stroke_pressed(&mut once, under_the_pen(0.8, 20.0), &heavy);
+    let once = once.render_to_image();
+
+    for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
+        let (d, o) = (texel(&doubled, p), texel(&once, p));
+        assert!(
+            apart(d, o) <= 2,
+            "at {p:?} the heavy mark crossed back lightly {d:?} must be the heavy \
+             mark alone {o:?} — the light pass took a claim it had no right to"
+        );
+    }
+
+    // The control: the light pass on its own is a faint mark, so the equality
+    // above is not two full strokes agreeing.
+    let mut faint = engine_or_skip().expect("the adapter answered once already");
+    stroke_pressed(&mut faint, under_the_pen(0.8, 20.0), &light);
+    assert!(
+        apart(
+            texel(&once, Vec2::ZERO),
+            texel(&faint.render_to_image(), Vec2::ZERO)
+        ) > 20,
+        "the light pass reads as the heavy one, so this test measured nothing"
+    );
+}
+
+/// …and the other way round: a heavy pass over a light mark, within one stroke,
+/// fills it in to the heavy pass's ceiling — the crossing shows the *max*, and
+/// exactly, the two ceilings falling in different thirds of the dial
+/// (`paint_common::claimed_coverage`). What the first-claim law this replaced
+/// could not do: at a saturating flow the light pass had claimed the spot.
+#[test]
+fn a_heavy_pass_over_a_light_mark_fills_it_in() {
+    let light = leg(-80.0, 80.0, 0.0, 0.15);
+    let heavy = leg(80.0, -80.0, 0.25, 1.0);
+    let excursion: Vec<(Vec2, f32)> = (1..=6)
+        .map(|i| (Vec2::new(80.0, 10.0 * i as f32), 0.15))
+        .chain((0..=6).map(|i| {
+            let t = i as f32 / 6.0;
+            (Vec2::new(80.0, 60.0 - 60.0 * t), 0.15 + 0.85 * t)
+        }))
+        .collect();
+
+    let Some(mut doubled) = engine_or_skip() else {
+        return;
+    };
+    let both: Vec<(Vec2, f32)> = light
+        .iter()
+        .chain(&excursion)
+        .chain(&heavy)
+        .copied()
+        .collect();
+    stroke_pressed(&mut doubled, under_the_pen(0.8, 20.0), &both);
+    let doubled = doubled.render_to_image();
+
+    let mut once = engine_or_skip().expect("the adapter answered once already");
+    stroke_pressed(
+        &mut once,
+        under_the_pen(0.8, 20.0),
+        &leg(-80.0, 80.0, 0.25, 1.0),
+    );
+    let once = once.render_to_image();
+
+    for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
+        let (d, o) = (texel(&doubled, p), texel(&once, p));
+        assert!(
+            apart(d, o) <= 2,
+            "at {p:?} the light mark crossed back heavily {d:?} must be the heavy              mark alone {o:?} — the light pass held a ceiling the heavy one should own"
+        );
+    }
+}
+
+/// **The fast path is an optimization, not a semantics**, under the pen too
+/// (§6.2): a whisper of `deposit` routes the identical pressed stroke through
+/// the stamp loop, whose region aux keeps the claim in its own lane and mints
+/// the prefix differences of the claimed law — and the two renderers agree
+/// texel for texel along a pressure ramp *and* across a crossing that the
+/// stroke covers at two pressures.
+#[test]
+fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
+    // Out along y = 0 easing off, and back along y = 0.25 bearing down — so
+    // every spot of the band is covered twice, at two pressures, in the order
+    // the first-claim rule cares about.
+    //
+    // Both legs reported every 10 px, so the fitted pressure is the ramp asked
+    // for along each leg rather than a spline pulled toward the hairpin's jump
+    // over the whole of it.
+    let n = 16;
+    let path: Vec<(Vec2, f32)> = (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            (Vec2::new(-80.0 + 160.0 * t, 0.0), 1.0 - 0.8 * t)
+        })
+        .chain((0..=n).map(|i| {
+            let t = i as f32 / n as f32;
+            (Vec2::new(80.0 - 160.0 * t, 0.25), 0.5 + 0.4 * t)
+        }))
+        .collect();
+    let Some(mut swept) = engine_or_skip() else {
+        return;
+    };
+    stroke_pressed(&mut swept, under_the_pen(0.8, 20.0), &path);
+    let swept = swept.render_to_image();
+
+    let mut looped = engine_or_skip().expect("the adapter answered once already");
+    let mut whisper = under_the_pen(0.8, 20.0);
+    whisper.make_wet().dynamics.deposit = 0.01;
+    stroke_pressed(&mut looped, whisper, &path);
+    let looped = looped.render_to_image();
+
+    for x in [-60.0, -30.0, 0.0, 30.0, 60.0] {
+        let p = Vec2::new(x, 0.0);
+        let (l, s) = (texel(&looped, p), texel(&swept, p));
+        assert!(
+            apart(l, s) <= 2,
+            "at {p:?} the loop's stroke {l:?} must be the fast path's {s:?} — \
+             the whisper of deposit changed the pen's ceiling"
+        );
+    }
+    // …and the ramp is real: the band fades from the end the pen bore down on
+    // first to the end it eased off at, so the agreement above is over a
+    // varying ceiling and not a flat one.
+    let (bore, eased) = (
+        texel(&swept, Vec2::new(-60.0, 0.0)),
+        texel(&swept, Vec2::new(60.0, 0.0)),
+    );
+    assert!(
+        apart(bore, eased) > 20,
+        "the pressure ramp did not reach the ceiling ({bore:?} against {eased:?}), so this          test measured nothing"
     );
 }

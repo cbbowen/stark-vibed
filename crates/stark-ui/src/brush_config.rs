@@ -210,6 +210,9 @@ pub struct EraseConfig {
     /// own, where the laying side shares [`BrushConfig::flow_modulation`]: how
     /// *this* tool responds to the pen is part of what it is.
     pub flow_modulation: Option<Modulation>,
+    /// The erase opacity's pen mapping (`EraseModulations::opacity`) — the
+    /// eraser's own, like its flow's.
+    pub opacity_modulation: Option<Modulation>,
 }
 
 impl Default for EraseConfig {
@@ -219,6 +222,7 @@ impl Default for EraseConfig {
         Self {
             opacity: 1.0,
             flow_modulation: None,
+            opacity_modulation: None,
         }
     }
 }
@@ -281,6 +285,9 @@ pub struct BrushConfig {
     /// liquify drag's [`LiquifyConfig::strength_modulation`]: the rate is the
     /// hand's, but how a tool responds to the pen is the tool's.
     pub flow_modulation: Option<Modulation>,
+    /// The laying opacity's pen mapping — shared by Paint and Wet like the flow's
+    /// and the dial's (`PaintModulations::opacity`, `WetModulations::opacity`).
+    pub opacity_modulation: Option<Modulation>,
     /// Color dynamics (§6.2) — the laying side's, shared like the pigment.
     pub color_dynamics: ColorDynamics,
     /// The wet-only fluxes and their mappings — held whether or not wet is in
@@ -336,6 +343,7 @@ impl Default for BrushConfig {
             effect: BrushEffectType::Paint,
             opacity: p.opacity,
             flow_modulation: p.modulation.flow,
+            opacity_modulation: p.modulation.opacity,
             color_dynamics: p.color_dynamics,
             wet: WetDynamics::default(),
             erase: EraseConfig::default(),
@@ -382,6 +390,7 @@ impl BrushConfig {
                     color_dynamics: self.color_dynamics,
                     modulation: PaintModulations {
                         flow: self.flow_modulation,
+                        opacity: self.opacity_modulation,
                     },
                 }),
                 BrushEffectType::Wet => BrushEffect::Wet(WetEffect {
@@ -398,6 +407,7 @@ impl BrushConfig {
                     color_dynamics: self.color_dynamics,
                     modulation: WetModulations {
                         flow: self.flow_modulation,
+                        opacity: self.opacity_modulation,
                         add: self.wet.add_modulation,
                         lift: self.wet.lift_modulation,
                         deposit: self.wet.deposit_modulation,
@@ -409,6 +419,7 @@ impl BrushConfig {
                     flow: t.flow,
                     modulation: EraseModulations {
                         flow: self.erase.flow_modulation,
+                        opacity: self.erase.opacity_modulation,
                     },
                 }),
                 BrushEffectType::Liquify => BrushEffect::Liquify(LiquifyEffect {

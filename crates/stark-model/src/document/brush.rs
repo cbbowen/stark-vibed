@@ -559,30 +559,41 @@ impl BrushModulations {
 }
 
 /// The pen mappings whose targets exist only while **painting** (§6.2) —
-/// the one rate a [`PaintEffect`] has. With the effect it modulates
+/// the [`PaintEffect`]'s rate and its ceiling. With the effect it modulates
 /// ([`PaintEffect::modulation`]) rather than beside the tip's own mappings, so a
 /// mapping cannot name a knob its brush does not have.
 ///
-/// [`opacity`](PaintEffect::opacity) is deliberately not a target, for
-/// [`EraseModulations`]' reason exactly: a modulated *ceiling* cannot ride the
-/// integrate's one per-stroke uniform — it needs a second accumulator lane (a
-/// mass-weighted opacity) to stay independent of how a live stroke is cut into
-/// pieces — so the knob the pen drives is the rate.
+/// The ceiling is a target with a cost the rate does not have: a segment's
+/// share of the stroke's coverage has to be remembered at the segment's own
+/// ceiling, so a stroke that maps it carries one more accumulator lane per
+/// touched tile (`stamp.wesl`'s ceiling lane, §6.2). A brush that leaves it
+/// unmapped never pays for it.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct PaintModulations {
     /// Scales [`PaintEffect::flow`] — the brush's own paint, "Flow" in the UI.
     pub flow: Option<Modulation>,
+    /// Scales [`PaintEffect::opacity`] — how much of a full stroke this stretch
+    /// of it is. Mapped to pressure the mark is full where the pen bore down
+    /// and faint where it eased off; where a stroke covers a spot twice, the
+    /// spot shows the **larger** of the two ceilings (§6.2, the ceiling lane),
+    /// so a light pass back over a heavy mark leaves it, and a heavy pass over
+    /// a light one fills it in.
+    #[serde(default)]
+    pub opacity: Option<Modulation>,
 }
 
 impl PaintModulations {
     pub fn flow(&self, pen: PenState) -> f32 {
         mod_factor(self.flow, pen)
     }
+    pub fn opacity(&self, pen: PenState) -> f32 {
+        mod_factor(self.opacity, pen)
+    }
 
     /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
-    fn all(&self) -> [Option<Modulation>; 1] {
-        let Self { flow } = *self;
-        [flow]
+    fn all(&self) -> [Option<Modulation>; 2] {
+        let Self { flow, opacity } = *self;
+        [flow, opacity]
     }
 
     /// Whether any target is mapped.
@@ -592,8 +603,8 @@ impl PaintModulations {
 
     /// Every mapped target sanitized, the unmapped ones left unmapped.
     pub fn sanitized(self) -> Self {
-        let [flow] = self.all().map(|m| m.map(Modulation::sanitized));
-        Self { flow }
+        let [flow, opacity] = self.all().map(|m| m.map(Modulation::sanitized));
+        Self { flow, opacity }
     }
 
     /// The steepest response across these targets (`mod_slope`).
@@ -603,14 +614,20 @@ impl PaintModulations {
 }
 
 /// The pen mappings whose targets exist only while **working wet paint** — the
-/// effect's own flow and the four rates of [`BrushDynamics`] (§6.2). With the
-/// effect they modulate ([`WetEffect::modulation`]) for [`PaintModulations`]'
-/// reason, whose note on modulating `opacity` applies here unchanged.
+/// effect's own flow and ceiling, and the four rates of [`BrushDynamics`]
+/// (§6.2). With the effect they modulate ([`WetEffect::modulation`]) for
+/// [`PaintModulations`]' reason.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct WetModulations {
     /// Scales [`WetEffect::flow`] — the whole of what the tool does, "Flow" in
     /// the UI: mapped to pressure, a light touch lays less *and* smears less.
     pub flow: Option<Modulation>,
+    /// Scales [`WetEffect::opacity`] — [`PaintModulations::opacity`]'s target,
+    /// reaching what the brush **mints** (§6.2): the `add` paint's ceiling. The
+    /// `charge` glob is scaled by the dial alone, being minted once before the
+    /// pen has moved; moved paint is under no ceiling at all.
+    #[serde(default)]
+    pub opacity: Option<Modulation>,
     /// Scales [`BrushDynamics::add`] — the brush's own paint alone, for a brush
     /// that lays more under the pen without working the canvas harder.
     pub add: Option<Modulation>,
@@ -626,6 +643,9 @@ impl WetModulations {
     pub fn flow(&self, pen: PenState) -> f32 {
         mod_factor(self.flow, pen)
     }
+    pub fn opacity(&self, pen: PenState) -> f32 {
+        mod_factor(self.opacity, pen)
+    }
     pub fn add(&self, pen: PenState) -> f32 {
         mod_factor(self.add, pen)
     }
@@ -640,15 +660,16 @@ impl WetModulations {
     }
 
     /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
-    fn all(&self) -> [Option<Modulation>; 5] {
+    fn all(&self) -> [Option<Modulation>; 6] {
         let Self {
             flow,
+            opacity,
             add,
             lift,
             deposit,
             bleed,
         } = *self;
-        [flow, add, lift, deposit, bleed]
+        [flow, opacity, add, lift, deposit, bleed]
     }
 
     /// Whether any target is mapped.
@@ -658,9 +679,11 @@ impl WetModulations {
 
     /// Every mapped target sanitized, the unmapped ones left unmapped.
     pub fn sanitized(self) -> Self {
-        let [flow, add, lift, deposit, bleed] = self.all().map(|m| m.map(Modulation::sanitized));
+        let [flow, opacity, add, lift, deposit, bleed] =
+            self.all().map(|m| m.map(Modulation::sanitized));
         Self {
             flow,
+            opacity,
             add,
             lift,
             deposit,
@@ -674,28 +697,32 @@ impl WetModulations {
     }
 }
 
-/// The pen mappings whose targets exist only while **erasing** (§6.12).
-///
-/// [`opacity`](EraseEffect::opacity) is deliberately not a target: a modulated
-/// *ceiling* cannot ride the erase integrate's one per-stroke uniform — it needs a
-/// second accumulator lane (a mass-weighted opacity) to stay independent of how a
-/// live stroke is cut into pieces — so the knob the pen drives today is the rate,
-/// exactly as it is for paint.
+/// The pen mappings whose targets exist only while **erasing** (§6.12): the
+/// eraser's rate and its ceiling, [`PaintModulations`]' pair on the removing
+/// side, carried the same way (the erase sweep's ceiling lane).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub struct EraseModulations {
     /// Scales [`EraseEffect::flow`] — how fast a light touch feathers the bite in.
     pub flow: Option<Modulation>,
+    /// Scales [`EraseEffect::opacity`] — how much of what it finds this stretch
+    /// of the stroke may remove. Mapped to pressure, a light touch thins and a
+    /// heavy one clears.
+    #[serde(default)]
+    pub opacity: Option<Modulation>,
 }
 
 impl EraseModulations {
     pub fn flow(&self, pen: PenState) -> f32 {
         mod_factor(self.flow, pen)
     }
+    pub fn opacity(&self, pen: PenState) -> f32 {
+        mod_factor(self.opacity, pen)
+    }
 
     /// Every target, exhaustively — [`BrushModulations::all`]'s bargain.
-    fn all(&self) -> [Option<Modulation>; 1] {
-        let Self { flow } = *self;
-        [flow]
+    fn all(&self) -> [Option<Modulation>; 2] {
+        let Self { flow, opacity } = *self;
+        [flow, opacity]
     }
 
     /// Whether any target is mapped.
@@ -705,8 +732,8 @@ impl EraseModulations {
 
     /// Every mapped target sanitized, the unmapped ones left unmapped.
     pub fn sanitized(self) -> Self {
-        let [flow] = self.all().map(|m| m.map(Modulation::sanitized));
-        Self { flow }
+        let [flow, opacity] = self.all().map(|m| m.map(Modulation::sanitized));
+        Self { flow, opacity }
     }
 
     /// The steepest response across these targets (`mod_slope`).
@@ -1077,8 +1104,8 @@ pub struct EraseEffect {
     /// paint effect's, so switching a brush's effect never re-interprets a number
     /// that meant something else.
     pub flow: f32,
-    /// The pen mappings onto this effect's own rates ([`EraseModulations`] — which
-    /// is also where the note on modulating `opacity` lives).
+    /// The pen mappings onto this effect's own rate and ceiling
+    /// ([`EraseModulations`]).
     #[serde(default)]
     pub modulation: EraseModulations,
 }
@@ -1278,6 +1305,20 @@ impl BrushEffect {
             Self::Wet(w) => w.modulation.max_slope(),
             Self::Erase(e) => e.modulation.max_slope(),
             Self::Liquify(l) => l.modulation.max_slope(),
+        }
+    }
+
+    /// Whether the pen drives this effect's [`opacity`](Self::opacity) — the
+    /// one mapping the renderer has to know about *as a brush*, because a stroke
+    /// that carries it accumulates one more lane per touched tile and takes the
+    /// carried-parcel path whatever the dial says (§6.2). A pure function of the
+    /// brush, like every path decision, so a live tail and its commit agree.
+    pub fn opacity_modulated(&self) -> bool {
+        match self {
+            Self::Paint(p) => p.modulation.opacity.is_some(),
+            Self::Wet(w) => w.modulation.opacity.is_some(),
+            Self::Erase(e) => e.modulation.opacity.is_some(),
+            Self::Liquify(_) => false,
         }
     }
 
@@ -1506,10 +1547,10 @@ impl BrushParams {
     /// own gesture when a flux slider is first raised on a plain brush, and the
     /// shorthand a test builds a smearing brush with.
     ///
-    /// What both kinds hold carries over — the pigment, the opacity, the flow
-    /// (rate and mapping), the color dynamics — and the fluxes start at zero
-    /// with `add` at its full share, so wetting a brush and touching nothing
-    /// lays the paint it always laid. A brush already wet is handed back
+    /// What both kinds hold carries over — the pigment, the opacity and the flow
+    /// (each with its mapping), the color dynamics — and the fluxes start at
+    /// zero with `add` at its full share, so wetting a brush and touching
+    /// nothing lays the paint it always laid. A brush already wet is handed back
     /// untouched; an eraser keeps its opacity and its flow — the rate means the
     /// same thing on every effect — and takes the default wet brush for the
     /// rest.
@@ -1524,6 +1565,7 @@ impl BrushParams {
                 color_dynamics: p.color_dynamics,
                 modulation: WetModulations {
                     flow: p.modulation.flow,
+                    opacity: p.modulation.opacity,
                     ..WetModulations::default()
                 },
             }),
@@ -1532,6 +1574,7 @@ impl BrushParams {
                 flow: e.flow,
                 modulation: WetModulations {
                     flow: e.modulation.flow,
+                    opacity: e.modulation.opacity,
                     ..WetModulations::default()
                 },
                 ..WetEffect::default()
@@ -1886,10 +1929,57 @@ mod tests {
         }
         assert_eq!(PaintModulations::default().flow(pen(0.25)), 1.0);
         assert_eq!(EraseModulations::default().flow(pen(0.25)), 1.0);
+        assert_eq!(PaintModulations::default().opacity(pen(0.25)), 1.0);
+        assert_eq!(EraseModulations::default().opacity(pen(0.25)), 1.0);
         // …and the everyday brush maps size alone.
         let m = BrushModulations::PRESSURE_SIZE;
         assert_eq!(m.size(pen(0.4)).to_bits(), 0.4f32.to_bits());
         assert_eq!(m.tooth_give(pen(0.4)), 1.0);
+    }
+
+    /// The ceiling is a target on every effect that has a ceiling, and the
+    /// brush says so as one bit (`opacity_modulated`) — the bit the renderer
+    /// routes on. Turning a brush wet keeps the mapping, like the flow's.
+    #[test]
+    fn a_mapped_ceiling_is_a_fact_about_the_brush() {
+        let steep = Modulation {
+            source: ModSource::Pressure,
+            floor: 0.0,
+            curve: 1.0,
+        };
+        let mut b = BrushParams::default();
+        assert!(!b.effect.opacity_modulated());
+        b.paint_mut()
+            .expect("the default brush paints")
+            .modulation
+            .opacity = Some(steep);
+        assert!(b.effect.opacity_modulated());
+        // Counted by the flattener's budget like every other target.
+        assert!(
+            b.max_slope() > 1.0,
+            "a steep ceiling response costs segments"
+        );
+
+        b.make_wet();
+        assert_eq!(b.wet().expect("wet").modulation.opacity, Some(steep));
+        assert!(b.effect.opacity_modulated());
+
+        b.effect = BrushEffect::Erase(EraseEffect {
+            modulation: EraseModulations {
+                opacity: Some(steep),
+                ..EraseModulations::default()
+            },
+            ..EraseEffect::default()
+        });
+        assert!(b.effect.opacity_modulated());
+        b.make_wet();
+        assert_eq!(b.wet().expect("wet").modulation.opacity, Some(steep));
+
+        b.effect = BrushEffect::Liquify(LiquifyEffect::default());
+        assert!(
+            !b.effect.opacity_modulated(),
+            "a warp has no ceiling to drive"
+        );
     }
 
     /// The curve is a response, so it has to be one: monotone, at the floor when the

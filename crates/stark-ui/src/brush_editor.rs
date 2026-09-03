@@ -95,6 +95,7 @@ type BrushEdit = Box<dyn FnOnce(&mut BrushConfig, &mut Transient)>;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ModRow {
     Size,
+    Opacity,
     Flow,
     Stretch,
     ToothGive,
@@ -112,6 +113,7 @@ impl ModRow {
     fn label(self, b: &BrushConfig) -> &'static str {
         match self {
             Self::Size => "Size",
+            Self::Opacity => "Opacity",
             Self::Flow => match b.effect {
                 BrushEffectType::Liquify => "Strength",
                 _ => "Flow",
@@ -125,6 +127,16 @@ impl ModRow {
         }
     }
 
+    /// The glyph beside the row's word, where the parameter has one it wears
+    /// everywhere else — the opacity's, which the layer and selection panels
+    /// show against their own opacity sliders.
+    fn glyph(self) -> Option<&'static str> {
+        match self {
+            Self::Opacity => Some(icons::OPACITY),
+            _ => None,
+        }
+    }
+
     /// The base slider's range, for the brush being edited. The three wet fluxes
     /// stop at 0.95 for the reason they always did — λ diverges at 1 (§6.2).
     ///
@@ -134,6 +146,8 @@ impl ModRow {
     fn range(self, b: &BrushConfig, t: Transient) -> (f32, f32) {
         match self {
             Self::Size => (MIN_RADIUS, MAX_RADIUS),
+            // A ceiling: the fraction of a full stroke (§6.2, §6.12).
+            Self::Opacity => (0.0, 1.0),
             // The in-force effect's own range (`BrushConfig::max_flow`) — the
             // liquify strength stops at its quoted 1, the rates at the slider's
             // own top.
@@ -165,6 +179,9 @@ impl ModRow {
     fn get(self, b: &BrushConfig, t: Transient) -> f32 {
         match self {
             Self::Size => t.size,
+            // The ceiling of whichever effect is in force — the laying side's
+            // or the eraser's own (`BrushConfig::opacity`).
+            Self::Opacity => b.opacity(),
             // The overall rate of whichever effect is in force (§6.2, §6.12)
             // — the transient's, like the size beside it.
             Self::Flow => t.flow,
@@ -185,6 +202,7 @@ impl ModRow {
     fn set(self, b: &mut BrushConfig, t: &mut Transient, v: f32) {
         match self {
             Self::Size => t.size = v,
+            Self::Opacity => b.set_opacity(v),
             Self::Flow => t.flow = v,
             Self::Stretch => b.stretch = v,
             Self::ToothGive => b.tooth.give = v,
@@ -208,6 +226,16 @@ impl ModRow {
                 BrushEffectType::Erase => &mut b.erase.flow_modulation,
                 BrushEffectType::Liquify => &mut b.liquify.strength_modulation,
             },
+            // The laying side's or the eraser's, like the dial itself. A liquify
+            // brush shows no Opacity row at all (§6.13), so its arm is never
+            // reached; the laying side's slot is what the dial would write if it
+            // were.
+            Self::Opacity => match b.effect {
+                BrushEffectType::Erase => &mut b.erase.opacity_modulation,
+                BrushEffectType::Paint | BrushEffectType::Wet | BrushEffectType::Liquify => {
+                    &mut b.opacity_modulation
+                }
+            },
             Self::Add => &mut b.wet.add_modulation,
             Self::Lift => &mut b.wet.lift_modulation,
             Self::Deposit => &mut b.wet.deposit_modulation,
@@ -224,6 +252,12 @@ impl ModRow {
                 BrushEffectType::Paint | BrushEffectType::Wet => b.flow_modulation,
                 BrushEffectType::Erase => b.erase.flow_modulation,
                 BrushEffectType::Liquify => b.liquify.strength_modulation,
+            },
+            Self::Opacity => match b.effect {
+                BrushEffectType::Erase => b.erase.opacity_modulation,
+                BrushEffectType::Paint | BrushEffectType::Wet | BrushEffectType::Liquify => {
+                    b.opacity_modulation
+                }
             },
             Self::Add => b.wet.add_modulation,
             Self::Lift => b.wet.lift_modulation,
@@ -648,12 +682,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // fraction of a full stroke this stroke lays — or, erasing,
                     // removes. 0.5 really shows (or leaves) half, however hard
                     // the spot is scrubbed. Not a rate: the rate is Flow below.
-                    // A liquify brush has no such ceiling — scrubbing keeps
-                    // carrying (§6.13) — so the dial is not shown rather than
+                    // The pen can drive it like the rate — a light touch lays a
+                    // faint mark a heavy one fills in — which is the chip on the
+                    // row. A liquify brush has no such ceiling — scrubbing keeps
+                    // carrying (§6.13) — so the row is not shown rather than
                     // shown and vetoed (`BrushConfig::set_opacity`).
                     if !liquifies {
-                        Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: brush.opacity(),
-                            oninput: move |v| edit(state, preview, move |b, _| b.set_opacity(v)) }
+                        {mod_slider(state, preview, mod_open, ModRow::Opacity, brush, tune)}
                     }
                     // The effect's overall rate (§6.2): how much a pass lays — and,
                     // wet, how hard it works the canvas; erasing, how fast the bite
@@ -833,7 +868,7 @@ fn mod_slider(
 
     rsx! {
         div { class: "mod-slider",
-            Slider { label: row.label(&brush).to_string(), min, max, value: row.get(&brush, tune),
+            Slider { label: row.label(&brush).to_string(), glyph: row.glyph(), min, max, value: row.get(&brush, tune),
                 oninput: move |v| edit(state, preview, move |b, t| row.set(b, t, v)) }
             button {
                 class: chip_class,

@@ -190,6 +190,50 @@ fn flow_follows_pressure_when_it_is_mapped_to_it() {
     assert_eq!(a, b, "unmapped, the two presses must lay the same paint");
 }
 
+/// Opacity mapped to pressure on the swept path: the same tip at the same flow
+/// shows less the lighter the hand — the *ceiling* following the pen, where
+/// [`flow_follows_pressure_when_it_is_mapped_to_it`] has the rate follow it.
+/// The ceiling lane's headline (§6.2): a ceiling has no per-segment form, so a
+/// stroke that maps it accumulates what each segment claimed instead.
+#[test]
+fn opacity_follows_pressure_when_it_is_mapped_to_it() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut b = plain(30.0);
+    b.paint_mut().expect("a paint brush").modulation.opacity =
+        Some(Modulation::linear(ModSource::Pressure));
+    let (heavy, light) = two_marks(&mut engine, b, (1.0, 0.0), (0.15, 0.0), ink);
+    assert!(
+        light < heavy * 0.6,
+        "a light touch should show markedly less: {light} vs {heavy}"
+    );
+    assert!(
+        light > 0.0,
+        "…but a 0.15 press through a linear mapping is not nothing"
+    );
+}
+
+/// …and on the stamp loop, whose mint claims coverage in the region aux's own
+/// lane rather than in a sweep target (§6.2) — the same mapping, the same two
+/// presses, routed by a whisper of `deposit`.
+#[test]
+fn opacity_follows_pressure_on_the_stamp_loop() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut b = plain(30.0);
+    let w = b.make_wet();
+    w.dynamics.deposit = 0.01;
+    w.modulation.opacity = Some(Modulation::linear(ModSource::Pressure));
+    let (heavy, light) = two_marks(&mut engine, b, (1.0, 0.0), (0.15, 0.0), ink);
+    assert!(
+        light < heavy * 0.6,
+        "a light touch should show markedly less on the loop: {light} vs {heavy}"
+    );
+    assert!(light > 0.0, "…but not nothing");
+}
+
 /// Size driven by **tilt** instead of pressure — the pencil that widens as it is laid
 /// over — and pressure no longer reaching the radius at all.
 ///

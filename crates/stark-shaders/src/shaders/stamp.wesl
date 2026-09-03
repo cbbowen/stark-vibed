@@ -52,7 +52,7 @@ import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
     substrate_tooth, jitter_of, xf,
 };
-import package::lib::paint_common::{OPACITY_K};
+import package::lib::paint_common::{OPACITY_K, level_sums};
 
 @vertex
 fn vs_main(
@@ -94,8 +94,13 @@ fn vs_main(
     // to turn into it, and this is per segment where that would be per texel in the
     // dynamics loop beside it. The host solves it once (`segments::Stretch::solve`).
     @location(5) stretch: vec3<f32>,
+    // The ceiling's modulation factor (§6.2): what this segment's share of the
+    // stroke's coverage is capped at, as a fraction of the stroke's dial. 1 on
+    // every brush whose opacity the pen does not drive. Its own attribute for
+    // `tooth_give`'s reason: `extra` is full.
+    @location(6) opacity: f32,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch);
+    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch, opacity);
 }
 
 @fragment
@@ -155,6 +160,15 @@ fn fs_main(in: VsOut) -> FsOut {
     // *ordered*, so a stroke crossing itself covers rather than averages.
     let w = 1.0 - exp(-OPACITY_K * m);
     out.color = vec4<f32>(brush_color(in, sw) * w, w);
+    // The ceiling lane (`FsOut::ceiling`): this segment's mass and moment above
+    // each ceiling level, at its own factor — and the moment of *all* its mass in
+    // the aux's spare `.z`, beside the mass it is the moment of. The dial is not
+    // here — it is a stroke constant the integrate scales the claim by.
+    var moment = 0.0;
+    @if(ceiling) {
+        out.ceiling = level_sums(in.opacity, m);
+        moment = in.opacity * m;
+    }
     // The wide scratch aux (§6.1), both channels additive in τ so they sum to the
     // true path integral of the extent:
     //   .x = laid height — the amount of paint, so a second pass builds impasto in
@@ -163,12 +177,14 @@ fn fs_main(in: VsOut) -> FsOut {
     //        law blends in. It rides here *unsaturated* because `.a` above has
     //        already saturated, and the integrate needs the total to recover the
     //        merged per-unit opacity `m/h`;
-    //   .zw = unused.
+    //   .z  = the mass's first moment over the ceiling factor, on a stroke whose
+    //        ceiling the pen drives (§6.2) — zero on every other;
+    //   .w  = unused.
     // Height is the amount of paint; the color alpha is per-unit opacity only and
     // never represents amount (§6.1). Height is also the *only* thing a persistent
     // tile keeps: gloss is a uniform property of paint, not a stored channel, so
     // there is nothing here that a brush could source it from.
-    out.aux = vec4<f32>(h, m, 0.0, 0.0);
+    out.aux = vec4<f32>(h, m, moment, 0.0);
     // The parcel's residual (§6.7), premultiplied by the same `w` and over-blended by
     // the same rule as the color beside it: the pair is one color, and anything that
     // treated them as two quantities to combine differently would take the paint off
@@ -189,6 +205,13 @@ fn fs_main(in: VsOut) -> FsOut {
 // which is what lets `erase.wesl` read the whole stroke's extent at once.
 struct FsErase {
     @location(0) mass: vec4<f32>,
+    // The erase's ceiling lane (§6.12) — `FsOut::ceiling` on the removing side,
+    // with the moment of the whole mass beside it in a lane of its own, since
+    // the accumulator has one channel and no spare. `erase.wesl` reads the pair
+    // in place of the accumulated extent's coverage on a stroke whose ceiling
+    // the pen drives.
+    @if(ceiling) @location(1) ceiling: vec4<f32>,
+    @if(ceiling) @location(2) moment: vec4<f32>,
 }
 
 // The erase variant of the sweep (§6.12): the same swept extent as
@@ -211,6 +234,32 @@ fn fs_erase(in: VsOut) -> FsErase {
     let jitter = jitter_of(in);
 
     var out: FsErase;
-    out.mass = vec4<f32>(in.extra.w * drain * tooth * jitter * tau, 0.0, 0.0, 0.0);
+    let mass = in.extra.w * drain * tooth * jitter * tau;
+    out.mass = vec4<f32>(mass, 0.0, 0.0, 0.0);
+    @if(ceiling) {
+        out.ceiling = level_sums(in.opacity, mass);
+        out.moment = vec4<f32>(in.opacity * mass, 0.0, 0.0, 0.0);
+    }
+    return out;
+}
+
+// The ceiling lane alone (§6.2): what the stamp loop draws per segment into its
+// region, between that segment's deposit and the next's, so the loop's claim
+// advances by the very sums the swept sweep accumulates — one fragment law for
+// both paths. The mass is `fs_main`'s, gated the same way.
+struct FsLevels {
+    @location(0) levels: vec4<f32>,
+}
+
+@fragment
+fn fs_levels(in: VsOut) -> FsLevels {
+    let sw = sweep_of(in);
+    let tau = swept_depth(in, sw);
+    let drain = stroke_drain(stroke_arc(in, sw));
+    let tooth = substrate_tooth(in, sw);
+    let jitter = jitter_of(in);
+    let m = drain * in.extra.w * drain * tooth * jitter * tau;
+    var out: FsLevels;
+    out.levels = level_sums(in.opacity, m);
     return out;
 }

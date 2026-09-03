@@ -7,7 +7,8 @@ use wesl::include_wesl;
 
 mod entry_points;
 pub use entry_points::{
-    ENTRY_POINTS, MIXBOX_ENTRY_POINTS, RESID_ENTRY_POINTS, RESID_FEATURE, entry_point_enabled,
+    CEILING_ENTRY_POINTS, CEILING_FEATURE, ENTRY_POINTS, MIXBOX_ENTRY_POINTS, RESID_ENTRY_POINTS,
+    RESID_FEATURE, entry_point_enabled,
 };
 
 /// One pass's two builds, chosen by whether the document's color space carries a
@@ -172,9 +173,14 @@ pub mod mirror {
 ///
 /// Takes `resid` because this pass carries a tile's color, so it is built in two
 /// variants (see [`RESID_ENTRY_POINTS`]): with the residual channel a pigment space
-/// needs (§6.7), and without it.
-pub fn stamp(resid: bool) -> &'static str {
-    resid_variant!(resid, "stamp", "stamp_resid")
+/// needs (§6.7), and without it. And `ceiling`, for the variant that also sweeps
+/// the ceiling lane (see [`CEILING_ENTRY_POINTS`]) — four artifacts in all.
+pub fn stamp(resid: bool, ceiling: bool) -> &'static str {
+    if ceiling {
+        resid_variant!(resid, "stamp_ceiling", "stamp_resid_ceiling")
+    } else {
+        resid_variant!(resid, "stamp", "stamp_resid")
+    }
 }
 
 /// WGSL source for the tile compositing pass (§6.3, pass A).
@@ -416,7 +422,7 @@ mod tests {
             ("selection", selection),
             ("slab", || slab(false)),
             ("slice", slice),
-            ("stamp", || stamp(false)),
+            ("stamp", || stamp(false, false)),
             ("transform", || transform(false)),
         ];
 
@@ -472,7 +478,7 @@ mod tests {
             ("matte", matte),
             ("merge", merge),
             ("slab", slab),
-            ("stamp", stamp),
+            ("stamp", |r| stamp(r, false)),
             ("transform", transform),
         ];
 
@@ -495,6 +501,31 @@ mod tests {
                 accessor(false),
                 "`{name}_resid` is byte-identical to `{name}` — the `{RESID_FEATURE}`                  feature did not reach it",
             );
+        }
+    }
+
+    /// The ceiling-lane sweep is a real second artifact, in every residual
+    /// configuration this build has — the residual test's argument, for the
+    /// other feature: a `@if(ceiling)` spelt wrong would deposit the plain sweep
+    /// twice, every pipeline would build, and a pen-driven ceiling would draw as
+    /// the dial with no lane to say otherwise.
+    #[test]
+    fn every_ceiling_variant_differs_from_its_plain_build() {
+        for name in CEILING_ENTRY_POINTS {
+            assert!(
+                ENTRY_POINTS.contains(name),
+                "`{name}` has a ceiling variant but no plain build to vary from",
+            );
+        }
+        assert_ne!(
+            stamp(false, true),
+            stamp(false, false),
+            "`stamp_ceiling` is byte-identical to `stamp` — the `{CEILING_FEATURE}` feature did not reach it",
+        );
+        #[cfg(feature = "mixbox")]
+        {
+            assert_ne!(stamp(true, true), stamp(true, false));
+            assert_ne!(stamp(true, true), stamp(false, true));
         }
     }
 }

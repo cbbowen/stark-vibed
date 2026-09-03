@@ -1142,11 +1142,99 @@ at least a pixel soft, and a texel under it scales the parcel exactly as a dial
 below 1 does. Moved paint takes the mask as a fraction instead, the one gate
 that conserves it.
 
-**Not built, and deliberately:** an `opacity` target in `PaintModulations`, for
-`EraseModulations`' reason exactly — a modulated ceiling cannot ride the
-integrate's one per-stroke uniform; it needs a second accumulator lane (a
-mass-weighted opacity) to stay independent of how a live stroke is cut into
-pieces. The pen drives the rate.
+### The ceiling under the pen
+
+`opacity` is a modulation target on all three effects that have a ceiling
+(`PaintModulations`, `WetModulations`, `EraseModulations` — the pen mapping,
+below), and it is the one target that cannot ride the machinery the others ride.
+A rate is per segment by nature: `add` scales what *this* segment lays. A
+ceiling is per stroke — it caps what the whole accumulated parcel shows — and
+under the pen there is no longer one number to cap by, only the factor each
+segment asked for.
+
+**What a texel shows is the largest ceiling any of its paint asked for**,
+averaged over the texel: a light pass and a heavy pass over one spot, in either
+order, leave the heavy pass's mark, and a heavy segment's soft shoulder over a
+light mark lifts it only by the coverage the shoulder brings. With `c(θ)` the
+coverage laid by segments whose ceiling is at least `θ`, that average is
+
+```text
+V = ∫₀¹ c(θ) dθ,    c(θ) = 1 − exp(−K · M(θ)),    M(θ) = the mass laid at or above θ
+```
+
+and this is a *max* that fixed-function blending can reach: a blend cannot take
+the maximum of a running quantity, but `M(θ)` is a plain sum of per-segment
+masses gated on the segment's factor, and a sum is what a blend accumulates. The
+sweep that draws a pen-driven stroke has a fourth target, the **ceiling lane**
+(`stamp_common.wesl`'s `FsOut::ceiling`, built only in the `ceiling` variant of
+the shader; `paint_common::level_sums`): the segment's mass above each of two
+levels — thirds of the dial — and its moment above each, additive like the aux.
+The total mass and total moment ride the aux's own lanes. Between two levels the
+mass sits at its mean factor (`claimed_coverage`), so the law is **exact
+wherever all the mass in a third of the dial is at one factor** — a pen that
+holds still, a mouse, which reports 1 — and **the max across thirds**: a
+crossing whose two ceilings fall in different thirds shows the higher one
+exactly. Two ceilings in the same third average by mass, never more than a third
+of the dial from either; two more levels would halve that, and the lane has the
+channels for them only in a colorimetric space, which is why there are two.
+
+Every sum is symmetric in the segments, so the picture is the same whichever
+pass came first, and it composes under re-cutting for the reason the aux does.
+It is not strictly monotone: paint at two factors in one third averages, so a
+light pass in the same third as a heavy mark can lower the mark by a hair,
+bounded as above; across thirds a claim only ever rises.
+
+Two other laws were built first and taken out, and both are worth naming. The
+plain **mass-weighted mean** — one additive lane of `Σ oᵢ·mᵢ` — is exact and
+composable and not a max at all: a light crossing eats a notch out of the heavy
+line it crosses, since any function of two additive sums that reduces to
+`o·w(B)` at constant `o` falls as zero-ceiling mass is added. **First claim
+wins** — `Σ oᵢ·wᵢ·Π_{j<i}(1 − wⱼ)`, the one monotone law a single blend can
+express — never fades, but at a flow that saturates coverage in one pass the
+first pass over a spot claims all of it and a heavier pass back over it adds
+nothing, which is the other notch. The level law is what both were reaching
+for.
+
+The integrate reads the lane in place of the dial: what shows is
+`dial × mask × V`, inverted through the slab law with the parcel's own mass as
+the cap (`t > exp(−K·m)` is asked before the log is). One corner follows from
+the cap: at a ceiling of exactly 1 a saturated claim rounds to f16's 1, the
+transmittance it leaves is 0, and the whole parcel lands — mass laid later at a
+lighter touch included, as impasto rather than as coverage — which is what the
+unmodulated brush at dial 1 does too, having no ceiling at all. Below 1 the
+inversion is exact. The lane resolves under supersampling as the mean of the
+subsamples' own claims, a claim being a visible coverage already. The erase
+sweep carries the same lane by the same rule, with the moment in a lane of its
+own since its accumulator has one channel, and `erase.wesl` reads the claim in
+place of the extent's coverage (§6.12).
+
+**The stamp loop reads the same lane**, drawn over its region rather than
+storage-written: after each painting segment's deposit the host ends the compute
+pass, draws that one segment through `stamp.wesl::fs_levels` into a region-sized
+lane with the sweep's own pipeline, and resumes — so a deposit reads the lane as
+the segments before it left it, adds its own share, and mints the prefix
+difference of the *claimed* law `−ln(1 − o·V)/K` (`dynamics.wesl::claimed_m`),
+capped at the raw total so a saturated claim lands the whole attempt. The moment
+of the raw mass rides the region aux's `.w` beside the raw totals in `.yz`. The
+differences telescope as the dial's own do, a difference below zero — the
+within-third average falling — *un-mints*, taking the brush's own paint back as
+far as the texel still holds it, and the lane rides the per-tile carry beside
+the mint budget (`LoopCarry::levels`, cut and seeded by
+the same copies). The two renderers agree texel for texel under a pressure ramp
+and across a crossing (`tests/opacity.rs`,
+`the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays`). The `charge` glob is
+scaled by the dial alone: it is minted once, before the pen has moved, and
+`charge` is an initial condition the pen cannot reach (below). Moved paint is
+under no ceiling, as before.
+
+A stroke whose ceiling the pen drives takes the carried-parcel path whatever its
+dial says (`render_swept`'s branch reads `StrokeConstants::ceiling_lane`), since
+a claim is something the pieces of a live stroke build up together. The lane is
+one more `Rgba16Float` per touched tile for the stroke's lifetime, and on the
+loop a region-sized one per piece plus a render pass per segment; a brush that
+leaves the target unmapped never allocates any of it, binds a 1×1 zero in the
+slot, and renders bit for bit what it did. Both paths ride the corpus
+(`opacity_pen`, `wet_opacity_pen`).
 
 ### Pen mapping — what drives which parameter
 
@@ -1158,7 +1246,7 @@ mapping, one optional entry per target:
 
 ```rust
 struct Modulation { source: ModSource, floor: f32, curve: f32 }   // ModSource = Pressure | Tilt
-struct Modulations { size, flow, add, lift, deposit, bleed: Option<Modulation> }
+struct Modulations { size, flow, opacity, add, lift, deposit, bleed: Option<Modulation> }
 ```
 
 On a wet brush the `flow` target scales the whole loop — mapped to pressure, a
@@ -1225,15 +1313,17 @@ way catches the other sides (§6.4).
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
 where the pen attributes are already interpolated per segment. Both render paths
 flatten through it, so a live tail and the commit that replaces it cannot read
-the pen differently. Downstream, the four rates and the tooth's give ride the
-`Segment` — the stamp loop already carried its λs per dispatch and needed no
-change at all, and the swept path moved `add` off the per-tile uniform onto the
-segment instance (`extra.w`), leaving `drain` behind because `drain` is a
-function of arc length that every fragment recovers for itself. The tooth is a
-per-*fragment* gate on `τ` in the same slot `drain` occupies, for the same
-composition reason (§6.4). `hardness` and `charge` are deliberately
-not targets: hardness is baked into a prefix-τ texture per value, and `charge` is
-an initial condition rather than a rate, so neither has a per-segment form to
+the pen differently. Downstream, the four rates, the tooth's give and the
+ceiling's factor ride the `Segment` — the stamp loop already carried its λs per
+dispatch and needed no change at all, and the swept path moved `add` off the
+per-tile uniform onto the segment instance (`extra.w`), leaving `drain` behind
+because `drain` is a function of arc length that every fragment recovers for
+itself. The tooth is a per-*fragment* gate on `τ` in the same slot `drain`
+occupies, for the same composition reason (§6.4). The ceiling's factor is the
+one that has no per-segment *law* to ride, and gets a lane of its own (*The
+ceiling under the pen*, above). `hardness` and `charge` are deliberately not
+targets: hardness is baked into a prefix-τ texture per value, and `charge` is an
+initial condition rather than a rate, so neither has a per-segment form to
 modulate. Adding the field bumped the wire version to 3 (§8) — back when it had to:
 the encoding wrote no field names, so an appended field was still a break and
 `#[serde(default)]` had nothing to fill from. The same addition today is exactly that
@@ -2118,10 +2208,13 @@ eraser is the digital artist's tool, calibrated in the coverage domain; paint
 as *material* answers to the knife (`lift`), which removes amount and conserves
 it. Both exist because they are different questions.
 
-**Not built, and deliberately:** an `opacity` target in `EraseModulations` —
-the pen drives an eraser through its flow (the rate, already a target there)
-and Size for now; a modulated *ceiling* needs a second accumulator lane
-(mass-weighted opacity) to stay piece-independent, and is its own change.
+**Under the pen** (`EraseModulations::opacity`): the erase sweep carries the
+ceiling lane beside its accumulator, summed exactly as the deposit's is (§6.2,
+*The ceiling under the pen*), and the integrate reads the claimed coverage —
+the largest ceiling any pass asked for, averaged over the texel — in place of
+`w`. A light touch thins where a heavy one clears, and a light pass back over a
+cleared band takes nothing more from it (`tests/erase.rs`,
+`an_eraser_under_the_pen_removes_what_the_pen_asks`).
 
 ## 6.13 The liquify brush — dragging the picture itself
 

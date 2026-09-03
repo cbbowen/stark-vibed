@@ -57,10 +57,16 @@ use super::swept::SweepDraws;
 use super::{StrokeRenderer, StrokeScene};
 use crate::gpu::scratch::{Kept, Key, SubmitScope};
 
-/// The most lanes a parcel can have: the channel trio (§6.7), which is the widest
-/// thing a swept pass writes. The erase's single transparency mass is the other end
-/// of the same range.
-const MAX_LANES: usize = 3;
+/// The most lanes a parcel can have: the channel trio (§6.7) plus the ceiling lane
+/// a pen-driven opacity adds (§6.2), which is the widest thing a swept pass writes.
+/// The erase's single transparency mass is the other end of the same range.
+///
+/// A lane list may have a **hole**: the sweep's targets are the shader's
+/// `@location`s, and the ceiling sits at 3 whether or not the space has a residual
+/// at 2 — so a colorimetric space under a pen-driven ceiling attaches
+/// `[color, aux, none, ceiling]`, and the hole rides the list as a `None` rather
+/// than shifting the lane after it.
+const MAX_LANES: usize = 4;
 
 /// One parcel lane's pool key: a full tile texture (interior + apron), renderable
 /// (the sweep accumulates into it), bindable (the landing pass reads it), and
@@ -91,21 +97,23 @@ pub(super) fn lane_key(format: wgpu::TextureFormat, label: &'static str) -> Key 
 /// the keys it builds them from, so the two cannot drift into a parcel that
 /// attaches in a different order than it binds.
 pub(super) struct Parcel {
-    lanes: Vec<Kept>,
+    /// `None` is a hole (see [`MAX_LANES`]): no lease, and no attachment at that
+    /// index of the sweep.
+    lanes: Vec<Option<Kept>>,
 }
 
 impl Parcel {
-    /// Check out a working parcel of `keys`' shape.
-    fn take(r: &StrokeRenderer, keys: &[Key]) -> Self {
+    /// Check out a working parcel of `keys`' shape, holes included.
+    fn take(r: &StrokeRenderer, keys: &[Option<Key>]) -> Self {
         assert!(
             keys.len() <= MAX_LANES,
-            "a parcel is at most the channel trio, got {} lanes",
+            "a parcel is at most the channel trio and the ceiling lane, got {} lanes",
             keys.len(),
         );
         Parcel {
             lanes: keys
                 .iter()
-                .map(|k| r.scratch.keep(&r.ctx.device, *k))
+                .map(|k| k.map(|k| r.scratch.keep(&r.ctx.device, k)))
                 .collect(),
         }
     }
@@ -114,13 +122,15 @@ impl Parcel {
     ///
     /// The panic says what the bare index would not. A lane is asked for only where
     /// the effect's landing shader declares a slot for it, and how many lanes exist
-    /// is what the effect's key list said — both derived from the same predicate
-    /// (§6.7: a space has a residual or it does not). So this is unreachable, and
-    /// unreachable through an agreement between two lists in the *effect's* file,
-    /// which is exactly the kind that goes stale quietly.
+    /// is what the effect's key list said — both derived from the same predicates
+    /// (§6.7: a space has a residual or it does not; §6.2: the pen drives the
+    /// ceiling or it does not). So this is unreachable, and unreachable through an
+    /// agreement between two lists in the *effect's* file, which is exactly the
+    /// kind that goes stale quietly.
     pub(super) fn lane(&self, i: usize) -> &wgpu::TextureView {
         self.lanes
             .get(i)
+            .and_then(Option::as_ref)
             .unwrap_or_else(|| {
                 panic!(
                     "lane {i} of a {}-lane parcel: an effect's lane names and its keys \
@@ -134,14 +144,15 @@ impl Parcel {
     /// The lanes as the sweep attaches them, in key order — a fixed array plus
     /// [`Self::len`] rather than a `Vec`, [`Targets::attachments`]' reason: one of
     /// these is built per tile per piece, and that rate is what a per-pass
-    /// allocation costs (§6.2).
+    /// allocation costs (§6.2). A hole attaches nothing, at the index the sweep
+    /// pipeline's own target list has nothing.
     fn attachments(
         &self,
         ops: wgpu::Operations<wgpu::Color>,
     ) -> [Option<wgpu::RenderPassColorAttachment<'_>>; MAX_LANES] {
-        let mut att = [None, None, None];
+        let mut att = [None, None, None, None];
         for (slot, lease) in att.iter_mut().zip(&self.lanes) {
-            *slot = Some(desc::attach(lease.view(), ops));
+            *slot = lease.as_ref().map(|l| desc::attach(l.view(), ops));
         }
         att
     }
@@ -254,7 +265,7 @@ pub(super) struct IncrementalTileAccumulator<'a> {
     r: &'a StrokeRenderer,
     scene: StrokeScene<'a>,
     scope: SubmitScope,
-    keys: &'a [Key],
+    keys: &'a [Option<Key>],
     bare: BareCanvas,
     /// The copy-on-write map being built. Read the pristine fallback out of
     /// `scene.base` rather than out of this: they start equal, but this one is
@@ -276,7 +287,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
         scope: SubmitScope,
-        keys: &'a [Key],
+        keys: &'a [Option<Key>],
         bare: BareCanvas,
         prior: Option<&ParcelCarry>,
     ) -> Self {
@@ -344,11 +355,15 @@ impl<'a> IncrementalTileAccumulator<'a> {
             let resumed = self.tiles.get(coord).map(|t| Arc::clone(&t.accum));
             if let Some(old) = &resumed {
                 for ((src, dst), key) in old.lanes.iter().zip(&work.lanes).zip(self.keys) {
-                    self.scope.encoder().copy_texture_to_texture(
-                        src.tex().as_image_copy(),
-                        dst.tex().as_image_copy(),
-                        key.extent(),
-                    );
+                    // A hole in one list is a hole in all three: the keys made both
+                    // parcels, so the `None`s line up and nothing is copied there.
+                    if let (Some(src), Some(dst), Some(key)) = (src, dst, key) {
+                        self.scope.encoder().copy_texture_to_texture(
+                            src.tex().as_image_copy(),
+                            dst.tex().as_image_copy(),
+                            key.extent(),
+                        );
+                    }
                 }
             }
 

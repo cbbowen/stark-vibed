@@ -115,11 +115,19 @@ fn main() {
     // exists (§6.7). `Feature::Disable` is `condcomp`'s default, so the first pass
     // simply does not contain the `@if(resid)` declarations.
     compiler.set_feature(RESID_FEATURE, false);
+    compiler.set_feature(CEILING_FEATURE, false);
     for name in ENTRY_POINTS {
         if entry_point_enabled(name, mixbox) {
             build_one(&compiler, name, name);
         }
     }
+    // The sweep with its ceiling lane (§6.2): a target the pipeline has to list,
+    // so a second artifact rather than a flag (`CEILING_ENTRY_POINTS`).
+    compiler.set_feature(CEILING_FEATURE, true);
+    for name in CEILING_ENTRY_POINTS {
+        build_one(&compiler, name, &format!("{name}_ceiling"));
+    }
+    compiler.set_feature(CEILING_FEATURE, false);
     // The residual pass belongs to the pigment space, so it goes with it: without
     // `mixbox` no space in the build declares a `resid_format`, and these would be
     // eight artifacts nothing could select.
@@ -127,6 +135,10 @@ fn main() {
         compiler.set_feature(RESID_FEATURE, true);
         for name in RESID_ENTRY_POINTS {
             build_one(&compiler, name, &format!("{name}_resid"));
+        }
+        compiler.set_feature(CEILING_FEATURE, true);
+        for name in CEILING_ENTRY_POINTS {
+            build_one(&compiler, name, &format!("{name}_resid_ceiling"));
         }
     }
 

@@ -150,7 +150,9 @@ pub trait ColorSpace {
     fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3];
 
     /// WGSL for the stamp deposit pass (color + aux MRT outputs) — §6.2.
-    fn stamp_shader(&self) -> &'static str;
+    /// `ceiling` asks for the variant that also accumulates the ceiling lane,
+    /// the fourth target a stroke whose opacity the pen drives sweeps into.
+    fn stamp_shader(&self, ceiling: bool) -> &'static str;
     /// WGSL for the media/lighting + present pass — §6.3.
     fn media_shader(&self) -> &'static str;
     /// WGSL for the per-layer blend pass — §18.0.4. One isolated
@@ -232,8 +234,8 @@ impl ColorSpace for OkLabColorSpace {
         ]
     }
 
-    fn stamp_shader(&self) -> &'static str {
-        stark_shaders::stamp(false)
+    fn stamp_shader(&self, ceiling: bool) -> &'static str {
+        stark_shaders::stamp(false, ceiling)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_oklab()
@@ -312,10 +314,10 @@ impl ColorSpace for MixboxColorSpace {
         mixbox::latent_to_float_rgb(&latent)
     }
 
-    fn stamp_shader(&self) -> &'static str {
+    fn stamp_shader(&self, ceiling: bool) -> &'static str {
         // Deposit is premultiplied-over of the channels — the same law as Oklab's,
         // run over one more target.
-        stark_shaders::stamp(true)
+        stark_shaders::stamp(true, ceiling)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_mixbox()

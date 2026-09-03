@@ -27,15 +27,17 @@
 // residual are the pigment — erased paint is *less of the same paint*, so color
 // and residual pass through untouched and only the amount falls.
 
-import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS, claimed_coverage};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
     // The stroke's ceiling in `.x`: the erase opacity (`EraseEffect::opacity`,
     // §6.12) with the selection mask's folded in (`stroke_constants`, §6.8), as
-    // `integrate.wesl` carries it. `.yzw` unused — the uniform's 16-byte round
-    // (§6.10).
+    // `integrate.wesl` carries it. `.y` ≠ 0 says `ceiling` is a real lane — the
+    // stroke's ceiling is pen-driven, and the coverage it may act on is read off
+    // the lane rather than the accumulated extent — as `integrate.wesl`'s
+    // `params.z` says it. `.zw` unused — the uniform's 16-byte round (§6.10).
     params: vec4<f32>,
 }
 
@@ -58,6 +60,12 @@ struct Erase {
 // The resident color's residual half (§6.7), in a space that has one. Bound
 // so it can pass through the rewrite whole — an erase changes no pigment.
 @if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
+// The stroke's ceiling lane (`stamp.wesl::FsErase::ceiling`, §6.12): the mass
+// and moment above each ceiling level, 1:1 with the accumulator, and the moment
+// of the whole mass beside it. Read only when `e.params.y` says the sweep wrote
+// them; the 1×1 zero stands in for both otherwise.
+@group(0) @binding(6) var ceiling: texture_2d<f32>;
+@group(0) @binding(7) var moment: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -107,13 +115,27 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // here — `integrate.wesl`'s reading of the same mask, so a half-selected
     // texel uncovers half of what the eraser would (§6.8). Color and residual are
     // the base's either way; the height is the only lane the mask has a say in.
-    let opacity = e.params.x * load1(selection, c).r;
+    let sel = load1(selection, c).r;
+
+    // The coverage the ceiling scales: what the extent would have covered — or,
+    // on a stroke whose ceiling the pen drives, what the stroke has **claimed**
+    // here: the largest ceiling any of its passes asked for, averaged over the
+    // texel (`paint_common::claimed_coverage`, §6.2), so a light pass back over
+    // a heavy one takes nothing more and a heavy one over a light one takes what
+    // the heavy one asks. Clamped for the same reason `integrate.wesl` clamps.
+    var cover = w;
+    if e.params.y != 0.0 {
+        cover = min(
+            claimed_coverage(m_e, textureLoad(moment, c, 0).x, textureLoad(ceiling, c, 0)),
+            1.0,
+        );
+    }
 
     // What must remain visible is `(1 − t0)·(1 − opacity·w)`; carried as what
     // shows *through* — the old transmittance plus the newly uncovered share —
     // so the small quantity is the one computed and nothing cancels where the
     // paint is nearly opaque.
-    let through = t0 + (1.0 - t0) * opacity * w;
+    let through = t0 + (1.0 - t0) * (e.params.x * sel) * cover;
     // Inverted through the slab law into the mass that shows exactly that much
     // (`fill.wesl`'s inversion, run the other way). `through >= t0` by
     // construction, so `m1 <= m0` up to rounding — the `min` states it outright,

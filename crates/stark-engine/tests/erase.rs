@@ -15,7 +15,7 @@ use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
 use stark_model::document::{
-    BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, SelectionShape,
+    BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, ModSource, Modulation, SelectionShape,
 };
 use stark_model::geom::Vec2;
 
@@ -241,5 +241,75 @@ fn erasing_bare_canvas_changes_nothing() {
         (frac, worst),
         (0.0, 0),
         "an eraser over bare canvas moved pixels"
+    );
+}
+
+/// A straight leg along `y` from `x0` to `x1`, reported every 10 px at one
+/// `pressure`, so the fit holds the pressure along the leg (`tests/opacity.rs`
+/// makes the same construction, for the same reason).
+fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
+    let n = 16;
+    (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            (Vec2::new(x0 + (x1 - x0) * t, y), pressure)
+        })
+        .collect()
+}
+
+/// The eraser's ceiling under the pen (§6.12, `EraseModulations::opacity`):
+/// mapped to pressure, a light touch thins the bed where a heavy one clears
+/// it — and, the first claim winning (§6.2), a light pass back over a cleared
+/// band within one stroke takes nothing more from it.
+#[test]
+fn an_eraser_under_the_pen_removes_what_the_pen_asks() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    fill_canvas(&mut engine, RED, 1.0);
+    let bed = texel(&engine.render_to_image(), Vec2::ZERO);
+    let mut e = eraser(1.0, 20.0);
+    if let BrushEffect::Erase(e) = &mut e.effect {
+        e.modulation.opacity = Some(Modulation::linear(ModSource::Pressure));
+    }
+    // Heavy along y = −40, light along y = 40.
+    stroke_pressed(&mut engine, e, &leg(-80.0, 80.0, -40.0, 1.0));
+    stroke_pressed(&mut engine, e, &leg(-80.0, 80.0, 40.0, 0.2));
+    let after = engine.render_to_image();
+    let heavy = texel(&after, Vec2::new(0.0, -40.0));
+    let light = texel(&after, Vec2::new(0.0, 40.0));
+    assert!(
+        apart(heavy, bed) > 100,
+        "a heavy press should clear the bed: {heavy:?}"
+    );
+    assert!(
+        apart(light, bed) < apart(heavy, bed) / 2,
+        "a light touch should thin it markedly less: {light:?} against {heavy:?}"
+    );
+    assert!(apart(light, bed) > 10, "…and is not nothing: {light:?}");
+
+    // One stroke: out heavy, back light over the same band.
+    let mut twice = engine_or_skip().expect("the adapter answered once already");
+    fill_canvas(&mut twice, RED, 1.0);
+    // The pressure drop on an excursion away from the band, for the reason
+    // `tests/opacity.rs` gives: the fitted pressure is a smoothed spline, and a
+    // step in it at the hairpin ripples back along the heavy leg.
+    let excursion: Vec<(Vec2, f32)> = (1..=6)
+        .map(|i| (Vec2::new(80.0, 10.0 * i as f32), 1.0))
+        .chain((0..=6).map(|i| {
+            let t = i as f32 / 6.0;
+            (Vec2::new(80.0, 60.0 - 60.0 * t), 1.0 - 0.8 * t)
+        }))
+        .collect();
+    let both: Vec<(Vec2, f32)> = leg(-80.0, 80.0, 0.0, 1.0)
+        .into_iter()
+        .chain(excursion)
+        .chain(leg(80.0, -80.0, 0.25, 0.2))
+        .collect();
+    stroke_pressed(&mut twice, e, &both);
+    let crossed = texel(&twice.render_to_image(), Vec2::ZERO);
+    assert!(
+        apart(crossed, heavy) <= 2,
+        "the cleared band crossed back lightly {crossed:?} must be the cleared band {heavy:?}"
     );
 }

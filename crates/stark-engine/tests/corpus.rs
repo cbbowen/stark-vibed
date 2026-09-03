@@ -75,6 +75,8 @@ battery!(
     opacity,
     supersampled,
     wet_opacity,
+    opacity_pen,
+    wet_opacity_pen,
     erase,
     liquify,
 );
@@ -104,7 +106,12 @@ const VISIBLE_LEVELS: u8 = 12;
 /// of near-identical numbers would read as a table of measurements and be a table of
 /// noise. The headroom above 3 is for another adapter's rounding, not for a case with
 /// something to say.
-const TRANSLATION_LEVELS: u8 = 4;
+///
+/// One case reaches 5: `opacity_pen`, at a single shoulder texel with its neighbours
+/// at 1 and 2. Its ceiling is read off *ratios* of f16 sums (§6.2's level law), and
+/// at the shoulder both sums are small, so the same storage rounding lands one level
+/// further — the tail of the same distribution, not a step.
+const TRANSLATION_LEVELS: u8 = 5;
 
 fn run(name: &str) {
     let case = CASES

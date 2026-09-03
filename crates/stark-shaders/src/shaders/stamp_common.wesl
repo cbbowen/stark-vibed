@@ -10,8 +10,9 @@ import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
-    // params.xy = tile *texture* top-left (interior origin − apron) in canvas px;
-    // params.z = 2 / TILE_TEX (full interior+apron maps to NDC); params.w = half
+    // params.xy = the target's top-left in canvas px — a tile *texture*'s (interior
+    // origin − apron), or the stamp loop's region's; params.z unused (the NDC
+    // scale is `ndc` below, per axis); params.w = half
     // the deposit's own footprint in canvas px — 0.5 on the 1× path, 0.5/s when
     // the sweep rasterizes s subsamples per px into a supersampled scratch
     // (§6.2). Only `swept_depth`'s lateral window reads it: every other
@@ -58,6 +59,10 @@ struct TileXform {
     // the same record seed the noise tile (`noise_tex`) is baked from.
     jitter_eps: f32,
     jitter_seed: u32,
+    // Canvas px → NDC per axis: `2 / target size`. `(2/TILE_TEX, 2/TILE_TEX)` on a
+    // tile; the stamp loop's ceiling pass draws the same segments into its
+    // region, which is not square (§6.2).
+    ndc: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
@@ -134,6 +139,10 @@ struct VsOut {
     // The tip's stretch along its facing axis, forwarded verbatim (`stretch_look`).
     // Flat: a per-segment constant, like the instance lanes above.
     @location(8) @interpolate(flat) stretch: vec3<f32>,
+    // The ceiling's modulation factor for this segment (§6.2): what its share of
+    // the stroke's coverage is capped at, as a fraction of the stroke's dial.
+    // Flat, like every per-segment constant.
+    @location(9) @interpolate(flat) opacity: f32,
 }
 
 struct FsOut {
@@ -143,6 +152,14 @@ struct FsOut {
     // and over-blended by the same rule — a residual is not a separate quantity to
     // combine but the rest of the same color (§6.7).
     @if(resid) @location(2) resid: vec4<f32>,
+    // The **ceiling lane** (§6.2, `paint_common::level_sums`): this segment's mass
+    // above each of the two ceiling levels, and its moment above each — additive,
+    // like the aux, since every one of the four is a sum over segments. What the
+    // integrate reads off it is the largest ceiling any paint at the texel asked
+    // for, averaged over the texel (`claimed_coverage`). Only the variant a
+    // pen-driven ceiling builds carries it; location 3 whether or not there is a
+    // residual, so the host's lane index is the shader's.
+    @if(ceiling) @location(3) ceiling: vec4<f32>,
 }
 
 // A canvas point's place in the frame the sweep is integrated in.
@@ -474,6 +491,7 @@ fn sweep_vertex(
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
     tooth_give: f32, // how far this tip settles into the substrate (§6.4)
     stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
+    opacity: f32, // the ceiling's modulation factor here (§6.2)
 ) -> VsOut {
     let radius = geom.x;
     let len = geom.y;
@@ -541,8 +559,7 @@ fn sweep_vertex(
             + perp * (sk * (abs_r - rho * cos(delta)));
     }
 
-    let s = xf.params.z;
-    let ndc = (canvas - xf.params.xy) * vec2<f32>(s, -s) + vec2<f32>(-1.0, 1.0);
+    let ndc = (canvas - xf.params.xy) * vec2<f32>(xf.ndc.x, -xf.ndc.y) + vec2<f32>(-1.0, 1.0);
 
     // The exact frame *at this vertex*, from the same arc arithmetic the fragment used
     // to run. On a straight sweep every quantity below is affine in canvas position, so
@@ -563,6 +580,7 @@ fn sweep_vertex(
     out.range = vec2<f32>(sw.local.x - sw.lr, sw.local.x);
     out.frame = vec3<f32>(sw.local.y, sw.warp, sw.turn);
     out.stretch = stretch;
+    out.opacity = opacity;
     return out;
 }
 

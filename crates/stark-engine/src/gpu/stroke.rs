@@ -168,12 +168,20 @@ impl StrokeRenderer {
         // that uses them, and the brush textures both paths resolve live with their
         // caches. What is left here is the pair of them plus the scene-independent
         // things a renderer is handed.
-        // One compile of `stamp.wesl`, lent to the two kits that draw the swept
-        // extent through it (`swept::stamp_module`).
-        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref());
-        let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp);
+        // One compile of `stamp.wesl` per variant — plain, and with the ceiling
+        // lane (§6.2) — lent to the two kits that draw the swept extent through
+        // them (`swept::stamp_module`).
+        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref(), false);
+        let stamp_ceiling = swept::stamp_module(&ctx.device, color_space.as_ref(), true);
+        let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp, &stamp_ceiling);
         let dynamics = build_dynamics_kit(ctx, color_space.as_ref(), tile_bgl);
-        let erase = build_erase_kit(&ctx.device, color_space.as_ref(), &swept, &stamp);
+        let erase = build_erase_kit(
+            &ctx.device,
+            color_space.as_ref(),
+            &swept,
+            &stamp,
+            &stamp_ceiling,
+        );
 
         Self {
             ctx: ctx.clone(),
@@ -393,6 +401,7 @@ impl StrokeRenderer {
             // reaches every place the dial does — the integrate, the erase, the
             // loop's mint and the charge — through the one number.
             opacity: rec.brush.effect.opacity().clamp(0.0, 1.0) * selection.opacity(),
+            ceiling_lane: rec.brush.effect.opacity_modulated(),
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
@@ -445,6 +454,13 @@ struct StrokeConstants {
     /// other. The mask's *per-texel* coverage is the same ceiling's third factor,
     /// and rides in the mask each pass binds.
     opacity: f32,
+    /// Whether the pen drives the ceiling (`BrushEffect::opacity_modulated`,
+    /// §6.2) — the one mapping that is a fact about the *stroke* and not only
+    /// about a segment: the sweep then builds its **ceiling lane**, the parcel
+    /// carries it across pieces, and every landing pass reads the coverage the
+    /// stroke has claimed off the lane instead of scaling by the dial above. The
+    /// segments carry the pen's factor; this says whether anything reads it.
+    ceiling_lane: bool,
     /// Canvas px → substrate-tile uv (§6.4). Zero on a substrate with no relief — a `Flat`
     /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
     /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.

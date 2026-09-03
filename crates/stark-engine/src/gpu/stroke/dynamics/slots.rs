@@ -113,6 +113,10 @@ pub(super) const DEPOSIT: &[Slot] = &[
     // 1×1 stand-in is what it binds there — the same "one shader, one layout" the 1×1
     // masks buy everywhere else (§6.8).
     Slot::at(d::BLEED_W),
+    // The ceiling lane over the region (§6.2), drawn by the host between
+    // deposits; the kit's 1×1 zero on a stroke whose ceiling the pen does not
+    // drive, by the mobility's argument above.
+    Slot::at(d::REGION_LEVELS),
 ];
 
 /// `bleed_weight`: one thread per snapshot texel, writing the mobility the ladder reads
@@ -149,6 +153,7 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
     Slot::at(d::CELL_TOOL),
     Slot::at(d::CELL_LAT),
     Slot::at(d::CELL_RES),
+    Slot::at(d::REGION_LEVELS),
 ];
 
 /// `warp`: the liquify effect's one kernel (§6.13) — the snapshot in, the region
@@ -186,6 +191,8 @@ pub(super) const SETTLE: &[Slot] = &[
     Slot::at(d::SEL_MASK),
     // The substrate (§6.4): the settle lays paint, so it reads the tooth too.
     Slot::at(d::SUBSTRATE_TEX),
+    // …and the ceiling lane, since it lays through `lay_parcel` (§6.2).
+    Slot::at(d::REGION_LEVELS),
 ];
 
 #[cfg(test)]

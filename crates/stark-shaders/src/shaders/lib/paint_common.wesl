@@ -260,3 +260,58 @@ fn tooth_gate(d: f32, give: f32, softness: f32) -> f32 {
     );
     return t * t * (3.0 - 2.0 * t);
 }
+
+// ---- The ceiling under the pen (§6.2) --------------------------------------------
+//
+// When the pen drives a stroke's opacity there is no one ceiling to scale the
+// parcel by, and what a texel should show is the **largest** ceiling any paint
+// covering it asked for — at every point of the texel, then averaged over it. With
+// `c(θ)` the coverage laid by segments whose ceiling is at least `θ`, that average
+// is `∫₀¹ c(θ) dθ`, and `c(θ) = 1 − exp(−K·M(θ))` with `M(θ)` the mass laid at or
+// above `θ`. Every `M(θ)` is a plain sum of per-segment masses gated on the
+// segment's factor, so a blend can accumulate it — which is what makes a *max* law
+// reachable by fixed-function blending at all, where a running max of anything is
+// not.
+//
+// The lane samples `M` at two levels, `LEVEL_1` and `LEVEL_2`, and beside each the
+// first moment of the mass above it; the total mass and total moment ride the aux.
+// Between two levels the mass is placed at its own **mean** factor, which is exact
+// wherever all the mass in a third sits at one factor — a pen that holds still, a
+// mouse — and is a mean within a third otherwise. So a crossing whose two ceilings
+// fall in different thirds of the dial shows the higher one exactly, and one whose
+// two fall in the same third shows their mass-weighted mean, never more than a third
+// of the dial from either.
+
+// The two levels: thirds of the dial.
+const LEVEL_1: f32 = 0.33333334;
+const LEVEL_2: f32 = 0.6666667;
+
+// One fragment's share of the lane: its mass above each level, and its moment
+// above each — `(M₁, M₂, Q₁, Q₂)` increments for a factor `o` laying mass `m`.
+fn level_sums(o: f32, m: f32) -> vec4<f32> {
+    let g1 = step(LEVEL_1, o);
+    let g2 = step(LEVEL_2, o);
+    return vec4<f32>(m * g1, m * g2, o * m * g1, o * m * g2);
+}
+
+// The claimed coverage: the point-wise max of the ceilings, averaged over the
+// texel, from the total mass `s0`, the total moment `s1` and the lane `lv` — each
+// third's mass placed at its mean factor, and `∫ c(θ) dθ` summed across them. Every
+// sum is clamped against its neighbour: they are f16 accumulations of the same
+// increments, and a mass above a level can round a hair past the mass above the
+// level below it.
+fn claimed_coverage(s0: f32, s1: f32, lv: vec4<f32>) -> f32 {
+    let m1 = min(lv.x, s0);
+    let m2 = min(lv.y, m1);
+    let q1 = min(lv.z, s1);
+    let q2 = min(lv.w, q1);
+    let c0 = 1.0 - exp(-OPACITY_K * s0);
+    let c1 = 1.0 - exp(-OPACITY_K * m1);
+    let c2 = 1.0 - exp(-OPACITY_K * m2);
+    // Each third's mean factor, held to its third. A third with no mass has
+    // `c` equal on both sides of it, so where its mean lands decides nothing.
+    let mu1 = clamp((s1 - q1) / max(s0 - m1, PAINT_EPS), 0.0, LEVEL_1);
+    let mu2 = clamp((q1 - q2) / max(m1 - m2, PAINT_EPS), LEVEL_1, LEVEL_2);
+    let mu3 = clamp(q2 / max(m2, PAINT_EPS), LEVEL_2, 1.0);
+    return mu1 * c0 + (mu2 - mu1) * c1 + (mu3 - mu2) * c2;
+}

@@ -27,7 +27,7 @@
 // opacity × thickness — one level further down.
 
 import package::lib::latent::{Latent, latent_blend, latent_of, latent_scale, latent_unpremult};
-import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
+import package::lib::paint_common::{OPACITY_K, PAINT_EPS, claimed_coverage};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
@@ -41,8 +41,13 @@ struct Integrate {
     // `.y` = how many scratch subsample texels stand for one canvas px, per axis
     // (§6.2): 1 on the plain path — the 1:1 load, bit for bit — and the sweep's
     // supersampling factor when the scratch was rasterized finer, which is what
-    // sends the loads through the box resolve below. `.zw` unused — the uniform's
-    // 16-byte round (§6.10).
+    // sends the loads through the box resolve below.
+    //
+    // `.z` ≠ 0 says `scratch_ceiling` is a real lane: the stroke's ceiling is
+    // pen-driven, and the coverage the parcel may show is read off the lane
+    // rather than derived from the dial (§6.2). 0 binds the 1×1 zero there and
+    // takes the dial's branch, bit for bit. `.w` unused — the uniform's 16-byte
+    // round (§6.10).
     params: vec4<f32>,
 }
 
@@ -67,6 +72,11 @@ struct Integrate {
 @if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
 @if(resid) @group(0) @binding(6) var scratch_resid: texture_2d<f32>;
 @group(0) @binding(7) var<uniform> ig: Integrate;
+// The stroke's **ceiling lane** (§6.2, `stamp.wesl::FsOut::ceiling`): the parcel's
+// mass and moment above each ceiling level — 1:1 with the scratch parcel,
+// subsamples included. Read only when `ig.params.z` says the sweep wrote one; the
+// 1×1 zero stands in otherwise, and nothing here touches it.
+@group(0) @binding(8) var scratch_ceiling: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,
@@ -119,13 +129,25 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // averaged coverage precisely as a supersampled render of the scaled stroke
     // would show it. No second branch needed anywhere past this point.
     let s = i32(ig.params.y);
+    let lane = ig.params.z != 0.0;
     var s_c: vec4<f32>;
     var s_a: vec4<f32>;
     var s_res = vec3<f32>(0.0, 0.0, 0.0);
+    // The claimed coverage (§6.2, `paint_common::claimed_coverage`), where the
+    // sweep wrote the ceiling lane: the largest ceiling any paint at the texel
+    // asked for, averaged over it, from the lane's gated sums and the aux's total
+    // mass and moment. Its resolve is the plain mean of the subsamples' own: a
+    // visible coverage already, so the box filter's average of it is the
+    // pixel's — the very thing the mass beside it has to go through the
+    // log-mean-exp to become.
+    var s_v = 0.0;
     if s <= 1 {
         s_c = textureLoad(scratch_color, c, 0);
         s_a = textureLoad(scratch_aux, c, 0);
         @if(resid) { s_res = textureLoad(scratch_resid, c, 0).rgb; }
+        if lane {
+            s_v = claimed_coverage(s_a.y, s_a.z, textureLoad(scratch_ceiling, c, 0));
+        }
     } else {
         // The block's smallest mass first: the shift that keeps the log-mean-exp
         // exact where the subsamples agree and finite however heavy they are.
@@ -139,6 +161,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         var acc_h = 0.0;
         var acc_e = 0.0;
         var acc_r = vec3<f32>(0.0, 0.0, 0.0);
+        var acc_v = 0.0;
         for (var j = 0; j < s; j = j + 1) {
             for (var i = 0; i < s; i = i + 1) {
                 let sc = c * s + vec2<i32>(i, j);
@@ -147,6 +170,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
                 acc_h += a.x;
                 acc_e += exp(-OPACITY_K * (a.y - m_min));
                 @if(resid) { acc_r += textureLoad(scratch_resid, sc, 0).rgb; }
+                if lane {
+                    acc_v += claimed_coverage(a.y, a.z, textureLoad(scratch_ceiling, sc, 0));
+                }
             }
         }
         let inv = 1.0 / f32(s * s);
@@ -158,6 +184,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
             0.0,
         );
         @if(resid) { s_res = acc_r * inv; }
+        s_v = acc_v * inv;
     }
     // The two colors, each as one value (§6.7, `lib::latent`). **The gate is on the
     // load and nowhere else**: a residual *texture* exists only in a space that has
@@ -206,16 +233,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     var m1 = s_a.y;
     let col1 = latent_unpremult(s_col, s_c.a, PAINT_EPS);
 
-    // The ceiling at this texel (§6.2, §6.8): the stroke's — the dial with the
-    // mask's overall opacity folded in — times the mask's coverage here. **The
-    // selection is a factor of the ceiling, not a lerp of the result.** A lerp
-    // left a half-covered texel with half the *height* of an opaque stroke, which
-    // the slab law shows as very nearly all of it; the eye reads coverage, and
-    // through the ceiling a half-covered texel shows half of what the saturated
-    // stroke would — the same reading a fill makes of the same mask, and the
-    // same one a dial at a half makes with no mask at all. The mask's own
-    // antialiasing and feather are the stroke's edge either way.
-    let opacity = ig.params.x * load1(selection, c).r;
+    // The mask's coverage here (§6.8) — a factor of the ceiling on both branches
+    // below, never a lerp of the result.
+    let sel = load1(selection, c).r;
 
     // The ceiling: the whole parcel scaled as one laid amount, `erase.wesl`'s
     // arithmetic run in the laying direction. The coverage the parcel would have
@@ -225,27 +245,57 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // because a scaled coverage is neither of §6.2's two composable forms — so
     // `opacity·w` is a ceiling, not a rate: a stroke crossing itself never
     // outruns the dial, or the mask.
-    //
-    // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
-    // level up: the round trip below lands an ulp off now and then, and every
-    // full-opacity stroke would pay it. On the supersampled path this is exact
-    // *because* the resolve stored the visible-equivalent mass: the `w` below is
-    // then the parcel's averaged coverage, so the ceiling scales exactly what a
-    // supersampled render of the scaled stroke would show.
-    if opacity != 1.0 {
-        // The parcel's own coverage, from the unsaturated mass — the same number
-        // the color target's `.a` carries, except that the saturated copy cannot
-        // be inverted back.
-        let w = 1.0 - exp(-OPACITY_K * m1);
-        // The scaled coverage, inverted through the slab law into the mass that
-        // shows exactly that much. `1 − opacity·w ≥ 1 − opacity > 0` on this
-        // branch, so nothing cancels and the log has an argument.
-        let ms = -log(1.0 - opacity * w) / OPACITY_K;
-        // Less of the same parcel (§6.1): the height falls in proportion, so the
-        // per-unit opacity of what arrives is unchanged — a half-opacity stroke
-        // is half a stroke, not full-bodied translucent material.
-        h1 = h1 * (ms / max(m1, PAINT_EPS));
-        m1 = ms;
+    if lane {
+        // The pen drove the ceiling, so the parcel has no *one* ceiling to scale
+        // by: what shows is the coverage the stroke **claimed** — the largest
+        // ceiling any of its paint here asked for, averaged over the texel —
+        // times the dial and the mask's two factors. Inverted through the slab
+        // law like the dial's branch below, with the parcel's own mass as the
+        // cap: the claim is at most the parcel's coverage, so the transmittance
+        // it leaves is at least the parcel's, and a claim that has saturated
+        // (`t` at or under the parcel's own transmittance, both possibly 0) lands
+        // the whole parcel rather than asking the log about it. Clamped at 1
+        // because the sums it is read from are f16.
+        let v = min(ig.params.x * sel * s_v, 1.0);
+        let t = 1.0 - v;
+        if t > exp(-OPACITY_K * m1) {
+            let ms = -log(t) / OPACITY_K;
+            h1 = h1 * (ms / max(m1, PAINT_EPS));
+            m1 = ms;
+        }
+    } else {
+        // The ceiling at this texel (§6.2, §6.8): the stroke's — the dial with
+        // the mask's overall opacity folded in — times the mask's coverage
+        // here. **The selection is a factor of the ceiling, not a lerp of the
+        // result.** A lerp left a half-covered texel with half the *height* of
+        // an opaque stroke, which the slab law shows as very nearly all of it;
+        // the eye reads coverage, and through the ceiling a half-covered texel
+        // shows half of what the saturated stroke would — the same reading a
+        // fill makes of the same mask, and the same one a dial at a half makes
+        // with no mask at all. The mask's own antialiasing and feather are the
+        // stroke's edge either way.
+        let opacity = ig.params.x * sel;
+        // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
+        // level up: the round trip below lands an ulp off now and then, and every
+        // full-opacity stroke would pay it. On the supersampled path this is exact
+        // *because* the resolve stored the visible-equivalent mass: the `w` below is
+        // then the parcel's averaged coverage, so the ceiling scales exactly what a
+        // supersampled render of the scaled stroke would show.
+        if opacity != 1.0 {
+            // The parcel's own coverage, from the unsaturated mass — the same number
+            // the color target's `.a` carries, except that the saturated copy cannot
+            // be inverted back.
+            let w = 1.0 - exp(-OPACITY_K * m1);
+            // The scaled coverage, inverted through the slab law into the mass that
+            // shows exactly that much. `1 − opacity·w ≥ 1 − opacity > 0` on this
+            // branch, so nothing cancels and the log has an argument.
+            let ms = -log(1.0 - opacity * w) / OPACITY_K;
+            // Less of the same parcel (§6.1): the height falls in proportion, so the
+            // per-unit opacity of what arrives is unchanged — a half-opacity stroke
+            // is half a stroke, not full-bodied translucent material.
+            h1 = h1 * (ms / max(m1, PAINT_EPS));
+            m1 = ms;
+        }
     }
 
     // Stack the parcel on the resident paint (§6.1): height and mass are conserved

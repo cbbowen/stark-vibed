@@ -23,7 +23,7 @@
 use stark_engine::Engine;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_model::document::{BrushParams, BrushShape, OrientationSource};
+use stark_model::document::{BrushParams, BrushShape, ModSource, Modulation, OrientationSource};
 use stark_model::geom::{Extent2, Vec2};
 
 use super::{SIZE, brush, engine_or_skip_sized, replay_with};
@@ -375,6 +375,25 @@ fn lift_tail(samples: &[InputSample], release: bool) -> Vec<InputSample> {
         });
     }
     out
+}
+
+/// A figure of eight under a pressure ramp — a feather touch at the start, pressed
+/// home by the end — so the crossing at the centre is a spot the stroke covers
+/// twice, at two pressures, in the order a pen-driven ceiling cares about (§6.2).
+/// Shared by the two cases that map the ceiling to the pen.
+fn figure_eight_ramp() -> Vec<InputSample> {
+    let n = 120;
+    (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            let a = std::f32::consts::TAU * t;
+            InputSample {
+                pos: Vec2::new(80.0 * a.cos(), 40.0 * (2.0 * a).sin()),
+                pressure: 0.15 + 0.85 * t,
+                ..InputSample::default()
+            }
+        })
+        .collect()
 }
 
 /// A half-turn arc: the tangent sweeps 180°, so how finely the path is cut *is* how
@@ -957,6 +976,64 @@ pub const CASES: &[Case] = &[
             // measured case, and a regression past the uncapped control would
             // still fail loudly.
             refine: 0.15,
+            lift: 0.0,
+        },
+    },
+    Case {
+        name: "opacity_pen",
+        what: "The opacity ceiling under the pen (§6.2): the swept brush over a figure \
+               of eight whose pressure ramps from a feather touch to home, with \
+               opacity mapped to it, so the crossing is covered at two pressures. The \
+               only cover for the ceiling lane — the sweep's fourth target, carried \
+               across the pieces of a live stroke, first claim winning at the crossing \
+               — and for the integrate's read of it in place of the dial.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = brush([0.15, 0.25, 0.9], 20.0);
+            let p = b.paint_mut().expect("a paint brush");
+            p.flow = 2.5;
+            p.modulation.opacity = Some(Modulation::linear(ModSource::Pressure));
+            b.effect.set_opacity(0.8);
+            b.drain = 0.0;
+            b
+        },
+        path: figure_eight_ramp,
+        tol: Tol {
+            golden: 6,
+            // The opacity case's figure: the lane carries the same claims however
+            // the stroke is cut, so this bound is about f16 stores, not the pass.
+            seam: 4,
+            // A pressure ramp on a curve: what moves under a finer fit is the
+            // fitted pressure curve, which here is also the ceiling — the
+            // `curve` case's fit at the `pressure_ramp` case's attribute.
+            refine: 4.0,
+            lift: 0.0,
+        },
+    },
+    Case {
+        name: "wet_opacity_pen",
+        what: "The same pen-driven ceiling on the stamp loop (§6.2): the smear's brush \
+               over the figure of eight, its claim riding the region aux's fourth lane \
+               through the lift, the deposit and the settle, and across the per-tile \
+               carry. The only cover for the loop's claimed-law mint.",
+        view: SIZE,
+        prepare: |e, at| {
+            undercoat(e, at);
+            let mut b = smear_brush(15.0);
+            let w = b.make_wet();
+            w.flow = 2.0;
+            w.dynamics.add = 1.0;
+            w.modulation.opacity = Some(Modulation::linear(ModSource::Pressure));
+            b.effect.set_opacity(0.8);
+            b
+        },
+        path: figure_eight_ramp,
+        tol: Tol {
+            golden: 6,
+            // The smear's own figure, for `wet_opacity`'s reason.
+            seam: 12,
+            refine: 4.0,
             lift: 0.0,
         },
     },

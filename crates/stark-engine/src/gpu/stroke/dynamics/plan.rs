@@ -142,6 +142,9 @@ impl SlotCommon<'_> {
             // Only a painting segment's mint reads it; a bleed or settle slot
             // carries it inertly, the jitter's argument one field down.
             opacity: self.k.opacity,
+            // …and whether the pen drives it, which is likewise the stroke's. A
+            // bleed or settle slot carries the flag inertly with the dial.
+            ceiling_lane: self.k.ceiling_lane,
             substrate_uv_scale: self.substrate[0],
             substrate_uv_bias: Vec2::new(self.substrate[1], self.substrate[2]),
             // A stroke constant like the color above it, and off `k` for the same
@@ -220,6 +223,12 @@ struct Slot {
     /// The paint effect's opacity — the ceiling the mint's prefix-difference law
     /// runs under in the shader (§6.2). 1 is the identity, exactly.
     opacity: f32,
+    /// The ceiling's modulation factor as this segment resolved it (§6.2) — read
+    /// only where `ceiling_lane` is set. 1, a scale's neutral, everywhere else.
+    opacity_mod: f32,
+    /// Whether the stroke's ceiling is pen-driven, off `k` like the dial: routes
+    /// the mint through the ceiling lane the region aux's `.w` carries.
+    ceiling_lane: bool,
     /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
     /// `channels`, and zero in a space that has no residual to carry.
     resid: [f32; 4],
@@ -323,6 +332,8 @@ impl Default for Slot {
             // branches to exactly — not 0, which would be the strongest ceiling
             // there is (`stretch`'s argument, one field over).
             opacity: 1.0,
+            opacity_mod: 1.0,
+            ceiling_lane: false,
             resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
             orient: 0.0,
@@ -407,6 +418,12 @@ impl Slot {
             jitter_eps: self.jitter_eps,
             jitter_seed: self.jitter_seed,
             canvas_origin: self.canvas_origin,
+            opacity_mod: self.opacity_mod,
+            ceiling_lane: u32::from(self.ceiling_lane),
+            // The struct's own trailing padding, generated because the two
+            // scalars above end 8 bytes short of the uniform's 16-byte round
+            // (§6.10) — `TileXform`'s own tail, one uniform over.
+            _pad_34: [0; 8],
         }
     }
 }
@@ -811,6 +828,10 @@ pub(super) fn dynamics_plan(
                         // Off the segment, since the pen can drive it (§6.2) — the same
                         // number the swept path now reads off its instance.
                         add: paint.add,
+                        // The ceiling's factor as the segment resolved it, beside
+                        // the rate it caps — the same number the swept path reads
+                        // off its instance.
+                        opacity_mod: paint.opacity,
                         curvature: sw.curvature,
                         tooth_give: paint.tooth_give,
                         cell: cell as f32,
@@ -1155,8 +1176,9 @@ mod tests {
     /// below; the rest are the compiler's.
     ///
     /// (`pack` used to close with a `..Default::default()` for the generated
-    /// padding's sake; `drag` filled the last hole, so the struct is now written
-    /// out whole and a forgotten member is the compiler's to catch.)
+    /// padding's sake; `drag` filled the last hole, so the struct is written out
+    /// whole — the one trailing pad the ceiling's pair reopened named as the
+    /// zeroes it is — and a forgotten member is the compiler's to catch.)
     #[test]
     fn every_slot_field_lands_in_the_member_the_shader_reads_it_from() {
         let packed = Slot {
@@ -1168,6 +1190,8 @@ mod tests {
             lambda_deposit: 8.0,
             channels: [9.0, 10.0, 11.0],
             opacity: 53.0,
+            opacity_mod: 55.0,
+            ceiling_lane: true,
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
             drain: 16.0,
@@ -1240,16 +1264,19 @@ mod tests {
         assert_eq!(packed.jitter_seed, 50);
         assert_eq!(packed.canvas_origin, [51, 52]);
         assert_eq!(packed.opacity, 53.0, "the effect's ceiling (§6.2)");
+        assert_eq!(packed.opacity_mod, 55.0, "the ceiling's pen factor (§6.2)");
+        assert_eq!(packed.ceiling_lane, 1, "the ceiling lane's flag (§6.2)");
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for six fields is
-    /// not zero. Five are **scales**, and a zeroed scale does not say "none of
+    /// The neutral slot is neutral *in the shader's terms*, which for seven fields
+    /// is not zero. Six are **scales**, and a zeroed scale does not say "none of
     /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
     /// half of every transfer against no substrate at all — infinite tooth, not absent
     /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
     /// zeroed stretch is a tip of no width whose every prefix difference is divided by
-    /// it (§6.6); and a zeroed `opacity` is the strongest ceiling there is where 1 is
-    /// the exact identity branch (§6.2). The sixth, `tooth_give`, is not a scale but
+    /// it (§6.6); a zeroed `opacity` is the strongest ceiling there is where 1 is
+    /// the exact identity branch (§6.2), and a zeroed `opacity_mod` would take the
+    /// whole of it away on the lane. The seventh, `tooth_give`, is not a scale but
     /// a knob that runs the other way (`BrushParams::tooth_give`): zeroed it is the
     /// driest tip there is, where 1 is the short-circuit a slot with no tooth wants.
     /// A derived `Default` would make every slot kind that leaves one alone quietly
@@ -1272,8 +1299,12 @@ mod tests {
             d.opacity, 1.0,
             "the default opacity must be 1 — the identity ceiling — not 0"
         );
+        assert_eq!(
+            d.opacity_mod, 1.0,
+            "the default ceiling factor must be 1 — the pen taking nothing — not 0"
+        );
         // And everything else is zero, which for the rest of the slot *is* neutral —
-        // stated as the complement of the four above so a new member has to be
+        // stated as the complement of the five above so a new member has to be
         // classified rather than silently joining whichever list it was written near.
         let z = Stamp {
             tooth_bearing: 1.0,
@@ -1281,12 +1312,13 @@ mod tests {
             tooth_give: 1.0,
             stretch: [1.0, 0.0, 1.0],
             opacity: 1.0,
+            opacity_mod: 1.0,
             ..Default::default()
         };
         assert_eq!(
             bytemuck::bytes_of(&d),
             bytemuck::bytes_of(&z),
-            "a member of the default slot is neither zero nor one of the six neutrals",
+            "a member of the default slot is neither zero nor one of the seven neutrals",
         );
     }
 

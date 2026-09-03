@@ -20,6 +20,7 @@ use stark_shaders::mirror::composite::binding as cb;
 use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
+use super::super::swept::{segment_instance, tile_xform, xform_group};
 use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use super::bleed::bleed_fires;
 use super::plan::{
@@ -28,6 +29,8 @@ use super::plan::{
 };
 use super::slots;
 use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
+use stark_shaders::mirror::stamp::SegmentInstance;
+use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
 /// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
 /// for smeared paint, and small enough that the per-stamp reservoir update is
@@ -99,6 +102,36 @@ const fn fresh_key() -> Key {
         wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST),
         "stark dynamics fresh",
     )
+}
+
+/// The ceiling lane's carried tile ([`LoopCarry::levels`], §6.2): [`fresh_key`]'s
+/// twin, for the lane's own sums, cut from and seeded into the region's lane by
+/// the same copies.
+const fn levels_key() -> Key {
+    Key::tile(
+        super::super::swept::CEILING_FORMAT,
+        wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST),
+        "stark dynamics levels",
+    )
+}
+
+/// The brush as the swept sweep binds it (§6.2) — for the per-segment draw of
+/// the ceiling lane over the region, which runs the sweep's own pipeline over
+/// the sweep's own layouts.
+struct LaneBinds {
+    prefix: wgpu::BindGroup,
+    noise: wgpu::BindGroup,
+}
+
+/// One piece's draw state for the ceiling lane (§6.2): the region-sized lane the
+/// deposits read, the piece's segments instanced as the sweep draws them, and
+/// the three groups `stamp.wesl::fs_levels` is drawn with.
+struct LevelsPass {
+    view: wgpu::TextureView,
+    xform: wgpu::BindGroup,
+    prefix: wgpu::BindGroup,
+    noise: wgpu::BindGroup,
+    instances: wgpu::Buffer,
 }
 
 /// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
@@ -319,6 +352,13 @@ struct DynamicsRun<'a> {
     /// touched with the leases it extracted. Untouched — and empty — at the
     /// identity opacity.
     fresh: BTreeMap<TileCoord, Arc<Kept>>,
+    /// The ceiling lane's carried tiles ([`LoopCarry::levels`]), evolving with
+    /// the run exactly as `fresh` does. Empty unless the pen drives the ceiling.
+    levels: BTreeMap<TileCoord, Arc<Kept>>,
+    /// The brush as the **swept** sweep binds it — its prefix-τ and noise groups
+    /// over the swept layouts — for the per-segment draw of the ceiling lane
+    /// over the region (§6.2). `None` unless the pen drives the ceiling.
+    lane: Option<LaneBinds>,
     /// Which tool this run is drawing (§6.2, §6.13) — what picks the plan a
     /// piece dispatches, and gates everything only the wet tool has: the mint
     /// budget, the settle, the carry.
@@ -331,10 +371,11 @@ struct DynamicsRun<'a> {
 impl<'a> DynamicsRun<'a> {
     /// Whether the mint runs under a ceiling anywhere in this stroke, and so
     /// whether its budget lanes have to be carried across pieces (§6.2): the
-    /// dial below 1, *or* a mask in force — whose rim is at least a pixel soft,
-    /// and a texel under it caps its mint exactly as a dial below 1 does (§6.8).
-    /// The mask's overall opacity is already inside `consts.opacity`
-    /// (`stroke_constants`); this is about its coverage.
+    /// dial below 1, the pen driving it — the ceiling lane in the aux's `.w`
+    /// then rides the same carry — *or* a mask in force, whose rim is at least
+    /// a pixel soft, and a texel under it caps its mint exactly as a dial below
+    /// 1 does (§6.8). The mask's overall opacity is already inside
+    /// `consts.opacity` (`stroke_constants`); this is about its coverage.
     ///
     /// Never for the liquify tool: it mints nothing for a ceiling to budget —
     /// its opacity *is* 1 (`BrushEffect::opacity`) and the mask scales its
@@ -342,7 +383,16 @@ impl<'a> DynamicsRun<'a> {
     /// there are no lanes to seed or carry.
     fn capped(&self) -> bool {
         matches!(self.tool, LoopTool::Wet(_))
-            && (self.consts.opacity < 1.0 || self.scene.selection.is_active())
+            && (self.consts.opacity < 1.0
+                || self.consts.ceiling_lane
+                || self.scene.selection.is_active())
+    }
+
+    /// Whether the pen drives this stroke's ceiling (§6.2) — the run then draws
+    /// the ceiling lane over its region per segment and carries it per tile
+    /// beside the mint budget. Implies [`capped`](Self::capped).
+    fn leveled(&self) -> bool {
+        self.lane.is_some()
     }
 
     /// Open the run: resolve the brush's textures, and put the tool in the state the
@@ -428,6 +478,26 @@ impl<'a> DynamicsRun<'a> {
         // reads the tiles it resumed, seeding its region by copy and extracting
         // fresh leases — so this clone is a refcount per tile. Empty at the
         // identity opacity, and on a fresh tip.
+        // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives:
+        // the carried tiles, and the swept sweep's own bind groups for drawing the
+        // lane over the region — the brush bound exactly as the fast path binds
+        // it, so the lane's sums are the fast path's.
+        let leveled = matches!(brush.tool, LoopTool::Wet(_)) && consts.ceiling_lane;
+        let levels: BTreeMap<TileCoord, Arc<Kept>> =
+            tool.map(ToolState::looped).map_or_else(BTreeMap::new, |t| {
+                t.levels.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
+            });
+        let lane = leveled.then(|| {
+            let (prefix, noise) = super::super::swept::sweep_binds(
+                r,
+                &mut scope,
+                brush.tip,
+                rec,
+                scene.substrate,
+                &consts,
+            );
+            LaneBinds { prefix, noise }
+        });
         let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = tool.map(ToolState::looped) {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
@@ -548,6 +618,8 @@ impl<'a> DynamicsRun<'a> {
             bake_latm,
             bake_rlm,
             fresh,
+            levels,
+            lane,
             tool: brush.tool,
             // Floored where it is inverted, though `assets::peak_tau` already
             // floors what it hands out: a divisor is the one reading of the
@@ -655,6 +727,30 @@ impl<'a> DynamicsRun<'a> {
                 );
             }
         }
+        // …and the ceiling lane's carried tiles over the cleared lane (§6.2), the
+        // same cut.
+        if let Some(levels_tex) = &region.levels_tex {
+            for coord in coords {
+                let Some(kept) = self.levels.get(coord) else {
+                    continue;
+                };
+                let off = coord.origin() - lo;
+                self.scope.encoder().copy_texture_to_texture(
+                    kept.tex().as_image_copy(),
+                    wgpu::TexelCopyTextureInfo {
+                        texture: levels_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: off.x as u32,
+                            y: off.y as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    levels_key().extent(),
+                );
+            }
+        }
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
@@ -679,7 +775,7 @@ impl<'a> DynamicsRun<'a> {
         // next piece's or `finish`'s. The bind groups outlive the block because they
         // are what the loop below is recorded against, and a `BindGroup` holds its
         // own references to every view in it.
-        let (plan, bind) = {
+        let (plan, bind, levels_pass) = {
             crate::timing::span!("stroke.plan");
             let ctx = PlanCtx {
                 rec: self.rec,
@@ -709,7 +805,38 @@ impl<'a> DynamicsRun<'a> {
                 .then(|| self.bleed_scratch(plan.dsize));
             let stamp_buf = self.upload_plan(&plan.slots);
             let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref(), bleed.as_ref());
-            (plan, bind)
+            // The ceiling lane's draw state (§6.2): the segments as the sweep
+            // instances them, and the region as one sweep target.
+            let levels_pass = region.levels.as_ref().map(|view| {
+                let lane = self
+                    .lane
+                    .as_ref()
+                    .expect("a leveled region comes of a lane");
+                let instances: Vec<SegmentInstance> =
+                    segments.iter().map(segment_instance).collect();
+                let bytes: &[u8] = bytemuck::cast_slice(&instances);
+                let buf = self.scope.take_piece_buffer(BufKey {
+                    size: bytes.len() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    label: "stark dynamics levels instances",
+                });
+                self.scope.write_lease(&buf, bytes);
+                let xform = tile_xform(
+                    self.rec,
+                    &self.consts,
+                    region_origin,
+                    (w as f32, h as f32),
+                    1,
+                );
+                LevelsPass {
+                    view: view.clone(),
+                    xform: xform_group(self.r, &mut self.scope, &xform),
+                    prefix: lane.prefix.clone(),
+                    noise: lane.noise.clone(),
+                    instances: buf,
+                }
+            });
+            (plan, bind, levels_pass)
         };
 
         {
@@ -718,7 +845,7 @@ impl<'a> DynamicsRun<'a> {
             // where a per-segment cost lands, and where a change to the dispatch
             // count shows up before it shows up in a total.
             crate::timing::span!("stroke.loop");
-            self.record_loop(&plan.slots, plan.dsize, &bind);
+            self.record_loop(&plan.slots, plan.dsize, &bind, levels_pass.as_ref());
         }
         // Extract the budget's new totals for the carry (§6.2): a fresh lease
         // per touched tile, cut exactly as the write-back cuts paint — the
@@ -754,6 +881,31 @@ impl<'a> DynamicsRun<'a> {
                 // first), but `trim`'s `destroy` is not, and neither is an argument
                 // that rests on statement order.
                 if let Some(displaced) = self.fresh.insert(*coord, Arc::new(kept)) {
+                    self.scope.hold(displaced);
+                }
+            }
+        }
+        // The ceiling lane's new sums, cut the same way and held the same way.
+        if let Some(levels_tex) = &region.levels_tex {
+            let r = self.r;
+            for coord in coords {
+                let kept = r.scratch.keep(&r.ctx.device, levels_key());
+                let off = coord.origin() - lo;
+                self.scope.encoder().copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: levels_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: off.x as u32,
+                            y: off.y as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    kept.tex().as_image_copy(),
+                    levels_key().extent(),
+                );
+                if let Some(displaced) = self.levels.insert(*coord, Arc::new(kept)) {
                     self.scope.hold(displaced);
                 }
             }
@@ -810,6 +962,32 @@ impl<'a> DynamicsRun<'a> {
             .color_space
             .has_resid()
             .then(|| region_tex("stark dynamics region resid"))
+            .unzip();
+        // The ceiling lane over the region (§6.2), on a stroke whose ceiling the
+        // pen drives: **drawn** into per segment, so a render attachment rather
+        // than storage, and read by the deposits between draws. Cleared here —
+        // the pool hands back stale texels — and seeded from the carry below.
+        let (levels_tex, levels) = self
+            .leveled()
+            .then(|| {
+                let (tex, view) = self.scope.take_piece(Key {
+                    size: (w, h),
+                    format: super::super::swept::CEILING_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
+                    label: "stark dynamics region levels",
+                });
+                self.scope
+                    .encoder()
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("stark dynamics region levels clear"),
+                        color_attachments: &[Some(desc::attach(&view, desc::CLEAR))],
+                        ..Default::default()
+                    });
+                (tex, view)
+            })
             .unzip();
 
         // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
@@ -944,6 +1122,8 @@ impl<'a> DynamicsRun<'a> {
             aux,
             resid_tex,
             resid,
+            levels_tex,
+            levels,
             sel_mask,
         }
     }
@@ -1116,6 +1296,9 @@ impl<'a> DynamicsRun<'a> {
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
                 // painting segment carries `lambda_bleed = 0` and never reads it.
                 b::BLEED_W => view(bleed.unwrap_or(&kit.bleed_placeholder)),
+                // The ceiling lane (§6.2), by the same argument: a stroke whose
+                // ceiling the pen does not drive carries `ceiling_lane = 0`.
+                b::REGION_LEVELS => view(region.levels.as_ref().unwrap_or(&kit.levels_placeholder)),
                 b::DYN_NOISE_TEX => view(self.noise.view()),
                 b::DYN_NOISE_SAMP => samp(&r.tips.noise_sampler),
                 _ => return None,
@@ -1299,10 +1482,20 @@ impl<'a> DynamicsRun<'a> {
     /// `self.cur` outlives the pass: it names the reservoir texture holding the
     /// tool's state, so after the last dispatch it names the state this piece ends
     /// in — which is what the next piece, or the next range, resumes from.
-    fn record_loop(&mut self, plan: &[LoopDispatch], dsize: u32, bind: &PieceBindings) {
+    fn record_loop(
+        &mut self,
+        plan: &[LoopDispatch],
+        dsize: u32,
+        bind: &PieceBindings,
+        levels: Option<&LevelsPass>,
+    ) {
         let kit = &self.r.dynamics;
         let mut cur = self.cur;
         let prefix_bg = &self.prefix_bg;
+        // Which of the piece's segments the next painting slot is: the plan emits
+        // one such slot per segment, in order, with the firings and the settle
+        // between them.
+        let mut seg: u32 = 0;
         // The mobility pass covers the snapshot square, where every other dispatch
         // covers its own slot's rect — see the note at its `set_pipeline` below.
         let square_groups = super::plan::groups_for(dsize);
@@ -1405,6 +1598,39 @@ impl<'a> DynamicsRun<'a> {
                             cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                         }
                     }
+                    // The ceiling lane (§6.2): this segment's sums drawn over the
+                    // region *after* its deposit, so the deposit read the lane as
+                    // the segments before it left it and the next reads it with
+                    // this one in. A render pass, because the lane accumulates by
+                    // blending — the one read-modify-write of a region texel the
+                    // loop makes without a snapshot — so the compute pass ends
+                    // around it and resumes after.
+                    if let Some(l) = levels {
+                        drop(cpass);
+                        {
+                            let mut rpass = self.scope.encoder().begin_render_pass(
+                                &wgpu::RenderPassDescriptor {
+                                    label: Some("stark dynamics ceiling lane"),
+                                    color_attachments: &[Some(desc::attach(&l.view, desc::LOAD))],
+                                    ..Default::default()
+                                },
+                            );
+                            rpass.set_pipeline(&self.r.swept.levels_pipeline);
+                            rpass.set_bind_group(0, &l.xform, &[0]);
+                            rpass.set_bind_group(1, &l.prefix, &[]);
+                            rpass.set_bind_group(2, &l.noise, &[]);
+                            rpass.set_vertex_buffer(0, l.instances.slice(..));
+                            rpass.draw(0..SWEEP_VERTS, seg..seg + 1);
+                        }
+                        cpass =
+                            self.scope
+                                .encoder()
+                                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                    label: Some("stark dynamics stamp loop"),
+                                    timestamp_writes: None,
+                                });
+                    }
+                    seg += 1;
                     cur = 1 - cur;
                 }
                 // The pen-up: snapshot the final extent, bake the standing tip's
@@ -1585,6 +1811,7 @@ impl<'a> DynamicsRun<'a> {
             // already copies of the run's own state, so nothing more to copy
             // out here. Empty at the identity opacity.
             fresh: std::mem::take(&mut self.fresh),
+            levels: std::mem::take(&mut self.levels),
         })))
     }
 
@@ -1601,8 +1828,10 @@ impl<'a> DynamicsRun<'a> {
     /// here stands on the scope. One footing is better than two.
     fn submit(mut self) {
         let fresh = std::mem::take(&mut self.fresh);
+        let levels = std::mem::take(&mut self.levels);
         let Self { mut scope, .. } = self;
         scope.hold(fresh);
+        scope.hold(levels);
         scope.finish();
     }
 }
@@ -1626,6 +1855,12 @@ struct Region {
     /// same dispatches that evolve the color, and sliced back with it.
     resid_tex: Option<wgpu::Texture>,
     resid: Option<wgpu::TextureView>,
+    /// The ceiling lane over the region (§6.2), on a stroke whose ceiling the pen
+    /// drives: drawn per segment, read by the deposits, seeded from and extracted
+    /// into the carry by copy like the mint budget — never written back, being
+    /// no part of a tile.
+    levels_tex: Option<wgpu::Texture>,
+    levels: Option<wgpu::TextureView>,
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
     /// constant that stands in for an unrestricted selection.
     sel_mask: wgpu::TextureView,

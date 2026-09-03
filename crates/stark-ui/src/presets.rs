@@ -398,6 +398,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         floor: 0.0,
                         curve: 1.0,
                     }),
+                    opacity_modulation: None,
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
@@ -424,6 +425,7 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         floor: 0.25,
                         curve: 0.0,
                     }),
+                    opacity_modulation: None,
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),

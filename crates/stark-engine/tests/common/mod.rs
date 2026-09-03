@@ -237,6 +237,30 @@ pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
     engine.process(GestureCommand::End);
 }
 
+/// [`stroke_with`], each point pressed at its own pressure — for a claim about
+/// what the pen does *along* one stroke, where every other stroke here is
+/// pressed home throughout.
+pub fn stroke_pressed(engine: &mut Engine, b: BrushParams, points: &[(Vec2, f32)]) {
+    let sample = |&(pos, pressure): &(Vec2, f32)| InputSample {
+        pos,
+        pressure,
+        ..InputSample::default()
+    };
+    engine.process(ViewCommand::set_brush(b));
+    let mut it = points.iter();
+    let first = sample(it.next().expect("at least one point"));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: first,
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for p in it {
+        engine.process(GestureCommand::To { sample: sample(p) });
+    }
+    engine.process(GestureCommand::End);
+}
+
 /// Paint and commit a stroke through the given canvas points with `color`.
 pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2]) {
     stroke_with(engine, brush(color, radius), points);

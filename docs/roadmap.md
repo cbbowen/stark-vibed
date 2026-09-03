@@ -295,7 +295,10 @@ per-segment pressure/tilt modulation of the dynamics rates had been *removed* as
 inert scaffolding. `BrushParams.modulation` is now the mapping — see §6.2, "Pen
 mapping" — with **pressure and tilt** driving **size, flow, lift, deposit and
 bleed** through a bounded rational response curve, and the pressure → size rule
-demoted to the default entry in it rather than a rule.
+demoted to the default entry in it rather than a rule. The **opacity** ceiling
+joined the targets later, on all three effects that have one, and is the one
+target with no per-segment law to ride: it accumulates what each segment
+claimed in a lane of its own (§6.2, "The ceiling under the pen").
 
 The decision that made it cheap: a modulation is a **multiplier in [0, 1]**, so
 every bound the engine derives from a brush stays sound without learning that

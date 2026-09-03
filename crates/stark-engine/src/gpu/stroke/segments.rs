@@ -206,14 +206,22 @@ pub(super) struct Paint {
     /// reason the knob is quoted as the give: it is what makes a pressure mapping the
     /// charcoal rather than its opposite (`BrushModulations::tooth_give`).
     pub(super) tooth_give: f32,
+    /// The ceiling's **modulation factor** as the pen asked for it here (§6.2):
+    /// what this segment's share of the stroke's coverage is capped at, as a
+    /// fraction of the effect's own dial. The dial itself — with the mask's
+    /// opacity folded in — stays a stroke constant (`StrokeConstants::opacity`);
+    /// only the pen's factor rides the segment, so a brush with the target
+    /// unmapped carries exactly 1 and the ceiling lane holds the plain coverage.
+    pub(super) opacity: f32,
 }
 
 impl Default for Paint {
-    /// Every rate at zero — a tool doing nothing — the flow at its **neutral 1**
-    /// (a scale, so a zero would not be "no flow" but a λ multiplier that
-    /// silences the exchange), and the tooth at **full give**,
-    /// which is the same statement about the substrate: a tip that follows every fall
-    /// deposits exactly what it would with no substrate under it at all.
+    /// Every rate at zero — a tool doing nothing — the flow and the ceiling
+    /// factor at their **neutral 1** (scales, so a zero would not be "none" but
+    /// a λ multiplier that silences the exchange and a ceiling that admits
+    /// nothing), and the tooth at **full give**, which is the same statement
+    /// about the substrate: a tip that follows every fall deposits exactly what
+    /// it would with no substrate under it at all.
     ///
     /// Written out rather than derived, because the knob runs the other way
     /// (`ToothParams::give`) and a derived zero here would be the *driest* tip
@@ -227,6 +235,7 @@ impl Default for Paint {
             bleed: 0.0,
             drag: 0.0,
             tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
+            opacity: 1.0,
         }
     }
 }
@@ -731,10 +740,21 @@ pub(super) fn generate_segments_in(
         // before its `ln`, so the factor rides the segment and the plan scales
         // their λs — one pass at flow f trades exactly what f passes at flow 1
         // would.
-        let (flow, add, lift, deposit, bleed, drag) = match &b.effect {
-            stark_model::document::BrushEffect::Paint(p) => {
-                (1.0, p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-            }
+        //
+        // The ceiling's factor rides beside them for the three effects that have a
+        // ceiling: the pen's share alone, the dial staying a stroke constant
+        // (`Paint::opacity`). A liquify stroke has no ceiling and carries the
+        // neutral 1.
+        let (flow, add, lift, deposit, bleed, drag, opacity) = match &b.effect {
+            stark_model::document::BrushEffect::Paint(p) => (
+                1.0,
+                p.flow * p.modulation.flow(pen),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                p.modulation.opacity(pen),
+            ),
             stark_model::document::BrushEffect::Wet(w) => {
                 let flow = w.flow * w.modulation.flow(pen);
                 (
@@ -744,11 +764,18 @@ pub(super) fn generate_segments_in(
                     w.dynamics.deposit * w.modulation.deposit(pen),
                     w.dynamics.bleed * w.modulation.bleed(pen) * flow,
                     0.0,
+                    w.modulation.opacity(pen),
                 )
             }
-            stark_model::document::BrushEffect::Erase(e) => {
-                (1.0, e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-            }
+            stark_model::document::BrushEffect::Erase(e) => (
+                1.0,
+                e.flow * e.modulation.flow(pen),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                e.modulation.opacity(pen),
+            ),
             stark_model::document::BrushEffect::Liquify(l) => (
                 1.0,
                 0.0,
@@ -756,6 +783,7 @@ pub(super) fn generate_segments_in(
                 0.0,
                 0.0,
                 l.strength * l.modulation.strength(pen),
+                1.0,
             ),
         };
         Segment {
@@ -768,6 +796,7 @@ pub(super) fn generate_segments_in(
                 bleed,
                 drag,
                 tooth_give: b.tooth.give * m.tooth_give(pen),
+                opacity,
             },
         }
     };

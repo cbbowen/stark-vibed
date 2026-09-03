@@ -67,6 +67,24 @@ pub fn entry_point_enabled(name: &str, mixbox: bool) -> bool {
 /// channel — the third color texture a pigment space needs (§6.7).
 pub const RESID_FEATURE: &str = "resid";
 
+/// The WESL feature that turns on the sweep's **ceiling lane** (§6.2): the
+/// target a stroke whose opacity the pen drives accumulates its claimed coverage
+/// into, beside the parcel.
+pub const CEILING_FEATURE: &str = "ceiling";
+
+/// The subset of [`ENTRY_POINTS`] built again with [`CEILING_FEATURE`] on,
+/// deposited as `<module>_ceiling` — and, in a residual build, once more as
+/// `<module>_resid_ceiling`.
+///
+/// Only the sweep. The lane is a render *target*, and a pipeline's target list is
+/// fixed when the pipeline is, so the sweep that writes it is a second pipeline
+/// over a second artifact. The passes that *read* the lane (`integrate`, `erase`,
+/// `dynamics`) declare its slot unconditionally and bind a 1×1 zero behind a
+/// uniform flag when there is none — a flag costs those passes nothing, where a
+/// fourth attachment on every unmodulated stroke would cost the sweep two bytes a
+/// fragment.
+pub const CEILING_ENTRY_POINTS: &[&str] = &["stamp"];
+
 /// The subset of [`ENTRY_POINTS`] that also gets built a *second* time with
 /// [`RESID_FEATURE`] enabled, deposited as `<module>_resid`.
 ///

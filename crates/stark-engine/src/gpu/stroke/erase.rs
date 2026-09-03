@@ -48,7 +48,8 @@ use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
-/// accumulated mass, the selection, and the opacity uniform.
+/// accumulated mass, the selection, the opacity uniform, and the ceiling lane —
+/// the parcel's second lane under a pen-driven opacity, the 1×1 zero otherwise.
 const ERASE_SLOTS: &[Slot] = &[
     Slot::at(ed::BASE_COLOR),
     Slot::at(ed::BASE_AUX),
@@ -56,6 +57,8 @@ const ERASE_SLOTS: &[Slot] = &[
     Slot::at(ed::SELECTION),
     Slot::at(ed::E),
     Slot::at(ed::BASE_RESID),
+    Slot::at(ed::CEILING),
+    Slot::at(ed::MOMENT),
 ];
 
 /// The accumulator's format: one channel — the transparency mass — additive, like
@@ -65,16 +68,34 @@ const ERASE_SLOTS: &[Slot] = &[
 /// `exp(−m)` has long since reached zero.
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 
-/// The accumulator is the parcel's only lane: this pass rasterizes one number per
-/// texel, where the deposit rasterizes the channel trio. Named beside the key it is
-/// taken with, so the attach order and the bind order are one list
+/// The accumulator is the parcel's first lane: this pass rasterizes one number per
+/// texel, where the deposit rasterizes the channel trio. Under a pen-driven
+/// opacity the ceiling lane rides beside it (§6.2) — the coverage the stroke has
+/// claimed, each segment's share at its own ceiling. Named beside the keys they
+/// are taken with, so the attach order and the bind order are one list
 /// ([`Parcel`](super::accum::Parcel)).
 const MASS: usize = 0;
+const CEILING: usize = 1;
+/// The moment of the whole mass over the pen's factor — the lane's companion,
+/// which the deposit keeps in its aux's spare channel and this pass, whose
+/// accumulator has none, keeps in a lane of its own.
+const MOMENT: usize = 2;
 
 /// The accumulator's pool key — [`lane_key`]'s usages, at this pass's own format
 /// and label.
 fn accum_key() -> Key {
     lane_key(ACCUM_FORMAT, "stark erase accum")
+}
+
+/// The ceiling lane's pool key: the swept path's format, since the two lanes
+/// carry the same sums by the same rule.
+fn ceiling_key() -> Key {
+    lane_key(super::swept::CEILING_FORMAT, "stark erase ceiling")
+}
+
+/// The moment lane's pool key: one channel, the accumulator's own format.
+fn moment_key() -> Key {
+    lane_key(ACCUM_FORMAT, "stark erase moment")
 }
 
 /// The erase pass's GPU objects, built once beside the two paths' kits.
@@ -87,6 +108,9 @@ pub(super) struct EraseKit {
     /// so one set of bind groups serves either pipeline) — with `fs_erase` writing
     /// the single accumulator target.
     pub(super) sweep: wgpu::RenderPipeline,
+    /// The same sweep with the ceiling lane as a second target (§6.2, §6.12) —
+    /// the swept kit's `pipeline_ceiling`, on the removing side.
+    pub(super) sweep_ceiling: wgpu::RenderPipeline,
     /// The integrate (`erase.wesl`): a fullscreen pass reading the pristine tile
     /// and the accumulated mass, writing the erased tile's color+aux(+resid) MRT.
     pub(super) integrate: wgpu::RenderPipeline,
@@ -95,12 +119,14 @@ pub(super) struct EraseKit {
 
 /// Build the erase kit (§6.12). Takes the [`SweptKit`] because the sweep
 /// half *is* that path's pipeline over the same layouts — only the fragment entry
-/// point and the target list differ.
+/// point and the target list differ — and both stamp modules, for the same two
+/// sweeps that kit builds.
 pub(super) fn build_erase_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
     swept: &SweptKit,
     shader: &wgpu::ShaderModule,
+    shader_ceiling: &wgpu::ShaderModule,
 ) -> EraseKit {
     let layout = desc::pipeline_layout(
         device,
@@ -111,25 +137,37 @@ pub(super) fn build_erase_kit(
             Some(&swept.noise_bgl),
         ],
     );
-    let sweep = desc::render_pipeline(
-        device,
-        desc::RenderPipe {
-            label: "stark erase sweep pipeline",
-            layout: &layout,
-            module: shader,
-            vs: "vs_main",
-            fs: "fs_erase",
-            primitive: desc::QUAD_STRIP,
-            buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
-                wgpu::VertexStepMode::Instance,
-            ))],
-            // The transparency mass, additive across overlapping segment quads —
-            // and, through the load below, across the pieces of a live stroke.
-            targets: &[desc::blended_target(
-                ACCUM_FORMAT,
-                Some(color_space.aux_blend()),
-            )],
-        },
+    let targets = [
+        // The transparency mass, additive across overlapping segment quads —
+        // and, through the load below, across the pieces of a live stroke.
+        desc::blended_target(ACCUM_FORMAT, Some(color_space.aux_blend())),
+        // The ceiling lane and the mass's moment beside it, additive like the
+        // deposit's (`swept::ceiling_target`, §6.2).
+        super::swept::ceiling_target(color_space),
+        desc::blended_target(ACCUM_FORMAT, Some(color_space.aux_blend())),
+    ];
+    let sweep_pipeline = |label, module, targets: &[Option<wgpu::ColorTargetState>]| {
+        desc::render_pipeline(
+            device,
+            desc::RenderPipe {
+                label,
+                layout: &layout,
+                module,
+                vs: "vs_main",
+                fs: "fs_erase",
+                primitive: desc::QUAD_STRIP,
+                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+                    wgpu::VertexStepMode::Instance,
+                ))],
+                targets,
+            },
+        )
+    };
+    let sweep = sweep_pipeline("stark erase sweep pipeline", shader, &targets[..1]);
+    let sweep_ceiling = sweep_pipeline(
+        "stark erase sweep ceiling pipeline",
+        shader_ceiling,
+        &targets,
     );
 
     let resid = color_space.has_resid();
@@ -153,6 +191,7 @@ pub(super) fn build_erase_kit(
 
     EraseKit {
         sweep,
+        sweep_ceiling,
         integrate,
         integrate_bgl,
     }
@@ -207,7 +246,7 @@ impl StrokeRenderer {
         // and that is exactly the argument `swept.rs` writes out as the reason the ring
         // had to leave it. Correct because a loop happens not to flush is not correct.
         let opacity = stark_shaders::mirror::erase::Erase {
-            params: [k.opacity, 0.0, 0.0, 0.0],
+            params: [k.opacity, f32::from(u8::from(k.ceiling_lane)), 0.0, 0.0],
         };
         let opacity_buf = scope.take_run_buffer(BufKey {
             size: std::mem::size_of_val(&opacity) as u64,
@@ -215,6 +254,15 @@ impl StrokeRenderer {
             label: "stark erase opacity",
         });
         scope.write_lease(&opacity_buf, bytemuck::bytes_of(&opacity));
+
+        // The parcel: the transparency mass, and under a pen-driven ceiling the
+        // lane beside it (§6.2) — the same two-lane sweep the deposit takes, at the
+        // shader's own locations.
+        let mut keys: Vec<Option<Key>> = vec![Some(accum_key())];
+        if k.ceiling_lane {
+            keys.push(Some(ceiling_key()));
+            keys.push(Some(moment_key()));
+        }
 
         // The shared procedure (§6.12, `accum`): resume everything the pieces
         // before this one accumulated, extend it over this piece's tiles, and turn
@@ -226,14 +274,18 @@ impl StrokeRenderer {
             self,
             scene,
             scope,
-            &[accum_key()],
+            &keys,
             BareCanvas::Skip,
             resume.prior.map(ToolState::erased),
         )
         .run(
             &Sweep {
                 label: "stark erase sweep pass",
-                pipeline: &self.erase.sweep,
+                pipeline: if k.ceiling_lane {
+                    &self.erase.sweep_ceiling
+                } else {
+                    &self.erase.sweep
+                },
                 draws: &draws,
                 prefix: &prefix_bg,
                 noise: &noise_bg,
@@ -258,6 +310,16 @@ impl StrokeRenderer {
                         eb::BASE_RESID => wgpu::BindingResource::TextureView(
                             l.base.resid.expect("a residual build has one"),
                         ),
+                        eb::CEILING => wgpu::BindingResource::TextureView(if k.ceiling_lane {
+                            l.parcel.lane(CEILING)
+                        } else {
+                            &self.zeroes.aux
+                        }),
+                        eb::MOMENT => wgpu::BindingResource::TextureView(if k.ceiling_lane {
+                            l.parcel.lane(MOMENT)
+                        } else {
+                            &self.zeroes.aux
+                        }),
                         other => unreachable!("`ERASE_SLOTS` lists no binding {other}"),
                     },
                 )
