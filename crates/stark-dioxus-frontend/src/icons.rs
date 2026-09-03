@@ -167,7 +167,7 @@ icons! {
     // carry.
     FLIP_H => "flip-horizontal-bold",
     FLIP_V => "flip-vertical-bold",
-    // The H hotkey's act (`commands::Command::MirrorView`): the same picture as
+    // The H hotkey's act (`stark_chrome::commands::Command::MirrorView`): the same picture as
     // [`FLIP_H`] — a mirroring about the vertical axis — and a second name
     // because the control is a different one: the flip moves the selected
     // *paint*, this turns the whole view and moves nothing. The same argument

@@ -33,7 +33,6 @@ use stark_engine::command::Tool;
 
 use crate::collab::now_seconds;
 use crate::commands;
-use crate::drags;
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
     self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,
@@ -41,9 +40,10 @@ use crate::platform::{
 };
 use crate::slots::{self, Grip};
 use crate::state::{
-    AppState, BrushRing, Dwell, FlowBar, PickScope, TowUi, TuneReadout, dispatch, update_brush,
+    AppState, BrushRing, Dwell, FlowBar, TowUi, TuneReadout, dispatch, update_brush,
 };
 use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_chrome::commands::PickScope;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
@@ -600,8 +600,8 @@ const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 /// stroke would.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     if *state.space_down.peek()
-        || drags::armed(&state.drags.peek(), *state.held_mods.peek())
-            .is_some_and(drags::DragAction::shadows_paint)
+        || stark_chrome::drags::armed(&state.drags.peek(), *state.held_mods.peek())
+            .is_some_and(stark_chrome::drags::DragAction::shadows_paint)
         || *state.pick.dragging.peek()
         || crate::panels::timeline::is_playing(state)
     {

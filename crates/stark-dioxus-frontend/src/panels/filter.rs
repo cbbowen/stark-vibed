@@ -56,7 +56,6 @@ use std::sync::LazyLock;
 
 use dioxus::prelude::*;
 
-use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::layout::chrome_dimmed;
 use crate::panels::color::ab_field_data_url;
@@ -64,6 +63,7 @@ use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
+use stark_chrome::commands::Command;
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
@@ -1453,7 +1453,7 @@ pub fn FilterBar() -> Element {
                 class: "chip",
                 // Esc performs this same act (`commands`' ladder) — advertised
                 // through the registry, the frame bar's reason.
-                title: commands::advertised(
+                title: stark_chrome::commands::advertised(
                     "Stop tuning and go back to painting \u{2014} the filter stays",
                     Command::CancelMode,
                     &state.bindings.read(),

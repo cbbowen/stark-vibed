@@ -39,7 +39,6 @@ use std::collections::HashSet;
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
-use crate::commands::Command;
 use crate::icons::{self, icon, label};
 use crate::panels::filter::AddFilterButton;
 use crate::panels::reorder;
@@ -48,6 +47,7 @@ use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, slider_fill};
+use stark_chrome::commands::Command;
 use stark_chrome::layer_tree::{INDENT, Row, landing, rows};
 use stark_chrome::reorder::{Grab, Motion};
 use stark_engine::LayerInfo;

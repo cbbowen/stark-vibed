@@ -930,23 +930,6 @@ pub fn unbind(state: AppState, name: &str) {
     persist(&brushes.read());
 }
 
-/// The slot a key **code** stands for, or `None` for every other key.
-///
-/// The physical key rather than the character it produces (`code`, not `key`),
-/// which is what a hold binding wants: on a French layout the digit row types
-/// `&é"'` unshifted, and a rack reachable only through Shift would be no rack at
-/// all. The numeric keypad is the same ten slots — it is a digit row that happens
-/// to be square.
-pub fn of_code(code: &str) -> Option<usize> {
-    let digit = code
-        .strip_prefix("Digit")
-        .or_else(|| code.strip_prefix("Numpad"))?;
-    match digit.as_bytes() {
-        [d @ b'0'..=b'9'] => Some((d - b'0') as usize),
-        _ => None,
-    }
-}
-
 /// Populate the rack from storage. Called once at app start, before the renderer
 /// exists — nothing here needs an engine, or even the library: a slot is a name
 /// until it is resolved, and it is resolved at every use ([`resolve`]).
@@ -1285,19 +1268,5 @@ mod tests {
         assert!(taps.press(3, 10.1));
         assert!(!taps.press(3, 10.2), "a third press starts over");
         assert!(taps.press(3, 10.3), "...and pairs with the fourth");
-    }
-
-    #[test]
-    fn codes_map_to_the_digit_they_are() {
-        assert_eq!(of_code("Digit0"), Some(ERASER));
-        assert_eq!(of_code("Digit3"), Some(3));
-        assert_eq!(of_code("Digit9"), Some(9));
-        // The keypad is the same rack.
-        assert_eq!(of_code("Numpad7"), Some(7));
-        // Everything else is somebody else's key.
-        assert_eq!(of_code("KeyH"), None);
-        assert_eq!(of_code("Digit"), None);
-        assert_eq!(of_code("NumpadAdd"), None);
-        assert_eq!(of_code("Numpad10"), None);
     }
 }

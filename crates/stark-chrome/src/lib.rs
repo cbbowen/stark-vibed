@@ -1,3 +1,9 @@
+// `variant_count` counts `Command`'s arms so that a command added without a row in
+// `commands::ALL` fails the build with the row it is missing (§25.2). Test-only, which
+// is what keeps a nightly feature out of the shipped crate — the toolchain here is
+// nightly either way (`rust-toolchain.toml`), and this is the one thing that needs it.
+#![cfg_attr(test, feature(variant_count))]
+
 //! The **frontend's model** — what a chrome is written in, below any toolkit
 //! (§11.2).
 //!
@@ -55,16 +61,21 @@
 //!   second copy of.
 
 pub mod brush_config;
+pub mod commands;
+pub mod drags;
 pub mod identity;
 pub mod input;
+pub mod keys;
 pub mod layer_tree;
 pub mod library;
+pub mod panels;
 pub mod prefs;
 pub mod presets;
 pub mod reorder;
 pub mod slots;
 pub mod storage;
 pub mod transform;
+pub mod visibility;
 
 #[cfg(test)]
 mod tests {

@@ -1,10 +1,11 @@
 //! Small reusable controls shared by the panels, the dialogs and the brush editor.
 
+use crate::commands;
 use dioxus::prelude::*;
 
-use crate::commands::Command;
 use crate::icons::{icon, label as label_span};
 use crate::state::{AppState, use_obs_opt};
+use stark_chrome::commands::Command;
 
 /// A button that runs a [`Command`], wearing the command's own mark, word and
 /// tooltip (`crate::commands`) — so a control and the act it reaches cannot
@@ -42,7 +43,10 @@ pub fn CommandButton(
     // moves at pointer rate during a stroke, and this button's pair of bools
     // almost never changes. Re-render on the bools, not on the read.
     let look = use_obs_opt(state, move |o| {
-        (command.enabled(o), command.active(state) == Some(true))
+        (
+            command.enabled(o),
+            commands::active(command, state) == Some(true),
+        )
     });
     let (enabled, lit) = look();
     rsx! {
@@ -51,8 +55,8 @@ pub fn CommandButton(
             class: if lit { "active" },
             disabled: !enabled,
             title: command.tooltip(&state.bindings.read()),
-            onclick: move |_| command.run(state),
-            {icon(command.icon())}
+            onclick: move |_| commands::run(command, state),
+            {icon(commands::icon(command))}
             {label_span(command.word())}
         }
     }

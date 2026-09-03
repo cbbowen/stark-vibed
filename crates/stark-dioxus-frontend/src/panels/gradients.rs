@@ -21,7 +21,6 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::commands::Command;
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
@@ -29,6 +28,7 @@ use crate::layout::chrome_dimmed;
 use crate::platform::{capture_pointer, select_all};
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
+use stark_chrome::commands::Command;
 use stark_model::geom::Vec2;
 
 /// How far the pointer must move, in **screen** px, before the trace keeps

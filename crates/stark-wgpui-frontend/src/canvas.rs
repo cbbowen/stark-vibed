@@ -12,14 +12,17 @@
 //! What the hit test tests against is the layout wgpui actually produced, not one
 //! this side derived — see `panel::Regions`.
 
-use stark_chrome::brush_config::BrushEffectType;
+use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_chrome::commands::{Bindings, Command};
+use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_chrome::input as chrome_input;
+use stark_chrome::keys::Mods;
 use stark_engine::ViewTransform;
-use stark_engine::command::{GestureCommand, InputSample, Tool};
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool};
 use stark_model::Vec2;
 use wgpui::{
-    AnyElement, Context, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Render, Window, div, prelude::*, rgb, wgpu_surface,
+    AnyElement, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, Window, div, prelude::*, rgb, wgpu_surface,
 };
 
 use crate::brush::Brush;
@@ -38,12 +41,40 @@ const EFFECTS: &[(BrushEffectType, &str)] = &[
     (BrushEffectType::Liquify, "Liquify"),
 ];
 
+/// How far one press of the bracket keys moves the brush's size, as a factor.
+///
+/// A ratio rather than a step, because size is perceived logarithmically: a pixel
+/// added to a 4-px tip is a quarter of it and nothing at all to a 400-px one. The same
+/// figure the web frontend steps by.
+const SIZE_STEP: f32 = 1.1;
+
+/// How much of the size range one horizontal pixel of a tuning drag spends, as an
+/// exponent — so the knob moves multiplicatively, for `SIZE_STEP`'s reason.
+///
+/// `MIN_RADIUS..MAX_RADIUS` is about nine doublings, and this spends them over some
+/// 900 px: a drag across a window covers the range once, and a short one is fine.
+const TUNE_SIZE_PER_PX: f32 = 0.007;
+
+/// How much flow one vertical pixel spends — the range over some 300 px, which is
+/// shorter because there is far less of it to cross.
+const TUNE_FLOW_PER_PX: f32 = 0.01;
+
 /// What a press took hold of.
 enum Held {
     /// A stroke on the canvas.
     Stroke,
     /// A knob on the panel, kept for the whole drag — see the module note.
     Knob(Knob),
+    /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
+    /// flow up and down, from where the press landed.
+    Tune {
+        /// Where the drag started, in logical px, and the tune it started from — so
+        /// a long drag is one map from the press rather than a chain of steps, which
+        /// is `stark_chrome::transform`'s rule applied to a knob.
+        from: Point<Pixels>,
+        size: f32,
+        flow: f32,
+    },
 }
 
 pub struct Canvas {
@@ -54,6 +85,12 @@ pub struct Canvas {
     brush: Brush,
     /// What the pointer is holding, if anything.
     held: Option<Held>,
+    /// This browser's chord table, and the drag table beside it — both shipped
+    /// defaults for now: rebinding needs a settings surface, which is N8's.
+    bindings: Bindings,
+    drags: DragBindings,
+    /// The keyboard needs somewhere to be focused, or nothing is dispatched at all.
+    focus: FocusHandle,
     /// Whether the canvas owes the surface a frame.
     dirty: bool,
     /// Where the panel's controls were laid out, as of the last painted frame — the
@@ -69,7 +106,7 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub fn new(window: &mut Window, _cx: &mut Context<'_, Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let mut renderer = Renderer::new(window);
         let brush = Brush::default();
         if let Some(r) = renderer.as_mut() {
@@ -77,10 +114,14 @@ impl Canvas {
         }
         let clock = quanta::Clock::new();
         let epoch = clock.raw();
+        let focus = cx.focus_handle();
         Self {
             renderer,
             brush,
             held: None,
+            bindings: Bindings::default(),
+            drags: DragBindings::default(),
+            focus,
             // The first frame has a canvas nobody has painted yet.
             dirty: true,
             regions: Regions::default(),
@@ -121,6 +162,28 @@ impl Canvas {
             None => {}
         }
 
+        // The drag table before the paint path, exactly as the web canvas asks it:
+        // a modified press is a *gesture*, and which one is the table's answer rather
+        // than a ladder of modifier tests here (§25.3).
+        let mods = Mods {
+            ctrl: ev.modifiers.control || ev.modifiers.platform,
+            shift: ev.modifiers.shift,
+            alt: ev.modifiers.alt,
+        };
+        let chord = DragChord {
+            mods,
+            button: DragButton::Left,
+        };
+        if self.drags.lookup(mods, DragButton::Left) == Some(DragAction::TuneBrush) {
+            let _ = chord;
+            self.held = Some(Held::Tune {
+                from: ev.position,
+                size: self.brush.tune.size,
+                flow: self.brush.tune.flow,
+            });
+            return;
+        }
+
         let (scale, now) = (window.scale_factor(), self.elapsed());
         let smoothing = self.brush.config.smoothing;
         let Some(r) = self.renderer.as_mut() else {
@@ -153,6 +216,18 @@ impl Canvas {
                     self.turn(knob, f, cx);
                 }
             }
+            Some(Held::Tune { from, size, flow }) => {
+                // Both knobs from the press rather than from the last move, so a long
+                // drag is one map and rounding cannot walk over its length.
+                let dx = f32::from(ev.position.x) - f32::from(from.x);
+                let dy = f32::from(ev.position.y) - f32::from(from.y);
+                self.brush.tune.size =
+                    (size * (TUNE_SIZE_PER_PX * dx).exp()).clamp(MIN_RADIUS, MAX_RADIUS);
+                // Up is more, which is the direction every slider in the app grows in
+                // and the opposite of the screen's y.
+                self.brush.tune.flow = (flow - dy * TUNE_FLOW_PER_PX).clamp(0.0, MAX_FLOW);
+                self.send_brush(cx);
+            }
             Some(Held::Stroke) => {
                 let (scale, now) = (window.scale_factor(), self.elapsed());
                 let Some(r) = self.renderer.as_mut() else {
@@ -177,6 +252,51 @@ impl Canvas {
             r.process(GestureCommand::End);
         }
         self.repaint(cx);
+    }
+
+    /// Run whatever the shipped chord table says this keystroke asks for.
+    ///
+    /// **The whole of the keyboard, and it is nine lines**, because the table is
+    /// shared: what Ctrl+Z means was settled once (§25) and this frontend only has to
+    /// say what a keystroke *is* (`crate::keys`) and what an act *does* below.
+    fn key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some(command) = self.bindings.lookup(&crate::keys::stroke(&ev.keystroke)) else {
+            return;
+        };
+        self.run(command, cx);
+    }
+
+    /// Do what a command means here.
+    ///
+    /// A short list, and short *honestly*: the registry has thirty-odd acts and this
+    /// frontend has five of them. What the others need is a
+    /// surface — a dialog, a layer list, a selection — and each arrives with its own
+    /// stage (§11.2). An act with nothing to act on is left alone rather than given a
+    /// no-op arm, so the day it lands the compiler has nothing to say and the reader
+    /// does.
+    fn run(&mut self, command: Command, cx: &mut Context<'_, Self>) {
+        let doc = match command {
+            Command::Undo => Some(DocCommand::Undo),
+            Command::Redo => Some(DocCommand::Redo),
+            _ => None,
+        };
+        match command {
+            Command::BrushSmaller => self.step_size(1.0 / SIZE_STEP, cx),
+            Command::BrushLarger => self.step_size(SIZE_STEP, cx),
+            _ => {}
+        }
+        if let Some(doc) = doc
+            && let Some(r) = self.renderer.as_mut()
+        {
+            r.process(doc);
+            self.repaint(cx);
+        }
+    }
+
+    /// Step the brush's size by a factor, clamped to the range the panel offers.
+    fn step_size(&mut self, factor: f32, cx: &mut Context<'_, Self>) {
+        self.brush.tune.size = (self.brush.tune.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
+        self.send_brush(cx);
     }
 
     /// Move a knob and put the changed brush in the engine's hand.
@@ -236,6 +356,10 @@ impl Render for Canvas {
         div()
             .size_full()
             .flex()
+            // The keyboard answers whatever has focus, and nothing has it unless
+            // something asks: an unfocused window dispatches no chord at all.
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key))
             .child(chrome)
             .child(
                 div()

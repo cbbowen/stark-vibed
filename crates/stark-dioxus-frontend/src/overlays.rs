@@ -19,8 +19,8 @@
 
 use dioxus::prelude::*;
 
-use crate::drags::{self, DragAction};
 use crate::state::{AppState, BrushRing, FlowBar, TuneReadout, use_obs};
+use stark_chrome::drags::DragAction;
 
 /// Collaborators' pointers, drawn in each peer's own color (§17.4).
 ///
@@ -124,7 +124,7 @@ pub fn BrushCursor() -> Element {
     if !paintable
         || tool.is_selection()
         || (state.space_down)()
-        || drags::armed(&state.drags.read(), (state.held_mods)())
+        || stark_chrome::drags::armed(&state.drags.read(), (state.held_mods)())
             .is_some_and(DragAction::shadows_paint)
         || (state.pick.dragging)()
     {

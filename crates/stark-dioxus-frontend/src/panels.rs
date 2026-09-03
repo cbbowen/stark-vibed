@@ -11,7 +11,7 @@
 //! - a **panel** stacks in the right-hand column, wears a title bar, is dragged
 //!   and folded and closed, and is remembered between visits ([`BrushPanel`],
 //!   [`ColorPanel`], [`SelectPanel`], [`LayerPanel`], [`GuidesPanel`],
-//!   [`LightingPanel`] — the six of [`PanelId`](crate::layout::PanelId), and
+//!   [`LightingPanel`] — the six of [`PanelId`](stark_chrome::panels::PanelId), and
 //!   the only six there will be without an edit to that enum);
 //! - a **bar** mounts at the bottom with the thing it acts on and dissolves with
 //!   it, so it doubles as the indicator that the thing exists ([`SelectionBar`],

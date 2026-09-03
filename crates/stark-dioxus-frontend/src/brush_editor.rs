@@ -43,7 +43,7 @@ use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
 
-use crate::commands::{self, Command};
+use crate::commands;
 use crate::icons::{self, icon};
 use crate::panels::brush::{MAX_TAPER, MAX_TOOTH_SOFTNESS, set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
@@ -53,6 +53,7 @@ use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
 use stark_chrome::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_chrome::commands::Command;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
@@ -475,7 +476,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
             format!("Replace \u{201C}{name}\u{201D} with the brush in hand")
         }
     };
-    let save_new_title = commands::advertised(
+    let save_new_title = stark_chrome::commands::advertised(
         "Keep the brush in hand under a new name",
         Command::SavePreset,
         &state.bindings.read(),
@@ -531,7 +532,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     button {
                         class: "btn btn-secondary",
                         title: "{save_new_title}",
-                        onclick: move |_| Command::SavePreset.run(state),
+                        onclick: move |_| commands::run(Command::SavePreset, state),
                         {icon(icons::ADD)}
                         "Save new preset"
                     }

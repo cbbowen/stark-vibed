@@ -30,12 +30,6 @@
     clippy::useless_format,
     reason = "rsx! expands plain interpolation through format!; the suggestion applies to the expansion"
 )]
-// `std::mem::variant_count`, for `commands::tests::all_lists_every_command` and
-// nothing else — which is why it is `cfg_attr(test, …)` rather than a feature
-// this crate carries. §25.2 step 5 says of the registry's list that it is kept
-// "by hand, and nothing will remind you"; this is the reminder, and it costs a
-// nightly feature in the test profile to have one.
-#![cfg_attr(test, feature(variant_count))]
 
 mod anchor;
 mod brush_editor;
@@ -200,7 +194,7 @@ fn app() -> Element {
     // the app in — the engine-owned half of them waits for the renderer below
     // (`crate::prefs`).
     use_hook(|| prefs::load(state));
-    // And this browser's rebound shortcuts (`commands::Bindings`) — before the
+    // And this browser's rebound shortcuts (`stark_chrome::commands::Bindings`) — before the
     // first keystroke could ask the table, like everything above it.
     use_hook(|| commands::load(state));
     // And its rebound canvas drags (§25.8), which the very first press asks and

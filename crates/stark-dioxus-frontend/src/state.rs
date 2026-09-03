@@ -18,8 +18,9 @@ use dioxus::dioxus_core::{Subscribers, Task};
 use dioxus::prelude::*;
 
 use crate::collab;
-use crate::commands::VisibilityToggle;
 use crate::render::Renderer;
+use stark_chrome::commands::PickScope;
+use stark_chrome::commands::VisibilityToggle;
 use stark_chrome::prefs::Prefs;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
@@ -192,9 +193,9 @@ pub struct Signals {
     /// modifier set, so a press or release that happened while the window was
     /// not focused is caught up on the next keystroke. Only ever *shown*: the
     /// resting cursor and the eyedropper's options bar ask the drag table what
-    /// a press under these would open (`drags::armed`), which is what makes a
+    /// a press under these would open (`stark_chrome::drags::armed`), which is what makes a
     /// modifier binding discoverable before it is used.
-    pub held_mods: Signal<crate::drags::Mods>,
+    pub held_mods: Signal<stark_chrome::keys::Mods>,
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
     /// or a run of wheel zooming). The floating chrome fades out while it is set,
     /// handing the screen back to the painting — see
@@ -441,28 +442,28 @@ pub struct Signals {
     /// The floating panel stack: order, which are open, and the in-flight
     /// gestures (`crate::layout::PanelLayout`). Here rather than provided as
     /// its own context because the panels' commands live in the registry now
-    /// (`commands::Command::TogglePanel`), and a command reaches everything it
+    /// (`stark_chrome::commands::Command::TogglePanel`), and a command reaches everything it
     /// acts on through this one handle.
     pub panels: crate::layout::PanelLayout,
-    /// This browser's chord table (`commands::Bindings`): the shipped defaults
+    /// This browser's chord table (`stark_chrome::commands::Bindings`): the shipped defaults
     /// with the user's rebindings laid over them. A signal so a shortcut column
     /// re-renders the moment a rebind lands; seeded from storage at app start
     /// (`commands::load`) and written back on every rebind.
-    pub bindings: Signal<crate::commands::Bindings>,
-    /// This browser's drag table (`drags::DragBindings`): the shipped rows with
+    pub bindings: Signal<stark_chrome::commands::Bindings>,
+    /// This browser's drag table (`stark_chrome::drags::DragBindings`): the shipped rows with
     /// the user's own laid over them (§25.8). A signal for the chord table's
     /// reason and one more of its own — the resting cursor asks it what a press
     /// under the held modifiers would open, so a rebind has to move the promise
     /// in the same frame it moves the press.
-    pub drags: Signal<crate::drags::DragBindings>,
+    pub drags: Signal<stark_chrome::drags::DragBindings>,
     /// Whether this browser has been offered a table of drag presets, and
     /// whether one is waiting for the hand to come off the canvas
-    /// (`drags::Offer`, §25.8).
+    /// (`stark_chrome::drags::Offer`, §25.8).
     ///
     /// Not in [`Dialogs`] though it raises one: the flag there is *whether the
     /// dialog is up*, and this is the durable fact that decides whether it ever
     /// will be — seeded from storage at app start alongside the table above.
-    pub drag_offer: Signal<crate::drags::Offer>,
+    pub drag_offer: Signal<stark_chrome::drags::Offer>,
 }
 
 /// The root-mounted dialogs: one flag per modal, raised by the command that
@@ -829,7 +830,7 @@ impl AppState {
             // rather than in a load hook, so the first render is already the
             // screen the artist left.
             navigator: root_signal(|| {
-                crate::visibility::stored_showing(VisibilityToggle::Navigator)
+                stark_chrome::visibility::stored_showing(VisibilityToggle::Navigator)
             }),
             tutor: crate::tutor::TutorState::new(),
             popout: root_signal(|| None),
@@ -889,7 +890,9 @@ impl TimelineState {
             // three entries of that menu (`crate::visibility`, §25.6) — here
             // rather than in a load hook, so the first render is already the
             // screen the artist left.
-            open: root_signal(|| crate::visibility::stored_showing(VisibilityToggle::Timeline)),
+            open: root_signal(|| {
+                stark_chrome::visibility::stored_showing(VisibilityToggle::Timeline)
+            }),
             playing: root_signal(|| false),
             speed: root_signal(|| 1.0),
             task: root_signal(|| None),
@@ -915,7 +918,7 @@ impl SlotState {
             // The rack's pin is one of the four entries of the visibility menu
             // this browser remembers (`crate::visibility`, §25.6).
             pinned: root_signal(|| {
-                crate::visibility::stored_showing(VisibilityToggle::QuickBrushes)
+                stark_chrome::visibility::stored_showing(VisibilityToggle::QuickBrushes)
             }),
         }
     }
@@ -1090,7 +1093,7 @@ pub struct TimelineState {
 /// that keeps a picking drag from asking for samples faster than the GPU answers
 /// them, and the flag that says the drag is under way. (Whether the eyedropper is
 /// *armed* is no longer a flag of its own: it is the drag table's answer to the
-/// modifiers currently held — `drags::armed` over
+/// modifiers currently held — `stark_chrome::drags::armed` over
 /// [`Signals::held_mods`](crate::state::Signals::held_mods).)
 ///
 /// The options live here rather than in the engine because nothing in the engine
@@ -1128,50 +1131,6 @@ pub struct PickState {
     /// hand behind it. The loupe is the answer for the one gesture that cannot
     /// otherwise see one.
     pub loupe: Signal<Option<Vec2>>,
-}
-
-/// How far the eyedropper sees, before [`PickState::group_only`] narrows it
-/// (§18.0.2).
-///
-/// The *choice*, not [`PickSource`](stark_engine::PickSource): which layer "this layer"
-/// means is resolved against the selected layer at the moment of the sample
-/// ([`crate::input::pick_color`]), so the bar cannot be left holding a layer id whose
-/// layer has since been deleted — the same reason the radius is a number here and a
-/// clamped one in the engine.
-///
-/// Serde, because a scope is named in a stored record: the rebinding of the
-/// `Command::SetPickScope` row that carries it (§25.2). The derive spells a
-/// variant exactly as `Debug` does, so the stored name and this enum are one
-/// word by construction, and a variant renamed costs that browser's binding
-/// rather than quietly mis-matching it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum PickScope {
-    /// The selected layer alone, ignoring anything over or under it.
-    ThisLayer,
-    /// The selected layer and everything beneath it — what the canvas would show
-    /// with the layers above switched off.
-    AndBelow,
-    /// Every visible layer.
-    #[default]
-    AllLayers,
-}
-
-impl PickScope {
-    /// Every reach, ordered by how much each one lets in — one layer, the layers
-    /// beneath it too, then all of them. The ordering is the claim that the three
-    /// are one question — *how far does this sample see* — rather than three
-    /// unrelated buttons (§18.0.2), and the default sits where that puts it rather
-    /// than at the head of the row, which is what an ordering worth having costs.
-    ///
-    /// Written once here because the bar's row is drawn from it and the registry
-    /// must agree with the bar: `commands::ALL` is kept by hand, so
-    /// `commands::tests::every_pick_scope_has_a_row` walks this array to say that a
-    /// reach added to the bar arrives in the palette with a chord of its own.
-    pub const ALL: [PickScope; 3] = [
-        PickScope::ThisLayer,
-        PickScope::AndBelow,
-        PickScope::AllLayers,
-    ];
 }
 
 /// The shared-session signals, grouped because they share one lifecycle: they are

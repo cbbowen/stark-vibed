@@ -39,9 +39,9 @@ mod tests {
         let claimed = [
             <stark_chrome::identity::Stored as Record>::STORE,
             <stark_chrome::prefs::Prefs as Record>::STORE,
-            <crate::commands::StoredBinding as Entry>::STORE,
-            <crate::drags::DragRow as Entry>::STORE,
-            <crate::visibility::StoredVisible as Entry>::STORE,
+            <stark_chrome::commands::StoredBinding as Entry>::STORE,
+            <stark_chrome::drags::DragRow as Entry>::STORE,
+            <stark_chrome::visibility::StoredVisible as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
             <crate::shapes::StoredShape as Entry>::STORE,
             <stark_chrome::presets::StoredPreset as Entry>::STORE,

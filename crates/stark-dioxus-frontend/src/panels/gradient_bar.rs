@@ -27,7 +27,6 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::commands::{self, Command};
 use crate::gradients;
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
@@ -38,6 +37,7 @@ use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, use_obs};
 use crate::widgets::CommandButton;
+use stark_chrome::commands::Command;
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
@@ -398,7 +398,7 @@ pub fn GradientBar() -> Element {
             CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
+                title: stark_chrome::commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
                 onclick: move |_| finish(state),
                 {icon(icons::DONE)}
                 {label("Done")}

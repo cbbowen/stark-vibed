@@ -29,13 +29,13 @@ use dioxus::prelude::*;
 use stark_model::Srgb;
 use stark_model::document::GradientParcel;
 
-use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_dimmed;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
+use stark_chrome::commands::Command;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::LayerId;
@@ -500,7 +500,7 @@ pub fn FrameBar() -> Element {
                 // Esc performs this same act (`commands`' ladder), so the chip
                 // advertises the key the way the mode bars' Done advertises
                 // Enter — through the registry, so a rebind follows.
-                title: commands::advertised(
+                title: stark_chrome::commands::advertised(
                     "Stop composing and go back to painting \u{2014} the frame stays",
                     Command::CancelMode,
                     &state.bindings.read(),

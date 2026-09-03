@@ -36,7 +36,6 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
-use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
@@ -44,6 +43,7 @@ use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
+use stark_chrome::commands::Command;
 use stark_chrome::transform::{
     MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
     WarpUi,
@@ -350,7 +350,7 @@ pub fn TransformBar() -> Element {
             CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: commands::advertised(
+                title: stark_chrome::commands::advertised(
                     "Apply the transform \u{2014} one undo step",
                     Command::FinishMode,
                     &state.bindings.read(),

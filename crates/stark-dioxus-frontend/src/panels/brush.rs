@@ -3,13 +3,13 @@
 
 use dioxus::prelude::*;
 
-use crate::commands::Command;
 use crate::icons::{self, icon};
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{CommandButton, Modal, Slider};
 use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_chrome::commands::Command;
 use stark_model::document::{BrushShape, OrientationSource};
 
 /// The longest taper the editor offers, in brush radii

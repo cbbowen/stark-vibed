@@ -30,6 +30,7 @@
 
 mod brush;
 mod canvas;
+mod keys;
 mod panel;
 mod render;
 mod store;

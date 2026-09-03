@@ -50,92 +50,28 @@ use crate::icons::{self, icon};
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::{AppState, root_signal};
+use stark_chrome::panels::PanelId;
 use stark_chrome::reorder::{Grab, Motion, Slide};
 
-/// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
-/// order and which are open (§11).
+/// The panel's mark, worn by its title bar and by the entry that reopens it in the
+/// visibility menu (`stark_chrome::commands::VisibilityToggle`).
 ///
-/// Serde, because a panel is named in two stored records — which panels this browser
-/// left open, and a rebinding of `Command::TogglePanel` — and the derive spells a
-/// variant exactly as `Debug` does. So the stored name, the `data-panel` attribute and
-/// the drag key ([`panel_key`]) are one word by construction, and a variant renamed
-/// costs the stored row rather than mis-matching it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
-pub enum PanelId {
-    Color,
-    Brush,
-    Select,
-    Layers,
-    Guides,
-    Lighting,
-}
-
-impl PanelId {
-    /// Every panel, in the default top-to-bottom order. Color leads: it is what the
-    /// next stroke is made of, and the one panel an artist reaches for between
-    /// nearly every pair of them.
-    pub const ALL: [PanelId; 6] = [
-        PanelId::Color,
-        PanelId::Brush,
-        PanelId::Select,
-        PanelId::Layers,
-        PanelId::Guides,
-        PanelId::Lighting,
-    ];
-
-    /// The panel's title-bar label.
-    pub fn title(self) -> &'static str {
-        match self {
-            PanelId::Color => "Color",
-            PanelId::Brush => "Brush",
-            PanelId::Select => "Select",
-            PanelId::Layers => "Layers",
-            PanelId::Guides => "Drawing Guides",
-            PanelId::Lighting => "Lighting",
-        }
-    }
-
-    /// The panel's mark, worn by its title bar and by the entry that reopens it in
-    /// the visibility menu (`commands::VisibilityToggle`).
-    ///
-    /// A stack of panels is read down its left edge, and a column of seven words is
-    /// read one word at a time; a column of seven marks is read at once. That is the
-    /// whole argument — the glyph is not decoration on the title, it is what makes
-    /// the stack scannable at the glance the title bar is actually given.
-    ///
-    /// Three of these are shared with a bar or a dialog elsewhere (see
-    /// [`crate::icons`]), on purpose: a panel and the bar that serves it are two
-    /// views of one subject, so they are one mark.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            PanelId::Color => icons::COLOR,
-            PanelId::Brush => icons::BRUSH,
-            PanelId::Select => icons::SELECTION,
-            PanelId::Layers => icons::LAYERS,
-            PanelId::Guides => icons::PERSPECTIVE_GRID,
-            PanelId::Lighting => icons::LIGHTING,
-        }
-    }
-
-    /// The height a panel opens at, in px — and, by being `Some`, that it is
-    /// **vertically resizable**: it gets a grip on its bottom edge and its content
-    /// is laid out to fill whatever height the user leaves it at.
-    ///
-    /// One method rather than a `resizable()` flag beside a `default_height()`,
-    /// because a panel that can be resized is exactly a panel whose height the
-    /// layout owns; two sources for that would be one to get out of step.
-    ///
-    /// Everything else hugs its controls, which is the right answer for a fixed set
-    /// of knobs — there is nothing to give the extra room to. Only a panel holding a
-    /// list the user grows (Brush, via its presets) has an appetite for height.
-    pub fn default_height(self) -> Option<f32> {
-        match self {
-            // Tall enough for the quick controls plus four or five presets — a library
-            // worth scrolling rather than a slot — and no taller, because the panel
-            // stack is a column and every pixel here is one the panels under it lose.
-            PanelId::Brush => Some(340.0),
-            _ => None,
-        }
+/// A free function rather than a method, because `PanelId` is `stark_chrome`'s now
+/// and this is not: an icon here is inline SVG (`crate::icons`), which is a DOM
+/// idiom — a native chrome draws a glyph another way entirely.
+///
+/// A stack of panels is read down its left edge, and a column of seven words is read
+/// one word at a time; a column of seven marks is read at once. That is the whole
+/// argument — the glyph is not decoration on the title, it is what makes the stack
+/// scannable at the glance the title bar is actually given.
+pub fn panel_glyph(id: PanelId) -> &'static str {
+    match id {
+        PanelId::Color => icons::COLOR,
+        PanelId::Brush => icons::BRUSH,
+        PanelId::Select => icons::SELECTION,
+        PanelId::Layers => icons::LAYERS,
+        PanelId::Guides => icons::PERSPECTIVE_GRID,
+        PanelId::Lighting => icons::LIGHTING,
     }
 }
 
@@ -146,7 +82,7 @@ const MIN_PANEL_HEIGHT: f32 = 140.0;
 /// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
 /// restores their slot); the stack renders `order` minus `hidden`. A field of
 /// [`AppState`] (`state.panels`) rather than a context of its own, because the panel
-/// toggles are registry commands now (`commands::Command::TogglePanel`) and a command
+/// toggles are registry commands now (`stark_chrome::commands::Command::TogglePanel`) and a command
 /// reaches everything it acts on through that one handle.
 ///
 /// No panel geometry is kept here — a drag reads it off the DOM at the moment it starts
@@ -196,8 +132,8 @@ impl PanelLayout {
             // back — read here, before the first render, so the stack the artist
             // left is the first one drawn rather than one that assembles itself a
             // frame later (`crate::visibility`, §25.6).
-            hidden: root_signal(crate::visibility::stored_hidden),
-            collapsed: root_signal(crate::visibility::stored_collapsed),
+            hidden: root_signal(stark_chrome::visibility::stored_hidden),
+            collapsed: root_signal(stark_chrome::visibility::stored_collapsed),
             drag: root_signal(|| None),
             heights: root_signal(PanelLayout::default_heights),
             resize: root_signal(|| None),
@@ -542,7 +478,7 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 }
 
 /// Show `id` if it is hidden, hide it if it is not — what the panel's row in the
-/// visibility menu runs (`commands::VisibilityToggle::Panel`).
+/// visibility menu runs (`stark_chrome::commands::VisibilityToggle::Panel`).
 ///
 /// The wake goes through [`open_panel`], so it happens on the half of the toggle that
 /// opens and not on the half that closes.
@@ -882,7 +818,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     // starting *from the grip* would take the reorder's press with it,
                     // whatever the selection is.
                     ondragstart: move |e| e.prevent_default(),
-                    {icon(id.glyph())}
+                    {icon(crate::layout::panel_glyph(id))}
                     "{id.title()}"
                     // Which way this panel is folded, at the far end of the grip —
                     // inside it, so the mark is part of what you click rather than a

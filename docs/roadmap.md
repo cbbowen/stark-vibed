@@ -48,7 +48,7 @@ Status lives here and nowhere else.
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | — | The guided tour (§24) | done — five lessons off the `dispatch` seam; a lesson is a row in one table |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
-| N | Native frontend to parity (§11.2) | N0–N2 done — `stark-chrome` holds the pure modules, the record format and its `Backend`, the shared input maps and the preset table; the native app keeps a store, reopens where it was, and paints with any shipped preset from a panel. N3–N9 **not started** |
+| N | Native frontend to parity (§11.2) | N0–N3 done — `stark-chrome` holds the pure modules, the record format and its `Backend`, the input maps, the preset table and both binding registries; the native app keeps a store, reopens where it was, paints with any shipped preset from a panel, and answers the shipped chords. N4–N9 **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
 collapsed into **one tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux

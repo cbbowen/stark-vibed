@@ -889,10 +889,35 @@ the exit criterion is an act, not a diff.
   A colour picker did not land. The transient's third knob is there and the engine
   takes it; what is missing is a control, and a colour well is its own design
   (§25.7's pop-out) rather than a fifth slider.
-- **N3 — the two registries.** `Command`'s descriptive half, `Chord`, `Bindings`,
-  `search`; `drags` and `Mods`. A native dispatcher over wgpui actions and a
-  native `armed`. *Exit:* Ctrl+Z undoes, a chord rebound in one frontend is
-  honoured by the other's table, and a modifier-drag tunes the brush.
+- **N3 — the two registries.** `Command` and its descriptive half, `Chord`,
+  `Bindings`, `search`, `capture`; the whole drag table but the press that reads a
+  DOM event. *Exit:* Ctrl+Z undoes and Ctrl+Shift+Z redoes in the native app,
+  answered by the shipped table rather than by a `match` of its own, and a
+  modifier-drag tunes the brush. **Done.**
+
+  `visibility` came down at last, which is the rule N1 found being paid: a record
+  cannot move before its vocabulary has, so `VisibilityToggle` and `PanelId` went
+  first and the record followed. `PickScope` travelled with them, for the same
+  reason — a `Command` variant carries one.
+
+  **The abstraction the two tables needed turned out to be one type.**
+  `keys::Keystroke` is what a chord is matched against and `keys::Mods` the triple
+  both tables compare exactly; "the two tables read one keystroke the same way" had
+  been a *comment* in the chord table, and is now the reason they share a module.
+  What a frontend still owes is only what a frontend alone knows: that the
+  accelerator is Command on a Mac, and what the layout typed.
+
+  Three things did **not** travel, each for its own reason. `run` dispatches and
+  asks the app's gates; `active` reads a frontend's own state rather than
+  `ObservableState`, which is exactly why `enabled` could move and it could not;
+  and `icon` returns inline SVG, which is a DOM idiom — the native panel wears
+  words. `PanelId::glyph` stayed behind with it, as a free function.
+
+  wgpui reports no W3C `code`, so the half of the binding vocabulary that names a
+  key by *position* has to be reconstructed from its key names
+  (`stark-wgpui-frontend`'s `keys::code_of`). Twelve rows cover everything the
+  shipped table binds spatially; anything else answers an empty code, which the
+  chord table already reads as "nothing left to name this by".
 - **N4 — layers.** `layer_tree` + `reorder` drive a native list. *Exit:* add,
   remove, reorder, group, clip, set opacity and blend, all from the native app.
 - **N5 — documents on disk.** `files` splits; save, open and export through the

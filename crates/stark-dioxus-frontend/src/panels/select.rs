@@ -2,17 +2,18 @@
 //! shape *does*, and how strongly a fill lands (§6.8, §18.0.4) — and the
 //! selection bar, which carries the whole mask's opacity and the acts on it.
 
+use crate::commands;
 use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
 
-use crate::commands::Command;
 use crate::icons::{self, icon, icon_tinted, label};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider, slider_fill};
+use stark_chrome::commands::Command;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 
@@ -29,7 +30,7 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 /// All three of those sentences are the **registry's** now, not this panel's
 /// (`crate::commands`): each chip is a `Command` worn whole, so the same act is
 /// reached from the chip, from the search palette and from a chord (R / E / L),
-/// and the lit state a chip shows is the one [`Command::active`] answers. The
+/// and the lit state a chip shows is the one [`commands::active`](crate::commands::active) answers. The
 /// panel keeps what is genuinely its own — that these three sit in one
 /// `.segmented` run, with the feather they will strike beneath them, above the
 /// row saying what their region *does*.
@@ -87,7 +88,7 @@ pub fn SelectPanel() -> Element {
     let chip = |on: bool| if on { "chip active" } else { "chip" };
     // *Which* tool is armed is deliberately not in the memo above: the three
     // chips are `CommandButton`s, and each carries its own answer
-    // ([`Command::active`]) — so moving the light from rect to ellipse
+    // ([`commands::active`](crate::commands::active)) — so moving the light from rect to ellipse
     // re-renders two buttons rather than the panel and its sliders. *Whether*
     // one is armed is in it, because the Feather row is mounted on that; it
     // flips on an arm and on the gesture's disarm, never between chips.
@@ -366,7 +367,7 @@ pub fn SelectionBar() -> Element {
                     class: "chip",
                     disabled: !has_selection,
                     title: Command::FillSelection.tooltip(&state.bindings.read()),
-                    onclick: move |_| Command::FillSelection.run(state),
+                    onclick: move |_| commands::run(Command::FillSelection, state),
                     // At full strength: this fill's coverage is the mask's own
                     // (`FillOp::of_selection`), so there is no thinner wash to show.
                     {icon_tinted(icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}

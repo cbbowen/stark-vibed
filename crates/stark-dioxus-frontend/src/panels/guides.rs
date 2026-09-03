@@ -38,7 +38,6 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::commands::{self, Command};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
@@ -48,6 +47,7 @@ use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
 use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
 use crate::widgets::{CommandButton, slider_fill};
+use stark_chrome::commands::Command;
 use stark_chrome::reorder::{Grab, Motion, Slide};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -865,7 +865,7 @@ pub fn PerspectiveGuideBar() -> Element {
             span { class: "bar-sep" }
             button {
                 class: "chip",
-                title: commands::advertised(
+                title: stark_chrome::commands::advertised(
                     "Leave the guide as it stands",
                     Command::FinishMode,
                     &state.bindings.read(),

@@ -16,8 +16,8 @@
 
 use dioxus::prelude::*;
 
-use crate::commands::Command;
-use crate::drags::{self, DragAction};
+use crate::commands;
+use crate::drags;
 use crate::input::{
     self, Landing, Nav, Paint, PickMove, Tune, elem_xy, end_interaction, hover_at, hover_gone,
     hover_stroke, move_loupe, pick_color, point_at, sample,
@@ -28,6 +28,8 @@ use crate::panels::select::current_tool;
 use crate::platform::capture_pointer;
 use crate::render::CANVAS_ID;
 use crate::state::{AppState, resize, use_obs};
+use stark_chrome::commands::Command;
+use stark_chrome::drags::DragAction;
 
 /// The full-window painting surface (a WebGPU canvas the engine draws into).
 #[component]
@@ -93,7 +95,7 @@ pub fn Canvas() -> Element {
     let (paintable, tool) = look().unwrap_or((false, stark_engine::command::Tool::Brush));
     // The pick chord (Alt by default) arms the eyedropper over the brush, and the
     // cursor says so before it is used — the only thing that makes a modifier
-    // binding discoverable. Asked of the drag table (`drags::armed`), the same
+    // binding discoverable. Asked of the drag table (`stark_chrome::drags::armed`), the same
     // table the press will ask, so the promise moves with the binding. Not over a
     // selection tool, where alt already means "subtract from the selection"
     // (§6.8), so the cursor promises the pick exactly where a press would
@@ -106,7 +108,7 @@ pub fn Canvas() -> Element {
     // pick does — Shift is the union marquee there (§6.8) — which is the gate the
     // action itself declares, restated here because `armed` answers the table
     // about a chord and this is a question about the tool in hand.
-    let armed = drags::armed(&state.drags.read(), (state.held_mods)());
+    let armed = stark_chrome::drags::armed(&state.drags.read(), (state.held_mods)());
     let over_paint = !(state.space_down)() && !tool.is_selection();
     let sampling = armed == Some(DragAction::PickColor) && over_paint;
     let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;
@@ -420,8 +422,8 @@ pub fn Canvas() -> Element {
                     }
                     end_interaction(state, landing, nav, tune, carry);
                     match tap {
-                        Some(2) => Command::Undo.run(state),
-                        Some(3) => Command::Redo.run(state),
+                        Some(2) => commands::run(Command::Undo, state),
+                        Some(3) => commands::run(Command::Redo, state),
                         // One finger is a dot the brush already painted, and four
                         // is a hand put down on the glass. Neither is an act.
                         _ => {}
