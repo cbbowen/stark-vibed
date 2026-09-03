@@ -1093,7 +1093,49 @@ the exit criterion is an act, not a diff.
   draw, and it wears its name alone.
 - **N8 — the long tail.** Guides (§20), gradients (§22), filters (§21), frames and
   export (§15), the navigator, timeline mode. One panel at a time; each is a Tier
-  B move plus native markup.
+  B move plus native markup. **Started**: the stack that holds panels, and Color.
+
+  Two things had to come before any of the six, and the first was not on this list
+  at all.
+
+  **The column had to become a stack.** It was a fixed run of brush controls when
+  it held a brush; by N7 it held three panels and ran off the bottom of the window,
+  which is a stack whose last panel does not exist. So it scrolls, and each section
+  is **folded** rather than hidden — a hidden panel is one a person has to remember
+  exists, where a folded one leaves its title behind, which is the whole difference
+  in a column read top to bottom. Keyed by `PanelId`, so what this client folded is
+  stored under the same word the web app stores its own under; `visibility`'s
+  *write* half came down to match, leaving each frontend the exhaustive match over
+  `VisibilityToggle` that says where each bit is kept.
+
+  **Color was the gap.** N2 deferred it — "a colour well is its own design rather
+  than a fifth slider" — and the native app could paint in one colour until now.
+  It is also the best Tier B move left in the tree: `stark_chrome::color` is the
+  gamut's rim by bisection, the fit that makes the wheel a wheel, the two pictures
+  and what a fine drag spends, and **every constant in it was measured** — a
+  bisection bracket, a `GAMUT_BRIDGE` priced at 4/255 in one channel, a rim
+  resolution justified against a crease at the blue primary. A second copy of those
+  is a second answer to *which colors exist*, and the two apps would draw different
+  wheels for one document. The web panel went 802 lines to 391; what stayed is a
+  BMP `data:` URL, and the native carrier is a texture.
+
+  Two things the native picker does differently, both because it is not a DOM. The
+  wheel **cuts itself to a circle** in the picture's alpha rather than being clipped
+  by its element — the same result decided by the thing that knows where the rim is,
+  and an antialiased edge for free. And the pictures are cached one-deep, keyed on
+  the quantized value they are a picture of: a wheel is `FIELD_N²` gamut lookups and
+  an `L` drag asks for a new one per frame, so a table keyed by value would grow for
+  the length of a gesture and never be asked twice.
+
+  **A bug worth recording.** `RenderImage` calls itself BGRA and its wgpu upload
+  path takes RGBA, so the native asset cards had been swapping red and blue since
+  N7 — and nothing could have shown it, because an asset card is grey and grey
+  survives exchanging two channels exactly. The colour wheel caught it on its first
+  frame: the marker sat on a blue the readout called `#9c0a05`.
+
+  **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
+  (§15), the navigator and timeline mode. Each is a large panel with an overlay of
+  its own, which is why they sequence after the stack that will hold them.
 - **N9 — collaboration.** `collab`'s two pumps move down; the ticket is pasted
   rather than linked. *Exit:* the two frontends paint on one document.
 

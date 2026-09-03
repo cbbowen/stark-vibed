@@ -802,7 +802,7 @@ impl AppState {
             // configuration to the engine once one is up).
             brush: root_signal(stark_chrome::brush_config::BrushConfig::default),
             transient: root_signal(|| stark_chrome::brush_config::Transient {
-                color: crate::panels::color::INITIAL_COLOR,
+                color: stark_chrome::color::INITIAL_COLOR,
                 ..Default::default()
             }),
             tow: root_signal(|| None),

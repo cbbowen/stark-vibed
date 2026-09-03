@@ -31,6 +31,7 @@
 mod assets;
 mod brush;
 mod canvas;
+mod color;
 mod files;
 mod gallery;
 mod keys;

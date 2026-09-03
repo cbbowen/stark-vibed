@@ -53,14 +53,11 @@ pub fn card<K: Kind>(id: AssetId, png: &[u8]) -> Option<Arc<RenderImage>> {
         return Some(hit);
     }
     let (width, height, rgba) = crate::assets::card_rgba::<K>(png)?;
-    // **BGRA**, which is what wgpui's texture upload reads; the card's own numbers are
-    // RGBA like everything else in the tree, so the swap is here at the edge rather
-    // than in what the crate hands over.
-    let mut bgra = rgba;
-    for p in bgra.as_chunks_mut::<4>().0 {
-        p.swap(0, 2);
-    }
-    let buffer = image::RgbaImage::from_raw(width, height, bgra)?;
+    // Straight through: wgpui's `RenderImage` calls itself BGRA and its wgpu upload
+    // path takes RGBA. This swapped for one stage and nothing could show it — an
+    // asset card is grey, and grey survives exchanging red and blue exactly. The
+    // color wheel is what caught it (`crate::color`).
+    let buffer = image::RgbaImage::from_raw(width, height, rgba)?;
     let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
     cards::<K>().put(id, image.clone());
     Some(image)

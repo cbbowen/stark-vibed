@@ -8,8 +8,6 @@ use dioxus::prelude::*;
 
 use crate::state::AppState;
 use stark_chrome::commands::VisibilityToggle;
-use stark_chrome::storage;
-use stark_chrome::visibility::StoredVisible;
 
 pub fn persist(state: AppState) {
     let hidden = state.panels.hidden.peek().clone();
@@ -18,20 +16,16 @@ pub fn persist(state: AppState) {
     let quick_brushes = *state.slots.pinned.peek();
     let timeline = *state.timeline.open.peek();
 
-    let rows: Vec<StoredVisible> = VisibilityToggle::ALL
-        .into_iter()
-        .filter(|what| match what {
-            // The exhaustive match durability now hangs on. A tenth entry in the
-            // menu stops the build here until somebody says where its bit is kept.
-            VisibilityToggle::Panel(id) => !hidden.contains(id),
+    stark_chrome::visibility::persist(
+        |what| match what {
+            // The exhaustive match durability hangs on. A tenth entry in the menu
+            // stops the build here until somebody says where its bit is kept — which
+            // is why the closure is this frontend's and the row shape is not.
+            VisibilityToggle::Panel(id) => !hidden.contains(&id),
             VisibilityToggle::Navigator => navigator,
             VisibilityToggle::QuickBrushes => quick_brushes,
             VisibilityToggle::Timeline => timeline,
-        })
-        .map(|what| StoredVisible {
-            what,
-            collapsed: matches!(what, VisibilityToggle::Panel(id) if collapsed.contains(&id)),
-        })
-        .collect();
-    storage::save_list(&rows);
+        },
+        &collapsed,
+    );
 }

@@ -98,6 +98,29 @@ fn panels(rows: Vec<StoredVisible>) -> impl Iterator<Item = (PanelId, bool)> {
 /// `peek` throughout, never `read`: this runs from inside the writers, and
 /// subscribing a click handler to the state it is in the middle of changing is how a
 /// signal read ends up live across a write of itself.
+/// Write this client's on-screen state back.
+///
+/// `showing` answers for one menu entry at a time and `collapsed` says which panels
+/// are folded to their title bar. Both halves stay with the caller because only a
+/// frontend knows where each bit is kept — a `Signal` on one side, a field on the
+/// other — and that is exactly why the closure is exhaustive over
+/// [`VisibilityToggle`] at *its* call site: a tenth entry in the menu stops the build
+/// there until somebody says where its bit lives.
+///
+/// What is here is the row shape and the write, which is the half that must not
+/// differ: two clients writing one record two ways is a record neither can read.
+pub fn persist(showing: impl Fn(VisibilityToggle) -> bool, collapsed: &HashSet<PanelId>) {
+    let rows: Vec<StoredVisible> = VisibilityToggle::ALL
+        .into_iter()
+        .filter(|what| showing(*what))
+        .map(|what| StoredVisible {
+            what,
+            collapsed: matches!(what, VisibilityToggle::Panel(id) if collapsed.contains(&id)),
+        })
+        .collect();
+    storage::save_list(&rows);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

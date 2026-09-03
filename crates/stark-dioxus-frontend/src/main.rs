@@ -329,7 +329,7 @@ fn app() -> Element {
             // leaves a step in the undo history. Once per app start, not per
             // document: a new document keeps the brush the user is holding.
             presets::apply_first(state);
-            update_brush(state, |_, t| t.color = panels::color::INITIAL_COLOR);
+            update_brush(state, |_, t| t.color = stark_chrome::color::INITIAL_COLOR);
 
             // The settings that live in the engine rather than in a signal — there is
             // one, and it is read by the session this block may be about to join, so it

@@ -18,6 +18,7 @@ use stark_chrome::commands::{Bindings, Command};
 use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_chrome::input as chrome_input;
 use stark_chrome::keys::Mods;
+use stark_chrome::panels::PanelId;
 use stark_chrome::transform::{Family, Grab, Hint, Switch, TransformUi};
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
@@ -31,6 +32,7 @@ use wgpui::{
 };
 
 use crate::brush::Brush;
+use crate::color;
 use crate::files::{self, Done};
 use crate::gallery;
 use crate::layers::{self, Act};
@@ -80,6 +82,12 @@ enum Held {
     Shape { restore: Option<ShapeAction> },
     /// A knob on the panel, kept for the whole drag — see the module note.
     Knob(Knob),
+    /// One of the color picker's two controls, with what the press meant — see
+    /// `stark_chrome::color::Grab`, which decides that once and holds it.
+    Pick {
+        region: color::Region,
+        grab: stark_chrome::color::Grab,
+    },
     /// One of the Select section's dials, with where the drag has moved it.
     ///
     /// The fraction is kept rather than read back at the release, because the mask's
@@ -127,8 +135,17 @@ pub struct Canvas {
     regions: Regions,
     /// The same, for the layers panel on the other side.
     layer_regions: layers::Regions,
+    /// Where the picker stands (`crate::color`) — held rather than read back off the
+    /// brush, because a color coming through sRGB cannot say what hue a grey was.
+    wheel: color::Wheel,
+    /// Its two pictures, kept between frames: a wheel is `FIELD_N²` gamut lookups.
+    pictures: color::Pictures,
+    /// Which panels this client has folded away, remembered across sessions
+    /// (`stark_chrome::visibility`).
+    folded: std::collections::HashSet<PanelId>,
     /// The same, for the Select section, the transform bar and the two galleries.
     select_regions: select::Regions,
+    color_regions: color::Regions,
     bar_regions: transform::Regions,
     gallery_regions: gallery::Regions,
     /// The two asset libraries this client keeps (§25.6) — the stamps and the
@@ -215,7 +232,12 @@ impl Canvas {
         // rather than a race.
         let shapes = pollster::block_on(assets::load::<assets::Shapes>());
         let substrates = pollster::block_on(assets::load::<assets::Substrates>());
-        let brush = Brush::new(crate::assets::builtin_shapes());
+        // The color the session opens on is the crate's, so the picker and the brush
+        // start on one color rather than the picker showing something the first stroke
+        // would not lay (`stark_chrome::color::INITIAL_COLOR`).
+        let wheel = color::Wheel::default();
+        let mut brush = Brush::new(crate::assets::builtin_shapes());
+        brush.tune.color = wheel.rgb();
         if let Some(r) = renderer.as_mut() {
             r.process(brush.set());
         }
@@ -234,7 +256,11 @@ impl Canvas {
             dirty: true,
             regions: Regions::default(),
             layer_regions: layers::Regions::default(),
+            wheel,
+            pictures: color::Pictures::default(),
+            folded: stark_chrome::visibility::stored_collapsed(),
             select_regions: select::Regions::default(),
+            color_regions: color::Regions::default(),
             bar_regions: transform::Regions::default(),
             gallery_regions: gallery::Regions::default(),
             shapes,
@@ -255,6 +281,15 @@ impl Canvas {
     }
 
     fn press(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // Read once, at the top: three of the branches below want it — the drag
+        // table, the marquee's combine mode, and the picker's fine drag — and a
+        // second reading is a second chance to spell `platform` wrong.
+        let mods = Mods {
+            ctrl: ev.modifiers.control || ev.modifiers.platform,
+            shift: ev.modifiers.shift,
+            alt: ev.modifiers.alt,
+        };
+
         // A live transform owns the canvas: its bar first, then the widget, and a
         // press that reached neither is still not paint. This is the web app's
         // full-viewport catcher without the catcher — one hit test in one place
@@ -288,6 +323,25 @@ impl Canvas {
             return;
         }
         if self.over_layers(window, ev.position) {
+            return;
+        }
+
+        if let Some(region) = color::hit(&self.color_regions, ev.position) {
+            let Some(at) = color::fraction_at(&self.color_regions, region, ev.position) else {
+                return;
+            };
+            // Where the marker stands now, so a fine drag has somewhere to move
+            // *from* — the press itself then picks nothing, which is the whole of
+            // what makes a small adjustment possible.
+            let held = match region {
+                color::Region::Wheel => {
+                    stark_chrome::color::wheel_xy(self.wheel.hue, self.wheel.sat)
+                }
+                color::Region::Track => (self.wheel.l, 0.5),
+            };
+            let grab = stark_chrome::color::Grab::take(at, held, mods.shift);
+            self.held = Some(Held::Pick { region, grab });
+            self.pick(region, grab, at, cx);
             return;
         }
 
@@ -356,6 +410,10 @@ impl Canvas {
                 }
                 return;
             }
+            Some(Region::Fold(id)) => {
+                self.fold(id, cx);
+                return;
+            }
             Some(Region::Preset(i)) => {
                 if let Some(name) = self.brush.library.get(i).map(|e| e.name.clone()) {
                     self.brush.wear(&name);
@@ -373,11 +431,6 @@ impl Canvas {
         // The drag table before the paint path, exactly as the web canvas asks it:
         // a modified press is a *gesture*, and which one is the table's answer rather
         // than a ladder of modifier tests here (§25.3).
-        let mods = Mods {
-            ctrl: ev.modifiers.control || ev.modifiers.platform,
-            shift: ev.modifiers.shift,
-            alt: ev.modifiers.alt,
-        };
         let chord = DragChord {
             mods,
             button: DragButton::Left,
@@ -458,6 +511,11 @@ impl Canvas {
                 // long drag stays one map (`stark_chrome::transform`).
                 let next = grab.follow(ui, at, stark_chrome::transform::SNAP_PX / view.zoom);
                 self.compose(next, cx);
+            }
+            Some(Held::Pick { region, grab }) => {
+                if let Some(at) = color::fraction_at(&self.color_regions, region, ev.position) {
+                    self.pick(region, grab, at, cx);
+                }
             }
             Some(Held::Dial { dial, .. }) => {
                 if let Some(fraction) = select::fraction_at(&self.select_regions, dial, ev.position)
@@ -849,6 +907,53 @@ impl Canvas {
             window.set_window_title(&title);
             self.title = title;
         }
+    }
+
+    /// Move the picker, and the brush with it.
+    ///
+    /// `grab` is what the press decided this gesture means and is applied *before*
+    /// the position is read as a value — an ordinary drag is the pointer, a fine one
+    /// is a fifth of its travel from where the marker stood
+    /// (`stark_chrome::color::Grab`).
+    fn pick(
+        &mut self,
+        region: color::Region,
+        grab: stark_chrome::color::Grab,
+        at: (f32, f32),
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (x, y) = grab.place(at);
+        self.wheel = match region {
+            color::Region::Wheel => color::wheel_at(self.wheel, x, y),
+            color::Region::Track => color::Wheel {
+                l: x.clamp(0.0, 1.0),
+                ..self.wheel
+            },
+        };
+        // The color is the hand's rather than the tool's (§18.1.8), so this moves the
+        // transient half and leaves the preset's name on the brush.
+        self.brush.tune.color = self.wheel.rgb();
+        self.send_brush(cx);
+    }
+
+    /// Fold a panel away, or open it — and remember which.
+    ///
+    /// Written on the press rather than at shutdown, for `crate::window`'s reason
+    /// inverted: a fold is one act a person performs deliberately, where a resize is
+    /// a hundred frames of a drag. There is nothing here worth batching.
+    fn fold(&mut self, id: PanelId, cx: &mut Context<'_, Self>) {
+        if !self.folded.insert(id) {
+            self.folded.remove(&id);
+        }
+        let folded = self.folded.clone();
+        // What is *showing* is every panel this frontend has: folding is the only
+        // thing it offers, so nothing is ever hidden outright, and the three entries
+        // that are not panels belong to surfaces it has not got (§25).
+        stark_chrome::visibility::persist(
+            |what| matches!(what, stark_chrome::commands::VisibilityToggle::Panel(_)),
+            &folded,
+        );
+        self.repaint(cx);
     }
 
     /// Enter transform mode around whatever is selected (§16.6).
@@ -1484,14 +1589,23 @@ impl Render for Canvas {
             substrate_bytes,
             &self.gallery_regions,
         );
+        let picker = color::color_panel(self.wheel, &mut self.pictures, &self.color_regions);
         let chrome = panel::brush_panel(
             &self.brush,
             dragging,
             EFFECTS,
             &self.regions,
-            select::select_panel(self.obs.as_ref(), &self.bindings, &self.select_regions),
-            shapes,
-            substrates,
+            &self.folded,
+            panel::Sections {
+                color: picker,
+                select: select::select_panel(
+                    self.obs.as_ref(),
+                    &self.bindings,
+                    &self.select_regions,
+                ),
+                shapes,
+                substrates,
+            },
         );
         let rows = self.rows();
         let roster = layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions);

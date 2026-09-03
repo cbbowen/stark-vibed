@@ -14,8 +14,11 @@
 //! Where each control *is* is measured rather than derived — see [`Regions`], and the
 //! bug that taught it.
 
+use std::collections::HashSet;
+
 use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_chrome::commands::Command;
+use stark_chrome::panels::PanelId;
 use stark_model::document::BrushShape;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
@@ -230,60 +233,41 @@ fn readout(knob: Knob, v: f32) -> String {
 /// reached for: the two share this column but nothing else, and a panel that
 /// constructed its neighbour would be the one place either could learn about the
 /// other's state.
+/// The sections the column is built out of, each by its own module.
+///
+/// A struct rather than four more arguments: they are all `impl IntoElement`, so a
+/// caller that shuffled two of them would build a panel with the Select rows under
+/// the "Color" title and the compiler would have nothing to say.
+pub struct Sections<C, S, G, U> {
+    pub color: C,
+    pub select: S,
+    pub shapes: G,
+    pub substrates: U,
+}
+
 pub fn brush_panel(
     brush: &Brush,
     dragging: Option<Knob>,
     effects: &[(BrushEffectType, &'static str)],
     regions: &Regions,
-    select: impl IntoElement,
-    shapes: impl IntoElement,
-    substrates: impl IntoElement,
+    folded: &HashSet<PanelId>,
+    sections: Sections<impl IntoElement, impl IntoElement, impl IntoElement, impl IntoElement>,
 ) -> impl IntoElement {
+    let Sections {
+        color,
+        select,
+        shapes,
+        substrates,
+    } = sections;
     let effect = brush.config.effect;
     // Cleared here rather than after the press: prepaint refills it every frame, and
     // clearing on read would leave the frame between a press and the next paint with
     // no layout to test against.
     regions.borrow_mut().clear();
-    div()
+    let brush_body = div()
         .flex()
         .flex_col()
-        .w(px(WIDTH))
-        .h_full()
-        .p_3()
-        .gap_2()
-        .bg(rgb(0x1e2124))
-        .border_r_1()
-        .border_color(rgb(0x35393d))
-        .text_color(rgb(0xe8eaed))
-        .child(
-            div()
-                .flex()
-                .gap_1()
-                .children(FILE_ACTS.iter().enumerate().map(|(i, command)| {
-                    div()
-                        .relative()
-                        .flex_1()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .text_xs()
-                        .text_center()
-                        .text_color(rgb(0xb0b4b8))
-                        .cursor_pointer()
-                        .child(probe(regions, Region::File(i)))
-                        // The registry's own word, so a button here and a row in the
-                        // web app's menu cannot come to call one act two things.
-                        .child(command.word())
-                })),
-        )
-        .child(select)
-        .child(
-            div()
-                .pt_2()
-                .text_sm()
-                .text_color(rgb(0x9aa0a6))
-                .child("Brush"),
-        )
+        .gap_1()
         .children(KNOBS.map(|knob| {
             let (lo, hi) = knob.range();
             let v = knob.read(brush);
@@ -335,7 +319,97 @@ pub fn brush_panel(
             worn: brush.from.as_deref() == Some(e.name.as_str()),
             regions: regions.clone(),
             index: i,
-        }))
+        }));
+
+    div()
+        .id("panels")
+        .flex()
+        .flex_col()
+        .w(px(WIDTH))
+        .h_full()
+        .p_3()
+        .gap_2()
+        // **Scrolls.** This column was a fixed run of controls when it held a brush;
+        // it holds three panels now and will hold more (§11.2 N8), and a stack that
+        // ran off the bottom of the window would be one whose last panel does not
+        // exist. The web app floats its panels so they can overlap; this one is a
+        // column, so the column is what gives.
+        .overflow_y_scroll()
+        .bg(rgb(0x1e2124))
+        .border_r_1()
+        .border_color(rgb(0x35393d))
+        .text_color(rgb(0xe8eaed))
+        .child(
+            div()
+                .flex()
+                .gap_1()
+                .children(FILE_ACTS.iter().enumerate().map(|(i, command)| {
+                    div()
+                        .relative()
+                        .flex_1()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(rgb(0x2a2d31))
+                        .text_xs()
+                        .text_center()
+                        .text_color(rgb(0xb0b4b8))
+                        .cursor_pointer()
+                        .child(probe(regions, Region::File(i)))
+                        // The registry's own word, so a button here and a row in the
+                        // web app's menu cannot come to call one act two things.
+                        .child(command.word())
+                })),
+        )
+        .child(section(regions, folded, PanelId::Color, color))
+        .child(section(regions, folded, PanelId::Brush, brush_body))
+        .child(section(regions, folded, PanelId::Select, select))
+}
+
+/// One panel in the stack: a title bar that folds it, and its body when it is not.
+///
+/// Keyed by [`PanelId`], which is the vocabulary both frontends name a panel in
+/// (§11) — so what this client left folded is stored under the same word the web app
+/// stores its own under, and a variant renamed costs the row rather than mis-matching
+/// it (`stark_chrome::visibility`).
+///
+/// **Folded rather than hidden.** A hidden panel is one a person has to remember
+/// exists; a folded one leaves its title behind, which is the whole difference in a
+/// column that is read top to bottom.
+fn section(
+    regions: &Regions,
+    folded: &HashSet<PanelId>,
+    id: PanelId,
+    body: impl IntoElement,
+) -> impl IntoElement {
+    let open = !folded.contains(&id);
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(title(regions, folded, id))
+        .children(open.then_some(body))
+}
+
+/// A section's title bar.
+fn title(regions: &Regions, folded: &HashSet<PanelId>, id: PanelId) -> impl IntoElement {
+    let open = !folded.contains(&id);
+    div()
+        .relative()
+        .flex()
+        .justify_between()
+        .items_center()
+        .pt_2()
+        .cursor_pointer()
+        .child(probe(regions, Region::Fold(id)))
+        .child(div().text_sm().text_color(rgb(0x9aa0a6)).child(id.title()))
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x6c7378))
+                // Down for open, right for folded — which way the content lies, not
+                // which way pressing it would go.
+                .child(if open { "\u{25be}" } else { "\u{25b8}" }),
+        )
 }
 
 // --- what the layout actually is ------------------------------------------
@@ -361,6 +435,8 @@ pub enum Region {
     File(usize),
     Effect(usize),
     Preset(usize),
+    /// A section's title bar — pressing it folds the section away.
+    Fold(PanelId),
 }
 
 /// Where each control was laid out, as of the last frame that painted.

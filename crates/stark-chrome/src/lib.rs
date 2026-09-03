@@ -63,6 +63,7 @@
 pub mod assets;
 pub mod bounds;
 pub mod brush_config;
+pub mod color;
 pub mod commands;
 pub mod drags;
 pub mod files;
