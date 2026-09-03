@@ -50,7 +50,7 @@
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
-    substrate_tooth, jitter_of, xf,
+    substrate_tooth, jitter_of, ceiling_of, xf,
 };
 import package::lib::paint_common::{OPACITY_K, level_sums};
 
@@ -94,11 +94,12 @@ fn vs_main(
     // to turn into it, and this is per segment where that would be per texel in the
     // dynamics loop beside it. The host solves it once (`segments::Stretch::solve`).
     @location(5) stretch: vec3<f32>,
-    // The ceiling's modulation factor (§6.2): what this segment's share of the
-    // stroke's coverage is capped at, as a fraction of the stroke's dial. 1 on
-    // every brush whose opacity the pen does not drive. Its own attribute for
+    // The ceiling's factor across this segment (§6.2): the mean of its
+    // two ends, and the difference between them — what the fragment reads at its
+    // own travel, the way the radius ramp beside it is read. `(1, 0)` on every
+    // brush whose opacity the pen does not drive. Its own attribute for
     // `tooth_give`'s reason: `extra` is full.
-    @location(6) opacity: f32,
+    @location(6) opacity: vec2<f32>,
 ) -> VsOut {
     return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch, opacity);
 }
@@ -166,8 +167,9 @@ fn fs_main(in: VsOut) -> FsOut {
     // here — it is a stroke constant the integrate scales the claim by.
     var moment = 0.0;
     @if(ceiling) {
-        out.ceiling = level_sums(in.opacity, m);
-        moment = in.opacity * m;
+        let o = ceiling_of(in, sw);
+        out.ceiling = level_sums(o, m);
+        moment = o * m;
     }
     // The wide scratch aux (§6.1), both channels additive in τ so they sum to the
     // true path integral of the extent:
@@ -237,8 +239,9 @@ fn fs_erase(in: VsOut) -> FsErase {
     let mass = in.extra.w * drain * tooth * jitter * tau;
     out.mass = vec4<f32>(mass, 0.0, 0.0, 0.0);
     @if(ceiling) {
-        out.ceiling = level_sums(in.opacity, mass);
-        out.moment = vec4<f32>(in.opacity * mass, 0.0, 0.0, 0.0);
+        let o = ceiling_of(in, sw);
+        out.ceiling = level_sums(o, mass);
+        out.moment = vec4<f32>(o * mass, 0.0, 0.0, 0.0);
     }
     return out;
 }
@@ -258,8 +261,8 @@ fn fs_levels(in: VsOut) -> FsLevels {
     let drain = stroke_drain(stroke_arc(in, sw));
     let tooth = substrate_tooth(in, sw);
     let jitter = jitter_of(in);
-    let m = drain * in.extra.w * drain * tooth * jitter * tau;
+    let m = in.extra.w * drain * tooth * jitter * tau;
     var out: FsLevels;
-    out.levels = level_sums(in.opacity, m);
+    out.levels = level_sums(ceiling_of(in, sw), m);
     return out;
 }

@@ -315,3 +315,29 @@ fn claimed_coverage(s0: f32, s1: f32, lv: vec4<f32>) -> f32 {
     let mu3 = clamp(q2 / max(m2, PAINT_EPS), LEVEL_2, 1.0);
     return mu1 * c0 + (mu2 - mu1) * c1 + (mu3 - mu2) * c2;
 }
+
+// The ceiling's factor where a point sits along one segment (§6.2): the segment's
+// two **ends**, linearly across its travel — the mean the segment carries, and the
+// difference between them.
+//
+// A ceiling read once per segment is piecewise constant, and a stroke drawn at a
+// realistic report rate is a handful of segments wide, so what the eye sees is
+// bands: `opacity` was the one pen target whose value stepped at every cut. This
+// is `Sweep::ramp`'s answer for the radius, in the one form that differs —
+// absolute rather than relative, opacity being a fraction rather than a scale, so
+// nothing here has to defend a positive product.
+//
+// `x` is the point's travel from the segment's start and `lr` the segment's own,
+// both in whatever units the caller's frame measures travel in. The clamp past
+// either end is `ramp_scale`'s and buys the same thing: two adjacent segments
+// computed their shared end from the same pen at the same arc length, so the
+// overhanging caps agree there rather than each running off along its own slope.
+// A segment with no travel at all — the pen-up settle — reads the mean.
+fn ceiling_at(mean: f32, ramp: f32, x: f32, lr: f32) -> f32 {
+    // Every segment of a brush whose ceiling the pen does not drive takes this
+    // branch, and takes it as an exact identity.
+    if ramp == 0.0 || lr <= 0.0 {
+        return mean;
+    }
+    return mean + ramp * (clamp(x / lr, 0.0, 1.0) - 0.5);
+}

@@ -329,17 +329,12 @@ fn a_pen_driven_ceiling_pressed_home_is_the_dial() {
     }
 }
 
-/// A straight leg along `y` from `x0` to `x1`, reported every 10 px at one
-/// `pressure` — dense enough that the fit holds the pressure along the leg
-/// rather than smoothing a neighbouring leg's into it.
+/// A straight leg along `y` from `x0` to `x1` at one `pressure` — the two reports
+/// a hand actually makes of a straight run, which is the point: the ceiling is
+/// interpolated across each segment (§6.2, `Paint::opacity_ramp`), so a stroke
+/// does not have to be finely reported for its ceiling to be smooth.
 fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
-    let n = 16;
-    (0..=n)
-        .map(|i| {
-            let t = i as f32 / n as f32;
-            (Vec2::new(x0 + (x1 - x0) * t, y), pressure)
-        })
-        .collect()
+    vec![(Vec2::new(x0, y), pressure), (Vec2::new(x1, y), pressure)]
 }
 
 /// **The larger ceiling wins** (§6.2), one way round: a light pass back over a
@@ -417,13 +412,18 @@ fn a_light_pass_back_over_a_heavy_mark_leaves_it() {
 /// could not do: at a saturating flow the light pass had claimed the spot.
 #[test]
 fn a_heavy_pass_over_a_light_mark_fills_it_in() {
-    let light = leg(-80.0, 80.0, 0.0, 0.15);
-    let heavy = leg(80.0, -80.0, 0.25, 1.0);
+    // The turn sits at x = 120, well right of the band this samples: the *fit*
+    // carries a pressure change back along the curve for tens of px either side
+    // of it (the excursion below is the same story), and a texel inside that blur
+    // is one where neither pass has the ceiling the test names. Sampling at
+    // x ≤ 40 keeps 80 px between the claim and the smoothing.
+    let light = leg(-80.0, 120.0, 0.0, 0.15);
+    let heavy = leg(120.0, -80.0, 0.25, 1.0);
     let excursion: Vec<(Vec2, f32)> = (1..=6)
-        .map(|i| (Vec2::new(80.0, 10.0 * i as f32), 0.15))
+        .map(|i| (Vec2::new(120.0, 10.0 * i as f32), 0.15))
         .chain((0..=6).map(|i| {
             let t = i as f32 / 6.0;
-            (Vec2::new(80.0, 60.0 - 60.0 * t), 0.15 + 0.85 * t)
+            (Vec2::new(120.0, 60.0 - 60.0 * t), 0.15 + 0.85 * t)
         }))
         .collect();
 
@@ -439,19 +439,43 @@ fn a_heavy_pass_over_a_light_mark_fills_it_in() {
     stroke_pressed(&mut doubled, under_the_pen(0.8, 20.0), &both);
     let doubled = doubled.render_to_image();
 
-    let mut once = engine_or_skip().expect("the adapter answered once already");
+    // Both references, because what this can hold is *which of the two* the
+    // crossing reads as — not an equality with either.
+    //
+    // Its twin above gets an equality, and the difference is which pass comes
+    // first. There the heavy leg opens the stroke, so nothing precedes it to
+    // perturb its fit and a standalone heavy leg is the same curve. Here the
+    // heavy leg is the *return*, and the fitted pressure is still climbing out of
+    // the turn tens of px into it — a smoothing the ceiling then reports
+    // faithfully. Asserting equality against a standalone leg would be asserting
+    // that the fitter does not smooth.
+    let mut heavy_only = engine_or_skip().expect("the adapter answered once already");
     stroke_pressed(
-        &mut once,
+        &mut heavy_only,
         under_the_pen(0.8, 20.0),
-        &leg(-80.0, 80.0, 0.25, 1.0),
+        &leg(120.0, -80.0, 0.25, 1.0),
     );
-    let once = once.render_to_image();
+    let heavy_only = heavy_only.render_to_image();
+
+    let mut light_only = engine_or_skip().expect("the adapter answered once already");
+    stroke_pressed(
+        &mut light_only,
+        under_the_pen(0.8, 20.0),
+        &leg(-80.0, 120.0, 0.0, 0.15),
+    );
+    let light_only = light_only.render_to_image();
 
     for p in [Vec2::ZERO, Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)] {
-        let (d, o) = (texel(&doubled, p), texel(&once, p));
+        let (d, h, l) = (
+            texel(&doubled, p),
+            texel(&heavy_only, p),
+            texel(&light_only, p),
+        );
         assert!(
-            apart(d, o) <= 2,
-            "at {p:?} the light mark crossed back heavily {d:?} must be the heavy              mark alone {o:?} — the light pass held a ceiling the heavy one should own"
+            apart(d, l) > 4 * apart(d, h),
+            "at {p:?} the light mark crossed back heavily {d:?} must read as the \
+             heavy mark {h:?} rather than the light one {l:?} — the light pass held \
+             a ceiling the heavy one should own"
         );
     }
 }
@@ -467,21 +491,12 @@ fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
     // Out along y = 0 easing off, and back along y = 0.25 bearing down — so
     // every spot of the band is covered twice, at two pressures, in the order
     // the first-claim rule cares about.
-    //
-    // Both legs reported every 10 px, so the fitted pressure is the ramp asked
-    // for along each leg rather than a spline pulled toward the hairpin's jump
-    // over the whole of it.
-    let n = 16;
-    let path: Vec<(Vec2, f32)> = (0..=n)
-        .map(|i| {
-            let t = i as f32 / n as f32;
-            (Vec2::new(-80.0 + 160.0 * t, 0.0), 1.0 - 0.8 * t)
-        })
-        .chain((0..=n).map(|i| {
-            let t = i as f32 / n as f32;
-            (Vec2::new(80.0 - 160.0 * t, 0.25), 0.5 + 0.4 * t)
-        }))
-        .collect();
+    let path = [
+        (Vec2::new(-80.0, 0.0), 1.0),
+        (Vec2::new(80.0, 0.0), 0.2),
+        (Vec2::new(80.0, 0.25), 0.5),
+        (Vec2::new(-80.0, 0.25), 0.9),
+    ];
     let Some(mut swept) = engine_or_skip() else {
         return;
     };
@@ -510,8 +525,12 @@ fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
         texel(&swept, Vec2::new(-60.0, 0.0)),
         texel(&swept, Vec2::new(60.0, 0.0)),
     );
+    // The reports are the four a hand makes of this gesture, so what the ramp is
+    // worth at these two points is what the *fit* made of them — around fifteen
+    // levels, where a finely reported one would show more. The bound catches a
+    // ceiling that stopped varying; it does not measure the fit.
     assert!(
-        apart(bore, eased) > 20,
+        apart(bore, eased) > 10,
         "the pressure ramp did not reach the ceiling ({bore:?} against {eased:?}), so this          test measured nothing"
     );
 }

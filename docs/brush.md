@@ -1178,6 +1178,25 @@ exactly. Two ceilings in the same third average by mass, never more than a third
 of the dial from either; two more levels would halve that, and the lane has the
 channels for them only in a colorimetric space, which is why there are two.
 
+**The factor itself is interpolated across a segment**, and that is not a
+refinement — it is what makes the target usable. Every other pen target is a
+*rate*: `add` scales what this segment lays, so one value per segment is what it
+means. A ceiling is not, and read once per segment it is piecewise constant — so
+a stroke drawn at the rate a hand actually reports came out in bands, stepping
+at every cut, which is what a segment count of a dozen across a mark looks like.
+So `Paint` carries the factor at the segment's two **ends** (its mean and the
+difference between them, `opacity_ramp`) and every fragment reads it at its own
+travel (`paint_common::ceiling_at`) — `Sweep::ramp`'s construction for the
+radius, in the one form that differs: absolute rather than relative, a ceiling
+being a fraction rather than a scale, so the interpolant stays inside `[0, 1]`
+with nothing to defend. Adjacent segments read the pen at the knot they share
+from the same sample, so the ceiling is continuous *by construction* rather than
+finely enough stepped; past either end the overhanging cap takes the end it
+reached, which is the clamp `ramp_scale` already makes. The stamp loop reads the
+same law off the same frame (`Stamp::opacity_ramp`), so a texel's factor is one
+number on either path. A brush the pen does not drive this way carries a zero
+ramp and takes an exact branch.
+
 Every sum is symmetric in the segments, so the picture is the same whichever
 pass came first, and it composes under re-cutting for the reason the aux does.
 It is not strictly monotone: paint at two factors in one third averages, so a
@@ -1314,14 +1333,16 @@ way catches the other sides (§6.4).
 where the pen attributes are already interpolated per segment. Both render paths
 flatten through it, so a live tail and the commit that replaces it cannot read
 the pen differently. Downstream, the four rates, the tooth's give and the
-ceiling's factor ride the `Segment` — the stamp loop already carried its λs per
+ceiling's factor — the last as the *pair* its interpolation needs — ride the
+`Segment` — the stamp loop already carried its λs per
 dispatch and needed no change at all, and the swept path moved `add` off the
 per-tile uniform onto the segment instance (`extra.w`), leaving `drain` behind
 because `drain` is a function of arc length that every fragment recovers for
 itself. The tooth is a per-*fragment* gate on `τ` in the same slot `drain`
 occupies, for the same composition reason (§6.4). The ceiling's factor is the
-one that has no per-segment *law* to ride, and gets a lane of its own (*The
-ceiling under the pen*, above). `hardness` and `charge` are deliberately not
+one that is neither: it has no per-segment law to ride, so it gets a lane of its
+own, and it is not a per-segment *value* either, so it is interpolated across
+the sweep like the radius (*The ceiling under the pen*, above). `hardness` and `charge` are deliberately not
 targets: hardness is baked into a prefix-τ texture per value, and `charge` is an
 initial condition rather than a rate, so neither has a per-segment form to
 modulate. Adding the field bumped the wire version to 3 (§8) — back when it had to:

@@ -86,6 +86,7 @@ import package::lib::latent::{
 };
 import package::lib::paint_common::{
     substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
+    ceiling_at,
 };
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
@@ -275,12 +276,15 @@ struct Stamp {
     // the stroke's own seed for it.
     jitter_eps: f32,
     jitter_seed: u32,
-    // The ceiling's modulation factor for this slot (§6.2): the pen's share of the
-    // dial above, on a stroke whose ceiling it drives. Read only where
-    // `ceiling_lane` says so; 1 — a scale's neutral — everywhere else. Here at
-    // the tail with its flag rather than beside `opacity`, where a scalar after
-    // the `vec3` lanes' filler would open a 16-byte hole.
+    // The ceiling's modulation factor across this slot (§6.2): the mean of its two
+    // ends, and — in `opacity_ramp` — the difference between them, which
+    // `paint_common::ceiling_at` reads at the texel's own travel exactly as the
+    // swept sweep does. Read only where `ceiling_lane` says so; `(1, 0)` — a
+    // scale's neutral and no ramp — everywhere else. Here at the tail with its
+    // flag rather than beside `opacity`, where a scalar after the `vec3` lanes'
+    // filler would open a 16-byte hole.
     opacity_mod: f32,
+    opacity_ramp: f32,
     // Whether the stroke's ceiling is pen-driven (§6.2): 1 routes the mint through
     // the ceiling lane the region aux's `.w` carries (`lay_parcel`), reading
     // `opacity_mod` per slot; 0 is the dial's own law, bit for bit. A stroke
@@ -1723,11 +1727,14 @@ fn lay_parcel(
         let survive = ex.add_w / max(e_src, PAINT_EPS);
         // The claim before this slot, from the lane as the host drew it up to the
         // previous segment, and after it, with this slot's own share added —
-        // the very sums `fs_levels` will draw for it once this dispatch is done.
+        // the very sums `fs_levels` will draw for it once this dispatch is done,
+        // at the very factor it will draw them at (`ceiling_at`, on the frame the
+        // two paths share).
+        let o_mod = ceiling_at(st.opacity_mod, st.opacity_ramp, sw.local.x, sw.lr);
         let fresh = f_m - u.a.z;
         let lv0 = textureLoad(region_levels, rt, 0);
-        let lv1 = lv0 + level_sums(st.opacity_mod, fresh);
-        let moment1 = moment + st.opacity_mod * fresh;
+        let lv1 = lv0 + level_sums(o_mod, fresh);
+        let moment1 = moment + o_mod * fresh;
         let v0 = claimed_coverage(u.a.z, moment, lv0);
         let v1 = claimed_coverage(f_m, moment1, lv1);
         let cm1 = claimed_m(v1, f_m, o);

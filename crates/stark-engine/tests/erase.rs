@@ -244,17 +244,11 @@ fn erasing_bare_canvas_changes_nothing() {
     );
 }
 
-/// A straight leg along `y` from `x0` to `x1`, reported every 10 px at one
-/// `pressure`, so the fit holds the pressure along the leg (`tests/opacity.rs`
-/// makes the same construction, for the same reason).
+/// A straight leg along `y` from `x0` to `x1` at one `pressure` — the two reports
+/// a hand makes of a straight run (`tests/opacity.rs` makes the same
+/// construction, for the same reason).
 fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
-    let n = 16;
-    (0..=n)
-        .map(|i| {
-            let t = i as f32 / n as f32;
-            (Vec2::new(x0 + (x1 - x0) * t, y), pressure)
-        })
-        .collect()
+    vec![(Vec2::new(x0, y), pressure), (Vec2::new(x1, y), pressure)]
 }
 
 /// The eraser's ceiling under the pen (§6.12, `EraseModulations::opacity`):

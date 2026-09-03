@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::lib::noise::{color_jitter, jitter};
-import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate};
+import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, ceiling_at};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
@@ -139,10 +139,14 @@ struct VsOut {
     // The tip's stretch along its facing axis, forwarded verbatim (`stretch_look`).
     // Flat: a per-segment constant, like the instance lanes above.
     @location(8) @interpolate(flat) stretch: vec3<f32>,
-    // The ceiling's modulation factor for this segment (§6.2): what its share of
-    // the stroke's coverage is capped at, as a fraction of the stroke's dial.
-    // Flat, like every per-segment constant.
-    @location(9) @interpolate(flat) opacity: f32,
+    // The ceiling's modulation factor across this segment (§6.2): the mean of its
+    // two ends in `.x` and the difference between them in `.y`, which
+    // [`ceiling_of`] reads at the fragment's own travel. Flat, like the radius
+    // ramp beside it and for its reason: the pair is the segment's, and what
+    // varies across the sweep is recovered per fragment from the frame rather
+    // than interpolated — the travel fraction is not affine in canvas position on
+    // a curved sweep.
+    @location(9) @interpolate(flat) opacity: vec2<f32>,
 }
 
 struct FsOut {
@@ -491,7 +495,7 @@ fn sweep_vertex(
     extra: vec4<f32>, // orientation (turns ∈ [0,1)), arc length at start, curvature, `add`
     tooth_give: f32, // how far this tip settles into the substrate (§6.4)
     stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
-    opacity: f32, // the ceiling's modulation factor here (§6.2)
+    opacity: vec2<f32>, // the ceiling's factor across the segment (§6.2)
 ) -> VsOut {
     let radius = geom.x;
     let len = geom.y;
@@ -583,6 +587,7 @@ fn sweep_vertex(
     out.opacity = opacity;
     return out;
 }
+
 
 // This fragment's place in its segment's travel frame, as the vertices agreed it.
 //
@@ -698,6 +703,14 @@ fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
     return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth_give, xf.paint.z);
+}
+
+// The ceiling's factor at this fragment (§6.2): the segment's two ends read at the
+// fragment's own travel (`paint_common::ceiling_at`). Exactly `in.opacity.x` on a
+// brush whose ceiling the pen does not drive, which is the branch that keeps those
+// strokes bit-identical.
+fn ceiling_of(in: VsOut, sw: Sweep) -> f32 {
+    return ceiling_at(in.opacity.x, in.opacity.y, sw.local.x, sw.lr);
 }
 
 // The deposit jitter's gate at this fragment (§6.2, `lib::noise::jitter`):

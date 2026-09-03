@@ -223,9 +223,12 @@ struct Slot {
     /// The paint effect's opacity — the ceiling the mint's prefix-difference law
     /// runs under in the shader (§6.2). 1 is the identity, exactly.
     opacity: f32,
-    /// The ceiling's modulation factor as this segment resolved it (§6.2) — read
-    /// only where `ceiling_lane` is set. 1, a scale's neutral, everywhere else.
+    /// The ceiling's modulation factor across this segment (§6.2) — the mean of
+    /// its two ends and the difference between them, read at the texel's own
+    /// travel by the shader. Only where `ceiling_lane` is set; `(1, 0)` — a
+    /// scale's neutral and no ramp — everywhere else.
     opacity_mod: f32,
+    opacity_ramp: f32,
     /// Whether the stroke's ceiling is pen-driven, off `k` like the dial: routes
     /// the mint through the ceiling lane the region aux's `.w` carries.
     ceiling_lane: bool,
@@ -333,6 +336,7 @@ impl Default for Slot {
             // there is (`stretch`'s argument, one field over).
             opacity: 1.0,
             opacity_mod: 1.0,
+            opacity_ramp: 0.0,
             ceiling_lane: false,
             resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
@@ -419,11 +423,12 @@ impl Slot {
             jitter_seed: self.jitter_seed,
             canvas_origin: self.canvas_origin,
             opacity_mod: self.opacity_mod,
+            opacity_ramp: self.opacity_ramp,
             ceiling_lane: u32::from(self.ceiling_lane),
-            // The struct's own trailing padding, generated because the two
-            // scalars above end 8 bytes short of the uniform's 16-byte round
+            // The struct's own trailing padding, generated because the three
+            // scalars above end 4 bytes short of the uniform's 16-byte round
             // (§6.10) — `TileXform`'s own tail, one uniform over.
-            _pad_34: [0; 8],
+            _pad_35: [0; 4],
         }
     }
 }
@@ -829,9 +834,11 @@ pub(super) fn dynamics_plan(
                         // number the swept path now reads off its instance.
                         add: paint.add,
                         // The ceiling's factor as the segment resolved it, beside
-                        // the rate it caps — the same number the swept path reads
-                        // off its instance.
+                        // the rate it caps — the same pair the swept path reads
+                        // off its instance, ramp included, so a texel's factor is
+                        // the same number on either path.
                         opacity_mod: paint.opacity,
+                        opacity_ramp: paint.opacity_ramp,
                         curvature: sw.curvature,
                         tooth_give: paint.tooth_give,
                         cell: cell as f32,
@@ -1191,6 +1198,7 @@ mod tests {
             channels: [9.0, 10.0, 11.0],
             opacity: 53.0,
             opacity_mod: 55.0,
+            opacity_ramp: 56.0,
             ceiling_lane: true,
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
@@ -1265,6 +1273,10 @@ mod tests {
         assert_eq!(packed.canvas_origin, [51, 52]);
         assert_eq!(packed.opacity, 53.0, "the effect's ceiling (§6.2)");
         assert_eq!(packed.opacity_mod, 55.0, "the ceiling's pen factor (§6.2)");
+        assert_eq!(
+            packed.opacity_ramp, 56.0,
+            "…and its ramp across the segment"
+        );
         assert_eq!(packed.ceiling_lane, 1, "the ceiling lane's flag (§6.2)");
     }
 

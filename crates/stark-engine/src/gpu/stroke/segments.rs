@@ -212,7 +212,28 @@ pub(super) struct Paint {
     /// opacity folded in — stays a stroke constant (`StrokeConstants::opacity`);
     /// only the pen's factor rides the segment, so a brush with the target
     /// unmapped carries exactly 1 and the ceiling lane holds the plain coverage.
+    ///
+    /// The **mean of the segment's two ends**, like [`Sweep::radius`] and for its
+    /// reason — see [`opacity_ramp`](Self::opacity_ramp).
     pub(super) opacity: f32,
+    /// How much the ceiling's factor changes across this segment: `o_end −
+    /// o_start`, so the factor a fraction `u` of the way through is
+    /// `opacity + opacity_ramp·(u − ½)` (`paint_common::ceiling_at`). **Zero for a
+    /// segment whose ceiling does not change**, which is every segment of every
+    /// brush the pen does not drive that way, and the shaders branch on that zero.
+    ///
+    /// Why a segment carries one at all is [`Sweep::ramp`]'s argument, one target
+    /// over: read once per segment the ceiling is piecewise constant, and a stroke
+    /// drawn at a realistic report rate is a handful of segments wide — so the
+    /// mark came out in bands, stepping at every cut. Carried as a ramp the
+    /// ceiling is continuous *by construction*: adjacent segments agree at the
+    /// knot they share, because both read the pen there at the same arc length.
+    ///
+    /// **Absolute where the radius ramp is relative**, which is the one way the
+    /// two differ: a ceiling is a fraction rather than a scale, so the interpolant
+    /// stays inside `[min, max]` of two numbers already in `[0, 1]` and nothing
+    /// here has to defend a positive product.
+    pub(super) opacity_ramp: f32,
 }
 
 impl Default for Paint {
@@ -236,6 +257,7 @@ impl Default for Paint {
             drag: 0.0,
             tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
             opacity: 1.0,
+            opacity_ramp: 0.0,
         }
     }
 }
@@ -585,6 +607,23 @@ struct Track {
     dist: f32,
 }
 
+/// A segment's two **ends**, for the two quantities that ramp across it rather
+/// than being sampled at its midpoint: the tip ([`Sweep::ramp`]) and the pen the
+/// ceiling's factor is read from ([`Paint::opacity_ramp`]).
+///
+/// One value because they are one question — what is in force at each end — and
+/// because both rest on the same property: each is a function of arc length
+/// alone, so the shared end of two adjacent segments resolves to the same number
+/// on both sides. Bundling them is what keeps a third such quantity from being
+/// threaded through as a fourth argument.
+struct Ends {
+    /// The tip in canvas px at the start and at the end, the taper's own factor
+    /// at each already folded in — which only the caller knows.
+    tip: (f32, f32),
+    /// The pen as the modulations read it at those same two points.
+    pen: (PenState, PenState),
+}
+
 /// Build swept segments from the fitted control points (§6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. This is where the
 /// brush's fixed numbers become the per-segment ones the shaders read: the radius
@@ -661,19 +700,29 @@ pub(super) fn generate_segments_in(
     //
     // `tap` is the taper's radius factor, which only the caller can know: it is
     // measured against the *whole* stroke and a partial range does not have one.
-    let tip_at = |pressure: f32, tilt: Vec2, tap: f32| {
-        let pen = PenState {
-            pressure,
-            tilt: tilt.length(),
-        };
-        (b.size * b.modulation.size(pen) * tap).max(0.5)
+    let tip_at = |pen: PenState, tap: f32| (b.size * b.modulation.size(pen) * tap).max(0.5);
+
+    // The ceiling's factor for one pen reading (§6.2). Read at the segment's two
+    // **ends** rather than at its midpoint, where every rate below is read: a rate
+    // is a per-segment quantity by nature — `add` scales what this segment lays —
+    // where a ceiling caps what the whole stroke shows, so a value held constant
+    // across a segment steps at every cut and the mark comes out in bands. The
+    // shaders interpolate it across the sweep the way they interpolate the tip
+    // ([`Paint::opacity_ramp`]).
+    let ceiling_at = |pen: PenState| match &b.effect {
+        stark_model::document::BrushEffect::Paint(p) => p.modulation.opacity(pen),
+        stark_model::document::BrushEffect::Wet(w) => w.modulation.opacity(pen),
+        stark_model::document::BrushEffect::Erase(e) => e.modulation.opacity(pen),
+        // A warp has no ceiling for the pen to drive (`BrushEffect::opacity`).
+        stark_model::document::BrushEffect::Liquify(_) => 1.0,
     };
 
-    // `ends` is the tip at the segment's two ends — where the radius *ramp* comes from
-    // ([`Sweep::ramp`]). Everything else is sampled at the midpoint, `at`: the rates
-    // below are applied per segment and the midpoint is the reading whose error is
-    // second order where either end's would be first.
-    let make = |at: At, track: Track, ends: (f32, f32)| {
+    // `ends` is what is in force at the segment's two ends — the tip, where the radius
+    // *ramp* comes from ([`Sweep::ramp`]), and the pen, where the ceiling's does
+    // ([`Paint::opacity_ramp`]). Everything else is sampled at the midpoint, `at`: the
+    // rates below are applied per segment and the midpoint is the reading whose error
+    // is second order where either end's would be first.
+    let make = |at: At, track: Track, ends: Ends| {
         // The pen as the modulations read it, at this segment's own attributes
         // (§6.2). `Modulation::factor` clamps anyway.
         let pen = PenState {
@@ -681,7 +730,8 @@ pub(super) fn generate_segments_in(
             tilt: at.tilt.length(),
         };
         let m = &b.modulation;
-        let (r0, r1) = ends;
+        let (r0, r1) = ends.tip;
+        let (o0, o1) = (ceiling_at(ends.pen.0), ceiling_at(ends.pen.1));
         // The mean rather than the midpoint *sample*, and that is what makes the ramp
         // exact at both ends: `radius·(1 ± ramp/2)` is then `r1` and `r0` themselves,
         // so two adjacent segments — which computed the tip at their shared knot from
@@ -741,20 +791,12 @@ pub(super) fn generate_segments_in(
         // their λs — one pass at flow f trades exactly what f passes at flow 1
         // would.
         //
-        // The ceiling's factor rides beside them for the three effects that have a
-        // ceiling: the pen's share alone, the dial staying a stroke constant
-        // (`Paint::opacity`). A liquify stroke has no ceiling and carries the
-        // neutral 1.
-        let (flow, add, lift, deposit, bleed, drag, opacity) = match &b.effect {
-            stark_model::document::BrushEffect::Paint(p) => (
-                1.0,
-                p.flow * p.modulation.flow(pen),
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                p.modulation.opacity(pen),
-            ),
+        // The ceiling's factor is **not** among them: it is read at the segment's
+        // two ends instead (`ceiling_at`, and `Paint::opacity_ramp` for why).
+        let (flow, add, lift, deposit, bleed, drag) = match &b.effect {
+            stark_model::document::BrushEffect::Paint(p) => {
+                (1.0, p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+            }
             stark_model::document::BrushEffect::Wet(w) => {
                 let flow = w.flow * w.modulation.flow(pen);
                 (
@@ -764,18 +806,11 @@ pub(super) fn generate_segments_in(
                     w.dynamics.deposit * w.modulation.deposit(pen),
                     w.dynamics.bleed * w.modulation.bleed(pen) * flow,
                     0.0,
-                    w.modulation.opacity(pen),
                 )
             }
-            stark_model::document::BrushEffect::Erase(e) => (
-                1.0,
-                e.flow * e.modulation.flow(pen),
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                e.modulation.opacity(pen),
-            ),
+            stark_model::document::BrushEffect::Erase(e) => {
+                (1.0, e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+            }
             stark_model::document::BrushEffect::Liquify(l) => (
                 1.0,
                 0.0,
@@ -783,7 +818,6 @@ pub(super) fn generate_segments_in(
                 0.0,
                 0.0,
                 l.strength * l.modulation.strength(pen),
-                1.0,
             ),
         };
         Segment {
@@ -796,7 +830,13 @@ pub(super) fn generate_segments_in(
                 bleed,
                 drag,
                 tooth_give: b.tooth.give * m.tooth_give(pen),
-                opacity,
+                // The mean of the two ends and the difference between them, the
+                // radius's own construction one field up: the mean is what makes
+                // the ramp exact at both ends, so two adjacent segments — which
+                // read the pen at the knot they share from the same sample —
+                // agree there to the bit, and the ceiling has no step to band at.
+                opacity: (o0 + o1) * 0.5,
+                opacity_ramp: o1 - o0,
             },
         }
     };
@@ -837,6 +877,13 @@ pub(super) fn generate_segments_in(
                 a.tilt + (c.tilt - a.tilt) * u,
             )
         };
+        // …as the modulations read it. Both quantities that ramp across a segment
+        // are functions of this alone, so they are pinned to one sample per end
+        // rather than each taking its own.
+        let pen_state = |(pressure, tilt): (f32, Vec2)| PenState {
+            pressure,
+            tilt: Vec2::length(tilt),
+        };
         for k in 0..n {
             let (u0, u1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
             let (pressure, tilt) = pen_at((u0 + u1) * 0.5);
@@ -851,12 +898,14 @@ pub(super) fn generate_segments_in(
             // both sides. That agreement is what makes the outline continuous
             // ([`Sweep::ramp`]); it is not approached, it is the same expression
             // evaluated twice.
-            let (p0, t0) = pen_at(u0);
-            let (p1, t1) = pen_at(u1);
-            let ends = (
-                tip_at(p0, t0, taper.factor(dist)),
-                tip_at(p1, t1, taper.factor(dist + step)),
-            );
+            let (pen0, pen1) = (pen_state(pen_at(u0)), pen_state(pen_at(u1)));
+            let ends = Ends {
+                tip: (
+                    tip_at(pen0, taper.factor(dist)),
+                    tip_at(pen1, taper.factor(dist + step)),
+                ),
+                pen: (pen0, pen1),
+            };
             segs.push(make(
                 At {
                     pos,

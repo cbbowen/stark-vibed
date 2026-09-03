@@ -936,9 +936,10 @@ pub(super) fn segment_instance(segment: &Segment) -> SegmentInstance {
         geom: [sweep.radius, sweep.length, sweep.ramp],
         extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
         tooth_give: paint.tooth_give,
-        // The ceiling's factor here (§6.2) — 1 unless the pen drives it, and read
-        // by no pipeline but the ceiling lane's.
-        opacity: paint.opacity,
+        // The ceiling's factor across the segment (§6.2) — its mean and its ramp,
+        // `(1, 0)` unless the pen drives it, and read by no pipeline but the
+        // ceiling lane's.
+        opacity: [paint.opacity, paint.opacity_ramp],
         // The solved stretch map (§6.6). Unscaled for the ramp's reason: it acts on
         // brush-local coordinates, which are already the frame's own units.
         stretch: [
