@@ -38,7 +38,12 @@ pub(crate) struct RenderImageParams {
     pub(crate) frame_index: usize,
 }
 
-/// A cached and processed image, in BGRA format
+/// A cached and processed image, in **RGBA** format.
+///
+/// STARK PATCH: said BGRA, and every producer in this crate swapped to match — but
+/// the polychrome atlas is `Rgba8Unorm` and `poly_sprites.wgsl` samples it with no
+/// swizzle, so the swap put red and blue the wrong way round on screen. The name
+/// and the pixels agree now, and so does anything a consumer builds by hand.
 pub struct RenderImage {
     /// The ID associated with this image
     pub id: ImageId,

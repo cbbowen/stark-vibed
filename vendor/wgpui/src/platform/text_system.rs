@@ -331,13 +331,8 @@ impl CosmicTextSystemState {
                 .clone()
                 .with_context(|| format!("no image for {params:?} in font {font:?}"))?;
 
-            if params.is_emoji {
-                // Convert from RGBA to BGRA.
-                for pixel in image.data.chunks_exact_mut(4) {
-                    pixel.swap(0, 2);
-                }
-            }
-
+            // STARK PATCH: no RGBA -> BGRA swap for color emoji. They reach the
+            // same `Rgba8Unorm` polychrome atlas every other image does.
             Ok((bitmap_size, image.data))
         }
     }

@@ -1666,12 +1666,10 @@ impl Image {
             bytes: &[u8],
             format: image::ImageFormat,
         ) -> Result<SmallVec<[Frame; 1]>> {
-            let mut data = image::load_from_memory_with_format(bytes, format)?.into_rgba8();
-
-            // Convert from RGBA to BGRA.
-            for pixel in data.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
+            // STARK PATCH: no RGBA -> BGRA swap. The polychrome atlas is
+            // `Rgba8Unorm` and `poly_sprites.wgsl` samples it without a swizzle, so
+            // swapping here drew every loaded image with red and blue exchanged.
+            let data = image::load_from_memory_with_format(bytes, format)?.into_rgba8();
 
             Ok(SmallVec::from_elem(Frame::new(data), 1))
         }
@@ -1681,13 +1679,9 @@ impl Image {
                 let decoder = GifDecoder::new(Cursor::new(&self.bytes))?;
                 let mut frames = SmallVec::new();
 
+                // STARK PATCH: no RGBA -> BGRA swap; see `frames_for_image`.
                 for frame in decoder.into_frames() {
-                    let mut frame = frame?;
-                    // Convert from RGBA to BGRA.
-                    for pixel in frame.buffer_mut().chunks_exact_mut(4) {
-                        pixel.swap(0, 2);
-                    }
-                    frames.push(frame);
+                    frames.push(frame?);
                 }
 
                 frames

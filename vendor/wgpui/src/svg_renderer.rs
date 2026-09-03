@@ -1,6 +1,6 @@
 use crate::{
     AssetSource, DevicePixels, IsZero, RenderImage, Result, SharedString, Size,
-    swap_rgba_pa_to_bgra,
+    unmultiply_alpha,
 };
 use image::Frame;
 use resvg::tiny_skia::Pixmap;
@@ -69,7 +69,7 @@ impl SvgRenderer {
         &self,
         bytes: &[u8],
         scale_factor: f32,
-        to_brga: bool,
+        unmultiply: bool,
     ) -> Result<Arc<RenderImage>, usvg::Error> {
         self.render_pixmap(
             bytes,
@@ -80,9 +80,11 @@ impl SvgRenderer {
                 image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
                     .unwrap();
 
-            if to_brga {
+            // STARK PATCH: was `to_brga`, and did a swap this atlas never wanted.
+            // What is left is the un-premultiply, which resvg's output does need.
+            if unmultiply {
                 for pixel in buffer.chunks_exact_mut(4) {
-                    swap_rgba_pa_to_bgra(pixel);
+                    unmultiply_alpha(pixel);
                 }
             }
 

@@ -638,13 +638,11 @@ impl Asset for ImageAssetLoader {
                         let decoder = GifDecoder::new(Cursor::new(&bytes))?;
                         let mut frames = SmallVec::new();
 
+                        // STARK PATCH: no RGBA -> BGRA swap. The polychrome atlas
+                        // is `Rgba8Unorm` and the sprite shader does not swizzle, so
+                        // this drew every image with red and blue exchanged.
                         for frame in decoder.into_frames() {
-                            let mut frame = frame?;
-                            // Convert from RGBA to BGRA.
-                            for pixel in frame.buffer_mut().chunks_exact_mut(4) {
-                                pixel.swap(0, 2);
-                            }
-                            frames.push(frame);
+                            frames.push(frame?);
                         }
 
                         frames
@@ -656,35 +654,23 @@ impl Asset for ImageAssetLoader {
                             let _ = decoder.set_background_color(Rgba([0, 0, 0, 0]));
                             let mut frames = SmallVec::new();
 
+                            // STARK PATCH: no RGBA -> BGRA swap.
                             for frame in decoder.into_frames() {
-                                let mut frame = frame?;
-                                // Convert from RGBA to BGRA.
-                                for pixel in frame.buffer_mut().chunks_exact_mut(4) {
-                                    pixel.swap(0, 2);
-                                }
-                                frames.push(frame);
+                                frames.push(frame?);
                             }
 
                             frames
                         } else {
-                            let mut data = DynamicImage::from_decoder(decoder)?.into_rgba8();
-
-                            // Convert from RGBA to BGRA.
-                            for pixel in data.chunks_exact_mut(4) {
-                                pixel.swap(0, 2);
-                            }
+                            // STARK PATCH: no RGBA -> BGRA swap.
+                            let data = DynamicImage::from_decoder(decoder)?.into_rgba8();
 
                             SmallVec::from_elem(Frame::new(data), 1)
                         }
                     }
                     _ => {
-                        let mut data =
+                        // STARK PATCH: no RGBA -> BGRA swap.
+                        let data =
                             image::load_from_memory_with_format(&bytes, format)?.into_rgba8();
-
-                        // Convert from RGBA to BGRA.
-                        for pixel in data.chunks_exact_mut(4) {
-                            pixel.swap(0, 2);
-                        }
 
                         SmallVec::from_elem(Frame::new(data), 1)
                     }

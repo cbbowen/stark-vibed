@@ -22,9 +22,13 @@ pub fn rgba(hex: u32) -> Rgba {
     Rgba { r, g, b, a }
 }
 
-/// Swap from RGBA with premultiplied alpha to BGRA
-pub(crate) fn swap_rgba_pa_to_bgra(color: &mut [u8]) {
-    color.swap(0, 2);
+/// Undo premultiplied alpha, in place.
+///
+/// STARK PATCH: was `swap_rgba_pa_to_bgra`, which did this *and* exchanged red and
+/// blue. The swap was wrong — the polychrome atlas is `Rgba8Unorm` — and the
+/// un-premultiply is not: the sprite shader multiplies by alpha itself when the
+/// global says to, so a buffer arriving already multiplied would be darkened twice.
+pub(crate) fn unmultiply_alpha(color: &mut [u8]) {
     if color[3] > 0 {
         let a = color[3] as f32 / 255.;
         color[0] = (color[0] as f32 / a) as u8;

@@ -678,14 +678,17 @@ Three differences from §11 above are the interesting ones:
   factor is the whole of the mapping — and the input tolerance and the smoothing
   rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
 
-wgpui is **vendored** (`vendor/wgpui`) for three patches. The first is one line:
+wgpui is **vendored** (`vendor/wgpui`) for four patches. The first is one line:
 upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
 `flume` only for macOS, Linux and FreeBSD, so the published crate does not
 compile on Windows at all. The second is the `DeviceDescriptor` above. The third
 makes `WindowBounds` reach the platform whole, so a window can be reopened where
-it was (§11.2, N1). See `vendor/wgpui/VENDORING.md`, which also records what the
-second one *removed* — `Application::headless`, whose flag the new signature
-displaced and which upstream had never honoured.
+it was (§11.2, N1). The fourth makes `RenderImage` RGBA: every producer swapped
+red and blue on the way in, which is right on Metal and wrong on the
+`Rgba8Unorm` atlas this fork uploads to — so every image wgpui loaded was drawn
+with the two exchanged (§11.2, N8). See `vendor/wgpui/VENDORING.md`, which also
+records what the second one *removed* — `Application::headless`, whose flag the
+new signature displaced and which upstream had never honoured.
 
 [wgpui]: https://github.com/muktidaya/wgpui
 
@@ -1127,11 +1130,17 @@ the exit criterion is an act, not a diff.
   an `L` drag asks for a new one per frame, so a table keyed by value would grow for
   the length of a gesture and never be asked twice.
 
-  **A bug worth recording.** `RenderImage` calls itself BGRA and its wgpu upload
-  path takes RGBA, so the native asset cards had been swapping red and blue since
-  N7 — and nothing could have shown it, because an asset card is grey and grey
-  survives exchanging two channels exactly. The colour wheel caught it on its first
-  frame: the marker sat on a blue the readout called `#9c0a05`.
+  **A bug in the toolkit, which the wheel is what caught.** `RenderImage` said BGRA
+  and every producer in wgpui swapped to match — but the polychrome atlas is
+  `Rgba8Unorm` and `poly_sprites.wgsl` samples it with no swizzle, so **every image
+  wgpui loaded was drawn with red and blue exchanged**. Stark's own cards took the
+  doc at its word and swapped too, and nothing could have shown it: an asset card is
+  a coverage field or a height field, both grey, and grey survives exchanging two
+  channels exactly. The wheel was the first coloured picture either frontend put
+  through that path, and it was wrong on its first frame — the marker sat on a blue
+  the readout beside it called `#9c0a05`. Fixed in the vendored crate rather than
+  worked around (patch 4), so the type's name, its pixels and anything a consumer
+  builds by hand now agree.
 
   **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
   (§15), the navigator and timeline mode. Each is a large panel with an overlay of

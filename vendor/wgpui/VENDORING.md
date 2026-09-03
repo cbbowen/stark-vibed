@@ -2,7 +2,7 @@
 
 wgpui `0.3.4` from the crates.io source (`registry/src/.../wgpui-0.3.4`,
 upstream commit `5e94b544ff` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus three local patches. Substituted for the crates.io crate via
+tree**, plus four local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest. License: Apache-2.0
 (`LICENSE.md`, kept).
 
@@ -112,6 +112,51 @@ is changed in `WM_CREATE`, the restored size will be stored in that size".
 
 Upstreamable, and worth it — `zoom()` being a toggle used as a setter is a bug
 independent of anything Stark wants.
+
+## Patch 4 — `RenderImage` is RGBA, like the atlas it goes into
+
+Every producer of a `RenderImage` swapped red and blue on the way in — the two image
+decoders in `elements/img.rs`, the two in `platform.rs` (the clipboard's), the SVG
+rasterizer, and colour emoji in `platform/text_system.rs`. The swaps are gone, the
+type's doc says RGBA, and `swap_rgba_pa_to_bgra` is `unmultiply_alpha`: it did two
+things and only one of them was wanted.
+
+### Why
+
+**It drew every loaded image with red and blue exchanged.** The chain is three files
+and has no swizzle anywhere in it:
+
+- `platform/atlas.rs` allocates the polychrome atlas as `wgpu::TextureFormat::Rgba8Unorm`.
+- `window.rs::paint_image` hands the atlas `Cow::Borrowed(data.as_bytes(..))` — a
+  straight copy, no reordering.
+- `shaders/poly_sprites.wgsl` does `textureSample(..)` and uses `color.rgb` and
+  `sample.a` as they come.
+
+So the bytes reach the shader as RGBA, and every producer was writing BGRA.
+
+This is GPUI heritage rather than an oversight: upstream renders through Metal, whose
+natural surface format is `bgra8Unorm`, and the swaps are correct there. The fork
+moved the atlas to wgpu and `Rgba8Unorm` and left the loaders behind.
+
+**How it surfaced.** Stark's own consumers build a `RenderImage` by hand, and took the
+doc at its word — so the asset galleries (§11.2 N7) swapped too, and *nothing could
+show it*: an asset card is a brush shape's coverage or a substrate's height, both
+grey, and grey survives exchanging red and blue exactly. The Oklab colour wheel (N8)
+was the first coloured picture either frontend put through this path, and it was wrong
+on its first frame — the marker sat on a blue the readout beside it called `#9c0a05`.
+
+**The un-premultiply is kept.** `swap_rgba_pa_to_bgra` also divided out premultiplied
+alpha, which the SVG rasterizer's output genuinely needs: `poly_sprites.wgsl` does its
+own multiply when the global says to, so a buffer arriving already multiplied would be
+darkened twice. Only the channel swap is dropped, and the name now says what is left.
+Its `to_brga` parameter is `unmultiply`, and its two call sites still pass what they
+passed — one `true`, one `false`. That asymmetry looks wrong too and is left alone:
+it is a second question, and this patch is about one.
+
+Upstreamable, and worth it — an image element that exchanges two channels is a bug
+independent of anything Stark wants. Colour emoji are still garbled here for a
+separate reason (they draw as stripes, which is a stride fault rather than a channel
+one); that is untouched and unfixed.
 
 ## The deletion
 

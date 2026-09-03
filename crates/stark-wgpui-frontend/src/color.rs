@@ -179,11 +179,11 @@ impl Pictures {
 /// A buffer of straight sRGB as a texture this toolkit can draw, with `alpha`
 /// deciding each texel's coverage from its place in the picture.
 ///
-/// **RGBA, with no swap.** wgpui's `RenderImage` calls itself BGRA and its wgpu
-/// upload path is not; the picture went up with red and blue exchanged, and the
-/// marker sat on a blue the readout called `#9c0a05`. `crate::gallery` had the swap
-/// too and could never have shown it — an asset card is grey, and grey survives
-/// exchanging two channels exactly.
+/// **RGBA**, which is what the polychrome atlas has always been — though wgpui said
+/// otherwise until this wheel proved it did not: the picture went up with red and
+/// blue exchanged, and the marker sat on a blue the readout called `#9c0a05`. The
+/// vendored fix is patch 4 (`vendor/wgpui/VENDORING.md`), and this is what agrees
+/// with it.
 ///
 /// The alpha is how the wheel becomes a circle. Clipping the element would be the
 /// obvious way and is the web frontend's, but it leans on the toolkit rounding a

@@ -53,10 +53,10 @@ pub fn card<K: Kind>(id: AssetId, png: &[u8]) -> Option<Arc<RenderImage>> {
         return Some(hit);
     }
     let (width, height, rgba) = crate::assets::card_rgba::<K>(png)?;
-    // Straight through: wgpui's `RenderImage` calls itself BGRA and its wgpu upload
-    // path takes RGBA. This swapped for one stage and nothing could show it — an
-    // asset card is grey, and grey survives exchanging red and blue exactly. The
-    // color wheel is what caught it (`crate::color`).
+    // Straight through, RGBA: the polychrome atlas is `Rgba8Unorm`. This swapped for
+    // one stage, taking wgpui's doc at its word, and nothing could show it — an asset
+    // card is grey, and grey survives exchanging red and blue exactly. The colour
+    // wheel caught it, and the vendored crate is fixed (patch 4).
     let buffer = image::RgbaImage::from_raw(width, height, rgba)?;
     let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
     cards::<K>().put(id, image.clone());
