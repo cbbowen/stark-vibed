@@ -52,9 +52,9 @@ use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::{Extent2, Vec2};
 
-use crate::brush_config::{BrushConfig, Transient};
 use crate::platform::base64_encode;
 use crate::state::{AppState, root_signal};
+use stark_chrome::brush_config::{BrushConfig, Transient};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
 /// `.preset-row` — 36 px tall in a 300 px panel), so it stays crisp on a dense

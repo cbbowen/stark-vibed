@@ -65,6 +65,33 @@ use stark_model::document::{
     OrientationSource, PaintEffect, PaintModulations, ToothParams, WetEffect, WetModulations,
 };
 
+// --- What the sliders offer, and what a drag clamps against ---
+//
+// These three sat in the web frontend's Brush *panel* until the second frontend
+// arrived, which is the wrong place for a reason that only shows with two: a
+// markup module cannot be a shared authority, and the drag that reads them
+// (§18.1.9) is not the slider that displays them. `BrushConfig::max_flow` below
+// reads one of them, so the move was forced rather than chosen.
+
+/// The smallest brush radius ([`BrushParams::size`]). A tip finer than a canvas
+/// pixel has nothing left to narrow.
+pub const MIN_RADIUS: f32 = 1.0;
+
+/// The maximum brush radius ([`BrushParams::size`]).
+pub const MAX_RADIUS: f32 = 500.0;
+
+/// The most flow the sliders offer (`BrushDynamics::add`). Three, not one, because
+/// `add` is a rate rather than a fraction — the everyday brush sits near 1 and a
+/// loaded one that buries what is under it wants more.
+///
+/// Named beside the radius bounds because the *drag* bindings clamp against the same
+/// three figures (a frontend's brush-tuning drag, §18.1.9): a knob reachable two ways must have one
+/// range, or the drag would quietly go somewhere the slider cannot show. Every
+/// reader now goes through [`BrushConfig::max_flow`], which is where the one
+/// effect whose rate has a ceiling of its own — the liquify strength (§6.13) —
+/// substitutes it.
+pub const MAX_FLOW: f32 = 3.0;
+
 /// Which effect a stroke of the brush has — the user's own choice, beside the
 /// configurations it chooses between. A plain switch rather than the model's
 /// [`BrushEffect`] sum, because here the knobs it would carry live on
@@ -464,11 +491,11 @@ impl BrushConfig {
     /// tuning drag), or the drag would quietly go somewhere a slider cannot
     /// show. The liquify strength's top is its quoted — and load-bearing — 1
     /// (`LiquifyEffect::strength`); every other rate's ceiling is the slider's
-    /// own (`panels::brush::MAX_FLOW`).
+    /// own ([`MAX_FLOW`]).
     pub fn max_flow(&self) -> f32 {
         match self.effect {
             BrushEffectType::Liquify => 1.0,
-            _ => crate::panels::brush::MAX_FLOW,
+            _ => MAX_FLOW,
         }
     }
 }

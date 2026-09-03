@@ -30,6 +30,7 @@ exclude = [
 # so by that same rule it belongs in the default round, and is below.
 default-members = [
     "crates/stark-assetid",
+    "crates/stark-chrome",
     "crates/stark-engine",
     "crates/stark-model",
     "crates/stark-net",

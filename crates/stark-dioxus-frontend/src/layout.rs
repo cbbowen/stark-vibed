@@ -47,10 +47,10 @@ use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
 
 use crate::icons::{self, icon};
-use crate::panels::reorder::{Grab, Motion, Slide};
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::{AppState, root_signal};
+use stark_chrome::reorder::{Grab, Motion, Slide};
 
 /// Identity of a floating tool panel. The set is fixed; `PanelLayout` tracks their
 /// order and which are open (§11).

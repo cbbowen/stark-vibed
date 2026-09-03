@@ -9243,6 +9243,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "stark-chrome"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "stark-assetid",
+ "stark-engine",
+ "stark-model",
+]
+
+[[package]]
 name = "stark-dioxus-frontend"
 version = "0.0.0"
 dependencies = [
@@ -9253,6 +9263,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stark-assetid",
+ "stark-chrome",
  "stark-engine",
  "stark-model",
  "stark-net",

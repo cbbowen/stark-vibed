@@ -49,7 +49,6 @@ pub mod guides;
 pub mod layer;
 /// The Layers panel's arithmetic — the rows, and what a drop into them means.
 /// Split from the panel it serves because it is the half that can be tested.
-pub mod layer_tree;
 pub mod lighting;
 pub mod pick;
 /// Where a panel's pop-out is drawn — the one register in this directory that

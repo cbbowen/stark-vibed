@@ -38,7 +38,6 @@
 #![cfg_attr(test, feature(variant_count))]
 
 mod anchor;
-mod brush_config;
 mod brush_editor;
 mod builtin_ids;
 mod builtins;
@@ -49,7 +48,6 @@ mod credits;
 mod drags;
 mod failure;
 mod files;
-mod gesture;
 mod gradients;
 mod icons;
 mod identity;
@@ -57,7 +55,6 @@ mod images;
 mod input;
 mod layer_thumbs;
 mod layout;
-mod library;
 mod modes;
 mod navigator;
 mod overlays;

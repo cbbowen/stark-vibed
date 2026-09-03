@@ -748,7 +748,8 @@ two things one week apart is exactly what the glossary rule exists to stop.
 | `gesture.rs` | 868 | the transform algebra (§16.6, §16.8, §16.9) + 18 tests |
 | `panels/layer_tree.rs` | 549 | what the Layers panel draws and what a drop means (§14.6, §14.8) + 10 tests |
 | `library.rs` | 180 | the thumbnail cache both asset libraries share (§6.4, §6.6) |
-| `identity.rs` | 95 | this client's durable actor key and boot counter (§17) |
+| `panels/reorder.rs` | 465 | moving a row of a list by dragging it. Tier B on paper; it turned out to be **one function** — `claimed`, six lines over a `Signal` — with 444 pure lines behind it |
+| `identity.rs` | 95 | this client's durable actor key and boot counter (§17) — no toolkit in it, but it reads through `storage`, so it lands with **N1** rather than N0 |
 | `panels.rs`, `layout::PanelId` | — | the register vocabulary only: the enums, not the frames |
 
 **Tier B — moves after one decoupling each**, named:
@@ -759,7 +760,6 @@ two things one week apart is exactly what the glossary rule exists to stop.
 | `commands.rs` | 2462 | `Command`'s ~35 variants and every descriptive method (`name`, `word`, `aliases`, `icon`, `hint`, `tooltip`, `shortcut`, `rebindable`, `enabled`) plus `Chord`/`Bindings`/`search` go down; `active` and `run` take `AppState` and stay |
 | `drags.rs` | 1343 | everything but `Mods::of(dioxus::html::Modifiers)`, which becomes a constructor each frontend feeds |
 | `icons.rs` | 607 | the `include_str!` table goes down; the `Element`-returning helper stays |
-| `panels/reorder.rs` | 465 | wants the pointer report (below) |
 | `presets.rs`, `slots.rs`, `prefs.rs`, `visibility.rs`, `modes.rs` | 3133 | each is a record plus a policy plus a signal-shaped shell; the shell stays |
 | `input/` + `input.rs` | 3017 | the thresholds and the decisions go down — `TOUCH_SLOP`, `nav::MIN_SPAN`, the tune commit distance, the tolerance and rope maps, `is_contact`/`is_eraser`, the tap/pinch/hold discrimination. The five `Copy` hook carriers stay: they *are* signals |
 | `panels/brush.rs`'s bounds | — | `MIN_RADIUS`, `MAX_RADIUS`, `MAX_FLOW` sit in a markup module and are read by `input::Tune` and `BrushConfig::max_flow`. They are brush vocabulary and belong beside `brush_config` (their doc comments still say `BrushParams::radius`, renamed to `size` — the move is when that gets fixed) |
@@ -812,9 +812,21 @@ native ones:
 Each names what lands, what moves down with it, and one thing you can then *do* —
 the exit criterion is an act, not a diff.
 
-- **N0 — the crate, empty of opinion.** Create `stark-chrome`; move Tier A's five
-  pure modules behind `pub use` shims in the web frontend. Nothing else changes.
-  *Exit:* the web app is untouched and those 28 tests run from the new crate.
+- **N0 — the crate, empty of opinion.** Create `stark-chrome`; move the five pure
+  modules into it. **No `pub use` shims**: a shim would give every moved type two
+  public paths, which is the one thing CLAUDE.md's module rule forbids, so the call
+  sites move with the code. *Exit:* the web app is untouched and its tests run from
+  the new crate.
+
+  What it cost beyond the moves, which is the interesting half: `gesture` became
+  `transform`, because `gesture` next to five *input* gestures that are not it
+  would be read as those; `reorder`'s six-line `claimed` stayed behind and its 444
+  pure lines came down; `pub(super)` widened to `pub` where `super` used to mean
+  `panels`; and `MIN_RADIUS`/`MAX_RADIUS`/`MAX_FLOW` came down out of the Brush
+  *panel* because `BrushConfig::max_flow` reads one of them — the move was forced by
+  the compiler rather than argued for, which is the best kind. `Thumbs` grew a
+  `Default`: `new_without_default` does not fire on a binary's `pub` items and does
+  on a library's, so becoming a library is what asked.
 - **N1 — persistence.** `storage::Backend`; the native impl over a config dir and
   a cache dir; `identity`, `prefs` and `visibility` records move. *Exit:* the
   native app comes back with the same actor id and the same window.

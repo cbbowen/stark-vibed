@@ -37,10 +37,6 @@ use dioxus::prelude::*;
 
 use super::frame::{content_rect, view_rect};
 use crate::commands::{self, Command};
-use crate::gesture::{
-    MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
-    WarpUi,
-};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
@@ -48,6 +44,10 @@ use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
+use stark_chrome::transform::{
+    MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
+    WarpUi,
+};
 use stark_engine::ViewTransform;
 use stark_model::document::TransformMap;
 use stark_model::geom::Vec2;

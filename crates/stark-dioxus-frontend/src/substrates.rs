@@ -39,7 +39,7 @@
 //!
 //! So the library is `crate::shapes` for substrates, down to the storage: rows (a name
 //! and an id) in `localStorage`, height maps in the blob store beside them (§25.6),
-//! and the shared parts of both in `crate::library`. Import runs through
+//! and the shared parts of both in `stark_chrome::library`. Import runs through
 //! [`normalize_substrate_image`], which is where
 //! the one real difference between the two lives — a stamp's polarity is a spelling
 //! and a substrate's polarity *is the substrate*, so nothing here inverts anything.
@@ -55,12 +55,12 @@ use dioxus::prelude::*;
 use stark_engine::command::DocCommand;
 use stark_model::{AssetId, SubstrateId};
 
-use crate::library::{self, Thumbs};
 use crate::platform::{base64_encode, normalize_substrate_image};
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::storage::{self, Store};
 use crate::widgets::Modal;
+use stark_chrome::library::{self, Thumbs};
 use stark_model::ColorSpaceId;
 
 /// One substrate selectable in the UI.

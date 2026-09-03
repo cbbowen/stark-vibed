@@ -280,7 +280,7 @@ pub struct Signals {
     /// pointer move needed to notice.
     pub brush_cursor: Signal<Option<Vec2>>,
     /// The live brush's **durable** half, as this frontend configures it
-    /// ([`BrushConfig`](crate::brush_config::BrushConfig)): the shared tip
+    /// ([`BrushConfig`](stark_chrome::brush_config::BrushConfig)): the shared tip
     /// knobs, **every** effect with the switch between them — so toggling
     /// Paint ↔ Erase forgets nothing, the hand's color above all — and the
     /// stroke-smoothing feel (§6.11). The size and flow it is being worked
@@ -290,7 +290,7 @@ pub struct Signals {
     /// through [`update_brush`] — the one door — so nothing here reads a brush
     /// back off the observable, and what the engine cannot represent (the
     /// inactive effect, the feel) never has to round-trip through it.
-    pub brush: Signal<crate::brush_config::BrushConfig>,
+    pub brush: Signal<stark_chrome::brush_config::BrushConfig>,
     /// The live brush's **transient** half — the size and flow the hand is
     /// working the tool at (`brush_config::Transient`, §18.1.9). Its own
     /// signal beside [`brush`](Self::brush) rather than a pair of fields on
@@ -298,7 +298,7 @@ pub struct Signals {
     /// never the chrome that shows the tool — and so "the same tool" is plain
     /// equality on the durable half (`presets::same_tool`). Written through
     /// [`update_brush`], the same one door.
-    pub transient: Signal<crate::brush_config::Transient>,
+    pub transient: Signal<stark_chrome::brush_config::Transient>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
     /// canvas element's own px — `None` when there is nothing to show. Its own
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
@@ -799,8 +799,8 @@ impl AppState {
             // at mount, before any engine exists, and the first stroke has to
             // lay the color the marker shows (`main` pushes the same
             // configuration to the engine once one is up).
-            brush: root_signal(crate::brush_config::BrushConfig::default),
-            transient: root_signal(|| crate::brush_config::Transient {
+            brush: root_signal(stark_chrome::brush_config::BrushConfig::default),
+            transient: root_signal(|| stark_chrome::brush_config::Transient {
                 color: crate::panels::color::INITIAL_COLOR,
                 ..Default::default()
             }),
@@ -1584,7 +1584,7 @@ pub fn resize(state: AppState, width: u32, height: u32) {
     });
 }
 
-/// Read the current [`BrushConfig`](crate::brush_config::BrushConfig), mutate a
+/// Read the current [`BrushConfig`](stark_chrome::brush_config::BrushConfig), mutate a
 /// copy, and commit it: the signal takes the new configuration and the engine
 /// takes its projection (`ViewCommand::SetBrush`), in that door and no other —
 /// which is what keeps the two views of the brush the same brush.
@@ -1609,7 +1609,10 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 /// so answering would cost a discarded value at every one of them.
 pub fn update_brush(
     state: AppState,
-    f: impl FnOnce(&mut crate::brush_config::BrushConfig, &mut crate::brush_config::Transient),
+    f: impl FnOnce(
+        &mut stark_chrome::brush_config::BrushConfig,
+        &mut stark_chrome::brush_config::Transient,
+    ),
 ) {
     let mut config = *state.brush.peek();
     let mut tune = *state.transient.peek();
@@ -1646,8 +1649,8 @@ pub fn update_brush(
 /// itself would be a fight. Stretch giving way is visible instead — the slider's own
 /// top moves with it, and the editor says why (`ModRow::range`).
 fn hold_the_tip_drawable(
-    b: &mut crate::brush_config::BrushConfig,
-    t: crate::brush_config::Transient,
+    b: &mut stark_chrome::brush_config::BrushConfig,
+    t: stark_chrome::brush_config::Transient,
 ) {
     b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params(t)));
 }
@@ -1662,7 +1665,7 @@ mod tests {
     /// `stark-dioxus-frontend`'s half of the bargain the engine keeps in
     /// `dynamics::tests::the_offered_stretch_is_always_drawable`: whatever a caller
     /// asks `update_brush` for, what reaches the engine has a drawable tip. Swept
-    /// over the app's own ranges — `panels::brush::{MIN_RADIUS, MAX_RADIUS}` and the
+    /// over the app's own ranges — `brush_config::{MIN_RADIUS, MAX_RADIUS}` and the
     /// stretch knob's full travel — including the combinations no slider can reach
     /// but a *drag* or a preset can, since those are the writers the clamp is
     /// positioned to catch.
@@ -1672,23 +1675,23 @@ mod tests {
     #[test]
     fn the_clamp_leaves_every_brush_drawable() {
         for size in [
-            crate::panels::brush::MIN_RADIUS,
+            stark_chrome::brush_config::MIN_RADIUS,
             30.0,
             110.0,
             250.0,
-            crate::panels::brush::MAX_RADIUS,
+            stark_chrome::brush_config::MAX_RADIUS,
         ] {
             for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0, 0.6] {
-                    let t = crate::brush_config::Transient {
+                    let t = stark_chrome::brush_config::Transient {
                         size,
                         ..Default::default()
                     };
-                    let mut b = crate::brush_config::BrushConfig {
+                    let mut b = stark_chrome::brush_config::BrushConfig {
                         stretch: knob,
                         ..Default::default()
                     };
-                    b.effect = crate::brush_config::BrushEffectType::Wet;
+                    b.effect = stark_chrome::brush_config::BrushEffectType::Wet;
                     b.wet.bleed = bleed;
                     hold_the_tip_drawable(&mut b, t);
                     let reach = t.size * BrushParams::elongation(b.stretch);
@@ -1713,12 +1716,18 @@ mod tests {
     /// this one's name.
     #[test]
     fn the_clamp_leaves_a_small_tip_alone() {
-        for size in [crate::panels::brush::MIN_RADIUS, 30.0, 110.0, 250.0, 400.0] {
-            let t = crate::brush_config::Transient {
+        for size in [
+            stark_chrome::brush_config::MIN_RADIUS,
+            30.0,
+            110.0,
+            250.0,
+            400.0,
+        ] {
+            let t = stark_chrome::brush_config::Transient {
                 size,
                 ..Default::default()
             };
-            let mut b = crate::brush_config::BrushConfig {
+            let mut b = stark_chrome::brush_config::BrushConfig {
                 stretch: BrushParams::MAX_STRETCH,
                 ..Default::default()
             };

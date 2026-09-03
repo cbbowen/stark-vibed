@@ -40,10 +40,10 @@ use dioxus::prelude::*;
 use stark_model::AssetId;
 use stark_model::document::BrushShape;
 
-use crate::library::{self, Thumbs};
 use crate::platform::{base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
+use stark_chrome::library::{self, Thumbs};
 
 /// One custom shape in the library, **with its bytes in hand**.
 ///

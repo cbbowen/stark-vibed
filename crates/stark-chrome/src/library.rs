@@ -1,7 +1,7 @@
 //! What a **browser-held asset library** is made of — the parts both of them share.
 //!
-//! There are two: `crate::shapes` keeps the brush stamps a user brought in (§6.6) and
-//! `crate::substrates` the canvas substrates (§6.4). They are the same object twice over. An
+//! There are two, and both are a frontend's (`shapes` and `substrates` in the web one):
+//! the brush stamps a user brought in (§6.6) and the canvas substrates (§6.4). They are the same object twice over. An
 //! entry is a canonical image keyed by its content id, the id is the whole of the
 //! reference, the rows go to `localStorage` and the bytes to the blob store beside
 //! them (§25.6), and each is shown as a card the size of a fingernail.
@@ -33,7 +33,7 @@ pub const THUMB_DIM: u32 = 128;
 /// An id *names* a field (§19), so a thumbnail is a pure function of the id and of
 /// which library is drawing it: there is no invalidation to get wrong and nothing to
 /// evict. Scanned by `PartialEq` over a `Vec` rather than hashed, like
-/// `Renderer::builtins` and `crate::thumbs::lookup` — the list is as long as the user
+/// `Renderer::builtins` and the frontend's `thumbs::lookup` — the list is as long as the user
 /// has entries.
 ///
 /// **One per library, never shared.** See the module note: two readings of one PNG
@@ -41,6 +41,8 @@ pub const THUMB_DIM: u32 = 128;
 pub struct Thumbs(Mutex<Vec<(AssetId, String)>>);
 
 impl Thumbs {
+    /// `const`, because every consumer of this declares one as a `static`: a
+    /// library's cache is per-library and lives as long as the app does.
     pub const fn new() -> Self {
         Self(Mutex::new(Vec::new()))
     }
@@ -62,6 +64,15 @@ impl Thumbs {
         if let Ok(mut thumbs) = self.0.lock() {
             thumbs.push((id, url));
         }
+    }
+}
+
+impl Default for Thumbs {
+    /// Deferring to [`new`](Self::new) rather than deriving, which would drop the
+    /// `const` the `static`s need. Here because this is a library's public type now
+    /// and a `new` without a `Default` is a surprise in one.
+    fn default() -> Self {
+        Self::new()
     }
 }
 

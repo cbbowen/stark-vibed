@@ -9,7 +9,7 @@
 //! length of it. The chrome that drives them is `panels::transform`; what holds
 //! them between events is `state::AppState::transform`.
 //!
-//! That is why it is a file of its own. It lived in `crate::state`, which is about
+//! That is why it is a file of its own. It lived in the web frontend's `state`, which is about
 //! the app's signals and the one door to the engine, and this is the part of that
 //! file that could be tested — 18 of the crate's tests are here, and they are the
 //! ones that can say a rim drag really does carry the grabbed point to the pointer

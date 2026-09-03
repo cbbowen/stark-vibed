@@ -9,26 +9,8 @@ use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{CommandButton, Modal, Slider};
+use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_model::document::{BrushShape, OrientationSource};
-
-/// The smallest brush radius (`BrushParams::radius`). A tip finer than a canvas
-/// pixel has nothing left to narrow.
-pub const MIN_RADIUS: f32 = 1.0;
-
-/// The maximum brush radius (`BrushParams::radius`).
-pub const MAX_RADIUS: f32 = 500.0;
-
-/// The most flow the sliders offer (`BrushDynamics::add`). Three, not one, because
-/// `add` is a rate rather than a fraction — the everyday brush sits near 1 and a
-/// loaded one that buries what is under it wants more.
-///
-/// Named beside the radius bounds because the *drag* bindings clamp against the same
-/// three figures (`input::Tune`, §18.1.9): a knob reachable two ways must have one
-/// range, or the drag would quietly go somewhere the slider cannot show. Every
-/// reader now goes through `BrushConfig::max_flow`, which is where the one
-/// effect whose rate has a ceiling of its own — the liquify strength (§6.13) —
-/// substitutes it.
-pub const MAX_FLOW: f32 = 3.0;
 
 /// The longest taper the editor offers, in brush radii
 /// (`BrushParams::start_taper_length`). Twenty radii is ten stroke widths of run-in

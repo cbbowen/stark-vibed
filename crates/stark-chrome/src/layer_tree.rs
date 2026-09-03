@@ -5,21 +5,22 @@
 //! folded away, what a row's own Carry and Release would do, and — given a drag —
 //! where the block would land, at what depth, and what that spells as a
 //! [`MoveLayer`](stark_engine::command::DocCommand::MoveLayer). The rsx! that draws
-//! it is [`layer`](crate::panels::layer), which is 900 lines of chrome this used to be buried in.
+//! it is `stark-dioxus-frontend`'s `panels::layer`, 900 lines of chrome this used to be
+//! buried in.
 //!
-//! It is a file of its own for `crate::gesture`'s reason: this is the part of the
+//! It is a file of its own for [`transform`](crate::transform)'s reason: this is the part of the
 //! panel that can be *tested*, and ten of the crate's tests are here — the ones
 //! that can say a drop between two rows means one place in the tree rather than
 //! another. Inside 1500 lines of markup they were the tests hardest to find and
 //! the code most likely to be skimmed as layout.
 //!
 //! The column arithmetic underneath — which rows yield, and by how much — is not
-//! here either. That is [`reorder`](crate::panels::reorder), shared with the guide list; what is
+//! here either. That is [`reorder`](crate::reorder), shared with the guide list; what is
 //! here is the part only a *tree* has.
 
 use std::collections::{HashMap, HashSet};
 
-use super::reorder::{Grab, Motion, Slide};
+use crate::reorder::{Grab, Motion, Slide};
 use stark_engine::LayerInfo;
 use stark_model::document::LayerId;
 use stark_model::document::Place;
@@ -29,7 +30,7 @@ use stark_model::document::Place;
 /// to its left, which is where Release sits, and — since a drag can change a row's
 /// depth as well as its place — how far sideways the pointer must travel to mean one
 /// level of it.
-pub(super) const INDENT: usize = 14;
+pub const INDENT: usize = 14;
 
 /// A row as the panel draws it: the layer, plus what its neighbours in the flat
 /// list say about it that the layer alone cannot.
@@ -37,23 +38,23 @@ pub(super) const INDENT: usize = 14;
 pub struct Row {
     pub info: LayerInfo,
     /// Collapsed away under a group whose triangle is shut.
-    pub(super) hidden: bool,
+    pub hidden: bool,
     /// Shut, for a group. Meaningless for a layer that carries nothing.
-    pub(super) collapsed: bool,
+    pub collapsed: bool,
     /// The layer directly below this one *in its own stack* — what Carry would put
     /// it on, and the layer a clip would be bounded by. `None` at the foot of a
     /// stack, where there is nothing to be carried by.
-    pub(super) carry_onto: Option<LayerId>,
+    pub carry_onto: Option<LayerId>,
     /// The group this layer is in, and what carries *that* — between them, where
     /// Release would put it: out of the group and directly above it. `None` for a
     /// layer that is not in a group, which is the only state Release has nothing to
     /// say about.
-    pub(super) release_to: Option<(LayerId, Option<LayerId>)>,
+    pub release_to: Option<(LayerId, Option<LayerId>)>,
     /// Whether Remove would leave a document behind. Removing a group takes what it
     /// carries with it (§14.2), so the floor is not "more than one row" but
     /// "something would be left" — which for a row deep in a group is nearly always
     /// true, and for the sole top-level stack never is.
-    pub(super) removable: bool,
+    pub removable: bool,
 }
 
 /// What a drag would commit, resolved against the rows as they stand now.
@@ -63,28 +64,28 @@ pub struct Row {
 /// is the part only a *tree* has: which depth the hand is asking for, and what that
 /// spells as a place in the document.
 #[derive(Clone, Copy, PartialEq)]
-pub(super) struct Landing {
+pub struct Landing {
     /// Which rows travel and what the rest do about it. The block is the dragged row
     /// and everything it carries — contiguous in the panel, because a base is drawn
     /// under exactly the rows it carries and nothing may come between.
-    pub(super) slide: Slide,
+    pub slide: Slide,
     /// The depth it lands at, which the pointer's *horizontal* travel chooses among
     /// the depths this seam can express.
-    pub(super) depth: usize,
+    pub depth: usize,
     /// Where the block is drawn while in flight.
-    pub(super) shift: (f32, f32),
+    pub shift: (f32, f32),
     /// The move this commits to (§14.8).
-    pub(super) carrier: Option<LayerId>,
-    pub(super) at: Place,
+    pub carrier: Option<LayerId>,
+    pub at: Place,
     /// Whether that move would change anything. A drag that ends where it began must
     /// not spend an undo step saying so — in a tree that means the same slot *and*
     /// the same depth, since one seam can hold several depths.
-    pub(super) inert: bool,
+    pub inert: bool,
 }
 
 impl Landing {
     /// How to draw the row at display index `i`.
-    pub(super) fn motion(&self, i: usize) -> Motion {
+    pub fn motion(&self, i: usize) -> Motion {
         self.slide.motion(i, self.shift)
     }
 }
@@ -117,7 +118,7 @@ impl Landing {
 /// travelling block is not one. And the landing is total — every depth in the range
 /// names exactly one real position, because the ancestors of the row below the gap
 /// cover every depth beneath it without a gap.
-pub(super) fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
+pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
     // Each row's box, found by the id it wears rather than by where it sits.
     let keys: Vec<String> = display.iter().map(|r| r.info.id.to_string()).collect();
     let (from, boxes) = drag.resolve(&keys)?;
@@ -206,7 +207,7 @@ pub(super) fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
 /// simply the last one seen in its stack, and a group's base is walked before
 /// anything it carries, so what carries the group is known by the time a member asks.
 /// Both are one map lookup per row rather than a scan of the list per row.
-pub(super) fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
+pub fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
     let mut out = Vec::with_capacity(layers.len());
     let mut shut_at: Option<usize> = None;
     // The topmost layer seen so far in each stack, and whether it is a filter —

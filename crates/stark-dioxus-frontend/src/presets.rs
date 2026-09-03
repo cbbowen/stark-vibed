@@ -49,13 +49,13 @@ use stark_model::document::{
     OrientationSource, ToothParams,
 };
 
-use crate::brush_config::{
-    BrushConfig, BrushEffectType, EraseConfig, LiquifyConfig, Transient, WetDynamics,
-};
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
 use crate::storage::{self, Store};
+use stark_chrome::brush_config::{
+    BrushConfig, BrushEffectType, EraseConfig, LiquifyConfig, Transient, WetDynamics,
+};
 
 /// The live brush, snapshotted: both halves — the tool ([`BrushConfig`]) and
 /// the tune it is being worked at (`Transient`) — copies of the two signals,

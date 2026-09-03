@@ -81,6 +81,13 @@ crates/
     build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
+  stark-chrome/    the **frontend's model** (§11.2): what a chrome is written in, below
+                   any toolkit. The brush's durable/transient halves, the transform
+                   algebra, the layer tree's arithmetic, the list-drag gesture, the
+                   asset libraries' thumbnails. Names no `dioxus::`, `wgpui::`,
+                   `web_sys::` or `winit::` type at all, and a test reads the source
+                   to say so. Everything in it was the web frontend's until there
+                   were two frontends
   stark-dioxus-frontend/
                    Dioxus 0.7 frontend; owns the wgpu::Surface
     tutor.rs       the guided tour (§24): the one reader hung off `dispatch`, and
@@ -100,8 +107,8 @@ crates/
 vendor/            third-party, EXCLUDED from the workspace
 ```
 
-**Dependencies point one way: frontend → engine → model.** `stark-net` depends
-on the model *only* — it moves logs and assets and never names an engine type,
+**Dependencies point one way: frontend → chrome → engine → model.** `stark-net`
+depends on the model *only* — it moves logs and assets and never names an engine type,
 which is what the split bought (§2). Which side a type belongs on has a
 mechanical answer: if it is `Serialize` it is a fact about the document and
 lives in the model; if it holds a tile it is a cache and lives in the engine.

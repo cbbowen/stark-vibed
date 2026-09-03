@@ -34,7 +34,6 @@ use stark_engine::command::Tool;
 use crate::collab::now_seconds;
 use crate::commands;
 use crate::drags;
-use crate::panels::brush::{MAX_RADIUS, MIN_RADIUS};
 use crate::panels::select::{current_action, modifier_mode};
 use crate::platform::{
     self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,
@@ -44,6 +43,7 @@ use crate::slots::{self, Grip};
 use crate::state::{
     AppState, BrushRing, Dwell, FlowBar, PickScope, TowUi, TuneReadout, dispatch, update_brush,
 };
+use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};

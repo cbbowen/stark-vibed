@@ -84,12 +84,12 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::brush_config::{BrushConfig, Transient};
 use crate::icons::{self, icon};
 use crate::layout::chrome_dimmed;
 use crate::presets::{self, PresetEntry};
 use crate::state::AppState;
 use crate::storage::{self, Store};
+use stark_chrome::brush_config::{BrushConfig, Transient};
 
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;

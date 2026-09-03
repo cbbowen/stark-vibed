@@ -138,7 +138,7 @@ pub enum Store {
     Shapes,
     /// The custom canvas-substrate library (§6.4, `crate::substrates`) — [`Shapes`]'s
     /// sibling in every respect, rows here and height maps in the blob store beside
-    /// them (`crate::library`).
+    /// them (`stark_chrome::library`).
     ///
     /// **Its key is still `stark.grounds`.** A key is browser-local data, not
     /// vocabulary: renaming one silently orphans every library already saved under

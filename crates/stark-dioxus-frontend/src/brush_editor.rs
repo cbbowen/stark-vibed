@@ -43,17 +43,16 @@ use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
 
-use crate::brush_config::{BrushConfig, BrushEffectType, Transient};
 use crate::commands::{self, Command};
 use crate::icons::{self, icon};
-use crate::panels::brush::{
-    MAX_RADIUS, MAX_TAPER, MAX_TOOTH_SOFTNESS, MIN_RADIUS, set_orientation, set_shape,
-};
+use crate::panels::brush::{MAX_TAPER, MAX_TOOTH_SOFTNESS, set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
+use stark_chrome::brush_config::{BrushConfig, BrushEffectType, Transient};
+use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
@@ -1095,7 +1094,7 @@ fn ShapeGallery() -> Element {
                     key: "{name}",
                     class: card(active),
                     onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "asset-thumb", style: crate::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: stark_chrome::library::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                 }
             }
@@ -1104,7 +1103,7 @@ fn ShapeGallery() -> Element {
                     key: "{key}",
                     class: card(brush_shape == BrushShape::Stamp(id)),
                     onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "asset-thumb", style: crate::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: stark_chrome::library::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                     // `icons::REMOVE`, as on every other row the application lets you
                     // take something out of — the library of stamps is one more roster.
