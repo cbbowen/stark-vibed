@@ -211,12 +211,12 @@ pub struct SessionTicket {
 /// things to go. A representative link loses a third of its bytes.
 ///
 /// **`base64url` because a link *is* a URL half the time** — the page fragment a shared
-/// session rides in (`stark-ui`'s `collab`). Base32 spends 8 characters per 5 bytes
-/// where base64 spends 4 per 3, so the alphabet alone is a fifth off the length; the
-/// `url` in the name is what makes that free, `-` and `_` for the two extra digits and
-/// no padding, so a link needs no percent-encoding anywhere it is put. What it costs is
-/// case-sensitivity, which is the one thing base32 was buying: a link is now something
-/// to copy rather than to retype.
+/// session rides in (`stark-dioxus-frontend`'s `collab`). Base32 spends 8 characters
+/// per 5 bytes where base64 spends 4 per 3, so the alphabet alone is a fifth off the
+/// length; the `url` in the name is what makes that free, `-` and `_` for the two extra
+/// digits and no padding, so a link needs no percent-encoding anywhere it is put. What
+/// it costs is case-sensitivity, which is the one thing base32 was buying: a link is
+/// now something to copy rather than to retype.
 ///
 /// **`best` rather than `default`**, the opposite of the save container's choice (§8),
 /// because it is not the same trade at all — a body of a few hundred bytes makes the

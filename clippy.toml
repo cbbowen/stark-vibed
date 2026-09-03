@@ -5,11 +5,12 @@
 # person loads the app. Nothing before a hand-run catches it, so it has to be
 # caught at the name. The rows below are that list.
 #
-# `stark-model`, `stark-engine` and `stark-ui` all compile to wasm; `stark-net`
-# does too. The benches, examples and native-only tests are the legitimate
-# exceptions, and each carries an `#[expect(clippy::disallowed_types, reason =
-# "...")]` that says so at the site — which is better than the silence there was
-# before, because an `#[expect]` that stops being needed reports itself.
+# `stark-model`, `stark-engine` and `stark-dioxus-frontend` all compile to wasm;
+# `stark-net` does too. The benches, examples and native-only tests are the
+# legitimate exceptions, and each carries an `#[expect(clippy::disallowed_types,
+# reason = "...")]` that says so at the site — which is better than the silence
+# there was before, because an `#[expect]` that stops being needed reports
+# itself.
 
 disallowed-types = [
   # `Instant::now()` panics on wasm32-unknown-unknown. This is the sharp one: the

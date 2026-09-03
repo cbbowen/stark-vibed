@@ -154,6 +154,6 @@ impl From<stark_assetid::AssetError> for EngineError {
 /// a superset of `std::result::Result` and save the two places below that spell the
 /// std one out — but a type-parameter default is not used for *inference*, so
 /// `stark_engine::Result::Ok(v)` in expression position stops resolving `E`, and that
-/// is exactly how a frontend closure pins its error type (`stark-ui`'s `collab`). Two
-/// in-crate spellings is the cheaper side of that trade.
+/// is exactly how a frontend closure pins its error type (`stark-dioxus-frontend`'s
+/// `collab`). Two in-crate spellings is the cheaper side of that trade.
 pub type Result<T> = std::result::Result<T, EngineError>;

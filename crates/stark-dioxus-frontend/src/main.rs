@@ -5,7 +5,7 @@
 //! after each command, with no GPU→CPU readback. The canvas fills the window;
 //! unobtrusive floating panels (color, brush, layers) sit on top.
 //!
-//! Run with `dx serve --web -p stark-ui` in a WebGPU-capable browser.
+//! Run with `dx serve --web -p stark-dioxus-frontend` in a WebGPU-capable browser.
 //!
 //! # What is in this file
 //!

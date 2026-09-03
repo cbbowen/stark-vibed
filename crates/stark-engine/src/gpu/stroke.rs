@@ -320,10 +320,10 @@ impl StrokeRenderer {
                 //
                 // **No brush this app can build does.** The frontier is published as
                 // [`max_tip_reach`](budget::max_tip_reach) and the frontend clamps
-                // every brush to it (`stark-ui`'s `state::hold_the_tip_drawable`), so
-                // reaching this arm means a record came from somewhere that did not —
-                // a peer, or a file written by another build — and is not being
-                // honoured.
+                // every brush to it (`stark-dioxus-frontend`'s
+                // `state::hold_the_tip_drawable`), so reaching this arm means a record
+                // came from somewhere that did not — a peer, or a file written by
+                // another build — and is not being honoured.
                 //
                 // Said once per stroke, not once per render: the gate is a pure
                 // function of the brush and so answers the same way every pointer move

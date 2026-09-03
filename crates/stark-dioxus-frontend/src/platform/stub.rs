@@ -33,7 +33,7 @@ impl Canvas {
     pub fn set_buffer_size(&self, _width: u32, _height: u32) {}
 
     pub fn surface_target(&self) -> wgpu::SurfaceTarget<'static> {
-        unimplemented!("stark-ui targets the web; there is no native surface backend")
+        unimplemented!("stark-dioxus-frontend targets the web; there is no native surface backend")
     }
 }
 

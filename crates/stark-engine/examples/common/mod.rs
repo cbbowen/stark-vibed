@@ -9,12 +9,12 @@
 ///
 /// **A capture is a lean file and this is not optional.** The app strips any asset it
 /// ships from the bundle and keeps only the content id, on the promise that whoever
-/// opens it can produce those bytes — a promise only `stark-ui` could keep, because
-/// only its build script hashes the shipped PNGs. So a harness that skipped this got a
-/// substrate that would not resolve, and a substrate that does not resolve is `Flat`, whose
-/// relief is 0: the deposition tooth is inert, and a toothed capture replays perfectly
-/// smooth with nothing to say it did (§6.4). A real bug report was unreproducible here
-/// for that reason alone.
+/// opens it can produce those bytes — a promise only `stark-dioxus-frontend` could
+/// keep, because only its build script hashes the shipped PNGs. So a harness that
+/// skipped this got a substrate that would not resolve, and a substrate that does not
+/// resolve is `Flat`, whose relief is 0: the deposition tooth is inert, and a toothed
+/// capture replays perfectly smooth with nothing to say it did (§6.4). A real bug
+/// report was unreproducible here for that reason alone.
 ///
 /// It is a bill and not a fetch: the engine refuses to replay a document whose content
 /// is still outstanding (`stark_model::DocError::MissingContent`), so anything left unpaid here

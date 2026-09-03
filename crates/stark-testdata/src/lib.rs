@@ -2568,9 +2568,9 @@ pub const FAST_STROKE: &[[f32; 2]] = &[
 /// than a synthetic stand-in — the studio HDR the goldens are lit by, the bristle
 /// brush, the linen substrate.
 ///
-/// These live in `crates/stark-ui/assets/` and are read from there. That is a
-/// crate boundary pointing the wrong way (§2 has stark-ui depending on
-/// core, never the reverse) and it is deliberate, for one reason: Dioxus's
+/// These live in `crates/stark-dioxus-frontend/assets/` and are read from there. That
+/// is a crate boundary pointing the wrong way (§2 has stark-dioxus-frontend depending
+/// on core, never the reverse) and it is deliberate, for one reason: Dioxus's
 /// `asset!` macro refuses any path outside its own crate, so the frontend cannot
 /// reference them anywhere else — and at 11 MB they are not worth a second copy.
 ///
@@ -2583,7 +2583,10 @@ pub mod assets {
     use std::path::PathBuf;
 
     fn dir() -> PathBuf {
-        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../stark-ui/assets"))
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../stark-dioxus-frontend/assets"
+        ))
     }
 
     fn read(rel: &str) -> Vec<u8> {
@@ -2619,17 +2622,17 @@ pub mod assets {
     }
 
     /// Bytes for any image the app ships, **by content id** — the dev-side of
-    /// `stark-ui::builtin_ids::fetch`, and what lets a headless engine open a lean
-    /// document (§8).
+    /// `stark-dioxus-frontend::builtin_ids::fetch`, and what lets a headless engine
+    /// open a lean document (§8).
     ///
     /// The app saves lean: a `.stark` painted on Linen names the substrate's id and
     /// carries none of its bytes, on the promise that whoever opens it can produce
-    /// that id from its own assets. Only `stark-ui` could keep that promise, because
-    /// only its build script hashes the shipped PNGs into a table. So every other
-    /// opener — a test, a repro harness, a CLI — got a substrate that would not resolve
-    /// and a document that replayed through the flat stand-in, silently: no tooth, and
-    /// stored pixels that no later arrival un-bakes (§6.4). A captured bug report was
-    /// unreproducible for exactly this reason.
+    /// that id from its own assets. Only `stark-dioxus-frontend` could keep that
+    /// promise, because only its build script hashes the shipped PNGs into a table. So
+    /// every other opener — a test, a repro harness, a CLI — got a substrate that
+    /// would not resolve and a document that replayed through the flat stand-in,
+    /// silently: no tooth, and stored pixels that no later arrival un-bakes (§6.4). A
+    /// captured bug report was unreproducible for exactly this reason.
     ///
     /// This is that table, derived at *runtime* from the same files rather than at
     /// build time — the one thing a dev-only crate can do that a build script cannot,

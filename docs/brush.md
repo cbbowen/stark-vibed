@@ -1723,21 +1723,22 @@ reserved id, so the shader always samples a texture — one code path.
 
 **Assets are fetched at runtime, never embedded.** The engine is *given* image
 bytes; it embeds none. Built-in assets (brush shapes, substrate height maps, the HDR)
-live as static files under `stark-ui/assets/`, bundled by `asset!` with
-cache-busting URLs; the frontend fetches them on demand with
+live as static files under `stark-dioxus-frontend/assets/`, bundled by `asset!`
+with cache-busting URLs; the frontend fetches them on demand with
 `dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
 and hands the bytes to the engine. The built-in shapes are listed in one table
-(`stark-ui/src/builtins.rs`) and fetched once at startup, which is what makes an
-id available to name them by: imported bytes are keyed by the hash of their
-decoded coverage, so every engine (main canvas, brush-editor preview, a peer's)
-lands on the same `AssetId`, and a built-in is referenced downstream exactly like
-a user's imported shape — a `BrushShape::Stamp`, with no notion of "built-in"
-anywhere. Adding a shape is a PNG plus a row. Brush *presets*
-(`stark-ui/src/presets.rs`) are the one thing that has to wait for the fetch,
-since a preset stores a content id. The large substrate maps are fetched lazily,
-only when a substrate is selected. This keeps multi-megabyte assets out of the wasm
-binary and is the path that scales as the libraries grow. (Headless tests, having
-no frontend, read the same files from disk and register them directly.)
+(`stark-dioxus-frontend/src/builtins.rs`) and fetched once at startup, which is
+what makes an id available to name them by: imported bytes are keyed by the hash
+of their decoded coverage, so every engine (main canvas, brush-editor preview, a
+peer's) lands on the same `AssetId`, and a built-in is referenced downstream
+exactly like a user's imported shape — a `BrushShape::Stamp`, with no notion of
+"built-in" anywhere. Adding a shape is a PNG plus a row. Brush *presets*
+(`stark-dioxus-frontend/src/presets.rs`) are the one thing that has to wait for
+the fetch, since a preset stores a content id. The large substrate maps are
+fetched lazily, only when a substrate is selected. This keeps multi-megabyte
+assets out of the wasm binary and is the path that scales as the libraries grow.
+(Headless tests, having no frontend, read the same files from disk and register
+them directly.)
 
 
 ## 6.9 Drag-and-hold drawing assist
@@ -1894,13 +1895,13 @@ closed loop join without a notch.
 ### The hold itself is the frontend's
 
 The engine owns what a hold **means** (`GestureCommand::Hold`); noticing that the
-pointer has stopped is `stark-ui/src/input.rs`. The split is the one §18.1.2 draws
-for the navigator's rotate drag: how long a pause has to be and how still a hand
-has to hold is *gesture feel*, a property of the device and the hand — and the
-engine has no clock to measure it with anyway (§7). The dwell is measured in
-**screen** pixels, not canvas pixels: holding still is a fact about the hand, and
-on the canvas the same tremor would count as a hold at one zoom level and as
-movement at another.
+pointer has stopped is `stark-dioxus-frontend/src/input.rs`. The split is the
+one §18.1.2 draws for the navigator's rotate drag: how long a pause has to be
+and how still a hand has to hold is *gesture feel*, a property of the device and
+the hand — and the engine has no clock to measure it with anyway (§7). The dwell
+is measured in **screen** pixels, not canvas pixels: holding still is a fact
+about the hand, and on the canvas the same tremor would count as a hold at one
+zoom level and as movement at another.
 
 `Hold` is idempotent and a no-op for a gesture that has already snapped, for a
 selection drag, and for a stroke that resembles nothing, so the frontend may send
@@ -2126,10 +2127,10 @@ encoding. Instead:
   hatch from heavy smoothing is the one artists already reach for to do fine
   work.
 - **The amount is stored with the preset, UI-side** — a field of the preset
-  library (`stark-ui`, localStorage; the self-describing format reconciles by
-  name, absent = 0), and so of every quick slot bound to a preset, since a slot
-  stores the preset's name and only its own size and flow (§18.1.8) — never of
-  the action log.
+  library (`stark-dioxus-frontend`, localStorage; the self-describing format
+  reconciles by name, absent = 0), and so of every quick slot bound to a preset,
+  since a slot stores the preset's name and only its own size and flow (§18.1.8)
+  — never of the action log.
 
 The name collision is deliberate avoided: `path.rs` already has a private
 `SMOOTHING` — the fit's curvature ridge, numerical conditioning, not a feel knob
@@ -2241,13 +2242,13 @@ nothing for a color to be a property of, so the pigment lives inside the paint
 effect (`PaintEffect::color`) and a stored erase stroke simply has none. The
 *hand* still has one while the eraser is held — the Color panel writes it
 whatever brush is in force (§18.1.8) — but that is the frontend's fact:
-`stark-ui`'s `BrushConfig` holds both effects' configurations with one in
-force, so the color lands on the remembered paint side, and a fill drawn
+`stark-dioxus-frontend`'s `BrushConfig` holds both effects' configurations with
+one in force, so the color lands on the remembered paint side, and a fill drawn
 mid-erase still lays it (the hand's color rides beside the params on
 `ViewCommand::SetBrush`, into `Session::color`). That the dynamics axes do not
-run is the enum, not a rule: an `Erase` brush has none. No region is ever
-needed either, so no tip is too large for this path (`dynamics_setup` answers
-`Erase` off the variant alone).
+run is the enum, not a rule: an `Erase` brush has none. No region is ever needed
+either, so no tip is too large for this path (`dynamics_setup` answers `Erase`
+off the variant alone).
 
 ### Why the extent accumulates across pieces
 

@@ -1,4 +1,4 @@
-"""Generate Stark's PWA icon set into `crates/stark-ui/public/`.
+"""Generate Stark's PWA icon set into `crates/stark-dioxus-frontend/public/`.
 
 The mark is two strokes crossing — a warm yellow over a cool blue — swept with
 Stark's own bundled bristle stamp, and mixing to green where they meet. That is

@@ -18,9 +18,10 @@ exclude = [
     # VENDORING.md); substituted for the crates.io version via [patch] below.
     "vendor/iroh",
 ]
-# stark-ui is a wasm/web app (Dioxus web + WebGPU); keep it out of the native
-# default build/test so `cargo build`/`cargo test` stay host-only. Build it with
-# `dx serve --platform web` or `cargo build -p stark-ui --target wasm32-unknown-unknown`.
+# stark-dioxus-frontend is a wasm/web app (Dioxus web + WebGPU); keep it out of
+# the native default build/test so `cargo build`/`cargo test` stay host-only.
+# Build it with `dx serve --platform web` or
+# `cargo build -p stark-dioxus-frontend --target wasm32-unknown-unknown`.
 default-members = [
     "crates/stark-assetid",
     "crates/stark-engine",

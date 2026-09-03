@@ -137,7 +137,7 @@ stark/
 │   │       ├── transport/      # the WebRTC path bootstrap
 │   │       ├── mirror.rs       # CPU copy of the log, to serve joiners
 │   │       └── ticket.rs       # shareable session tickets
-│   └── stark-ui/               # Dioxus 0.7 frontend (§11)
+│   └── stark-dioxus-frontend/  # Dioxus 0.7 frontend (§11)
 │       ├── assets/             # shipped images + stylesheet (fetched at runtime)
 │       └── src/
 │           ├── main.rs         # app root, canvas, command rail
@@ -217,23 +217,23 @@ rather than beside the op. The op is a document fact; how it is packed for
 
 `stark-net` adapts iroh to the log (§12) and depends on **`stark-model` alone** — it
 names no engine type at all, and takes `stark-engine` only as a dev-dependency,
-because its tests paint. `stark-ui` depends on both, and on neither through the
-other: a type has one public path, now enforced by the crate boundary instead of by
-convention. **`stark-ui` depends on the engine, never the reverse.**
-`stark-shaders` is split out so shader compilation (a build step) does not pollute
-the engine crate; `stark-assetid` is split out so a *build script* can compute a
-content id without a GPU, which is what lets the frontend know a bundled asset's id
-before fetching it (§19).
+because its tests paint. `stark-dioxus-frontend` depends on both, and on neither
+through the other: a type has one public path, now enforced by the crate
+boundary instead of by convention. **`stark-dioxus-frontend` depends on the
+engine, never the reverse.** `stark-shaders` is split out so shader compilation
+(a build step) does not pollute the engine crate; `stark-assetid` is split out
+so a *build script* can compute a content id without a GPU, which is what lets
+the frontend know a bundled asset's id before fetching it (§19).
 
 Two caveats, stated rather than hidden:
 
 - The large image assets (studio HDR, linen substrate, bristle brush — 11 MB
-  together) live in `crates/stark-ui/assets/`, because Dioxus's `asset!` macro
-  rejects any path outside its own crate. stark-engine's *tests* want the same
-  bytes, so they read them from there. That is a path pointing the wrong way; it
-  is confined to one module, `stark_testdata::assets`, which is the only thing
-  that breaks if the frontend reorganizes. No code or Cargo dependency crosses
-  that way; a second 11 MB copy was the alternative.
+  together) live in `crates/stark-dioxus-frontend/assets/`, because Dioxus's
+  `asset!` macro rejects any path outside its own crate. stark-engine's *tests*
+  want the same bytes, so they read them from there. That is a path pointing the
+  wrong way; it is confined to one module, `stark_testdata::assets`, which is
+  the only thing that breaks if the frontend reorganizes. No code or Cargo
+  dependency crosses that way; a second 11 MB copy was the alternative.
 - **`vendor/` is in `[workspace] exclude`.** Cargo otherwise promotes an
   unexcluded path dependency to a workspace member, which drags vendored code
   into `cargo fmt --all` and `clippy --workspace`. Their own test suites
@@ -244,7 +244,7 @@ Two caveats, stated rather than hidden:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ stark-ui (Dioxus)   DOM chrome + a GPU canvas surface           │
+│ stark-dioxus-frontend   DOM chrome + a GPU canvas surface       │
 │   - sends InputCommand     - subscribes to ObservableState      │
 │   - owns wgpu::Surface, calls engine.render(view, target)       │
 └───────────────▲─────────────────────────────┬───────────────────┘

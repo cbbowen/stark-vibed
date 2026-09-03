@@ -316,12 +316,12 @@ mappings onto one target is likewise a `Vec` away, and would multiply.
 It is what makes a brush feel *authored* rather than configured — and what makes
 a brush **library** worth shipping, which is the thing users actually shop for.
 (The library's skeleton exists: named per-user presets persist in `localStorage`
-and apply from the Brush panel, `stark-ui/src/presets.rs`, where the shipped
-Pencil now maps tilt → stretch and pressure → flow — leaning the pen draws the
-tip out along the lean rather than scaling it up, §6.6; shape import/persistence is
-done, §6.6; §18.1.8 puts ten of them under the number keys; and every preset
-shows the stroke it makes, rendered offscreen by a shared engine, §11. Preset
-import/export does not.)
+and apply from the Brush panel, `stark-dioxus-frontend/src/presets.rs`, where
+the shipped Pencil now maps tilt → stretch and pressure → flow — leaning the pen
+draws the tip out along the lean rather than scaling it up, §6.6; shape
+import/persistence is done, §6.6; §18.1.8 puts ten of them under the number
+keys; and every preset shows the stroke it makes, rendered offscreen by a shared
+engine, §11. Preset import/export does not.)
 
 #### 18.1.5 A mixing palette
 
@@ -453,8 +453,8 @@ replaced had the opposite property — a slot was a copy of the tool as it had b
 the day it was assigned, and editing the preset reached nothing.
 
 Everything the feature does falls out of that instead of being wired up three
-times — this is the whole of `stark-ui/src/slots.rs`, and the panel and the
-engine learn nothing:
+times — this is the whole of `stark-dioxus-frontend/src/slots.rs`, and the panel
+and the engine learn nothing:
 
 - **Hold and draw** and the stroke is the number's, because the slot's brush *is*
   the live brush for the length of the hold, and a stroke takes its copy of the
@@ -1143,8 +1143,8 @@ were absent". The hard part is built and only "undo the last thing" is exposed.
 Exposed as a **scrubber the artist can drag while working**, it is a real
 critique tool — seeing your own process is how you find the moment a piece went
 wrong — rather than a novelty output. Shipped as **Timeline mode** (command search → Timeline;
-`stark-ui/src/panels/timeline.rs`): a bar carrying a transport, a per-action
-scrubber and a speed control, over `Timeline::seek`.
+`stark-dioxus-frontend/src/panels/timeline.rs`): a bar carrying a transport, a
+per-action scrubber and a speed control, over `Timeline::seek`.
 
 The whole feature is one observation: `LinearTimeline` already holds an *applied
 prefix* and a *withheld suffix*, and undo and redo already move the boundary

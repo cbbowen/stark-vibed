@@ -10,9 +10,10 @@ dialog, which a new UI feature joins and how — §25.
 
 ## 11. Frontend (Dioxus)
 
-`stark-ui` is a Dioxus 0.7 **web** app: the backend runs in WASM and the painting
-surface is a dedicated `wgpu::Surface` bound to the page `<canvas>` via WebGPU,
-which the engine draws into directly. DOM chrome surrounds it.
+`stark-dioxus-frontend` is a Dioxus 0.7 **web** app: the backend runs in WASM
+and the painting surface is a dedicated `wgpu::Surface` bound to the page
+`<canvas>` via WebGPU, which the engine draws into directly. DOM chrome
+surrounds it.
 
 - UI components dispatch `InputCommand`s through one seam, `state::dispatch`,
   which applies, repaints, refreshes `ObservableState` and broadcasts whatever
@@ -550,8 +551,8 @@ which the engine draws into directly. DOM chrome surrounds it.
 - **The app installs, and it starts offline.** `index.html` (the crate root's
   own, which replaces the one `dx` would generate) links a web app manifest and
   registers a service worker; both, with the launcher icons, live in
-  `stark-ui/public/`, which the CLI copies to the **site root** unhashed —
-  unlike `assets/`, whose every file is renamed by content hash. That
+  `stark-dioxus-frontend/public/`, which the CLI copies to the **site root**
+  unhashed — unlike `assets/`, whose every file is renamed by content hash. That
   distinction is the whole design of `public/sw.js`: the navigation response
   names one build's hashed wasm, so it is fetched **network-first** and only
   falls back to cache; everything else same-origin is content-addressed and so
@@ -582,9 +583,9 @@ which the engine draws into directly. DOM chrome surrounds it.
     opening a document replaces the canvas (§8), so a second would be a painting
     nobody ever sees, which is what `single-client` says too.
   - The icons are painted with Stark's own bristle stamp by
-    `stark-ui/tools/make-icons.py`, run by hand; the PNGs are checked in. Not a
-    build step — a logo is not a build product, and nothing keys off its bytes
-    the way `stark-assetid` keys off an asset's (§19).
+    `stark-dioxus-frontend/tools/make-icons.py`, run by hand; the PNGs are
+    checked in. Not a build step — a logo is not a build product, and nothing
+    keys off its bytes the way `stark-assetid` keys off an asset's (§19).
 - **The painting lives in the tab, so the tab asks before it goes.** There is no
   autosave and no server here: a reload, a closed tab, a followed link and the back
   button are all the end of anything neither Save nor Export has taken out, and
@@ -620,26 +621,28 @@ which the engine draws into directly. DOM chrome surrounds it.
 Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame
 back to a PNG data URL — correct but laggy; the WebGPU surface replaced it,
-touching only `stark-ui`.) Run with `dx serve --web -p stark-ui` in a WebGPU
-browser. A native winit/desktop frontend could reuse the same engine.
+touching only `stark-dioxus-frontend`.) Run with
+`dx serve --web -p stark-dioxus-frontend` in a WebGPU browser. A native
+winit/desktop frontend could reuse the same engine.
 
 ## 25. Commands and drag bindings
 
 The chrome reaches every act and every bound gesture through one of two tables.
-The **command registry** (`stark-ui/src/commands.rs`) holds the simple acts —
-undo, deselect, open the export dialog — each a variant of `Command` carrying
-its whole description, with the keyboard as one rebindable column. The **drag
-table** (`stark-ui/src/drags.rs`) holds the canvas presses that open something
-other than painting — the brush-tuning drag (§18.1.9), the eyedropper (§18.0.2),
-the layer carry (§16.11) — each a row binding an exact chord+button to a
-`DragAction`. A third registry sits one layer down and answers a different
-question — `Store` (§25.6), which enumerates every record the frontend keeps in
-this *browser*: the libraries, the settings, the two tables above. §11 above tells the
-first two designs' history; this chapter is the working guide, written for the
-day a feature is added: which table the feature belongs to, if any, and the steps
-that keep them true. §25.7 and §25.9 cover the two things that join no registry
-and still have rules — the dialog, and a run of buttons — and §25.8 the half of
-the drag table that belongs to the user rather than to us.
+The **command registry** (`stark-dioxus-frontend/src/commands.rs`) holds the
+simple acts — undo, deselect, open the export dialog — each a variant of
+`Command` carrying its whole description, with the keyboard as one rebindable
+column. The **drag table** (`stark-dioxus-frontend/src/drags.rs`) holds the
+canvas presses that open something other than painting — the brush-tuning drag
+(§18.1.9), the eyedropper (§18.0.2), the layer carry (§16.11) — each a row
+binding an exact chord+button to a `DragAction`. A third registry sits one layer
+down and answers a different question — `Store` (§25.6), which enumerates every
+record the frontend keeps in this *browser*: the libraries, the settings, the
+two tables above. §11 above tells the first two designs' history; this chapter
+is the working guide, written for the day a feature is added: which table the
+feature belongs to, if any, and the steps that keep them true. §25.7 and §25.9
+cover the two things that join no registry and still have rules — the dialog,
+and a run of buttons — and §25.8 the half of the drag table that belongs to the
+user rather than to us.
 
 One law covers all three, and it is the reason they exist: **one authority, and
 surfaces render it rather than restating it.** Each table has one reader on its
@@ -934,10 +937,11 @@ checklist:
 ### 25.6 The browser-local store
 
 The third registry, and the one added last because it was learned the hard way.
-`Store` (`stark-ui/src/storage.rs`) enumerates every record this browser keeps —
-eleven of them: the five libraries (brush shapes, canvas substrates, presets,
-gradients, quick brushes), the ⚙ dialog's settings, the chord table, the drag
-table, what is on screen, what the tour has seen, and this client's identity.
+`Store` (`stark-dioxus-frontend/src/storage.rs`) enumerates every record this
+browser keeps — eleven of them: the five libraries (brush shapes, canvas
+substrates, presets, gradients, quick brushes), the ⚙ dialog's settings, the
+chord table, the drag table, what is on screen, what the tour has seen, and this
+client's identity.
 
 One law, the same one: **one authority, and callers hand it typed values rather
 than spelling a format.** Here that is enforced by the type system — a type
@@ -1216,7 +1220,7 @@ at the column's edge whether it is `absolute` or `fixed`. There is no arrangemen
 of the markup that gets it out. It is mounted at the app root instead
 (`panels::popout::StackPopouts`) and *placed*, against the row's own measured box —
 the machinery the guided tour's card is placed with, which is why both now read
-from one module (`stark-ui/src/anchor.rs`, §24.3).
+from one module (`stark-dioxus-frontend/src/anchor.rs`, §24.3).
 
 Placing it is three answers, and only the middle one was a surprise:
 
@@ -1253,13 +1257,14 @@ are a press away and cost the column nothing.
 
 ### 25.8 Rebinding a drag, and the one time we ask
 
-The drag table's rows are the user's. `DragBindings` (`stark-ui/src/drags.rs`) is
-`defaults()` with this browser's own rows laid over it, and it is what both
-readers ask — `find` on the press, `armed` on the advertisement — so a rebind
-moves the cursor's promise in the same frame it moves the press. The shape is
-`commands::Bindings`', copied deliberately: the two tables share nothing but that
-shape, and a trait generic over "a chord" would be two associated types and a
-blanket impl to save forty lines of the plainest code in either module.
+The drag table's rows are the user's. `DragBindings`
+(`stark-dioxus-frontend/src/drags.rs`) is `defaults()` with this browser's own
+rows laid over it, and it is what both readers ask — `find` on the press,
+`armed` on the advertisement — so a rebind moves the cursor's promise in the
+same frame it moves the press. The shape is `commands::Bindings`', copied
+deliberately: the two tables share nothing but that shape, and a trait generic
+over "a chord" would be two associated types and a blanket impl to save forty
+lines of the plainest code in either module.
 
 Four rules carry over from the chord table, each for its own reason:
 

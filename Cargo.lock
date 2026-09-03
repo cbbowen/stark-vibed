@@ -6535,6 +6535,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "stark-dioxus-frontend"
+version = "0.0.0"
+dependencies = [
+ "console_error_panic_hook",
+ "dioxus",
+ "js-sys",
+ "png",
+ "serde",
+ "serde_json",
+ "stark-assetid",
+ "stark-engine",
+ "stark-model",
+ "stark-net",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-wasm",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "stark-engine"
 version = "0.0.0"
 dependencies = [
@@ -6628,29 +6651,6 @@ version = "0.0.0"
 dependencies = [
  "stark-assetid",
  "stark-model",
-]
-
-[[package]]
-name = "stark-ui"
-version = "0.0.0"
-dependencies = [
- "console_error_panic_hook",
- "dioxus",
- "js-sys",
- "png",
- "serde",
- "serde_json",
- "stark-assetid",
- "stark-engine",
- "stark-model",
- "stark-net",
- "tracing",
- "tracing-subscriber",
- "tracing-wasm",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
 ]
 
 [[package]]

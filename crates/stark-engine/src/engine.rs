@@ -569,9 +569,9 @@ pub struct ObservableState {
     ///
     /// **Not "unsaved".** A frontend that asks before throwing the page away wants
     /// this *and* something only it knows — whether the revision on screen is one it
-    /// has since written to a file (`stark-ui`'s `files::unsaved`). The engine
-    /// supplies the half that would otherwise be a list of document-replacing call
-    /// sites kept by hand (`Engine::doc_origin`).
+    /// has since written to a file (`stark-dioxus-frontend`'s `files::unsaved`). The
+    /// engine supplies the half that would otherwise be a list of document-replacing
+    /// call sites kept by hand (`Engine::doc_origin`).
     pub edited: bool,
     pub active_layer: LayerId,
     /// Layers bottom-to-top. Shared rather than copied — see [`Layers`].

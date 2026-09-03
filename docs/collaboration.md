@@ -10,10 +10,11 @@ The CRDT over the action log, the iroh transport, owned selections, and the pres
 
 Multi-user editing over `iroh` — **implemented**, exactly as the additive layer
 this section always planned: `ReplicatedTimeline` in `stark-engine` (merge
-semantics), `stark-net` (the wire), a share/join dialog in `stark-ui`. Engine and
-GPU code were untouched. Three properties already in place made it tractable:
-the document is a **log of id-tagged deterministic actions** (§4); replay is
-**bit-for-bit deterministic** (§6.5, §9); the timeline is behind a **trait** (§5).
+semantics), `stark-net` (the wire), a share/join dialog in
+`stark-dioxus-frontend`. Engine and GPU code were untouched. Three properties
+already in place made it tractable: the document is a **log of id-tagged
+deterministic actions** (§4); replay is **bit-for-bit deterministic** (§6.5,
+§9); the timeline is behind a **trait** (§5).
 
 ### 12.1 Convergence model — a CRDT over the action log
 

@@ -1659,7 +1659,7 @@ mod tests {
 
     /// **No brush this app can hold is one the renderer refuses to draw.**
     ///
-    /// `stark-ui`'s half of the bargain the engine keeps in
+    /// `stark-dioxus-frontend`'s half of the bargain the engine keeps in
     /// `dynamics::tests::the_offered_stretch_is_always_drawable`: whatever a caller
     /// asks `update_brush` for, what reaches the engine has a drawable tip. Swept
     /// over the app's own ranges — `panels::brush::{MIN_RADIUS, MAX_RADIUS}` and the

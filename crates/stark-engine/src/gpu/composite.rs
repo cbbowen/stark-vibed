@@ -535,8 +535,8 @@ impl CompositorPipeline {
         // gamma-squared. Nothing *fails*: it is a picture, just the wrong one, which is
         // exactly the class §1 spends structure to rule out rather than to document.
         // The rule was real but lived in the frontend that happened to obey it
-        // (`stark-ui`'s surface configuration), so every other embedder — and one test
-        // — was free to get it wrong.
+        // (`stark-dioxus-frontend`'s surface configuration), so every other embedder
+        // — and one test — was free to get it wrong.
         assert!(
             !target_format.is_srgb(),
             "a compositor renders to a linear target: the media pass encodes display              sRGB itself (§6.5), so {target_format:?} would be encoded twice",

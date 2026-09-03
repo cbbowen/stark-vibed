@@ -129,8 +129,8 @@ pub struct LayerSite {
 /// (the fold), `patch` (its inverse), and the unlogged drag previews in `engine`,
 /// which fold the very action their release will commit
 /// (`document::apply::preview_of`). Nothing outside names one — checked against
-/// `stark-ui`, the integration tests, the benches and `stark-net`, which between them
-/// use only the readers.
+/// `stark-dioxus-frontend`, the integration tests, the benches and `stark-net`, which
+/// between them use only the readers.
 #[derive(Clone)]
 pub struct DocState {
     /// The root stack, bottom-to-top. The tree lives *inside* it: a layer's

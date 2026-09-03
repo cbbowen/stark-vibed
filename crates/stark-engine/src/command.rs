@@ -926,7 +926,7 @@ impl ViewCommand {
     /// own pigment — right for every caller whose hand holds nothing beside the
     /// brush: tests, benches, the thumbnail rig. The frontend does **not** come
     /// through here: its hand keeps a color an erasing brush does not carry
-    /// (`stark-ui`'s `BrushConfig`), and sends it alongside explicitly.
+    /// (`stark-dioxus-frontend`'s `BrushConfig`), and sends it alongside explicitly.
     pub fn set_brush(brush: BrushParams) -> Self {
         Self::SetBrush {
             color: brush.pigment().unwrap_or([0.0; 3]),

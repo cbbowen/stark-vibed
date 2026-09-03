@@ -70,7 +70,7 @@ fn save_load_roundtrip_is_lossless() {
 
 /// `ObservableState::edited` is the baseline half of "there is unsaved work here":
 /// it says the committed document has moved since it *arrived*, whichever way it
-/// arrived. A frontend that asks before the page unloads (`stark-ui`'s
+/// arrived. A frontend that asks before the page unloads (`stark-dioxus-frontend`'s
 /// `files::unsaved`, §11) is built on it, and what it must never do is object to
 /// closing a canvas nobody has touched — a warning raised when there is nothing to
 /// lose is one the user learns to click through before the day it is right.

@@ -412,8 +412,9 @@ coverage mask is, and a document that switched part-way needs both. The engine
 limit (preserving tileability), hashes, and returns the id — so an id is only
 knowable once the bytes are in hand. And `DEFAULT_SUBSTRATE` is `Flat`, because
 core naming linen would be core naming an image it cannot produce; the frontend
-holds a catalog (`stark-ui/src/substrates.rs`, the analogue of `builtins.rs` for
-shapes) and opens a fresh document on a substrate once its map has landed.
+holds a catalog (`stark-dioxus-frontend/src/substrates.rs`, the analogue of
+`builtins.rs` for shapes) and opens a fresh document on a substrate once its map
+has landed.
 
 **And a user brings one the same way.** This is the payoff of the paragraph above
 rather than a feature beside it: because a substrate *is* its bytes, "built-in" is a
@@ -422,11 +423,12 @@ substrate is saved, bundled, replayed and fetched by a peer through the machiner
 `Linen` already uses. There is no second path — only a second place the bytes come
 from. The frontend keeps the library the way it keeps imported brush stamps
 (§25.6): a name and an id in `localStorage`, the height map in the blob store
-beside it, and the parts both libraries share in `stark-ui/src/library.rs`. The
-one real difference between importing a stamp and importing a substrate is polarity.
-A stamp's is a *spelling* — white paints, and a scan of ink on paper means the
-opposite — so the import inverts a dark-on-light image; a substrate's polarity **is
-the substrate**, so nothing inverts it, and the import's whole job is to make the
+beside it, and the parts both libraries share in
+`stark-dioxus-frontend/src/library.rs`. The one real difference between
+importing a stamp and importing a substrate is polarity. A stamp's is a
+*spelling* — white paints, and a scan of ink on paper means the opposite — so
+the import inverts a dark-on-light image; a substrate's polarity **is the
+substrate**, so nothing inverts it, and the import's whole job is to make the
 image grey (`normalize_substrate_image`).
 
 **How large the substrate is laid** is document state too:
@@ -448,12 +450,12 @@ held for as long as the log can be replayed across it. The ladder is what keeps 
 slider dragged end to end from naming three hundred of them.
 
 That last cost is also why the slider *previews*. A scale is shown per pointer
-sample and committed once on release (§25.4's bargain, `stark-ui/src/preview.rs`)
-— and here the preview is genuinely free, because the map's **height** channel is
-the same field however large it is laid. All of a bake's scale-dependence is in
-its rise channels, which only the deposit reads. So the light follows the slider
-instantly while the tooth waits for the commit, and nothing filters a whole image
-under the hand.
+sample and committed once on release (§25.4's bargain,
+`stark-dioxus-frontend/src/preview.rs`) — and here the preview is genuinely
+free, because the map's **height** channel is the same field however large it is
+laid. All of a bake's scale-dependence is in its rise channels, which only the
+deposit reads. So the light follows the slider instantly while the tooth waits
+for the commit, and nothing filters a whole image under the hand.
 
 The bundled substrates: linen, a regular woven grid; and rough, a brushed acrylic
 substrate, irregular, whose height histogram is a broad spread rather than a

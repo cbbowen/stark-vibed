@@ -81,7 +81,8 @@ crates/
     build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
-  stark-ui/        Dioxus 0.7 frontend; owns the wgpu::Surface
+  stark-dioxus-frontend/
+                   Dioxus 0.7 frontend; owns the wgpu::Surface
     tutor.rs       the guided tour (§24): the one reader hung off `dispatch`, and
                    the only module that asks what a command *changes* rather than
                    what it says
@@ -92,17 +93,19 @@ crates/
 vendor/            third-party, EXCLUDED from the workspace
 ```
 
-**Dependencies point one way: ui → engine → model.** `stark-net` depends on the
-model *only* — it moves logs and assets and never names an engine type, which is
-what the split bought (§2). Which side a type belongs on has a mechanical answer:
-if it is `Serialize` it is a fact about the document and lives in the model; if it
-holds a tile it is a cache and lives in the engine. `AssetId`/`AssetStore`,
-`SubstrateId`/`SubstrateMap`, `LayerId`/`Layer`, `Action`/`DocState` are all the same pair.
+**Dependencies point one way: frontend → engine → model.** `stark-net` depends
+on the model *only* — it moves logs and assets and never names an engine type,
+which is what the split bought (§2). Which side a type belongs on has a
+mechanical answer: if it is `Serialize` it is a fact about the document and
+lives in the model; if it holds a tile it is a cache and lives in the engine.
+`AssetId`/`AssetStore`, `SubstrateId`/`SubstrateMap`, `LayerId`/`Layer`,
+`Action`/`DocState` are all the same pair.
 
-The one crack in that: large image assets live in `stark-ui/assets/` because
-Dioxus's `asset!` rejects paths outside its own crate, and the engine's *tests* read
-them from there through `stark_testdata::assets` — the single module that breaks if
-the frontend reorganizes.
+The one crack in that: large image assets live in
+`stark-dioxus-frontend/assets/` because Dioxus's `asset!` rejects paths outside
+its own crate, and the engine's *tests* read them from there through
+`stark_testdata::assets` — the single module that breaks if the frontend
+reorganizes.
 
 ## Commands
 
@@ -116,8 +119,8 @@ cargo test --workspace --doc    # doctests, which nextest cannot run (see below)
 # the flag it checks `pub` items only and reports a fraction of what is broken.
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
   cargo doc --workspace --no-deps --document-private-items
-cargo check -p stark-ui --target wasm32-unknown-unknown
-dx serve --web -p stark-ui                  # run it (needs a WebGPU browser)
+cargo check -p stark-dioxus-frontend --target wasm32-unknown-unknown
+dx serve --web -p stark-dioxus-frontend   # run it (needs a WebGPU browser)
 cargo bench -p stark-engine --bench stroke    # criterion; the dynamics perf gate
 # where a stroke's time goes, phase by phase (§7.1) — seconds, not minutes
 cargo run --release -p stark-engine --example stroke_bench
@@ -150,7 +153,7 @@ either way, so nothing else will say so.
 ```sh
 cargo clippy --workspace --all-targets --no-default-features \
   --features stark-net/webrtc -- -D warnings
-cargo check -p stark-ui --target wasm32-unknown-unknown \
+cargo check -p stark-dioxus-frontend --target wasm32-unknown-unknown \
   --no-default-features --features stark-net/webrtc
 # both rounds above put `stark-net/webrtc` back, so this crate's feature-OFF
 # shape — the no-op transport facade included — is compiled by no other gate.

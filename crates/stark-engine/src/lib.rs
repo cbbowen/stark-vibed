@@ -52,10 +52,10 @@
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
 //! **A module that is both is what the rule forbids** — `stark_engine::InputSample`
-//! and `stark_engine::command::InputSample` both live, in the same file of `stark-ui`.
-//! The split is settled the way the traffic decided: `command` and `document` are
-//! navigated (132 and 4 module-path uses
-//! outside the crate), so they keep the module and lose their root re-exports;
+//! and `stark_engine::command::InputSample` both live, in the same file of
+//! `stark-dioxus-frontend`. The split is settled the way the traffic decided:
+//! `command` and `document` are navigated (132 and 4 module-path uses outside the
+//! crate), so they keep the module and lose their root re-exports;
 //! `assets`, `colorspace`, `engine`, `gpu`, `peer`, `pictures`, `session` and `view`
 //! are not, so they lose the module and the root list absorbs the handful of names
 //! that were only reachable through it.

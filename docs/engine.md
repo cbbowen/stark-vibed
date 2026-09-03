@@ -213,7 +213,7 @@ bill, since only its build script hashes the shipped PNGs into a table
 (`builtin_ids`). `stark-testdata::assets::bundled` is the same table derived at
 *runtime* from the same files, so a test or a repro harness can open a capture the
 way the app opens it. That is a dev-only mirror of a frontend concern, kept in the
-one crate that already reaches into `stark-ui/assets` (§2).
+one crate that already reaches into `stark-dioxus-frontend/assets` (§2).
 
 This walks back part of the paragraph above, so it is worth being exact about
 what changed. That bug was a substrate named by a *label*, resolved against whatever

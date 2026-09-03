@@ -39,14 +39,14 @@ jobs:
 
       - name: Build
         # `--debug-symbols false` is only to keep wasm-opt from failing.
-        run: dx build --package stark-ui --platform web --release --debug-symbols false --base-path ${{ github.event.repository.name }}
+        run: dx build --package stark-dioxus-frontend --platform web --release --debug-symbols false --base-path ${{ github.event.repository.name }}
 
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
         with:
           # dx writes the static site under target/dx/<package name>/release/web/public.
-          path: "./target/dx/stark-ui/release/web/public"
+          path: "./target/dx/stark-dioxus-frontend/release/web/public"
 
   deploy:
     needs: build

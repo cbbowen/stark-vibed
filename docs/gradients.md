@@ -134,14 +134,13 @@ outlier ignored, the normalization refusals) is pinned CPU-side in
 A gradient is something the artist paints **with**, not part of what they have
 painted — the same classification call as brush presets and the shape library
 (§11), and the same consequences: entries live in the frontend
-(`stark-ui/src/gradients.rs`), follow this browser across documents via
-`localStorage` (`stark.gradients`, a JSON list of `{name, gradient}` read entry
-by entry, so one damaged entry is skipped and the rest of the library still loads —
-§25.6), never enter the
-document, and never reach a peer. When the gradient fill lands, the chosen ramp
-is **embedded in the `FillOp` it commits** — the way a stroke embeds its brush
-color — so documents stay self-contained and replayable with no reference
-into anyone's library.
+(`stark-dioxus-frontend/src/gradients.rs`), follow this browser across documents
+via `localStorage` (`stark.gradients`, a JSON list of `{name, gradient}` read
+entry by entry, so one damaged entry is skipped and the rest of the library
+still loads — §25.6), never enter the document, and never reach a peer. When the
+gradient fill lands, the chosen ramp is **embedded in the `FillOp` it commits**
+— the way a stroke embeds its brush color — so documents stay self-contained and
+replayable with no reference into anyone's library.
 
 Unlike the presets there are **no built-in entries**: a gradient's whole story
 is that it came off *your* canvas, and a library opening on a stranger's sunset

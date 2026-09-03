@@ -128,9 +128,9 @@ async fn custom_shapes_replicate_mid_session() {
 /// degradation an unreachable brush gets, reached without a single dial.
 ///
 /// A wire fact, so no engine: the stroke is hand-built naming a shape nobody
-/// registered — the call `stark-ui` makes beside every import is the one being
-/// skipped — and what is asserted is that the action arrives and nothing is
-/// fetched for it.
+/// registered — the call `stark-dioxus-frontend` makes beside every import is the
+/// one being skipped — and what is asserted is that the action arrives and nothing
+/// is fetched for it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stroke_whose_shape_was_never_registered_still_arrives() {
     let (host, _host_events) =

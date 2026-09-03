@@ -918,8 +918,8 @@ pub struct PaintEffect {
     /// brush parameter only painting consumes: an eraser lays nothing a color
     /// could be a property of (§6.12), so a stored erase stroke carries no color
     /// at all. The *hand* still has one while the eraser is in force — that is
-    /// frontend state (`stark-ui`'s `BrushConfig`), which remembers the whole
-    /// paint effect across the toggle and hands the color to fills besides.
+    /// frontend state (`stark-dioxus-frontend`'s `BrushConfig`), which remembers the
+    /// whole paint effect across the toggle and hands the color to fills besides.
     ///
     /// A file from before this field replays its strokes in the default brush's
     /// pigment (black) — the bare `#[serde(default)]` (§8).

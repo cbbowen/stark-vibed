@@ -337,10 +337,10 @@ mod tests {
     /// **What the editor offers is always drawable**, at every size and for every
     /// other setting that moves the cap.
     ///
-    /// This is the engine's half of the bargain `stark-ui` keeps by clamping to
-    /// [`max_stretch`] (`state::update_brush`, and the stretch slider's own top):
-    /// take the largest knob this says is available and the loop runs. So the
-    /// degradation is unreachable from the UI *structurally* rather than by a
+    /// This is the engine's half of the bargain `stark-dioxus-frontend` keeps by
+    /// clamping to [`max_stretch`] (`state::update_brush`, and the stretch slider's
+    /// own top): take the largest knob this says is available and the loop runs. So
+    /// the degradation is unreachable from the UI *structurally* rather than by a
     /// number kept in step by hand, and what is left for `TipTooLarge` is a record
     /// from somewhere else — a peer, or a file built by another build.
     ///

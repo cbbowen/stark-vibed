@@ -88,10 +88,10 @@ impl Canvas {
 
     /// What `wgpu` binds a surface to.
     ///
-    /// stark-ui is a web app (§11), so the surface is always the page's canvas. The
-    /// crate still *compiles* for the host — that is what `cargo test` and clippy
-    /// exercise — but there is no native windowing backend behind it, and reaching
-    /// here off the web is a bug rather than a fallback.
+    /// stark-dioxus-frontend is a web app (§11), so the surface is always the page's
+    /// canvas. The crate still *compiles* for the host — that is what `cargo test` and
+    /// clippy exercise — but there is no native windowing backend behind it, and
+    /// reaching here off the web is a bug rather than a fallback.
     #[cfg(target_arch = "wasm32")]
     pub fn surface_target(&self) -> wgpu::SurfaceTarget<'static> {
         wgpu::SurfaceTarget::Canvas(self.0.clone())

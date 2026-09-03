@@ -57,12 +57,12 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc -p stark-model --no-deps
 
-      # stark-ui is excluded from default-members (it is a wasm app), so nothing
-      # else in this workflow would compile it for its real target. `dx build` is
-      # reserved for the pages deploy; a plain cargo check catches wasm-only
-      # compile errors in a fraction of the time.
-      - name: Check stark-ui (wasm32)
-        run: cargo check -p stark-ui --target wasm32-unknown-unknown
+      # stark-dioxus-frontend is excluded from default-members (it is a wasm
+      # app), so nothing else in this workflow would compile it for its real
+      # target. `dx build` is reserved for the pages deploy; a plain cargo
+      # check catches wasm-only compile errors in a fraction of the time.
+      - name: Check stark-dioxus-frontend (wasm32)
+        run: cargo check -p stark-dioxus-frontend --target wasm32-unknown-unknown
 
   test:
     runs-on: ubuntu-latest

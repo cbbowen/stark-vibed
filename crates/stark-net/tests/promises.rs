@@ -187,10 +187,10 @@ async fn a_promised_substrate_is_left_out_of_the_snapshot_and_still_replays() {
 ///
 /// The peer here plays the frontend by hand: it promises the substrate, waits to be
 /// asked, and supplies the bytes from its own copy — which is exactly what
-/// `stark-ui`'s `supply_locally` does with its bundle. The proof that the local
-/// answer was *used* rather than merely offered is in the pixels: the toothed
-/// stroke that follows lands identically, which it cannot do against the flat
-/// stand-in.
+/// `stark-dioxus-frontend`'s `supply_locally` does with its bundle. The proof that
+/// the local answer was *used* rather than merely offered is in the pixels: the
+/// toothed stroke that follows lands identically, which it cannot do against the
+/// flat stand-in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
     let (Some(mut host), Some(mut peer)) = (engine_or_skip(), engine_or_skip()) else {
@@ -200,9 +200,9 @@ async fn a_promised_substrate_is_asked_of_the_frontend_mid_session() {
 
     // The peer promises the rough substrate before it has any reason to want it.
     let rough_bytes = stark_testdata::assets::rough();
-    // Derived without a GPU, exactly as `stark-ui`'s build script derives the ids
-    // of the assets it bundles — and the `assert_eq!` below is what checks that
-    // this route and the engine's `import_substrate` agree on the name.
+    // Derived without a GPU, exactly as `stark-dioxus-frontend`'s build script derives
+    // the ids of the assets it bundles — and the `assert_eq!` below is what checks
+    // that this route and the engine's `import_substrate` agree on the name.
     let probe = stark_assetid::height(&rough_bytes)
         .expect("decode the substrate")
         .id();

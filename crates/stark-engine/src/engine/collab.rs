@@ -175,8 +175,8 @@ impl Engine {
     /// Ending an unshared session ran the whole body, including `committed_changed`,
     /// which bumps the document revision, drops the preview and forces a full
     /// re-projection for nothing. The only thing stopping that was a guard in
-    /// `stark-ui`'s collaboration panel: a rule a call site could forget, in another
-    /// crate, which is exactly the shape CLAUDE.md says to make structural.
+    /// `stark-dioxus-frontend`'s collaboration panel: a rule a call site could forget,
+    /// in another crate, which is exactly the shape CLAUDE.md says to make structural.
     pub fn end_collaboration(&mut self) -> bool {
         if !self.is_shared() {
             return false;

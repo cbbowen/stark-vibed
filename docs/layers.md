@@ -302,7 +302,7 @@ every row fills it — so the panel gains a second column to read down beside th
 All three kinds of layer answer one question there, each in the terms it has:
 
 - a **paint** layer shows a miniature of its own paint
-  (`stark-ui/src/layer_thumbs.rs`);
+  (`stark-dioxus-frontend/src/layer_thumbs.rs`);
 - a **frame** shows the crop marks, because its content is a rect and a color the row
   is already drawing — a picture of it would be a flat rectangle saying less than the
   mark does;

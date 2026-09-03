@@ -17,14 +17,13 @@ pays it for one binding by bringing its options bar up on Alt (§18.0.2): press 
 modifier and the thing it does announces itself. This chapter is the same answer
 generalized to everything no modifier announces.
 
-The whole feature is `stark-ui/src/tutor.rs`, one line in `dispatch`, and eight call
-sites that say something the command stream cannot — three brackets and five
-reports (§24.2). It turns on three
-decisions: what brings a lesson (§24.1), where the counting comes from (§24.2), and
-what a card is allowed to do to the screen (§24.3) — including what takes one down,
-which is as often the artist doing the thing as it is the button. §24.4 is the
-ledger, §24.5 the table of lessons as it stands, and §24.6 what is deliberately
-absent.
+The whole feature is `stark-dioxus-frontend/src/tutor.rs`, one line in
+`dispatch`, and eight call sites that say something the command stream cannot —
+three brackets and five reports (§24.2). It turns on three decisions: what
+brings a lesson (§24.1), where the counting comes from (§24.2), and what a card
+is allowed to do to the screen (§24.3) — including what takes one down, which is
+as often the artist doing the thing as it is the button. §24.4 is the ledger,
+§24.5 the table of lessons as it stands, and §24.6 what is deliberately absent.
 
 Since every panel now starts closed (§11), the tour also carries the opening
 screen: the first three lessons are how the stack gets assembled for somebody who
