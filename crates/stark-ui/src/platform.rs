@@ -171,8 +171,9 @@ impl WindowEvent {
     }
 }
 
-/// A pointer event's raw button fields — everything `input::is_eraser_event`
-/// needs, and nothing it does not.
+/// A pointer event as `input::tail_says` reads it — which end of a stylus faces
+/// the glass, and whether it is still over the page at all. Everything that
+/// policy needs, and nothing it does not.
 ///
 /// The two button fields are both here because the two halves of a press report
 /// differently, and the policy that reads them is the caller's (§18.1.8).
@@ -186,6 +187,12 @@ pub struct RawPointer {
     pub button: i16,
     /// The buttons still down.
     pub buttons: u16,
+    /// Whether the report names no element being **entered** (`relatedTarget`).
+    /// On a `pointerout` that is the whole difference between a pen leaving the
+    /// digitizer's range — or the page — and a pointer crossing from one
+    /// element to its neighbour, which fires the same event. Vacuously true on
+    /// every other kind, where nothing is being left.
+    pub entered_nothing: bool,
 }
 
 /// One report the browser folded into a delivered `pointermove`, in the target
@@ -450,9 +457,10 @@ pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'stati
 ///
 /// The pointer counterpart to [`on_window_key`], and it exists for the same
 /// reason: what it binds is not any one surface's business. The pen's eraser end
-/// holds a brush slot for as long as it is down (§18.1.8) whatever it is pressed
-/// against — the canvas, a slider, a preset row — exactly as a held number key
-/// does, and a listener per surface would be a list nobody could keep complete.
+/// holds a brush slot for as long as it faces the glass (§18.1.8) whatever it is
+/// hovering over or pressed against — the canvas, a slider, a preset row —
+/// exactly as a held number key does, and a listener per surface would be a list
+/// nobody could keep complete.
 ///
 /// **Capture, not bubble**, and that is load-bearing on the press: the swap has
 /// to be in force before the surface's own handler runs, or the canvas would open
@@ -485,6 +493,7 @@ fn raw_of(e: &web_sys::PointerEvent) -> RawPointer {
         pen: e.pointer_type() == "pen",
         button: e.button(),
         buttons: e.buttons(),
+        entered_nothing: e.related_target().is_none(),
     }
 }
 

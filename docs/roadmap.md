@@ -473,25 +473,47 @@ engine learn nothing:
   swap-back takes it away with the borrowed brush. A number keeps a binding and a
   tune, never a third copy of a tool.
 - **Flip the pen over** and the eraser end holds slot 0 for as long as its tail
-  is on the glass — *whatever it is pressed against*. The same hold, made by
-  hardware rather than by a key, and bound at the window rather than by any one
-  surface (`input::bind_pen`), so it earns all three of the lines above rather
-  than only the first: erasing with the tail is one gesture, dragging Size or
-  Flow with it tunes the eraser, and eraser-clicking a preset assigns that
-  preset to the tail. A key and a hand do the same thing. The eraser is
-  therefore a brush like any other and can be replaced with any other.
+  *faces* the glass — hovering in range or pressed down, *whatever it is over*.
+  The same hold, made by hardware rather than by a key, and
+  bound at the window rather than by any one surface (`input::bind_pen`), so it
+  earns all three of the lines above rather than only the first: erasing with the
+  tail is one gesture, dragging Size or Flow with it tunes the eraser, and
+  eraser-clicking a preset assigns that preset to the tail. A key and a hand do
+  the same thing. The eraser is therefore a brush like any other and can be
+  replaced with any other.
+
+  **In range rather than on contact, because the hover is a promise.** The brush
+  cursor and the mark under it are what a press *would* lay (§18.1.10), and a
+  hold that began at the press previewed paint under an inverted pen and then
+  erased — the one place the rule above did not reach. A pen that comes into
+  range already inverted sends no press to say so — until it touches down, its
+  hovering moves are the only reports carrying the eraser bit — so the tail is
+  read off **every** pen report rather than off the edges alone
+  (`input::tail_says`, a pure function of one report). Each report re-states which end faces the glass, so a hold nothing
+  armed — or nothing ended — is corrected by the next report instead of
+  stranding the brush swapped. Three groups, deliberately not one test: a press,
+  a move or an enter *is* the tail if it carries the eraser bit and the tip if it
+  does not (a press tested loosely would make every ordinary stroke erase); a
+  release or a cancel ends the hold **unless** it is the eraser's own, since
+  leaving the glass is not leaving the range and handing the brush back between
+  two erase strokes would flicker the cursor across the preview this is for; and
+  an `out` ends it only when it entered nothing, which is what tells a pen out of
+  range from a pointer crossing between elements. A `blur` still releases
+  whatever is held.
+
+  A number pressed while the tail merely hovers **outranks** it (`slots::hold`):
+  an act over a posture, and the tail takes the brush back on its next report.
+  Nothing else displaces anything — a key cannot take a key, and the tail cannot
+  take a key, so a number held while the pen is flipped over goes on drawing.
 
   Bound in the **capture** phase, which is load-bearing on the press: the swap
   has to be in force before the surface's own handler runs, or the canvas would
   open its stroke on the brush the eraser displaced. Capture runs window-inward,
   so it is ahead of every handler in the tree, and it cannot be silenced by a
   `stopPropagation` downstream — which matters most on the release, where a
-  listener that could be skipped would strand the brush swapped. The press is
-  tested strictly (it must really be the eraser, or the tip would erase); the
-  release is any **pen** leaving the glass, since a stylus has one contact and a
-  driver that reports the release without the eraser bit still has to end the
-  hold. A finger's release is left alone, so a palm settling mid-erase does not
-  hand the brush back under a pen that never moved.
+  listener that could be skipped would strand the brush swapped. A finger's
+  release is left alone, so a palm settling mid-erase does not hand the brush
+  back under a pen that never moved.
 
 Five things the rule has to get right, each a place a looser design goes wrong
 (`slots::Held::settle`, a pure function of the release):
@@ -895,7 +917,11 @@ hover is wearing that size on the way back to the work.
   while space arms a pan or Alt the eyedropper (§18.0.2), whose cursors it
   must not outbid; and not during a pinch, a pan or a tuning drag, each of
   which takes the hover down on its way in. It rides along during a stroke,
-  where it goes on being true.
+  where it goes on being true. And it is the **eraser's** while the pen's tail
+  faces the glass, which costs this section nothing: the tail holds slot 0 from
+  the moment it is in range rather than from the press (§18.1.8), so both
+  halves of the cursor are drawn from the live brush and the live brush is
+  already the one the press would use.
 - **A `<div>` wearing `.brush-ring-circle`** — the peer cursors' bargain
   (chrome, never in an export), §18.1.9's affordability argument (a circle
   through the zoom is the whole transform), and one definition of "the brush

@@ -40,13 +40,17 @@
 //!   reaches this number and every other bound to that preset; let the hold go
 //!   without, and the swap-back takes it away with the borrowed brush. What the
 //!   number keeps is its binding and its tune, never a third copy of a tool.
-//! - **Flip the pen over** — the eraser end holds [`ERASER`] for as long as it is
-//!   on the glass, whatever it is pressed against. It is the same hold, made by
-//!   hardware instead of by a key, and being bound at the window rather than by
-//!   any one surface (`input::bind_pen`) it earns the three lines above rather
-//!   than only the first: erasing with the tail is one gesture, tuning the
-//!   eraser's Size or Flow with it is another, and eraser-clicking a preset
-//!   assigns that preset to the tail. A key and a hand do the same thing here.
+//! - **Flip the pen over** — the eraser end holds [`ERASER`] for as long as it
+//!   *faces* the glass, hovering in range or pressed against anything at all
+//!   (`input::tail_says`). It is the same hold, made by hardware instead of by a
+//!   key, and being bound at the window rather than by any one surface
+//!   (`input::bind_pen`) it earns the three lines above rather than only the
+//!   first: erasing with the tail is one gesture, tuning the eraser's Size or
+//!   Flow with it is another, and eraser-clicking a preset assigns that preset
+//!   to the tail. A key and a hand do the same thing here — and because the
+//!   hold begins in range rather than on contact, the brush cursor and the mark
+//!   under it show the eraser *before* the press instead of after it
+//!   (§18.1.10). A number pressed while the tail hovers outranks it ([`hold`]).
 //!
 //! What the rule deliberately does *not* carry is the painting **color**, which
 //! is [`presets::wear`]'s rule and is applied in both directions: a slot never
@@ -204,7 +208,8 @@ impl Taps {
 pub enum Grip {
     /// A number key.
     Key,
-    /// The pen's eraser end, against the glass.
+    /// The pen's eraser end facing the glass — hovering in range or in contact
+    /// with it (`input::tail_says`).
     Eraser,
 }
 
@@ -327,7 +332,17 @@ impl Held {
 
 /// Begin holding `slot`. Ignored when a hold is already in flight — which is what
 /// makes it safe to call on every keydown, since a held key repeats at the
-/// system's repeat rate and each repeat is another keydown.
+/// system's repeat rate and each repeat is another keydown, and on every report
+/// of a hovering pen, which is what the tail's hold is read off
+/// (`input::tail_says`).
+///
+/// With one exception, and it is the difference between an **act** and a
+/// **posture**: the tail's hold says only which end of the pen faces the glass,
+/// so a number deliberately pressed under one takes the brush from it. The tail
+/// takes it back on its next report. Nothing else displaces anything — a key
+/// cannot take a key, which is what keeps a hand rolling from 3 to 4 on the hold
+/// it has, and the tail cannot take a key, so a number held while the pen is
+/// flipped over goes on being the brush that draws.
 ///
 /// A slot with nothing in it still enters the hold rather than declining: the
 /// hold *is* the arming, and holding an empty number while clicking a preset is
@@ -345,8 +360,14 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
         return;
     }
     let mut held = state.slots.held;
-    if held.peek().is_some() {
-        return;
+    // Answered without cloning the hold, since this runs on every report of a
+    // hovering pen and nearly all of them are already holding.
+    let in_flight = held.peek().as_ref().map(|h| (h.slot, h.grip));
+    if let Some((held_slot, held_grip)) = in_flight {
+        if grip != Grip::Key || held_grip != Grip::Eraser {
+            return;
+        }
+        release(state, held_slot, held_grip);
     }
     let mut taps = state.slots.taps;
     let picked = grip == Grip::Key && taps.write().press(slot, crate::platform::now_seconds());
@@ -408,10 +429,16 @@ pub fn claim(state: AppState) {
 /// rolling from 3 to 4 — from ending the hold that 3 still has.
 pub fn release(state: AppState, slot: usize, grip: Grip) {
     let mut held = state.slots.held;
-    let Some(h) = held.peek().clone() else { return };
-    if h.slot != slot || h.grip != grip {
-        return;
-    }
+    // The guard is answered before the hold is cloned: this runs on every report
+    // of a pen whose tail is not facing the glass (`input::tail_says`), and the
+    // overwhelming majority of them are holding nothing.
+    let h = {
+        let in_flight = held.peek();
+        match in_flight.as_ref() {
+            Some(h) if h.slot == slot && h.grip == grip => h.clone(),
+            _ => return,
+        }
+    };
     held.set(None);
     let current = presets::worn(state).1;
     // The tool the number would be bound to: whatever preset is in hand at the
@@ -530,10 +557,10 @@ pub fn release_all(state: AppState) {
 ///
 /// The hold that mounts it is a **key** hold alone, which is the one place the
 /// two grips are told apart rather than being the same hold. The pen's tail holds
-/// [`ERASER`] for as long as it is on the glass (`input::bind_pen`) — that is
-/// every erase stroke — and a rack flying in and out of the corner of the eye on
-/// each one is noise answering a question nobody asked. Holding `0` shows the
-/// same row.
+/// [`ERASER`] for as long as it faces the glass (`input::tail_says`) — that is
+/// every erase stroke and every hover between them — and a rack standing in the
+/// corner of the eye for as long as the pen is inverted is noise answering a
+/// question nobody asked. Holding `0` shows the same row.
 #[component]
 pub fn SlotOverlay() -> Element {
     let state = use_context::<AppState>();

@@ -52,33 +52,33 @@ pub fn bind_shortcuts(state: AppState) {
 /// remembered, and the list of the ones they did not is the kind nobody keeps
 /// complete.
 ///
-/// The two tests are deliberately **not** the same one:
-///
-/// - The **press** has to really be the eraser ([`is_eraser_event`]), or the tip
-///   would arm the eraser's slot and every ordinary stroke would erase.
-/// - The **release** is any pen leaving the glass. A stylus has one contact, so a
-///   tip release cannot coexist with the tail being down, and a driver that
-///   reports the release without the eraser bit still ends the hold — where the
-///   stricter test would leave the brush swapped with nothing left to swap it
-///   back. [`slots::release`] is a no-op unless an eraser hold is in flight, so
-///   asking too often costs nothing where asking too rarely costs the session.
+/// What each kind *means* is [`tail_says`], which is where the policy is stated
+/// and argued; this is the wiring. Every kind a pen can report is bound, because
+/// the hold follows the tail facing the glass rather than touching it, and a pen
+/// that comes into range already inverted announces itself on a hovering move
+/// and nowhere else.
 ///
 /// A *finger's* release is left alone on purpose: a palm settling on the glass
 /// mid-erase would otherwise hand the brush back under a pen that never moved.
+/// [`slots::release`] is a no-op unless an eraser hold is in flight, and
+/// [`slots::hold`] one unless the hold is somebody else's, so the reports that
+/// change nothing — which is nearly all of them — cost a peek.
 pub fn bind_pen(state: AppState) {
-    on_window_pointer("pointerdown", move |e| {
-        if is_eraser_event(&e) {
-            slots::hold(state, slots::ERASER, Grip::Eraser);
-        }
-    });
-
-    // Both edges, because a cancel is a release the browser made on your behalf —
-    // a gesture the system took over, a tab switched away from mid-stroke.
-    for kind in ["pointerup", "pointercancel"] {
-        on_window_pointer(kind, move |e| {
-            if e.pen {
-                slots::release(state, slots::ERASER, Grip::Eraser);
-            }
+    // Both edges of the contact, the hover on either side of it, and the pen
+    // leaving: a cancel is a release the browser made on your behalf — a gesture
+    // the system took over, a tab switched away from mid-stroke.
+    for (kind, report) in [
+        ("pointerdown", PenReport::Present),
+        ("pointermove", PenReport::Present),
+        ("pointerover", PenReport::Present),
+        ("pointerup", PenReport::Lifted),
+        ("pointercancel", PenReport::Lifted),
+        ("pointerout", PenReport::Out),
+    ] {
+        on_window_pointer(kind, move |e| match tail_says(report, &e) {
+            Some(Tail::Facing) => slots::hold(state, slots::ERASER, Grip::Eraser),
+            Some(Tail::Away) => slots::release(state, slots::ERASER, Grip::Eraser),
+            None => {}
         });
     }
 }

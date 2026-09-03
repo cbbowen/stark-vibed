@@ -146,9 +146,9 @@ pub fn is_eraser(e: &Event<PointerData>) -> bool {
 ///
 /// Both button fields, because the two halves of a press report differently: the
 /// press and the release name the button that *changed* (`button`), while every
-/// move between them names only what is still down (`buttons`, with `button` at
-/// −1). A test on either alone would arm on the press and then, one move later,
-/// disagree with itself.
+/// move — hovering or in contact — names only what is still down (`buttons`,
+/// with `button` at −1). A test on either alone would arm on the press and then,
+/// one move later, disagree with itself.
 fn is_eraser_event(raw: &RawPointer) -> bool {
     /// `button` for the eraser end, per Pointer Events.
     const ERASER_BUTTON: i16 = 5;
@@ -156,6 +156,67 @@ fn is_eraser_event(raw: &RawPointer) -> bool {
     const ERASER_BUTTONS: u16 = 32;
 
     raw.pen && (raw.button == ERASER_BUTTON || raw.buttons & ERASER_BUTTONS != 0)
+}
+
+/// Which edge of the pointer protocol a report arrived on — the three groups
+/// [`tail_says`] answers differently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PenReport {
+    /// A press, a move or an enter: the pen saying where it is.
+    Present,
+    /// A release or a cancel: the contact ending.
+    Lifted,
+    /// An out: the pointer leaving *something*, only sometimes the digitizer.
+    Out,
+}
+
+/// Which end of the stylus faces the glass, so far as one report can say.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tail {
+    /// The eraser end: hold its slot.
+    Facing,
+    /// The tip, or a pen that has gone: end the hold, if one is in flight.
+    Away,
+}
+
+/// What one report says about the pen's tail — the whole of the eraser hold's
+/// policy (§18.1.8), pure so it can be held to it without a browser.
+///
+/// The hold follows the tail **facing** the glass rather than touching it. A pen
+/// that comes into range already inverted sends no press to say so, and the mark
+/// under the cursor is a promise about the brush a press *would* use
+/// (§18.1.10) — held to contact alone it previewed paint and then erased.
+///
+/// Read off every report rather than the edges alone, which is what makes a
+/// missed edge cost a frame instead of the session: each one re-states which end
+/// faces the glass, so a hold nothing armed, or nothing ended, is corrected by
+/// the next report rather than stranding the swapped brush.
+///
+/// The three are deliberately not one test:
+///
+/// - **Present** — the eraser bit *is* the tail, and its absence the tip: a
+///   press must really be the eraser or every ordinary stroke would erase, and a
+///   hovering move without it is the pen flipped back.
+/// - **Lifted** — leaving the glass is not leaving the range, so the eraser's
+///   own release goes on holding; handing the brush back between two erase
+///   strokes would flicker the cursor across the very preview this is for.
+///   Anything else ends the hold, a driver that reports the release without the
+///   eraser bit included.
+/// - **Out** — a pen out of range and a pointer crossing between elements fire
+///   the same event, and only the first entered nothing.
+fn tail_says(report: PenReport, raw: &RawPointer) -> Option<Tail> {
+    if !raw.pen {
+        return None;
+    }
+    match report {
+        PenReport::Present => Some(if is_eraser_event(raw) {
+            Tail::Facing
+        } else {
+            Tail::Away
+        }),
+        PenReport::Lifted => (!is_eraser_event(raw)).then_some(Tail::Away),
+        PenReport::Out => raw.entered_nothing.then_some(Tail::Away),
+    }
 }
 
 /// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
@@ -713,4 +774,77 @@ pub fn end_interaction(state: AppState, landing: Landing, nav: Nav, tune: Tune, 
     // would take the canvas away mid-mark. Last, because it is the one thing in
     // this function that puts something *up*.
     crate::drags::settle_offer(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pen(button: i16, buttons: u16) -> RawPointer {
+        RawPointer {
+            pen: true,
+            button,
+            buttons,
+            entered_nothing: true,
+        }
+    }
+
+    #[test]
+    fn the_tail_holds_its_slot_from_hover_rather_than_from_contact() {
+        // A pen in range has pressed nothing: the changed button is −1 and
+        // nothing is down. Inverted, it carries the eraser bit all the same, and
+        // that bit is the only thing a hover can be told apart by (§18.1.8).
+        assert_eq!(
+            tail_says(PenReport::Present, &pen(-1, 32)),
+            Some(Tail::Facing)
+        );
+        assert_eq!(tail_says(PenReport::Present, &pen(-1, 0)), Some(Tail::Away));
+        // And the press still has to really be the eraser, or every ordinary
+        // stroke would erase.
+        assert_eq!(tail_says(PenReport::Present, &pen(0, 1)), Some(Tail::Away));
+        assert_eq!(
+            tail_says(PenReport::Present, &pen(5, 32)),
+            Some(Tail::Facing)
+        );
+    }
+
+    #[test]
+    fn the_tail_leaving_the_glass_is_still_facing_it() {
+        // The lift that ends an erase stroke names button 5 with nothing left
+        // down — and the tail is a millimetre above the same glass, so the hold
+        // stands rather than flickering the brush back for the gap between two
+        // strokes.
+        assert_eq!(tail_says(PenReport::Lifted, &pen(5, 0)), None);
+        // Any other pen leaving ends it, which is what covers a driver that
+        // reports the release without the bit, and a cancel.
+        assert_eq!(tail_says(PenReport::Lifted, &pen(0, 0)), Some(Tail::Away));
+        assert_eq!(tail_says(PenReport::Lifted, &pen(-1, 0)), Some(Tail::Away));
+    }
+
+    #[test]
+    fn only_an_out_that_entered_nothing_is_the_pen_gone() {
+        assert_eq!(tail_says(PenReport::Out, &pen(-1, 32)), Some(Tail::Away));
+        let crossing = RawPointer {
+            entered_nothing: false,
+            ..pen(-1, 32)
+        };
+        assert_eq!(
+            tail_says(PenReport::Out, &crossing),
+            None,
+            "crossing between elements fires the same event as leaving the range"
+        );
+    }
+
+    #[test]
+    fn nothing_but_a_pen_says_anything_about_the_pen() {
+        // A mouse's press carries button 0 and a finger's leave enters nothing;
+        // neither is evidence about which end of a stylus faces the glass.
+        let other = RawPointer {
+            pen: false,
+            ..pen(0, 1)
+        };
+        for report in [PenReport::Present, PenReport::Lifted, PenReport::Out] {
+            assert_eq!(tail_says(report, &other), None);
+        }
+    }
 }
