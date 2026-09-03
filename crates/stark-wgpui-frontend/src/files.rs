@@ -20,19 +20,19 @@
 //! callback — so each act is a task that waits, and the result comes back to the view
 //! through a message rather than by writing a signal from inside the picker.
 //!
-//! # The one thing this frontend cannot resolve
+//! # Lean files, both ways
 //!
-//! A `.stark` file may *name* content rather than carry it (§8's version 6): the web
-//! app saves lean, leaving out substrates and shapes it knows it ships. Resolving
-//! those on open means having the catalog, and this frontend has no bundled assets
-//! yet — that is N7. So:
+//! A `.stark` file may *name* content rather than carry it (§8's version 6), leaving
+//! out substrates and shapes it knows the opener ships. Doing that needs a catalog on
+//! both sides, and until N7 this frontend had none — so it saved everything, and
+//! refused any file naming a shipped substrate.
 //!
-//! - **Saving** carries everything ([`save_bytes`] passes an empty resolvable list),
-//!   which makes every file this frontend writes openable anywhere.
-//! - **Opening** works for any file whose named content this session already holds —
-//!   which is every document on the default substrate, and so every document either
-//!   frontend makes today. One that names a bundled substrate is refused with the
-//!   painting on screen untouched, and says so.
+//! It carries the images now (`crate::assets`), so both halves are the catalog's:
+//! [`save_bytes`] leaves out what any build can resolve, and `Canvas::load` settles an
+//! owed asset out of the binary before replaying. A file naming content **no** build
+//! ships is still refused, with the painting on screen untouched — a file has no peer
+//! to ask, and a substrate that silently failed to arrive would bake a smooth deposit
+//! into tiles that no later arrival un-bakes (§6.4).
 
 use std::path::{Path, PathBuf};
 
@@ -60,14 +60,15 @@ pub enum Done {
     Failed(String),
 }
 
-/// The document as bytes, with everything it names carried.
+/// The document as bytes, **lean**: what any build can resolve out of its own
+/// catalog is named rather than carried (§8's version 6).
 ///
-/// **Everything**, unlike the web frontend's lean save: leaving content out means
-/// naming it, and naming it means the opener must have the catalog. See the module
-/// note — until this frontend ships assets, a fat file is the honest one.
+/// The list is `stark_chrome::assets::resolvable`, which is the same list the web
+/// frontend passes — so the two write files of the same shape, and a document on the
+/// linen substrate is a few kilobytes on both rather than fourteen megabytes on one.
 pub fn save_bytes(renderer: &Renderer) -> Result<Vec<u8>, String> {
     renderer
-        .save_bytes_resolvable(&[])
+        .save_bytes_resolvable(&stark_chrome::assets::resolvable())
         .map_err(|e| format!("could not serialize the document: {e}"))
 }
 

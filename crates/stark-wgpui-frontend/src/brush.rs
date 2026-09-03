@@ -7,12 +7,11 @@
 //! what a quick slot substitutes, so both frontends carry the pair and neither
 //! carries a third shape.
 //!
-//! What is here that is not shared is the *library this frontend can show*. The
-//! shipped table names two bundled stamps by content id (`presets::shipped`), and an
-//! id is the hash of bytes nothing has fetched yet — this frontend has no asset
-//! import (that is N7) — so the two stamp presets stand on the round tip until then.
-//! They are still in the list, because dropping them would mean a different set of
-//! tools on the two frontends for a reason that is temporary.
+//! What is here that is not shared is where the shipped table's two **stamps** come
+//! from. Each is a content id, and an id is the hash of an image — but this build
+//! carries the images and had them hashed at build time (`crate::assets`), so the
+//! ids are known before anything is imported and the presets open resolved. The web
+//! frontend has to wait for its fetches and seeds them afterwards.
 
 use stark_chrome::brush_config::{BrushConfig, Transient};
 use stark_chrome::presets::{BuiltinShapes, PresetEntry, shipped};
@@ -32,13 +31,16 @@ pub struct Brush {
     pub from: Option<String>,
 }
 
-impl Default for Brush {
+impl Brush {
     /// Opens on the library's first entry, which is the everyday brush — the same
     /// rule the web frontend's `apply_first` follows, and the reason the table leads
     /// with Hard Round.
-    fn default() -> Self {
-        // `BuiltinShapes::default()` is the round tip twice over: see the module note.
-        let library = shipped(BuiltinShapes::default());
+    ///
+    /// `shapes` is what the two stamp presets stand on. `BuiltinShapes::default()` is
+    /// the round tip twice over, which is what a build with no images would get; this
+    /// one has them (see the module note).
+    pub fn new(shapes: BuiltinShapes) -> Self {
+        let library = shipped(shapes);
         let first = library.first().cloned();
         Self {
             config: first.as_ref().map(|e| e.brush).unwrap_or_default(),
@@ -47,9 +49,7 @@ impl Default for Brush {
             library,
         }
     }
-}
 
-impl Brush {
     /// The command that puts this brush in the engine's hand.
     ///
     /// One command rather than two, because the engine takes the pair together

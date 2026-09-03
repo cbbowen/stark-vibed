@@ -9,7 +9,8 @@
 //! per-session library and breaks nothing).
 //!
 //! **The library is kept in two stores, split down the middle of an entry**
-//! ([`StoredShape`] and [`ShapeEntry`], §25.6). The name and the id are text and go
+//! ([`stark_chrome::assets::Row`] and [`ShapeEntry`], §25.6). The name and the id are
+//! text and go
 //! to `localStorage` with the settings and the chord table; the PNG is bytes and goes
 //! to IndexedDB under the id that names it. They were one record once, the PNG
 //! base64'd inline — which put half a megabyte per imported shape into a five-megabyte
@@ -40,55 +41,21 @@ use dioxus::prelude::*;
 use stark_model::AssetId;
 use stark_model::document::BrushShape;
 
-use crate::platform::{base64_encode, normalize_shape_image};
+use crate::platform::normalize_shape_image;
 use crate::state::{AppState, update_brush};
+use stark_chrome::assets;
 use stark_chrome::library::{self, Thumbs};
-use stark_chrome::storage::{self, Store};
 
 /// One custom shape in the library, **with its bytes in hand**.
 ///
-/// Not the stored type any more, and the split is the point: the row is text and the
-/// PNG is not, so they are kept in two stores and this is what they add up to
-/// ([`StoredShape`], `stark_chrome::storage`). Constructing one means the bytes are here —
-/// [`load`] drops a row whose blob is gone rather than admitting a byte-less entry —
-/// so `ensure` and `thumbnail` have nothing to check and there is no half-loaded
-/// shape for the gallery to draw a blank card for.
-#[derive(Clone, PartialEq)]
-pub struct ShapeEntry {
-    /// Display name, defaulted from the imported file's stem.
-    pub name: String,
-    /// Canonical grayscale PNG (what the engine stores under `id`).
-    pub png: Vec<u8>,
-    /// Content id of `png`. If an engine upgrade ever re-canonicalizes differently,
-    /// [`select`] heals the entry from the id the import actually returns.
-    pub id: AssetId,
-}
-
-/// One row of the stored library: **a name and an id, and no bytes at all.**
-///
-/// The id is the whole of the reference — it *names* the PNG (§19), which is what
-/// makes a row this small enough to keep in a text store that the settings, the chord
-/// table and the tour's ledger are also spending. The bytes it names are a
-/// [`storage::Blob`] under the same record's key; see `stark_chrome::storage` for what
-/// putting them there bought and what it cost.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct StoredShape {
-    name: String,
-    #[serde(with = "storage::hex")]
-    id: AssetId,
-}
-
-impl storage::Entry for StoredShape {
-    const STORE: Store = Store::Shapes;
-}
-
-impl storage::Blob for ShapeEntry {
-    const STORE: Store = Store::Shapes;
-}
+/// The crate's, since there are two libraries and they are one object twice over
+/// (`stark_chrome::assets`). Aliased rather than imported so the name a reader meets
+/// at every call site still says which library it is an entry of.
+pub type ShapeEntry = assets::Entry;
 
 /// This library's gallery thumbnails ([`Thumbs`]) — the *coverage* each id names,
 /// which is not the picture `crate::substrates` draws for the same id.
-static THUMBS: Thumbs = Thumbs::new();
+static THUMBS: Thumbs<String> = Thumbs::new();
 
 /// A `background-image` data URL showing what the shape `id` names **covers**,
 /// whichever way its source encoded that.
@@ -146,22 +113,7 @@ pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
 /// the picture is the shape's and not the stylesheet's — a card sets the substrate it
 /// sits on, and this is the paint.
 fn encode_thumb(png: &[u8]) -> Option<String> {
-    let stark_assetid::Canonical {
-        width,
-        height,
-        texels,
-    } = library::reduce(stark_assetid::coverage(png).ok()?);
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::GrayscaleAlpha);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::High);
-        let mut writer = encoder.write_header().ok()?;
-        let pixels: Vec<u8> = texels.iter().flat_map(|&c| [u8::MAX, c]).collect();
-        writer.write_image_data(&pixels).ok()?;
-    }
-    Some(format!("data:image/png;base64,{}", base64_encode(&out)))
+    crate::cards::data_url(assets::card::<assets::Shapes>(png)?)
 }
 
 /// Populate the library signal from storage. Called once at app start.
@@ -177,31 +129,8 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
 /// Awaited before the first thing that resolves a stamp id — `presets::apply_first`,
 /// in `main` — which is what the ordering there is for.
 pub async fn load(state: AppState) {
-    let rows = storage::load_list::<StoredShape>().unwrap_or_default();
-    let ids: Vec<AssetId> = rows.iter().map(|r| r.id).collect();
-    let blobs = storage::blob_load_all::<ShapeEntry>(&ids).await;
-
-    let kept: Vec<ShapeEntry> = rows
-        .into_iter()
-        .zip(blobs)
-        .filter_map(|(row, png)| {
-            png.map(|png| ShapeEntry {
-                name: row.name,
-                png,
-                id: row.id,
-            })
-        })
-        .collect();
-    if kept.len() != ids.len() {
-        tracing::warn!(
-            "{} shape(s) had lost their image and were dropped from the library",
-            ids.len() - kept.len()
-        );
-        persist(&kept);
-    }
-
     let mut entries = state.shapes.entries;
-    entries.set(kept);
+    entries.set(assets::load::<assets::Shapes>().await);
 }
 
 /// Import an image file as a new shape: normalize in the browser, canonicalize
@@ -242,7 +171,7 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
         if !known {
             // Bytes before the row that names them (`storage::blob_save`): the other
             // order can leave a library pointing at a shape that was never stored.
-            storage::blob_save::<ShapeEntry>(id, &canonical).await;
+            assets::store_bytes::<assets::Shapes>(id, &canonical).await;
             entries.write().push(ShapeEntry {
                 name: name.clone(),
                 png: canonical.clone(),
@@ -348,9 +277,8 @@ pub fn ensure(state: AppState, id: AssetId) -> Option<AssetId> {
         }
         let (stale, bytes) = (entry.id, entry.png.clone());
         spawn_forever(async move {
-            storage::blob_save::<ShapeEntry>(actual, &bytes).await;
-            persist(&entries.read());
-            storage::blob_remove::<ShapeEntry>(stale).await;
+            let rows = entries.read().clone();
+            assets::heal::<assets::Shapes>(&rows, stale, actual, &bytes).await;
         });
     }
     seed_session(state, actual, entry.png);
@@ -368,7 +296,7 @@ pub fn remove(state: AppState, id: AssetId) {
     // The row first, then the bytes (`storage::blob_save`): a crash between the two
     // strands some bytes, which costs space; the other order strands the *row*, which
     // costs a shape that cannot be painted with.
-    spawn_forever(async move { storage::blob_remove::<ShapeEntry>(id).await });
+    spawn_forever(async move { assets::drop_bytes::<assets::Shapes>(id).await });
 
     let selected = state.brush.peek().shape == BrushShape::Stamp(id);
     if selected {
@@ -402,19 +330,10 @@ fn seed_session(state: AppState, id: AssetId, bytes: Vec<u8>) {
 // used to happen at this line was a base64 of every PNG in the library, on the thread
 // the canvas paints on, per change.
 
-/// Write the library's rows — [`ShapeEntry`] narrowed to what is durable about it.
-///
-/// The bytes are not this function's to write. An entry reaching here always has
-/// them stored already, because every caller put them there first.
+/// Write the library's rows — the crate's [`persist`](assets::persist), which states
+/// what the bytes/row ordering buys and why only the rows are written from here.
 fn persist(entries: &[ShapeEntry]) {
-    let rows: Vec<StoredShape> = entries
-        .iter()
-        .map(|e| StoredShape {
-            name: e.name.clone(),
-            id: e.id,
-        })
-        .collect();
-    storage::save_list(&rows);
+    assets::persist::<assets::Shapes>(entries);
 }
 
 #[cfg(test)]

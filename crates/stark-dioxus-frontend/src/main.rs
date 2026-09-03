@@ -36,6 +36,7 @@ mod brush_editor;
 mod builtin_ids;
 mod builtins;
 mod canvas;
+mod cards;
 mod collab;
 mod commands;
 mod credits;

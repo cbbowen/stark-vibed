@@ -236,6 +236,8 @@ pub fn brush_panel(
     effects: &[(BrushEffectType, &'static str)],
     regions: &Regions,
     select: impl IntoElement,
+    shapes: impl IntoElement,
+    substrates: impl IntoElement,
 ) -> impl IntoElement {
     let effect = brush.config.effect;
     // Cleared here rather than after the press: prepaint refills it every frame, and
@@ -317,6 +319,10 @@ pub fn brush_panel(
                         .child(*label)
                 })),
         )
+        // The stamp gallery sits with the brush rather than with the presets: what a
+        // shape *is* is the tool, and a preset is a way of arriving at one.
+        .child(shapes)
+        .child(substrates)
         .child(
             div()
                 .pt_2()
@@ -509,7 +515,7 @@ mod tests {
     /// the second pair takes a preset's name off the brush (§18.1.8).
     #[test]
     fn only_the_durable_knobs_change_the_tool() {
-        let mut brush = Brush::default();
+        let mut brush = Brush::new(Default::default());
         assert!(!drag_knob(&mut brush, Knob::Size, 0.5));
         assert!(!drag_knob(&mut brush, Knob::Flow, 0.5));
         assert!(drag_knob(&mut brush, Knob::Hardness, 0.5));
@@ -520,7 +526,7 @@ mod tests {
     /// trip the panel relies on to draw a fill where the hand left it.
     #[test]
     fn a_knob_reads_back_what_a_drag_wrote() {
-        let mut brush = Brush::default();
+        let mut brush = Brush::new(Default::default());
         for knob in KNOBS {
             drag_knob(&mut brush, knob, 0.25);
             let (lo, hi) = knob.range();

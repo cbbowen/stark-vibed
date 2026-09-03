@@ -60,6 +60,7 @@
 //!   from a knob to each (§6.2, §6.11). The module this crate was built to prevent a
 //!   second copy of.
 
+pub mod assets;
 pub mod bounds;
 pub mod brush_config;
 pub mod commands;

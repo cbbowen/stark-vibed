@@ -97,6 +97,51 @@ impl Renderer {
         self.engine.load_document(file)
     }
 
+    /// Import a brush shape, returning the content id that names it (§6.6).
+    ///
+    /// Content-addressed, so importing the same image twice is free and lands on the
+    /// same id — which is what lets a shipped stamp, a library entry and a stamp that
+    /// arrived in a save file all be one asset.
+    pub fn import_brush_id(&self, png: &[u8]) -> Result<stark_model::AssetId, String> {
+        self.engine.import_brush(png).map_err(|e| e.to_string())
+    }
+
+    /// The canonical bytes of an imported asset — for a card's picture, and for
+    /// seeding a session so peers can fetch it by hash.
+    pub fn asset_bytes(&self, id: stark_model::AssetId) -> Option<Vec<u8>> {
+        self.engine.asset_bytes(id)
+    }
+
+    /// Import a canvas substrate's height map (§6.4).
+    ///
+    /// `Result` rather than the web frontend's `Option`-and-a-log: this frontend has
+    /// somewhere to put a failure a person can act on (`Canvas::report`), and a
+    /// substrate that would not import is exactly the kind they should hear about.
+    pub fn import_substrate(&mut self, png: &[u8]) -> Result<stark_model::SubstrateId, String> {
+        self.engine.import_substrate(png).map_err(|e| e.to_string())
+    }
+
+    /// Take a substrate's bytes under the id that asked for them.
+    ///
+    /// Re-derives the id and refuses bytes that do not match, which is what makes a
+    /// catalog file that changed out from under a document a caught error rather than
+    /// a deposit through the wrong substrate (§6.4).
+    pub fn accept_substrate(
+        &mut self,
+        id: stark_model::SubstrateId,
+        png: &[u8],
+    ) -> Result<(), String> {
+        self.engine
+            .accept_substrate(id, png)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// The canonical height map of a loaded substrate.
+    pub fn substrate_bytes(&self, id: stark_model::SubstrateId) -> Option<Vec<u8>> {
+        self.engine.substrate_bytes(id)
+    }
+
     /// Render a picture and hand back a future for its readback (§15.6).
     ///
     /// The future does **not** borrow the renderer, which is the point: the caller

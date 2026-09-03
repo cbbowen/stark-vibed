@@ -25,7 +25,7 @@
 //! holder either has those exact bytes or knows precisely what to ask a peer for, and
 //! what comes back is verified against the id that asked for it.
 //!
-//! **Adding a built-in substrate is a file plus a row in [`SUBSTRATES`]** — it then appears
+//! **Adding a built-in substrate is a file plus a row in [`assets::SHIPPED_SUBSTRATES`]** — it then appears
 //! in the Lighting panel's picker and in the New-document dialog.
 //!
 //! # The user's own substrates
@@ -55,130 +55,48 @@ use dioxus::prelude::*;
 use stark_engine::command::DocCommand;
 use stark_model::{AssetId, SubstrateId};
 
-use crate::platform::{base64_encode, normalize_substrate_image};
+use crate::platform::normalize_substrate_image;
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Modal;
+use stark_chrome::assets::{self, Pick};
 use stark_chrome::library::{self, Thumbs};
-use stark_chrome::storage::{self, Store};
 use stark_model::ColorSpaceId;
 
-/// One substrate selectable in the UI.
-pub struct BuiltinSubstrate {
-    /// The picker's label, and the name the rest of the app asks for it by. Not
-    /// persisted anywhere — a document stores the resolved content id — so
-    /// renaming one is a cosmetic change.
-    pub name: &'static str,
-    /// The bundled height map, fetched at runtime. `None` for a substrate that is
-    /// procedural and needs no image, which is `Smooth` and only ever `Smooth`.
-    pub asset: Option<Asset>,
-    /// The same file's path under `assets/`, which is how `crate::builtin_ids`
-    /// knows this substrate's content id without fetching it. Spelled twice because
-    /// `asset!` needs a literal and a lookup needs a string; a test checks the two
-    /// agree. `None` exactly when `asset` is.
-    pub path: Option<&'static str>,
-    /// The picker's one-line description.
-    pub blurb: &'static str,
-}
-
-pub const SMOOTH: &str = "Smooth";
-pub const LINEN: &str = "Linen";
-pub const ROUGH: &str = "Rough";
-
-/// Every substrate that ships with the app, in picker order.
-pub const SUBSTRATES: &[BuiltinSubstrate] = &[
-    BuiltinSubstrate {
-        name: SMOOTH,
-        asset: None,
-        path: None,
-        blurb: "A perfectly smooth surface — paint lies flat, no canvas texture.",
-    },
-    BuiltinSubstrate {
-        name: LINEN,
-        asset: Some(asset!("/assets/substrate/Linen.png")),
-        path: Some("substrate/Linen.png"),
-        blurb: "A regular woven grid — the honest painter's canvas.",
-    },
-    BuiltinSubstrate {
-        name: ROUGH,
-        asset: Some(asset!("/assets/substrate/Rough.png")),
-        path: Some("substrate/Rough.png"),
-        blurb: "Brushed acrylic substrate: irregular knife strokes with a fine crackle.",
-    },
+/// The bundled height map behind a catalog row, by the row's path.
+///
+/// **The one thing the catalog cannot carry.** Which substrates ship, what they are
+/// called and how they are described are `stark_chrome::assets::SHIPPED_SUBSTRATES`,
+/// because a name is what a preset asks for and a second catalog would be a second
+/// answer. An `Asset` is not: `asset!` is a proc macro that demands a path literal in
+/// this crate, so the files are spelled here — and a test checks the two agree.
+const BUNDLED: &[(&str, Asset)] = &[
+    ("substrate/Linen.png", asset!("/assets/substrate/Linen.png")),
+    ("substrate/Rough.png", asset!("/assets/substrate/Rough.png")),
 ];
 
-/// The substrate a fresh document opens on: `Smooth`, the one that is procedural.
-///
-/// The opinion lives here rather than in the engine because the engine embeds no
-/// image bytes and a substrate now *is* its bytes: naming a substrate in core would be core
-/// naming an image it cannot produce. `document::DEFAULT_SUBSTRATE` is `Flat`
-/// accordingly, and [`open_default`] is the hook that would move a starting document
-/// off it — which today it does not, because the two agree.
-///
-/// It is a `Pick` rather than a `SubstrateId` for that same reason, and the shape is
-/// what matters more than the value: naming a *woven* default here is a one-word
-/// change, and every fetch-then-open it needs is already written.
-pub const DEFAULT_SUBSTRATE: Pick = Pick::Builtin(SMOOTH);
+/// The bundled file at `path`, if this catalog claims it.
+pub fn bundled_at(path: &str) -> Option<Asset> {
+    BUNDLED.iter().find(|(p, _)| *p == path).map(|(_, a)| *a)
+}
 
-/// **What the picker hands back** — the two ways a substrate can be named before it is
-/// resolved.
-///
-/// The asymmetry is real and is the whole reason this is an enum rather than an id:
-/// a built-in's id is the hash of a file that may not have been fetched yet, so it
-/// can only be named by catalog *name* until then, while a substrate in the library was
-/// hashed when it was imported and is named by the id it already has. Both are
-/// resolved to a `SubstrateId` by [`resolve_signal`], which is the last place either
-/// spelling exists.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Pick {
-    /// A substrate this build ships with, by its row in [`SUBSTRATES`].
-    Builtin(&'static str),
-    /// A substrate the user imported, by the content id the library holds it under.
-    Custom(AssetId),
+/// The bundled file for a catalog row, or `None` for the procedural one.
+pub fn bundled(row: &assets::Shipped) -> Option<Asset> {
+    bundled_at(row.path?)
 }
 
 // --- the user's library ----------------------------------------------------
 
-/// One imported substrate, **with its bytes in hand**.
-///
-/// `crate::shapes`'s `ShapeEntry` for substrates, and the same bargain: constructing one
-/// means the bytes are here — [`load`] drops a row whose blob is gone rather than
-/// admitting a byte-less entry — so nothing downstream has a half-loaded substrate to draw
-/// a blank card for.
-#[derive(Clone, PartialEq)]
-pub struct SubstrateEntry {
-    /// Display name, defaulted from the imported file's stem.
-    pub name: String,
-    /// Canonical grayscale height map (what the engine stores under `id`).
-    pub png: Vec<u8>,
-    /// Content id of `png` — the `AssetId` inside the `SubstrateId::Image` a document
-    /// records. If an engine upgrade ever re-canonicalizes differently, [`ensure`]
-    /// heals the entry from the id the import actually returns.
-    pub id: AssetId,
-}
-
-/// One row of the stored library: **a name and an id, and no bytes at all** — see
-/// `crate::shapes`'s `StoredShape`, which this is the sibling of.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct StoredSubstrate {
-    name: String,
-    #[serde(with = "storage::hex")]
-    id: AssetId,
-}
-
-impl storage::Entry for StoredSubstrate {
-    const STORE: Store = Store::Substrates;
-}
-
-impl storage::Blob for SubstrateEntry {
-    const STORE: Store = Store::Substrates;
-}
+/// One imported substrate, **with its bytes in hand** — `crate::shapes`'s
+/// `ShapeEntry` for substrates, which is to say the same crate type under the other
+/// name (`stark_chrome::assets`).
+pub type SubstrateEntry = assets::Entry;
 
 /// This library's gallery thumbnails ([`Thumbs`]) — the *height field* each id names.
 ///
 /// Its own cache, not `crate::shapes`': a grayscale PNG canonicalizes to one id under
 /// both readings, so one table would hand a substrate the picture of a stamp.
-static THUMBS: Thumbs = Thumbs::new();
+static THUMBS: Thumbs<String> = Thumbs::new();
 
 /// A `background-image` data URL showing the height field `id` names.
 ///
@@ -226,21 +144,7 @@ pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
 /// the engine does not look shows up as a card that looks wrong rather than as a mark
 /// that is.
 fn encode_thumb(png: &[u8]) -> Option<String> {
-    let stark_assetid::Canonical {
-        width,
-        height,
-        texels,
-    } = library::reduce(stark_assetid::height(png).ok()?);
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Grayscale);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::High);
-        let mut writer = encoder.write_header().ok()?;
-        writer.write_image_data(&texels).ok()?;
-    }
-    Some(format!("data:image/png;base64,{}", base64_encode(&out)))
+    crate::cards::data_url(assets::card::<assets::Substrates>(png)?)
 }
 
 /// Populate the library signal from storage. Called once at app start.
@@ -249,31 +153,8 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
 /// `load`, which this is the sibling of, for the whole of why a row whose bytes are
 /// gone is **dropped** rather than kept as a card that draws nothing.
 pub async fn load(state: AppState) {
-    let rows = storage::load_list::<StoredSubstrate>().unwrap_or_default();
-    let ids: Vec<AssetId> = rows.iter().map(|r| r.id).collect();
-    let blobs = storage::blob_load_all::<SubstrateEntry>(&ids).await;
-
-    let kept: Vec<SubstrateEntry> = rows
-        .into_iter()
-        .zip(blobs)
-        .filter_map(|(row, png)| {
-            png.map(|png| SubstrateEntry {
-                name: row.name,
-                png,
-                id: row.id,
-            })
-        })
-        .collect();
-    if kept.len() != ids.len() {
-        tracing::warn!(
-            "{} surface(s) had lost their height map and were dropped from the library",
-            ids.len() - kept.len()
-        );
-        persist(&kept);
-    }
-
     let mut entries = state.substrates.entries;
-    entries.set(kept);
+    entries.set(assets::load::<assets::Substrates>().await);
 }
 
 /// Import an image file as a new substrate: normalize in the browser, canonicalize in
@@ -327,7 +208,7 @@ pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
         if !known {
             // Bytes before the row that names them (`storage::blob_save`): the other
             // order can leave a library pointing at a substrate that was never stored.
-            storage::blob_save::<SubstrateEntry>(id, &canonical).await;
+            assets::store_bytes::<assets::Substrates>(id, &canonical).await;
             entries.write().push(SubstrateEntry {
                 name: name.clone(),
                 png: canonical,
@@ -405,9 +286,9 @@ pub fn ensure(state: AppState, id: AssetId) -> Option<SubstrateId> {
         }
         let bytes = entry.png;
         spawn_forever(async move {
-            storage::blob_save::<SubstrateEntry>(healed, &bytes).await;
+            assets::store_bytes::<assets::Substrates>(healed, &bytes).await;
             persist(&entries.read());
-            storage::blob_remove::<SubstrateEntry>(id).await;
+            assets::drop_bytes::<assets::Substrates>(id).await;
         });
     }
     Some(actual)
@@ -425,14 +306,14 @@ pub fn remove(state: AppState, id: AssetId) {
     // The row first, then the bytes (`storage::blob_save`): a crash between the two
     // strands some bytes, which costs space; the other order strands the *row*, which
     // costs a substrate that cannot be painted on.
-    spawn_forever(async move { storage::blob_remove::<SubstrateEntry>(id).await });
+    spawn_forever(async move { assets::drop_bytes::<assets::Substrates>(id).await });
 }
 
 // --- resolving and switching ------------------------------------------------
 
 /// The catalog row for `name`.
-fn substrate(name: &str) -> Option<&'static BuiltinSubstrate> {
-    SUBSTRATES.iter().find(|g| g.name == name)
+fn substrate(name: &str) -> Option<&'static assets::Shipped> {
+    assets::SHIPPED_SUBSTRATES.iter().find(|g| g.name == name)
 }
 
 /// The height map behind a bundled substrate. `None` for a procedural substrate (which
@@ -443,7 +324,7 @@ fn substrate(name: &str) -> Option<&'static BuiltinSubstrate> {
 /// callers that own a `Renderer` and callers that reach it through a signal: this
 /// is the awaiting half, and it borrows nothing.
 async fn fetch(name: &str) -> Option<Vec<u8>> {
-    let asset = substrate(name)?.asset?;
+    let asset = bundled(substrate(name)?)?;
     tracing::info!(substrate = name, url = %asset, "fetching canvas substrate");
     match dioxus::asset_resolver::read_asset_bytes(asset).await {
         Ok(bytes) => Some(bytes),
@@ -456,7 +337,7 @@ async fn fetch(name: &str) -> Option<Vec<u8>> {
 
 /// Whether `name` needs no image: `Flat` is its own id, known without a fetch.
 fn is_procedural(name: &str) -> bool {
-    substrate(name).is_some_and(|g| g.asset.is_none())
+    substrate(name).is_some_and(|g| g.path.is_none())
 }
 
 /// Resolve a pick to its content id, fetching and importing a bundled height map the
@@ -487,7 +368,9 @@ pub async fn resolve(r: &mut Renderer, pick: Pick) -> Option<SubstrateId> {
 /// comes out of the image. A substrate that cannot be fetched leaves the document on
 /// `Flat` — smooth, and honestly so, rather than claiming a substrate it has not got.
 pub async fn open_default(r: &mut Renderer, color_space: stark_model::ColorSpaceId) {
-    let surface = resolve(r, DEFAULT_SUBSTRATE).await.unwrap_or_default();
+    let surface = resolve(r, assets::DEFAULT_SUBSTRATE)
+        .await
+        .unwrap_or_default();
     r.new_document(color_space, surface);
 }
 
@@ -583,12 +466,12 @@ fn seed_session(state: AppState, id: SubstrateId) {
 /// in *neither* — one a peer brought, or one loaded from a file whose substrate was never
 /// in this browser's library — which is why a picker asks this rather than assuming
 /// its own list is exhaustive ([`SubstrateGallery`] draws that case as its own card).
-pub fn resolved(state: AppState) -> Vec<(&'static BuiltinSubstrate, Option<SubstrateId>)> {
+pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<SubstrateId>)> {
     let renderer = state.renderer.read();
-    SUBSTRATES
+    assets::SHIPPED_SUBSTRATES
         .iter()
         .map(|g| {
-            let id = match g.asset {
+            let id = match g.path {
                 None => Some(SubstrateId::Flat),
                 Some(_) => renderer.as_ref().and_then(|r| r.builtin_substrate(g.name)),
             };
@@ -603,14 +486,7 @@ pub fn resolved(state: AppState) -> Vec<(&'static BuiltinSubstrate, Option<Subst
 /// The bytes are not this function's to write; every caller reaching here has put
 /// them down already (`crate::shapes`'s `persist` has the argument).
 fn persist(entries: &[SubstrateEntry]) {
-    let rows: Vec<StoredSubstrate> = entries
-        .iter()
-        .map(|e| StoredSubstrate {
-            name: e.name.clone(),
-            id: e.id,
-        })
-        .collect();
-    storage::save_list(&rows);
+    assets::persist::<assets::Substrates>(entries);
 }
 
 // --- the pickers ------------------------------------------------------------
@@ -638,7 +514,7 @@ fn persist(entries: &[SubstrateEntry]) {
 fn use_bundled(state: AppState) {
     use_hook(|| {
         spawn_forever(async move {
-            for g in SUBSTRATES {
+            for g in assets::SHIPPED_SUBSTRATES {
                 resolve_signal(state, Pick::Builtin(g.name)).await;
             }
         });
@@ -730,7 +606,7 @@ pub fn SubstrateWell() -> Element {
 /// The brush editor's `ShapeGallery` with substrates in it — deliberately the same
 /// picture, because they are the same kind of thing (see the module note). What it
 /// does *not* borrow is the flat card's stand-in: `Smooth` is a real substrate with a
-/// real id, so it is an ordinary row of [`SUBSTRATES`] rather than a special case.
+/// real id, so it is an ordinary row of [`assets::SHIPPED_SUBSTRATES`] rather than a special case.
 #[component]
 pub fn SubstrateGallery() -> Element {
     let state = use_context::<AppState>();
@@ -905,7 +781,7 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 .then_some(Pick::Custom(id)),
             _ => None,
         })
-        .unwrap_or(DEFAULT_SUBSTRATE);
+        .unwrap_or(assets::DEFAULT_SUBSTRATE);
     let surf_choice = use_signal(|| current_pick);
 
     // One selectable color-space card; `selected` toggles the highlight.
@@ -951,7 +827,7 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     // `Signal` guard is held open across a loop body that runs arbitrary render code,
     // and the dialog wakes when the library changes rather than on every read of it.
     let surfaces = use_memo(move || {
-        SUBSTRATES
+        assets::SHIPPED_SUBSTRATES
             .iter()
             .map(|g| {
                 (

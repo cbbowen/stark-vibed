@@ -18,57 +18,44 @@
 //! library and not in `localStorage`: it comes back with the app, so storing a
 //! copy per browser would only be a second, staler one.
 //!
-//! **Adding a shape is a file plus a row in [`SHAPES`]** — it then appears in
+//! **Adding a shape is a file plus a row in the catalog**
+//! ([`stark_chrome::assets::SHIPPED_SHAPES`]) plus its `asset!` literal below — it
+//! then appears in
 //! the brush editor's gallery and can be named by a default preset.
 
 use dioxus::prelude::*;
+use stark_chrome::assets;
 use stark_model::document::BrushShape;
 
 use crate::render::Renderer;
 use crate::state::AppState;
 
-/// One shape bundled with the app.
-pub struct BuiltinShape {
-    /// The gallery's label, and the name a default preset asks for it by
-    /// ([`shape`]). Not persisted anywhere — a preset stores the resolved
-    /// content id — so renaming one is a cosmetic change.
-    pub name: &'static str,
-    /// The bundled PNG, fetched at runtime.
-    pub asset: Asset,
-    /// The same file's path under `assets/`, which is how `crate::builtin_ids`
-    /// knows this shape's content id without fetching it. Spelled twice because
-    /// `asset!` needs a literal and a lookup needs a string; a test checks the two
-    /// agree.
-    pub path: &'static str,
+/// The bundled PNG behind a catalog row, by the row's path.
+///
+/// **The one thing the catalog cannot carry.** Which shapes ship and what they are
+/// called are `stark_chrome::assets::SHIPPED_SHAPES`, because a name is what a preset
+/// asks for and a second catalog would be a second answer to what this build has. An
+/// `Asset` is not: `asset!` is a proc macro that demands a path literal inside this
+/// crate, so the files are spelled here — and `crate::builtin_ids` has the test that
+/// the two spellings agree.
+const BUNDLED: &[(&str, Asset)] = &[
+    (
+        "shape/Worn_Bristles.png",
+        asset!("/assets/shape/Worn_Bristles.png"),
+    ),
+    ("shape/Flat.png", asset!("/assets/shape/Flat.png")),
+    ("shape/Pencil.png", asset!("/assets/shape/Pencil.png")),
+];
+
+/// The bundled file at `path`, if this catalog claims it.
+pub fn bundled_at(path: &str) -> Option<Asset> {
+    BUNDLED.iter().find(|(p, _)| *p == path).map(|(_, a)| *a)
 }
 
-/// The worn bristle shape: a dry, broken-edged tip.
-pub const BRISTLES: &str = "Worn Bristles";
-
-/// The flat shape.
-pub const FLAT_TIP: &str = "Flat";
-
-/// The pencil shape
-pub const PENCIL: &str = "Pencil";
-
-/// Every shape that ships with the app, in gallery order.
-pub const SHAPES: &[BuiltinShape] = &[
-    BuiltinShape {
-        name: BRISTLES,
-        asset: asset!("/assets/shape/Worn_Bristles.png"),
-        path: "shape/Worn_Bristles.png",
-    },
-    BuiltinShape {
-        name: FLAT_TIP,
-        asset: asset!("/assets/shape/Flat.png"),
-        path: "shape/Flat.png",
-    },
-    BuiltinShape {
-        name: PENCIL,
-        asset: asset!("/assets/shape/Pencil.png"),
-        path: "shape/Pencil.png",
-    },
-];
+/// The bundled file for a catalog row.
+pub fn bundled(row: &assets::Shipped) -> Option<Asset> {
+    bundled_at(row.path?)
+}
 
 /// Fetch every bundled shape and import it into `r`, so strokes and presets can
 /// reference one by content id. Run on each engine that has to render them: the
@@ -78,8 +65,11 @@ pub const SHAPES: &[BuiltinShape] = &[
 /// A shape that fails to fetch is logged and skipped — the rest still load, and
 /// callers already treat an unresolved built-in as "not available yet".
 pub async fn import_all(r: &mut Renderer) {
-    for builtin in SHAPES {
-        match dioxus::asset_resolver::read_asset_bytes(builtin.asset).await {
+    for builtin in assets::SHIPPED_SHAPES {
+        let Some(file) = bundled(builtin) else {
+            continue;
+        };
+        match dioxus::asset_resolver::read_asset_bytes(file).await {
             Ok(bytes) => r.load_builtin(builtin.name, &bytes),
             Err(e) => tracing::warn!("could not fetch the built-in shape “{}”: {e}", builtin.name),
         }
@@ -107,9 +97,9 @@ pub fn select(state: AppState, name: &str) {
 /// Every built-in paired with the id it resolved to — `None` for one still in
 /// flight. For the gallery, which draws a card per built-in and highlights the
 /// one the brush is holding; `read`, so the cards light up when the fetch lands.
-pub fn resolved(state: AppState) -> Vec<(&'static BuiltinShape, Option<stark_model::AssetId>)> {
+pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<stark_model::AssetId>)> {
     let renderer = state.renderer.read();
-    SHAPES
+    assets::SHIPPED_SHAPES
         .iter()
         .map(|b| (b, renderer.as_ref().and_then(|r| r.builtin(b.name))))
         .collect()

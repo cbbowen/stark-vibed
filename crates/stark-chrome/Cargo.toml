@@ -16,6 +16,10 @@ stark-model = { workspace = true }
 # all. `default-features = false` because nothing here has an opinion about the
 # color space: Mixbox (§6.7) is a fact about the renderer, not about a panel.
 stark-engine = { path = "../stark-engine", default-features = false }
+# Encoding an import (`assets`). The decode is each frontend's — the browser has one
+# and a native build ships one — but what an image *becomes* is decided here, and it
+# leaves as a PNG because that is the form both engines' importers take.
+png = { workspace = true }
 # The brush's two halves are what a preset stores, so they are `Serialize` — the
 # one place this crate's types reach a file (§25.6).
 serde = { workspace = true }
@@ -30,3 +34,9 @@ tracing = { workspace = true }
 # The shared lint set (root Cargo.toml).
 [lints]
 workspace = true
+
+# The shipped assets' content ids, computed at build time (`build.rs`) — which is
+# what `stark-assetid` is shaped for: no GPU, no wgpu, so a build script can hash
+# one and the app knows an id before it has the bytes (§19).
+[build-dependencies]
+stark-assetid = { workspace = true }

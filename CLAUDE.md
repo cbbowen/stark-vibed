@@ -87,8 +87,10 @@ crates/
                    a drag makes of it, what switching families costs — what a shape
                    gesture is about to do to the selection or to the paint, the canvas
                    rectangles a frontend asks the document for, the layer tree's
-                   arithmetic, the list-drag gesture, the
-                   asset libraries' thumbnails, the record format every client keeps
+                   arithmetic, the list-drag gesture, both
+                   asset libraries — one type generic in what an id is a *reading* of,
+                   the import policy a decoder does not answer, the shipped catalog and
+                   the build script that hashes it — the record format every client keeps
                    its settings and libraries in — with a `storage::Backend` each
                    frontend installs to say where the bytes go — and both binding
                    registries (§25): what a command *is* and which chord reaches it,
@@ -125,9 +127,11 @@ lives in the model; if it holds a tile it is a cache and lives in the engine.
 
 The one crack in that: large image assets live in
 `stark-dioxus-frontend/assets/` because Dioxus's `asset!` rejects paths outside
-its own crate, and the engine's *tests* read them from there through
-`stark_testdata::assets` — the single module that breaks if the frontend
-reorganizes.
+its own crate. Three things reach in: the engine's *tests* through
+`stark_testdata::assets`, `stark-chrome`'s build script (which hashes them into the
+shipped-id table both frontends read), and `stark-wgpui-frontend`'s
+`include_bytes!`. Those are the modules that break if the frontend reorganizes,
+and they are the only ones.
 
 ## Commands
 

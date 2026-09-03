@@ -101,7 +101,7 @@ fn mark_written(state: AppState, revision: u64) {
 /// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
 /// working.
 pub fn save_document(state: AppState) {
-    let resolvable = crate::builtin_ids::resolvable();
+    let resolvable = stark_chrome::assets::resolvable();
     let bytes = state
         .renderer
         .read()

@@ -1,51 +1,25 @@
 //! What the app already has, by content id (§6.6, §6.4, §12.4).
 //!
-//! Every asset under `assets/shape` and `assets/substrate` is hashed at build time
-//! (`build.rs`) into [`BUILTIN_IDS`], so this build knows the id of a bundled
-//! brush shape or canvas substrate **without fetching it**. Both catalogs are
-//! explicit that an id is otherwise only knowable once the bytes have arrived;
-//! this is the table that breaks the circularity.
+//! The table of ids is `stark_chrome::assets` — hashed at build time, in the crate
+//! both frontends depend on, so there is one answer to "what does this build already
+//! have" rather than one per frontend. What is left here is the two halves that need
+//! this frontend's own vocabulary: an id becomes a `dioxus::Asset` to fetch, and a
+//! fetched asset becomes an `AssetNeed` the session glue speaks in.
 //!
-//! What it buys: a peer that switches to a substrate this app ships with names it by
-//! content id like any other, and the receiver — knowing it can resolve that id
-//! from its own bundle — declines the transfer instead of pulling megabytes over
-//! the network for bytes sitting next to its binary.
-//!
-//! It is *only* a table of ids. Resolving one to bytes is still a fetch, just a
-//! local one; nothing here embeds an image.
+//! What the table buys: a peer that switches to a substrate this app ships with names
+//! it by content id like any other, and the receiver — knowing it can resolve that id
+//! from its own bundle — declines the transfer instead of pulling megabytes over the
+//! network for bytes sitting next to its binary.
 
 use stark_assetid::AssetId;
 use stark_model::SubstrateId;
 use stark_net::AssetNeed;
 
-include!(concat!(env!("OUT_DIR"), "/builtin_ids.rs"));
-
-/// The bundled file behind a content id, if this build ships it — the reverse of
-/// [`resolvable`], for actually making good on what it promised.
+/// The bundled file behind a content id, if this build ships it — for actually making
+/// good on what `stark_chrome::assets::resolvable` promised.
 pub fn asset_for(id: AssetId) -> Option<dioxus::prelude::Asset> {
-    let path = BUILTIN_IDS
-        .iter()
-        .find(|(_, i)| *i == id)
-        .map(|(p, _)| *p)?;
-    crate::builtins::SHAPES
-        .iter()
-        .find(|s| s.path == path)
-        .map(|s| s.asset)
-        .or_else(|| {
-            crate::substrates::SUBSTRATES
-                .iter()
-                .find(|g| g.path == Some(path))
-                .and_then(|g| g.asset)
-        })
-}
-
-/// Every content id this build can resolve out of its own bundle.
-///
-/// Handed to a session at join time so the host can leave them out of the
-/// snapshot: the joiner is not saying "I have these loaded", it is saying "I can
-/// get these without you" (§12.4).
-pub fn resolvable() -> Vec<AssetId> {
-    BUILTIN_IDS.iter().map(|(_, id)| *id).collect()
+    let path = stark_chrome::assets::shipped_at(id)?.path?;
+    crate::builtins::bundled_at(path).or_else(|| crate::substrates::bundled_at(path))
 }
 
 /// Read content out of this app's own bundle, by content id (§12.4, §8).
@@ -105,97 +79,50 @@ pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// The catalogs name their files as literals for `asset!` and again as a path
-    /// for this table, because a proc macro needs a literal and a lookup needs a
-    /// string. Two spellings of one filename is exactly the kind of thing that
-    /// drifts, so it is checked rather than trusted: every catalog row must
-    /// resolve, and every bundled asset must be claimed by a row.
+    /// The catalog names its files as paths and this frontend names them again as
+    /// `asset!` literals, because a proc macro needs a literal and a lookup needs a
+    /// string. Two spellings of one filename is exactly the kind of thing that drifts.
+    ///
+    /// The other half — that a catalog path is a file that was actually hashed — is
+    /// `stark_chrome::assets`', where the id table is. This half cannot move with it:
+    /// an `Asset` is a `dioxus` type and the crate below names none.
     #[test]
-    fn the_catalogs_and_the_manifest_name_the_same_files() {
-        let claimed: Vec<&str> = crate::builtins::SHAPES
+    fn every_catalog_row_has_the_file_this_frontend_bundles() {
+        for row in stark_chrome::assets::SHIPPED_SHAPES
             .iter()
-            .map(|s| s.path)
-            .chain(crate::substrates::SUBSTRATES.iter().filter_map(|g| g.path))
+            .chain(stark_chrome::assets::SHIPPED_SUBSTRATES)
+        {
+            let Some(path) = row.path else { continue };
+            assert!(
+                super::asset_for(
+                    stark_chrome::assets::shipped_id(path).expect("a catalog row is hashed")
+                )
+                .is_some(),
+                "the catalog names {path} and no `asset!` in this frontend does"
+            );
+        }
+    }
+
+    /// And nothing is bundled that no row offers — a file fetched by nothing is
+    /// weight in the deploy that the manifest still carries.
+    #[test]
+    fn nothing_this_frontend_bundles_is_unreachable() {
+        let claimed: Vec<&str> = stark_chrome::assets::SHIPPED_SHAPES
+            .iter()
+            .chain(stark_chrome::assets::SHIPPED_SUBSTRATES)
+            .filter_map(|s| s.path)
             .collect();
-        for path in &claimed {
-            assert!(
-                BUILTIN_IDS.iter().any(|(p, _)| p == path),
-                "catalog names {path}, which is not in assets/ — the row and the file disagree"
-            );
+        for path in [
+            "shape/Worn_Bristles.png",
+            "shape/Flat.png",
+            "shape/Pencil.png",
+        ] {
+            assert!(crate::builtins::bundled_at(path).is_some());
+            assert!(claimed.contains(&path), "{path} is bundled but unreachable");
         }
-        for (path, _) in BUILTIN_IDS {
-            assert!(
-                claimed.contains(path),
-                "assets/{path} is bundled and hashed but no catalog row offers it"
-            );
-        }
-    }
-
-    /// **The catalog is append-only.** Every id here has been shipped, so a saved
-    /// document may reference one and rely on this build to supply it (§8's
-    /// version 6). Re-authoring a bundled image, or dropping one, does not break a
-    /// picker — it strands every painting made on it, which will then refuse to
-    /// open rather than open wrong.
-    ///
-    /// Adding a row is free. Changing or removing one is a decision about other
-    /// people's files, so it fails here first: add the new asset alongside, and
-    /// retire the old one only when nothing can still be pointing at it.
-    ///
-    /// **Keyed on the id, not the path**, because the id is the whole of what a
-    /// document holds (§19). A file may be renamed — `Gesso.png` became
-    /// `Rough.png` — and every painting made on it still opens, while re-authoring
-    /// it under the same name strands them all. The path beside each hash says
-    /// which asset it was, and nothing looks it up.
-    ///
-    /// **The two shape rows were re-canonicalized once, in alpha** (2026-08-23),
-    /// when a brush shape's canonical form became reach-normalized so that a
-    /// brush's `size` names the disc its mark fits in for every shape
-    /// (`stark_assetid::coverage`, §6.6). That re-derived every shape id and
-    /// stranded documents painted on the old ones — a decision about other
-    /// people's files that §19 puts at exactly this rung, and one the alpha
-    /// window is *for*. The substrate rows did not move, the height derivation
-    /// being untouched. Past alpha the rule above stands as written: append.
-    #[test]
-    fn the_shipped_catalog_is_append_only() {
-        // Shipped ids, oldest first. Append; do not edit.
-        const SHIPPED: &[(&str, &str)] = &[
-            (
-                "shape/Flat.png",
-                "2c484d9d80ad2d087996fe17aade9b6618cf4e91a97a570df8b378cd3de563bb",
-            ),
-            (
-                "shape/Worn_Bristles.png",
-                "e572234345c9a1ffdf7df457569a3bc14709437512266f4b9c4fb7f4214bab0d",
-            ),
-            (
-                "substrate/Rough.png",
-                "0b88d740a6b3f35f57b5f1d6e4064ac7b4ace0d2c2abab417bbcce762602deb6",
-            ),
-            (
-                "substrate/Linen.png",
-                "9d8105e76895f6e47b456177da890816a2983112548d7d748cd42c5d67cd5dc1",
-            ),
-        ];
-        for (path, want) in SHIPPED {
-            assert!(
-                BUILTIN_IDS.iter().any(|(_, id)| id.to_hex() == *want),
-                "{path} shipped as {want} and this build bundles no such content; \
-                 documents painted on it can no longer be opened. Add the new asset \
-                 as a new row rather than re-authoring the old one."
-            );
-        }
-    }
-
-    /// Distinct files must be distinct content; two rows sharing an id would make
-    /// the picker offer one thing twice.
-    #[test]
-    fn every_bundled_asset_is_distinct_content() {
-        for (i, (path, id)) in BUILTIN_IDS.iter().enumerate() {
-            for (other, other_id) in &BUILTIN_IDS[i + 1..] {
-                assert_ne!(id, other_id, "{path} and {other} hash to one id");
-            }
+        for path in ["substrate/Linen.png", "substrate/Rough.png"] {
+            assert!(crate::substrates::bundled_at(path).is_some());
+            assert!(claimed.contains(&path), "{path} is bundled but unreachable");
         }
     }
 }

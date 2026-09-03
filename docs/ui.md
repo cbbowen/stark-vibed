@@ -1037,6 +1037,60 @@ the exit criterion is an act, not a diff.
   probes only escape it by being their parent's *first* child.
 - **N7 — the asset libraries.** Shapes and substrates over `library` and the blob
   backend; native decode. *Exit:* import a brush shape and a canvas substrate.
+  **Done**, and it closed the one thing N5 left open.
+
+  The two libraries were **one object written twice** in the web frontend —
+  `shapes.rs` and `substrates.rs` were near line-for-line the same file — so what
+  came down is a `stark_chrome::assets` generic in the single thing that differs:
+  what the id is a *reading of*. `Kind` carries it, `Shapes` and `Substrates`
+  instantiate it, and the records, the two-store load, the persist and the
+  write-ordering are written once. A row is still `{name, id}` on disk, so every
+  already-stored library reads back unchanged.
+
+  **What a decoder does not answer.** An import is decode, resample, decide,
+  encode; only the middle two words are a platform's. That a light border means
+  ink on paper and must be inverted, that a substrate's transparency is its own top
+  surface rather than a trench, that grey is one set of luminance weights — all of
+  that is now `assets::shape_png` / `assets::substrate_png`, over straight RGBA8.
+  The web keeps `createImageBitmap` and `drawImage`; the native app uses the
+  `image` crate at Lanczos3. **The resample is the one genuine divergence**: two
+  resamplers means an *oversized* file imported on the two frontends lands on two
+  ids. Under the cap there is none, and the shared `fit` at least makes them ask
+  for the same size.
+
+  **The id table moved down with the catalog.** Which assets ship, what they are
+  called and what each is described as were two catalogs the moment there were two
+  frontends; they are one now, and so is the build script that hashes them —
+  `stark-chrome/build.rs`, reading the frontend's `assets/` directory. That
+  directory is still a crate boundary pointing the wrong way (`asset!` refuses a
+  path outside its own crate), but the coupling is contained in one more place
+  rather than one per frontend, which is the containment `stark-testdata` already
+  uses for the same files. The catalog's invariants came with it, the append-only
+  test included — and it passing after the move is the evidence the two build
+  scripts hashed identically.
+
+  **The native app carries the images**, all 17 MB, by `include_bytes!` — the exact
+  opposite of the web's decision and for the reason that decides it. A wasm binary
+  is downloaded per visit, so four large PNGs staying out of it is the difference
+  between a page that loads and one that does not. A native binary is installed
+  once, and fetching would buy an install layout to get right, a missing-file
+  failure mode and a `cargo run` that cannot find its own canvas textures. What it
+  bought: resolving is a slice, the two stamp presets open *resolved* rather than
+  standing on the round tip until a fetch lands, and **N5's open item closes** —
+  the native app saves lean like the web one (a document on the 14 MB linen
+  substrate is 2.2 kB) and settles an owed asset out of its own binary on open.
+
+  The card is the other half of the split, done the same way: `assets::card` gives
+  the texels and says whether they are coverage or height, and each frontend
+  carries them its own way — a data URL in a `background-image`, a texture in an
+  element tree. `library::Thumbs` became generic in exactly that, so the cache
+  policy is shared and only the carrier is not.
+
+  Two things the native galleries show that are worth naming. Importing a file the
+  app already ships lights **two** cards, because content addressing lands them on
+  one id — which is the design working, not a bug. And the shipped substrate row
+  keeps a card with no picture: `Smooth` is procedural, so there is no field to
+  draw, and it wears its name alone.
 - **N8 — the long tail.** Guides (§20), gradients (§22), filters (§21), frames and
   export (§15), the navigator, timeline mode. One panel at a time; each is a Tier
   B move plus native markup.

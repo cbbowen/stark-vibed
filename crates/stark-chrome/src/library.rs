@@ -38,18 +38,22 @@ pub const THUMB_DIM: u32 = 128;
 ///
 /// **One per library, never shared.** See the module note: two readings of one PNG
 /// land on one id and two different pictures.
-pub struct Thumbs(Mutex<Vec<(AssetId, String)>>);
+///
+/// Generic in what a picture *is*, because the two frontends carry one differently: a
+/// data URL for a `background-image`, a texture handle for an element tree. The cache
+/// policy is the part worth agreeing on, and it is all here.
+pub struct Thumbs<T>(Mutex<Vec<(AssetId, T)>>);
 
-impl Thumbs {
+impl<T: Clone> Thumbs<T> {
     /// `const`, because every consumer of this declares one as a `static`: a
     /// library's cache is per-library and lives as long as the app does.
     pub const fn new() -> Self {
         Self(Mutex::new(Vec::new()))
     }
 
-    /// The remembered data URL for `id`, as a value — so a caller's miss path is not
+    /// The remembered picture of `id`, as a value — so a caller's miss path is not
     /// holding the lock while it decodes.
-    pub fn get(&self, id: AssetId) -> Option<String> {
+    pub fn get(&self, id: AssetId) -> Option<T> {
         let thumbs = self.0.lock().ok()?;
         thumbs
             .iter()
@@ -57,17 +61,17 @@ impl Thumbs {
             .map(|(_, u)| u.clone())
     }
 
-    /// Remember `url` as the picture of `id`. A poisoned lock simply forgets it: the
-    /// cache is a saving, and re-encoding a thumbnail is cheaper than taking a panel
-    /// down over one.
-    pub fn put(&self, id: AssetId, url: String) {
+    /// Remember `picture` as the picture of `id`. A poisoned lock simply forgets it:
+    /// the cache is a saving, and re-encoding a thumbnail is cheaper than taking a
+    /// panel down over one.
+    pub fn put(&self, id: AssetId, picture: T) {
         if let Ok(mut thumbs) = self.0.lock() {
-            thumbs.push((id, url));
+            thumbs.push((id, picture));
         }
     }
 }
 
-impl Default for Thumbs {
+impl<T: Clone> Default for Thumbs<T> {
     /// Deferring to [`new`](Self::new) rather than deriving, which would drop the
     /// `const` the `static`s need. Here because this is a library's public type now
     /// and a `new` without a `Default` is a surprise in one.

@@ -1391,179 +1391,42 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
 /// Normalize an image into a brush-shape PNG, using the browser as the decoder —
 /// any format the browser can display can be imported (JPEG, WebP, GIF, …).
 ///
-/// Two normalizations beyond transcoding:
-/// - **Downscale** so the longest edge is at most the engine's shape cap
-///   (1024 px, `stark_model::MAX_SHAPE_DIM`). The engine would cap it
-///   anyway; doing it here keeps library entries small in `localStorage`.
-/// - **Dark-on-light inversion.** The engine reads coverage as
-///   `luminance × alpha` (white paints, black doesn't) — but scanned or drawn
-///   brush images are usually dark ink on light paper, which would import as a
-///   solid rectangle with a shape-shaped hole. If the image's border ring is
-///   mostly covered, it's read as ink-on-paper and the luminance is inverted.
+/// **The browser's half only**: decode, and downscale to the size
+/// `stark_chrome::assets::fit` asks for. What the pixels then mean — that a light
+/// border is paper with ink on it, and the inversion that follows — is the crate's,
+/// so the two frontends cannot come to read one file two ways.
 ///
 /// Returns the PNG bytes and whether the inversion fired (so the UI can say so).
 #[cfg(target_arch = "wasm32")]
 pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
-    use wasm_bindgen::JsCast;
-
-    let window = web_sys::window().ok_or("no window")?;
-    let array = js_sys::Uint8Array::from(bytes.as_slice());
-    let parts = js_sys::Array::of1(&array.buffer());
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
-        .map_err(|_| "could not wrap the image bytes".to_string())?;
-    let promise = window
-        .create_image_bitmap_with_blob(&blob)
-        .map_err(|_| "image decoding unavailable".to_string())?;
-    let bitmap: web_sys::ImageBitmap = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "not an image the browser can decode".to_string())?
-        .dyn_into()
-        .map_err(|_| "unexpected decode result".to_string())?;
-
-    let (sw, sh) = (bitmap.width(), bitmap.height());
-    if sw == 0 || sh == 0 {
-        return Err("the image is empty".to_string());
-    }
-    let cap = stark_model::MAX_SHAPE_DIM;
-    let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
-    let w = ((sw as f64 * scale) as u32).max(1);
-    let h = ((sh as f64 * scale) as u32).max(1);
-
-    let document = window.document().ok_or("no document")?;
-    let canvas: web_sys::HtmlCanvasElement = document
-        .create_element("canvas")
-        .ok()
-        .and_then(|e| e.dyn_into().ok())
-        .ok_or("could not create a canvas")?;
-    canvas.set_width(w);
-    canvas.set_height(h);
-    let ctx: web_sys::CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .ok()
-        .flatten()
-        .and_then(|c| c.dyn_into().ok())
-        .ok_or("no 2d context")?;
-    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, w as f64, h as f64)
-        .map_err(|_| "could not draw the image".to_string())?;
-
-    let data = ctx
-        .get_image_data(0.0, 0.0, w as f64, h as f64)
-        .map_err(|_| "could not read the pixels".to_string())?;
-    let mut px = data.data().0;
-
-    // Mirror of the engine's coverage read (assets.rs::decode_coverage):
-    // coverage = luminance × alpha, in [0, 255].
-    let coverage = |px: &[u8], i: usize| -> u32 {
-        let lum = (77 * px[i] as u32 + 150 * px[i + 1] as u32 + 29 * px[i + 2] as u32) >> 8;
-        lum * px[i + 3] as u32 / 255
-    };
-    let (mut border_sum, mut border_n) = (0u64, 0u64);
-    let mut ring = |x: u32, y: u32, px: &[u8]| {
-        border_sum += coverage(px, ((y * w + x) * 4) as usize) as u64;
-        border_n += 1;
-    };
-    for x in 0..w {
-        ring(x, 0, &px);
-        ring(x, h - 1, &px);
-    }
-    for y in 1..h.saturating_sub(1) {
-        ring(0, y, &px);
-        ring(w - 1, y, &px);
-    }
-    let inverted = border_sum / border_n.max(1) > 127;
-    if inverted {
-        for p in px.as_chunks_mut::<4>().0 {
-            let lum = ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u8;
-            let inv = 255 - lum;
-            (p[0], p[1], p[2]) = (inv, inv, inv);
-        }
-        let data =
-            web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&px), w, h)
-                .map_err(|_| "could not rebuild the pixels".to_string())?;
-        ctx.put_image_data(&data, 0.0, 0.0)
-            .map_err(|_| "could not write the pixels".to_string())?;
-    }
-
-    let url = canvas
-        .to_data_url_with_type("image/png")
-        .map_err(|_| "could not encode the PNG".to_string())?;
-    let b64 = url
-        .strip_prefix("data:image/png;base64,")
-        .ok_or("unexpected data URL")?;
-    Ok((base64_decode(b64)?, inverted))
+    let (width, height, rgba) = decode_to_canvas(bytes, stark_chrome::assets::SHAPE_CAP).await?;
+    stark_chrome::assets::shape_png(stark_chrome::assets::Decoded {
+        width,
+        height,
+        rgba,
+    })
 }
 
-/// Normalize an image into a **canvas-substrate PNG**, using the browser as the decoder
-/// — any format it can display can become a substrate (JPEG, WebP, TIFF, …).
+/// Normalize an image into a **canvas-substrate PNG**, using the browser as the
+/// decoder — any format it can display can become a substrate (JPEG, WebP, TIFF, …).
 ///
-/// [`normalize_shape_image`]'s sibling, and the differences are the whole of what a
-/// substrate *is* as against a stamp (§6.4):
+/// [`normalize_shape_image`]'s sibling, and the same split: the browser decodes and
+/// resamples, `stark_chrome::assets::substrate_png` decides. What it decides — grey by
+/// luminance, no inversion, alpha composited over white rather than multiplied in —
+/// is the whole of what a substrate is as against a stamp (§6.4), and is stated there.
 ///
-/// - **Grayscale by luminance.** `stark_assetid::height` reads channel 0 and says why:
-///   a height map's grey is its height, so weighting the channels of one that was
-///   authored as a height map would tilt the substrate. That rule is about an authored
-///   map; this is the step before it, where a photograph of a canvas is being *turned
-///   into* one, and taking the red channel of a photograph is not a height field. Once
-///   it is grey the two readings agree, which is exactly the point — the engine's rule
-///   is left untouched and the frontend's policy stops it from ever mattering.
-/// - **No inversion.** A stamp's polarity is a spelling (white paints, and a scan of
-///   ink on paper means the opposite); a substrate's polarity is the substrate. Inverting
-///   one would turn its ridges into its valleys, and nothing about the image says
-///   which was meant.
-/// - **Capped at [`MAX_SUBSTRATE_DIM`](stark_assetid::MAX_SUBSTRATE_DIM)**, not the shape
-///   cap. `stark_assetid::height` would cap it anyway; doing it here means the
-///   full-size decode never crosses into wasm's heap.
-///
-/// The result still goes through `Engine::import_substrate`, which decodes it again and
-/// hashes what it finds: this makes a substrate *possible*, and the id still comes out of
-/// the bytes.
+/// The result still goes through `Engine::import_substrate`, which decodes it again
+/// and hashes what it finds: this makes a substrate *possible*, and the id still comes
+/// out of the bytes.
 #[cfg(target_arch = "wasm32")]
 pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    use wasm_bindgen::JsCast;
-
-    let (w, h, mut px) = decode_to_canvas(bytes, stark_assetid::MAX_SUBSTRATE_DIM).await?;
-    let window = web_sys::window().ok_or("no window")?;
-    let document = window.document().ok_or("no document")?;
-    let canvas: web_sys::HtmlCanvasElement = document
-        .create_element("canvas")
-        .ok()
-        .and_then(|e| e.dyn_into().ok())
-        .ok_or("could not create a canvas")?;
-    canvas.set_width(w);
-    canvas.set_height(h);
-    let ctx: web_sys::CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .ok()
-        .flatten()
-        .and_then(|c| c.dyn_into().ok())
-        .ok_or("no 2d context")?;
-
-    // The same luminance weights the coverage read uses, so "grey" means one thing
-    // across the app. Alpha is *composited against white* rather than multiplied in:
-    // a mask's transparency means "no ink here", but a substrate has no such thing as
-    // an absent height — a PNG with a transparent border would otherwise import as a
-    // deep trench around a canvas that has none. White, not black, because an
-    // unpainted substrate reads as its own top surface.
-    for p in px.as_chunks_mut::<4>().0 {
-        let lum = (77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8;
-        let a = p[3] as u32;
-        let over = (lum * a + 255 * (255 - a)) / 255;
-        let g = over as u8;
-        *p = [g, g, g, 255];
-    }
-    let data =
-        web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&px), w, h)
-            .map_err(|_| "could not rebuild the pixels".to_string())?;
-    ctx.put_image_data(&data, 0.0, 0.0)
-        .map_err(|_| "could not write the pixels".to_string())?;
-
-    let url = canvas
-        .to_data_url_with_type("image/png")
-        .map_err(|_| "could not encode the PNG".to_string())?;
-    let b64 = url
-        .strip_prefix("data:image/png;base64,")
-        .ok_or("unexpected data URL")?;
-    base64_decode(b64)
+    let (width, height, rgba) =
+        decode_to_canvas(bytes, stark_chrome::assets::SUBSTRATE_CAP).await?;
+    stark_chrome::assets::substrate_png(stark_chrome::assets::Decoded {
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// Decode `bytes` through the browser, downscaled so the longest edge is at most
@@ -1594,9 +1457,10 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<(u32, u32, Vec<u8>
     if sw == 0 || sh == 0 {
         return Err("the image is empty".to_string());
     }
-    let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
-    let w = ((sw as f64 * scale) as u32).max(1);
-    let h = ((sh as f64 * scale) as u32).max(1);
+    // The *size* is the shared rule's, even though the resampling is not: two
+    // frontends asking their own resampler for two different sizes would be a
+    // divergence that did not have to exist (`stark_chrome::assets`).
+    let (w, h) = stark_chrome::assets::fit(sw, sh, cap);
 
     let document = window.document().ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = document

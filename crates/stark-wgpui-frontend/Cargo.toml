@@ -46,11 +46,33 @@ wgpu = { workspace = true }
 # runs in one, but the tree has one clock and this is it (§7.1). Already compiled
 # here by way of the engine's timing layer.
 quanta = "0.12"
+# The decoder half of an asset import (§6.4, §6.6). The browser is the web
+# frontend's — any format it can display can become a brush shape — and this is the
+# native equivalent, cut to the formats worth the compile: the raster ones a person
+# is likely to have a texture or a scanned brush in. What the pixels then *mean* is
+# `stark_chrome::assets`, so this crate decodes and resamples and decides nothing.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "gif",
+    "bmp",
+    "tiff",
+] }
+# Reading the asset libraries at startup, which is the one place this binary has to
+# finish a future before it can go on: the brush the app opens on may name a stamp,
+# and a preset that resolved *after* the first frame would paint one stroke round.
+# The backend behind it is synchronous file I/O (`crate::store`), so this parks on
+# nothing — it is an adapter, not an executor.
+pollster = "0.4"
 
 [dev-dependencies]
 # Round-tripping a record in a test. The format is `stark-chrome`'s at run time,
 # so this is here to *check* one rather than to write one.
 serde_json = "1"
+# Re-deriving a shipped asset's id in a test, to check that the bytes in the binary
+# are the bytes the id table was built from (`assets`).
+stark-assetid = { workspace = true }
 
 # The shared lint set (root Cargo.toml).
 [lints]

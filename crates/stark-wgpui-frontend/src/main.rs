@@ -28,9 +28,11 @@
 //! There is still no chrome, no document state and no panels. The plan from here is
 //! §11.2.
 
+mod assets;
 mod brush;
 mod canvas;
 mod files;
+mod gallery;
 mod keys;
 mod layers;
 mod panel;

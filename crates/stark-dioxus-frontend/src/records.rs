@@ -43,11 +43,11 @@ mod tests {
             <stark_chrome::drags::DragRow as Entry>::STORE,
             <stark_chrome::visibility::StoredVisible as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
-            <crate::shapes::StoredShape as Entry>::STORE,
+            <stark_chrome::assets::Row<stark_chrome::assets::Shapes> as Entry>::STORE,
             <stark_chrome::presets::StoredPreset as Entry>::STORE,
             <crate::slots::StoredSlot as Entry>::STORE,
             <crate::gradients::GradientEntry as Entry>::STORE,
-            <crate::substrates::StoredSubstrate as Entry>::STORE,
+            <stark_chrome::assets::Row<stark_chrome::assets::Substrates> as Entry>::STORE,
         ];
         let distinct: HashSet<Store> = claimed.iter().copied().collect();
         assert_eq!(
@@ -68,8 +68,15 @@ mod tests {
 
         // [`Blob`] is deliberately *not* one of the claims above: a record's bytes are
         // the other half of a record that already has a row, never a record of their
-        // own. What is checked instead is that they cannot invent one.
-        let blobs = [<crate::shapes::ShapeEntry as Blob>::STORE];
+        // own. That used to be checked here. It is now **structural**: one type
+        // carries both impls for an asset library, so its bytes cannot name a store
+        // its rows do not (`stark_chrome::assets::Row`). What is left to check is
+        // that the two libraries are still the only blob-bearing records, since a
+        // third would be a claim this list does not make.
+        let blobs = [
+            <stark_chrome::assets::Row<stark_chrome::assets::Shapes> as Blob>::STORE,
+            <stark_chrome::assets::Row<stark_chrome::assets::Substrates> as Blob>::STORE,
+        ];
         assert!(
             blobs.iter().all(|s| distinct.contains(s)),
             "bytes belong to a record some type already claims"

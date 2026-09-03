@@ -9246,6 +9246,7 @@ dependencies = [
 name = "stark-chrome"
 version = "0.0.0"
 dependencies = [
+ "png",
  "serde",
  "serde_json",
  "stark-assetid",
@@ -9378,9 +9379,12 @@ dependencies = [
 name = "stark-wgpui-frontend"
 version = "0.0.0"
 dependencies = [
+ "image",
+ "pollster 0.4.0",
  "quanta",
  "serde",
  "serde_json",
+ "stark-assetid",
  "stark-chrome",
  "stark-engine",
  "stark-model",

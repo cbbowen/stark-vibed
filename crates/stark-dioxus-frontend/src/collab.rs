@@ -85,7 +85,7 @@ pub fn share(state: AppState) {
 
         let opts = NetOptions {
             secret: Some(id.secret),
-            resolvable: crate::builtin_ids::resolvable(),
+            resolvable: stark_chrome::assets::resolvable(),
             ..Default::default()
         };
         match CollabSession::host(doc, opts).await {
@@ -135,7 +135,7 @@ pub fn join(state: AppState, ticket_text: String) {
         // session.
         let opts = NetOptions {
             secret: Some(id.secret),
-            resolvable: crate::builtin_ids::resolvable(),
+            resolvable: stark_chrome::assets::resolvable(),
             ..Default::default()
         };
         match CollabSession::join(&ticket, opts).await {

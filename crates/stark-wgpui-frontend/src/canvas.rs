@@ -12,6 +12,7 @@
 //! What the hit test tests against is the layout wgpui actually produced, not one
 //! this side derived — see `panel::Regions`.
 
+use stark_chrome::assets;
 use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_chrome::commands::{Bindings, Command};
 use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
@@ -21,8 +22,9 @@ use stark_chrome::transform::{Family, Grab, Hint, Switch, TransformUi};
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
-use stark_model::document::{FillOp, SelectionOp, ShapeAction};
-use stark_model::{Srgb, Vec2};
+use stark_model::AssetNeed;
+use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
+use stark_model::{AssetId, Srgb, SubstrateId, Vec2};
 use wgpui::{
     AnyElement, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, Window, div, prelude::*, rgb, wgpu_surface,
@@ -30,6 +32,7 @@ use wgpui::{
 
 use crate::brush::Brush;
 use crate::files::{self, Done};
+use crate::gallery;
 use crate::layers::{self, Act};
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
@@ -124,9 +127,18 @@ pub struct Canvas {
     regions: Regions,
     /// The same, for the layers panel on the other side.
     layer_regions: layers::Regions,
-    /// The same, for the Select section and for the transform bar.
+    /// The same, for the Select section, the transform bar and the two galleries.
     select_regions: select::Regions,
     bar_regions: transform::Regions,
+    gallery_regions: gallery::Regions,
+    /// The two asset libraries this client keeps (§25.6) — the stamps and the
+    /// substrates a person brought in, read from the store at start.
+    shapes: Vec<assets::Entry>,
+    substrates: Vec<assets::Entry>,
+    /// The substrate the document is on, so a card can show as chosen. Read back from
+    /// the engine would be better, but `ObservableState::substrate` is a
+    /// `SubstrateId` and a card is keyed by the `AssetId` inside it.
+    substrate: SubstrateId,
     /// What a press on the transform widget would take hold of, as of the last move
     /// — the cursor, and nothing else. Meaningless with no mode live.
     hover: Hint,
@@ -177,7 +189,33 @@ pub struct Canvas {
 impl Canvas {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let mut renderer = Renderer::new(window);
-        let brush = Brush::default();
+        // The shipped stamps go in before the first brush is chosen, because the
+        // brush the app opens on may *be* one of them — a preset that resolved after
+        // the first frame would paint one stroke round (`crate::brush`).
+        //
+        // Their ids are known without this (`stark_chrome::assets::shipped_id`, hashed
+        // at build time); what the import buys is the engine holding the bytes, so a
+        // stroke can actually be stamped with one.
+        let mut failure = None;
+        if let Some(r) = renderer.as_mut() {
+            for (row, png) in crate::assets::shipped_shape_files() {
+                if let Err(e) = r.import_brush_id(png)
+                    && failure.is_none()
+                {
+                    failure = Some(format!(
+                        "the shipped shape “{}” did not load: {e}",
+                        row.name
+                    ));
+                }
+            }
+        }
+        // Both libraries, read to completion before the window is built. The backend
+        // is synchronous file I/O (`crate::store`), so this parks on nothing — and
+        // doing it here rather than in a task is what makes the roster below a fact
+        // rather than a race.
+        let shapes = pollster::block_on(assets::load::<assets::Shapes>());
+        let substrates = pollster::block_on(assets::load::<assets::Substrates>());
+        let brush = Brush::new(crate::assets::builtin_shapes());
         if let Some(r) = renderer.as_mut() {
             r.process(brush.set());
         }
@@ -198,13 +236,17 @@ impl Canvas {
             layer_regions: layers::Regions::default(),
             select_regions: select::Regions::default(),
             bar_regions: transform::Regions::default(),
+            gallery_regions: gallery::Regions::default(),
+            shapes,
+            substrates,
+            substrate: SubstrateId::Flat,
             hover: Hint::Move,
             mode: None,
             obs,
             path: None,
             written: 0,
             title: String::new(),
-            failure: None,
+            failure,
             file_task: None,
             collapsed: std::collections::HashSet::new(),
             clock,
@@ -246,6 +288,13 @@ impl Canvas {
             return;
         }
         if self.over_layers(window, ev.position) {
+            return;
+        }
+
+        // The galleries share the column too, and are asked before the Select section
+        // for no reason beyond where they sit: the regions are disjoint.
+        if let Some(region) = gallery::hit(&self.gallery_regions, ev.position) {
+            self.gallery_act(region, window, cx);
             return;
         }
 
@@ -741,10 +790,31 @@ impl Canvas {
         let Some(r) = self.renderer.as_mut() else {
             return false;
         };
-        // What the file names but does not carry. This frontend has no catalog to
-        // resolve those out of yet (`crate::files`), so anything owed is the end of
-        // it — reported, with the painting on screen untouched, which is what makes a
-        // refused file cost nothing.
+        // What the file names but does not carry. A lean file leaves out content it
+        // expects the opener to have (§8's version 6), and this build **has** it: the
+        // shipped images are in the binary, so settling an owed asset is a slice
+        // rather than a fetch (`crate::assets`).
+        let owed: Vec<_> = r
+            .unresolved_content(&file)
+            .into_iter()
+            .filter_map(|need| Some((need, crate::assets::bytes_for(need.content())?)))
+            .collect();
+        for (need, png) in owed {
+            let taken = match need {
+                AssetNeed::Brush(_) => r.import_brush_id(png).map(|_| ()),
+                AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), png),
+                // No build ships a picture: one is by definition something a person
+                // brought in, so a catalog naming one is a catalog wrong about itself.
+                AssetNeed::Picture(_) => Err("the shipped catalog holds no pictures".to_string()),
+            };
+            if let Err(e) = taken {
+                self.report(format!("content this painting names would not load: {e}"));
+                return false;
+            }
+        }
+        // Anything still owed is content nobody here can produce. A file has no peer
+        // to ask, so it is refused with the painting on screen untouched — which is
+        // what makes a refused file cost nothing (§6.4).
         if !r.unresolved_content(&file).is_empty() {
             self.report("that painting uses content this build does not carry".to_string());
             return false;
@@ -934,6 +1004,305 @@ impl Canvas {
         self.renderer.as_ref().map(Renderer::view)
     }
 
+    /// What a press on one of the two galleries does.
+    fn gallery_act(
+        &mut self,
+        region: gallery::Region,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match region {
+            gallery::Region::Shape(i) => {
+                // A shipped stamp's id is known without importing anything, and the
+                // bytes went in at startup — so wearing one is a brush write and
+                // nothing else (`crate::assets`).
+                if let Some(id) = assets::SHIPPED_SHAPES
+                    .get(i)
+                    .and_then(|row| row.path)
+                    .and_then(assets::shipped_id)
+                {
+                    self.wear_shape(BrushShape::Stamp(id), cx);
+                }
+            }
+            gallery::Region::OwnShape(id) => {
+                if let Some(id) = self.ensure_shape(id, cx) {
+                    self.wear_shape(BrushShape::Stamp(id), cx);
+                }
+            }
+            gallery::Region::Substrate(i) => {
+                let Some(row) = assets::SHIPPED_SUBSTRATES.get(i) else {
+                    return;
+                };
+                // The procedural one is its own id and needs no image (§6.4).
+                let Some(path) = row.path else {
+                    return self.wear_substrate(SubstrateId::Flat, cx);
+                };
+                let Some(png) = crate::assets::bundled(path) else {
+                    return;
+                };
+                if let Some(id) = self.import_substrate(png, cx) {
+                    self.wear_substrate(id, cx);
+                }
+            }
+            gallery::Region::OwnSubstrate(id) => {
+                let Some(png) = self
+                    .substrates
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| e.png.clone())
+                else {
+                    return;
+                };
+                if let Some(id) = self.import_substrate(&png, cx) {
+                    self.wear_substrate(id, cx);
+                }
+            }
+            gallery::Region::Import(which) => self.import_asset(which, window, cx),
+            gallery::Region::Remove(which, id) => self.forget_asset(which, id, cx),
+        }
+    }
+
+    /// Put a shape on the brush, taking the preset's name off it: a stamp is what the
+    /// tool *is* (§18.1.8).
+    fn wear_shape(&mut self, shape: BrushShape, cx: &mut Context<'_, Self>) {
+        self.brush.config.shape = shape;
+        self.brush.tuned_off_preset();
+        self.send_brush(cx);
+    }
+
+    /// Move the document onto a substrate — a logged action, so it undoes and
+    /// replicates like any other edit. The painting is preserved; the paint already
+    /// down re-reads against the new surface (§6.4).
+    fn wear_substrate(&mut self, id: SubstrateId, cx: &mut Context<'_, Self>) {
+        self.substrate = id;
+        self.send(DocCommand::SetSubstrate(id), cx);
+    }
+
+    /// Get a substrate's height map into this document's engine, reporting a refusal
+    /// where a person will see it.
+    fn import_substrate(&mut self, png: &[u8], cx: &mut Context<'_, Self>) -> Option<SubstrateId> {
+        match self.renderer.as_mut()?.import_substrate(png) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                self.report(format!("that substrate would not load: {e}"));
+                self.repaint(cx);
+                None
+            }
+        }
+    }
+
+    /// Make sure a library shape's bytes are in this document's engine, answering the
+    /// id to reference it by — **healed** when the stored id predates a
+    /// canonicalization change, which is the one case where what the library calls an
+    /// asset and what the engine calls it can differ (§19).
+    fn ensure_shape(&mut self, id: AssetId, cx: &mut Context<'_, Self>) -> Option<AssetId> {
+        // Already here — imported in this session, or arrived with a loaded file.
+        if self.renderer.as_ref()?.asset_bytes(id).is_some() {
+            return Some(id);
+        }
+        let entry = self.shapes.iter().find(|e| e.id == id)?.clone();
+        let actual = match self.renderer.as_ref()?.import_brush_id(&entry.png) {
+            Ok(actual) => actual,
+            Err(e) => {
+                self.report(format!("“{}” would not load: {e}", entry.name));
+                self.repaint(cx);
+                return None;
+            }
+        };
+        if actual != entry.id {
+            if let Some(e) = self.shapes.iter_mut().find(|e| e.id == entry.id) {
+                e.id = actual;
+            }
+            let rows = self.shapes.clone();
+            pollster::block_on(assets::heal::<assets::Shapes>(
+                &rows, entry.id, actual, &entry.png,
+            ));
+        }
+        Some(actual)
+    }
+
+    /// Open an image and put it in one of the two libraries.
+    ///
+    /// The dialog is held rather than detached for `crate::files`' reason: a wgpui
+    /// `Task` cancels when it is dropped, and an import dropped mid-dialog is a file
+    /// the user asked for and did not get.
+    fn import_asset(
+        &mut self,
+        which: gallery::Which,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let ask = cx.prompt_for_paths(wgpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let picked = match ask.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(e)) => {
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        this.report(format!("the import dialog failed: {e}"));
+                        this.repaint(cx);
+                    });
+                    return;
+                }
+            };
+            let Some(path) = picked else { return };
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let read =
+                std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()));
+            let _ = this.update_in(cx, |this, _, cx| match read {
+                Ok(bytes) => this.take_asset(which, name, &bytes, cx),
+                Err(e) => {
+                    this.report(e);
+                    this.repaint(cx);
+                }
+            });
+        }));
+    }
+
+    /// Normalize an opened file into an entry, store it, and put it in hand.
+    ///
+    /// The decode is this frontend's and what the pixels *mean* is the crate's
+    /// (`crate::assets`) — which is why the two branches below differ only in which
+    /// of the pair they call and what they do with the result.
+    fn take_asset(
+        &mut self,
+        which: gallery::Which,
+        file_name: String,
+        bytes: &[u8],
+        cx: &mut Context<'_, Self>,
+    ) {
+        let name = stark_chrome::library::display_name(
+            &file_name,
+            match which {
+                gallery::Which::Shapes => "Imported shape",
+                gallery::Which::Substrates => "Imported substrate",
+            },
+        );
+        match which {
+            gallery::Which::Shapes => {
+                let (png, inverted) = match crate::assets::as_shape(bytes) {
+                    Ok(v) => v,
+                    Err(e) => return self.refuse(&file_name, e, cx),
+                };
+                let Some(r) = self.renderer.as_ref() else {
+                    return;
+                };
+                let id = match r.import_brush_id(&png) {
+                    Ok(id) => id,
+                    Err(e) => return self.refuse(&file_name, e, cx),
+                };
+                // The engine's own canonical bytes, not the ones handed to it: the id
+                // names *those*, and a library holding anything else would be a
+                // library whose rows do not match its blobs.
+                let canonical = r.asset_bytes(id).unwrap_or(png);
+                self.keep::<assets::Shapes>(id, name, canonical);
+                self.wear_shape(BrushShape::Stamp(id), cx);
+                if inverted {
+                    self.report(
+                        "that image read as dark ink on light paper, so it was inverted — \
+                         white now paints"
+                            .to_string(),
+                    );
+                }
+                self.repaint(cx);
+            }
+            gallery::Which::Substrates => {
+                let png = match crate::assets::as_substrate(bytes) {
+                    Ok(v) => v,
+                    Err(e) => return self.refuse(&file_name, e, cx),
+                };
+                let Some(id) = self.import_substrate(&png, cx) else {
+                    return;
+                };
+                let SubstrateId::Image(content) = id else {
+                    return self.refuse(&file_name, "it holds no height field".to_string(), cx);
+                };
+                let canonical = self
+                    .renderer
+                    .as_ref()
+                    .and_then(|r| r.substrate_bytes(id))
+                    .unwrap_or(png);
+                self.keep::<assets::Substrates>(content, name, canonical);
+                self.wear_substrate(id, cx);
+            }
+        }
+    }
+
+    /// Put an entry in its library and on disk — **bytes before the row that names
+    /// them**, which is `stark_chrome::assets`' order and its reason.
+    ///
+    /// A repeat import is free and silent: content addressing means the id is already
+    /// there, so the entry is not added twice.
+    fn keep<K: assets::Kind>(&mut self, id: AssetId, name: String, png: Vec<u8>) {
+        // Which list, taken from `K` rather than from a second argument beside it:
+        // the type already says which store the bytes go to, and a parameter that
+        // could disagree with it is a way for a shape to be filed as a substrate.
+        let entries = if K::STORE == <assets::Shapes as assets::Kind>::STORE {
+            &mut self.shapes
+        } else {
+            &mut self.substrates
+        };
+        if entries.iter().any(|e| e.id == id) {
+            return;
+        }
+        pollster::block_on(assets::store_bytes::<K>(id, &png));
+        entries.push(assets::Entry { name, png, id });
+        assets::persist::<K>(entries);
+    }
+
+    /// Drop an entry from a library. **The row first, then the bytes** — the same rule
+    /// read the other way: a crash between the two strands some bytes, which costs
+    /// space, where the other order strands the row, which costs an asset that cannot
+    /// be used.
+    ///
+    /// Paint already down is untouched: the engine's per-document store keeps every
+    /// imported asset, and a save file bundles whatever its strokes reference.
+    fn forget_asset(&mut self, which: gallery::Which, id: AssetId, cx: &mut Context<'_, Self>) {
+        match which {
+            gallery::Which::Shapes => {
+                self.shapes.retain(|e| e.id != id);
+                assets::persist::<assets::Shapes>(&self.shapes);
+                pollster::block_on(assets::drop_bytes::<assets::Shapes>(id));
+                if self.brush.config.shape == BrushShape::Stamp(id) {
+                    self.wear_shape(BrushShape::default(), cx);
+                }
+            }
+            gallery::Which::Substrates => {
+                self.substrates.retain(|e| e.id != id);
+                assets::persist::<assets::Substrates>(&self.substrates);
+                pollster::block_on(assets::drop_bytes::<assets::Substrates>(id));
+            }
+        }
+        self.repaint(cx);
+    }
+
+    /// Say why a file could not be taken, naming it.
+    fn refuse(&mut self, file_name: &str, why: String, cx: &mut Context<'_, Self>) {
+        self.report(format!("could not import “{file_name}”: {why}"));
+        self.repaint(cx);
+    }
+
+    /// The shipped rows of one catalog, each paired with the id it resolves to.
+    ///
+    /// Every one of them resolves, always — the ids were hashed at build time and the
+    /// bytes are in the binary — which is why this answers `Some` where the web app's
+    /// equivalent has to allow for a fetch still in flight.
+    fn shipped(
+        rows: &'static [assets::Shipped],
+    ) -> Vec<(&'static assets::Shipped, Option<AssetId>)> {
+        rows.iter()
+            .map(|row| (row, row.path.and_then(assets::shipped_id)))
+            .collect()
+    }
+
     /// Run whatever the shipped chord table says this keystroke asks for.
     ///
     /// **The whole of the keyboard, and it is nine lines**, because the table is
@@ -1065,12 +1434,64 @@ impl Render for Canvas {
             Some(Held::Knob(k)) => Some(k),
             _ => None,
         };
+        // Both galleries write into one region list, so it is cleared once, here,
+        // rather than by whichever of the two is built first.
+        self.gallery_regions.borrow_mut().clear();
+        let shape_rows = Self::shipped(assets::SHIPPED_SHAPES);
+        let substrate_rows = Self::shipped(assets::SHIPPED_SUBSTRATES);
+        let held_shape = match self.brush.config.shape {
+            BrushShape::Stamp(id) => Some(id),
+            BrushShape::Round { .. } => None,
+        };
+        let held_substrate = match self.substrate {
+            SubstrateId::Image(id) => Some(id),
+            SubstrateId::Flat => None,
+        };
+        // A card's bytes come from the engine first and the shipped table second, on
+        // `ensure`'s order: a stamp imported in an earlier session is only in the
+        // library until it is picked, and a shipped one is in the binary either way.
+        let engine_bytes = |id| {
+            self.renderer
+                .as_ref()
+                .and_then(|r| r.asset_bytes(id))
+                .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
+        };
+        let shapes = gallery::gallery::<assets::Shapes>(
+            gallery::Which::Shapes,
+            "Shapes",
+            gallery::Shown {
+                rows: &shape_rows,
+                own: &self.shapes,
+                current: held_shape,
+            },
+            engine_bytes,
+            &self.gallery_regions,
+        );
+        let substrate_bytes = |id| {
+            self.renderer
+                .as_ref()
+                .and_then(|r| r.substrate_bytes(SubstrateId::Image(id)))
+                .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
+        };
+        let substrates = gallery::gallery::<assets::Substrates>(
+            gallery::Which::Substrates,
+            "Substrates",
+            gallery::Shown {
+                rows: &substrate_rows,
+                own: &self.substrates,
+                current: held_substrate,
+            },
+            substrate_bytes,
+            &self.gallery_regions,
+        );
         let chrome = panel::brush_panel(
             &self.brush,
             dragging,
             EFFECTS,
             &self.regions,
             select::select_panel(self.obs.as_ref(), &self.bindings, &self.select_regions),
+            shapes,
+            substrates,
         );
         let rows = self.rows();
         let roster = layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions);

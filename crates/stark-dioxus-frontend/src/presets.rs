@@ -75,8 +75,8 @@ fn default_presets(state: AppState) -> Vec<PresetEntry> {
 
 fn builtins_for(state: AppState) -> Option<BuiltinShapes> {
     Some(BuiltinShapes {
-        bristles: builtins::shape(state, builtins::BRISTLES)?,
-        pencil: builtins::shape(state, builtins::PENCIL)?,
+        bristles: builtins::shape(state, stark_chrome::assets::BRISTLES)?,
+        pencil: builtins::shape(state, stark_chrome::assets::PENCIL)?,
     })
 }
 
