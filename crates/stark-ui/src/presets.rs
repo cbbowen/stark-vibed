@@ -301,16 +301,16 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                         floor: 0.5,
                         curve: 0.0,
                     }),
-                    ..BrushModulations::default()
+                    ..Default::default()
                 },
                 opacity: 1.0,
-                flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                opacity_modulation: Some(Modulation::linear(ModSource::Pressure)),
                 color_dynamics: ColorDynamics {
                     noise: NoiseKind::White,
                     frequency: [0.5, 0.0],
                     amplitude: [0.01, 0.0, 0.0],
                 },
-                ..BrushConfig::default()
+                ..Default::default()
             },
         ),
         shipped(
@@ -392,13 +392,8 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.25 },
                 effect: BrushEffectType::Erase,
                 erase: EraseConfig {
-                    opacity: 1.0,
-                    flow_modulation: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.0,
-                        curve: 1.0,
-                    }),
-                    opacity_modulation: None,
+                    opacity_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Default::default()
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
@@ -419,17 +414,12 @@ fn shipped_presets(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 shape: BrushShape::Round { hardness: 0.95 },
                 effect: BrushEffectType::Erase,
                 erase: EraseConfig {
-                    opacity: 1.0,
-                    flow_modulation: Some(Modulation {
-                        source: ModSource::Pressure,
-                        floor: 0.25,
-                        curve: 0.0,
-                    }),
-                    opacity_modulation: None,
+                    opacity_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Default::default()
                 },
                 modulation: BrushModulations {
                     size: Some(Modulation::linear(ModSource::Pressure)),
-                    ..BrushModulations::default()
+                    ..Default::default()
                 },
                 ..BrushConfig::default()
             },
