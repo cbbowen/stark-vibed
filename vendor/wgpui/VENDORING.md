@@ -2,7 +2,7 @@
 
 wgpui `0.3.4` from the crates.io source (`registry/src/.../wgpui-0.3.4`,
 upstream commit `5e94b544ff` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus two local patches. Substituted for the crates.io crate via
+tree**, plus three local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest. License: Apache-2.0
 (`LICENSE.md`, kept).
 
@@ -74,6 +74,45 @@ about both — is where it belongs. `main::device_descriptor` starts from
 `Limits::default()` (what wgpui's renderer was written against) and raises only
 the fields the engine needs, with `or_better_values_from`.
 
+## Patch 3 — `WindowBounds` is honoured whole
+
+`WindowParams` carried `bounds: Bounds<Pixels>` — `WindowBounds::get_bounds()`, the
+rect with the variant thrown away — so the platform never learned whether a window
+was meant to open maximized. It carries `window_bounds: WindowBounds` now, and its
+two readers (`platform::open_window`, the test window) call `get_bounds()`
+themselves.
+
+`CrossPlatform::open_window` then builds the winit attributes with `with_position`,
+`with_maximized` and `with_fullscreen` beside the `with_inner_size` it already had.
+And the `match window_bounds` in `Window::new` that used to apply the state
+afterwards is gone.
+
+### Why
+
+Two independent faults, and the second is why the first was not obvious.
+
+**The position was dropped.** The attributes were built from the size alone, so an
+app restoring a window to where the user left it got the size back and the OS's
+cascade for a position.
+
+**The state was applied with a toggle.** `Window::new` did
+`WindowBounds::Maximized(_) => platform_window.zoom()`, and `CrossWindow::zoom` is
+`set_maximized(!is_maximized())`. Asking a window to *be* maximized by toggling it
+is only right when it is not already — and on a freshly created window that has not
+been pumped yet, the call does not take on Windows regardless, so the state was lost
+either way.
+
+The two interact: fixing only the first, by adding `with_maximized` to the
+attributes, makes the toggle *correct in reverse* and the window opens restored.
+They have to move together, which is why they are one patch.
+
+Applying the state at creation is also what preserves the restore rect: winit's
+Windows backend deliberately maximizes after `CreateWindowEx` "because if the size
+is changed in `WM_CREATE`, the restored size will be stored in that size".
+
+Upstreamable, and worth it — `zoom()` being a toggle used as a setter is a bug
+independent of anything Stark wants.
+
 ## The deletion
 
 `examples/` is gone, and with it the thirty `[[example]]` blocks that named its
@@ -96,21 +135,21 @@ verbatim" that would otherwise be worth keeping for the clean update diff.
 - Excluded from the workspace (root `Cargo.toml`), so `cargo fmt --all` and
   `cargo clippy --workspace` do not reach it — see the comment there. Its
   `[[example]]` targets are not built by `--all-targets` for the same reason.
-- **`WindowOptions::window_bounds` is honoured only for its size.**
-  `CrossPlatform::open_window` builds the winit attributes with
-  `with_inner_size` and no `with_position`, and does not act on
-  `WindowBounds::Maximized` or `Fullscreen` at all — so an app that restores a
-  window's placement gets the size back and not the position, and a maximized
-  window reopens restored. Not patched: `stark-wgpui-frontend`'s `window` module
-  stores the whole placement and says so at the call site, and the fix is a
-  `with_position` plus a `set_maximized` if it is ever worth a third patch.
+- **`PlatformWindow::window_bounds` reports the window's *current* frame**, wrapped
+  in whichever variant the state says — so a maximized window answers
+  `Maximized(the screen it fills)` where the variant documents its bounds as the
+  size to restore *to*. Not patched, because the answer is not winit's to give
+  (there is no `restore_size`; Windows has `GetWindowPlacement` and the other
+  platforms differ). `stark-wgpui-frontend`'s `window::remember` handles it where
+  it costs nothing: a maximized window keeps the rect already on file, which is by
+  construction the last size it was not maximized at.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply all three changes: the
-`flume` line in each manifest, the `DeviceDescriptor` threading, and the
-deletion — `rm -rf examples/` and strip the `[[example]]` blocks the new
-manifests bring back.
+Unpack the new version over this directory, then re-apply all four changes: the
+`flume` line in each manifest, the `DeviceDescriptor` threading, the
+`WindowBounds` plumbing, and the deletion — `rm -rf examples/` and strip the
+`[[example]]` blocks the new manifests bring back.
 
 Dropping this directory takes more than the `flume` fix landing upstream now:
 patch 2 has to land too, in some form, or the frontend goes back to a device it

@@ -1009,7 +1009,8 @@ impl Window {
         let mut platform_window = cx.platform.open_window(
             handle,
             WindowParams {
-                bounds: window_bounds.get_bounds(),
+                // STARK PATCH: hand the platform the whole thing; see `WindowParams`.
+                window_bounds,
                 titlebar,
                 kind,
                 is_movable,
@@ -1049,11 +1050,10 @@ impl Window {
             .request_decorations(window_decorations.unwrap_or(WindowDecorations::Server));
         platform_window.set_background_appearance(window_background);
 
-        match window_bounds {
-            WindowBounds::Fullscreen(_) => platform_window.toggle_fullscreen(),
-            WindowBounds::Maximized(_) => platform_window.zoom(),
-            WindowBounds::Windowed(_) => {}
-        }
+        // STARK PATCH: the state is applied at *creation* now (`open_window`), which
+        // is where winit wants it and what keeps the requested size as the restore
+        // size. Applying it again here undid it — `zoom` and `toggle_fullscreen` are
+        // toggles, so on a window already in the state they ask for, they leave it.
 
         platform_window.on_close(Box::new({
             let window_id = handle.window_id();

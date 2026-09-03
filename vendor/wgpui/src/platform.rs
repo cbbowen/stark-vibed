@@ -1061,7 +1061,11 @@ pub struct WindowOptions {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct WindowParams {
-    pub bounds: Bounds<Pixels>,
+    // STARK PATCH: was `bounds: Bounds<Pixels>`, i.e. `WindowBounds::get_bounds()`.
+    // Flattening here is what dropped the maximized and fullscreen states before the
+    // platform ever saw them, so a caller could ask for a maximized window and get a
+    // restored one. The two readers call `get_bounds()` themselves now.
+    pub window_bounds: WindowBounds,
 
     /// The titlebar configuration of the window
     pub titlebar: Option<TitlebarOptions>,

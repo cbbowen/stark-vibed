@@ -58,7 +58,8 @@ impl TestWindow {
         display: Rc<dyn PlatformDisplay>,
     ) -> Self {
         Self(Rc::new(Mutex::new(TestWindowState {
-            bounds: params.bounds,
+            // STARK PATCH: `WindowParams` carries the whole `WindowBounds` now.
+            bounds: params.window_bounds.get_bounds(),
             display,
             platform,
             handle,

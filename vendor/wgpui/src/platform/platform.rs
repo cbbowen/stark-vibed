@@ -247,7 +247,12 @@ impl Platform for CrossPlatform {
         );
 
         let success = with_active_context(|event_loop, app_state| {
-            let bounds = options.bounds;
+            // STARK PATCH: the whole of `WindowBounds` is honoured here. Only the
+            // size was read before, so a window restored to where it was last came
+            // back the right size wherever the OS chose to cascade it — and the
+            // maximized state, applied by a *toggle* after the fact in `Window::new`,
+            // did not survive at all.
+            let bounds = options.window_bounds.get_bounds();
             let attributes = winit::window::Window::default_attributes()
                 .with_title(
                     options
@@ -259,7 +264,26 @@ impl Platform for CrossPlatform {
                 .with_inner_size(winit::dpi::LogicalSize::new(
                     bounds.size.width.0 as f64,
                     bounds.size.height.0 as f64,
-                ));
+                ))
+                .with_position(winit::dpi::LogicalPosition::new(
+                    bounds.origin.x.0 as f64,
+                    bounds.origin.y.0 as f64,
+                ))
+                // In the attributes, not after creation: `set_maximized` on a window
+                // that has not been shown yet is dropped on Windows, so the state has
+                // to be part of what the window is created as. The size and position
+                // above stay the restore rect, which is what `WindowBounds::Maximized`
+                // documents its bounds to be.
+                .with_maximized(matches!(
+                    options.window_bounds,
+                    crate::WindowBounds::Maximized(_)
+                ))
+                .with_fullscreen(match options.window_bounds {
+                    crate::WindowBounds::Fullscreen(_) => {
+                        Some(winit::window::Fullscreen::Borderless(None))
+                    }
+                    _ => None,
+                });
 
             let winit_window = event_loop
                 .create_window(attributes)

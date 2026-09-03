@@ -56,17 +56,10 @@ impl Default for Placement {
 /// The window's opening bounds: where it was last, or centred if this is a first run
 /// or the store has nothing to say.
 ///
-/// **wgpui 0.3.4 reads only the size out of this.** Its `create_window` builds the
-/// winit attributes with `with_inner_size` and no `with_position`, and it treats
-/// `Maximized` and `Fullscreen` as `Windowed` — so a reopened window comes back the
-/// right *size* wherever the OS chose to cascade it, and a maximized one comes back
-/// restored. What is written here is complete and correct; what reads it is not, and
-/// the gap is one `with_position` plus a `set_maximized` in a file this workspace
-/// already patches (`vendor/wgpui/VENDORING.md`).
-///
-/// Left stating the whole placement rather than trimmed to what works, because the
-/// record is what a *file* holds: trimming it would mean every window that ever
-/// stored a position losing it the day the toolkit learns to read one.
+/// Honoured whole — position, size and maximized state — over a vendored patch:
+/// upstream wgpui 0.3.4 read only the size out of this and treated `Maximized` as
+/// `Windowed` (`vendor/wgpui/VENDORING.md`, patch 3). What it still does not do is
+/// *report* a restore rect, which is [`remember`]'s problem rather than this one's.
 pub fn opening(cx: &mut App) -> WindowBounds {
     match storage::load::<Placement>() {
         Some(p) => {
@@ -97,19 +90,27 @@ pub fn opening(cx: &mut App) -> WindowBounds {
 /// keeps its old placement, which is the same bargain every other record makes about
 /// a write that never happened.
 pub fn remember(bounds: WindowBounds) {
+    // **A maximized window keeps the rect it already had.** `WindowBounds::Maximized`
+    // documents its bounds as the size to restore *to*, but wgpui fills all three
+    // variants from the window's current frame — so what arrives here for a maximized
+    // window is the screen it fills. Storing that would mean un-maximizing, next run,
+    // to a window the size of the display. What the restore rect actually is, is the
+    // one already on file: the last size this window was *not* maximized at.
+    let previous = storage::load::<Placement>();
     let (rect, maximized) = match bounds {
-        WindowBounds::Windowed(b) => (b, false),
-        // Fullscreen restores to a window, not to fullscreen: coming back into a mode
-        // with no chrome and no way out but a key is not what "where it was" should
-        // mean, and the restore rect is right there either way.
-        WindowBounds::Maximized(b) => (b, true),
-        WindowBounds::Fullscreen(b) => (b, false),
+        WindowBounds::Windowed(b) => (Some(b), false),
+        WindowBounds::Maximized(_) => (None, true),
+        // Fullscreen comes back as a window: returning into a mode with no chrome and
+        // no way out but a key is not what "where it was" should mean. Its frame is
+        // the display's too, so it keeps the stored rect for the same reason.
+        WindowBounds::Fullscreen(_) => (None, false),
     };
+    let previous = previous.unwrap_or_default();
     storage::save(&Placement {
-        x: f32::from(rect.origin.x),
-        y: f32::from(rect.origin.y),
-        width: f32::from(rect.size.width),
-        height: f32::from(rect.size.height),
+        x: rect.map_or(previous.x, |b| f32::from(b.origin.x)),
+        y: rect.map_or(previous.y, |b| f32::from(b.origin.y)),
+        width: rect.map_or(previous.width, |b| f32::from(b.size.width)),
+        height: rect.map_or(previous.height, |b| f32::from(b.size.height)),
         maximized,
     });
 }

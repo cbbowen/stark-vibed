@@ -678,13 +678,14 @@ Three differences from §11 above are the interesting ones:
   factor is the whole of the mapping — and the input tolerance and the smoothing
   rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
 
-wgpui is **vendored** (`vendor/wgpui`) for two patches. The first is one line:
+wgpui is **vendored** (`vendor/wgpui`) for three patches. The first is one line:
 upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
 `flume` only for macOS, Linux and FreeBSD, so the published crate does not
-compile on Windows at all. The second is the `DeviceDescriptor` above. See
-`vendor/wgpui/VENDORING.md`, which also records what the second one *removed* —
-`Application::headless`, whose flag the new signature displaced and which
-upstream had never honoured.
+compile on Windows at all. The second is the `DeviceDescriptor` above. The third
+makes `WindowBounds` reach the platform whole, so a window can be reopened where
+it was (§11.2, N1). See `vendor/wgpui/VENDORING.md`, which also records what the
+second one *removed* — `Application::headless`, whose flag the new signature
+displaced and which upstream had never honoured.
 
 [wgpui]: https://github.com/muktidaya/wgpui
 
@@ -859,10 +860,12 @@ the exit criterion is an act, not a diff.
   `stark-dioxus-frontend`'s `records` owns it now, with the rows it does not keep
   listed by name.
 
-  The native half restores the window's **size** but not its position: wgpui
-  0.3.4's `open_window` reads `with_inner_size` off the bounds and no
-  `with_position`, and treats `Maximized` as `Windowed`. The record stores the
-  whole placement anyway — see `window::opening`.
+  The window record was also the first thing to need a **third** vendored patch.
+  wgpui 0.3.4 dropped the origin when it built the winit attributes, *and* applied
+  the maximized state afterwards with `zoom()`, which is a toggle used as a
+  setter. Either fault alone hides the other — add `with_maximized` and the toggle
+  becomes correct in reverse — so the two moved together, and the placement is
+  honoured whole now (`vendor/wgpui/VENDORING.md`, patch 3).
 - **N2 — the brush in hand.** `brush_config` in use natively; a brush panel with
   size, flow, effect, hardness and colour; `presets`' records move. *Exit:* paint
   with any shipped preset, tuned, instead of one hard-coded `BrushParams`.
