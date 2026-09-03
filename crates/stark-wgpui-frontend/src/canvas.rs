@@ -17,6 +17,7 @@ use stark_chrome::commands::{Bindings, Command};
 use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_chrome::input as chrome_input;
 use stark_chrome::keys::Mods;
+use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool};
 use stark_model::Vec2;
@@ -26,6 +27,7 @@ use wgpui::{
 };
 
 use crate::brush::Brush;
+use crate::layers::{self, Act};
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
 
@@ -65,6 +67,8 @@ enum Held {
     Stroke,
     /// A knob on the panel, kept for the whole drag — see the module note.
     Knob(Knob),
+    /// The layers panel's opacity track.
+    Opacity,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
     /// flow up and down, from where the press landed.
     Tune {
@@ -96,6 +100,17 @@ pub struct Canvas {
     /// Where the panel's controls were laid out, as of the last painted frame — the
     /// panel measures rather than predicts, and this is where it reports (`panel`).
     regions: Regions,
+    /// The same, for the layers panel on the other side.
+    layer_regions: layers::Regions,
+    /// The engine's projection, refreshed after every command — what the layers
+    /// panel draws and what a command's gate reads (§5).
+    ///
+    /// Kept rather than asked per frame: `observe()` walks the roster, and a frame
+    /// that changed nothing would rebuild it for a panel that would draw the same.
+    obs: Option<ObservableState>,
+    /// Which groups this client has folded away. The panel's own state, not the
+    /// document's: a collaborator's fold is theirs (§17.4).
+    collapsed: std::collections::HashSet<stark_model::document::LayerId>,
     /// The clock `InputSample::time` is read off, and the raw reading it counts
     /// from. `quanta` rather than `std::time::Instant` (clippy.toml): this binary
     /// is native-only, but the clock the rest of the tree uses is the one that
@@ -115,6 +130,7 @@ impl Canvas {
         let clock = quanta::Clock::new();
         let epoch = clock.raw();
         let focus = cx.focus_handle();
+        let obs = renderer.as_ref().map(Renderer::observe);
         Self {
             renderer,
             brush,
@@ -125,13 +141,33 @@ impl Canvas {
             // The first frame has a canvas nobody has painted yet.
             dirty: true,
             regions: Regions::default(),
+            layer_regions: layers::Regions::default(),
+            obs,
+            collapsed: std::collections::HashSet::new(),
             clock,
             epoch,
         }
     }
 
     fn press(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
-        // The panel first: its column is where a press stops being paint.
+        // The layers panel is on the right, so it is asked first for the same reason
+        // the brush panel is: a press is paint only where neither column claims it.
+        if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
+            if region == layers::Region::Opacity {
+                self.held = Some(Held::Opacity);
+                if let Some(f) = layers::opacity_at(&self.layer_regions, ev.position) {
+                    self.set_opacity(f, cx);
+                }
+            } else {
+                self.act(region, cx);
+            }
+            return;
+        }
+        if self.over_layers(window, ev.position) {
+            return;
+        }
+
+        // Then the brush panel: its column is where a press stops being paint.
         match panel::hit(&self.regions, ev.position) {
             Some(Region::Knob(knob)) => {
                 self.held = Some(Held::Knob(knob));
@@ -216,6 +252,11 @@ impl Canvas {
                     self.turn(knob, f, cx);
                 }
             }
+            Some(Held::Opacity) => {
+                if let Some(f) = layers::opacity_at(&self.layer_regions, ev.position) {
+                    self.set_opacity(f, cx);
+                }
+            }
             Some(Held::Tune { from, size, flow }) => {
                 // Both knobs from the press rather than from the last move, so a long
                 // drag is one map and rounding cannot walk over its length.
@@ -246,10 +287,81 @@ impl Canvas {
     /// End whatever the press took hold of — for a stroke, the one edge that commits
     /// an action (§4).
     fn release(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        if matches!(self.held.take(), Some(Held::Stroke))
-            && let Some(r) = self.renderer.as_mut()
-        {
-            r.process(GestureCommand::End);
+        // A committed stroke is a document change like any other: the roster it
+        // may have added to has to reach the panel.
+        if matches!(self.held.take(), Some(Held::Stroke)) {
+            self.send(GestureCommand::End, cx);
+        } else {
+            self.repaint(cx);
+        }
+    }
+
+    /// Whether a position is over the layers panel's column at all.
+    ///
+    /// The canvas ends where this begins, so a press it does not want is still not
+    /// paint — the same bargain `panel::within` makes on the other side, measured
+    /// from the right because that is the edge this column is pinned to.
+    fn over_layers(&self, window: &Window, at: Point<Pixels>) -> bool {
+        let right = f32::from(window.viewport_size().width);
+        f32::from(at.x) >= right - layers::WIDTH
+    }
+
+    /// Do what a press on the layers panel means.
+    ///
+    /// The *meaning* is `layers::act`, which is a function over the rows so that it
+    /// can be tested; what is here is the two things it cannot do — send the command,
+    /// and fold a group, which is this client's own state rather than the document's.
+    fn act(&mut self, region: layers::Region, cx: &mut Context<'_, Self>) {
+        let rows = self.rows();
+        let active = self.obs.as_ref().map(|o| o.active_layer);
+        match layers::act(region, &rows, active) {
+            Some(Act::Doc(command)) => self.send(command, cx),
+            Some(Act::Peer(command)) => self.send(command, cx),
+            Some(Act::Fold(id)) => {
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
+                self.repaint(cx);
+            }
+            None => {}
+        }
+    }
+
+    /// Set the selected layer's opacity, previewing per sample.
+    ///
+    /// One command per pointer move and one undo step for the whole drag is what
+    /// `preview` buys the web app (§14.6); this sends the document command each time,
+    /// which is honest but coarse — the engine coalesces nothing, so a drag is a run
+    /// of history entries. The preview pair is a stage of its own.
+    fn set_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
+        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+            return;
+        };
+        self.send(DocCommand::SetLayerOpacity(id, opacity), cx);
+    }
+
+    /// The rows the layers panel draws, worked out by the tree.
+    fn rows(&self) -> Vec<stark_chrome::layer_tree::Row> {
+        match &self.obs {
+            Some(o) => stark_chrome::layer_tree::rows(&o.layers, &self.collapsed),
+            None => Vec::new(),
+        }
+    }
+
+    /// Send a command and take the engine's answer back.
+    ///
+    /// **Every document change goes through here**, which is what keeps the
+    /// projection and the panel in step: a command that moved state without
+    /// refreshing `obs` would leave the panel drawing the state before it, which is
+    /// the failure §4 names and the web frontend's `dispatch` exists to rule out.
+    fn send(
+        &mut self,
+        command: impl Into<stark_engine::command::InputCommand>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(r) = self.renderer.as_mut() {
+            r.process(command);
+            self.obs = Some(r.observe());
         }
         self.repaint(cx);
     }
@@ -285,11 +397,8 @@ impl Canvas {
             Command::BrushLarger => self.step_size(SIZE_STEP, cx),
             _ => {}
         }
-        if let Some(doc) = doc
-            && let Some(r) = self.renderer.as_mut()
-        {
-            r.process(doc);
-            self.repaint(cx);
+        if let Some(doc) = doc {
+            self.send(doc, cx);
         }
     }
 
@@ -345,6 +454,8 @@ impl Render for Canvas {
             _ => None,
         };
         let chrome = panel::brush_panel(&self.brush, dragging, EFFECTS, &self.regions);
+        let rows = self.rows();
+        let roster = layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions);
 
         let Some(r) = self.renderer.as_mut() else {
             return unavailable();
@@ -367,6 +478,7 @@ impl Render for Canvas {
                     .h_full()
                     .child(wgpu_surface(r.surface()).size_full()),
             )
+            .child(roster)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_move(cx.listener(Self::drag))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::release))

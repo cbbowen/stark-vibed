@@ -57,6 +57,36 @@ pub struct Row {
     pub removable: bool,
 }
 
+/// What to call a layer that has never been named: its place in the stack, or what
+/// it *is* when that says more (§15.7 — there is only ever one frame,
+/// so numbering it would be noise).
+///
+/// Here rather than in the engine because it is a way of *presenting* a stack,
+/// not a fact about the document — which is exactly why an unnamed layer stores no
+/// name (see [`LayerInfo::name`]). A layer the author has named shows that name,
+/// frame or not.
+///
+/// The word alone, with no mark in it. A `\u{25F1}` leading an unnamed frame's label
+/// would stand in for a glyph the set already has (`icons::FRAME`, which the frame bar
+/// wears), and putting it in the *string* costs twice over: this label is also a
+/// rename field's placeholder, so opening the field on a frame would show a corner mark
+/// inside a text box. The row draws the glyph, which leaves the placeholder a name.
+pub fn layer_label(info: &LayerInfo) -> String {
+    match (&info.name, info.matte.as_ref(), info.filter.as_ref()) {
+        (Some(name), ..) => name.to_string(),
+        // The two kinds of matte, told apart by the one thing that differs:
+        // a frame is defined against a rect, a background against none (§15.5).
+        (None, Some(m), _) if m.rect.is_some() => "Frame".to_string(),
+        (None, Some(_), _) => "Background".to_string(),
+        // The *filter's* own name rather than the word "Filter" (§21.6): unlike a
+        // frame, of which there is only ever one kind, which filter this is is the
+        // first thing to know about the row — and a stack of three rows all reading
+        // "Filter" would say nothing at all.
+        (None, _, Some(f)) => f.label().to_string(),
+        (None, None, None) => format!("Layer {}", info.id.minted_at()),
+    }
+}
+
 /// What a drag would commit, resolved against the rows as they stand now.
 ///
 /// The column arithmetic — which rows yield, and by how much — is [`Slide`], shared

@@ -920,6 +920,22 @@ the exit criterion is an act, not a diff.
   chord table already reads as "nothing left to name this by".
 - **N4 — layers.** `layer_tree` + `reorder` drive a native list. *Exit:* add,
   remove, reorder, group, clip, set opacity and blend, all from the native app.
+  **Done**, and the cheapest stage so far: the tree came down in N0, so almost
+  nothing here was a decision.
+
+  What a row *is* — which are folded away, which can be removed, what Carry and
+  Release would each mean — is `layer_tree::Row` answering, so a row's two tree
+  buttons are a `Some` each rather than a rule the panel writes. `layer_label`
+  joined it: the web copy already said it was "a way of *presenting* a stack, not
+  a fact about the document", which is the definition of this crate's contents.
+
+  Two things the native panel does that the web one does not, and both are
+  admissions. The blend picker is a **cycle** through four modes rather than a
+  pop-out, because a pop-out is §25.7's own design; it compares modes by
+  discriminant, so a Radiance layer at its own `k` is still on Radiance rather
+  than being skipped. And the opacity drag sends a document command per pointer
+  move where the web app previews and commits once (§14.6) — honest but coarse,
+  one history entry per sample. The preview pair is a stage of its own.
 - **N5 — documents on disk.** `files` splits; save, open and export through the
   native dialogs. *Exit:* a `.stark` file round-trips between the two frontends,
   history intact.

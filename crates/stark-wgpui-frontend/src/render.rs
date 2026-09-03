@@ -8,7 +8,7 @@
 //! bargain the browser canvas makes, with no readback and no encode.
 
 use stark_engine::command::{InputCommand, ViewCommand};
-use stark_engine::{Engine, GpuContext, ViewTransform};
+use stark_engine::{Engine, GpuContext, ObservableState, ViewTransform};
 use stark_model::geom::Extent2;
 use wgpui::{WgpuSurfaceHandle, Window};
 
@@ -58,6 +58,14 @@ impl Renderer {
     /// that skips whatever the first one also did.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
         self.engine.process(command);
+    }
+
+    /// The engine's cheap UI-facing projection, read back after each command (§5).
+    ///
+    /// Cheap by construction — the layer roster is shared rather than copied — but
+    /// not free, so the view keeps the answer rather than asking per frame.
+    pub fn observe(&self) -> ObservableState {
+        self.engine.observe()
     }
 
     /// The view a pointer position is mapped through.

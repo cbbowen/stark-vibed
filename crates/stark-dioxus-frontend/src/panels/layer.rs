@@ -431,7 +431,7 @@ pub fn LayerPanel() -> Element {
 
 /// What a blend mode does, in one line, for the picker's tooltip.
 ///
-/// Here rather than beside [`BlendMode`] for the same reason [`layer_label`] is: the
+/// Here rather than beside [`BlendMode`] for the same reason [`layer_label`](stark_chrome::layer_tree::layer_label) is: the
 /// mode's *name* is part of what it is and travels with the document, but how you
 /// explain it to someone hovering a drop-down is a frontend's business. The core
 /// says "Glow"; deciding that a painter wants to hear "cannot blow out" rather than
@@ -538,36 +538,6 @@ fn clip_hint(layer: &LayerInfo) -> &'static str {
     }
 }
 
-/// What to call a layer that has never been named: its place in the stack, or what
-/// it *is* when that says more (§15.7 — there is only ever one frame,
-/// so numbering it would be noise).
-///
-/// Kept here rather than in the core because it is a way of *presenting* a stack,
-/// not a fact about the document — which is exactly why an unnamed layer stores no
-/// name (see [`LayerInfo::name`]). A layer the author has named shows that name,
-/// frame or not.
-///
-/// The word alone, with no mark in it. A `\u{25F1}` leading an unnamed frame's label
-/// would stand in for a glyph the set already has (`icons::FRAME`, which the frame bar
-/// wears), and putting it in the *string* costs twice over: this label is also the
-/// rename field's placeholder, so opening the field on a frame would show a corner mark
-/// inside a text box. The row draws the glyph, which leaves the placeholder a name.
-fn layer_label(info: &LayerInfo) -> String {
-    match (&info.name, info.matte.as_ref(), info.filter.as_ref()) {
-        (Some(name), ..) => name.to_string(),
-        // The two kinds of matte, told apart by the one thing that differs:
-        // a frame is defined against a rect, a background against none (§15.5).
-        (None, Some(m), _) if m.rect.is_some() => "Frame".to_string(),
-        (None, Some(_), _) => "Background".to_string(),
-        // The *filter's* own name rather than the word "Filter" (§21.6): unlike a
-        // frame, of which there is only ever one kind, which filter this is is the
-        // first thing to know about the row — and a stack of three rows all reading
-        // "Filter" would say nothing at all.
-        (None, _, Some(f)) => f.label().to_string(),
-        (None, None, None) => format!("Layer {}", info.id.minted_at()),
-    }
-}
-
 #[component]
 pub fn LayerRow(
     row: Row,
@@ -608,7 +578,7 @@ pub fn LayerRow(
     let visible = info.visible;
     let matte = info.matte.is_some();
     let filter = info.filter.is_some();
-    let label = layer_label(&info);
+    let label = stark_chrome::layer_tree::layer_label(&info);
     // What the field opens on: the layer's *name*, which for one that has never been
     // named is empty. Deliberately not the label — seeding with the generated
     // "Layer 3" would turn opening the field and pressing Enter into a rename to

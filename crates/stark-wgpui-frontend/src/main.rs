@@ -31,6 +31,7 @@
 mod brush;
 mod canvas;
 mod keys;
+mod layers;
 mod panel;
 mod render;
 mod store;
