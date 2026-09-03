@@ -453,24 +453,25 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
     };
 
-    // What the header's "Overwrite preset" can do (`presets::overwrite`), asked
+    // What the header's "Overwrite preset" can do (`stark_chrome::presets::overwrite`), asked
     // of the library, the name in hand and the brush as they are *now* — so the
     // button wakes with the first edit that moves the brush off its preset.
     let in_hand = (state.preset_in_hand)();
-    let verdict = presets::overwrite(&state.presets.read(), in_hand.as_deref(), &(brush, tune));
-    let overwrite_ready = matches!(verdict, presets::Overwrite::Ready(_));
+    let verdict =
+        stark_chrome::presets::overwrite(&state.presets.read(), in_hand.as_deref(), &(brush, tune));
+    let overwrite_ready = matches!(verdict, stark_chrome::presets::Overwrite::Ready(_));
     let overwrite_title = match &verdict {
-        presets::Overwrite::Nothing => {
+        stark_chrome::presets::Overwrite::Nothing => {
             "The brush was not taken from a preset \u{2014} save a new one".to_string()
         }
-        presets::Overwrite::Builtin(name) => format!(
+        stark_chrome::presets::Overwrite::Builtin(name) => format!(
             "\u{201C}{name}\u{201D} is one of the app's own presets, which it keeps up to date \
              \u{2014} save a new one instead"
         ),
-        presets::Overwrite::Unchanged(name) => {
+        stark_chrome::presets::Overwrite::Unchanged(name) => {
             format!("\u{201C}{name}\u{201D} already is this brush")
         }
-        presets::Overwrite::Ready(name) => {
+        stark_chrome::presets::Overwrite::Ready(name) => {
             format!("Replace \u{201C}{name}\u{201D} with the brush in hand")
         }
     };
@@ -498,7 +499,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 // Saving lives here rather than on the Brush panel because the brush
                 // worth keeping is the one that has just been tuned.
                 div { class: "be-header-actions",
-                    // Dead in every arm of `presets::overwrite` but one, and the
+                    // Dead in every arm of `stark_chrome::presets::overwrite` but one, and the
                     // tooltip says which: a built-in is rebuilt next start, so the
                     // write would not last; a brush still equal to its preset has
                     // nothing to write.
@@ -1341,7 +1342,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
     // test stroke is a hand, and replaying it through the tow is what lets the
     // slider show its work on the stroke beside it.
-    let rope = crate::input::rope_in(r.view(), brush.smoothing);
+    let rope = stark_chrome::input::rope(r.view(), brush.smoothing);
     r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
     r.paint();
     drop(guard);
@@ -1460,7 +1461,7 @@ fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<Pointer
         // Towed like the main canvas (§6.11): the preview is where the brush
         // is felt out, so drawing on it under smoothing has to feel like the
         // brush, not like the brush with its string cut.
-        rope: crate::input::rope_in(r.view(), state.brush.peek().smoothing),
+        rope: stark_chrome::input::rope(r.view(), state.brush.peek().smoothing),
     });
     r.paint();
     drop(guard);

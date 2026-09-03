@@ -320,7 +320,7 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
             brush: w.params(keyed_tune),
             color: keyed_tune.color,
         });
-        let rope = crate::input::rope_in(view, w.smoothing);
+        let rope = stark_chrome::input::rope(view, w.smoothing);
         rig.engine
             .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
         // The whole rig document, which is only ever the thumbnail in flight — there

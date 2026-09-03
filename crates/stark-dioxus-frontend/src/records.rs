@@ -44,7 +44,7 @@ mod tests {
             <crate::visibility::StoredVisible as Entry>::STORE,
             <crate::tutor::Row as Entry>::STORE,
             <crate::shapes::StoredShape as Entry>::STORE,
-            <crate::presets::StoredPreset as Entry>::STORE,
+            <stark_chrome::presets::StoredPreset as Entry>::STORE,
             <crate::slots::StoredSlot as Entry>::STORE,
             <crate::gradients::GradientEntry as Entry>::STORE,
             <crate::substrates::StoredSubstrate as Entry>::STORE,

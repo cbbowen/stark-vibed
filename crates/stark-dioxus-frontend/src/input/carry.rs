@@ -22,7 +22,7 @@ use stark_model::geom::IVec2;
 /// consequence worth naming rather than discovering: in canvas terms the
 /// threshold shrinks as you zoom in, so the escape hatch from a deadzone too
 /// coarse for the nudge you want is the one artists already reach for to do fine
-/// work — the same bargain [`ROPE_MAX_SCREEN_PX`] strikes for the smoothing
+/// work — the same bargain `stark_chrome::input`'s rope strikes for the smoothing
 /// string.
 ///
 /// Wider than the transform widget's 2 px jiggle snap (`panels::transform`'s

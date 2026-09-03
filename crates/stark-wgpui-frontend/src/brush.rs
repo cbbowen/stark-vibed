@@ -1,71 +1,94 @@
-//! The one brush this frontend carries: **Hard Round**, as the web frontend's
-//! preset table ships it (§6.2).
+//! The brush in hand: which tool, at what size, flow and colour (§6.2, §18.1.8).
 //!
-//! Written out as a [`BrushParams`] rather than reached for. The durable/transient
-//! split a preset has over there — what the tool *is*, beside the size, flow and
-//! color the hand is working it at — is that frontend's own shape, and the engine
-//! takes only the assembled parameters. One brush needs no split; a frontend that
-//! grew a second one would grow its own.
+//! Both halves, as `stark-chrome` splits them — the **durable**
+//! [`BrushConfig`] (what the tool *is*) beside the **transient** [`Transient`] (the
+//! size, flow and colour the hand is working it at). The split is not this
+//! frontend's invention and not the web one's either: it is what a preset stores and
+//! what a quick slot substitutes, so both frontends carry the pair and neither
+//! carries a third shape.
+//!
+//! What is here that is not shared is the *library this frontend can show*. The
+//! shipped table names two bundled stamps by content id (`presets::shipped`), and an
+//! id is the hash of bytes nothing has fetched yet — this frontend has no asset
+//! import (that is N7) — so the two stamp presets stand on the round tip until then.
+//! They are still in the list, because dropping them would mean a different set of
+//! tools on the two frontends for a reason that is temporary.
 
-use stark_model::document::{
-    BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ColorDynamics,
-    ModSource, Modulation, NoiseKind, WetEffect, WetModulations,
-};
+use stark_chrome::brush_config::{BrushConfig, Transient};
+use stark_chrome::presets::{BuiltinShapes, PresetEntry, shipped};
+use stark_engine::command::ViewCommand;
 
-/// The color in hand, which is not the brush's: a wet brush carries pigment, an
-/// eraser would not, and the engine takes the two in one command
-/// (`ViewCommand::SetBrush`). No alpha — minted paint is per-unit opaque and "how
-/// much shows" is the effect's opacity (§6.1).
-pub const INK: [f32; 3] = [0.0, 0.0, 0.0];
+/// The brush the app opens on and the library it can be swapped for.
+pub struct Brush {
+    /// What the tool is.
+    pub config: BrushConfig,
+    /// The size, flow and colour it is being worked at.
+    pub tune: Transient,
+    /// The shipped presets, in the order the table declares. Not a user library:
+    /// saving one is a record and a dialog, and neither exists here yet.
+    pub library: Vec<PresetEntry>,
+    /// Which preset the tool came from, so a row can show as the one in hand.
+    /// `None` once a knob has been moved off it.
+    pub from: Option<String>,
+}
 
-/// The stroke smoothing the preset asks for, 0..=1 (§6.11). Mapped to a string
-/// length by [`canvas`](crate::canvas), which is the only side holding the view it
-/// has to be converted through.
-pub const SMOOTHING: f32 = 0.15;
+impl Default for Brush {
+    /// Opens on the library's first entry, which is the everyday brush — the same
+    /// rule the web frontend's `apply_first` follows, and the reason the table leads
+    /// with Hard Round.
+    fn default() -> Self {
+        // `BuiltinShapes::default()` is the round tip twice over: see the module note.
+        let library = shipped(BuiltinShapes::default());
+        let first = library.first().cloned();
+        Self {
+            config: first.as_ref().map(|e| e.brush).unwrap_or_default(),
+            tune: first.as_ref().map(|e| e.transient).unwrap_or_default(),
+            from: first.map(|e| e.name),
+            library,
+        }
+    }
+}
 
-/// Hard Round: a nearly-hard round tip on the wet-mixing loop, ridden at flow 3.
-///
-/// The wet axes are quoted low because of that flow — they are per pass at the
-/// neutral flow (§6.2), so at flow 3 the exchange lands where a single saturated
-/// pass would.
-///
-/// Both pen mappings are inert under a mouse and deliberately kept anyway: a mouse
-/// reports pressure 1, so the flow rides at its full rate and the size at its full
-/// width. They are what the brush *is*, and dropping them would make this a
-/// different tool the moment a tablet was plugged in.
-pub fn hard_round() -> BrushParams {
-    BrushParams {
-        size: 100.0,
-        shape: BrushShape::Round { hardness: 0.98 },
-        drain: 0.1,
-        effect: BrushEffect::Wet(WetEffect {
-            color: INK,
-            opacity: 1.0,
-            flow: 3.0,
-            dynamics: BrushDynamics {
-                lift: 0.1,
-                deposit: 0.37,
-                bleed: 0.08,
-                ..BrushDynamics::default()
-            },
-            color_dynamics: ColorDynamics {
-                noise: NoiseKind::Simplex,
-                frequency: [0.05, 0.1],
-                amplitude: [0.0, 0.025, 0.05],
-            },
-            modulation: WetModulations {
-                flow: Some(Modulation::linear(ModSource::Pressure)),
-                ..WetModulations::default()
-            },
-        }),
-        modulation: BrushModulations {
-            size: Some(Modulation {
-                source: ModSource::Pressure,
-                floor: 0.8,
-                curve: 0.0,
-            }),
-            ..BrushModulations::default()
-        },
-        ..BrushParams::default()
+impl Brush {
+    /// The command that puts this brush in the engine's hand.
+    ///
+    /// One command rather than two, because the engine takes the pair together
+    /// (`ViewCommand::SetBrush`): the hand's colour is not always the brush's — an
+    /// erasing brush carries no pigment — so sending them apart would let the two
+    /// arrive out of step.
+    pub fn set(&self) -> ViewCommand {
+        ViewCommand::SetBrush {
+            brush: self.config.params(self.tune),
+            color: self.tune.color,
+        }
+    }
+
+    /// Wear the preset called `name`, keeping the colour in hand.
+    ///
+    /// The colour stays because it is the Colour panel's rather than the tool's
+    /// (§18.1.8) — picking up a different brush does not repaint your palette. Every
+    /// other field, the effect's own opacity included, comes from the preset.
+    pub fn wear(&mut self, name: &str) {
+        let Some(entry) = self.library.iter().find(|e| e.name == name) else {
+            return;
+        };
+        let color = self.tune.color;
+        self.config = entry.brush;
+        self.tune = Transient {
+            color,
+            ..entry.transient
+        };
+        self.from = Some(entry.name.clone());
+    }
+
+    /// Note that a knob has been moved: the tool is no longer *the* preset, though
+    /// it still descends from it.
+    ///
+    /// The size and the flow are exempt, which is the whole of the durable/transient
+    /// split showing through: working a brush at another size is the same tool, and
+    /// the rack is built on that (§18.1.8). Only an edit to the durable half takes
+    /// the name off.
+    pub fn tuned_off_preset(&mut self) {
+        self.from = None;
     }
 }

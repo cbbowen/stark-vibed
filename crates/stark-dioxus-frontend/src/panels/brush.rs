@@ -77,7 +77,7 @@ pub fn BrushPanel() -> Element {
 
 /// The preset library (`crate::presets`) at the panel's foot: one row per preset —
 /// click applies it, hover reveals a remove ✕. The row whose *tool* the live brush
-/// still is — size, flow and color aside (`presets::same_tool`) — is highlighted;
+/// still is — size, flow and color aside (`stark_chrome::presets::same_tool`) — is highlighted;
 /// it goes out the moment any other knob moves. Size and flow are the transient
 /// half, adjusted all day without the tool becoming another tool, so a pen sized
 /// up is still the pen and the row still says so.
@@ -125,7 +125,7 @@ fn PresetSection() -> Element {
                     {
                         let apply_name = entry.name.clone();
                         let remove_name = entry.name.clone();
-                        let active = presets::same_tool(&brush, &entry.brush);
+                        let active = stark_chrome::presets::same_tool(&brush, &entry.brush);
                         // The brush as a stroke (`crate::thumbs`), filling the whole
                         // row as its background: the preview is the star, and the
                         // name floats over it (shadowed in the stylesheet) to tell
@@ -217,11 +217,12 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     // `peek`, not `read`: the proposed name is a starting point captured at open, not
     // a view of the library that should be re-derived under the user's typing.
-    let mut name = use_signal(|| presets::next_name(&state.presets.peek()));
+    let mut name = use_signal(|| stark_chrome::presets::next_name(&state.presets.peek()));
 
     let trimmed = name().trim().to_string();
     let taken = !trimmed.is_empty() && state.presets.read().iter().any(|e| e.name == trimmed);
-    let builtin = !trimmed.is_empty() && presets::is_builtin(&state.presets.read(), &trimmed);
+    let builtin =
+        !trimmed.is_empty() && stark_chrome::presets::is_builtin(&state.presets.read(), &trimmed);
     // Taken by one of the user's own, which is the case Save offers to replace.
     let replaces = taken && !builtin;
 

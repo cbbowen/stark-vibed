@@ -461,28 +461,23 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 
 /// How finely a pointer report resolves position, in **CSS px**.
 ///
-/// Not a preference — an estimate of the device's tolerance, which is what the fitter
-/// needs in order to tell jitter from detail (see
-/// [`PathFitter::with_tolerance`](stark_engine::path::PathFitter::with_tolerance)). A
-/// mouse walks the screen in whole *physical* pixels, so `1 / devicePixelRatio` CSS
-/// px is its floor. A pen or a finger comes off a digitizer that resolves well below
-/// the screen it sits under, so what limits those is the hand rather than the API;
-/// half a physical pixel is a deliberate under-estimate — too fine only costs a few
-/// extra control points, while too coarse rounds off detail that was really there.
+/// The device's half of `stark_chrome::input::tolerance` — what this browser knows
+/// and the shared map cannot: which kind of pointer this is, and how many physical
+/// pixels a CSS one is. A mouse walks the screen in whole physical pixels, so
+/// `1 / devicePixelRatio` CSS px is its floor; a pen or a finger comes off a
+/// digitizer that resolves well below the screen it sits under.
 fn input_resolution(e: &Event<PointerData>) -> f32 {
     let dpr = platform::device_pixel_ratio();
     let physical = match e.pointer_type().as_str() {
-        "pen" | "touch" => 0.5,
-        _ => 1.0,
+        "pen" | "touch" => stark_chrome::input::PEN_RESOLUTION,
+        _ => stark_chrome::input::MOUSE_RESOLUTION,
     };
     physical / dpr
 }
 
-/// The fitting tolerance to declare for a gesture starting with `e`, in canvas px:
-/// the device's own tolerance (above) carried through `view`, since canvas space is
-/// where the fit measures error.
+/// The fitting tolerance to declare for a gesture starting with `e`, in canvas px.
 pub fn input_tolerance_in(view: ViewTransform, e: &Event<PointerData>) -> f32 {
-    input_resolution(e) / view.zoom
+    stark_chrome::input::tolerance(view, input_resolution(e))
 }
 
 /// [`input_tolerance_in`] against the main canvas's view; `None` before the engine
@@ -491,30 +486,14 @@ pub fn input_tolerance(state: AppState, e: &Event<PointerData>) -> Option<f32> {
     Some(input_tolerance_in(view_of(state)?, e))
 }
 
-/// The longest smoothing string a brush can ask for, in **screen px** — what
-/// `smoothing = 1` means. Screen px because wobble is a fact about the hand:
-/// the same tremor spans 64× more canvas zoomed out than in.
-const ROPE_MAX_SCREEN_PX: f32 = 160.0;
-
-/// The §6.11 rope a smoothing amount means against `view`, in canvas px: the
-/// 0..=1 knob mapped **quadratically** to a screen-px string — so the low end
-/// is fine-grained while the top is a real lettering tow — then carried
-/// through the view like the tolerance above. Zooming in therefore shrinks the
-/// dead zone in canvas terms: the escape hatch from heavy smoothing is the one
-/// artists already reach for to do fine work.
+/// The §6.11 rope for the live brush against the main canvas's view, in canvas px.
+/// Zero (no tow at all) when the amount is zero or there is no view yet.
 ///
-/// Stated once against an explicit view because two canvases ask: the main
-/// canvas below, and the brush editor's preview against its own.
-pub fn rope_in(view: ViewTransform, amount: f32) -> f32 {
-    let a = amount.clamp(0.0, 1.0);
-    a * a * ROPE_MAX_SCREEN_PX / view.zoom
-}
-
-/// [`rope_in`] for the live brush against the main canvas's view. Zero (no tow
-/// at all) when the amount is zero or there is no view yet.
+/// The map itself is `stark_chrome::input::rope`, shared with the native frontend;
+/// what is here is only *which* brush and *which* view.
 pub fn input_rope(state: AppState) -> f32 {
     match view_of(state) {
-        Some(view) => rope_in(view, state.brush.peek().smoothing),
+        Some(view) => stark_chrome::input::rope(view, state.brush.peek().smoothing),
         None => 0.0,
     }
 }

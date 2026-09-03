@@ -867,8 +867,28 @@ the exit criterion is an act, not a diff.
   becomes correct in reverse — so the two moved together, and the placement is
   honoured whole now (`vendor/wgpui/VENDORING.md`, patch 3).
 - **N2 — the brush in hand.** `brush_config` in use natively; a brush panel with
-  size, flow, effect, hardness and colour; `presets`' records move. *Exit:* paint
-  with any shipped preset, tuned, instead of one hard-coded `BrushParams`.
+  size, flow, hardness, opacity and the four effects; the preset table and the
+  library arithmetic move down. *Exit:* paint with any shipped preset, tuned,
+  instead of one hard-coded `BrushParams`. **Done.**
+
+  The headline was the duplication: `input` is now a shared module and the native
+  frontend's copy of `ROPE_MAX_SCREEN_PX` and its quadratic are gone. The table
+  moved with two things it names — `BuiltinShapes`, so a frontend can hand in the
+  stamps it has resolved, and `slots::{COUNT, ERASER}`, because a preset declares
+  the digit it ships on and the record cannot outrun its vocabulary.
+
+  What the *panel* found is worth more than the panel. wgpui ships no widgets, so
+  the first cut hand-derived every offset from the Tailwind-shaped spacing the tree
+  asks for — and was wrong: a press where the arithmetic said "Airbrush" selected
+  Hard Eraser, because the guessed row pitch was 26 px where Taffy had laid out 39.
+  Two descriptions of one layout is the drift this whole stage exists to delete, one
+  scale down. So the panel **measures**: each control carries a `canvas` element
+  whose prepaint writes its laid-out bounds into a shared list, and the hit test
+  reads that. No geometry constant survives outside the tests.
+
+  A colour picker did not land. The transient's third knob is there and the engine
+  takes it; what is missing is a control, and a colour well is its own design
+  (§25.7's pop-out) rather than a fifth slider.
 - **N3 — the two registries.** `Command`'s descriptive half, `Chord`, `Bindings`,
   `search`; `drags` and `Mods`. A native dispatcher over wgpui actions and a
   native `armed`. *Exit:* Ctrl+Z undoes, a chord rebound in one frontend is

@@ -50,13 +50,19 @@
 //! - [`identity`] — the key this client's `ActorId` derives from, and the run counter
 //!   beside it (§17).
 //! - [`prefs`] — the standing preferences a settings dialog sets.
+//! - [`input`] — the two screen-denominated lengths a gesture declares, and the map
+//!   from a knob to each (§6.2, §6.11). The module this crate was built to prevent a
+//!   second copy of.
 
 pub mod brush_config;
 pub mod identity;
+pub mod input;
 pub mod layer_tree;
 pub mod library;
 pub mod prefs;
+pub mod presets;
 pub mod reorder;
+pub mod slots;
 pub mod storage;
 pub mod transform;
 

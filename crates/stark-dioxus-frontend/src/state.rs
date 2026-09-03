@@ -296,7 +296,7 @@ pub struct Signals {
     /// signal beside [`brush`](Self::brush) rather than a pair of fields on
     /// it, so a tuning drag at pointer rate wakes only what shows a number,
     /// never the chrome that shows the tool — and so "the same tool" is plain
-    /// equality on the durable half (`presets::same_tool`). Written through
+    /// equality on the durable half (`stark_chrome::presets::same_tool`). Written through
     /// [`update_brush`], the same one door.
     pub transient: Signal<stark_chrome::brush_config::Transient>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
@@ -380,10 +380,10 @@ pub struct Signals {
     pub substrates: SubstratesState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
-    pub presets: Signal<Vec<crate::presets::PresetEntry>>,
+    pub presets: Signal<Vec<stark_chrome::presets::PresetEntry>>,
     /// The preset the brush in hand was taken from, by name — and still, after
     /// every edit since. That is what tells it apart from the Brush panel's
-    /// highlighted row (`presets::same_tool`): the row says the brush still *is*
+    /// highlighted row (`stark_chrome::presets::same_tool`): the row says the brush still *is*
     /// a preset, this says which one it *descends from*, and the brush editor's
     /// "Overwrite preset" is a question about the second — as is what a held
     /// number binds itself to at the release (`slots::Held::settle`), since a
