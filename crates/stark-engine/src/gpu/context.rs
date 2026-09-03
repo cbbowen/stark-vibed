@@ -128,14 +128,22 @@ const _: () = assert!(
     "a brush shape would not fit the texture limit the device was asked for",
 );
 
-/// The wgpu device, queue, and adapter the engine draws with.
+/// The wgpu device and queue the engine draws with.
 ///
 /// `wgpu::Device` and `wgpu::Queue` are cheaply clonable (reference-counted),
 /// so this struct is too.
+///
+/// **The `Instance` and `Adapter` that produced them are deliberately not here.**
+/// The engine never reads either — what it draws with is the device and the queue —
+/// and wgpu says both "do not have to be kept alive". A frontend that needs them
+/// (to bind a second surface, say) already has them and keeps them on its own side;
+/// one whose UI toolkit owns the device outright never sees them at all, which is
+/// what the second frontend (`stark-wgpui-frontend`) found: `WgpuSurfaceHandle`
+/// hands out a device and a queue and nothing else. Holding a *stale* adapter here —
+/// one that did not produce this device — would be worse than holding none, since
+/// the next reader of `adapter.limits()` would believe it.
 #[derive(Clone)]
 pub struct GpuContext {
-    pub instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     /// Whether this device is still usable (§5).
@@ -162,17 +170,10 @@ impl GpuContext {
     /// publishes what it learns through
     /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) so the
     /// frontend loses nothing by not owning the callback.
-    pub fn from_parts(
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-    ) -> Self {
+    pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let health = GpuHealth::default();
         install_callbacks(&device, &health);
         Self {
-            instance,
-            adapter,
             device,
             queue,
             health,
@@ -256,7 +257,10 @@ impl GpuContext {
                 trace: wgpu::Trace::Off,
             })
             .await?;
-        Ok(Self::from_parts(instance, adapter, device, queue))
+        // The instance and the adapter are dropped here, which wgpu explicitly
+        // permits ("does not have to be kept alive"): the device and queue keep
+        // everything behind them alive, and nothing offscreen needs a surface.
+        Ok(Self::from_parts(device, queue))
     }
 }
 

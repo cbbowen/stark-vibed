@@ -44,6 +44,16 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 /// Owns the canvas surface and the painting engine.
 pub struct Renderer {
     canvas: Canvas,
+    /// The two handles a *surface* is made from, kept on this side because they are
+    /// this frontend's business and not the engine's ([`stark_engine::GpuContext`]):
+    /// the app binds three `<canvas>` elements over one device — the painting
+    /// canvas, the navigator's miniature and the brush editor's preview — and each
+    /// of them needs the instance to create the surface and the adapter to ask what
+    /// that surface can do. Both are cheap `Arc` handles, and wgpu does not require
+    /// either to be kept alive; keeping them is how a *second* surface stays
+    /// possible after the first is bound.
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     engine: Engine,
@@ -425,15 +435,14 @@ impl Renderer {
     /// look wrong. The format the main canvas settled on is available here (both
     /// surfaces are canvases on the same adapter, so it is in this one's caps too).
     pub fn attach_overview(&mut self, canvas: Canvas) {
-        let gpu = self.engine.gpu();
-        let surface = match gpu.instance.create_surface(canvas.surface_target()) {
+        let surface = match self.instance.create_surface(canvas.surface_target()) {
             Ok(surface) => surface,
             Err(e) => {
                 tracing::warn!("navigator surface unavailable: {e}");
                 return;
             }
         };
-        let caps = surface.get_capabilities(&gpu.adapter);
+        let caps = surface.get_capabilities(&self.adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: self.engine.target_format(),
@@ -859,8 +868,8 @@ pub async fn init(canvas: Canvas) -> Result<Renderer, StartupFailure> {
         .await
         .map_err(|e| StartupFailure::Device(e.to_string()))?;
 
-    let gpu = GpuContext::from_parts(instance, adapter, device, queue);
-    Ok(finish_init(canvas, surface, gpu).await)
+    let gpu = GpuContext::from_parts(device, queue);
+    Ok(finish_init(canvas, instance, adapter, surface, gpu).await)
 }
 
 impl Renderer {
@@ -888,12 +897,11 @@ impl Renderer {
     pub fn shared(&self, canvas: Canvas) -> Renderer {
         let (width, height) = canvas.laid_out_size();
         canvas.set_buffer_size(width, height);
-        let gpu = self.engine.gpu();
-        let surface: wgpu::Surface<'static> = gpu
+        let surface: wgpu::Surface<'static> = self
             .instance
             .create_surface(canvas.surface_target())
             .expect("create preview canvas surface");
-        let caps = surface.get_capabilities(&gpu.adapter);
+        let caps = surface.get_capabilities(&self.adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: self.engine.target_format(),
@@ -905,10 +913,12 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::default(),
         };
-        surface.configure(&gpu.device, &config);
+        surface.configure(&self.engine.gpu().device, &config);
         let engine = Engine::new_sharing(&self.engine, Extent2::new(width, height));
         Renderer {
             canvas,
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
             surface,
             config,
             engine,
@@ -940,7 +950,13 @@ impl Renderer {
 /// Tail of [`init`]: size the drawing buffer, pick the surface format, configure,
 /// and build the engine. (A *second* renderer never comes through here — it is built
 /// synchronously by [`Renderer::shared`], on the first engine's format and state.)
-async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuContext) -> Renderer {
+async fn finish_init(
+    canvas: Canvas,
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    surface: wgpu::Surface<'static>,
+    gpu: GpuContext,
+) -> Renderer {
     // Size the drawing buffer to the canvas's laid-out size (CSS pixels). We
     // measure the *element*, not the window, so an embedded/sub-window canvas
     // works too, and we do it here — after the async device setup and a layout
@@ -958,7 +974,7 @@ async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuCo
 
     // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
     // sRGB surface would double-encode (§6.5).
-    let caps = surface.get_capabilities(&gpu.adapter);
+    let caps = surface.get_capabilities(&adapter);
     let format = caps
         .formats
         .iter()
@@ -982,6 +998,8 @@ async fn finish_init(canvas: Canvas, surface: wgpu::Surface<'static>, gpu: GpuCo
     let engine = Engine::new(gpu, format, Extent2::new(width, height));
     Renderer {
         canvas,
+        instance,
+        adapter,
         surface,
         config,
         engine,

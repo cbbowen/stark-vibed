@@ -48,7 +48,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens, the rays drawn from the vanishing points through the cursor |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
 | [glossary.md](docs/glossary.md) | — | One name per thing, and the file that owns it: the canvas **substrate** and what it is not (backdrop, `Background`, backing, surface, ground), the input **tolerance**, the stamp **extent** vs the CRDT `Footprint`. Read it before coining a term |
-| [ui.md](docs/ui.md) | §11, §25 | The Dioxus frontend: the one dispatch seam, the panels and the surface they float over. Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
+| [ui.md](docs/ui.md) | §11, §25 | The two frontends: the Dioxus web app — the one dispatch seam, the panels and the surface they float over — and the native wgpui one beside it (§11.1), which is what makes "frontend-agnostic" a tested claim. Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
@@ -90,6 +90,13 @@ crates/
     public/        manifest, service worker, launcher icons — an installable,
                    offline-capable app (§11). Copied to the SITE ROOT unhashed,
                    unlike `assets/`, renamed by content hash
+  stark-wgpui-frontend/
+                   native wgpui frontend (§11): a winit window whose `WgpuSurface`
+                   the engine renders into. **The second consumer** — the thing that
+                   turns "frontend-agnostic" from a claim into a tested one. A
+                   canvas and one brush, deliberately: chrome is not what a second
+                   frontend has to prove. It does NOT own the device, which is what
+                   it found first — see `GpuContext`
 vendor/            third-party, EXCLUDED from the workspace
 ```
 
@@ -121,6 +128,7 @@ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
   cargo doc --workspace --no-deps --document-private-items
 cargo check -p stark-dioxus-frontend --target wasm32-unknown-unknown
 dx serve --web -p stark-dioxus-frontend   # run it (needs a WebGPU browser)
+cargo run -p stark-wgpui-frontend         # the native frontend (§11); no flags
 cargo bench -p stark-engine --bench stroke    # criterion; the dynamics perf gate
 # where a stroke's time goes, phase by phase (§7.1) — seconds, not minutes
 cargo run --release -p stark-engine --example stroke_bench
@@ -135,7 +143,12 @@ look, seconds not minutes, and the only one that accounts for the GPU drain
 between runs of identical code.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, the test suite
-and the wasm build — **the default feature set only**.
+and the wasm build — **the default feature set only**, and **without
+`stark-wgpui-frontend`**: winit, cosmic-text, arboard and oo7 want X11/Wayland/
+xkbcommon/dbus development packages the runner does not install, so the three
+workspace commands `--exclude` it. `cargo fmt --all` still reaches it. That is a
+hole rather than a judgement — the native frontend is gated by nothing until the
+packages are added.
 
 **The second configuration (§6.7) is not part of the default round.** It is the
 build without Mixbox, and so without any CC BY-NC 4.0 code — the one a commercial

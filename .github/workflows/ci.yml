@@ -37,8 +37,15 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      # `--exclude stark-wgpui-frontend`, in all three workspace commands below:
+      # the native frontend (§11) pulls winit, cosmic-text, arboard and oo7, which
+      # need X11/Wayland/xkbcommon/dbus development packages this runner does not
+      # install. `cargo fmt --all` above still reaches it — formatting compiles
+      # nothing — so only the building gates skip it. It is a **hole**, not a
+      # decision that the crate needs no gate: close it by installing the packages
+      # once the frontend is worth the runner minutes.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude stark-wgpui-frontend -- -D warnings
 
       # The doc graph is load-bearing here: the design lives in doc comments, and
       # §-numbers are cited from ~1000 places. Nothing was checking it, so links
@@ -114,7 +121,7 @@ jobs:
           # errors and panics are all still caught; only the pixel diff is
           # dropped.
           STARK_SKIP_GOLDEN: '1'
-        run: cargo nextest run --workspace --profile ci
+        run: cargo nextest run --workspace --exclude stark-wgpui-frontend --profile ci
 
       # nextest cannot run doctests — there is no libtest protocol for them — so
       # they are a second command. It executes nothing today: `stark-engine`'s
@@ -125,4 +132,4 @@ jobs:
         env:
           WGPU_BACKEND: vulkan
           STARK_SKIP_GOLDEN: '1'
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --exclude stark-wgpui-frontend --doc

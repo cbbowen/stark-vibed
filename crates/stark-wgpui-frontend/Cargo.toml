@@ -1,0 +1,38 @@
+[package]
+name = "stark-wgpui-frontend"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Native wgpui frontend for Stark (§11): a winit/wgpu window over the same engine."
+
+[dependencies]
+# The document (§2), depended on directly rather than through the engine, for the
+# reason `stark-dioxus-frontend` gives: a type has one public path.
+stark-model = { workspace = true }
+# `default-features = false` drops Mixbox (§6.7), and here that is a *device*
+# constraint rather than a licence one. wgpui creates the wgpu device itself and
+# asks it for `wgpu::Limits::default()`, which guarantees four storage textures
+# per stage; the Mixbox stamp loop writes six (`GpuContext::minimum_required_limits`).
+# An Oklab document writes four, so this frontend paints — and a Mixbox one would
+# fail to build its pipelines, which is why it never opens one.
+#
+# Cargo unifies features across a `--workspace` build, so the dioxus frontend's
+# `mixbox` still reaches this engine in that round. Harmless: the sixth texture is
+# declared by the *pipeline* a Mixbox document builds, not by the feature.
+stark-engine = { path = "../stark-engine", default-features = false }
+# The fork of GPUI that renders through wgpu, which is the whole reason it is the
+# toolkit here: `WgpuSurface` puts the engine's own texture in the element tree,
+# so the canvas is composited rather than copied.
+wgpui = "0.3.4"
+# Must be the major version wgpui is built against (30) or the `Device`, `Queue`
+# and `TextureView` types it hands over will not unify with the engine's.
+wgpu = { workspace = true }
+# The clock a pointer sample is stamped from. `std::time::Instant` is disallowed
+# workspace-wide (clippy.toml) because it panics in a browser — this binary never
+# runs in one, but the tree has one clock and this is it (§7.1). Already compiled
+# here by way of the engine's timing layer.
+quanta = "0.12"
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

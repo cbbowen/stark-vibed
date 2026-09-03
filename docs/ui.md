@@ -1,14 +1,15 @@
 # The frontend
 
-The Dioxus app and the wgpu surface it wraps — §11 — and the chrome's registries:
-commands, chords, drag bindings, the browser-local store and the shape of a
-dialog, which a new UI feature joins and how — §25.
+The Dioxus app and the wgpu surface it wraps, and the native wgpui frontend
+beside it — §11 — and the chrome's registries: commands, chords, drag bindings,
+the browser-local store and the shape of a dialog, which a new UI feature joins
+and how — §25.
 
 > Part of the Stark design docs. Index and conventions: [CLAUDE.md](../CLAUDE.md).
 > Section numbers are stable — code cites them as `§n.m`.
 > One name per thing: [glossary.md](glossary.md).
 
-## 11. Frontend (Dioxus)
+## 11. Frontends
 
 `stark-dioxus-frontend` is a Dioxus 0.7 **web** app: the backend runs in WASM
 and the painting surface is a dedicated `wgpu::Surface` bound to the page
@@ -622,8 +623,58 @@ Because the engine is frontend-agnostic, this layer stays thin. (An earlier
 interim cut ran on Dioxus *desktop* and bridged the canvas by reading the frame
 back to a PNG data URL — correct but laggy; the WebGPU surface replaced it,
 touching only `stark-dioxus-frontend`.) Run with
-`dx serve --web -p stark-dioxus-frontend` in a WebGPU browser. A native
-winit/desktop frontend could reuse the same engine.
+`dx serve --web -p stark-dioxus-frontend` in a WebGPU browser.
+
+### 11.1 The second frontend (wgpui, native)
+
+`stark-wgpui-frontend` is a native window over the same engine: [wgpui][wgpui] —
+a community fork of GPUI that renders through wgpu and winit — with the engine's
+own texture in its element tree as a `WgpuSurface`. Run it with
+`cargo run -p stark-wgpui-frontend`.
+
+**It exists to be a second consumer.** "Because the engine is frontend-agnostic"
+was a claim about a tree with one frontend in it, and a claim of that shape is
+only tested by something that shares nothing with the first: no DOM, no browser,
+no `<canvas>` — and no ownership of the device. What it carries is a canvas and
+one brush (Hard Round, §6.2), deliberately: chrome is not what a second frontend
+has to prove.
+
+It found something on the first day. `GpuContext` carried a `wgpu::Instance` and
+a `wgpu::Adapter` that no engine code ever read; wgpui's `WgpuSurfaceHandle`
+hands out a device and a queue and nothing else. The two moved to the side that
+uses them — the web frontend's own `Renderer`, which binds three `<canvas>`
+elements over one device and needs the instance to make each surface and the
+adapter to ask what it can do. `GpuContext::from_parts` takes a device and a
+queue now, which is what an engine that is *given* its wgpu resources should
+have taken all along. Holding a stale adapter — one that did not produce this
+device — would have been worse than holding none.
+
+Three differences from §11 above are the interesting ones:
+
+- **The frontend does not own the device**, so it does not choose its limits.
+  wgpui asks for `wgpu::Limits::default()`, which guarantees four storage
+  textures per shader stage; the Mixbox stamp loop writes six (§6.7). An Oklab
+  document writes four, so this frontend paints and never opens a Mixbox one.
+- **The paint happens inside `Render::render`**, not on a thread or a timer. The
+  surface element resizes its textures during *prepaint* — after the view has
+  rendered — so a resize is first visible one frame later, and a window resize
+  schedules no further frame; the view therefore asks for an animation frame
+  every time and lets a dirty flag decide whether the engine renders at all. The
+  swap is `swap_buffers` rather than `present`: this is already inside the frame
+  wgpui is building, so the swap is what that frame composites.
+- **Screen space is device px.** The web canvas sizes its drawing buffer in CSS
+  px, so its pointer coordinates need no conversion; here the surface is in
+  device px and every `Pixels` the layout speaks in is logical, so the scale
+  factor is the whole of the mapping — and the input tolerance and the smoothing
+  rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
+
+wgpui is **vendored** (`vendor/wgpui`), for one line: upstream 0.3.4 calls
+`flume::bounded` in `Executor::spawn_realtime` but declares `flume` only for
+macOS, Linux and FreeBSD, so the published crate does not compile on Windows at
+all. See `vendor/wgpui/VENDORING.md`; the patch is the missing declaration and
+nothing else.
+
+[wgpui]: https://github.com/muktidaya/wgpui
 
 ## 25. Commands and drag bindings
 

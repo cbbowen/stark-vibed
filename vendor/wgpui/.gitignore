@@ -1,0 +1,37 @@
+# Build Artifacts
+**/target
+**/cargo-target
+*.wasm
+
+# IDE and Editor
+.DS_Store
+.idea
+.vscode
+.zed
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+xcuserdata/
+
+# Python
+**/venv
+.venv
+*.pyc
+.pytest_cache
+
+# Nix
+**/.direnv
+.envrc
+/result
+
+# Environment and Secrets
+.env
+.env.secret.toml
+.netrc
+
+# Version Control
+.git
+
+# Misc
+**/*.db
+.build

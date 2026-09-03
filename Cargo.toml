@@ -17,17 +17,24 @@ exclude = [
     # iroh 1.0.3 + the custom-transport path-opening patch (see its
     # VENDORING.md); substituted for the crates.io version via [patch] below.
     "vendor/iroh",
+    # wgpui 0.3.4 + the one-line manifest fix that lets it build on Windows at
+    # all (see its VENDORING.md); substituted via [patch] below.
+    "vendor/wgpui",
 ]
 # stark-dioxus-frontend is a wasm/web app (Dioxus web + WebGPU); keep it out of
 # the native default build/test so `cargo build`/`cargo test` stay host-only.
 # Build it with `dx serve --platform web` or
 # `cargo build -p stark-dioxus-frontend --target wasm32-unknown-unknown`.
+#
+# stark-wgpui-frontend *is* host-only — a winit window on a native wgpu device —
+# so by that same rule it belongs in the default round, and is below.
 default-members = [
     "crates/stark-assetid",
     "crates/stark-engine",
     "crates/stark-model",
     "crates/stark-net",
     "crates/stark-shaders",
+    "crates/stark-wgpui-frontend",
 ]
 
 [workspace.package]
@@ -216,3 +223,7 @@ opt-level = 3
 # transport (WebRTC). See vendor/iroh/VENDORING.md.
 [patch.crates-io]
 iroh = { path = "vendor/iroh" }
+# Vendored wgpui with `flume` declared on Windows: upstream 0.3.4 uses it in
+# `Executor::spawn_realtime` but declares it only for macOS/Linux/FreeBSD, so the
+# published crate does not compile on Windows at all. See vendor/wgpui/VENDORING.md.
+wgpui = { path = "vendor/wgpui" }
