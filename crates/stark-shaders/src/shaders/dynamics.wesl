@@ -76,7 +76,7 @@
 // Replay and live == committed hold.
 
 import package::stamp_common::{
-    prefix_at, prefix_span, ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep,
+    prefix_at, prefix_span, radius_ramp_apply, stretch_gain, stretch_look, stretch_unlook, Sweep,
     sweep_at, sweep_tangent,
 };
 import package::lib::noise::{color_jitter, jitter};
@@ -86,7 +86,7 @@ import package::lib::latent::{
 };
 import package::lib::paint_common::{
     substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
-    ceiling_at,
+    linear_across,
 };
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
@@ -131,7 +131,7 @@ struct Stamp {
     // break of contact rather than a stretch of travel.
     travel_radii: f32,
     // How much the tip grows across this slot's sweep, as a fraction of `radius`
-    // (§6.2, `Segment::ramp`), so the tip a fraction `u` of the way through is
+    // (§6.2, `Segment::radius_ramp`), so the tip a fraction `u` of the way through is
     // `radius·(1 + radius_ramp·(u − ½))`. A segment does not have one radius —
     // the taper and the size modulation both scale the tip with distance travelled —
     // and a sweep at a single radius steps the stroke's outline at every cut.
@@ -278,13 +278,27 @@ struct Stamp {
     jitter_seed: u32,
     // The ceiling's modulation factor across this slot (§6.2): the mean of its two
     // ends, and — in `opacity_ramp` — the difference between them, which
-    // `paint_common::ceiling_at` reads at the texel's own travel exactly as the
+    // `paint_common::linear_across` reads at the texel's own travel exactly as the
     // swept sweep does. Read only where `ceiling_lane` says so; `(1, 0)` — a
     // scale's neutral and no ramp — everywhere else. Here at the tail with its
     // flag rather than beside `opacity`, where a scalar after the `vec3` lanes'
     // filler would open a 16-byte hole.
     opacity_mod: f32,
     opacity_ramp: f32,
+    // How the slot's other **per-texel** pen targets change across its travel
+    // (§6.2): the `add` source rate, the tooth's give, and the liquify follow, each
+    // as the difference between the slot's two ends, read by `rate_across` at the
+    // texel's own arc. Their means ride `add`, `tooth_give` and `drag`, so a brush
+    // the pen does not drive this way carries zeroes and every read is an identity.
+    //
+    // `lambda_lift`, `lambda_deposit` and `lambda_bleed` have no ramp beside them
+    // and cannot: the exchange is one solve per dispatch whose two halves are
+    // complements, and the tool half lives in the shape frame with no canvas
+    // position to vary along. What bounds their step is the flattener's attribute
+    // budget instead (`BrushParams::max_slope`).
+    add_ramp: f32,
+    tooth_give_ramp: f32,
+    drag_ramp: f32,
     // Whether the stroke's ceiling is pen-driven (§6.2): 1 routes the mint through
     // the ceiling lane the region aux's `.w` carries (`lay_parcel`), reading
     // `opacity_mod` per slot; 0 is the dial's own law, bit for bit. A stroke
@@ -303,6 +317,27 @@ struct Stamp {
 
 // The segment's travel in px — the product the arc arithmetic wants.
 fn travel_px() -> f32 { return st.travel_radii * st.radius; }
+
+// One of this slot's ramped rates at a point, addressed by its **arc** (§6.2,
+// `paint_common::linear_across`).
+//
+// By arc rather than by the travel frame's own `x`, because that is the one
+// coordinate both halves of a transfer can name. The canvas half reads a texel's
+// arc off the segment frame; the tool half reads its reservoir texel's, which sits
+// somewhere else entirely (`exchange`) — and the two must agree on the rate for the
+// same reason they must agree on the drain: what one hands over the other takes
+// back, and a pair that read different rates would not balance.
+fn rate_across(mean: f32, delta: f32, arc: f32) -> f32 {
+    return linear_across(mean, delta, arc - st.arc_at_start, travel_px());
+}
+
+// A texel's arc along the stroke, from the frame the sweep was unrolled in: the
+// segment's own start plus how far into it this point sits. The travel axis is
+// denominated in the *reference* radius (`stamp_common::Sweep`), which is what
+// `st.radius` is.
+fn arc_at(sw: Sweep) -> f32 {
+    return st.arc_at_start + sw.local.x * st.radius;
+}
 
 // The three exchange rates, as `k = −λ ≥ 0`. `lift` and `deposit` are the vertical
 // pair; `bleed` is the lateral one, and is nonzero only on a dedicated bleed slot.
@@ -671,14 +706,14 @@ fn stroke_drain(arc: f32) -> f32 {
 // bookkeeping: bleed is wet paint spreading sideways on the canvas, not a tip dragged
 // over it, so there is no travel to read the substrate's rise along, and gating it would
 // break the flux's antisymmetry (the two threads of a pair sit over different substrate).
-fn substrate_tooth(rt: vec2<i32>, turn: f32) -> f32 {
-    if st.substrate_uv_scale <= 0.0 || st.tooth_give >= 1.0 {
+fn substrate_tooth(rt: vec2<i32>, turn: f32, give: f32) -> f32 {
+    if st.substrate_uv_scale <= 0.0 || give >= 1.0 {
         return 1.0;
     }
     let uv = vec2<f32>(rt) * st.substrate_uv_scale + st.substrate_uv_bias;
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(uv, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), st.tooth_give, st.tooth_softness);
+    return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), give, st.tooth_softness);
 }
 
 // The deposit jitter's gate at region texel `rt` (§6.2) —
@@ -877,7 +912,7 @@ fn bake(
 // from is recovered by multiplying back through.
 //
 // **The single place the loop builds a frame**, which is what lets the radius ramp
-// (§6.2, `Segment::ramp`) be applied in exactly one line: `deposit`, its coarse twin,
+// (§6.2, `Segment::radius_ramp`) be applied in exactly one line: `deposit`, its coarse twin,
 // the bleed flux, `snapshot` and `settle` all come through here, so all five agree
 // about where the sweep's rim is — and `outside_sweep`, which several of them use to
 // skip work the others must then also skip, is computed from the same frame. Applying
@@ -891,7 +926,7 @@ fn bake(
 fn segment_frame(rt: vec2<i32>) -> Sweep {
     let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
     let sw = sweep_at(p, st.start, st.dir, st.radius, travel_px(), st.curvature);
-    return ramp_apply(sw, st.radius_ramp);
+    return radius_ramp_apply(sw, st.radius_ramp);
 }
 
 // Where that frame lands in the one the prefix-τ volume and the bake rows are indexed
@@ -1262,7 +1297,7 @@ fn exchange(
         // two are the same place at the same moment, so they must read the same `A`.
         let arc = st.arc_at_start + f * travel_px() + (local.x * cs - local.y * sn) * st.radius;
         let drain = stroke_drain(arc);
-        let src_h = st.add * drain * ex.src_w * sel;
+        let src_h = rate_across(st.add, st.add_ramp, arc) * drain * ex.src_w * sel;
         let src_m = drain * src_h;
         // The brush's own paint. Its residual is **not** jittered, for the reason
         // `stamp.wesl` gives — color dynamics perturb the pigment mixture, and the
@@ -1702,7 +1737,7 @@ fn lay_parcel(
     // survival fraction, so what actually lands still carries the lift's
     // in-flight shaping — and at `lift = 0` the two are one number.
     let e_src = ex.add_w + ex.src_w;
-    let raw_h = st.add * drain * e_src;
+    let raw_h = rate_across(st.add, st.add_ramp, arc) * drain * e_src;
     let raw_m = own_op * raw_h;
     // Clamped far past saturation — the capped law is flat to the last f32 bit
     // well below this — so a stroke scrubbing one spot for hours cannot walk a
@@ -1715,7 +1750,7 @@ fn lay_parcel(
     // is the identity to the bit (`−ln(e^{−K·f})/K = f`), and the branch keeps
     // even its rounding out of the master arithmetic below.
     let o = st.opacity * sel;
-    var add_h = st.add * drain * ex.add_w;
+    var add_h = rate_across(st.add, st.add_ramp, arc) * drain * ex.add_w;
     var add_m = own_op * add_h;
     // The raw mass's moment over the pen's factor so far — the ceiling lane's
     // companion, on a stroke whose ceiling the pen drives; stored back as it was
@@ -1728,9 +1763,9 @@ fn lay_parcel(
         // The claim before this slot, from the lane as the host drew it up to the
         // previous segment, and after it, with this slot's own share added —
         // the very sums `fs_levels` will draw for it once this dispatch is done,
-        // at the very factor it will draw them at (`ceiling_at`, on the frame the
+        // at the very factor it will draw them at (`linear_across`, on the frame the
         // two paths share).
-        let o_mod = ceiling_at(st.opacity_mod, st.opacity_ramp, sw.local.x, sw.lr);
+        let o_mod = linear_across(st.opacity_mod, st.opacity_ramp, sw.local.x, sw.lr);
         let fresh = f_m - u.a.z;
         let lv0 = textureLoad(region_levels, rt, 0);
         let lv1 = lv0 + level_sums(o_mod, fresh);
@@ -1875,7 +1910,7 @@ fn deposit(@builtin(global_invocation_id) gid: vec3<u32>) {
     // in the form that composes across segment cuts. Scaling the finished shares
     // instead would do neither.
     let e = dpre * sw.warp * stretch_gain(st.stretch)
-        * substrate_tooth(rt, sw.turn) * jitter_at(rt);
+        * substrate_tooth(rt, sw.turn, rate_across(st.tooth_give, st.tooth_give_ramp, arc_at(sw))) * jitter_at(rt);
     // The selection's coverage here (§6.8). Fully deselected texels are exactly the
     // "keeps its value" case, so they cost nothing.
     let sel = load1(sel_mask, rt).r;
@@ -2226,7 +2261,7 @@ fn deposit_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The substrate's share of this texel (§6.4) and the deposit jitter (§6.2) — per
     // texel, never per cell: both gates are the canvas's resolution, and averaging
     // either over a cell would smear exactly the per-texel structure it exists for.
-    let e = cell.x * substrate_tooth(rt, sw.turn) * jitter_at(rt);
+    let e = cell.x * substrate_tooth(rt, sw.turn, rate_across(st.tooth_give, st.tooth_give_ramp, arc_at(sw))) * jitter_at(rt);
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return;
@@ -2400,7 +2435,7 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     // delivered there stays on it. Nothing
     // is destroyed — the tool is discarded at pen-up carrying whatever it still holds,
     // which is what a knife lifted off a canvas does.
-    let ex = exchange_at(e * substrate_tooth(rt, sw.turn) * jitter_at(rt));
+    let ex = exchange_at(e * substrate_tooth(rt, sw.turn, rate_across(st.tooth_give, st.tooth_give_ramp, arc_at(sw))) * jitter_at(rt));
 
     // The parcel is **what the rest of the pass would have delivered**, not the cell
     // overhead. At the end of a long smear the reservoir is radially skewed: the
@@ -2648,8 +2683,8 @@ fn warp(@builtin(global_invocation_id) gid: vec3<u32>) {
     // drag skips the substrate's valleys and a drained one lets go as it travels.
     let arc = st.arc_at_start + sw.local.x * st.radius;
     let e = dpre * sw.warp * stretch_gain(st.stretch)
-        * substrate_tooth(rt, sw.turn) * jitter_at(rt) * stroke_drain(arc);
-    let follow = min(st.drag * e * st.radius, travel_px()) * sel;
+        * substrate_tooth(rt, sw.turn, rate_across(st.tooth_give, st.tooth_give_ramp, arc_at(sw))) * jitter_at(rt) * stroke_drain(arc);
+    let follow = min(rate_across(st.drag, st.drag_ramp, arc_at(sw)) * e * st.radius, travel_px()) * sel;
     if follow < WARP_MIN_FOLLOW {
         return;
     }

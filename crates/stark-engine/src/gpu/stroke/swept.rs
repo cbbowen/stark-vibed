@@ -933,13 +933,16 @@ pub(super) fn segment_instance(segment: &Segment) -> SegmentInstance {
         // The tip's radius, which is the frame brush-local coordinates are read in
         // (§6.6, [`Sweep::radius`]) — the ramp rides beside it unscaled, that being
         // the point of its being *relative*.
-        geom: [sweep.radius, sweep.length, sweep.ramp],
+        geom: [sweep.radius, sweep.length, sweep.radius_ramp],
         extra: [sweep.orient, sweep.dist, sweep.curvature, paint.add],
         tooth_give: paint.tooth_give,
         // The ceiling's factor across the segment (§6.2) — its mean and its ramp,
         // `(1, 0)` unless the pen drives it, and read by no pipeline but the
         // ceiling lane's.
         opacity: [paint.opacity, paint.opacity_ramp],
+        // The other two per-texel targets' ramps (§6.2); their means ride
+        // `extra.w` and `tooth_give` above.
+        ramps: [paint.add_ramp, paint.tooth_give_ramp],
         // The solved stretch map (§6.6). Unscaled for the ramp's reason: it acts on
         // brush-local coordinates, which are already the frame's own units.
         stretch: [

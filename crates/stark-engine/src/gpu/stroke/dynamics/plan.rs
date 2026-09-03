@@ -229,6 +229,12 @@ struct Slot {
     /// scale's neutral and no ramp — everywhere else.
     opacity_mod: f32,
     opacity_ramp: f32,
+    /// How this segment's other **per-texel** rates change across it (§6.2) —
+    /// `Paint`'s three ramps, carried through unchanged. The exchange's own lambdas
+    /// have none: that solve is one problem per dispatch (see `dynamics.wesl`).
+    add_ramp: f32,
+    tooth_give_ramp: f32,
+    drag_ramp: f32,
     /// Whether the stroke's ceiling is pen-driven, off `k` like the dial: routes
     /// the mint through the ceiling lane the region aux's `.w` carries.
     ceiling_lane: bool,
@@ -288,7 +294,7 @@ struct Slot {
     /// standing still with no travel to ramp along. Zero is also
     /// [`Default`]'s value, so a slot kind that has never heard of ramps cannot
     /// accidentally acquire one.
-    ramp: f32,
+    radius_ramp: f32,
     /// The tip drawn out along its facing axis (§6.6), solved into the map that
     /// carries a point of the reference travel frame into the frame the prefix-τ
     /// volume and the bake rows are indexed in
@@ -337,6 +343,9 @@ impl Default for Slot {
             opacity: 1.0,
             opacity_mod: 1.0,
             opacity_ramp: 0.0,
+            add_ramp: 0.0,
+            tooth_give_ramp: 0.0,
+            drag_ramp: 0.0,
             ceiling_lane: false,
             resid: [0.0; 4],
             rect_origin: Vec2::ZERO,
@@ -360,7 +369,7 @@ impl Default for Slot {
             substrate_uv_bias: Vec2::ZERO,
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
-            ramp: 0.0,
+            radius_ramp: 0.0,
             stretch: Stretch::NONE,
             jitter_eps: 0.0,
             jitter_seed: 0,
@@ -390,7 +399,7 @@ impl Slot {
             dir: self.dir.to_array(),
             radius: self.radius,
             travel_radii: self.travel_radii,
-            radius_ramp: self.ramp,
+            radius_ramp: self.radius_ramp,
             lambda_lift: self.lambda_lift,
             lambda_deposit: self.lambda_deposit,
             lambda_bleed: self.lambda_bleed,
@@ -424,11 +433,14 @@ impl Slot {
             canvas_origin: self.canvas_origin,
             opacity_mod: self.opacity_mod,
             opacity_ramp: self.opacity_ramp,
+            add_ramp: self.add_ramp,
+            tooth_give_ramp: self.tooth_give_ramp,
+            drag_ramp: self.drag_ramp,
             ceiling_lane: u32::from(self.ceiling_lane),
-            // The struct's own trailing padding, generated because the three
-            // scalars above end 4 bytes short of the uniform's 16-byte round
-            // (§6.10) — `TileXform`'s own tail, one uniform over.
-            _pad_35: [0; 4],
+            // The struct's own trailing padding, generated because the scalars
+            // above end 8 bytes short of the uniform's 16-byte round (§6.10) —
+            // `TileXform`'s own tail, one uniform over.
+            _pad_38: [0; 8],
         }
     }
 }
@@ -801,7 +813,7 @@ pub(super) fn dynamics_plan(
                         // Everything the host prices off `sw.radius` — the cell, the
                         // bleed cadence, the exchange step — stays on the reference
                         // tip, which is what that radius is.
-                        ramp: sw.ramp,
+                        radius_ramp: sw.radius_ramp,
                         // Scaled by the segment's flow (§6.2): λ rides the
                         // exponent, so this is exposure scaling — a pass at flow f
                         // trades exactly what f passes at flow 1 would, and the
@@ -839,6 +851,8 @@ pub(super) fn dynamics_plan(
                         // the same number on either path.
                         opacity_mod: paint.opacity,
                         opacity_ramp: paint.opacity_ramp,
+                        add_ramp: paint.add_ramp,
+                        tooth_give_ramp: paint.tooth_give_ramp,
                         curvature: sw.curvature,
                         tooth_give: paint.tooth_give,
                         cell: cell as f32,
@@ -1030,10 +1044,13 @@ pub(super) fn liquify_plan(
                 dir: sw.dir,
                 radius: sw.radius,
                 travel_radii: sw.length / sw.radius,
-                ramp: sw.ramp,
+                radius_ramp: sw.radius_ramp,
                 // The one lane only a warp slot carries — and the lane
                 // `snapshot` reads to know its square must be copied whole.
                 drag: paint.drag * inv_peak_tau,
+                // Normalised by the same peak, so the two ends stay the pair
+                // they were (§6.13).
+                drag_ramp: paint.drag_ramp * inv_peak_tau,
                 rect_origin: rect.origin,
                 orient: sw.orient,
                 stretch: sw.stretch,
@@ -1199,6 +1216,9 @@ mod tests {
             opacity: 53.0,
             opacity_mod: 55.0,
             opacity_ramp: 56.0,
+            add_ramp: 57.0,
+            tooth_give_ramp: 58.0,
+            drag_ramp: 59.0,
             ceiling_lane: true,
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
@@ -1219,7 +1239,7 @@ mod tests {
             resid: [36.0, 37.0, 38.0, 39.0],
             cell: 40.0,
             cell_anchor: Vec2::new(41.0, 42.0),
-            ramp: 44.0,
+            radius_ramp: 44.0,
             stretch: Stretch {
                 travel: 45.0,
                 shear: 46.0,
@@ -1277,6 +1297,9 @@ mod tests {
             packed.opacity_ramp, 56.0,
             "…and its ramp across the segment"
         );
+        assert_eq!(packed.add_ramp, 57.0, "the source rate's ramp (§6.2)");
+        assert_eq!(packed.tooth_give_ramp, 58.0, "the tooth give's (§6.4)");
+        assert_eq!(packed.drag_ramp, 59.0, "the liquify follow's (§6.13)");
         assert_eq!(packed.ceiling_lane, 1, "the ceiling lane's flag (§6.2)");
     }
 

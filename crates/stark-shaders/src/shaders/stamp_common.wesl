@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::lib::noise::{color_jitter, jitter};
-import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, ceiling_at};
+import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, linear_across};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
@@ -102,7 +102,7 @@ struct VsOut {
     @location(1) @interpolate(flat) start: vec2<f32>,
     @location(2) @interpolate(flat) dir: vec2<f32>,
     // The **reference** radius, the arc length, and the radius ramp — how much the tip
-    // grows across the segment as a fraction of that radius (§6.2, `Segment::ramp`).
+    // grows across the segment as a fraction of that radius (§6.2, `Segment::radius_ramp`).
     // Zero on a tip that does not change, which is the branch every untapered stroke
     // at constant pressure takes.
     @location(3) @interpolate(flat) geom: vec3<f32>,
@@ -147,6 +147,18 @@ struct VsOut {
     // than interpolated — the travel fraction is not affine in canvas position on
     // a curved sweep.
     @location(9) @interpolate(flat) opacity: vec2<f32>,
+    // How the segment's other two **per-texel** pen targets change across it
+    // (§6.2): the `add` source rate in `.x`, the tooth's give in `.y`, each as the
+    // difference between the segment's ends. Their means ride where they always
+    // did — `extra.w` and `tooth_give` — so a brush the pen does not drive this
+    // way carries zeroes here and every read is an exact identity.
+    //
+    // The rates the *exchange* solves with — `lift`, `deposit`, `bleed` — are not
+    // here and cannot be: that transfer is one solve per dispatch over a tool that
+    // has no canvas position, so a rate varying across the segment would leave its
+    // two halves solving different problems. What bounds their step instead is the
+    // flattener, which buys segments against `BrushParams::max_slope`.
+    @location(10) @interpolate(flat) ramps: vec2<f32>,
 }
 
 struct FsOut {
@@ -171,7 +183,7 @@ struct Sweep {
     // Brush-local: .x the travel coordinate in units of the segment's *reference*
     // radius (0 at the segment start, growing the way the tip goes), .y the lateral
     // offset in units of the radius **in force where this point is** — which is the
-    // reference one only on a segment whose tip does not ramp (`ramp_apply`).
+    // reference one only on a segment whose tip does not ramp (`radius_ramp_apply`).
     //
     // The two axes are denominated differently on purpose. `.x` is conjugate to `lr`
     // and to the segment's own arc, so the pair must share one frame and that frame is
@@ -192,7 +204,7 @@ struct Sweep {
     // `lr`.
     //
     // A pair and not a base-plus-width, because **the two ends are denominated
-    // against different tips** on a ramping segment (`ramp_apply`): the point's offset
+    // against different tips** on a ramping segment (`radius_ramp_apply`): the point's offset
     // when the segment starts is worth `r_start` px and when it ends `r_end`, and
     // dividing both by the reference radius is what made a taper's deposit depend on
     // where the flattener cut it (§6.2). Denominated this way the pair *telescopes*:
@@ -226,7 +238,7 @@ struct Sweep {
     turn: f32,
     // The tip radius **in force where this point is**, in the same px the frame is
     // measured in — the segment's reference radius on a tip that does not ramp, and
-    // the ramp read at this point's own travel otherwise (`ramp_apply`).
+    // the ramp read at this point's own travel otherwise (`radius_ramp_apply`).
     //
     // What turns a brush-local lateral offset back into px: `local.y · radius`. The
     // travel axis does *not* convert through this one — `local.x` is in reference
@@ -317,23 +329,23 @@ fn stretch_hull(st: vec3<f32>) -> vec2<f32> {
 }
 
 // The tip in force a fraction `u` of the way through a ramping segment, as a multiple
-// of the segment's reference radius: `1 + ramp·(u − ½)` (§6.2, `Segment::ramp`).
+// of the segment's reference radius: `1 + ramp·(u − ½)` (§6.2, `Segment::radius_ramp`).
 //
 // Positive for every `u ∈ [0,1]` without a clamp, because the host floors both ends of
-// the ramp at half a px and `|r₁ − r₀| < r₁ + r₀` — so `|ramp| < 2` structurally.
+// the radius ramp at half a px and `|r₁ − r₀| < r₁ + r₀` — so `|radius_ramp| < 2` structurally.
 //
 // Clamped in `u` rather than extrapolated: past either end of the segment the tip has,
 // as far as this segment is concerned, stopped at the end it reached. That is also what
 // keeps the overhanging caps of two adjacent segments agreeing about the knot they
 // share, instead of each running off along its own slope.
-fn ramp_scale(ramp: f32, x: f32, lr: f32) -> f32 {
+fn radius_ramp_scale(radius_ramp: f32, x: f32, lr: f32) -> f32 {
     // Every segment of an untapered brush at constant pressure takes this branch, and
     // it is an exact identity — those strokes render as they did before ramps existed,
     // to the bit. It also carries the settle slot, whose travel is zero.
-    if ramp == 0.0 || lr <= 0.0 {
+    if radius_ramp == 0.0 || lr <= 0.0 {
         return 1.0;
     }
-    return 1.0 + ramp * (clamp(x / lr, 0.0, 1.0) - 0.5);
+    return 1.0 + radius_ramp * (clamp(x / lr, 0.0, 1.0) - 0.5);
 }
 
 // Re-denominate a sweep's lateral axis against the tip actually in force there.
@@ -345,18 +357,18 @@ fn ramp_scale(ramp: f32, x: f32, lr: f32) -> f32 {
 // — it is a ratio of two affine functions — so interpolating its result would be wrong
 // where interpolating `sweep_at`'s is exact. There it is applied after the interpolation
 // instead (`sweep_of`), on quantities that survive it.
-fn ramp_apply(sw: Sweep, ramp: f32) -> Sweep {
+fn radius_ramp_apply(sw: Sweep, radius_ramp: f32) -> Sweep {
     // The identity, taken as a branch rather than as a `/1` and a `*1`. Every segment
     // of an untapered brush at constant pressure comes through here, and the dynamics
     // loop's bleed ladder builds thirty-six of these frames per thread, so the two
     // reciprocals below are worth not paying. Guarded on `lr` as well as on the ramp,
-    // for the reason `ramp_scale` is: a slot with no travel has no ends to tell apart,
+    // for the reason `radius_ramp_scale` is: a slot with no travel has no ends to tell apart,
     // and denominating its two span coordinates differently would open a prefix
     // difference where the tip never moved.
-    if ramp == 0.0 || sw.lr <= 0.0 {
+    if radius_ramp == 0.0 || sw.lr <= 0.0 {
         return sw;
     }
-    let s = ramp_scale(ramp, sw.local.x, sw.lr);
+    let s = radius_ramp_scale(radius_ramp, sw.local.x, sw.lr);
     var out = sw;
     out.local.y = sw.local.y / s;
     out.radius = sw.radius * s;
@@ -370,11 +382,14 @@ fn ramp_apply(sw: Sweep, ramp: f32) -> Sweep {
     // taper's deposit rippled at the flattener's own cadence, worst exactly where the
     // ramp is largest and no subdivision can shrink it (the taper's point).
     //
-    // The two scales are `1 ∓ ramp/2` — `ramp_scale`'s value at either end, written
+    // The two scales are `1 ∓ ramp/2` — `radius_ramp_scale`'s value at either end, written
     // out because these are the segment's ends and not this point's position. Both are
-    // positive without a clamp for the reason the tip is: `|ramp| < 2` structurally
-    // ([`Segment::ramp`]).
-    out.span = vec2<f32>(sw.span.x / (1.0 - 0.5 * ramp), sw.span.y / (1.0 + 0.5 * ramp));
+    // positive without a clamp for the reason the tip is: `|radius_ramp| < 2` structurally
+    // ([`Segment::radius_ramp`]).
+    out.span = vec2<f32>(
+        sw.span.x / (1.0 - 0.5 * radius_ramp),
+        sw.span.y / (1.0 + 0.5 * radius_ramp),
+    );
     return out;
 }
 
@@ -496,6 +511,7 @@ fn sweep_vertex(
     tooth_give: f32, // how far this tip settles into the substrate (§6.4)
     stretch: vec3<f32>, // the tip drawn out along its facing axis (§6.6)
     opacity: vec2<f32>, // the ceiling's factor across the segment (§6.2)
+    ramps: vec2<f32>, // how `add` and the tooth's give change across it (§6.2)
 ) -> VsOut {
     let radius = geom.x;
     let len = geom.y;
@@ -585,6 +601,7 @@ fn sweep_vertex(
     out.frame = vec3<f32>(sw.local.y, sw.warp, sw.turn);
     out.stretch = stretch;
     out.opacity = opacity;
+    out.ramps = ramps;
     return out;
 }
 
@@ -596,10 +613,10 @@ fn sweep_vertex(
 // travel it was swept by is the range's own width. Stated that way round because it is
 // the range that is fundamental: `swept_depth` wants two prefix arguments, and
 // everything else here is a reading of the same pair.
-// The ramp is applied *here*, after the interpolation, for the reason `ramp_apply`
+// The ramp is applied *here*, after the interpolation, for the reason `radius_ramp_apply`
 // gives: the varyings above are affine in canvas position on a straight sweep and the
 // correction is not, so the strip carries the reference frame and the fragment
-// re-denominates it. A segment whose tip does not ramp takes `ramp_apply`'s identity
+// re-denominates it. A segment whose tip does not ramp takes `radius_ramp_apply`'s identity
 // branch and reads exactly the interpolated values, bit for bit.
 fn sweep_of(in: VsOut) -> Sweep {
     var out: Sweep;
@@ -612,7 +629,7 @@ fn sweep_of(in: VsOut) -> Sweep {
     out.warp = in.frame.y;
     out.turn = in.frame.z;
     out.radius = in.geom.x;
-    return ramp_apply(out, in.geom.z);
+    return radius_ramp_apply(out, in.geom.z);
 }
 
 // The brush's color channels (per the color space) at this fragment: the
@@ -697,20 +714,36 @@ fn stroke_drain(arc: f32) -> f32 {
 // what it always did whatever the brush's tooth says.
 fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
     let uv_scale = xf.paint.y;
-    if uv_scale <= 0.0 || in.tooth_give >= 1.0 {
+    let give = tooth_give_of(in, sw);
+    if uv_scale <= 0.0 || give >= 1.0 {
         return 1.0;
     }
     let dims = textureDimensions(substrate_tex);
     let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), in.tooth_give, xf.paint.z);
+    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), give, xf.paint.z);
 }
 
-// The ceiling's factor at this fragment (§6.2): the segment's two ends read at the
-// fragment's own travel (`paint_common::ceiling_at`). Exactly `in.opacity.x` on a
-// brush whose ceiling the pen does not drive, which is the branch that keeps those
-// strokes bit-identical.
+// The three per-texel pen targets at this fragment (§6.2): each segment's two ends
+// read at the fragment's own travel (`paint_common::linear_across`). Exactly the
+// carried mean on a brush the pen does not drive that way, which is the branch that
+// keeps those strokes bit-identical.
 fn ceiling_of(in: VsOut, sw: Sweep) -> f32 {
-    return ceiling_at(in.opacity.x, in.opacity.y, sw.local.x, sw.lr);
+    return linear_across(in.opacity.x, in.opacity.y, sw.local.x, sw.lr);
+}
+
+// The `add` source rate — height per unit swept optical depth. Interpolating it is
+// what keeps the deposit's own law intact rather than bending it: the deposit is
+// `∫ add dτ` over the segment, `add` is the same function of arc length whichever
+// side of a knot reads it, and a definite integral cut in two is the sum of the
+// pieces — so this stays exactly as independent of the flattening as the constant
+// it replaces, and closer to the integral than the midpoint sample was.
+fn add_of(in: VsOut, sw: Sweep) -> f32 {
+    return linear_across(in.extra.w, in.ramps.x, sw.local.x, sw.lr);
+}
+
+// How far the tip settles into the substrate here (§6.4).
+fn tooth_give_of(in: VsOut, sw: Sweep) -> f32 {
+    return linear_across(in.tooth_give, in.ramps.y, sw.local.x, sw.lr);
 }
 
 // The deposit jitter's gate at this fragment (§6.2, `lib::noise::jitter`):

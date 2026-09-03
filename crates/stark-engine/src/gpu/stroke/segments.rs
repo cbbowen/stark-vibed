@@ -51,7 +51,7 @@ pub(super) struct Sweep {
     /// (the bleed cadence, the stencil's diffusivity, the touch-down dab).
     ///
     /// The *reference*, because a segment does not have a radius: the tip is a
-    /// function of travel, and [`ramp`](Self::ramp) is the rest of that function.
+    /// function of travel, and [`radius_ramp`](Self::radius_ramp) is the rest of that function.
     ///
     /// It is also **the frame the sweep is unrolled in** — region px per brush-local
     /// unit, the units everything the shaders read out of a brush-local coordinate is
@@ -93,7 +93,7 @@ pub(super) struct Sweep {
     ///
     /// Relative rather than absolute (px) because the tip and the frame the sweep is
     /// unrolled in are one radius — [`radius`](Self::radius) is both.
-    pub(super) ramp: f32,
+    pub(super) radius_ramp: f32,
     /// How far from the centreline this tip's deposit can land, in canvas px.
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
@@ -133,7 +133,7 @@ pub(super) struct Sweep {
 
 impl Sweep {
     /// The tip in force a fraction `u` of this sweep's travel in, canvas px — the
-    /// host's statement of the ramp `stamp_common::ramp_scale` applies, so the two
+    /// host's statement of the ramp `stamp_common::radius_ramp_scale` applies, so the two
     /// definitions can be read against each other.
     ///
     /// `u` is clamped, like the shader's: past either end the tip has, as far as this
@@ -144,7 +144,7 @@ impl Sweep {
     /// coverage box) is [`widest_tip`](Self::widest_tip).
     #[cfg(test)]
     pub(super) fn tip_at(&self, u: f32) -> f32 {
-        self.radius * (1.0 + self.ramp * (u.clamp(0.0, 1.0) - 0.5))
+        self.radius * (1.0 + self.radius_ramp * (u.clamp(0.0, 1.0) - 0.5))
     }
 
     /// The widest tip this sweep reaches, canvas px.
@@ -155,7 +155,7 @@ impl Sweep {
     /// the GPU rasterizes: it is what [`coverage_bounds`](super::region::coverage_bounds) grows the box by, and a box
     /// narrower than its own geometry is a stroke clipped at a tile boundary.
     fn widest_tip(&self) -> f32 {
-        self.radius * (1.0 + 0.5 * self.ramp.abs())
+        self.radius * (1.0 + 0.5 * self.radius_ramp.abs())
     }
 }
 
@@ -222,7 +222,7 @@ pub(super) struct Paint {
     /// segment whose ceiling does not change**, which is every segment of every
     /// brush the pen does not drive that way, and the shaders branch on that zero.
     ///
-    /// Why a segment carries one at all is [`Sweep::ramp`]'s argument, one target
+    /// Why a segment carries one at all is [`Sweep::radius_ramp`]'s argument, one target
     /// over: read once per segment the ceiling is piecewise constant, and a stroke
     /// drawn at a realistic report rate is a handful of segments wide — so the
     /// mark came out in bands, stepping at every cut. Carried as a ramp the
@@ -234,6 +234,25 @@ pub(super) struct Paint {
     /// stays inside `[min, max]` of two numbers already in `[0, 1]` and nothing
     /// here has to defend a positive product.
     pub(super) opacity_ramp: f32,
+    /// How the `add` source rate changes across this segment — `end − start`, read
+    /// at a texel's own travel by `stamp_common::add_of` and
+    /// `dynamics.wesl::rate_across`. [`opacity_ramp`](Self::opacity_ramp)'s
+    /// construction, and its argument: a rate held constant across a segment steps
+    /// at every cut.
+    ///
+    /// It costs the deposit nothing to be exact about: the deposit is `∫ add dτ`
+    /// over the segment, `add` is one function of arc length whichever side of a
+    /// knot reads it, and a definite integral cut in two is the sum of its pieces.
+    /// So this is as independent of the flattening as the constant it replaces, and
+    /// nearer the integral than a midpoint sample.
+    pub(super) add_ramp: f32,
+    /// How the tooth's give changes across this segment (§6.4) — the same
+    /// construction, on the one gate that is per *texel* rather than per parcel.
+    pub(super) tooth_give_ramp: f32,
+    /// How the liquify follow changes across this segment (§6.13) — likewise. The
+    /// travel bound it is held to is the segment's, and interpolating between two
+    /// ends that both respect it cannot leave it.
+    pub(super) drag_ramp: f32,
 }
 
 impl Default for Paint {
@@ -258,6 +277,9 @@ impl Default for Paint {
             tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
             opacity: 1.0,
             opacity_ramp: 0.0,
+            add_ramp: 0.0,
+            tooth_give_ramp: 0.0,
+            drag_ramp: 0.0,
         }
     }
 }
@@ -275,7 +297,7 @@ pub(super) struct Segment {
 /// A named type rather than the `(usize, Segment)` it was, and a [`Sweep`] rather than
 /// a whole segment. A firing lays no paint — `dynamics_plan` zeroes every vertical rate
 /// on the slot it becomes — so carrying rates here meant copying five numbers in for
-/// the sole purpose of writing them back out, and left `ramp: 0.0` as a field a window
+/// the sole purpose of writing them back out, and left `radius_ramp: 0.0` as a field a window
 /// had to remember not to set. It cannot set one now.
 #[derive(Copy, Clone)]
 pub(super) struct BleedFire {
@@ -332,14 +354,14 @@ const TAPER_MAX_SLOPE: f32 = 1.5;
 
 /// The largest `|d²/dt²|` [`taper_profile`] reaches, at `t = 1` (`f'' = −3t`). What
 /// bounds the error of drawing the profile as a **straight ramp** across a segment
-/// ([`Sweep::ramp`]) rather than as the curve it is — the only part of the taper's
+/// ([`Sweep::radius_ramp`]) rather than as the curve it is — the only part of the taper's
 /// shape a ramp does not already carry exactly.
 const TAPER_MAX_CURVATURE: f32 = 3.0;
 
 /// How far the drawn outline may sit from the true cone, in **canvas px**, where the
 /// tip is too hard (or too thin) for its own falloff to hide anything.
 ///
-/// A segment's tip is a straight ramp ([`Sweep::ramp`]) across a profile that is
+/// A segment's tip is a straight ramp ([`Sweep::radius_ramp`]) across a profile that is
 /// cubic, so what a cut has to buy is the *sagitta* of that chord — a second-order
 /// quantity, where before the ramp existed it was the whole first-order step. The
 /// budget is the flattener's own [`position`](crate::path::FlattenTolerance::position):
@@ -397,7 +419,7 @@ const TAPER_SHOULDER_SLACK: f32 = 0.25;
 // the tip. So the ramp is bounded where it matters and unbounded where it cannot
 // matter, and the one guarantee that has to hold everywhere — `|ramp| < 2`, which is
 // what keeps the tip positive at both ends, and now also what keeps both span scales
-// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Sweep::ramp`]).
+// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Sweep::radius_ramp`]).
 
 /// Cap on the pieces one flattened edge is cut into for the taper — a backstop on a
 /// pathological brush rather than a quality knob.
@@ -514,7 +536,7 @@ impl Taper {
     }
 
     /// A bound on `|d² factor / d dist²|` anywhere in `[dist, dist + len]` — what a
-    /// straight radius ramp has to be cut fine enough to track ([`Sweep::ramp`]).
+    /// straight radius ramp has to be cut fine enough to track ([`Sweep::radius_ramp`]).
     ///
     /// The product rule, term for term: `(f_s·f_e)'' = f_s''·f_e + 2 f_s' f_e' +
     /// f_s·f_e''`, and both factors are ≤ 1, so the two curvatures add and the cross
@@ -542,7 +564,7 @@ impl Taper {
     /// taper code.
     ///
     /// **The first-order variation is not what is being bought here.** A segment
-    /// carries the taper's slope exactly, as its ramp ([`Sweep::ramp`]), and two
+    /// carries the taper's slope exactly, as its ramp ([`Sweep::radius_ramp`]), and two
     /// adjacent segments agree on the radius at the knot they share — so the outline
     /// is continuous however coarse the cut. What is left is one second-order term:
     /// the ramp is a **chord** across a cubic profile, and the outline bows off it by
@@ -608,7 +630,7 @@ struct Track {
 }
 
 /// A segment's two **ends**, for the two quantities that ramp across it rather
-/// than being sampled at its midpoint: the tip ([`Sweep::ramp`]) and the pen the
+/// than being sampled at its midpoint: the tip ([`Sweep::radius_ramp`]) and the pen the
 /// ceiling's factor is read from ([`Paint::opacity_ramp`]).
 ///
 /// One value because they are one question — what is in force at each end — and
@@ -718,7 +740,7 @@ pub(super) fn generate_segments_in(
     };
 
     // `ends` is what is in force at the segment's two ends — the tip, where the radius
-    // *ramp* comes from ([`Sweep::ramp`]), and the pen, where the ceiling's does
+    // *ramp* comes from ([`Sweep::radius_ramp`]), and the pen, where the ceiling's does
     // ([`Paint::opacity_ramp`]). Everything else is sampled at the midpoint, `at`: the
     // rates below are applied per segment and the midpoint is the reading whose error
     // is second order where either end's would be first.
@@ -753,7 +775,7 @@ pub(super) fn generate_segments_in(
             dir: track.dir,
             curvature: track.curvature,
             radius,
-            ramp: (r1 - r0) / radius,
+            radius_ramp: (r1 - r0) / radius,
             // Filled from `widest_tip` below, which needs the ramp this initializer is
             // still building — and must be *that* expression rather than one equal to
             // it, since this bounds the strip the GPU draws.
@@ -790,51 +812,66 @@ pub(super) fn generate_segments_in(
         // before its `ln`, so the factor rides the segment and the plan scales
         // their λs — one pass at flow f trades exactly what f passes at flow 1
         // would.
-        //
-        // The ceiling's factor is **not** among them: it is read at the segment's
-        // two ends instead (`ceiling_at`, and `Paint::opacity_ramp` for why).
-        let (flow, add, lift, deposit, bleed, drag) = match &b.effect {
-            stark_model::document::BrushEffect::Paint(p) => {
-                (1.0, p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-            }
-            stark_model::document::BrushEffect::Wet(w) => {
-                let flow = w.flow * w.modulation.flow(pen);
-                (
-                    flow,
-                    w.dynamics.add * w.modulation.add(pen) * flow,
-                    w.dynamics.lift * w.modulation.lift(pen),
-                    w.dynamics.deposit * w.modulation.deposit(pen),
-                    w.dynamics.bleed * w.modulation.bleed(pen) * flow,
+        let rates = |pen: PenState| -> (f32, f32, f32, f32, f32, f32) {
+            match &b.effect {
+                stark_model::document::BrushEffect::Paint(p) => {
+                    (1.0, p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+                }
+                stark_model::document::BrushEffect::Wet(w) => {
+                    let flow = w.flow * w.modulation.flow(pen);
+                    (
+                        flow,
+                        w.dynamics.add * w.modulation.add(pen) * flow,
+                        w.dynamics.lift * w.modulation.lift(pen),
+                        w.dynamics.deposit * w.modulation.deposit(pen),
+                        w.dynamics.bleed * w.modulation.bleed(pen) * flow,
+                        0.0,
+                    )
+                }
+                stark_model::document::BrushEffect::Erase(e) => {
+                    (1.0, e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+                }
+                stark_model::document::BrushEffect::Liquify(l) => (
+                    1.0,
                     0.0,
-                )
+                    0.0,
+                    0.0,
+                    0.0,
+                    l.strength * l.modulation.strength(pen),
+                ),
             }
-            stark_model::document::BrushEffect::Erase(e) => {
-                (1.0, e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-            }
-            stark_model::document::BrushEffect::Liquify(l) => (
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                l.strength * l.modulation.strength(pen),
-            ),
         };
+        // **Which of them ride the ends, and which the midpoint.** A rate the
+        // shaders apply per *texel* — `add`, the liquify follow, and the tooth's
+        // give below — is read at both ends and interpolated between them, for
+        // [`Paint::add_ramp`]'s reason. The three the *exchange* solves with are
+        // read at the midpoint and stay constant across the segment, because that
+        // solve is one problem per dispatch whose two halves are complements and
+        // whose tool half has no canvas position to vary along (`dynamics.wesl`).
+        // What holds their step down is the flattener, which already buys segments
+        // against [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
+        let (flow, _, lift, deposit, bleed, _) = rates(pen);
+        let (_, add0, _, _, _, drag0) = rates(ends.pen.0);
+        let (_, add1, _, _, _, drag1) = rates(ends.pen.1);
+        let give0 = b.tooth.give * m.tooth_give(ends.pen.0);
+        let give1 = b.tooth.give * m.tooth_give(ends.pen.1);
         Segment {
             sweep,
             paint: Paint {
                 flow,
-                add,
+                // The mean of the two ends, like the radius and the ceiling: it is
+                // what makes the ramp exact at both, so two adjacent segments —
+                // which read the pen at the knot they share from the same sample —
+                // agree there to the bit.
+                add: (add0 + add1) * 0.5,
+                add_ramp: add1 - add0,
                 lift,
                 deposit,
                 bleed,
-                drag,
-                tooth_give: b.tooth.give * m.tooth_give(pen),
-                // The mean of the two ends and the difference between them, the
-                // radius's own construction one field up: the mean is what makes
-                // the ramp exact at both ends, so two adjacent segments — which
-                // read the pen at the knot they share from the same sample —
-                // agree there to the bit, and the ceiling has no step to band at.
+                drag: (drag0 + drag1) * 0.5,
+                drag_ramp: drag1 - drag0,
+                tooth_give: (give0 + give1) * 0.5,
+                tooth_give_ramp: give1 - give0,
                 opacity: (o0 + o1) * 0.5,
                 opacity_ramp: o1 - o0,
             },
@@ -896,7 +933,7 @@ pub(super) fn generate_segments_in(
             // adjacent pieces — and of two adjacent flattened edges, where `u1` of one
             // is `u0` of the next at the same `dist` — resolves to the same number on
             // both sides. That agreement is what makes the outline continuous
-            // ([`Sweep::ramp`]); it is not approached, it is the same expression
+            // ([`Sweep::radius_ramp`]); it is not approached, it is the same expression
             // evaluated twice.
             let (pen0, pen1) = (pen_state(pen_at(u0)), pen_state(pen_at(u1)));
             let ends = Ends {
@@ -1079,6 +1116,138 @@ mod tests {
     use super::*;
     use stark_model::document::BrushShape;
 
+    // --- what varies across a segment ------------------------------------
+
+    /// **Every pen target the shaders read per texel is continuous at the knots
+    /// two segments share** (§6.2).
+    ///
+    /// This is the whole content of the ramps, stated where it can be checked
+    /// exactly rather than looked for in pixels. A value carried as one number per
+    /// segment steps at every cut, and a stroke at the rate a hand reports is a
+    /// handful of segments wide — which is how a modulated `opacity` came to draw
+    /// bands and a modulated radius a comb of sawteeth. Carried as a mean and a
+    /// difference, the value at a segment's end is the same expression as the value
+    /// at the next one's start: both read the pen at that knot, from the same
+    /// sample of the same fitted curve.
+    ///
+    /// Held to a rounding rather than to the bit, and the gap is the *carrying*
+    /// rather than the values: a mean and a difference are each one rounding of the
+    /// pair, so reconstructing an end returns it to within an ulp instead of
+    /// exactly. What that leaves this free to catch is a **step**, which is the
+    /// pen's own change between two knots — five orders of magnitude above the
+    /// bound below, and what every one of these targets used to have.
+    ///
+    /// The three the exchange solves with are deliberately absent: `lift`,
+    /// `deposit` and `bleed` are one rate per dispatch (see [`Paint`]), and what
+    /// bounds their step is the flattener's attribute budget.
+    #[test]
+    fn every_per_texel_target_is_continuous_across_a_knot() {
+        // A pen that moves through the whole range, so no mapping sits still.
+        let pts: Vec<stark_model::path::ControlPoint> = (0..12)
+            .map(|i| {
+                let t = i as f32 / 11.0;
+                stark_model::path::ControlPoint {
+                    pos: Vec2::new(-120.0 + 240.0 * t, 30.0 * (t * 5.0).sin()),
+                    pressure: 0.05 + 0.9 * t,
+                    tilt: Vec2::new(0.8 * (1.0 - t), 0.0),
+                    time: t,
+                }
+            })
+            .collect();
+        let mapped = |source| {
+            Some(stark_model::document::Modulation {
+                source,
+                floor: 0.1,
+                curve: 0.4,
+            })
+        };
+        use stark_model::document::ModSource::{Pressure, Tilt};
+
+        // Every effect, so every target that has a ramp is exercised by the one
+        // check — including the two that only one effect has.
+        let mut wet = BrushParams {
+            size: 40.0,
+            ..BrushParams::default()
+        };
+        wet.modulation.size = mapped(Pressure);
+        wet.modulation.tooth_give = mapped(Tilt);
+        wet.tooth.give = 0.6;
+        {
+            let w = wet.make_wet();
+            w.modulation.flow = mapped(Pressure);
+            w.modulation.add = mapped(Tilt);
+            w.modulation.opacity = mapped(Pressure);
+        }
+        let mut liquify = BrushParams {
+            size: 40.0,
+            effect: stark_model::document::BrushEffect::Liquify(
+                stark_model::document::LiquifyEffect {
+                    strength: 0.9,
+                    modulation: stark_model::document::LiquifyModulations {
+                        strength: mapped(Pressure),
+                    },
+                },
+            ),
+            ..BrushParams::default()
+        };
+        liquify.modulation.size = mapped(Tilt);
+
+        for brush in [wet, liquify] {
+            let rec = StrokeRecord {
+                layer: stark_model::document::LayerId::ROOT,
+                brush,
+                path: pts.clone(),
+                seed: 0,
+                start: 0.0,
+                translation: stark_model::geom::IVec2::ZERO,
+            };
+            let tol = flatten_tolerance(&rec.brush);
+            let (segs, _) = generate_segments_in(&rec, tol, StrokeSpans::whole(&rec));
+            assert!(segs.len() > 4, "the fixture must cut into several segments");
+
+            for (i, pair) in segs.windows(2).enumerate() {
+                let (a, b) = (&pair[0], &pair[1]);
+                // Each target at the end of `a` and at the start of `b`.
+                let ends = [
+                    (
+                        "radius",
+                        a.sweep.radius * (1.0 + 0.5 * a.sweep.radius_ramp),
+                        b.sweep.radius * (1.0 - 0.5 * b.sweep.radius_ramp),
+                    ),
+                    (
+                        "add",
+                        a.paint.add + 0.5 * a.paint.add_ramp,
+                        b.paint.add - 0.5 * b.paint.add_ramp,
+                    ),
+                    (
+                        "tooth_give",
+                        a.paint.tooth_give + 0.5 * a.paint.tooth_give_ramp,
+                        b.paint.tooth_give - 0.5 * b.paint.tooth_give_ramp,
+                    ),
+                    (
+                        "opacity",
+                        a.paint.opacity + 0.5 * a.paint.opacity_ramp,
+                        b.paint.opacity - 0.5 * b.paint.opacity_ramp,
+                    ),
+                    (
+                        "drag",
+                        a.paint.drag + 0.5 * a.paint.drag_ramp,
+                        b.paint.drag - 0.5 * b.paint.drag_ramp,
+                    ),
+                ];
+                for (what, left, right) in ends {
+                    let slack = 1e-6 * left.abs().max(1.0);
+                    assert!(
+                        (left - right).abs() <= slack,
+                        "{what} steps at the knot between segments {i} and {}: \
+                         {left} then {right}",
+                        i + 1,
+                    );
+                }
+            }
+        }
+    }
+
     // --- tapers ----------------------------------------------------------
 
     /// A straight stroke `len` px long with a tapered brush of `radius`.
@@ -1180,7 +1349,7 @@ mod tests {
         assert_outline_is_continuous(&segs);
     }
 
-    /// **The property the ramp exists to have** (§6.2, [`Sweep::ramp`]): consecutive
+    /// **The property the ramp exists to have** (§6.2, [`Sweep::radius_ramp`]): consecutive
     /// segments agree on the tip at the knot they share, so the stroke's outline has
     /// no C⁰ break to alias — at any brush size, and however coarsely the taper is
     /// cut.
@@ -1209,16 +1378,16 @@ mod tests {
     }
 
     /// The one bound on the ramp that has to hold everywhere, and the reason
-    /// `stamp_common::ramp_scale` needs no clamp: `|ramp| < 2`, so the tip is positive
+    /// `stamp_common::radius_ramp_scale` needs no clamp: `|ramp| < 2`, so the tip is positive
     /// at both ends of every segment. Structural rather than enforced — it follows
     /// from flooring both ends at half a px — so this checks the algebra rather than a
     /// rule that could be forgotten.
     fn assert_tips_stay_positive(segs: &[Sweep]) {
         for (i, s) in segs.iter().enumerate() {
             assert!(
-                s.ramp.abs() < 2.0,
+                s.radius_ramp.abs() < 2.0,
                 "segment {i} ramps by {}, which puts a tip at or past zero",
-                s.ramp,
+                s.radius_ramp,
             );
             assert!(
                 s.tip_at(0.0) > 0.0 && s.tip_at(1.0) > 0.0,
@@ -1317,7 +1486,7 @@ mod tests {
 
     /// A tip that does not change carries **no** ramp, exactly — which is what makes
     /// every stroke that came before this change render as it did, to the bit: the
-    /// shaders branch on that zero (`stamp_common::ramp_scale`), and a zero that were
+    /// shaders branch on that zero (`stamp_common::radius_ramp_scale`), and a zero that were
     /// merely small would take the general path and round differently.
     #[test]
     fn a_tip_that_holds_still_carries_no_ramp() {
@@ -1325,7 +1494,7 @@ mod tests {
         let mut rec = tapered_record(40.0, 0.0, 0.0, 900.0);
         rec.brush.modulation = stark_model::document::BrushModulations::default();
         for s in whole(&rec) {
-            assert_eq!(s.ramp, 0.0, "an unvarying tip picked up a ramp");
+            assert_eq!(s.radius_ramp, 0.0, "an unvarying tip picked up a ramp");
             assert_eq!(s.radius, 40.0, "an unvarying tip changed size");
         }
     }

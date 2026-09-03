@@ -33,7 +33,7 @@ pub(in crate::gpu::stroke) fn sweep(
         radius,
         // A tip that holds still, so the frame the shader unrolls is the one the
         // caller is measuring against and nothing else.
-        ramp: 0.0,
+        radius_ramp: 0.0,
         // A tip that reaches its own radius: what is under test is the arithmetic over
         // sweeps, not how wide any one shape is.
         reach: radius,

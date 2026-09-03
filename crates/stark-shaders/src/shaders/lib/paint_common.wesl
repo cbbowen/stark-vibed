@@ -344,28 +344,36 @@ fn claimed_coverage(s0: f32, s1: f32, lv: vec4<f32>) -> f32 {
     return mu1 * c0 + (mu2 - mu1) * c1 + (mu3 - mu2) * c2;
 }
 
-// The ceiling's factor where a point sits along one segment (§6.2): the segment's
-// two **ends**, linearly across its travel — the mean the segment carries, and the
-// difference between them.
+// **One modulated parameter where a point sits along one segment** (§6.2): the
+// segment's two **ends**, linearly across its travel — the mean the segment
+// carries, and the difference between them.
 //
-// A ceiling read once per segment is piecewise constant, and a stroke drawn at a
-// realistic report rate is a handful of segments wide, so what the eye sees is
-// bands: `opacity` was the one pen target whose value stepped at every cut. This
-// is `Sweep::ramp`'s answer for the radius, in the one form that differs —
-// absolute rather than relative, opacity being a fraction rather than a scale, so
-// nothing here has to defend a positive product.
+// A parameter read once per segment is piecewise constant, and a stroke drawn at
+// the rate a hand actually reports is a handful of segments wide, so a value that
+// steps at every cut is one the eye sees as bands. That is `Sweep::radius_ramp`'s
+// argument for the radius, and it holds for every pen target whose effect is per
+// texel: the ceiling, the `add` source rate, the tooth's give, the liquify follow.
+// This is that construction with the sign those need — absolute rather than
+// relative, since they are fractions and rates rather than scales, so nothing here
+// has to defend a positive product.
 //
 // `x` is the point's travel from the segment's start and `lr` the segment's own,
 // both in whatever units the caller's frame measures travel in. The clamp past
-// either end is `ramp_scale`'s and buys the same thing: two adjacent segments
-// computed their shared end from the same pen at the same arc length, so the
-// overhanging caps agree there rather than each running off along its own slope.
-// A segment with no travel at all — the pen-up settle — reads the mean.
-fn ceiling_at(mean: f32, ramp: f32, x: f32, lr: f32) -> f32 {
-    // Every segment of a brush whose ceiling the pen does not drive takes this
-    // branch, and takes it as an exact identity.
-    if ramp == 0.0 || lr <= 0.0 {
+// either end is `radius_ramp_scale`'s and buys the same thing: two adjacent
+// segments computed their shared end from the same pen at the same arc length, so
+// the overhanging caps agree there rather than each running off along its own
+// slope. A segment with no travel at all — the pen-up settle — reads the mean.
+//
+// **Both sides of a transfer must call this at the same place.** The stamp loop's
+// tool half books its share of the source against the reservoir texel's own arc
+// rather than the segment's, precisely so that the two halves read one value
+// (`dynamics.wesl`'s `exchange`); a rate interpolated on the canvas side alone
+// would take back at one rate what it handed over at another.
+fn linear_across(mean: f32, delta: f32, x: f32, lr: f32) -> f32 {
+    // Every segment of a brush the pen does not drive this way takes this branch,
+    // and takes it as an exact identity.
+    if delta == 0.0 || lr <= 0.0 {
         return mean;
     }
-    return mean + ramp * (clamp(x / lr, 0.0, 1.0) - 0.5);
+    return mean + delta * (clamp(x / lr, 0.0, 1.0) - 0.5);
 }

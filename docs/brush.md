@@ -1179,23 +1179,25 @@ of the dial from either; two more levels would halve that, and the lane has the
 channels for them only in a colorimetric space, which is why there are two.
 
 **The factor itself is interpolated across a segment**, and that is not a
-refinement — it is what makes the target usable. Every other pen target is a
-*rate*: `add` scales what this segment lays, so one value per segment is what it
-means. A ceiling is not, and read once per segment it is piecewise constant — so
-a stroke drawn at the rate a hand actually reports came out in bands, stepping
-at every cut, which is what a segment count of a dozen across a mark looks like.
-So `Paint` carries the factor at the segment's two **ends** (its mean and the
-difference between them, `opacity_ramp`) and every fragment reads it at its own
-travel (`paint_common::ceiling_at`) — `Sweep::ramp`'s construction for the
-radius, in the one form that differs: absolute rather than relative, a ceiling
-being a fraction rather than a scale, so the interpolant stays inside `[0, 1]`
-with nothing to defend. Adjacent segments read the pen at the knot they share
-from the same sample, so the ceiling is continuous *by construction* rather than
-finely enough stepped; past either end the overhanging cap takes the end it
-reached, which is the clamp `ramp_scale` already makes. The stamp loop reads the
-same law off the same frame (`Stamp::opacity_ramp`), so a texel's factor is one
-number on either path. A brush the pen does not drive this way carries a zero
-ramp and takes an exact branch.
+refinement — it is what makes the target usable. Read once per segment a ceiling
+is piecewise constant, so a stroke drawn at the rate a hand actually reports came
+out in bands, stepping at every cut. `Paint` carries the factor at the segment's
+two **ends** — its mean, and the difference between them in `opacity_ramp` — and
+every fragment reads it at its own travel (`paint_common::linear_across`), which
+is `Sweep::radius_ramp`'s construction for the radius in the one form that
+differs: absolute rather than relative, a ceiling being a fraction rather than a
+scale, so the interpolant stays inside `[0, 1]` with nothing to defend. Adjacent
+segments read the pen at the knot they share from the same sample, so the ceiling
+is continuous *by construction* rather than finely enough stepped; past either
+end the overhanging cap takes the end it reached, which is the clamp
+`radius_ramp_scale` already makes. The stamp loop reads the same law off the same
+frame (`Stamp::opacity_ramp`), so a texel's factor is one number on either path,
+and a brush the pen does not drive this way carries a zero ramp and takes an
+exact branch.
+
+The ceiling was the first target carried that way and is no longer the only one:
+every pen target the shaders read per texel is, and for the same reason. The rule
+and the line it draws are under *Pen mapping* below.
 
 Every sum is symmetric in the segments, so the picture is the same whichever
 pass came first, and it composes under re-cutting for the reason the aux does.
@@ -1366,20 +1368,50 @@ way catches the other sides (§6.4).
 **Resolution happens in one place**: `generate_segments_in`, alongside the taper,
 where the pen attributes are already interpolated per segment. Both render paths
 flatten through it, so a live tail and the commit that replaces it cannot read
-the pen differently. Downstream, the four rates, the tooth's give and the
-ceiling's factor — the last as the *pair* its interpolation needs — ride the
-`Segment` — the stamp loop already carried its λs per
-dispatch and needed no change at all, and the swept path moved `add` off the
-per-tile uniform onto the segment instance (`extra.w`), leaving `drain` behind
-because `drain` is a function of arc length that every fragment recovers for
-itself. The tooth is a per-*fragment* gate on `τ` in the same slot `drain`
-occupies, for the same composition reason (§6.4). The ceiling's factor is the
-one that is neither: it has no per-segment law to ride, so it gets a lane of its
-own, and it is not a per-segment *value* either, so it is interpolated across
-the sweep like the radius (*The ceiling under the pen*, above). `hardness` and `charge` are deliberately not
-targets: hardness is baked into a prefix-τ texture per value, and `charge` is an
-initial condition rather than a rate, so neither has a per-segment form to
-modulate. Adding the field bumped the wire version to 3 (§8) — back when it had to:
+the pen differently. Downstream the resolved values ride the `Segment` — the
+stamp loop already carried its λs per dispatch and needed no change at all, and
+the swept path moved `add` off the per-tile uniform onto the segment instance,
+leaving `drain` behind because `drain` is a function of arc length that every
+fragment recovers for itself. The tooth is a per-*fragment* gate on `τ` in the
+same slot `drain` occupies, for the same composition reason (§6.4).
+
+**A target the shaders read per texel is carried as a pair and interpolated
+across the segment; one the *exchange* solves with is not.** That line is the
+whole of what a segment may hold constant, and it is drawn where it is for a
+reason on each side.
+
+On the interpolated side — the radius (`Sweep::radius_ramp`), the ceiling, the
+`add` source rate, the tooth's give, the liquify follow — a value held constant
+across a segment steps at every cut, and a stroke at the rate a hand actually
+reports is a handful of segments wide. That is visible: it drew a comb of
+sawteeth down a tapered tip, and bands across a mark whose opacity the pen was
+driving. So each is carried as a mean and a difference between the segment's two
+**ends**, and read at the fragment's own travel
+(`paint_common::linear_across`). Adjacent segments read the pen at the knot they
+share from the same sample, so the value is continuous *by construction* rather
+than finely enough stepped — `every_per_texel_target_is_continuous_across_a_knot`
+is that claim, checked on the segments themselves rather than looked for in
+pixels. It costs the deposit nothing to be exact about: the deposit is
+`∫ add dτ`, `add` is one function of arc length whichever side of a knot reads
+it, and a definite integral cut in two is the sum of its pieces — so the result
+is as independent of the flattening as the constant it replaces, and nearer the
+integral than the midpoint sample was.
+
+On the other side are `lift`, `deposit` and `bleed`. Those are not read per
+texel; they are the rates of a **transfer**, and the exchange solves it once per
+dispatch as two complementary halves — a canvas half indexed by canvas position
+and a tool half indexed by *reservoir* texel, which has no canvas position to
+vary along. A rate that varied across the segment would leave the two halves
+solving different problems, and the transfer would stop balancing; the shader
+makes the same argument about sub-stepping, and about why the tool books its
+share of the source at its own arc rather than the segment's. What bounds their
+step instead is the flattener, which already buys segments against
+`BrushParams::max_slope` — so a steeply mapped flux is paid for in segments,
+which is the mechanism that was there all along.
+
+`hardness` and `charge` are deliberately not targets: hardness is baked into a
+prefix-τ texture per value, and `charge` is an initial condition rather than a
+rate, so neither has a per-segment form to modulate. Adding the field bumped the wire version to 3 (§8) — back when it had to:
 the encoding wrote no field names, so an appended field was still a break and
 `#[serde(default)]` had nothing to fill from. The same addition today is exactly that
 attribute and no version at all.

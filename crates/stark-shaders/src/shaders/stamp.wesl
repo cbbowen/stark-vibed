@@ -50,7 +50,7 @@
 
 import package::stamp_common::{
     VsOut, FsOut, sweep_vertex, sweep_of, swept_depth, brush_color, stroke_arc, stroke_drain,
-    substrate_tooth, jitter_of, ceiling_of, xf,
+    substrate_tooth, jitter_of, ceiling_of, add_of, xf,
 };
 import package::lib::paint_common::{OPACITY_K, level_sums};
 
@@ -100,8 +100,12 @@ fn vs_main(
     // brush whose opacity the pen does not drive. Its own attribute for
     // `tooth_give`'s reason: `extra` is full.
     @location(6) opacity: vec2<f32>,
+    // How the `add` source rate and the tooth's give change across this segment
+    // (§6.2) — their means ride `extra.w` and `tooth_give`. `(0, 0)` on a brush the
+    // pen does not drive that way.
+    @location(7) ramps: vec2<f32>,
 ) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch, opacity);
+    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch, opacity, ramps);
 }
 
 @fragment
@@ -141,7 +145,7 @@ fn fs_main(in: VsOut) -> FsOut {
     //
     // The tooth gates the **height** and not the opacity beside it (§6.1), and the
     // jitter follows it: both decide how much paint arrives, not what the pigment is.
-    let h = in.extra.w * drain * tooth * jitter * tau;
+    let h = add_of(in, sw) * drain * tooth * jitter * tau;
     // Per-unit opacity: exactly 1, faded only by the drain — the paint a brush lays
     // is opaque per unit (§6.2). "How much shows" is not a material property any
     // more: the effect's own opacity scales the finished parcel where it lands
@@ -236,7 +240,7 @@ fn fs_erase(in: VsOut) -> FsErase {
     let jitter = jitter_of(in);
 
     var out: FsErase;
-    let mass = in.extra.w * drain * tooth * jitter * tau;
+    let mass = add_of(in, sw) * drain * tooth * jitter * tau;
     out.mass = vec4<f32>(mass, 0.0, 0.0, 0.0);
     @if(ceiling) {
         let o = ceiling_of(in, sw);
@@ -267,7 +271,7 @@ fn fs_levels(in: VsOut) -> FsLevels {
     // same quantity the aux's own total is, because `claimed_coverage` reads the
     // two against each other and clamps one by the other. Written as the height and
     // then the mass, the way the deposit writes it, so the pair cannot drift.
-    let h = in.extra.w * drain * tooth * jitter * tau;
+    let h = add_of(in, sw) * drain * tooth * jitter * tau;
     let m = drain * h;
     var out: FsLevels;
     out.levels = level_sums(ceiling_of(in, sw), m);

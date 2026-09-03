@@ -341,7 +341,7 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, 
                     // be diffusing at a width its own stencil was not built for. The
                     // cadence's usual approximation about the radius it fires at, and
                     // the same one the inherited rates below make.
-                    ramp: 0.0,
+                    radius_ramp: 0.0,
                     // The crossing segment's shape is the window's shape — a firing is
                     // that segment relaxing its own extent, so it reaches exactly as
                     // far from the centreline.
