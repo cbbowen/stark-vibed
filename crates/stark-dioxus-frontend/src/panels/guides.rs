@@ -38,7 +38,7 @@ use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
 use crate::modes::Composing;
@@ -615,18 +615,18 @@ fn GuideRow(
                 class: "guide-duplicate",
                 title: "Duplicate this guide",
                 onclick: move |_| duplicate_guide(state, id),
-                {icon(icons::DUPLICATE)}
+                {icon(stark_chrome::icons::DUPLICATE)}
             }
             // Remove then the eye, the order the Layers panel's rows put them in —
             // the two rosters answer the same question about different stacks, so a
             // hand that has learned one has learned the other. The ✕ this wore was
             // the one mark in either panel drawn as a character rather than a glyph;
-            // it is `icons::REMOVE` in both places now.
+            // it is `stark_chrome::icons::REMOVE` in both places now.
             button {
                 class: "guide-remove",
                 title: "Remove this guide",
                 onclick: move |_| remove_guide(state, id),
-                {icon(icons::REMOVE)}
+                {icon(stark_chrome::icons::REMOVE)}
             }
             // The eye, and the one control on this row that is **not** a document
             // edit (§20.5): whether *you* are looking at a guide is not a fact about
@@ -637,7 +637,7 @@ fn GuideRow(
                 class: if visible { "guide-eye" } else { "guide-eye hidden" },
                 title: if visible { "Hide this guide" } else { "Show this guide" },
                 onclick: move |_| dispatch(state, ViewCommand::SetGuideVisible(id, !visible)),
-                {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
+                {icon(if visible { stark_chrome::icons::VISIBLE } else { stark_chrome::icons::HIDDEN })}
             }
         }
     }
@@ -707,7 +707,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // this one standing would make the guide bar the odd bar out for a word that
             // is legible one panel away.
             span { class: "bar-label",
-                {icon(icons::PERSPECTIVE_GRID)}
+                {icon(stark_chrome::icons::PERSPECTIVE_GRID)}
                 {name}
             }
 
@@ -723,7 +723,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // taken away, so anything that can be reached for has to carry one, and a
             // label with nothing but a word is a control that would vanish.
             span { class: "bar-sub",
-                {icon(icons::LOCK)}
+                {icon(stark_chrome::icons::LOCK)}
                 {label("Lock")}
             }
             div {
@@ -759,7 +759,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // switchable where three axes were not: two axes could never show
             // one plane without a second coming free with them.
             span { class: "bar-sub",
-                {icon(icons::VISIBLE)}
+                {icon(stark_chrome::icons::VISIBLE)}
                 {label("Show")}
             }
             div {
@@ -804,7 +804,7 @@ pub fn PerspectiveGuideBar() -> Element {
                         Lens::Fisheye => Lens::Rectilinear,
                     };
                 }),
-                {icon(icons::FISHEYE)}
+                {icon(stark_chrome::icons::FISHEYE)}
                 {label("Fisheye")}
             }
             span { class: "bar-sep" }
@@ -812,7 +812,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // guide's fans are its parametrization (§20.5), so the mark is a picture
             // of the thing the slider makes more or fewer of.
             span { class: "bar-sub",
-                {icon(icons::DENSITY)}
+                {icon(stark_chrome::icons::DENSITY)}
                 {label("Cells")}
             }
             input {
@@ -844,7 +844,7 @@ pub fn PerspectiveGuideBar() -> Element {
             // The ghost the Layers panel and the brush editor wear: how much of what
             // is under this shows through, asked of a guide over the paint.
             span { class: "bar-sub",
-                {icon(icons::OPACITY)}
+                {icon(stark_chrome::icons::OPACITY)}
                 {label("Opacity")}
             }
             input {
@@ -871,7 +871,7 @@ pub fn PerspectiveGuideBar() -> Element {
                     &state.bindings.read(),
                 ),
                 onclick: move |_| end_guide_edit(state),
-                {icon(icons::DONE)}
+                {icon(stark_chrome::icons::DONE)}
                 {label("Done")}
             }
         }

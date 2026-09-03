@@ -9,7 +9,7 @@ use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::input::{accel, is_contact};
 use crate::state::AppState;
 use crate::widgets::Modal;
@@ -335,14 +335,14 @@ fn DragBindingRow(action: DragAction, capturing: Signal<Option<DragAction>>) -> 
                                 r#type: "button",
                                 title: "Leave this act with no drag at all",
                                 onclick: move |_| unbind(state, action),
-                                {icon(icons::CLOSE)}
+                                {icon(stark_chrome::icons::CLOSE)}
                             }
                         } else {
                             span {
                                 class: "menu-shortcut bind-chip bind-add",
                                 title: "Bind a drag: click, then hold the keys you want and press again",
                                 onpointerdown: press,
-                                {icon(icons::ADD)}
+                                {icon(stark_chrome::icons::ADD)}
                             }
                         }
                     }
@@ -419,7 +419,7 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
+                    {icon(stark_chrome::icons::DONE)}
                     "Not now"
                 }
             }

@@ -87,7 +87,8 @@ crates/
                    a drag makes of it, what switching families costs — what a shape
                    gesture is about to do to the selection or to the paint, the canvas
                    rectangles a frontend asks the document for, the layer tree's
-                   arithmetic, the Oklab picker's gamut geometry, the list-drag gesture, both
+                   arithmetic, the Oklab picker's gamut geometry, the icon catalog — which
+                   glyph each control wears, and why — the list-drag gesture, both
                    asset libraries — one type generic in what an id is a *reading* of,
                    the import policy a decoder does not answer, the shipped catalog and
                    the build script that hashes it — the record format every client keeps

@@ -716,7 +716,7 @@ pub fn SubstrateGallery() -> Element {
                             e.stop_propagation();
                             remove(state, id);
                         },
-                        {crate::icons::icon(crate::icons::REMOVE)}
+                        {crate::icons::icon(stark_chrome::icons::REMOVE)}
                     }
                 }
             }
@@ -736,7 +736,7 @@ pub fn SubstrateGallery() -> Element {
                         import_file(state, name, bytes);
                     });
                 },
-                div { class: "asset-thumb plus", {crate::icons::icon(crate::icons::ADD)} }
+                div { class: "asset-thumb plus", {crate::icons::icon(stark_chrome::icons::ADD)} }
                 div { class: "asset-name", "Import\u{2026}" }
             }
         }

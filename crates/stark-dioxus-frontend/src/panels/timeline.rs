@@ -24,7 +24,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::layout::chrome_dimmed;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch, use_obs_opt};
@@ -220,7 +220,7 @@ pub fn TimelineBar() -> Element {
             class: "chip timeline-close",
             title: "Leave Timeline mode",
             onclick: move |_| set_open(state, false),
-            {icon(icons::CLOSE)}
+            {icon(stark_chrome::icons::CLOSE)}
         }
     };
 
@@ -234,7 +234,7 @@ pub fn TimelineBar() -> Element {
                 class: "timeline-bar chrome",
                 class: if chrome_dimmed(state) { "dimmed" },
                 span { class: "bar-label",
-                    {icon(icons::TIMELINE)}
+                    {icon(stark_chrome::icons::TIMELINE)}
                     {label("Timeline")}
                 }
 
@@ -275,10 +275,14 @@ pub fn TimelineBar() -> Element {
         "Play the history from here"
     };
     // The transport shows the act clicking would perform, not the state it is in —
-    // the opposite of the layer eye (`icons::VISIBLE`), and right for the same reason
+    // the opposite of the layer eye (`stark_chrome::icons::VISIBLE`), and right for the same reason
     // that one is: what a running playhead *is* is already said by the bar moving,
     // so the button is free to say what pressing it would do.
-    let play_glyph = if playing { icons::PAUSE } else { icons::PLAY };
+    let play_glyph = if playing {
+        stark_chrome::icons::PAUSE
+    } else {
+        stark_chrome::icons::PLAY
+    };
     let count_class = if behind {
         "timeline-count behind"
     } else {

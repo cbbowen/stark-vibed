@@ -4,10 +4,11 @@
 
 use crate::commands;
 use dioxus::prelude::*;
+use stark_chrome::icons::Icon;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
 
-use crate::icons::{self, icon, icon_tinted, label};
+use crate::icons::{icon, icon_tinted, label};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
@@ -108,25 +109,25 @@ pub fn SelectPanel() -> Element {
     /// in that order — which is where the row's *membership* and its words live now,
     /// since both frontends draw it. What stays here is what is this one's: an inline
     /// SVG, and a sentence with room to be a sentence.
-    const MARKS: [(&str, &str); 5] = [
+    const MARKS: [(Icon, &str); 5] = [
         (
-            icons::SELECTION_NEW,
+            stark_chrome::icons::SELECTION_NEW,
             "Select this region, replacing the current selection",
         ),
         (
-            icons::SELECTION_ADD,
+            stark_chrome::icons::SELECTION_ADD,
             "Add this region to the selection (or hold shift). With nothing \n             selected, this selects just the region",
         ),
         (
-            icons::SELECTION_SUB,
+            stark_chrome::icons::SELECTION_SUB,
             "Cut this region out of the selection (or hold alt)",
         ),
         (
-            icons::SELECTION_ISECT,
+            stark_chrome::icons::SELECTION_ISECT,
             "Keep only the overlap with the selection (or hold shift+alt)",
         ),
         (
-            icons::PAINT_BUCKET,
+            stark_chrome::icons::PAINT_BUCKET,
             "Fill this region with the brush's paint instead of selecting it. \
              Stays armed, so you can keep blocking in",
         ),
@@ -164,7 +165,7 @@ pub fn SelectPanel() -> Element {
         // the four selecting actions the gesture's disarm takes it away along
         // with the tool.
         if armed {
-            Slider { label: "Feather", glyph: icons::FEATHER, min: 0.0, max: 64.0, value: feather,
+            Slider { label: "Feather", glyph: stark_chrome::icons::FEATHER, min: 0.0, max: 64.0, value: feather,
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
         div { class: "tool-row stacked segmented",
@@ -204,7 +205,7 @@ pub fn SelectPanel() -> Element {
         // times, and each sits where its time is: this one with the gesture's
         // settings, the mask's with the acts on the whole selection.
         if filling {
-            Slider { label: "Opacity", glyph: icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
+            Slider { label: "Opacity", glyph: stark_chrome::icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
                 oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
         }
     }
@@ -274,7 +275,7 @@ pub fn SelectionBar() -> Element {
                 // the bar is *this panel's* state made visible, so it says so with the
                 // panel's glyph rather than a second picture of a marquee.
                 span { class: "bar-label",
-                    {icon(icons::SELECTION)}
+                    {icon(stark_chrome::icons::SELECTION)}
                     {label("Selection")}
                 }
 
@@ -309,7 +310,7 @@ pub fn SelectionBar() -> Element {
                 // so a drag that logged every value it crossed would spend an
                 // undo step per pointer move on an adjustment the hand made once.
                 span { class: "bar-sub",
-                    {icon(icons::OPACITY)}
+                    {icon(stark_chrome::icons::OPACITY)}
                     {label("Opacity")}
                 }
                 input {
@@ -363,7 +364,7 @@ pub fn SelectionBar() -> Element {
                     onclick: move |_| commands::run(Command::FillSelection, state),
                     // At full strength: this fill's coverage is the mask's own
                     // (`FillOp::of_selection`), so there is no thinner wash to show.
-                    {icon_tinted(icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}
+                    {icon_tinted(stark_chrome::icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}
                     {label(Command::FillSelection.word())}
                 }
                 // The same act as Fill with the parcel varying along a dragged

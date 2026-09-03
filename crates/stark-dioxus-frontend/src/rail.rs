@@ -24,7 +24,7 @@ use dioxus::prelude::*;
 
 use crate::commands;
 use crate::credits::CreditsModal;
-use crate::icons::{self, icon, icon_large};
+use crate::icons::{icon, icon_large};
 use crate::layout::chrome_dimmed;
 use crate::platform;
 use crate::settings::SettingsModal;
@@ -83,7 +83,7 @@ pub fn CommandRail() -> Element {
                 r#type: "button",
                 title: Command::Settings.name(),
                 onclick: move |_| commands::run(Command::Settings, state),
-                {icon_large(commands::icon(Command::Settings))}
+                {icon_large(Command::Settings.icon())}
             }
         }
         if show_new_doc() {
@@ -167,7 +167,7 @@ fn VisibilityMenu() -> Element {
                         platform::focus(t);
                     }
                 },
-                {icon_large(icons::PANELS)}
+                {icon_large(stark_chrome::icons::PANELS)}
             }
             if open {
                 div { class: "rail-menu",
@@ -238,7 +238,7 @@ fn CmdItem(command: Command) -> Element {
                 class: "menu-item",
                 class: if active == Some(true) { "cmd-active" },
                 class: if active == Some(false) { "cmd-inactive" },
-                {icon(commands::icon(command))}
+                {icon(command.icon())}
                 {command.word()}
             }
             if let Some(chord) = command.shortcut(&state.bindings.read()) {
@@ -316,7 +316,7 @@ fn CommandSearch() -> Element {
                     }
                     open.set(show);
                 },
-                {icon_large(icons::SEARCH)}
+                {icon_large(stark_chrome::icons::SEARCH)}
             }
             if open() {
                 div { class: "command-palette",
@@ -455,7 +455,7 @@ fn PaletteRow(
                 class: "menu-item",
                 class: if active == Some(true) { "cmd-active" },
                 class: if active == Some(false) { "cmd-inactive" },
-                {icon(commands::icon(command))}
+                {icon(command.icon())}
                 {command.name()}
             }
             BindChip { command, capturing, field }
@@ -529,7 +529,7 @@ fn BindChip(
                 class: "menu-shortcut bind-chip bind-add",
                 title: "Add a shortcut: click, then press it",
                 onpointerdown: grab,
-                {icon(icons::ADD)}
+                {icon(stark_chrome::icons::ADD)}
             }
         }
     }

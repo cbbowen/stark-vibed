@@ -35,7 +35,7 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
 use crate::modes::Composing;
@@ -164,7 +164,7 @@ pub fn TransformBar() -> Element {
             // in for that one for the gesture's duration, so it carries the glyph of
             // the button that raised it.
             span { class: "bar-label",
-                {icon(icons::TRANSFORM)}
+                {icon(stark_chrome::icons::TRANSFORM)}
                 {label("Transform")}
             }
 
@@ -177,21 +177,21 @@ pub fn TransformBar() -> Element {
                 class: chip(family == Family::Free),
                 title: "Move, scale, rotate, shear — the ellipse widget",
                 onclick: move |_| switch_family(state, ui, Family::Free),
-                {icon(icons::TRANSFORM)}
+                {icon(stark_chrome::icons::TRANSFORM)}
                 {label("Free")}
             }
             button {
                 class: chip(family == Family::Perspective),
                 title: "Drag the corners into a perspective (§16.8)",
                 onclick: move |_| switch_family(state, ui, Family::Perspective),
-                {icon(icons::PERSPECTIVE)}
+                {icon(stark_chrome::icons::PERSPECTIVE)}
                 {label("Perspective")}
             }
             button {
                 class: chip(family == Family::Warp),
                 title: "Bend the paint through a mesh (§16.9)",
                 onclick: move |_| switch_family(state, ui, Family::Warp),
-                {icon(icons::WARP)}
+                {icon(stark_chrome::icons::WARP)}
                 {label("Warp")}
             }
             if family == Family::Free {
@@ -206,7 +206,7 @@ pub fn TransformBar() -> Element {
                             update(state, TransformUi::Affine { rect, ts: ts.flipped_h() });
                         }
                     },
-                    {icon(icons::FLIP_H)}
+                    {icon(stark_chrome::icons::FLIP_H)}
                     {label("Flip")}
                 }
                 button {
@@ -217,7 +217,7 @@ pub fn TransformBar() -> Element {
                             update(state, TransformUi::Affine { rect, ts: ts.flipped_v() });
                         }
                     },
-                    {icon(icons::FLIP_V)}
+                    {icon(stark_chrome::icons::FLIP_V)}
                     {label("Flip")}
                 }
             }
@@ -234,7 +234,7 @@ pub fn TransformBar() -> Element {
                     &state.bindings.read(),
                 ),
                 onclick: move |_| finish(state),
-                {icon(icons::DONE)}
+                {icon(stark_chrome::icons::DONE)}
                 {label("Done")}
             }
         }

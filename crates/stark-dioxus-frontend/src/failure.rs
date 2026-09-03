@@ -39,7 +39,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::state::{AppState, use_obs};
 use crate::widgets::Modal;
 
@@ -103,7 +103,7 @@ pub fn GpuFailureModal() -> Element {
                         crate::files::save_document(state);
                         saved.set(true);
                     },
-                    {icon(icons::SAVE)}
+                    {icon(stark_chrome::icons::SAVE)}
                     if saved() { "Save again" } else { "Save the painting" }
                 }
             }

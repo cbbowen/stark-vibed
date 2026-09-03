@@ -110,7 +110,7 @@ use dioxus::prelude::*;
 
 use crate::anchor::{self, GAP};
 use crate::brush_editor::BrushPart;
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::layout::{PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::{AppState, root_signal};
@@ -1958,7 +1958,7 @@ pub fn TutorCard() -> Element {
             class: if lesson.anchor.inside_dialog() { "over-dialog" },
             style: "{place}",
             div { class: "tutor-head",
-                span { class: "tutor-mark", {icon(icons::TOUR)} }
+                span { class: "tutor-mark", {icon(stark_chrome::icons::TOUR)} }
                 span { class: "tutor-title", "{lesson.title}" }
             }
             div { class: "tutor-body", "{lesson.body}" }
@@ -1978,7 +1978,7 @@ pub fn TutorCard() -> Element {
                 button {
                     class: if more { "chip tutor-done tutor-next" } else { "chip tutor-done" },
                     onclick: move |_| dismiss(state, i),
-                    {icon(if more { icons::NEXT } else { icons::DONE })}
+                    {icon(if more { stark_chrome::icons::NEXT } else { stark_chrome::icons::DONE })}
                     if more { "Next" } else { "Got it" }
                 }
             }

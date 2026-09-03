@@ -14,7 +14,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::layout::chrome_dimmed;
 use crate::panels::select::current_tool;
 use crate::state::AppState;
@@ -66,7 +66,7 @@ pub fn PickBar() -> Element {
             // of the eyedropper appearing beside the cursor is the shortest version of
             // that argument the bar can make.
             span { class: "bar-label",
-                {icon(icons::EYEDROPPER)}
+                {icon(stark_chrome::icons::EYEDROPPER)}
                 {label("Eyedropper")}
             }
 
@@ -103,7 +103,7 @@ pub fn PickBar() -> Element {
                         the whole document over the canvas color, so bare canvas \
                         and thin paint answer with what the eye sees",
                 onclick: move |_| group_only.set(!grouped),
-                {icon(icons::GROUP_ONLY)}
+                {icon(stark_chrome::icons::GROUP_ONLY)}
                 {label("Group")}
             }
 

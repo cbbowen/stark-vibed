@@ -46,7 +46,7 @@ use std::collections::{HashMap, HashSet};
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::{AppState, root_signal};
@@ -54,25 +54,14 @@ use stark_chrome::panels::PanelId;
 use stark_chrome::reorder::{Grab, Motion, Slide};
 
 /// The panel's mark, worn by its title bar and by the entry that reopens it in the
-/// visibility menu (`stark_chrome::commands::VisibilityToggle`).
+/// visibility menu (`stark_chrome::commands::VisibilityToggle`) — `PanelId::glyph`
+/// inlined, which is this frontend's whole share of it.
 ///
-/// A free function rather than a method, because `PanelId` is `stark_chrome`'s now
-/// and this is not: an icon here is inline SVG (`crate::icons`), which is a DOM
-/// idiom — a native chrome draws a glyph another way entirely.
-///
-/// A stack of panels is read down its left edge, and a column of seven words is read
-/// one word at a time; a column of seven marks is read at once. That is the whole
-/// argument — the glyph is not decoration on the title, it is what makes the stack
-/// scannable at the glance the title bar is actually given.
-pub fn panel_glyph(id: PanelId) -> &'static str {
-    match id {
-        PanelId::Color => icons::COLOR,
-        PanelId::Brush => icons::BRUSH,
-        PanelId::Select => icons::SELECTION,
-        PanelId::Layers => icons::LAYERS,
-        PanelId::Guides => icons::PERSPECTIVE_GRID,
-        PanelId::Lighting => icons::LIGHTING,
-    }
+/// A free function rather than a method for the orphan rule's sake, and a wrapper at
+/// all only because an icon here is inline SVG: *which* mark is the crate's now, and
+/// turning it into markup is what is left (§11.2 N8).
+pub fn panel_glyph(id: PanelId) -> stark_chrome::icons::Icon {
+    id.glyph()
 }
 
 /// The shortest a resizable panel may be dragged.
@@ -823,17 +812,17 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     // Which way this panel is folded, at the far end of the grip —
                     // inside it, so the mark is part of what you click rather than a
                     // second control beside it. One glyph rotated rather than a pair:
-                    // unlike the layer tree's fold (`icons::FOLD_OPEN`), which points at
+                    // unlike the layer tree's fold (`stark_chrome::icons::FOLD_OPEN`), which points at
                     // rows drawn *above* it in both states and so cannot turn, a panel's
                     // content is below its bar and the caret means the direction it will
                     // go.
-                    span { class: "panel-fold", {icon(icons::FOLD_OPEN)} }
+                    span { class: "panel-fold", {icon(stark_chrome::icons::FOLD_OPEN)} }
                 }
                 button {
                     class: "panel-close",
                     title: "Close panel",
                     onclick: move |_| close_panel(state, layout, id),
-                    {icon(icons::CLOSE)}
+                    {icon(stark_chrome::icons::CLOSE)}
                 }
             }
             // The panel's content as **one** thing, so folding it away is one rule

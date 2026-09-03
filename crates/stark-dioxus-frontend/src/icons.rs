@@ -1,491 +1,40 @@
-//! The icons the controls wear (`assets/icons`).
+//! The icons the controls wear, as this frontend draws them (§11, §25).
 //!
-//! Embedded with `include_str!` and dropped into the DOM **inline**, rather than
-//! fetched as an `asset!` and hung in an `<img>`. Every icon in that directory
-//! paints with `fill="currentColor"`, and inline is the only place that resolves
-//! the way we want: the glyph inherits the color of the control around it, so one
-//! file covers a resting chip, a lit chip's white-on-blue, and a disabled chip's
-//! fade — with nothing to keep in sync. Inside an `<img>`, `currentColor` resolves
-//! against the *image's* own root instead, which on our dark chrome means a black
-//! glyph on a near-black chip.
+//! **Which glyph a control wears is `stark_chrome::icons`'**, prose and all — it is a
+//! statement about what the control means, and two apps disagreeing about that would
+//! be two apps. What is here is the carrier.
+//!
+//! And the carrier is the reason the catalog had to be a *name* rather than a blob:
+//! an icon is dropped into the DOM **inline** here, rather than fetched as an
+//! `asset!` and hung in an `<img>`. Every icon paints with `fill="currentColor"`, and
+//! inline is the only place that resolves the way we want — the glyph inherits the
+//! color of the control around it, so one file covers a resting chip, a lit chip's
+//! white-on-blue, and a disabled chip's fade, with nothing to keep in sync. Inside an
+//! `<img>`, `currentColor` resolves against the *image's* own root instead, which on
+//! our dark chrome means a black glyph on a near-black chip.
 //!
 //! Inlining also spends no fetch, which is worth more here than elsewhere: this is
 //! the wasm build, and these are ~200-byte files.
 //!
-//! "Every icon in that directory" is a claim about files nobody reviews — a Phosphor
-//! download arrives with `fill="#000000"` baked in, and an icon that keeps it looks
-//! *right* in a file browser and paints a black glyph on near-black chrome. Nothing
-//! about the call site would say which happened, so `tests::every_icon_inherits_its_color`
-//! checks the directory rather than the table: an icon added and not yet wired up is
-//! caught before it is ever drawn, which is when a wrong fill is cheapest to fix.
+//! The native frontend reaches the same behaviour by a different route — resvg to an
+//! alpha mask, tinted per draw — which is why the catalog is shared and this is not.
 
 use dioxus::prelude::*;
+use stark_chrome::icons::Icon;
 
-/// `NAME => "file"` for each icon, embedded from `assets/icons/<file>.svg`.
-///
-/// The names are what the *control* means rather than what the glyph draws
-/// (`SELECTION_NEW`, not `RECTANGLE_DASHED`), because the call sites are controls —
-/// except the three shape tools, where the glyph *is* the meaning.
-macro_rules! icons {
-    ($($name:ident => $file:literal),* $(,)?) => {
-        $(pub const $name: &str = include_str!(concat!("../assets/icons/", $file, ".svg"));)*
-    };
-}
-
-icons! {
-    RECTANGLE => "rectangle-bold",
-    CIRCLE => "circle-bold",
-    LASSO => "lasso-bold",
-    SELECTION_NEW => "rectangle-dashed-bold",
-    // The three combining modes, drawn as the set operation itself: two overlapping
-    // squares with the kept part filled. They are one family where the marks they
-    // replaced were three unrelated pictures of a marquee — and the family matters
-    // more than the picture here, because the row's whole claim is that Add, Sub and
-    // Isect are the same question answered three ways (see `panels::select`). Squares
-    // rather than the bare `unite`/`subtract` circles so they sit at the weight of the
-    // rectangle beside them.
-    SELECTION_ADD => "unite-square-bold",
-    SELECTION_SUB => "subtract-square-bold",
-    SELECTION_ISECT => "intersect-square-bold",
-    SELECTION_NONE => "selection-slash-bold",
-    SELECTION_INVERT => "selection-inverse-bold",
-    // The one solid glyph in the set, and the only one that ever wears a color of its
-    // own ([`icon_tinted`]): an outline weight has barely any interior to tint, so the
-    // bucket is `fill` where its neighbours are `bold`. That break is not an
-    // inconsistency — it is the *reason* this chip looks different from the four beside
-    // it, and it does the job a separate swatch beside the word would otherwise take.
-    PAINT_BUCKET => "paint-bucket-fill",
-    // The Layers panel's header. A frame is a layer, so the two "add" buttons sit side
-    // by side and the glyphs alone have to carry the difference: a stack gains a
-    // member, versus a single bordered region coming into being — which is what a frame
-    // is (§15.7), and why it is a square rather than a stack.
-    ADD_LAYER => "stack-plus-bold",
-    ADD_FRAME => "plus-square-bold",
-    // The fourth "add" in that header, and the whole-plane matte's own mark
-    // (§15.5): a figure standing on a filled ground, which is what a
-    // background is to the painting above it. Worn by the add button and by the
-    // matte bar when the selected matte is one, so the row and the bar agree on
-    // what kind of thing is selected.
-    BACKGROUND => "selection-background-bold",
-    // The third "add" in that header (§21). A funnel, because a filter layer is a
-    // thing the stack beneath it is *seen through* — and because "filter" has been
-    // drawn as a funnel for long enough that nobody has to be told. The plus is
-    // [`ADD_LAYER`]'s own, dropped into the corner the funnel leaves free, so the
-    // three buttons read as one family: a mark for the kind, a plus for the act.
-    //
-    // Composed here rather than downloaded, like `fisheye-bold`: the set has the
-    // funnel and the plus but not the pair, and inventing a *different* picture for
-    // the button than for the bar would have cost the family the row is built on.
-    ADD_FILTER => "funnel-plus-bold",
-    // Take this one away, drawn in the row it would take: a layer in the Layers panel,
-    // a perspective in the Guides panel. One glyph for both, because it is one control
-    // — the two rosters differ in what they list, not in what removing means.
-    //
-    // A trash rather than the stack-minus that mirrored "+ Layer". That mirror was an
-    // argument about *header* buttons — one stack gaining a member, the other losing
-    // one — and it stopped being true when Remove moved onto the rows, where there is
-    // no "+" beside it to mirror and no stack in a guide to lose from. What the glyph
-    // has to say now is that this is the destructive control, which is the one thing a
-    // trash says everywhere.
-    REMOVE => "trash-bold",
-    // The frame bar's own mark. Crop marks rather than a frame outline, because the bar
-    // is not *about* the rectangle — it is about deciding what the piece is, which is
-    // the one job a frame does and the reason it clips nothing.
-    FRAME => "crop-bold",
-    // The filter bar's mark, and the filter row's (§21) — the same funnel
-    // [`ADD_FILTER`] is built from, on the argument the frame's crop marks are
-    // shared between its bar and its row: a layer kind and the bar that tunes it are
-    // one subject, so they are one mark.
-    FILTER => "funnel-bold",
-    // The color filter's two lightness knobs (§21.6). Both are drawn as the *quantity*
-    // rather than as a control for it, which is what lets the words go in minimal mode:
-    // a sun is the light an exposure counts stops of, and a disc lit on one side and
-    // dark on the other is the spread about mid-grey a contrast gain widens — the
-    // slider at 0 flattening that disc to one tone is the picture the glyph already
-    // shows. The filter's other three numbers get no mark and want none: the dial is a
-    // picture of all three at once, and a mark beside it would be a second, worse one.
-    EXPOSURE => "sun-bold",
-    CONTRAST => "circle-half-bold",
-    // The focal blur's three aperture shapes (§21.12), each drawn as the bokeh it
-    // makes — which is the one thing a lens shape has to say, and the reason these
-    // three are marks at all where the filter's other choices are words.
-    //
-    // Each is the shape at `Aperture::ALL`'s own default for it, so the mark is the
-    // picture of what the click produces: an unobstructed disc, a six-bladed iris,
-    // a 2× squeeze lying along angle 0. The doughnut and the other blade counts are
-    // knobs away and get no second glyph, for the reason the enum has no fourth
-    // variant.
-    //
-    // `APERTURE_DISC` shares [`CIRCLE`]'s file the way [`GRADIENT_RADIAL`] does — a
-    // different control wearing the same picture on purpose. The oval is composed
-    // here, like `fisheye-bold`: Phosphor has no ellipse at any weight. A stroked
-    // ellipse rather than two nested paths, because a ring cut from a squeezed
-    // ellipse is thinner along its flatter run and the disc beside it would look
-    // heavier than its own sibling.
-    APERTURE_DISC => "circle-bold",
-    APERTURE_BLADES => "hexagon-bold",
-    APERTURE_OVAL => "ellipse-bold",
-    // Grouping, drawn as the move itself rather than as a picture of a group. The pair
-    // has to read as one gesture and its undo, which is why it is one glyph mirrored
-    // rather than two pictures — the same argument the stack pair above is built on.
-    // An elbow rather than a folder because what these commands change is *membership*
-    // (§14.2), and membership is a thing the panel already draws: the indent. So the
-    // arrow turns the way the row's own indent is about to turn — in to the right, out
-    // to the left — and the glyph is a preview of the panel after the click.
-    CARRY => "arrow-elbow-down-right-bold",
-    RELEASE => "arrow-elbow-up-left-bold",
-    // The disclosure mark on a group, centred on the top edge of its row. Both states
-    // point *up*, because in this panel what a layer carries is drawn above it
-    // (§14.6) — so the caret is aimed at the members either way, and what changes is
-    // whether it can get to them. Open, it is a bare caret pointing at rows that are
-    // there; shut, it runs into a lid, and what is behind the lid is what has been
-    // folded away. One picture with one thing added, which is the same argument the
-    // Carry/Release pair above is built on — a rotation would have said "shut" by
-    // pointing away from the very rows it is about.
-    FOLD_OPEN => "caret-up-bold",
-    FOLD_SHUT => "caret-line-up-bold",
-    // Opacity sliders.
-    OPACITY => "ghost-bold",
-    // The blend mode drop-down.
-    BLEND => "waves-bold",
-    // Radiance's Bend (§18.0.4) — the first parameter a blend mode has had. A rising
-    // curve, because that is literally what the slider moves: `k` is the bend of the
-    // tone curve the mode conjugates addition by, and the two ends of the track are a
-    // corner and a straight line. Beside [`BLEND`]'s waves rather than derived from
-    // them, since the row is a setting *of* the mode rather than a second way to pick
-    // one.
-    BEND => "chart-line-bold",
-    // The clip toggle. What a clipped layer is bounded by is the paint under it, so the
-    // glyph is a picture in a frame — an image with a silhouette, which is the thing
-    // doing the bounding. It sits beside the blend picker because both answer *how does
-    // this layer meet what is below it*, and the two together are one row of that
-    // question rather than a drop-down and a sentence with a tick-box.
-    CLIP => "image-square-bold",
-    // The two flips on the transform bar. Here the glyph *is* the meaning — each one
-    // draws its own axis of mirroring, which is the whole difference between the two
-    // buttons, and is what the `\u{2194}` / `\u{2195}` arrows in their labels used to
-    // carry.
-    FLIP_H => "flip-horizontal-bold",
-    FLIP_V => "flip-vertical-bold",
-    // The H hotkey's act (`stark_chrome::commands::Command::MirrorView`): the same picture as
-    // [`FLIP_H`] — a mirroring about the vertical axis — and a second name
-    // because the control is a different one: the flip moves the selected
-    // *paint*, this turns the whole view and moves nothing. The same argument
-    // [`RESET`] and [`UNDO`] are two names for one arrow.
-    MIRROR_VIEW => "flip-horizontal-bold",
-    // Per-row visibility. Unlike every other icon here this one is a *state* rather
-    // than an act: the row shows the eye it currently is, not the one clicking would
-    // give you. That is the way the tick-box it replaces read, and the way the same
-    // control reads in every other painting application — a row of eyes is scannable
-    // in a way a row of "would-hide" glyphs is not.
-    VISIBLE => "eye-bold",
-    HIDDEN => "eye-slash-bold",
-    // Dismissal, everywhere: a panel's header, Timeline mode's bar. One constant
-    // rather than a glyph per site, because closing is one control wherever it is
-    // drawn — the same argument [`REMOVE`] is one mark across two rosters.
-    CLOSE => "x-bold",
-    // The command rail's entries. A rail is read as a column of destinations
-    // rather than of verbs, so these say *where* rather than what: the command
-    // registry, a grid of what is on screen, the preferences.
-    //
-    // `SEARCH` is a magnifier over a list — the palette it opens is the list of
-    // commands with a field for finding one, and the list rows are the ☰ this
-    // entry used to be. Deliberately *not* the bare magnifier, which is the
-    // navigator's ([`NAVIGATOR`]): a glyph that means two things means neither.
-    SEARCH => "list-magnifying-glass-bold",
-    PANELS => "dots-nine-bold",
-    SETTINGS => "gear-bold",
-    // The history, in both directions. Deliberately *not* the elbow arrows above —
-    // those already mean membership in the Layers panel, and a glyph that means two
-    // things means neither. A turning arrow is what undo is drawn as everywhere, and
-    // the pair differs only in which way it turns, which is the whole difference
-    // between the two commands.
-    UNDO => "arrow-counter-clockwise-bold",
-    REDO => "arrow-clockwise-bold",
-    // The brush editor's "restore the default test stroke". The same file as [`UNDO`],
-    // and that is the point rather than an oversight: putting the preview back is an
-    // undo narrowed to the one thing the dialog owns. Named for the control, as
-    // everything here is, so the call site says what it does and not where the glyph
-    // came from.
-    RESET => "arrow-counter-clockwise-bold",
-    // The file commands. Nothing in the drawing looks like these, so they are the
-    // conventional pictures — the ones a hand arrives already knowing — rather than
-    // anything derived from what Stark does with them.
-    OPEN_DOC => "folder-open-bold",
-    SAVE => "floppy-disk-bold",
-    EXPORT => "export-bold",
-    // Importing an image (§23), beside the file commands because that is what it is: a
-    // picture coming *in*, where [`EXPORT`] is one going out — and the pair is named as
-    // a pair, here and in the menu. A page with a picture on it rather than a bare
-    // frame: the frame is taken ([`CLIP`] is `image-square`, and a glyph that means two
-    // things means neither), and a page is the truer picture anyway, since what arrives
-    // here comes from a file.
-    IMPORT_IMAGE => "file-image-bold",
-    SHARE => "share-network-bold",
-    // The invite link's Copy. A clipboard is what the act *is* here, which is worth
-    // saying because the button's label changes to "Copied" and back: the glyph is
-    // the half that holds still. Named for the destination rather than for the verb,
-    // because the verb is shared: [`DUPLICATE`] below is also a copy, and the two are
-    // different acts — one puts a string somewhere else, the other puts a second
-    // layer in the document.
-    COPY_TO_CLIPBOARD => "clipboard-bold",
-    // Duplicate, in the row it would duplicate — a layer in the Layers panel, a
-    // perspective in the Guides panel, one glyph for both on the argument [`REMOVE`]
-    // is one mark across the two rosters. Two sheets, one behind the other: the
-    // picture is the panel *after* the click, which is the same thing the Carry and
-    // Release elbows are drawn to say.
-    DUPLICATE => "copy-bold",
-    // Merge down (§14.11), beside Duplicate and drawn as its opposite: [`ADD_LAYER`]'s
-    // stack with a member taken *out of it* rather than put in. That is exactly what
-    // the click does to the panel — two rows become one — and saying it with the
-    // header's own glyph is what keeps it from reading as a second Remove, which is
-    // [`REMOVE`]'s trash can and a different act entirely: nothing is lost here, the
-    // paint moves down.
-    //
-    // The control is absent rather than inert where a merge would change the picture,
-    // so this glyph never appears greyed out — see `LayerInfo::merge_down`.
-    MERGE_DOWN => "stack-minus-bold",
-    // Timeline mode and its transport (§18.2.4). A slideshow for the mode, because
-    // what the mode offers is the log played back rather than a clock or a strip of
-    // film; play and pause for the transport, which have no second reading.
-    TIMELINE => "slideshow-bold",
-    PLAY => "play-bold",
-    PAUSE => "pause-bold",
-    // Every "Done" in the application — the transform, guide and frame bars, and the
-    // dialogs that have nothing to cancel. A tick is what it means to be finished, so
-    // this is the one act in the set drawn as its own outcome.
-    //
-    // The one tick left, and the menus want none: "am I in it?" rides the entry's own
-    // mark there (`rail::CmdItem`), so a state and this verb cannot be confused for
-    // each other by sharing a glyph.
-    DONE => "check-bold",
-    // The Timing Stats dialog (§7.1), the command search's other row that does
-    // nothing to the drawing. A speedometer rather than a chart or a stopwatch: what
-    // the dialog reports is a *rate the app is achieving* — frames a second, pointer
-    // samples a second — and a dial with a needle already means exactly that. A chart
-    // would promise a history over time, which the histograms do not keep, and a
-    // stopwatch would promise something the reader started.
-    TIMING => "speedometer-bold",
-    // Last in the registry, and the one act in it that is not a thing to do
-    // to the drawing — so it gets the one glyph in the set that is not about one.
-    CREDITS => "heart-bold",
-    // "Next" on a guided-tour card that has another behind it (§24.5). The Layers
-    // panel's own fold caret, and the same file — turned a quarter by the stylesheet
-    // (`.tutor-next .icon`) rather than downloaded a second time, so the mark cannot
-    // come out at a different weight from the one three panels already wear. What it
-    // says is the same thing it says there: *there is more this way*.
-    NEXT => "caret-up-bold",
-    // The guided tour's card (§24). A lightbulb, which is the one mark in this set
-    // that is not about the drawing *or* about the app: it says "here is something
-    // you did not know", which is the only thing the card ever says. It is also the
-    // single glyph that appears where the user did not ask for anything, so it wants
-    // to be recognized before it is read.
-    //
-    // `TOUR` and not `TIP`, which the brush editor's tip section already holds — the
-    // two words collide in English and the marks must not, since one of them names a
-    // part of a brush.
-    TOUR => "lightbulb-bold",
-    // Making one, wherever there is no stack to add to and no region to bound: a new
-    // document, a brush shape imported into the gallery. A bare plus rather than one
-    // of the two loaded "add" marks above, because neither a document nor a stamp is
-    // a layer or a frame.
-    ADD => "plus-bold",
-    NEW_DOCUMENT => "file-bold",
-    MODULATE => "wave-sine-bold",
-    // The transform gesture (§16.6). Arrows out of a centre rather than a box of
-    // handles, deliberately: the widget is an ellipse and the module's whole claim is
-    // that there are no handles — a glyph of eight grips would promise a control that
-    // is not there. What the four arrows say instead is that the paint is about to be
-    // moved and reshaped, which is true of all three of the mode's gestures.
-    TRANSFORM => "arrows-out-cardinal-bold",
-    // The float (§16.12): the selected paint cut loose from its layer, hovering
-    // over where it came from — lifted, tethered, and one merge from settling back.
-    FLOAT => "balloon-bold",
-    PERSPECTIVE => "perspective-bold",
-    // The transform bar's Warp family (§16.9). A curve with its control
-    // points, which is what the gesture *is*: a smooth surface bent by the
-    // handles through it. Perspective takes [`PERSPECTIVE`] — the same subject
-    // the guides panel wears, and the sharing is the claim: both are one
-    // projective space looked at two ways.
-    WARP => "bezier-curve-bold",
-    // Alt over the brush (§18.0.2). The bar comes up on the modifier and names itself
-    // with the tool it arms — which is the whole discoverability argument that bar is
-    // built on, made in a picture as well as a word.
-    EYEDROPPER => "eyedropper-bold",
-    // The gradient library (§22.3): a square filling from ink to air, which is what
-    // a ramp is. Worn by an empty well's face and by the gradient-fill bar's label
-    // (§22.4), which is that library's ramp being put to work, so it is the same
-    // subject and the same mark.
-    GRADIENT => "gradient-bold",
-    // The gradient-fill bar's two axis kinds (§22.4): each glyph is the figure
-    // the drag draws — a segment the ramp runs along, a circle the ramp reaches.
-    // `GRADIENT_RADIAL` shares its file with [`CIRCLE`] the way [`BUILTIN`]
-    // shares [`LOCK`]'s: the *picture* is the same on purpose (both marks mean
-    // "a circle from this drag") while the control differs, so it gets its own
-    // name rather than borrowing the ellipse-select chip's.
-    GRADIENT_LINEAR => "line-segment-bold",
-    GRADIENT_RADIAL => "circle-bold",
-    // The gradient map's one in-place edit (§21.11): run the ramp the other way.
-    // A double-headed arrow rather than a cycle, because reversing a ramp is a
-    // flip along its own axis, not a rotation — and the cycle arrows are already
-    // the history's. Composed here, like `funnel-plus-bold`: the set has no
-    // left-right pair at this weight.
-    SWAP => "arrows-left-right-bold",
-    // The trace that *makes* a gradient (§22.2): the eyedropper with a sample in
-    // hand, because that is the claim the feature stakes — the trace is the
-    // eyedropper generalized from a point to a line, and the mark should say it is
-    // kin to Alt-pick rather than a pen or a lasso.
-    TRACE_GRADIENT => "eyedropper-sample-bold",
-    // A preset row that is the app's rather than the user's, standing where the
-    // user's rows carry their trash ([`REMOVE`]). The same file as [`LOCK`], and a
-    // second name because the *control* is a different one — the perspective bar's
-    // locks are chips that toggle an axis, this is a state a row is in. (The same
-    // argument [`FLIP_H`] and [`MIRROR_VIEW`] are two names for one mirroring.)
-    //
-    // A padlock rather than, say, a badge, because what it has to say is not "this
-    // one is special" but "this one is not yours to remove" — and the reason it is
-    // not is that there is nothing stored behind it: it is rebuilt from the app on
-    // every start, which is also what keeps it current (`crate::presets`).
-    BUILTIN => "lock-bold",
-    // The quick-brush rack's tenth chip (§18.1.8). The one slot in the row that
-    // wears a picture instead of its digit, because it is the one whose binding is
-    // not the digit: it is what the pen's other end reaches, and a `0` would say
-    // nothing about the thing already in the user's hand. What it names is the
-    // brush the slot ships with rather than a mode — there is no eraser tool here
-    // to draw (§6.2) — which is why it can be overwritten like any other slot and
-    // the mark still tells the truth about which one it is.
-    ERASER => "eraser-bold",
-    // The eyedropper's reach (§18.0.2), drawn as the stack growing: one plane,
-    // two, three — the row reads as one question, *how far does this sample
-    // see*, and the marks count the answer.
-    ONE_LAYER => "stack-single-bold",
-    AND_BELOW => "stack-simple-bold",
-    ALL_LAYERS => "stack-bold",
-    // The eyedropper's group fence: only what the selected layer shares a
-    // carrier with answers. Two circles, the shared part filled — "what we have
-    // in common" — at the circles' weight deliberately, since the selection
-    // row's set operations wear the squares ([`SELECTION_ISECT`]) and this is a
-    // different control asking a different question.
-    GROUP_ONLY => "intersect-bold",
-    // The brush editor, off the Brush panel. A wrench rather than a brush: the panel
-    // that hosts the button already wears the brush ([`BRUSH`]), and what this opens
-    // is the place where the brush is *adjusted*, not another brush.
-    EDIT_BRUSH => "wrench-bold",
-    // The brush editor's parameter groups. Each says what the group is *about* — the
-    // footprint the stroke sweeps, the paint the brush carries down, and the canvas
-    // paint it lifts and moves — which is the same job the group's sentence does, in
-    // the space beside the chevron. Its fourth group, color, takes [`COLOR`] below.
-    //
-    // `PAINT` is the *outline* twin of [`PAINT_BUCKET`], and that is the reason both
-    // files are here: the solid one is the Fill action, the one glyph in the set that
-    // ever carries a color, and letting a section header wear it would spend that
-    // distinction on a heading.
-    TIP => "shapes-bold",
-    PAINT => "paint-bucket-bold",
-    WET => "drop-simple-bold",
-    // Sliders. Each says what the number *does* rather than naming the parameter: a
-    // rule for how wide, moving air for how much the brush lets go, a feather for an
-    // edge that stops being an edge.
-    //
-    // An earlier note here said a slider's word and track already identify it and so
-    // only the two or three reached for mid-stroke needed marking. That was true of a
-    // chrome whose words are always on screen, and it stops being true the moment the
-    // words can be turned off: a control's mark is what survives its label, so a bare
-    // label is a control that would disappear. Marks lead now, and the word is the
-    // half that is optional.
-    SIZE => "ruler-bold",
-    FLOW => "wind-bold",
-    FEATHER => "feather-bold",
-    // The Lighting panel, whose every row is marked (§6.3, §6.4) — the three media
-    // sliders and, because they are the same column and fold on the same rule, the
-    // four hand-rolled rows under them. The panel's own [`LIGHTING`] sphere is the
-    // title's and cannot be spent on a row.
-    //
-    // Two of the sliders are one quantity — relief amplitude — asked of two different
-    // heights, so the marks differ in the *source* rather than in the act: peaks are
-    // paint standing off the canvas, a weave is the canvas coming up through it.
-    IMPASTO => "mountains-bold",
-    // The substrate's tooth, drawn as warp over weft, which is what a linen weave is
-    // at the magnification this slider decides. The transparency-checker reading that
-    // haunts this picture elsewhere needs a *field* of squares to land, and this is a
-    // 14px mark in a row beside the well that shows the actual cloth.
-    TEXTURE => "checkerboard-bold",
-    // Gloss, drawn as the quantity itself: a bead of paint with a highlight on it,
-    // which is the whole of what this slider adds (§6.3). The file is [`WET`]'s
-    // drop *plus that highlight* — the two differ by exactly the thing the number
-    // sets, so the mark at 0 is the bare drop and the mark at 1 is this one. Near
-    // kin rather than a collision, on `PAINT`/`PAINT_BUCKET`'s argument.
-    //
-    // Deliberately not a sparkle, whichever way that glyph draws a shine: the
-    // four-point cluster is the contemporary mark for a machine writing something
-    // for you, and a painting application is the last place to promise that by
-    // accident.
-    GLOSS => "drop-bold",
-    // The ground's colour (§15.5). A roller, because what this lays is one flat tone
-    // under everything — not a brush's mark and not [`PAINT_BUCKET`]'s fill, which
-    // puts the *brush's* colour inside a selection. The swatch beside it says which
-    // colour; the mark is there to say what is being coloured.
-    CANVAS => "paint-roller-bold",
-    // Which surface the canvas is (§6.4): a fanned book of material samples, which is
-    // both what the well opens and what a substrate gallery is. Cards rather than
-    // [`COLOR`]'s palette, since the choice here is a cloth and not a colour — the row
-    // above it is the one about colour.
-    SURFACE => "swatches-bold",
-    // How large that surface is laid. The one row in the panel whose mark is about a
-    // size rather than a material, and drawn as the act: a square told to be bigger.
-    SUBSTRATE_SCALE => "resize-bold",
-    // The light the canvas is under (§6.3). A sun over a horizon rather than
-    // [`EXPOSURE`]'s bare disc, and the horizon is the whole difference: exposure
-    // counts stops of light, this picks the *sky* — which is literally what the
-    // image-backed environments are, a hill, an overcast noon, a dusk.
-    LIGHT => "sun-horizon-bold",
-    // Two of the perspective bar's four group heads (§20.5). `LOCK` and "Show" label
-    // three identical X/Y/Z chips each, so the word was carrying the whole difference
-    // between two triplets that look the same; `DENSITY` draws a fan of lines from a
-    // point, which is exactly what its number counts — the fan *is* the guide's
-    // parametrization. The fourth, Opacity, takes [`OPACITY`].
-    //
-    // "Show" has no constant of its own: it takes the eye the layer and guide rows
-    // wear ([`VISIBLE`]), because it is the same question asked of a fan of guide
-    // lines instead of of a layer.
-    LOCK => "lock-bold",
-    DENSITY => "vector-three-bold",
-    // The perspective bar's lens toggle (§20.8): a gridded globe — straight
-    // lines bowed onto a sphere, which is what the stereographic fisheye does
-    // to the guide. Hand-drawn in the Phosphor bold grammar; not from the set.
-    FISHEYE => "fisheye-bold",
-    // The nouns the floating panels are about (§11), worn by the title bar and by the
-    // entry that opens that panel in the visibility menu — so a panel and the way back
-    // to it are one picture rather than two names that happen to match.
-    //
-    // Three of them are shared rather than duplicated, and the sharing is the claim:
-    // `SELECTION` and `PERSPECTIVE_GRID` also head the bars that serve those panels, and
-    // `COLOR` also heads the brush editor's color-dynamics group. A panel, its bar
-    // and the dialog that expands it are three views of one subject, so they are one
-    // mark — the same argument the frame bar's crop marks are the frame's.
-    NAVIGATOR => "magnifying-glass-bold",
-    COLOR => "palette-bold",
-    BRUSH => "paint-brush-bold",
-    SELECTION => "selection-bold",
-    LAYERS => "stack-bold",
-    PERSPECTIVE_GRID => "vector-three-bold",
-    LIGHTING => "sphere-bold",
-    // The quick-brush rack's entry in that same menu (§18.1.8) — the one thing the
-    // menu shows and hides that is not one of the panels above it.
-    //
-    // A marker rather than [`BRUSH`]'s paint brush, and the difference is the point:
-    // the two would sit four rows apart in one menu, and a rack of ten brushes is not
-    // the Brush panel by another name. A marker is the tool a hand grabs without
-    // looking, which is what the number keys are for.
-    QUICK_BRUSHES => "highlighter-bold",
+/// The SVG source for a mark. Empty for a name this build ships no file for, which
+/// `stark_chrome::icons::tests::every_icon_has_its_file` rules out — so what a missing
+/// one costs is a blank span rather than a panic in a render.
+fn svg(mark: Icon) -> &'static str {
+    mark.svg().unwrap_or_default()
 }
 
 /// One icon, sized and colored by whatever it sits in (`.icon` in `stark.css`).
 ///
 /// `dangerous_inner_html` is what the module doc is about: the markup is ours,
 /// compiled in from a file in this repo, so no untrusted string comes near it.
-pub fn icon(svg: &'static str) -> Element {
-    rsx! { span { class: "icon", dangerous_inner_html: svg } }
+pub fn icon(mark: Icon) -> Element {
+    rsx! { span { class: "icon", dangerous_inner_html: svg(mark) } }
 }
 
 /// A control's word, marked as the half that minimal mode may take away (§11).
@@ -528,8 +77,8 @@ pub fn label(text: &str) -> Element {
 /// the 18px characters the rail wore were already compensating for. One extra class
 /// rather than a second `icons!` table: it is the *setting*, not the glyph, that is
 /// different here.
-pub fn icon_large(svg: &'static str) -> Element {
-    rsx! { span { class: "icon icon-lg", dangerous_inner_html: svg } }
+pub fn icon_large(mark: Icon) -> Element {
+    rsx! { span { class: "icon icon-lg", dangerous_inner_html: svg(mark) } }
 }
 
 /// The same icon holding a paint color rather than the color of its control — for
@@ -547,9 +96,10 @@ pub fn icon_large(svg: &'static str) -> Element {
 /// The base takes the control's own color rather than a hard white, so at zero
 /// opacity the bucket is exactly its four neighbours, and it fades with a disabled
 /// chip like they do. One path, twice: the layers cannot drift apart.
-pub fn icon_tinted(svg: &'static str, color: [f32; 4]) -> Element {
+pub fn icon_tinted(mark: Icon, color: [f32; 4]) -> Element {
     let c = |i: usize| (color[i] * 255.0).round().clamp(0.0, 255.0) as u8;
     let paint = format!("color: rgba({}, {}, {}, {})", c(0), c(1), c(2), color[3]);
+    let svg = svg(mark);
     rsx! {
         span { class: "icon tinted",
             span { dangerous_inner_html: svg }

@@ -39,6 +39,27 @@ impl PanelId {
         PanelId::Lighting,
     ];
 
+    /// The mark the panel's title bar wears, and the one its menu entry does.
+    ///
+    /// A stack of panels is read down its left edge, and a column of seven words is
+    /// read one word at a time; a column of seven marks is read at once. That is the
+    /// whole argument — the glyph is not decoration on the title, it is what makes the
+    /// stack scannable at the glance a title bar is actually given.
+    ///
+    /// It lived in the web frontend until the icon catalog came down (§11.2 N8),
+    /// because an icon *was* inline SVG there and that is a DOM idiom. What a control
+    /// wears is not: `crate::icons` names the file, and each frontend draws it.
+    pub fn glyph(self) -> crate::icons::Icon {
+        match self {
+            PanelId::Color => crate::icons::COLOR,
+            PanelId::Brush => crate::icons::BRUSH,
+            PanelId::Select => crate::icons::SELECTION,
+            PanelId::Layers => crate::icons::LAYERS,
+            PanelId::Guides => crate::icons::PERSPECTIVE_GRID,
+            PanelId::Lighting => crate::icons::LIGHTING,
+        }
+    }
+
     /// The panel's title-bar label.
     pub fn title(self) -> &'static str {
         match self {

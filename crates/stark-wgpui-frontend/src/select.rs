@@ -13,6 +13,7 @@
 //! a design (§25.7) rather than a stage.
 
 use stark_chrome::commands::{Bindings, Command};
+use stark_chrome::icons::Icon;
 use stark_chrome::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
 use stark_engine::ObservableState;
 use stark_engine::command::Tool;
@@ -169,13 +170,8 @@ pub fn select_panel(
         .flex()
         .flex_col()
         .gap_1()
-        .child(
-            div()
-                .pt_2()
-                .text_sm()
-                .text_color(rgb(0x9aa0a6))
-                .child("Select"),
-        )
+        // No heading: the section's own title bar carries it (`crate::panel`), and
+        // this drew a second one under it for exactly one build.
         .child(
             // At most one of the three is lit, and none lit *is* the brush: arming is
             // momentary, so a fourth chip for painting would be one that can never be
@@ -184,9 +180,11 @@ pub fn select_panel(
                 .flex()
                 .gap_1()
                 .children(SHAPE_TOOLS.iter().enumerate().map(|(i, t)| {
-                    chip(
+                    let command = tool_command(*t);
+                    marked(
                         probe(regions, Region::Tool(i)),
-                        tool_command(*t).word(),
+                        command.icon(),
+                        command.word(),
                         *t == tool,
                     )
                 })),
@@ -198,8 +196,9 @@ pub fn select_panel(
                 .flex()
                 .gap_1()
                 .children(SHAPE_ACTIONS.iter().enumerate().map(|(i, a)| {
-                    chip(
+                    marked(
                         probe(regions, Region::Action(i)),
+                        action_mark(*a),
                         action_word(*a),
                         *a == action,
                     )
@@ -254,15 +253,39 @@ fn shortened(command: Command, bindings: &Bindings) -> String {
     }
 }
 
-/// One chip in a segmented run.
-fn chip(probe: impl IntoElement, word: &'static str, lit: bool) -> impl IntoElement {
+/// The mark for one of the five actions.
+///
+/// The web app's row draws these five and this one draws the same five, from the
+/// catalog both read (`stark_chrome::icons`) — which matters more here than usual:
+/// the row's whole claim is that Add, Sub and Isect are one question answered three
+/// ways, and that claim is carried by the glyphs being a family.
+fn action_mark(action: ShapeAction) -> Icon {
+    use stark_model::document::SelectionMode;
+    match action {
+        ShapeAction::Select(SelectionMode::Replace) => stark_chrome::icons::SELECTION_NEW,
+        ShapeAction::Select(SelectionMode::Union) => stark_chrome::icons::SELECTION_ADD,
+        ShapeAction::Select(SelectionMode::Subtract) => stark_chrome::icons::SELECTION_SUB,
+        ShapeAction::Select(SelectionMode::Intersect) => stark_chrome::icons::SELECTION_ISECT,
+        ShapeAction::Fill => stark_chrome::icons::PAINT_BUCKET,
+    }
+}
+
+/// One chip in a segmented run, wearing its mark over its word.
+///
+/// Stacked rather than side by side: five chips of glyph-plus-word do not fit the
+/// panel's column, and the word is the half that is unambiguous — so it is not the
+/// half to drop. The same arrangement the web panel's action row settled on.
+fn marked(probe: impl IntoElement, mark: Icon, word: &'static str, lit: bool) -> impl IntoElement {
     div()
         .relative()
         .flex_1()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_0p5()
         .py_1()
         .rounded_sm()
         .text_xs()
-        .text_center()
         .cursor_pointer()
         .when_else(
             lit,
@@ -270,6 +293,10 @@ fn chip(probe: impl IntoElement, word: &'static str, lit: bool) -> impl IntoElem
             |el| el.bg(rgb(0x2a2d31)).text_color(rgb(0xb0b4b8)),
         )
         .child(probe)
+        .child(crate::icons::icon(
+            mark,
+            if lit { 0xe8eaed } else { 0xb0b4b8 },
+        ))
         .child(word)
 }
 

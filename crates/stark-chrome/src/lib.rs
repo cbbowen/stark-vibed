@@ -67,6 +67,7 @@ pub mod color;
 pub mod commands;
 pub mod drags;
 pub mod files;
+pub mod icons;
 pub mod identity;
 pub mod input;
 pub mod keys;

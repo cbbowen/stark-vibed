@@ -2,6 +2,7 @@
 
 use crate::commands;
 use dioxus::prelude::*;
+use stark_chrome::icons::Icon;
 
 use crate::icons::{icon, label as label_span};
 use crate::state::{AppState, use_obs_opt};
@@ -56,7 +57,7 @@ pub fn CommandButton(
             disabled: !enabled,
             title: command.tooltip(&state.bindings.read()),
             onclick: move |_| commands::run(command, state),
-            {icon(commands::icon(command))}
+            {icon(command.icon())}
             {label_span(command.word())}
         }
     }
@@ -87,7 +88,7 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
 /// marked yet, **not** because a slider is expected to go without one. A control's mark
 /// is the half of it that survives its label, so anything reachable wants one; a `None`
 /// here is a row that would be blank if the words were hidden, and is a to-do rather
-/// than a decision (see [`crate::icons::SIZE`]).
+/// than a decision (see [`stark_chrome::icons::SIZE`]).
 ///
 /// Which is exactly why the word is wrapped as hideable ([`crate::icons::label`]) only
 /// when there *is* a mark to fall back on. An unmarked slider keeps its word in minimal
@@ -116,7 +117,7 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
 #[component]
 pub fn Slider(
     label: String,
-    #[props(default)] glyph: Option<&'static str>,
+    #[props(default)] glyph: Option<Icon>,
     min: f32,
     max: f32,
     value: f32,

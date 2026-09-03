@@ -27,7 +27,7 @@ use std::time::Duration;
 use dioxus::prelude::*;
 use stark_engine::timing::{self, Phase};
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::widgets::Modal;
 
 /// How often the open dialog re-reads the histograms.
@@ -135,13 +135,13 @@ pub fn TimingModal(on_close: EventHandler<()>) -> Element {
                         timing::reset();
                         stats.set(timing::snapshot());
                     },
-                    {icon(icons::RESET)}
+                    {icon(stark_chrome::icons::RESET)}
                     "Reset"
                 }
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
+                    {icon(stark_chrome::icons::DONE)}
                     "Done"
                 }
             }

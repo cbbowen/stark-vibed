@@ -18,13 +18,13 @@
 //! both — `carry_onto` and `release_to` — so a row's two buttons are a `Some` each
 //! rather than a rule written here.
 
+use stark_chrome::icons::Icon;
 use stark_chrome::layer_tree::{self, Row};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
 use wgpui::{
-    App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
-    prelude::*, px, rgb,
+    App, Bounds, IntoElement, Pixels, Point, RenderOnce, Window, canvas, div, prelude::*, px, rgb,
 };
 
 /// The panel's width in logical px — wider than the brush's, because a row carries a
@@ -128,10 +128,14 @@ fn blend_word(mode: BlendMode) -> &'static str {
         .map_or("Normal", |(_, w)| *w)
 }
 
-/// A small square control — an eye, a triangle, a clip mark.
+/// A small square control — an eye, a carry, a clip mark.
+///
+/// The mark is `stark_chrome::icons`' rather than a character: which glyph a control
+/// wears says what the control *means*, and the two frontends agreeing about that is
+/// the whole reason the catalog is shared (§11.2 N8).
 #[derive(IntoElement)]
 struct Chip {
-    glyph: SharedString,
+    glyph: Icon,
     on: bool,
     region: Region,
     regions: Regions,
@@ -149,12 +153,14 @@ impl RenderOnce for Chip {
             .rounded_sm()
             .text_xs()
             .child(probe(&self.regions, self.region))
-            .when_else(
-                self.on,
-                |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-                |el| el.text_color(rgb(0x767b80)),
-            )
-            .child(self.glyph)
+            // The colour is passed rather than inherited: a rasterized glyph is
+            // tinted by its *own* element, not by the row around it
+            // (`crate::icons`).
+            .when(self.on, |el| el.bg(rgb(0x35496b)))
+            .child(crate::icons::icon(
+                self.glyph,
+                if self.on { 0xe8eaed } else { 0x767b80 },
+            ))
     }
 }
 
@@ -188,13 +194,18 @@ pub fn layers_panel(
         // The acts on the whole stack, above the roster they act on.
         .child(
             div().flex().gap_1().children(
+                // The catalog's own marks (`stark_chrome::icons`), so the three
+                // acts here and the three in the web app's header are one control
+                // apiece rather than two that resemble each other. A stack gaining a
+                // member, a copy of one, and the destructive one — which is what a
+                // trash says everywhere.
                 [
-                    (Region::Add, "+"),
-                    (Region::Duplicate, "⧉"),
-                    (Region::Remove, "−"),
+                    (Region::Add, stark_chrome::icons::ADD_LAYER),
+                    (Region::Duplicate, stark_chrome::icons::DUPLICATE),
+                    (Region::Remove, stark_chrome::icons::REMOVE),
                 ]
                 .map(|(region, glyph)| Chip {
-                    glyph: glyph.into(),
+                    glyph,
                     on: false,
                     region,
                     regions: regions.clone(),
@@ -226,7 +237,11 @@ pub fn layers_panel(
                                 |el| el.text_color(rgb(0xb0b4b8)),
                             )
                             .child(Chip {
-                                glyph: if row.info.visible { "◉" } else { "○" }.into(),
+                                glyph: if row.info.visible {
+                                    stark_chrome::icons::VISIBLE
+                                } else {
+                                    stark_chrome::icons::HIDDEN
+                                },
                                 on: row.info.visible,
                                 region: Region::Visible(i),
                                 regions: regions.clone(),
@@ -238,7 +253,11 @@ pub fn layers_panel(
                             // unreadable — the indent would stop meaning depth.
                             .child(if row.info.is_group {
                                 Chip {
-                                    glyph: if row.collapsed { "▸" } else { "▾" }.into(),
+                                    glyph: if row.collapsed {
+                                        stark_chrome::icons::FOLD_SHUT
+                                    } else {
+                                        stark_chrome::icons::FOLD_OPEN
+                                    },
                                     on: false,
                                     region: Region::Fold(i),
                                     regions: regions.clone(),
@@ -259,13 +278,13 @@ pub fn layers_panel(
                                     .child(layer_tree::layer_label(&row.info)),
                             )
                             .when(row.info.clip, |el| {
-                                el.child(div().text_xs().text_color(rgb(0x9aa0a6)).child("⌐"))
+                                el.child(crate::icons::icon(stark_chrome::icons::CLIP, 0x9aa0a6))
                             })
                             // Carry and Release are a `Some` each rather than a rule
                             // written here — see the module note.
                             .when(row.carry_onto.is_some(), |el| {
                                 el.child(Chip {
-                                    glyph: "⤓".into(),
+                                    glyph: stark_chrome::icons::CARRY,
                                     on: false,
                                     region: Region::Carry(i),
                                     regions: regions.clone(),
@@ -273,14 +292,14 @@ pub fn layers_panel(
                             })
                             .when(row.release_to.is_some(), |el| {
                                 el.child(Chip {
-                                    glyph: "⤒".into(),
+                                    glyph: stark_chrome::icons::RELEASE,
                                     on: false,
                                     region: Region::Release(i),
                                     regions: regions.clone(),
                                 })
                             })
                             .child(Chip {
-                                glyph: "⧀".into(),
+                                glyph: stark_chrome::icons::CLIP,
                                 on: row.info.clip,
                                 region: Region::Clip(i),
                                 regions: regions.clone(),

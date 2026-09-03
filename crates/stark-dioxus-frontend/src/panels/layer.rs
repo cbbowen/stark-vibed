@@ -39,7 +39,7 @@ use std::collections::HashSet;
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::panels::filter::AddFilterButton;
 use crate::panels::reorder;
 use crate::platform::{capture_pointer, layer_boxes, select_all};
@@ -276,7 +276,7 @@ pub fn LayerPanel() -> Element {
                 // sentence saying what *this* opacity fades (§14.3), and half a
                 // sentence left standing in minimal mode would read as a bug.
                 div { class: "slider-label",
-                    {icon(icons::OPACITY)}
+                    {icon(stark_chrome::icons::OPACITY)}
                     // A filter's opacity is its **strength** (§21.4), and the word is
                     // worth changing: "50% opacity" on a color adjustment invites
                     // the reading that the filter is half transparent, when what it
@@ -315,7 +315,7 @@ pub fn LayerPanel() -> Element {
             }
             div { class: "slider-row marked",
                 div { class: "slider-label",
-                    {icon(icons::BLEND)}
+                    {icon(stark_chrome::icons::BLEND)}
                     {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
                 }
                 // Blend and clip are one row because they are one question — *how does
@@ -375,7 +375,7 @@ pub fn LayerPanel() -> Element {
                         // (§14.4.3).
                         disabled: clip_inert,
                         onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
-                        {icon(icons::CLIP)}
+                        {icon(stark_chrome::icons::CLIP)}
                     }
                 }
             }
@@ -388,7 +388,7 @@ pub fn LayerPanel() -> Element {
             if let BlendMode::Drago { k } = l.blend {
                 div { class: "slider-row marked",
                     div { class: "slider-label",
-                        {icon(icons::BEND)}
+                        {icon(stark_chrome::icons::BEND)}
                         {label("Bend")}
                     }
                     input {
@@ -697,7 +697,7 @@ pub fn LayerRow(
                             at: Place::Above(group),
                         });
                     },
-                    {icon(icons::RELEASE)}
+                    {icon(stark_chrome::icons::RELEASE)}
                 }
             }
             div {
@@ -730,7 +730,7 @@ pub fn LayerRow(
                 // Only a group gets a triangle, and it sits centred on the row's top
                 // edge, aimed at what it carries — which this panel draws *above* the
                 // base (§14.6). Which way the caret points therefore says nothing; what
-                // the two states differ by is a lid (see `icons::FOLD_OPEN`). It is out
+                // the two states differ by is a lid (see `stark_chrome::icons::FOLD_OPEN`). It is out
                 // of the line rather than in it because the line is full: the slot at
                 // the head of the row is where Carry goes, and a mark about the rows
                 // above belongs on the edge it shares with them.
@@ -740,7 +740,7 @@ pub fn LayerRow(
                         title: if collapsed { "Show what this layer carries" }
                                else { "Fold away what this layer carries" },
                         onclick: move |_| ontoggle.call(id),
-                        {icon(if collapsed { icons::FOLD_SHUT } else { icons::FOLD_OPEN })}
+                        {icon(if collapsed { stark_chrome::icons::FOLD_SHUT } else { stark_chrome::icons::FOLD_OPEN })}
                     }
                 }
                 // Carry, at the head of the line: put this layer on the one below it in
@@ -768,7 +768,7 @@ pub fn LayerRow(
                                 at: Place::Top,
                             });
                         },
-                        {icon(icons::CARRY)}
+                        {icon(stark_chrome::icons::CARRY)}
                     }
                 } else {
                     span { class: "layer-carry" }
@@ -926,7 +926,7 @@ pub fn LayerRow(
                         class: "layer-merge",
                         title: "{merge_title}",
                         onclick: move |_| dispatch(state, DocCommand::MergeLayerDown(id)),
-                        {icon(icons::MERGE_DOWN)}
+                        {icon(stark_chrome::icons::MERGE_DOWN)}
                     }
                 } else {
                     span { class: "layer-merge" }
@@ -942,7 +942,7 @@ pub fn LayerRow(
                     title: if is_group { "Duplicate this layer, and everything it carries" }
                            else { "Duplicate this layer" },
                     onclick: move |_| dispatch(state, DocCommand::DuplicateLayer(id)),
-                    {icon(icons::DUPLICATE)}
+                    {icon(stark_chrome::icons::DUPLICATE)}
                 }
                 // Remove, next to last: the destructive control on the row it destroys.
                 // It rests hidden and arrives on hover with Carry, Release and an open
@@ -962,7 +962,7 @@ pub fn LayerRow(
                         title: if is_group { "Remove this layer, and everything it carries" }
                                else { "Remove this layer" },
                         onclick: move |_| dispatch(state, DocCommand::RemoveLayer(id)),
-                        {icon(icons::REMOVE)}
+                        {icon(stark_chrome::icons::REMOVE)}
                     }
                 } else {
                     span { class: "layer-remove" }
@@ -976,7 +976,7 @@ pub fn LayerRow(
                 // tick-boxes this replaces marched *rightwards* with the indent, so reading
                 // "what is hidden?" off the panel meant reading every row rather than
                 // glancing down an edge. It shows the eye the layer *is*, not the one
-                // clicking would give you (see `icons::VISIBLE`).
+                // clicking would give you (see `stark_chrome::icons::VISIBLE`).
                 //
                 // An open eye now rests hidden with Carry and Release, which is that same
                 // argument taken one step: a layer you did not hide is showing, and the
@@ -993,7 +993,7 @@ pub fn LayerRow(
                         (false, false) => "Show this layer",
                     },
                     onclick: move |_| dispatch(state, DocCommand::SetLayerVisible(id, !visible)),
-                    {icon(if visible { icons::VISIBLE } else { icons::HIDDEN })}
+                    {icon(if visible { stark_chrome::icons::VISIBLE } else { stark_chrome::icons::HIDDEN })}
                 }
                 // **What this layer is**, in one slot flush with the row's right edge and
                 // as tall as the row (§14.6). Every row fills it and they all line up, so
@@ -1021,9 +1021,9 @@ pub fn LayerRow(
                 if let Some(style) = thumb {
                     div { class: "layer-thumb", style: "{style}" }
                 } else if matte {
-                    div { class: "layer-thumb layer-thumb-kind", {icon(icons::FRAME)} }
+                    div { class: "layer-thumb layer-thumb-kind", {icon(stark_chrome::icons::FRAME)} }
                 } else if filter {
-                    div { class: "layer-thumb layer-thumb-kind", {icon(icons::FILTER)} }
+                    div { class: "layer-thumb layer-thumb-kind", {icon(stark_chrome::icons::FILTER)} }
                 }
             }
         }

@@ -34,6 +34,7 @@
 use serde::{Deserialize, Serialize};
 use stark_engine::ObservableState;
 
+use crate::icons::Icon;
 use crate::keys::{Keystroke, Mods, Role};
 use crate::panels::PanelId;
 use crate::slots;
@@ -881,6 +882,63 @@ impl Command {
                 PanelId::Guides => "Drawing guides panel",
                 PanelId::Lighting => "Lighting panel",
             },
+        }
+    }
+
+    /// The command's mark (`crate::icons`). Total, because a control rendering
+    /// a command has nothing else to wear; the three keyboard-only commands
+    /// wear the mark of the knob they step or the subject they turn, on the
+    /// sharing argument `icons` already makes — the bracket keys are the Size
+    /// slider's own knob (§18.1.9), so they wear its ruler.
+    pub fn icon(self) -> Icon {
+        match self {
+            Command::Undo => crate::icons::UNDO,
+            Command::Redo => crate::icons::REDO,
+            Command::Deselect => crate::icons::SELECTION_NONE,
+            Command::InvertSelection => crate::icons::SELECTION_INVERT,
+            // The one family where the glyph *is* the meaning rather than the
+            // control's (`icons`): a tool that draws a rectangle is marked
+            // with a rectangle.
+            Command::SelectRect => crate::icons::RECTANGLE,
+            Command::SelectEllipse => crate::icons::CIRCLE,
+            Command::SelectLasso => crate::icons::LASSO,
+            Command::MirrorView => crate::icons::MIRROR_VIEW,
+            Command::BrushSmaller | Command::BrushLarger => crate::icons::SIZE,
+            Command::NewDocument => crate::icons::NEW_DOCUMENT,
+            Command::OpenDocument => crate::icons::OPEN_DOC,
+            Command::SaveDocument => crate::icons::SAVE,
+            Command::ImportImage => crate::icons::IMPORT_IMAGE,
+            Command::ExportImage => crate::icons::EXPORT,
+            Command::Share => crate::icons::SHARE,
+            Command::ToggleTimeline => crate::icons::TIMELINE,
+            Command::TimingStats => crate::icons::TIMING,
+            Command::Credits => crate::icons::CREDITS,
+            Command::ToggleNavigator => crate::icons::NAVIGATOR,
+            Command::ToggleQuickBrushes => crate::icons::QUICK_BRUSHES,
+            Command::Settings => crate::icons::SETTINGS,
+            Command::EditBrush => crate::icons::EDIT_BRUSH,
+            Command::SavePreset => crate::icons::SAVE,
+            Command::Transform => crate::icons::TRANSFORM,
+            Command::FloatSelection => crate::icons::FLOAT,
+            Command::FillSelection => crate::icons::PAINT_BUCKET,
+            Command::GradientFill => crate::icons::GRADIENT,
+            Command::AddLayer => crate::icons::ADD_LAYER,
+            Command::AddFrame => crate::icons::ADD_FRAME,
+            Command::AddPerspective => crate::icons::ADD_LAYER,
+            // The dismissal mark every panel header wears, and the tick every
+            // Done chip does — the two acts these commands are the names of.
+            Command::CancelMode => crate::icons::CLOSE,
+            Command::FinishMode => crate::icons::DONE,
+            // The bar's own three marks, which are a picture of the question:
+            // one sheet, a sheet over what is under it, a stack.
+            Command::SetPickScope(scope) => match scope {
+                PickScope::ThisLayer => crate::icons::ONE_LAYER,
+                PickScope::AndBelow => crate::icons::AND_BELOW,
+                PickScope::AllLayers => crate::icons::ALL_LAYERS,
+            },
+            // The mark its own title bar wears, so the menu and the palette
+            // both stay a picture of the stack.
+            Command::TogglePanel(id) => id.glyph(),
         }
     }
 

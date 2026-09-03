@@ -19,12 +19,11 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
 
-use crate::icons;
 use crate::input::accel;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::{Bindings, Chord, Command, PickScope, StoredBinding};
+use stark_chrome::commands::{Bindings, Chord, Command, StoredBinding};
 use stark_chrome::keys::{Keystroke, Mods, Role};
 
 pub fn load(state: AppState) {
@@ -135,62 +134,6 @@ pub fn find(state: AppState, e: &platform::KeyEvent) -> Option<Command> {
         .filter(|c| claims(*c, state))
 }
 
-/// The command's mark (`crate::icons`). Total, because a control rendering
-/// a command has nothing else to wear; the three keyboard-only commands
-/// wear the mark of the knob they step or the subject they turn, on the
-/// sharing argument `icons` already makes — the bracket keys are the Size
-/// slider's own knob (§18.1.9), so they wear its ruler.
-pub fn icon(command: Command) -> &'static str {
-    match command {
-        Command::Undo => icons::UNDO,
-        Command::Redo => icons::REDO,
-        Command::Deselect => icons::SELECTION_NONE,
-        Command::InvertSelection => icons::SELECTION_INVERT,
-        // The one family where the glyph *is* the meaning rather than the
-        // control's (`icons`): a tool that draws a rectangle is marked
-        // with a rectangle.
-        Command::SelectRect => icons::RECTANGLE,
-        Command::SelectEllipse => icons::CIRCLE,
-        Command::SelectLasso => icons::LASSO,
-        Command::MirrorView => icons::MIRROR_VIEW,
-        Command::BrushSmaller | Command::BrushLarger => icons::SIZE,
-        Command::NewDocument => icons::NEW_DOCUMENT,
-        Command::OpenDocument => icons::OPEN_DOC,
-        Command::SaveDocument => icons::SAVE,
-        Command::ImportImage => icons::IMPORT_IMAGE,
-        Command::ExportImage => icons::EXPORT,
-        Command::Share => icons::SHARE,
-        Command::ToggleTimeline => icons::TIMELINE,
-        Command::TimingStats => icons::TIMING,
-        Command::Credits => icons::CREDITS,
-        Command::ToggleNavigator => icons::NAVIGATOR,
-        Command::ToggleQuickBrushes => icons::QUICK_BRUSHES,
-        Command::Settings => icons::SETTINGS,
-        Command::EditBrush => icons::EDIT_BRUSH,
-        Command::SavePreset => icons::SAVE,
-        Command::Transform => icons::TRANSFORM,
-        Command::FloatSelection => icons::FLOAT,
-        Command::FillSelection => icons::PAINT_BUCKET,
-        Command::GradientFill => icons::GRADIENT,
-        Command::AddLayer => icons::ADD_LAYER,
-        Command::AddFrame => icons::ADD_FRAME,
-        Command::AddPerspective => icons::ADD_LAYER,
-        // The dismissal mark every panel header wears, and the tick every
-        // Done chip does — the two acts these commands are the names of.
-        Command::CancelMode => icons::CLOSE,
-        Command::FinishMode => icons::DONE,
-        // The bar's own three marks, which are a picture of the question:
-        // one sheet, a sheet over what is under it, a stack.
-        Command::SetPickScope(scope) => match scope {
-            PickScope::ThisLayer => icons::ONE_LAYER,
-            PickScope::AndBelow => icons::AND_BELOW,
-            PickScope::AllLayers => icons::ALL_LAYERS,
-        },
-        // The mark its own title bar wears, so the menu and the palette
-        // both stay a picture of the stack.
-        Command::TogglePanel(id) => crate::layout::panel_glyph(id),
-    }
-}
 pub fn active(command: Command, state: AppState) -> Option<bool> {
     match command {
         Command::SelectRect => Some(armed(state, Tool::SelectRect)),

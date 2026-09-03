@@ -1142,6 +1142,25 @@ the exit criterion is an act, not a diff.
   worked around (patch 4), so the type's name, its pixels and anything a consumer
   builds by hand now agree.
 
+  **The icons came next**, and they are SVG on both sides rather than a build-time
+  conversion. wgpui vendors resvg: `svg()` asks an `AssetSource` for the bytes and
+  `render_alpha_mask` keeps **only the alpha channel**, so the `fill` in the file is
+  irrelevant, what survives is coverage, and the mask is tinted per draw out of the
+  R8 atlas. One file covers a resting chip, a lit chip and a dim one — the same
+  behaviour the browser gets from inlining `currentColor`, reached by another route.
+  A rasterized icon would have had to be baked at a size, and a panel laid out in
+  logical px on a display whose scale factor is a runtime fact has no such size.
+
+  So the catalog moved down whole, prose and all: **which glyph a control wears is a
+  statement about what the control means** — that Add, Sub and Isect are one question
+  answered three ways, that a trash is the destructive control everywhere — and two
+  apps disagreeing about that would be two apps. `Command::icon` came with it, and
+  `PanelId::glyph` too: N3 left both behind because an icon *was* inline SVG, which
+  is a DOM idiom, and that stopped being what an icon is the moment the catalog
+  became a *name*. The files are embedded once, by the same build script that hashes
+  the shipped images, so the two frontends cannot come to `include_str!` different
+  ones.
+
   **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
   (§15), the navigator and timeline mode. Each is a large panel with an overlay of
   its own, which is why they sequence after the stack that will hold them.

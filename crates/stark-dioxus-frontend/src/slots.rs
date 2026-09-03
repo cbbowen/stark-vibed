@@ -84,7 +84,7 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::layout::chrome_dimmed;
 use crate::presets;
 use crate::state::AppState;
@@ -737,7 +737,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                             },
                             span { class: "slot-row-digit",
                                 if slot == ERASER {
-                                    {icon(icons::ERASER)}
+                                    {icon(stark_chrome::icons::ERASER)}
                                 } else {
                                     "{slot}"
                                 }
@@ -750,7 +750,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                 // written yet has nothing there for it to take.
                                 //
                                 // The trash every other roster in the app wears
-                                // (`icons::REMOVE`) — presets, layers, guides,
+                                // (`stark_chrome::icons::REMOVE`) — presets, layers, guides,
                                 // shapes, gradients — because emptying a row of
                                 // this one is the same act, revealed on the same
                                 // hover and answering it in the same red ink.
@@ -800,7 +800,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                         pressed.set(None);
                                         clear(state, slot);
                                     },
-                                    {icon(icons::REMOVE)}
+                                    {icon(stark_chrome::icons::REMOVE)}
                                 }
                             }
                         }

@@ -32,7 +32,7 @@ use stark_net::{
     SessionTicket, actor_from_endpoint_id,
 };
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::state::AppState;
 use crate::widgets::Modal;
 
@@ -685,7 +685,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                             copied.set(false);
                                         });
                                     },
-                                    {icon(icons::COPY_TO_CLIPBOARD)}
+                                    {icon(stark_chrome::icons::COPY_TO_CLIPBOARD)}
                                     if copied() { "Copied" } else { "Copy" }
                                 }
                             }
@@ -740,7 +740,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
+                    {icon(stark_chrome::icons::DONE)}
                     "Done"
                 }
             }

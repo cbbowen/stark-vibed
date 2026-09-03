@@ -29,7 +29,7 @@ use dioxus::prelude::*;
 use stark_model::Srgb;
 use stark_model::document::GradientParcel;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::input::page_xy;
 use crate::layout::chrome_dimmed;
 use crate::panels::color::OklabPicker;
@@ -318,10 +318,10 @@ pub fn FrameBar() -> Element {
             // identifies is the bar, and through it the mode you are in.
             span { class: "bar-label",
                 if rect.is_some() {
-                    {icon(icons::FRAME)}
+                    {icon(stark_chrome::icons::FRAME)}
                     {label("Frame")}
                 } else {
-                    {icon(icons::BACKGROUND)}
+                    {icon(stark_chrome::icons::BACKGROUND)}
                     {label("Background")}
                 }
             }
@@ -448,7 +448,7 @@ pub fn FrameBar() -> Element {
                 onclick: move |_| {
                     crate::panels::gradient_bar::begin_matte(state, info.id, &paint_for_begin);
                 },
-                {icon(icons::GRADIENT)}
+                {icon(stark_chrome::icons::GRADIENT)}
                 {label("Gradient")}
             }
 
@@ -467,7 +467,7 @@ pub fn FrameBar() -> Element {
                     title: "Add a background: an opaque layer under the whole painting \u{2014} \
                             flat or gradient, the underpainting's color",
                     onclick: move |_| add_backing(state),
-                    {icon(icons::BACKGROUND)}
+                    {icon(stark_chrome::icons::BACKGROUND)}
                     {label("Add background")}
                 }
             }
@@ -485,7 +485,7 @@ pub fn FrameBar() -> Element {
                     &state.bindings.read(),
                 ),
                 onclick: move |_| done_composing(state),
-                {icon(icons::DONE)}
+                {icon(stark_chrome::icons::DONE)}
                 {label("Done")}
             }
         }

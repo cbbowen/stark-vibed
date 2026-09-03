@@ -52,11 +52,12 @@
 //! Dragging it *is* pulling the spectrum apart. Two tracks could not show that the
 //! two numbers are one arrow, and no slider can show what the fringe will look like.
 
+use stark_chrome::icons::Icon;
 use std::sync::LazyLock;
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::layout::chrome_dimmed;
 use crate::panels::color::ab_field_data_url;
 use crate::panels::gradients::GradientWell;
@@ -96,7 +97,7 @@ struct Knob<F: 'static> {
     name: &'static str,
     hint: &'static str,
     /// The mark this knob wears, and — see above — whether its word may be hidden.
-    glyph: Option<&'static str>,
+    glyph: Option<Icon>,
     /// The slider's span, in display units — derived from the core's own bounds
     /// (`ColorAdjust::EXPOSURE` and friends) so the track and the sanitizer cannot
     /// disagree about how far a knob goes.
@@ -142,7 +143,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Stops of light. +1 is twice as much, \u{2212}1 is half \u{2014} applied \
                to the light itself, so it brightens the way an exposure does rather \
                than the way a brightness slider does.",
-        glyph: Some(icons::EXPOSURE),
+        glyph: Some(stark_chrome::icons::EXPOSURE),
         range: ColorAdjust::EXPOSURE,
         step: None,
         scale: 1.0,
@@ -157,7 +158,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
                one tone. It moves lightness only \u{2014} the colors keep their \
                saturation, which is not true of a contrast curve in sRGB.",
-        glyph: Some(icons::CONTRAST),
+        glyph: Some(stark_chrome::icons::CONTRAST),
         range: ColorAdjust::CONTRAST,
         step: None,
         scale: 1.0,
@@ -340,14 +341,14 @@ fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
 }
 
 /// The mark a shape's chip wears — the bokeh itself, at the setting the chip hands
-/// out ([`icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
+/// out ([`stark_chrome::icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
 /// the whole content of the choice, so the picture says more than the word does, and
 /// the run is one of the few that reads with the words gone.
-fn aperture_glyph(aperture: &Aperture) -> &'static str {
+fn aperture_glyph(aperture: &Aperture) -> Icon {
     match aperture {
-        Aperture::Disc { .. } => icons::APERTURE_DISC,
-        Aperture::Blades { .. } => icons::APERTURE_BLADES,
-        Aperture::Oval { .. } => icons::APERTURE_OVAL,
+        Aperture::Disc { .. } => stark_chrome::icons::APERTURE_DISC,
+        Aperture::Blades { .. } => stark_chrome::icons::APERTURE_BLADES,
+        Aperture::Oval { .. } => stark_chrome::icons::APERTURE_OVAL,
     }
 }
 
@@ -561,7 +562,7 @@ pub fn AddFilterButton() -> Element {
                     let show = !open();
                     open.set(show);
                 },
-                {icon(icons::ADD_FILTER)}
+                {icon(stark_chrome::icons::ADD_FILTER)}
                 {label("Filter")}
             }
             if open() {
@@ -1321,7 +1322,7 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
                             DocCommand::SetFilter(id, Filter::GradientMap(Some(g.reversed()))),
                         );
                     },
-                    {icon(icons::SWAP)}
+                    {icon(stark_chrome::icons::SWAP)}
                     {label("Reverse")}
                 }
             }
@@ -1416,7 +1417,7 @@ pub fn FilterBar() -> Element {
             // no single slider here is "the filter", so what the mark identifies is
             // the bar, and through it the layer you are tuning.
             span { class: "bar-label",
-                {icon(icons::FILTER)}
+                {icon(stark_chrome::icons::FILTER)}
                 {label(bar_label)}
             }
 
@@ -1446,7 +1447,7 @@ pub fn FilterBar() -> Element {
                 onclick: move |_| {
                     dispatch(state, DocCommand::SetFilter(info.id, neutral.clone()));
                 },
-                {icon(icons::RESET)}
+                {icon(stark_chrome::icons::RESET)}
                 {label("Neutral")}
             }
             button {
@@ -1459,7 +1460,7 @@ pub fn FilterBar() -> Element {
                     &state.bindings.read(),
                 ),
                 onclick: move |_| done_grading(state),
-                {icon(icons::DONE)}
+                {icon(stark_chrome::icons::DONE)}
                 {label("Done")}
             }
         }

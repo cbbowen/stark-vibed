@@ -34,6 +34,7 @@ mod canvas;
 mod color;
 mod files;
 mod gallery;
+mod icons;
 mod keys;
 mod layers;
 mod panel;
@@ -90,30 +91,35 @@ fn main() {
         stark_chrome::storage::install(files);
     }
 
-    Application::new(&device_descriptor()).run(|cx: &mut App| {
-        // Read before `open_window` borrows `cx`, not inside its argument list.
-        let bounds = window::opening(cx);
-        cx.open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Stark".into()),
+    Application::new(&device_descriptor())
+        // The shipped icons, served to wgpui's SVG renderer (`crate::icons`). Set
+        // before the app runs because it is what builds the `SvgRenderer`, and a
+        // renderer built without a source answers every icon with nothing.
+        .with_assets(icons::Icons)
+        .run(|cx: &mut App| {
+            // Read before `open_window` borrows `cx`, not inside its argument list.
+            let bounds = window::opening(cx);
+            cx.open_window(
+                WindowOptions {
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Stark".into()),
+                        ..Default::default()
+                    }),
+                    window_bounds: Some(bounds),
                     ..Default::default()
-                }),
-                window_bounds: Some(bounds),
-                ..Default::default()
-            },
-            |window, cx| {
-                // Where the window ends up is worth keeping, and the moment it is
-                // *worth writing* is once: a record saved as the bounds change would
-                // be a file written per frame of a resize drag.
-                window.on_window_should_close(cx, |window, _cx| {
-                    window::remember(window.window_bounds());
-                    true
-                });
-                cx.new(|cx| Canvas::new(window, cx))
-            },
-        )
-        .expect("open the painting window");
-        cx.activate(true);
-    });
+                },
+                |window, cx| {
+                    // Where the window ends up is worth keeping, and the moment it is
+                    // *worth writing* is once: a record saved as the bounds change would
+                    // be a file written per frame of a resize drag.
+                    window.on_window_should_close(cx, |window, _cx| {
+                        window::remember(window.window_bounds());
+                        true
+                    });
+                    cx.new(|cx| Canvas::new(window, cx))
+                },
+            )
+            .expect("open the painting window");
+            cx.activate(true);
+        });
 }

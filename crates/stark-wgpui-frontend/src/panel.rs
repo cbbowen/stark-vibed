@@ -354,9 +354,15 @@ pub fn brush_panel(
                         .text_center()
                         .text_color(rgb(0xb0b4b8))
                         .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
                         .child(probe(regions, Region::File(i)))
-                        // The registry's own word, so a button here and a row in the
-                        // web app's menu cannot come to call one act two things.
+                        // The registry's glyph and the registry's word, which is what
+                        // makes this row the same control as the web app's menu entry
+                        // rather than a second one that resembles it (§25).
+                        .child(crate::icons::icon(command.icon(), 0xb0b4b8))
                         .child(command.word())
                 })),
         )

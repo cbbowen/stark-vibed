@@ -22,7 +22,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::gradients;
-use crate::icons::{self, icon, label};
+use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
 use crate::platform::{capture_pointer, select_all};
@@ -75,7 +75,7 @@ pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
                     class: "bar-gradient-strip empty",
                     title: "{title}",
                     onclick: flip,
-                    {icon(icons::GRADIENT)}
+                    {icon(stark_chrome::icons::GRADIENT)}
                 }
             }
             if open {
@@ -131,7 +131,7 @@ fn GradientPopout() -> Element {
                         }
                         gradients::set_armed(state, arm);
                     },
-                    {icon(icons::TRACE_GRADIENT)}
+                    {icon(stark_chrome::icons::TRACE_GRADIENT)}
                     {label(if busy { "Sampling\u{2026}" } else if armed { "Cancel" } else { "Trace" })}
                 }
             }
@@ -255,7 +255,7 @@ fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
                     e.stop_propagation();
                     gradients::remove(state, &remove_name);
                 },
-                {icon(icons::REMOVE)}
+                {icon(stark_chrome::icons::REMOVE)}
             }
         }
     }
@@ -279,7 +279,7 @@ pub fn TraceBar() -> Element {
                 class: "selection-bar trace-bar mode-bar chrome",
                 class: if chrome_dimmed(state) { "dimmed" },
                 span { class: "bar-label",
-                    {icon(icons::GRADIENT)}
+                    {icon(stark_chrome::icons::GRADIENT)}
                     {label("Trace")}
                 }
                 span { class: "bar-sep" }

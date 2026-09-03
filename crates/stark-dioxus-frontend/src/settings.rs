@@ -35,7 +35,7 @@
 use dioxus::prelude::*;
 
 use crate::collab::CollabPhase;
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
@@ -202,7 +202,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
+                    {icon(stark_chrome::icons::DONE)}
                     "Done"
                 }
             }

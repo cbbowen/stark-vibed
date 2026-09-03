@@ -20,7 +20,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::panels::frame::{piece_frame, use_selected_frame};
 use crate::platform::{download_bytes, pick_file};
 use crate::state::{AppState, use_obs_opt};
@@ -408,7 +408,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                     },
                     // The same mark the menu entry that opened this dialog wears,
                     // and it stays put while the word swaps to "Exporting…".
-                    {icon(icons::EXPORT)}
+                    {icon(stark_chrome::icons::EXPORT)}
                     if busy() { "Exporting\u{2026}" } else { "Export" }
                 }
             }

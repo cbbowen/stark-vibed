@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
@@ -45,20 +45,20 @@ pub fn BrushPanel() -> Element {
     rsx! {
         // The panel's two sliders are the transient half — the two knobs a hand
         // reaches for without looking away from the canvas, which is what earns
-        // them their marks (`icons::SIZE`).
+        // them their marks (`stark_chrome::icons::SIZE`).
         //
         // They are the *live* pair's, which while a number is held is that
         // number's (§18.1.8) — the panel needs no line of code that knows about
         // slots, and the rack draws itself over the canvas while the key is down
         // (`slots::SlotOverlay`) rather than keeping a row of chips here.
-        Slider { label: "Size", glyph: icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: tune.size,
+        Slider { label: "Size", glyph: stark_chrome::icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: tune.size,
             oninput: move |v| update_brush(state, move |_, t| t.size = v) }
         // "Flow" is the overall rate of whichever effect is in force — how much
         // a pass lays and how hard a wet pass works the canvas (§6.2), how
         // fast an eraser's bite builds (§6.12), how hard a liquify brush's
         // paint follows (§6.13) — one knob, over that effect's own range
         // (`BrushConfig::max_flow`).
-        Slider { label: "Flow", glyph: icons::FLOW, min: 0.0, max: brush.max_flow(), value: tune.flow,
+        Slider { label: "Flow", glyph: stark_chrome::icons::FLOW, min: 0.0, max: brush.max_flow(), value: tune.flow,
             oninput: move |v| update_brush(state, move |_, t| t.flow = v) }
         // The panel's one door: the dialog where the brush is adjusted — and kept.
         // Saving a preset is the editor's act (its "Overwrite preset" and "Save new
@@ -68,7 +68,7 @@ pub fn BrushPanel() -> Element {
         // dimension, which every panel below it in the column pays for.
         //
         // A wrench, not a brush: the panel this button sits in is already the brush,
-        // and what the dialog opens is the place it gets adjusted (`icons::EDIT_BRUSH`).
+        // and what the dialog opens is the place it gets adjusted (`stark_chrome::icons::EDIT_BRUSH`).
         CommandButton { command: Command::EditBrush, class: "be-open" }
 
         PresetSection {}
@@ -150,7 +150,7 @@ fn PresetSection() -> Element {
                                 if entry.builtin {
                                     // The app's own, and the row says so where the
                                     // user's rows offer to remove: a lock instead
-                                    // of a trash (`icons::BUILTIN`), in the same
+                                    // of a trash (`stark_chrome::icons::BUILTIN`), in the same
                                     // column, so the two kinds are told apart by
                                     // the one thing that differs between them.
                                     //
@@ -162,11 +162,11 @@ fn PresetSection() -> Element {
                                     span {
                                         class: "preset-lock",
                                         title: "Built in \u{2014} kept up to date with the app",
-                                        {icon(icons::BUILTIN)}
+                                        {icon(stark_chrome::icons::BUILTIN)}
                                     }
                                 } else {
                                     // The same trash the Layers and Guides rows wear
-                                    // (`icons::REMOVE`): a third roster, and removing a
+                                    // (`stark_chrome::icons::REMOVE`): a third roster, and removing a
                                     // row from it is the same control, so it is the same
                                     // mark. The × it replaces was a character standing in
                                     // for a glyph the set already had.
@@ -177,7 +177,7 @@ fn PresetSection() -> Element {
                                             e.stop_propagation();
                                             presets::remove(state, &remove_name);
                                         },
-                                        {icon(icons::REMOVE)}
+                                        {icon(stark_chrome::icons::REMOVE)}
                                     }
                                 }
                             }

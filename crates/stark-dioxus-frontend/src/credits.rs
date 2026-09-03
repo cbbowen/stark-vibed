@@ -13,7 +13,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::{self, icon};
+use crate::icons::icon;
 use crate::widgets::Modal;
 
 /// Phosphor's licence, read from the copy vendored beside the icons it covers.
@@ -119,7 +119,7 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(icons::DONE)}
+                    {icon(stark_chrome::icons::DONE)}
                     "Done"
                 }
             }
