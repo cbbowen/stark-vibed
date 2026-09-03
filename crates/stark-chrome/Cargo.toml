@@ -19,6 +19,13 @@ stark-engine = { path = "../stark-engine", default-features = false }
 # The brush's two halves are what a preset stores, so they are `Serialize` — the
 # one place this crate's types reach a file (§25.6).
 serde = { workspace = true }
+# The one format every stored record is kept in (§25.6). Self-describing, so a value
+# stored by an older build reconciles against today's types by name — the save file's
+# bargain (§8) at client scale.
+serde_json = "1"
+# Damage is reported and carried on from, never returned: a warning is the whole of
+# what a caller could do about a record it cannot read.
+tracing = { workspace = true }
 
 # The shared lint set (root Cargo.toml).
 [lints]

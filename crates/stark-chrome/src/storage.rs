@@ -87,25 +87,35 @@
 //!
 //! # What is deliberately not here
 //!
-//! **Both stores themselves**, in [`crate::platform`]. That module is the only one
-//! allowed to name a browser type — the compiler checks it off wasm (U6) — so the
-//! `localStorage` calls behind [`get`] and [`set`] live there, and the IndexedDB ones
-//! behind [`blob_save`] with them. This module is the *format*, the key and the
-//! failure policy; that one is the door.
+//! **Both stores themselves.** This module is the *format*, the key and the failure
+//! policy; where the bytes actually go is a [`Backend`], which each frontend installs
+//! once at startup ([`install`]). The web one is `localStorage` and IndexedDB behind
+//! its `platform` module — the only module there allowed to name a browser type; the
+//! native one is two directories.
 //!
-//! **The base64 codec**, in `platform` too, and no longer used here for anything: it
-//! is what reads the data URL the browser hands back when it re-encodes an imported
-//! brush image, so owning it here would point a dependency up the stack — and now
-//! that a blob is bytes all the way down, this module has nothing to spell in it.
+//! Six methods, because that is exactly how many doors the format needed: three over
+//! text and three over bytes. Nothing was designed for this — the trait is the six
+//! calls this file was already funnelling to, lifted verbatim.
+//!
+//! **The base64 codec**, in the web frontend's `platform` and not used here for
+//! anything: it is what reads the data URL the browser hands back when it re-encodes
+//! an imported brush image, so owning it here would point a dependency up the stack —
+//! and now that a blob is bytes all the way down, this module has nothing to spell
+//! in it.
 //!
 //! # Failure is silence, on purpose
 //!
 //! A browser with no storage — a private window, storage disabled — reads as a browser
 //! that has stored nothing, and a write that will not fit warns and carries on. Both
-//! are the same bargain [`crate::identity`] makes and states: what is lost is
-//! *durability*, and the session still works to the end. Nothing here returns an error
-//! for a caller to handle, because there is no handling of it that is better than
-//! carrying on.
+//! are the same bargain [`identity`](crate::identity) makes and states: what is lost
+//! is *durability*, and the session still works to the end. Nothing here returns an
+//! error for a caller to handle, because there is no handling of it that is better
+//! than carrying on.
+//!
+//! **A frontend that installs no backend is that same case**, which is why [`install`]
+//! is not required and no call here fails without one. It is how a test runs, and how
+//! a frontend that has not grown persistence yet behaves — every read answers "nothing
+//! stored", every write warns.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -163,8 +173,37 @@ pub enum Store {
     /// (`slots::seed_defaults`). The old key is dropped at start
     /// ([`drop_retired`]).
     Slots,
-    /// The gradient library (§22.3, `crate::gradients`).
+    /// The gradient library (§22.3, a frontend's `gradients`).
     Gradients,
+    /// Where the window was and how big — **the native frontend's alone** (§11.1).
+    ///
+    /// A browser has no such thing to keep: a page is where the user put the tab. It
+    /// is a row of this registry all the same, because the registry's job is that a
+    /// key is written down once, and a second enum in the native frontend would be a
+    /// second place for one to collide from.
+    Window,
+}
+
+impl Store {
+    /// Every row, and the only place the list is written down.
+    ///
+    /// Public because the check that every row is *claimed* cannot live here any
+    /// more: most record types are a frontend's, so that test is too — see
+    /// `stark-dioxus-frontend`'s `records`.
+    pub const ALL: [Store; 12] = [
+        Store::Identity,
+        Store::Prefs,
+        Store::Bindings,
+        Store::Drags,
+        Store::Visible,
+        Store::Tutor,
+        Store::Shapes,
+        Store::Substrates,
+        Store::Presets,
+        Store::Slots,
+        Store::Gradients,
+        Store::Window,
+    ];
 }
 
 impl Store {
@@ -179,10 +218,13 @@ impl Store {
     /// had drifted off its key, are exactly the two mistakes a second table three
     /// lines away made possible.
     ///
+    /// Public because a [`Backend`] may need it: the native one turns a key into a
+    /// path, and the name is what a warning about a full store would print.
+    ///
     /// The keys are namespaced because `localStorage` is shared per origin, and carry
     /// **no version suffix**: the format is self-describing and reconciles by name, so
     /// there is nothing for a suffix to gate — see the module comment.
-    const fn named(self) -> (&'static str, &'static str) {
+    pub const fn named(self) -> (&'static str, &'static str) {
         match self {
             Store::Identity => ("stark.identity", "this browser's identity"),
             Store::Prefs => ("stark.prefs", "the settings"),
@@ -195,6 +237,7 @@ impl Store {
             Store::Presets => ("stark.presets", "the brush presets"),
             Store::Slots => ("stark.quick", "the quick brushes"),
             Store::Gradients => ("stark.gradients", "the gradient library"),
+            Store::Window => ("stark.window", "the window's place"),
         }
     }
 }
@@ -291,16 +334,66 @@ fn write<T: Serialize + ?Sized>(store: Store, value: &T) {
     }
 }
 
+/// A future this crate can hold without knowing whose executor will poll it.
+///
+/// **Not `Send`**, deliberately: the web backend's futures are IndexedDB requests
+/// bridged from JavaScript and cannot be, and requiring it here would make the one
+/// backend that must exist impossible to write.
+pub type Stored<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+
+/// Where a record's bytes actually go — the one thing this module does not decide.
+///
+/// Six methods, three over text and three over bytes, which is exactly the surface
+/// this file was already calling into the web frontend for. A frontend implements it
+/// once and hands it to [`install`].
+///
+/// Every method's failure is the caller's silence, not an error: see the module's
+/// "Failure is silence" note. `set` and `blob_put` answer `false` where the store
+/// refused them, which is all this module does anything with.
+pub trait Backend: Send + Sync + 'static {
+    /// The text stored under `key`, or `None` where there is none — and where what is
+    /// there cannot be read, which is the same answer.
+    fn get(&self, key: &str) -> Option<String>;
+    /// Store `value` under `key`; `false` if the store would not take it.
+    fn set(&self, key: &str, value: &str) -> bool;
+    /// Forget `key`. A key that was never stored is not an error.
+    fn remove(&self, key: &str);
+    /// The bytes for each of `keys`, in that order — see [`blob_load_all`] for why
+    /// this is plural.
+    fn blob_get_many<'a>(&'a self, keys: &'a [String]) -> Stored<'a, Vec<Option<Vec<u8>>>>;
+    /// Store `bytes` under `key`; `false` if the store would not take them.
+    fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, bool>;
+    /// Drop the bytes under `key`.
+    fn blob_delete<'a>(&'a self, key: &'a str) -> Stored<'a, ()>;
+}
+
+/// The installed backend, or `None` where a frontend has not given one.
+static BACKEND: std::sync::OnceLock<Box<dyn Backend>> = std::sync::OnceLock::new();
+
+/// Give this process its store. Call once, before anything reads a record.
+///
+/// A second call is ignored rather than a panic: the loser is a store nothing has
+/// read through yet, and taking the app down over it would trade a bug that costs
+/// nothing for one that costs the session. It answers whether this call was the one
+/// that installed, so a caller that cares can say so.
+pub fn install(backend: impl Backend) -> bool {
+    BACKEND.set(Box::new(backend)).is_ok()
+}
+
+fn backend() -> Option<&'static dyn Backend> {
+    BACKEND.get().map(AsRef::as_ref)
+}
+
 /// The untyped half, private so [`save`]/[`load`] are the only way in or out — which
 /// is what makes "one format" a property of the module rather than a habit.
 fn get(store: Store) -> Option<String> {
-    crate::platform::local_get(store.named().0)
+    backend()?.get(store.named().0)
 }
 
 fn set(store: Store, value: &str) {
-    if !crate::platform::local_set(store.named().0, value) {
-        // Quota, most likely. It still works for this session; only its durability is
-        // lost.
+    if !backend().is_some_and(|b| b.set(store.named().0, value)) {
+        // Quota, most likely — or no backend, which is the same case from here. It
+        // still works for this session; only its durability is lost.
         tracing::warn!(
             "could not persist {} (storage full or unavailable)",
             store.named().1
@@ -340,7 +433,9 @@ pub fn drop_retired() {
         // — see `Store::Slots` for why the key moved rather than the rows.
         "stark.slots",
     ] {
-        crate::platform::local_remove(key);
+        if let Some(b) = backend() {
+            b.remove(key);
+        }
     }
 }
 
@@ -421,7 +516,13 @@ fn blob_key<T: Blob>(id: AssetId) -> String {
 /// drops such a row and writes the library back without it.
 pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Vec<Option<Vec<u8>>> {
     let keys: Vec<String> = ids.iter().map(|&id| blob_key::<T>(id)).collect();
-    crate::platform::blob_get_many(&keys).await
+    match backend() {
+        Some(b) => b.blob_get_many(&keys).await,
+        // No store is the same answer as an empty one: the caller drops the rows
+        // whose bytes did not come back, which is what it already does for a blob
+        // the store evicted.
+        None => vec![None; ids.len()],
+    }
 }
 
 /// Store `bytes` under `id`. A store that will not take them warns and carries on,
@@ -432,7 +533,11 @@ pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Vec<Option<Vec<u8>>> {
 /// blob nothing points at, which costs some bytes; the other order leaves a row whose
 /// shape has no picture and cannot be painted with.
 pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) {
-    if !crate::platform::blob_put(&blob_key::<T>(id), bytes).await {
+    let stored = match backend() {
+        Some(b) => b.blob_put(&blob_key::<T>(id), bytes).await,
+        None => false,
+    };
+    if !stored {
         tracing::warn!(
             "could not persist an entry of {} (storage full or unavailable)",
             T::STORE.named().1
@@ -443,7 +548,9 @@ pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) {
 /// Drop the bytes stored under `id` — **after** the row that named them, per
 /// [`blob_save`].
 pub async fn blob_remove<T: Blob>(id: AssetId) {
-    crate::platform::blob_delete(&blob_key::<T>(id)).await;
+    if let Some(b) = backend() {
+        b.blob_delete(&blob_key::<T>(id)).await;
+    }
 }
 
 #[cfg(test)]
@@ -452,18 +559,7 @@ mod tests {
     use serde::Deserialize;
     use std::collections::HashSet;
 
-    const ALL: [Store; 10] = [
-        Store::Identity,
-        Store::Prefs,
-        Store::Bindings,
-        Store::Drags,
-        Store::Visible,
-        Store::Tutor,
-        Store::Shapes,
-        Store::Presets,
-        Store::Slots,
-        Store::Gradients,
-    ];
+    const ALL: [Store; 12] = Store::ALL;
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
     struct Item {
@@ -485,53 +581,6 @@ mod tests {
         );
         assert_eq!(names.len(), ALL.len());
         assert!(ALL.iter().all(|s| s.named().0.starts_with("stark.")));
-    }
-
-    /// Every [`Store`] is claimed by exactly one type, and every type claims one.
-    ///
-    /// The pairing is compile-time in one direction — a type names its record, so it
-    /// cannot be read out of the wrong key — and this is the other direction, which
-    /// nothing else checks: **two types naming the same variant** would overwrite each
-    /// other's record, and a variant no type claims is a row of the registry that does
-    /// nothing. The old `Store` argument made the first mistake unwritable only by
-    /// convention and the second invisible entirely.
-    ///
-    /// A record added without a line here fails on the count, not on a reviewer
-    /// remembering: `ALL` grows and the claims do not.
-    #[test]
-    fn every_record_claims_one_store() {
-        let claimed = [
-            <crate::identity::Stored as Record>::STORE,
-            <crate::prefs::Prefs as Record>::STORE,
-            <crate::commands::StoredBinding as Entry>::STORE,
-            <crate::drags::DragRow as Entry>::STORE,
-            <crate::visibility::StoredVisible as Entry>::STORE,
-            <crate::tutor::Row as Entry>::STORE,
-            <crate::shapes::StoredShape as Entry>::STORE,
-            <crate::presets::StoredPreset as Entry>::STORE,
-            <crate::slots::StoredSlot as Entry>::STORE,
-            <crate::gradients::GradientEntry as Entry>::STORE,
-        ];
-        let distinct: HashSet<Store> = claimed.iter().copied().collect();
-        assert_eq!(
-            distinct.len(),
-            claimed.len(),
-            "two types naming one record overwrite each other"
-        );
-        assert_eq!(
-            distinct,
-            ALL.iter().copied().collect::<HashSet<_>>(),
-            "every row of the registry is some type's, and every type has a row"
-        );
-
-        // [`Blob`] is deliberately *not* one of the claims above: a record's bytes are
-        // the other half of a record that already has a row, never a record of their
-        // own. What is checked instead is that they cannot invent one.
-        let blobs = [<crate::shapes::ShapeEntry as Blob>::STORE];
-        assert!(
-            blobs.iter().all(|s| distinct.contains(s)),
-            "bytes belong to a record some type already claims"
-        );
     }
 
     /// A retired key that is still in use would delete a live record on every start —
@@ -621,7 +670,13 @@ mod tests {
     #[test]
     fn a_blob_is_keyed_under_its_own_record() {
         let id = AssetId::from([0xabu8; 32]);
-        let key = blob_key::<crate::shapes::ShapeEntry>(id);
+        // A stand-in for the shape library's entry: what is under test is the key's
+        // shape, which is this module's, and the real type is a frontend's.
+        struct Stamps;
+        impl Blob for Stamps {
+            const STORE: Store = Store::Shapes;
+        }
+        let key = blob_key::<Stamps>(id);
         assert_eq!(key, format!("stark.shapes/{}", id.to_hex()));
         assert!(
             ALL.iter()

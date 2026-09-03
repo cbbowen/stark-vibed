@@ -44,11 +44,20 @@
 //!   what the list is. Two panels are rosters; this is the gesture they share.
 //! - [`library`] — the gallery thumbnails a browser-held asset library shows
 //!   (§6.4, §6.6).
+//! - [`storage`] — the ten records a client keeps between visits, the one JSON format
+//!   they are kept in, and the [`Backend`](storage::Backend) a frontend installs to
+//!   say where they actually go (§25.6).
+//! - [`identity`] — the key this client's `ActorId` derives from, and the run counter
+//!   beside it (§17).
+//! - [`prefs`] — the standing preferences a settings dialog sets.
 
 pub mod brush_config;
+pub mod identity;
 pub mod layer_tree;
 pub mod library;
+pub mod prefs;
 pub mod reorder;
+pub mod storage;
 pub mod transform;
 
 #[cfg(test)]

@@ -58,9 +58,9 @@ use stark_model::{AssetId, SubstrateId};
 use crate::platform::{base64_encode, normalize_substrate_image};
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::storage::{self, Store};
 use crate::widgets::Modal;
 use stark_chrome::library::{self, Thumbs};
+use stark_chrome::storage::{self, Store};
 use stark_model::ColorSpaceId;
 
 /// One substrate selectable in the UI.

@@ -14,7 +14,7 @@
 //! to IndexedDB under the id that names it. They were one record once, the PNG
 //! base64'd inline — which put half a megabyte per imported shape into a five-megabyte
 //! text store that ten other records are also spending, and re-encoded the whole
-//! library on the painting thread every time one changed. `crate::storage` has the
+//! library on the painting thread every time one changed. `stark_chrome::storage` has the
 //! rest of that argument. What it means here is that reading the library is a fetch
 //! ([`load`] is `async` and awaited once at start), and that every write puts the
 //! bytes and the row down in the order that leaves the two agreeing.
@@ -42,14 +42,14 @@ use stark_model::document::BrushShape;
 
 use crate::platform::{base64_encode, normalize_shape_image};
 use crate::state::{AppState, update_brush};
-use crate::storage::{self, Store};
 use stark_chrome::library::{self, Thumbs};
+use stark_chrome::storage::{self, Store};
 
 /// One custom shape in the library, **with its bytes in hand**.
 ///
 /// Not the stored type any more, and the split is the point: the row is text and the
 /// PNG is not, so they are kept in two stores and this is what they add up to
-/// ([`StoredShape`], `crate::storage`). Constructing one means the bytes are here —
+/// ([`StoredShape`], `stark_chrome::storage`). Constructing one means the bytes are here —
 /// [`load`] drops a row whose blob is gone rather than admitting a byte-less entry —
 /// so `ensure` and `thumbnail` have nothing to check and there is no half-loaded
 /// shape for the gallery to draw a blank card for.
@@ -69,7 +69,7 @@ pub struct ShapeEntry {
 /// The id is the whole of the reference — it *names* the PNG (§19), which is what
 /// makes a row this small enough to keep in a text store that the settings, the chord
 /// table and the tour's ledger are also spending. The bytes it names are a
-/// [`storage::Blob`] under the same record's key; see `crate::storage` for what
+/// [`storage::Blob`] under the same record's key; see `stark_chrome::storage` for what
 /// putting them there bought and what it cost.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StoredShape {
@@ -167,7 +167,7 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
 /// Populate the library signal from storage. Called once at app start.
 ///
 /// Two reads, because the library is kept in two stores: the rows out of the text
-/// one, then their PNGs out of the blob one in a single batch (`crate::storage`).
+/// one, then their PNGs out of the blob one in a single batch (`stark_chrome::storage`).
 /// A row whose bytes are not there is **dropped**, and the library written back
 /// without it — IndexedDB is evictable under storage pressure, so that is a state to
 /// expect rather than one that only follows a crash, and an entry that cannot be
@@ -395,7 +395,7 @@ fn seed_session(state: AppState, id: AssetId, bytes: Vec<u8>) {
 // The library is kept in two stores and this is the seam between them: the rows here,
 // the bytes at each site that changes one (`storage::blob_save`, and the order it
 // states). Everything else — the format, the key, the skip-a-damaged-row rule and the
-// failure policy — is `crate::storage`'s, as it was when the bytes rode along.
+// failure policy — is `stark_chrome::storage`'s, as it was when the bytes rode along.
 //
 // Only the rows are written from here, and they are written whole: a library of a few
 // dozen names and ids is a couple of kilobytes, which is what the split was for. What

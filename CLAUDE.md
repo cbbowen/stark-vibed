@@ -84,7 +84,9 @@ crates/
   stark-chrome/    the **frontend's model** (§11.2): what a chrome is written in, below
                    any toolkit. The brush's durable/transient halves, the transform
                    algebra, the layer tree's arithmetic, the list-drag gesture, the
-                   asset libraries' thumbnails. Names no `dioxus::`, `wgpui::`,
+                   asset libraries' thumbnails, and the record format every client
+                   keeps its settings and libraries in — with a `storage::Backend`
+                   each frontend installs to say where the bytes actually go. Names no `dioxus::`, `wgpui::`,
                    `web_sys::` or `winit::` type at all, and a test reads the source
                    to say so. Everything in it was the web frontend's until there
                    were two frontends

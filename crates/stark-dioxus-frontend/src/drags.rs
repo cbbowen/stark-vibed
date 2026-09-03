@@ -84,8 +84,8 @@ use serde::{Deserialize, Serialize};
 use crate::icons::{self, icon};
 use crate::input::{accel, is_contact};
 use crate::state::AppState;
-use crate::storage::{Entry, Store};
 use crate::widgets::Modal;
+use stark_chrome::storage::{Entry, Store};
 
 /// The modifier half of a drag chord — and, held in
 /// [`Signals::held_mods`](crate::state::Signals::held_mods)(crate::state::Signals::held_mods), the modifiers
@@ -737,7 +737,7 @@ pub fn capture(mods: Mods, button: Option<DragButton>) -> DragCapture {
 /// from this browser's stored rows. Called once at app start, beside
 /// `commands::load`.
 pub fn load(state: AppState) {
-    let Some(rows) = crate::storage::load_list::<DragRow>() else {
+    let Some(rows) = stark_chrome::storage::load_list::<DragRow>() else {
         return;
     };
     let mut overrides = Vec::new();
@@ -800,7 +800,7 @@ fn save(state: AppState) {
             offered: *state.drag_offer.peek() == Offer::Offered,
         }))
         .collect();
-    crate::storage::save_list(&rows);
+    stark_chrome::storage::save_list(&rows);
 }
 
 /// The ⚙ dialog's drag section (§25.8): the presets as a run of chips, then a

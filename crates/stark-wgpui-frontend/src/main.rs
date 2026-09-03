@@ -19,20 +19,23 @@
 //!
 //! # What is here and what is not
 //!
-//! Three modules, in the order a frame moves through them: [`brush`] is the one tool,
-//! [`render`] is the surface the engine paints into, and [`canvas`] is the view that
-//! turns mouse events into a gesture. There is no chrome, no document state, no
-//! panels — none of that is what a second frontend has to prove first. The plan from
-//! here is §11.2.
+//! Five modules. Three are the frame, in the order it moves through them: [`brush`]
+//! is the one tool, [`render`] is the surface the engine paints into, and [`canvas`]
+//! is the view that turns mouse events into a gesture. Two are what this frontend
+//! *keeps*: [`store`] is where a record goes on this platform — the native half of
+//! `stark_chrome::storage` — and [`window`] is the one record that is nobody else's.
+//!
+//! There is still no chrome, no document state and no panels. The plan from here is
+//! §11.2.
 
 mod brush;
 mod canvas;
 mod render;
+mod store;
+mod window;
 
 use stark_engine::GpuContext;
-use wgpui::{
-    App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size,
-};
+use wgpui::{App, Application, TitlebarOptions, WindowOptions, prelude::*};
 
 use crate::canvas::Canvas;
 
@@ -70,18 +73,36 @@ fn device_descriptor() -> wgpu::DeviceDescriptor<'static> {
 }
 
 fn main() {
+    // Before anything reads a record, say where records go (§11.2). Two directories,
+    // and `None` where the platform will not name them — which the format already
+    // treats as "nothing stored" rather than as a failure, so there is nothing to
+    // handle here beyond declining to install.
+    if let Some(files) = store::Files::resolve() {
+        stark_chrome::storage::install(files);
+    }
+
     Application::new(&device_descriptor()).run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        // Read before `open_window` borrows `cx`, not inside its argument list.
+        let bounds = window::opening(cx);
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Stark".into()),
                     ..Default::default()
                 }),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(bounds),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Canvas::new(window, cx)),
+            |window, cx| {
+                // Where the window ends up is worth keeping, and the moment it is
+                // *worth writing* is once: a record saved as the bounds change would
+                // be a file written per frame of a resize drag.
+                window.on_window_should_close(cx, |window, _cx| {
+                    window::remember(window.window_bounds());
+                    true
+                });
+                cx.new(|cx| Canvas::new(window, cx))
+            },
         )
         .expect("open the painting window");
         cx.activate(true);

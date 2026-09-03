@@ -9247,9 +9247,11 @@ name = "stark-chrome"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "stark-assetid",
  "stark-engine",
  "stark-model",
+ "tracing",
 ]
 
 [[package]]
@@ -9377,6 +9379,9 @@ name = "stark-wgpui-frontend"
 version = "0.0.0"
 dependencies = [
  "quanta",
+ "serde",
+ "serde_json",
+ "stark-chrome",
  "stark-engine",
  "stark-model",
  "wgpu",

@@ -64,12 +64,12 @@ mod prefs;
 mod presets;
 mod preview;
 mod rail;
+mod records;
 mod render;
 mod settings;
 mod shapes;
 mod slots;
 mod state;
-mod storage;
 mod substrates;
 mod thumbs;
 mod timings;
@@ -173,10 +173,16 @@ fn app() -> Element {
     // fails before there is one.
     use_hook(|| files::guard_unload(state));
 
-    // Before anything reads the browser's store: drop the keys the old formats were
-    // kept under, so their bytes are not still spending this origin's quota
-    // (`storage::drop_retired`, which says when to delete this line).
-    use_hook(storage::drop_retired);
+    // Before anything reads the browser's store, say what the store *is*: the format
+    // is `stark_chrome`'s and shared with the native frontend, and where the bytes go
+    // is this frontend's alone (§11.2). Nothing here fails without it — every read
+    // would answer "nothing stored" — which is why it is an install rather than a
+    // constructor everything else threads.
+    use_hook(|| stark_chrome::storage::install(platform::LocalStore));
+    // Then drop the keys the old formats were kept under, so their bytes are not
+    // still spending this origin's quota (`storage::drop_retired`, which says when to
+    // delete this line).
+    use_hook(stark_chrome::storage::drop_retired);
 
     // The brush presets follow the browser rather than the document (seeded with
     // the built-ins on a browser that has never stored any). The shape library

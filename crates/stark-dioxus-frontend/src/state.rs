@@ -19,8 +19,8 @@ use dioxus::prelude::*;
 
 use crate::collab;
 use crate::commands::VisibilityToggle;
-use crate::prefs::Prefs;
 use crate::render::Renderer;
+use stark_chrome::prefs::Prefs;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
@@ -233,7 +233,7 @@ pub struct Signals {
     /// is in hand whatever this holds, because half a dozen other things ask that
     /// question for their own reasons (a thumbnail deferring its work, the eyedropper
     /// bar). What the setting changes is who looks faded, not what is happening.
-    pub chrome_hiding: Signal<crate::layout::ChromeHiding>,
+    pub chrome_hiding: Signal<stark_chrome::prefs::ChromeHiding>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,

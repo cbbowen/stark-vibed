@@ -68,8 +68,8 @@ use crate::input::accel;
 use crate::layout::PanelId;
 use crate::platform;
 use crate::state::{AppState, PickScope, dispatch, update_brush};
-use crate::storage::{Entry, Store};
 use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_chrome::storage::{Entry, Store};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
@@ -524,7 +524,7 @@ impl Entry for StoredBinding {
 /// Seed [`Signals::bindings`](crate::state::Signals::bindings)(crate::state::Signals::bindings) from this
 /// browser's stored rebindings. Called once at app start, beside `prefs::load`.
 pub fn load(state: AppState) {
-    let Some(stored) = crate::storage::load_list::<StoredBinding>() else {
+    let Some(stored) = stark_chrome::storage::load_list::<StoredBinding>() else {
         return;
     };
     let overrides = stored
@@ -565,7 +565,7 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
             chord: chord.clone(),
         })
         .collect();
-    crate::storage::save_list(&stored);
+    stark_chrome::storage::save_list(&stored);
 }
 
 /// What a keydown means to a rebinding capture (`rail::CommandSearch`): the

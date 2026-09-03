@@ -51,7 +51,7 @@ use dioxus::prelude::*;
 use crate::commands::VisibilityToggle;
 use crate::layout::PanelId;
 use crate::state::AppState;
-use crate::storage::{self, Entry, Store};
+use stark_chrome::storage::{self, Entry, Store};
 
 /// One thing this browser last had on screen.
 ///

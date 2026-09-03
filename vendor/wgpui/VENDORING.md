@@ -96,6 +96,14 @@ verbatim" that would otherwise be worth keeping for the clean update diff.
 - Excluded from the workspace (root `Cargo.toml`), so `cargo fmt --all` and
   `cargo clippy --workspace` do not reach it — see the comment there. Its
   `[[example]]` targets are not built by `--all-targets` for the same reason.
+- **`WindowOptions::window_bounds` is honoured only for its size.**
+  `CrossPlatform::open_window` builds the winit attributes with
+  `with_inner_size` and no `with_position`, and does not act on
+  `WindowBounds::Maximized` or `Fullscreen` at all — so an app that restores a
+  window's placement gets the size back and not the position, and a maximized
+  window reopens restored. Not patched: `stark-wgpui-frontend`'s `window` module
+  stores the whole placement and says so at the call site, and the fix is a
+  `with_position` plus a `set_maximized` if it is ever worth a third patch.
 
 ## Updating
 

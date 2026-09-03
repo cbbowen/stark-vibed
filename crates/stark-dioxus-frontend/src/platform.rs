@@ -950,8 +950,52 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// This browser as a [`Backend`](stark_chrome::storage::Backend): `localStorage` for
+/// the rows, IndexedDB for the bytes.
+///
+/// The six methods are the six functions below, unchanged — the trait exists because
+/// the *format* moved to a crate the native frontend shares (§11.2, N1), not because
+/// anything about the web's answer changed. Installed once at startup
+/// (`main::App`), and unconditional: off wasm the six are the stubs beside them, so
+/// a host-run test gets a store that forgets, which is the same case as a private
+/// window.
+pub struct LocalStore;
+
+impl stark_chrome::storage::Backend for LocalStore {
+    fn get(&self, key: &str) -> Option<String> {
+        local_get(key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> bool {
+        local_set(key, value)
+    }
+
+    fn remove(&self, key: &str) {
+        local_remove(key);
+    }
+
+    fn blob_get_many<'a>(
+        &'a self,
+        keys: &'a [String],
+    ) -> stark_chrome::storage::Stored<'a, Vec<Option<Vec<u8>>>> {
+        Box::pin(blob_get_many(keys))
+    }
+
+    fn blob_put<'a>(
+        &'a self,
+        key: &'a str,
+        bytes: &'a [u8],
+    ) -> stark_chrome::storage::Stored<'a, bool> {
+        Box::pin(blob_put(key, bytes))
+    }
+
+    fn blob_delete<'a>(&'a self, key: &'a str) -> stark_chrome::storage::Stored<'a, ()> {
+        Box::pin(blob_delete(key))
+    }
+}
+
 /// What this browser has stored under `key`, per origin — the raw half of
-/// [`crate::storage`], which is where the format and the failure policy live.
+/// [`stark_chrome::storage`], which is where the format and the failure policy live.
 #[cfg(target_arch = "wasm32")]
 pub fn local_get(key: &str) -> Option<String> {
     web_sys::window()?
@@ -972,7 +1016,7 @@ pub fn local_set(key: &str, value: &str) -> bool {
         .is_some_and(|store| store.set_item(key, value).is_ok())
 }
 
-/// Drop whatever is stored under `key`. Only [`crate::storage::drop_retired`] calls
+/// Drop whatever is stored under `key`. Only [`stark_chrome::storage::drop_retired`] calls
 /// this, and it says how long either of them is worth keeping.
 #[cfg(target_arch = "wasm32")]
 pub fn local_remove(key: &str) {
@@ -983,7 +1027,7 @@ pub fn local_remove(key: &str) {
 
 // --- the blob store --------------------------------------------------------
 //
-// The raw half of [`crate::storage`]'s second door. `localStorage` above is *text*,
+// The raw half of [`stark_chrome::storage`]'s second door. `localStorage` above is *text*,
 // and a few megabytes of it per origin shared across every record this browser keeps
 // — so bytes go to IndexedDB instead, which is quota'd against the disk, and which
 // does its reading and writing off the thread the canvas paints on (§25.6).
@@ -1118,7 +1162,7 @@ pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
 ///
 /// A full disk surfaces as this request's own error rather than as a short write,
 /// which is what makes awaiting the request the answer to "did it land" — and what
-/// lets `crate::storage` keep saying so in one line.
+/// lets `stark_chrome::storage` keep saying so in one line.
 #[cfg(target_arch = "wasm32")]
 pub async fn blob_put(key: &str, bytes: &[u8]) -> bool {
     use wasm_bindgen::JsValue;

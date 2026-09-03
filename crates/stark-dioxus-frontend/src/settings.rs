@@ -36,10 +36,10 @@ use dioxus::prelude::*;
 
 use crate::collab::CollabPhase;
 use crate::icons::{self, icon};
-use crate::layout::ChromeHiding;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
+use stark_chrome::prefs::ChromeHiding;
 use stark_engine::command::ViewCommand;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by

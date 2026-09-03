@@ -20,7 +20,7 @@
 //! # Which panels are open follows the browser
 //!
 //! **Every panel starts closed**, and what is open is this browser's, kept between
-//! visits the way the shape and preset libraries are (`crate::storage`). The
+//! visits the way the shape and preset libraries are (`stark_chrome::storage`). The
 //! opening screen is therefore the painting and nothing else, and the panels that
 //! come back are the ones the artist actually reached for — a stack assembled by
 //! use rather than a default arrangement everybody has to disassemble.
@@ -333,83 +333,10 @@ pub fn panel_key(id: PanelId) -> String {
     format!("{id:?}")
 }
 
-/// What the floating chrome does while the canvas is in hand — this browser's own
-/// choice (`crate::prefs`, the ⚙ dialog's APPEARANCE section).
-///
-/// There were two mechanisms here and no switch: every floating container fades while
-/// a gesture is in flight, and the panel *stack* then stays down afterwards until the
-/// pointer reaches into its column. Which of those is wanted turns out to be a fact
-/// about the hardware rather than a matter of taste — a pen on a tablet crosses the
-/// panel column on the way to everything, so the wake gesture costs it nothing and it
-/// gets the whole window back; a mouse reaching for a slider between strokes pays the
-/// reach every time. The one thing that could not stay is the assumption.
-///
-/// Three states rather than two switches, because the third combination does not
-/// exist: a stack that stays down after a gesture it never faded for is a panel
-/// vanishing at the moment the artist stopped painting, which is nobody's preference.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum ChromeHiding {
-    /// Never get out of the way: the chrome is where it was put, whatever the hand is
-    /// doing.
-    Never,
-    /// Fade for the length of a canvas gesture and come straight back when it ends.
-    WhilePainting,
-    /// Fade for the gesture, and leave the panel stack down afterwards until the
-    /// pointer reaches into its column (§11). The default, and what Stark did before
-    /// there was anything to choose.
-    #[default]
-    AfterPainting,
-}
-
-impl ChromeHiding {
-    /// Whether a canvas gesture takes the chrome with it.
-    fn fades(self) -> bool {
-        !matches!(self, Self::Never)
-    }
-
-    /// Whether the panel stack stays down once the gesture has ended.
-    ///
-    /// Public because it is not only the fade's question: it decides whether
-    /// [`sleep_panels`] does anything at all, and the tour asks it about the one
-    /// lesson whose whole subject is this gesture (§24).
-    pub fn sleeps(self) -> bool {
-        matches!(self, Self::AfterPainting)
-    }
-
-    /// The name this is stored and chosen by — one vocabulary for the store and the
-    /// dialog, so a row of the dialog cannot come to mean a value nothing reads.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Never => "never",
-            Self::WhilePainting => "while-painting",
-            Self::AfterPainting => "after-painting",
-        }
-    }
-}
-
-impl From<String> for ChromeHiding {
-    /// A name this build does not know reads as the default — a preference written by
-    /// a later version, or a damaged one. Lenient on purpose: `Prefs` is one JSON blob
-    /// (`crate::prefs`), so an enum that refused an unknown variant would take every
-    /// *other* setting down with it rather than costing its own.
-    fn from(name: String) -> Self {
-        [Self::Never, Self::WhilePainting, Self::AfterPainting]
-            .into_iter()
-            .find(|c| c.key() == name)
-            .unwrap_or_default()
-    }
-}
-
-impl From<ChromeHiding> for String {
-    fn from(c: ChromeHiding) -> Self {
-        c.key().to_string()
-    }
-}
-
 /// Whether a floating-chrome container (the panel stack, the command rail, the
 /// selection bar) is faded out of the way right now — a canvas gesture is in flight
-/// *and* this browser has asked for that ([`ChromeHiding`]), since "Always show" is
+/// *and* this browser has asked for that ([`ChromeHiding`](stark_chrome::prefs::ChromeHiding)),
+/// since "Always show" is
 /// the answer no to both.
 ///
 /// Every one of them sits over the canvas and none of them is what the user is looking
@@ -1313,34 +1240,6 @@ mod tests {
             assert_eq!(serde_json::from_str::<PanelId>(&stored).unwrap(), id);
         }
         assert!(serde_json::from_str::<PanelId>("\"Atmosphere\"").is_err());
-    }
-
-    /// The stored name of a hiding mode is what the dialog offers and what
-    /// [`ChromeHiding::from`] reads back, and a name from a version that knows more
-    /// modes than this one reads as the default rather than refusing — which would
-    /// take every *other* preference in the blob down with it (`crate::prefs`).
-    #[test]
-    fn a_chrome_mode_round_trips_through_its_stored_name() {
-        for mode in [
-            ChromeHiding::Never,
-            ChromeHiding::WhilePainting,
-            ChromeHiding::AfterPainting,
-        ] {
-            assert_eq!(ChromeHiding::from(mode.key().to_string()), mode);
-        }
-        assert_eq!(
-            ChromeHiding::from("hide-on-tuesdays".to_string()),
-            ChromeHiding::default(),
-        );
-        // The default is what Stark did before there was a choice, which is what keeps
-        // a browser that stored its preferences before this field existed where it was.
-        assert!(ChromeHiding::default().sleeps());
-        assert!(ChromeHiding::default().fades());
-        assert!(!ChromeHiding::Never.fades(), "never means never");
-        assert!(
-            !ChromeHiding::WhilePainting.sleeps(),
-            "the stack comes straight back",
-        );
     }
 
     /// The thumb says what share of the column is showing, and where in it — the two

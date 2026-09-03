@@ -17,6 +17,13 @@ mixbox = ["stark-engine/mixbox"]
 # The document (§2), depended on directly rather than through the engine, for the
 # reason `stark-dioxus-frontend` gives: a type has one public path.
 stark-model = { workspace = true }
+# The frontend's model, shared with the web app (§11.2): the record format and the
+# keys it keeps them under, and — as this frontend grows — the brush, the layer tree
+# and the rest of what a chrome is written in.
+stark-chrome = { path = "../stark-chrome" }
+# The records this frontend keeps are serde structs like every other (§25.6).
+serde = { workspace = true }
+
 # The engine, with the same feature stance the web frontend takes: Mixbox on by
 # default (§6.7), forwarded, so a build that must carry no CC BY-NC 4.0 code can
 # drop it here exactly as it can there.
@@ -39,6 +46,11 @@ wgpu = { workspace = true }
 # runs in one, but the tree has one clock and this is it (§7.1). Already compiled
 # here by way of the engine's timing layer.
 quanta = "0.12"
+
+[dev-dependencies]
+# Round-tripping a record in a test. The format is `stark-chrome`'s at run time,
+# so this is here to *check* one rather than to write one.
+serde_json = "1"
 
 # The shared lint set (root Cargo.toml).
 [lints]

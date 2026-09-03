@@ -52,10 +52,10 @@ use stark_model::document::{
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
-use crate::storage::{self, Store};
 use stark_chrome::brush_config::{
     BrushConfig, BrushEffectType, EraseConfig, LiquifyConfig, Transient, WetDynamics,
 };
+use stark_chrome::storage::{self, Store};
 
 /// The live brush, snapshotted: both halves — the tool ([`BrushConfig`]) and
 /// the tune it is being worked at (`Transient`) — copies of the two signals,
@@ -778,7 +778,7 @@ pub fn overwrite_in_hand(state: AppState) {
 
 // --- persistence ----------------------------------------------------------
 //
-// One entry per **user** preset, through `crate::storage`, which is where the format
+// One entry per **user** preset, through `stark_chrome::storage`, which is where the format
 // and the skip-a-damaged-entry rule live. What is this module's own is which entries
 // are written and which two fields are not:
 //

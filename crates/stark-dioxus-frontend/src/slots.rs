@@ -88,8 +88,8 @@ use crate::icons::{self, icon};
 use crate::layout::chrome_dimmed;
 use crate::presets::{self, PresetEntry};
 use crate::state::AppState;
-use crate::storage::{self, Store};
 use stark_chrome::brush_config::{BrushConfig, Transient};
+use stark_chrome::storage::{self, Store};
 
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;
@@ -995,7 +995,7 @@ pub fn seed_defaults(state: AppState) {
 
 // --- persistence ----------------------------------------------------------
 //
-// One `crate::storage` entry per **assigned** slot. The format and the
+// One `stark_chrome::storage` entry per **assigned** slot. The format and the
 // skip-a-damaged-entry rule live there, so what is this module's own is that an entry
 // names its digit rather than sitting at a position: a rack with holes stores as the
 // few entries it has, and one whose digit is out of range is dropped instead of

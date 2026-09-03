@@ -840,8 +840,29 @@ the exit criterion is an act, not a diff.
   `Default`: `new_without_default` does not fire on a binary's `pub` items and does
   on a library's, so becoming a library is what asked.
 - **N1 — persistence.** `storage::Backend`; the native impl over a config dir and
-  a cache dir; `identity`, `prefs` and `visibility` records move. *Exit:* the
-  native app comes back with the same actor id and the same window.
+  a cache dir; `identity` and `prefs` move. *Exit:* the native app comes back with
+  the window it was closed at.
+
+  `visibility` did **not** come: its record is keyed by `VisibilityToggle`, which
+  is the command registry's, and its rows hold `PanelId`s. A record cannot move
+  before its key type has, so it goes with N3. The same rule brought
+  `ChromeHiding` down early — `Prefs` has one as a *field*, so it had to.
+
+  Three other things N1 turned up. `identity` could not name `SecretKey` without
+  putting iroh under a crate whose other consumer has no collaboration, so the
+  shared half keeps 32 bytes and takes the minting as a closure. `Prefs`'s
+  `capture`/`apply_view`/`apply_engine` became free functions, because an `impl`
+  on a type from another crate is exactly the orphan rule reporting the boundary
+  (CLAUDE.md) — and each of the three reads or writes signals, so none was ever
+  the record's business. And the registry's completeness test could no longer live
+  beside the format: most record *types* are a frontend's, so
+  `stark-dioxus-frontend`'s `records` owns it now, with the rows it does not keep
+  listed by name.
+
+  The native half restores the window's **size** but not its position: wgpui
+  0.3.4's `open_window` reads `with_inner_size` off the bounds and no
+  `with_position`, and treats `Maximized` as `Windowed`. The record stores the
+  whole placement anyway — see `window::opening`.
 - **N2 — the brush in hand.** `brush_config` in use natively; a brush panel with
   size, flow, effect, hardness and colour; `presets`' records move. *Exit:* paint
   with any shipped preset, tuned, instead of one hard-coded `BrushParams`.
