@@ -1739,16 +1739,33 @@ fn lay_parcel(
         let v1 = claimed_coverage(f_m, moment1, lv1);
         let cm1 = claimed_m(v1, f_m, o);
         let cm0 = claimed_m(v0, u.a.z, o);
-        // A difference below zero **un-mints**: the claim fell — paint at two
-        // factors in one third of the dial averaged — and the swept integrate
-        // will show less than it showed a segment ago, so this slot takes back
-        // the brush's own paint to match. Never more than the texel holds: a
-        // lift may already have carried some of it away.
-        add_m = max((cm1 - cm0) * survive, -(m + tool_op * dep_h));
-        add_h = max(
-            (f_h * claim_ratio(cm1, f_m, o) - u.a.y * claim_ratio(cm0, u.a.z, o)) * survive,
-            -(h + dep_h),
-        );
+        // **A mint never runs backwards.** The claimed law is not strictly
+        // monotone — paint at two factors inside one third of the dial averages,
+        // so a faint pass can lower the mean the third is placed at — and the
+        // difference is then negative. There is nothing to spend it on: fresh
+        // paint already smeared into the picture is not this loop's to take back
+        // (the note above), and a negative parcel is not even expressible in what
+        // follows, whose weighted mean of the tool's colour and the brush's own
+        // divides by exactly this mass. Minting nothing is what a dip means, so
+        // what the texel carries is the running maximum of the law rather than
+        // its latest value — the two differing by the within-third slack the law
+        // already carries.
+        //
+        // Both lanes are gated on the **mass**, not clamped one by one: they are
+        // two readings of one claim, and a rounding that left the height positive
+        // where the mass was not would mint paint with no pigment in it.
+        if cm1 > cm0 {
+            add_m = (cm1 - cm0) * survive;
+            add_h = max(
+                f_h * claim_ratio(cm1, f_m, o) - u.a.y * claim_ratio(cm0, u.a.z, o),
+                0.0,
+            ) * survive;
+        } else {
+            add_m = 0.0;
+            add_h = 0.0;
+        }
+        // The lane and the moment advance by the whole attempt either way, like
+        // the raw totals beside them: they are what the source tried.
         moment = moment1;
     } else if o != 1.0 {
         // `e_src = 0` makes both differences exactly 0, so the guarded quotient

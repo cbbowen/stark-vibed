@@ -286,11 +286,39 @@ fn tooth_gate(d: f32, give: f32, softness: f32) -> f32 {
 const LEVEL_1: f32 = 0.33333334;
 const LEVEL_2: f32 = 0.6666667;
 
+// How wide the crossing into a band is, as a fraction of the dial.
+//
+// **A hard boundary is what printed arcs** (2026-09-02): a band's coverage was
+// built only by the segments whose factor happened to land above the boundary, so
+// it carried *their swept footprints* rather than the mark — and a pen hovering at
+// the boundary, which is what a pen at a fixed pressure does, drew them one at a
+// time as scallops across the crossing. The claim there is
+// `mu1·(c0 − c1) + mu2·c1`, so wherever the two bands' coverages differ the band
+// gap is what the ripple is worth: about seven levels of grey on the reported
+// stroke.
+//
+// Over a window every fragment contributes to both bands in proportion, so both
+// coverages saturate together across the whole mark and the term that carried the
+// footprints goes to zero; what is left is a weighted mean that leans toward the
+// higher factors, which is the direction the max lies in anyway. Wide enough to
+// swallow the jitter a real pen has at one pressure, narrow enough that two
+// strokes a band apart still separate.
+//
+// A pen that holds still is **exactly** the dial either way: every fragment then
+// takes the same weight, so the two coverages agree and the means are the factor
+// itself, whatever the window does at the edges.
+const LEVEL_WINDOW: f32 = 0.15;
+
+// How much of a fragment at factor `o` a band starting at `level` takes.
+fn level_weight(level: f32, o: f32) -> f32 {
+    return clamp((o - level) / LEVEL_WINDOW + 0.5, 0.0, 1.0);
+}
+
 // One fragment's share of the lane: its mass above each level, and its moment
 // above each — `(M₁, M₂, Q₁, Q₂)` increments for a factor `o` laying mass `m`.
 fn level_sums(o: f32, m: f32) -> vec4<f32> {
-    let g1 = step(LEVEL_1, o);
-    let g2 = step(LEVEL_2, o);
+    let g1 = level_weight(LEVEL_1, o);
+    let g2 = level_weight(LEVEL_2, o);
     return vec4<f32>(m * g1, m * g2, o * m * g1, o * m * g2);
 }
 

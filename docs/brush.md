@@ -1199,9 +1199,43 @@ ramp and takes an exact branch.
 
 Every sum is symmetric in the segments, so the picture is the same whichever
 pass came first, and it composes under re-cutting for the reason the aux does.
-It is not strictly monotone: paint at two factors in one third averages, so a
-light pass in the same third as a heavy mark can lower the mark by a hair,
-bounded as above; across thirds a claim only ever rises.
+It is not strictly monotone, and that is the law's one real cost. Paint at two
+factors inside one band averages, so mass arriving at the lower of them lowers
+what the band is placed at — the claim *falls*, by up to the spread within the
+band. Across bands it only ever rises.
+
+**Where the claim dips the two paths part, in a bounded and directed way.** The
+swept integrate reads the finished sums once, so it reports the fallen value; the
+stamp loop mints prefix differences and a mint cannot run backwards — fresh paint
+already smeared into the picture is not the loop's to take back, and a negative
+parcel is not expressible in a colour that is a mass-weighted mean of the tool's
+and the brush's own (it blew out to white when it was tried; `tests/opacity.rs`,
+`a_smear_under_a_pen_driven_ceiling_stays_in_gamut`). So the loop holds the
+running maximum, which is the nearer of the two to the max the law approximates.
+On the crossing the suite draws the gap is inside the f16 stores
+(`the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays`, which is why that test
+still asserts an equality); what bounds it in general is the law's own within-band
+error.
+
+That the two can part at all is a property of *any* estimator built from additive
+sums: exactness for a pen that holds still forces a mean, and a mean falls when
+lighter mass joins it where the max it stands in for does not. Making them agree
+identically therefore means giving up either the exactness or the additivity, and
+both are load-bearing — the first for the mouse, which reports a constant 1, the
+second for the blend that accumulates the lane at all.
+
+**A band's edge is a window, not a line** (`paint_common::LEVEL_WINDOW`), and that
+is not a refinement either. With a hard edge a band's coverage is built only by
+the fragments whose factor landed above it, so it carries *their swept footprints*
+rather than the mark — and since a pen held at one pressure wobbles by a
+hundredth, a stroke sitting on a boundary printed those footprints one at a time,
+as scallops across its crossing (2026-09-02). The claim there is
+`mu1·(c0 − c1) + mu2·c1`, so wherever the two bands' coverages differ the band gap
+is what the ripple is worth — about seven levels of grey on the stroke that
+reported it. Over a window every fragment contributes to both bands in proportion,
+both coverages saturate together across the whole mark, and the term that carried
+the footprints goes to zero. A pen that holds still is exactly the dial either
+way.
 
 Two other laws were built first and taken out, and both are worth naming. The
 plain **mass-weighted mean** — one additive lane of `Σ oᵢ·mᵢ` — is exact and

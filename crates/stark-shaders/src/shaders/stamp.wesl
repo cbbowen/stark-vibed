@@ -261,7 +261,14 @@ fn fs_levels(in: VsOut) -> FsLevels {
     let drain = stroke_drain(stroke_arc(in, sw));
     let tooth = substrate_tooth(in, sw);
     let jitter = jitter_of(in);
-    let m = in.extra.w * drain * tooth * jitter * tau;
+    // **The mass, exactly as `fs_main` forms it** — the height, then faded again by
+    // the per-unit opacity the drain leaves (§6.1). Both `drain`s are load-bearing
+    // and the second is easy to read as a slip: what the lane holds has to be the
+    // same quantity the aux's own total is, because `claimed_coverage` reads the
+    // two against each other and clamps one by the other. Written as the height and
+    // then the mass, the way the deposit writes it, so the pair cannot drift.
+    let h = in.extra.w * drain * tooth * jitter * tau;
+    let m = drain * h;
     var out: FsLevels;
     out.levels = level_sums(ceiling_of(in, sw), m);
     return out;

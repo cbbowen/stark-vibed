@@ -106,7 +106,15 @@ const VISIBLE_LEVELS: u8 = 12;
 /// of near-identical numbers would read as a table of measurements and be a table of
 /// noise. The headroom above 3 is for another adapter's rounding, not for a case with
 /// something to say.
-const TRANSLATION_LEVELS: u8 = 4;
+///
+/// One case does have something to say, and it is why this reads 5 rather than 4:
+/// `opacity_pen` reaches it at a single shoulder texel, with its neighbours at 1 and
+/// 2. Its ceiling is read from *ratios* of f16 sums (§6.2's level law) where every
+/// other case reads a stored value, and at a shoulder both sums are small — so the
+/// same storage rounding lands one level further out. The tail of the same
+/// distribution rather than a step, and the one case in the table whose bound is
+/// about how its number is *derived* instead of how it is stored.
+const TRANSLATION_LEVELS: u8 = 5;
 
 fn run(name: &str) {
     let case = CASES

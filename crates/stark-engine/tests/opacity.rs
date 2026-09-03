@@ -18,7 +18,10 @@ mod common;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
-use stark_model::document::{BrushParams, FillOp, ModSource, Modulation, SelectionShape};
+use stark_model::document::{
+    BrushDynamics, BrushParams, BrushShape, FillOp, ModSource, Modulation, SelectionShape,
+    ToothParams,
+};
 use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -32,6 +35,39 @@ fn washed(opacity: f32, radius: f32) -> BrushParams {
     b.paint_mut().expect("a paint brush").flow = 2.5;
     b.effect.set_opacity(opacity);
     b.drain = 0.0;
+    b
+}
+
+/// The brush the recording above was drawn with: a wide, nearly hard tip working
+/// wet paint under a pen that drives both its size and its ceiling. Written out
+/// rather than built from [`washed`] because every one of these numbers is the
+/// captured brush's, and a test that drifted from them would stop being the
+/// reproduction.
+fn smear_under_the_pen() -> BrushParams {
+    let mut b = brush([0.85, 0.15, 0.1], 100.0);
+    b.drain = 0.1;
+    b.jitter = 0.01;
+    b.tooth = ToothParams {
+        give: 1.0,
+        softness: 0.5,
+    };
+    b.shape = BrushShape::Round { hardness: 0.98 };
+    b.modulation.size = Some(Modulation {
+        source: ModSource::Pressure,
+        floor: 0.8,
+        curve: 0.0,
+    });
+    let w = b.make_wet();
+    w.flow = 3.0;
+    w.opacity = 1.0;
+    w.dynamics = BrushDynamics {
+        add: 1.0,
+        lift: 0.1,
+        deposit: 0.37,
+        charge: 0.0,
+        bleed: 0.08,
+    };
+    w.modulation.opacity = Some(Modulation::linear(ModSource::Pressure));
     b
 }
 
@@ -480,6 +516,64 @@ fn a_heavy_pass_over_a_light_mark_fills_it_in() {
     }
 }
 
+/// **A smear under a pen-driven ceiling stays paint** (§6.2), on the recording
+/// that caught it not doing so.
+///
+/// The claimed law is not strictly monotone — paint at two factors inside one
+/// third of the dial averages, so a faint pass can lower the mean the third is
+/// placed at — and the loop's prefix difference then comes out **negative**. A
+/// mint has nothing to spend that on, and what follows it cannot express it: the
+/// parcel's colour is a weighted mean of the tool's and the brush's own, divided
+/// by exactly that mass, so a negative share put a negative weight on one of two
+/// different colours and divided by a mass cancelling toward zero. What landed
+/// was out of gamut — blown to white, fringed where the two colours pulled apart.
+///
+/// **Both strokes, and recorded ones.** The two ingredients are a claim that dips
+/// and a tool carrying a real load, and neither is present alone: the first
+/// stroke lays the paint, the second picks it up and works it at the low,
+/// wobbling pressures a hand actually makes. Every synthetic pair tried in place
+/// of these — a falling ramp, a zero dip, the file's own opening pressures on a
+/// drawn spiral — renders clean on the broken build, which is the corpus module's
+/// point about holes being the combination nobody happens to draw.
+///
+/// Stated as a gamut claim because that is what the defect was: nothing here —
+/// not the ground, not the brush — is within 40 levels of white, so a white texel
+/// is paint that was never laid.
+#[test]
+fn a_smear_under_a_pen_driven_ceiling_stays_in_gamut() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    for recorded in [stark_testdata::SMEAR_SPIRAL, stark_testdata::SMEAR_RETURN] {
+        let path: Vec<(Vec2, f32)> = recorded
+            .iter()
+            .map(|p| (Vec2::new(p[0], p[1]), p[2]))
+            .collect();
+        stroke_pressed(&mut engine, smear_under_the_pen(), &path);
+    }
+    let img = engine.render_to_image();
+
+    let blown: Vec<(usize, usize)> = img
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p[0] > 240 && p[1] > 240 && p[2] > 240)
+        .map(|(i, _)| {
+            let w = img.width as usize;
+            (i % w, i / w)
+        })
+        .collect();
+    assert!(
+        blown.is_empty(),
+        "{} texels came out whiter than anything laid on this canvas, first at \
+         {:?} — the smear minted a negative parcel",
+        blown.len(),
+        blown.first(),
+    );
+}
+
 /// **The fast path is an optimization, not a semantics**, under the pen too
 /// (§6.2): a whisper of `deposit` routes the identical pressed stroke through
 /// the stamp loop, whose region aux keeps the claim in its own lane and mints
@@ -497,25 +591,62 @@ fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
         (Vec2::new(80.0, 0.25), 0.5),
         (Vec2::new(-80.0, 0.25), 0.9),
     ];
+    // **Draining**, which is the one thing the brushes around here do not do: the
+    // ceiling lane holds a *mass*, and with `drain` at zero a mass and a height are
+    // the same number — so a path that wrote one where the other belonged agreed
+    // with itself everywhere this file looked. Under a drain they part, and the two
+    // renderers stop agreeing (2026-09-02).
+    let draining = |b: &mut BrushParams| b.drain = 0.4;
     let Some(mut swept) = engine_or_skip() else {
         return;
     };
-    stroke_pressed(&mut swept, under_the_pen(0.8, 20.0), &path);
+    let mut plain = under_the_pen(0.8, 20.0);
+    draining(&mut plain);
+    stroke_pressed(&mut swept, plain, &path);
     let swept = swept.render_to_image();
 
     let mut looped = engine_or_skip().expect("the adapter answered once already");
     let mut whisper = under_the_pen(0.8, 20.0);
+    draining(&mut whisper);
     whisper.make_wet().dynamics.deposit = 0.01;
     stroke_pressed(&mut looped, whisper, &path);
     let looped = looped.render_to_image();
 
-    for x in [-60.0, -30.0, 0.0, 30.0, 60.0] {
+    // **Where the claim does not dip, the two paths are one stroke.** That is the
+    // right half of the band here: the return leg crosses at a factor a whole band
+    // of the dial below the outward one, so the level law is exact and the two
+    // agree to their f16 stores.
+    for x in [-20.0, 0.0, 20.0, 40.0, 60.0] {
         let p = Vec2::new(x, 0.0);
         let (l, s) = (texel(&looped, p), texel(&swept, p));
         assert!(
             apart(l, s) <= 2,
             "at {p:?} the loop's stroke {l:?} must be the fast path's {s:?} — \
              the whisper of deposit changed the pen's ceiling"
+        );
+    }
+    // **Where it dips, they do not, and the gap has a direction** (§6.2). Left of
+    // centre both legs are deep in the dial's top band, so the law takes their
+    // *mean* — and a mean falls when the lighter of the two arrives. The swept
+    // integrate reads that fallen value, because it reads the finished sums once;
+    // the loop mints prefix differences and a mint cannot run backwards, so it
+    // holds the higher claim. The loop is therefore the *darker* of the two, and
+    // nearer the max the law is approximating — which is why this asserts a
+    // direction and a bound rather than an equality. Twenty levels is what the
+    // law's own within-band error is worth here; a regression that reversed the
+    // sign, or widened it much past this, is a different defect.
+    for x in [-70.0, -60.0, -40.0] {
+        let p = Vec2::new(x, 0.0);
+        let (l, s) = (texel(&looped, p), texel(&swept, p));
+        assert!(
+            l[1] <= s[1] && l[2] <= s[2],
+            "at {p:?} the loop {l:?} must hold at least the ceiling the fast path \
+             {s:?} does — the mint ran backwards"
+        );
+        assert!(
+            apart(l, s) <= 20,
+            "at {p:?} the loop {l:?} and the fast path {s:?} differ by more than \
+             the level law's within-band error"
         );
     }
     // …and the ramp is real: the band fades from the end the pen bore down on
