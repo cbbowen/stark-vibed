@@ -104,10 +104,10 @@ crates/
   stark-wgpui-frontend/
                    native wgpui frontend (§11): a winit window whose `WgpuSurface`
                    the engine renders into. **The second consumer** — the thing that
-                   turns "frontend-agnostic" from a claim into a tested one. A
-                   canvas and one brush, deliberately: chrome is not what a second
-                   frontend has to prove. It does NOT own the device, which is what
-                   it found first — see `GpuContext`
+                   turns "frontend-agnostic" from a claim into a tested one. On its
+                   way to parity a stage at a time (§11.2), and every stage's real
+                   product is what it pushed down into `stark-chrome`. It does NOT
+                   own the device, which is what it found first — see `GpuContext`
 vendor/            third-party, EXCLUDED from the workspace
 ```
 

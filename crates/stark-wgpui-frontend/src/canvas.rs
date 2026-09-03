@@ -27,6 +27,7 @@ use wgpui::{
 };
 
 use crate::brush::Brush;
+use crate::files::{self, Done};
 use crate::layers::{self, Act};
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
@@ -108,6 +109,23 @@ pub struct Canvas {
     /// Kept rather than asked per frame: `observe()` walks the roster, and a frame
     /// that changed nothing would rebuild it for a panel that would draw the same.
     obs: Option<ObservableState>,
+    /// The file this window holds, once one has been saved or opened. `None` for a
+    /// document that has never been written — which is what the title says.
+    path: Option<std::path::PathBuf>,
+    /// The revision this client last wrote out. The other half of "is there anything
+    /// to lose" (`stark_chrome::files::unsaved`); the engine supplies the first.
+    written: u64,
+    /// What the window's title bar last said. Kept so the title is set when it
+    /// *changes* rather than every frame: a title is a platform call, and the frame
+    /// loop runs whether or not the document moved.
+    title: String,
+    /// What went wrong, if anything, since the last act. Shown on the title bar for
+    /// want of anywhere better — see [`Canvas::report`].
+    failure: Option<String>,
+    /// The file act in flight, if any. **Held rather than detached**: a wgpui `Task`
+    /// cancels when it is dropped, and a save dropped mid-dialog is a file the user
+    /// asked for and did not get.
+    file_task: Option<wgpui::Task<()>>,
     /// Which groups this client has folded away. The panel's own state, not the
     /// document's: a collaborator's fold is theirs (§17.4).
     collapsed: std::collections::HashSet<stark_model::document::LayerId>,
@@ -143,6 +161,11 @@ impl Canvas {
             regions: Regions::default(),
             layer_regions: layers::Regions::default(),
             obs,
+            path: None,
+            written: 0,
+            title: String::new(),
+            failure: None,
+            file_task: None,
             collapsed: std::collections::HashSet::new(),
             clock,
             epoch,
@@ -169,6 +192,12 @@ impl Canvas {
 
         // Then the brush panel: its column is where a press stops being paint.
         match panel::hit(&self.regions, ev.position) {
+            Some(Region::File(i)) => {
+                if let Some(command) = panel::FILE_ACTS.get(i) {
+                    self.run(*command, window, cx);
+                }
+                return;
+            }
             Some(Region::Knob(knob)) => {
                 self.held = Some(Held::Knob(knob));
                 if let Some(f) = panel::fraction_at(&self.regions, knob, ev.position) {
@@ -366,27 +395,233 @@ impl Canvas {
         self.repaint(cx);
     }
 
+    /// Whether the document holds committed work no file has (§8).
+    fn unsaved(&self) -> bool {
+        self.obs
+            .as_ref()
+            .is_some_and(|o| stark_chrome::files::unsaved(o.edited, o.doc_revision, self.written))
+    }
+
+    /// Write the document, asking for a path unless this window already has one.
+    ///
+    /// Saving *over* the file you opened is the first thing a real path buys — the web
+    /// app cannot have it, because a download has nowhere to go back to. Its converse,
+    /// a Save-As that forces the ask, is not here: the registry has no such act, and
+    /// inventing one this frontend alone answers would put the two apps' vocabularies
+    /// out of step for a dialog (§25).
+    fn save(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let Some(r) = self.renderer.as_ref() else {
+            return;
+        };
+        let bytes = match files::save_bytes(r) {
+            Ok(bytes) => bytes,
+            Err(e) => return self.settle(Done::Failed(e), window, cx),
+        };
+        // The revision those bytes are of, read *before* anything asynchronous: by
+        // the time a dialog answers the hand may have painted again, and marking that
+        // revision written would call a stroke saved that no file holds.
+        let revision = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+        if let Some(path) = self.path.clone() {
+            let done = match files::write(&path, &bytes) {
+                Ok(path) => Done::Saved { path, revision },
+                Err(e) => Done::Failed(e),
+            };
+            return self.settle(done, window, cx);
+        }
+        // The dialogs are the *app's*, not the window's — one file picker at a time
+        // per process is what every platform gives.
+        let ask = cx.prompt_for_new_path(
+            &self.directory(),
+            Some(&stark_chrome::files::default_name()),
+        );
+        self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let done = match ask.await {
+                Ok(Ok(Some(path))) => match files::write(&path, &bytes) {
+                    Ok(path) => Done::Saved { path, revision },
+                    Err(e) => Done::Failed(e),
+                },
+                Ok(Ok(None)) => Done::Cancelled,
+                Ok(Err(e)) => Done::Failed(format!("the save dialog failed: {e}")),
+                // The sender went without answering — the window closed under the
+                // dialog. Nothing to report and nothing to write.
+                Err(_) => Done::Cancelled,
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
+        }));
+    }
+
+    /// Replace the document with one read from disk.
+    fn open(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let ask = cx.prompt_for_paths(wgpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let done = match ask.await {
+                Ok(Ok(Some(paths))) => match paths.into_iter().next() {
+                    Some(path) => match files::read(&path) {
+                        Ok(bytes) => Done::Opened { path, bytes },
+                        Err(e) => Done::Failed(e),
+                    },
+                    None => Done::Cancelled,
+                },
+                Ok(Ok(None)) => Done::Cancelled,
+                Ok(Err(e)) => Done::Failed(format!("the open dialog failed: {e}")),
+                Err(_) => Done::Cancelled,
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
+        }));
+    }
+
+    /// Write a picture of the document (§15.6).
+    ///
+    /// The render starts here and is *awaited* in the task, which is the borrow
+    /// bargain `Engine::export` is built for: the future does not hold the renderer,
+    /// so the window goes on painting while the GPU→CPU copy is in flight.
+    fn export(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let revision = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+        let (frame, scale, background, content) = files::EXPORT;
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        let render = match r.export(frame, scale, background, content) {
+            Ok(render) => render,
+            Err(e) => {
+                let done = Done::Failed(format!("could not render the picture: {e}"));
+                return self.settle(done, window, cx);
+            }
+        };
+        let ask = cx.prompt_for_new_path(&self.directory(), Some("painting.png"));
+        self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let image = render.await;
+            let done = match (ask.await, image) {
+                (Ok(Ok(Some(path))), Ok(image)) => match files::encode(&image, &path) {
+                    Ok(bytes) => match std::fs::write(&path, bytes) {
+                        Ok(()) => Done::Exported { revision },
+                        Err(e) => Done::Failed(format!("could not write {}: {e}", path.display())),
+                    },
+                    Err(e) => Done::Failed(e),
+                },
+                (Ok(Ok(None)), _) | (Err(_), _) => Done::Cancelled,
+                (Ok(Err(e)), _) => Done::Failed(format!("the export dialog failed: {e}")),
+                (_, Err(e)) => Done::Failed(format!("could not render the picture: {e}")),
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
+        }));
+    }
+
+    /// Where a dialog should open: the last file's folder, or the working directory.
+    fn directory(&self) -> std::path::PathBuf {
+        self.path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    }
+
+    /// Take a finished file act back into the view.
+    ///
+    /// **One place**, whichever door the act came through — the synchronous save over
+    /// a known path and the three that wait on a dialog all end here, so what a
+    /// success does to the title and the clean/dirty mark is written once.
+    fn settle(&mut self, done: Done, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.failure = None;
+        match done {
+            Done::Saved { path, revision } => {
+                self.path = Some(path);
+                self.written = revision;
+            }
+            Done::Opened { path, bytes } => {
+                if self.load(&bytes) {
+                    self.path = Some(path);
+                    self.written = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+                }
+            }
+            // A picture is not the document, but it is a copy of the work — so it
+            // settles the same question the unsaved guard asks (§15.6).
+            Done::Exported { revision } => self.written = revision,
+            Done::Cancelled => {}
+            Done::Failed(why) => self.report(why),
+        }
+        self.retitle(window);
+        self.repaint(cx);
+    }
+
+    /// Replay a loaded log over the open document (§8); `false` if it was refused.
+    fn load(&mut self, bytes: &[u8]) -> bool {
+        let file = match stark_model::DocumentFile::from_bytes(bytes) {
+            Ok(file) => file,
+            Err(e) => {
+                self.report(format!("could not open that file: {e}"));
+                return false;
+            }
+        };
+        let Some(r) = self.renderer.as_mut() else {
+            return false;
+        };
+        // What the file names but does not carry. This frontend has no catalog to
+        // resolve those out of yet (`crate::files`), so anything owed is the end of
+        // it — reported, with the painting on screen untouched, which is what makes a
+        // refused file cost nothing.
+        if !r.unresolved_content(&file).is_empty() {
+            self.report("that painting uses content this build does not carry".to_string());
+            return false;
+        }
+        if let Err(e) = r.load_document(&file) {
+            self.report(format!("could not open that painting: {e}"));
+            return false;
+        }
+        self.obs = Some(r.observe());
+        // A load replaces the document wholesale, so everything the panel remembered
+        // is stale — the folded groups above all, whose ids are gone.
+        self.collapsed.clear();
+        true
+    }
+
+    /// Say what went wrong, where a person will see it.
+    ///
+    /// The window title, for want of anywhere better: this frontend has no message
+    /// surface, and a failure that reached only a log nobody is tailing is a failure
+    /// nobody is told about. A proper report is a surface of its own (§25.7).
+    fn report(&mut self, why: String) {
+        self.failure = Some(why);
+    }
+
+    /// Put the file's name — or the last failure — on the window, if it has changed.
+    fn retitle(&mut self, window: &mut Window) {
+        let title = match &self.failure {
+            Some(why) => format!("{why} — Stark"),
+            None => files::window_title(self.path.as_deref(), self.unsaved()),
+        };
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
+    }
+
     /// Run whatever the shipped chord table says this keystroke asks for.
     ///
     /// **The whole of the keyboard, and it is nine lines**, because the table is
     /// shared: what Ctrl+Z means was settled once (§25) and this frontend only has to
     /// say what a keystroke *is* (`crate::keys`) and what an act *does* below.
-    fn key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(command) = self.bindings.lookup(&crate::keys::stroke(&ev.keystroke)) else {
             return;
         };
-        self.run(command, cx);
+        self.run(command, window, cx);
     }
 
     /// Do what a command means here.
     ///
     /// A short list, and short *honestly*: the registry has thirty-odd acts and this
-    /// frontend has five of them. What the others need is a
-    /// surface — a dialog, a layer list, a selection — and each arrives with its own
+    /// frontend answers the handful below. What the rest need is a surface — a
+    /// selection, a gradient bar, a settings page — and each arrives with its own
     /// stage (§11.2). An act with nothing to act on is left alone rather than given a
     /// no-op arm, so the day it lands the compiler has nothing to say and the reader
     /// does.
-    fn run(&mut self, command: Command, cx: &mut Context<'_, Self>) {
+    fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<'_, Self>) {
         let doc = match command {
             Command::Undo => Some(DocCommand::Undo),
             Command::Redo => Some(DocCommand::Redo),
@@ -395,6 +630,9 @@ impl Canvas {
         match command {
             Command::BrushSmaller => self.step_size(1.0 / SIZE_STEP, cx),
             Command::BrushLarger => self.step_size(SIZE_STEP, cx),
+            Command::SaveDocument => self.save(window, cx),
+            Command::OpenDocument => self.open(window, cx),
+            Command::ExportImage => self.export(window, cx),
             _ => {}
         }
         if let Some(doc) = doc {
@@ -448,6 +686,10 @@ impl Render for Canvas {
         // schedules no further frame of its own. Cheap to ask for: the tree is small,
         // and the engine renders only when something has actually changed.
         window.request_animation_frame();
+        // The dirty mark follows the document rather than the last file act, so the
+        // title is refreshed with the frame — cheaply, since `retitle` only calls the
+        // platform when the words changed.
+        self.retitle(window);
 
         let dragging = match self.held {
             Some(Held::Knob(k)) => Some(k),

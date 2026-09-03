@@ -68,6 +68,59 @@ impl Renderer {
         self.engine.observe()
     }
 
+    /// Serialize the document — the action log, not the pixels (§8).
+    ///
+    /// `resolvable` names content the *opener* is expected to already have, so it is
+    /// left out of the file. This frontend passes none: see `crate::files`.
+    pub fn save_bytes_resolvable(
+        &self,
+        resolvable: &[stark_model::AssetId],
+    ) -> stark_engine::Result<Vec<u8>> {
+        self.engine.save_bytes_resolvable(resolvable)
+    }
+
+    /// What `file` names that neither it carries nor this engine holds — settle it
+    /// before [`load_document`](Self::load_document), which refuses otherwise.
+    pub fn unresolved_content(
+        &self,
+        file: &stark_model::DocumentFile,
+    ) -> Vec<stark_model::AssetNeed> {
+        self.engine.unresolved_content(file)
+    }
+
+    /// Replace the document by replaying a loaded log (§8) — its whole undo history
+    /// comes back with it, because the file *is* the history.
+    ///
+    /// Fails leaving the open document untouched, which is what makes a refused file
+    /// cost nothing.
+    pub fn load_document(&mut self, file: &stark_model::DocumentFile) -> stark_engine::Result<()> {
+        self.engine.load_document(file)
+    }
+
+    /// Render a picture and hand back a future for its readback (§15.6).
+    ///
+    /// The future does **not** borrow the renderer, which is the point: the caller
+    /// can go back to painting while the GPU→CPU copy is in flight. A one-shot — the
+    /// attachments are allocated for this render and dropped with it, so a large
+    /// export does not park its buffers for the session.
+    pub fn export(
+        &mut self,
+        frame: Option<stark_model::document::LayerId>,
+        scale: stark_engine::ExportScale,
+        background: stark_engine::Background,
+        content: stark_engine::Rendered,
+    ) -> stark_engine::Result<
+        impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
+    > {
+        self.engine.export(
+            &mut stark_engine::Offscreen::default(),
+            frame,
+            scale,
+            background,
+            content,
+        )
+    }
+
     /// The view a pointer position is mapped through.
     pub fn view(&self) -> ViewTransform {
         self.engine.view()

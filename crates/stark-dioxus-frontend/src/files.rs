@@ -29,12 +29,6 @@ use stark_engine::command::ViewCommand;
 use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
 
-/// Extension for the native (replayable) document format.
-///
-/// `pub(crate)` for `crate::images`, which has to tell a dropped document from a
-/// dropped picture (§23.4) and must not do it with a second spelling of this.
-pub(crate) const DOC_EXT: &str = "stark";
-
 /// Object before the page goes away, if the document on screen holds work this
 /// browser is the only copy of. Bound once by `main`, for the life of the page.
 ///
@@ -75,7 +69,7 @@ pub fn unsaved(state: AppState) -> bool {
         .obs
         .peek()
         .as_ref()
-        .is_some_and(|o| o.edited && o.doc_revision != written)
+        .is_some_and(|o| stark_chrome::files::unsaved(o.edited, o.doc_revision, written))
 }
 
 /// The committed revision the chrome is being shown — what a file written now would
@@ -120,7 +114,7 @@ pub fn save_document(state: AppState) {
         Some(Ok(bytes)) => {
             match download_bytes(
                 &bytes,
-                &format!("painting.{DOC_EXT}"),
+                &stark_chrome::files::default_name(),
                 "application/octet-stream",
             ) {
                 Ok(()) => {
@@ -145,9 +139,10 @@ pub fn open_document(state: AppState) {
     // The handler is `Fn`, not `FnMut` — it may be re-entered per selected file —
     // so the signals are copied out of the capture on each call rather than
     // mutated in place. `Signal` is `Copy`, which is what makes that free.
-    pick_file(&format!(".{DOC_EXT}"), move |_name, bytes| {
-        open_bytes(state, bytes)
-    });
+    pick_file(
+        &format!(".{}", stark_chrome::files::DOC_EXT),
+        move |_name, bytes| open_bytes(state, bytes),
+    );
 }
 
 /// Take the app's second way in: the file the OS launched it with (§11).

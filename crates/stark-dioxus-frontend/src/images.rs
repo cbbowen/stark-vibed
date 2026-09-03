@@ -99,7 +99,7 @@ pub fn drop_files(state: AppState, e: &Event<DragData>) {
 /// Whether a dropped file is a Stark document rather than a picture.
 fn is_document(name: &str) -> bool {
     name.rsplit_once('.')
-        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(crate::files::DOC_EXT))
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(stark_chrome::files::DOC_EXT))
 }
 
 /// Place whatever image is pasted into the page — bound once, for the life of the page.

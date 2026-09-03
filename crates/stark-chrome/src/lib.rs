@@ -63,6 +63,7 @@
 pub mod brush_config;
 pub mod commands;
 pub mod drags;
+pub mod files;
 pub mod identity;
 pub mod input;
 pub mod keys;

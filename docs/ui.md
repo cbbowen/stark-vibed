@@ -635,9 +635,9 @@ own texture in its element tree as a `WgpuSurface`. Run it with
 **It exists to be a second consumer.** "Because the engine is frontend-agnostic"
 was a claim about a tree with one frontend in it, and a claim of that shape is
 only tested by something that shares nothing with the first: no DOM, no browser,
-no `<canvas>` — and no ownership of the device. What it carries is a canvas and
-one brush (Hard Round, §6.2), deliberately: chrome is not what a second frontend
-has to prove.
+no `<canvas>` — and no ownership of the device. It began as a canvas and one
+brush (Hard Round, §6.2), deliberately: chrome is not what a second frontend has
+to prove first. §11.2 is the plan that has been growing it since.
 
 It found something on the first day. `GpuContext` carried a `wgpu::Instance` and
 a `wgpu::Adapter` that no engine code ever read; wgpui's `WgpuSurfaceHandle`
@@ -691,8 +691,8 @@ displaced and which upstream had never honoured.
 
 ### 11.2 Parity, and the crate between the two frontends
 
-§11.1 is a canvas and one brush. This is the plan from there to a native app an
-artist could work in — and, because the two frontends will otherwise grow two
+§11.1 started as a canvas and one brush. This is the plan from there to a native
+app an artist could work in — and, because the two frontends will otherwise grow two
 copies of every rule, the crate that stops them.
 
 Status for each stage is in [§13](roadmap.md); the design is here.
@@ -938,7 +938,45 @@ the exit criterion is an act, not a diff.
   one history entry per sample. The preview pair is a stage of its own.
 - **N5 — documents on disk.** `files` splits; save, open and export through the
   native dialogs. *Exit:* a `.stark` file round-trips between the two frontends,
-  history intact.
+  history intact. **Done**, and the first stage where the two frontends are
+  meaningfully *different* rather than differently dressed.
+
+  What came down is small and is not the dialog work: `DOC_EXT`, the default
+  name, and `files::unsaved` — the rule that answers "would closing this lose
+  work". That rule is two halves from two places, which is why it is a function
+  rather than a field: the **engine** says whether the document has been edited
+  since it was last replaced, so a fresh canvas and a just-opened file both come
+  out clean without a frontend enumerating the ways a document can be replaced;
+  the **client** says which revision it last wrote, which is not a thing a
+  document can notice happening to it. Committed revisions only — a stroke in
+  flight moves the screen without moving `doc_revision`, and a gesture is over
+  before a hand reaches a close button.
+
+  **A real path is what the browser cannot have**, and it buys two things: *save
+  over the file you opened*, and a window title that says which file that is. The
+  web app has no Save/Save-As distinction because a download has nowhere to go
+  back to. The title is also this frontend's only message surface — a failed save
+  says so there, for want of anywhere better, which is an admission rather than a
+  design (§25.7).
+
+  **The saves diverge, deliberately.** The web app saves *lean*, naming content it
+  knows the opener ships (§8's version 6); the native one passes an empty
+  resolvable list, so every file it writes carries everything and opens anywhere.
+  The asymmetry is on the other side: opening a file that *names* a bundled
+  substrate needs the catalog, which is N7 — until then such a file is refused
+  with the painting on screen untouched, and says why.
+
+  The stage also found that **the shipped chord table binds no file acts at all**.
+  The web app reaches them through the command palette (§25), which this frontend
+  has not got, and wgpui installs platform menus on macOS alone — so three buttons,
+  labelled by `Command::word()` rather than by strings of their own, so a button
+  here and a palette row there cannot come to call one act two things.
+
+  What was actually exercised is native→native: a file saved after three strokes,
+  reopened, and then Ctrl+Z twice — which removed two of them, because the file
+  *is* the history (§8). The cross-frontend half rests on both frontends using one
+  `DocumentFile` codec plus the fat save above; it is not run end to end by
+  anything, and no gate covers it.
 - **N6 — selection, fill, transform.** Tool arming, the marquee, the fill parcel,
   and `gesture` (already down since N0) behind a native transform overlay.
   *Exit:* select, fill, and commit a transform.
