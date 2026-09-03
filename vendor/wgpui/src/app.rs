@@ -130,23 +130,12 @@ pub struct Application(Rc<AppCell>);
 impl Application {
     /// Builds an app with the given asset source.
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
+    pub fn new(device_descriptor: &wgpu::DeviceDescriptor) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         log::info!("WGPUI was compiled in test mode");
 
         Self(App::new_app(
-            current_platform(false),
-            Arc::new(()),
-            Arc::new(NullHttpClient),
-        ))
-    }
-
-    /// Build an app in headless mode. This prevents opening windows,
-    /// but makes it possible to run an application in an context like
-    /// SSH, where GUI applications are not allowed.
-    pub fn headless() -> Self {
-        Self(App::new_app(
-            current_platform(true),
+            current_platform(device_descriptor),
             Arc::new(()),
             Arc::new(NullHttpClient),
         ))

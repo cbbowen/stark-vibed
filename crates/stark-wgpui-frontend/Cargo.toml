@@ -5,20 +5,27 @@ edition.workspace = true
 license.workspace = true
 description = "Native wgpui frontend for Stark (§11): a winit/wgpu window over the same engine."
 
+[features]
+default = ["mixbox"]
+# Offer the Mixbox pigment space (§6.7) and forward it to the engine, which is where
+# turning it off actually drops the vendored CC BY-NC 4.0 code. The same switch the
+# web frontend carries, spelled the same way — and `device_descriptor` asks the
+# device for what *this* build needs, so the two cannot disagree.
+mixbox = ["stark-engine/mixbox"]
+
 [dependencies]
 # The document (§2), depended on directly rather than through the engine, for the
 # reason `stark-dioxus-frontend` gives: a type has one public path.
 stark-model = { workspace = true }
-# `default-features = false` drops Mixbox (§6.7), and here that is a *device*
-# constraint rather than a licence one. wgpui creates the wgpu device itself and
-# asks it for `wgpu::Limits::default()`, which guarantees four storage textures
-# per stage; the Mixbox stamp loop writes six (`GpuContext::minimum_required_limits`).
-# An Oklab document writes four, so this frontend paints — and a Mixbox one would
-# fail to build its pipelines, which is why it never opens one.
+# The engine, with the same feature stance the web frontend takes: Mixbox on by
+# default (§6.7), forwarded, so a build that must carry no CC BY-NC 4.0 code can
+# drop it here exactly as it can there.
 #
-# Cargo unifies features across a `--workspace` build, so the dioxus frontend's
-# `mixbox` still reaches this engine in that round. Harmless: the sixth texture is
-# declared by the *pipeline* a Mixbox document builds, not by the feature.
+# That was not a choice until now. wgpui creates the wgpu device, and it asked for
+# `wgpu::Limits::default()` — four storage textures per stage, where the Mixbox
+# stamp loop writes six — so the space was unreachable from this frontend whatever
+# the feature said. `main::device_descriptor` states the limits now, over a
+# vendored patch that threads a `DeviceDescriptor` down (vendor/wgpui).
 stark-engine = { path = "../stark-engine", default-features = false }
 # The fork of GPUI that renders through wgpu, which is the whole reason it is the
 # toolkit here: `WgpuSurface` puts the engine's own texture in the element tree,

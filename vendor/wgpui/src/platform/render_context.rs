@@ -22,25 +22,17 @@ pub struct WgpuContext {
 }
 
 impl WgpuContext {
-    pub fn new() -> anyhow::Result<Self> {
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(instance_descriptor);
+    pub fn new(
+        device_descriptor: &wgpu::DeviceDescriptor,
+    ) -> anyhow::Result<Self> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))?;
-
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 ..Default::default()
             }))?;
+
+        let (device, queue) = pollster::block_on(adapter.request_device(device_descriptor))?;
 
         let globals_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Globals Buffer"),

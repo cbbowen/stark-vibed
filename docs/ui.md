@@ -651,10 +651,20 @@ device — would have been worse than holding none.
 
 Three differences from §11 above are the interesting ones:
 
-- **The frontend does not own the device**, so it does not choose its limits.
-  wgpui asks for `wgpu::Limits::default()`, which guarantees four storage
-  textures per shader stage; the Mixbox stamp loop writes six (§6.7). An Oklab
-  document writes four, so this frontend paints and never opens a Mixbox one.
+- **The frontend does not own the device, and states what it must be anyway.**
+  wgpui creates it and every element in the window draws with it, so the
+  descriptor belongs to neither consumer alone — and upstream wrote it as
+  `wgpu::Limits::default()`, four storage textures per shader stage where the
+  Mixbox stamp loop writes six (§6.7). A whole colour space was therefore
+  unreachable here, and no cargo feature could reach it: limits are settled when
+  the device is created. The vendored patch threads a `DeviceDescriptor` down
+  from `Application::new`, and `main::device_descriptor` starts from
+  `Limits::default()` — what wgpui's own renderer was written against — raising
+  only the fields `GpuContext::minimum_required_limits` asks for. That function is
+  itself `#[cfg]`-dependent, so the ask tracks the build with no second copy of
+  the number to drift. What that buys today is a device that *can*: this frontend
+  opens the Oklab document `Engine::new` gives it and has no picker to ask for
+  another, so the space is unblocked rather than reachable.
 - **The paint happens inside `Render::render`**, not on a thread or a timer. The
   surface element resizes its textures during *prepaint* — after the view has
   rendered — so a resize is first visible one frame later, and a window resize
@@ -668,11 +678,13 @@ Three differences from §11 above are the interesting ones:
   factor is the whole of the mapping — and the input tolerance and the smoothing
   rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
 
-wgpui is **vendored** (`vendor/wgpui`), for one line: upstream 0.3.4 calls
-`flume::bounded` in `Executor::spawn_realtime` but declares `flume` only for
-macOS, Linux and FreeBSD, so the published crate does not compile on Windows at
-all. See `vendor/wgpui/VENDORING.md`; the patch is the missing declaration and
-nothing else.
+wgpui is **vendored** (`vendor/wgpui`) for two patches. The first is one line:
+upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
+`flume` only for macOS, Linux and FreeBSD, so the published crate does not
+compile on Windows at all. The second is the `DeviceDescriptor` above. See
+`vendor/wgpui/VENDORING.md`, which also records what the second one *removed* —
+`Application::headless`, whose flag the new signature displaced and which
+upstream had never honoured.
 
 [wgpui]: https://github.com/muktidaya/wgpui
 
