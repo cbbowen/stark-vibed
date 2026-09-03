@@ -77,18 +77,17 @@ impl Paint {
         // (`bind_pen`, §18.1.8). This press only has to *draw*, with whatever brush
         // the engine is holding.
 
-        // The marquee modifiers override the *combine mode*, so they apply only
-        // while the panel's action is a selecting one: under Fill there is nothing
-        // to combine, and letting shift quietly turn a fill into a union-select
-        // would be the worst kind of surprise (§18.0.4).
+        // The marquee modifiers may override the *combine mode* for the length of
+        // this one gesture; whether they do is `stark_chrome::selection`'s answer,
+        // and a `Some` is what has to be put back on release (below).
         let action = current_action(state);
         if tool.is_selection()
-            && action.is_select()
-            && let Some(m) = modifier_mode(e.modifiers())
+            && let Some(next) =
+                stark_chrome::selection::override_for(action, crate::drags::mods_of(e.modifiers()))
         {
             let mut restore = self.restore;
             restore.set(Some(action));
-            dispatch(state, ViewCommand::SetShapeAction(ShapeAction::Select(m)));
+            dispatch(state, ViewCommand::SetShapeAction(next));
         }
         // The brush's smoothing as a canvas-px string (§6.11); zero for the
         // selection tools, which fit no curve.

@@ -131,7 +131,7 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
     let Some(o) = obs.as_ref() else {
         return (Vec2::new(-256.0, -256.0), Vec2::new(256.0, 256.0));
     };
-    content_rect(o).unwrap_or_else(|| view_rect(o))
+    stark_chrome::bounds::content(o).unwrap_or_else(|| stark_chrome::bounds::view(o))
 }
 
 /// **The frame that says where the piece ends**: the topmost matte layer with a
@@ -153,27 +153,6 @@ pub(crate) fn piece_frame(o: &stark_engine::ObservableState) -> Option<LayerId> 
         .rev()
         .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
         .map(|l| l.id)
-}
-
-/// The painted content's canvas-space bounds, inset to the populated tiles.
-pub(crate) fn content_rect(o: &stark_engine::ObservableState) -> Option<(Vec2, Vec2)> {
-    let (min, max) = o.bounds.tile_range()?;
-    let t = stark_model::geom::TILE_SIZE as f32;
-    Some((
-        Vec2::new(min.x as f32 * t, min.y as f32 * t),
-        Vec2::new((max.x + 1) as f32 * t, (max.y + 1) as f32 * t),
-    ))
-}
-
-/// What the viewport currently shows, in canvas px, inset a little so a frame made
-/// from it is visibly a frame rather than flush with the window edge.
-pub(crate) fn view_rect(o: &stark_engine::ObservableState) -> (Vec2, Vec2) {
-    // The canvas-space bound of what is on screen — which under a turned canvas
-    // covers a little more than the window really shows, and that is the right way
-    // round for "frame what I am looking at".
-    let (min, max) = o.view.visible_bounds();
-    let inset = (max - min) * 0.06;
-    (min + inset, max - inset)
 }
 
 /// Reshape `rect` to `aspect` about its centre, preserving its area so switching
@@ -385,7 +364,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to everything painted so far",
                     onclick: move |_| {
-                        let rect = state.obs.peek().as_ref().and_then(content_rect);
+                        let rect = state.obs.peek().as_ref().and_then(stark_chrome::bounds::content);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to art"
@@ -394,7 +373,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to the current view",
                     onclick: move |_| {
-                        let rect = state.obs.peek().as_ref().map(view_rect);
+                        let rect = state.obs.peek().as_ref().map(stark_chrome::bounds::view);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to view"

@@ -82,8 +82,12 @@ crates/
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-chrome/    the **frontend's model** (§11.2): what a chrome is written in, below
-                   any toolkit. The brush's durable/transient halves, the transform
-                   algebra, the layer tree's arithmetic, the list-drag gesture, the
+                   any toolkit. The brush's durable/transient halves, the whole of a
+                   transform gesture — the algebra, what a press takes hold of and what
+                   a drag makes of it, what switching families costs — what a shape
+                   gesture is about to do to the selection or to the paint, the canvas
+                   rectangles a frontend asks the document for, the layer tree's
+                   arithmetic, the list-drag gesture, the
                    asset libraries' thumbnails, the record format every client keeps
                    its settings and libraries in — with a `storage::Backend` each
                    frontend installs to say where the bytes go — and both binding

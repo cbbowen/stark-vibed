@@ -3,7 +3,6 @@
 //! selection bar, which carries the whole mask's opacity and the acts on it.
 
 use crate::commands;
-use dioxus::html::Modifiers;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
@@ -15,7 +14,7 @@ use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider, slider_fill};
 use stark_chrome::commands::Command;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::{FillOp, SelectionMode, ShapeAction};
+use stark_model::document::{FillOp, ShapeAction};
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.
@@ -54,8 +53,8 @@ use stark_model::document::{FillOp, SelectionMode, ShapeAction};
 ///   *is* painting, and blocking in is done many times in a row.
 ///
 /// The four selecting actions also set a *default* that shift / alt override for one
-/// gesture (see [`modifier_mode`]) — the modifiers are inert under Fill, which has
-/// no combining to do.
+/// gesture (see [`stark_chrome::selection::modifier_mode`]) — the modifiers are inert
+/// under Fill, which has no combining to do.
 ///
 /// Add is the one whose word the mask algebra would not have honoured: a union with
 /// the unrestricted selection is the unrestricted selection, so on a fresh document
@@ -105,35 +104,29 @@ pub fn SelectPanel() -> Element {
     // that is about evenness rather than about glyphs — five icons over five words
     // keeps the row one row, and one entry left bare would break it the same way `∩`
     // did.
-    const ACTIONS: [(ShapeAction, &str, &str, &str); 5] = [
+    /// The mark and the prose for each of `stark_chrome::selection::SHAPE_ACTIONS`,
+    /// in that order — which is where the row's *membership* and its words live now,
+    /// since both frontends draw it. What stays here is what is this one's: an inline
+    /// SVG, and a sentence with room to be a sentence.
+    const MARKS: [(&str, &str); 5] = [
         (
-            ShapeAction::Select(SelectionMode::Replace),
             icons::SELECTION_NEW,
-            "New",
             "Select this region, replacing the current selection",
         ),
         (
-            ShapeAction::Select(SelectionMode::Union),
             icons::SELECTION_ADD,
-            "Add",
             "Add this region to the selection (or hold shift). With nothing \n             selected, this selects just the region",
         ),
         (
-            ShapeAction::Select(SelectionMode::Subtract),
             icons::SELECTION_SUB,
-            "Sub",
             "Cut this region out of the selection (or hold alt)",
         ),
         (
-            ShapeAction::Select(SelectionMode::Intersect),
             icons::SELECTION_ISECT,
-            "Isect",
             "Keep only the overlap with the selection (or hold shift+alt)",
         ),
         (
-            ShapeAction::Fill,
             icons::PAINT_BUCKET,
-            "Fill",
             "Fill this region with the brush's paint instead of selecting it. \
              Stays armed, so you can keep blocking in",
         ),
@@ -175,7 +168,7 @@ pub fn SelectPanel() -> Element {
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
         div { class: "tool-row stacked segmented",
-            for (a, glyph, word, hint) in ACTIONS {
+            for (a, (glyph, hint)) in stark_chrome::selection::SHAPE_ACTIONS.into_iter().zip(MARKS) {
                 button {
                     class: chip(action == a),
                     title: "{hint}",
@@ -195,7 +188,7 @@ pub fn SelectPanel() -> Element {
                     } else {
                         {icon(glyph)}
                     }
-                    {label(word)}
+                    {label(stark_chrome::selection::action_word(a))}
                 }
             }
         }
@@ -417,21 +410,6 @@ pub fn float_selection(state: AppState) {
         return;
     };
     dispatch(state, DocCommand::FloatSelection { layer });
-}
-
-/// The selection mode a gesture's modifier keys ask for, or `None` to keep the
-/// panel's default. Mirrors the conventional marquee modifiers.
-///
-/// Consulted only when the panel's action is a *selecting* one
-/// ([`ShapeAction::is_select`]): under Fill there is nothing to combine, so shift
-/// and alt mean nothing rather than silently turning a fill back into a selection.
-pub fn modifier_mode(m: Modifiers) -> Option<SelectionMode> {
-    match (m.contains(Modifiers::SHIFT), m.contains(Modifiers::ALT)) {
-        (true, true) => Some(SelectionMode::Intersect),
-        (true, false) => Some(SelectionMode::Union),
-        (false, true) => Some(SelectionMode::Subtract),
-        (false, false) => None,
-    }
 }
 
 /// Pick what the next shape gesture does — the action row's whole act, which is

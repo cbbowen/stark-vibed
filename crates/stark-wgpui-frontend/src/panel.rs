@@ -226,11 +226,16 @@ fn readout(knob: Knob, v: f32) -> String {
 /// A free function taking the pieces rather than a `Render` impl, because the panel
 /// has no state of its own: everything it shows is the brush's and everything it does
 /// is the canvas view's (`crate::canvas`), which owns the engine the changes go to.
+/// `select` is the Select section, built by its own module and passed in rather than
+/// reached for: the two share this column but nothing else, and a panel that
+/// constructed its neighbour would be the one place either could learn about the
+/// other's state.
 pub fn brush_panel(
     brush: &Brush,
     dragging: Option<Knob>,
     effects: &[(BrushEffectType, &'static str)],
     regions: &Regions,
+    select: impl IntoElement,
 ) -> impl IntoElement {
     let effect = brush.config.effect;
     // Cleared here rather than after the press: prepaint refills it every frame, and
@@ -269,7 +274,14 @@ pub fn brush_panel(
                         .child(command.word())
                 })),
         )
-        .child(div().text_sm().text_color(rgb(0x9aa0a6)).child("Brush"))
+        .child(select)
+        .child(
+            div()
+                .pt_2()
+                .text_sm()
+                .text_color(rgb(0x9aa0a6))
+                .child("Brush"),
+        )
         .children(KNOBS.map(|knob| {
             let (lo, hi) = knob.range();
             let v = knob.read(brush);

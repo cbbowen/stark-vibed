@@ -979,7 +979,62 @@ the exit criterion is an act, not a diff.
   anything, and no gate covers it.
 - **N6 — selection, fill, transform.** Tool arming, the marquee, the fill parcel,
   and `gesture` (already down since N0) behind a native transform overlay.
-  *Exit:* select, fill, and commit a transform.
+  *Exit:* select, fill, and commit a transform. **Done.**
+
+  The stage that paid off N0's biggest move. The transform *algebra* came down
+  first, before there was a second frontend to want it; what N6 found is that the
+  algebra was not the whole of what both frontends share, and the rest of it was
+  still sitting in the web panel:
+
+  - **`Grab`** — what a press on the widget took hold of, and `follow`, what a
+    drag makes of it. This was the web overlay's `Drag` enum plus a 60-line
+    `match` in its move handler, and it is *pure*: which family, which region,
+    where the press was, the state it was in, and for a mesh the least-norm basis
+    solved once at the press. Moving it made the native drag handler five lines,
+    and it is the difference between the second frontend re-deriving the gesture
+    and merely drawing it.
+  - **`Hint`** — three answers for what a press would do, because a CSS cursor
+    string and a `winit` cursor icon are two alphabets for one classification, and
+    the classification is the half that could disagree. Same shape as N3's finding
+    about `icon`, read the other way: there, what stayed behind was the spelling.
+  - **`switch`** — carry the deformation, or commit it first and reopen around the
+    moved paint. Real logic that had **no tests at all** while it was tangled with
+    `AppState`, and has four now: an ordinary affine carries into both other
+    families with the paint not moving, a mirrored one commits first (both of
+    those maps preserve orientation, so it has no image in either), and an
+    untouched gesture switches free rather than spending an undo step on nothing.
+  - **`entry`/`mount`**, the widget's ladder — the selection's hull, or the
+    paint's, or what is on screen — and with it `bounds`, which is where
+    `content_rect` and `view_rect` moved from the *frame* panel. Two features
+    wanted the same fallback, so it was already one answer given twice.
+  - **`selection`** — the momentary arm (pressing the lit chip disarms it), the
+    marquee modifiers over `keys::Mods` rather than a `dioxus` type, and the
+    action row's membership and words. The marks stay in each frontend, one being
+    inline SVG.
+
+  Entering the mode revealed that the two frontends' `entry` had *already*
+  drifted: the web app mounted the ellipse from the raw hull but recorded the
+  inflated rect, while its own family switch used one rect for both. Neither is
+  wrong and the difference is invisible except on a hairline selection — which is
+  exactly the kind of divergence that is cheap to fix while it is two callers and
+  expensive once it is a picture someone has noticed.
+
+  Three things this frontend does differently, each an admission. There is no
+  **remembered** shape tool: the web app keeps the last one armed in a signal so
+  the action row can hand it back, and this one hands back the rectangle. The
+  **grid** through a perspective quad is drawn brighter than the web's, because it
+  is drawn over the paint rather than in an SVG layer with its own compositing.
+  And the mode's catcher is not an element but **one branch at the top of the
+  press**, which is the same claim about hit testing without a full-viewport div
+  to make it — this frontend has one hit test already (`crate::canvas`), so the
+  mode joins it rather than stacking over it.
+
+  One bug worth recording because it will recur. The overlay is a `canvas` element
+  drawn *after* the surface, and `absolute()` + `size_full()` laid it out one full
+  viewport below the window: an absolutely-positioned child with only a size is
+  placed wherever the flow had reached. It drew correctly, off-screen, for exactly
+  one build. `absolute()` with all four insets is the fix, and the panel's own
+  probes only escape it by being their parent's *first* child.
 - **N7 — the asset libraries.** Shapes and substrates over `library` and the blob
   backend; native decode. *Exit:* import a brush shape and a canvas substrate.
 - **N8 — the long tail.** Guides (§20), gradients (§22), filters (§21), frames and

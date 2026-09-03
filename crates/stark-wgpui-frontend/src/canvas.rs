@@ -17,10 +17,12 @@ use stark_chrome::commands::{Bindings, Command};
 use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_chrome::input as chrome_input;
 use stark_chrome::keys::Mods;
+use stark_chrome::transform::{Family, Grab, Hint, Switch, TransformUi};
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool};
-use stark_model::Vec2;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_model::document::{FillOp, SelectionOp, ShapeAction};
+use stark_model::{Srgb, Vec2};
 use wgpui::{
     AnyElement, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, Window, div, prelude::*, rgb, wgpu_surface,
@@ -31,6 +33,8 @@ use crate::files::{self, Done};
 use crate::layers::{self, Act};
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
+use crate::select;
+use crate::transform;
 
 /// The effects the panel offers, with the word each wears.
 ///
@@ -66,8 +70,25 @@ const TUNE_FLOW_PER_PX: f32 = 0.01;
 enum Held {
     /// A stroke on the canvas.
     Stroke,
+    /// A shape gesture — a marquee or a lasso — which is the *same* engine seam as a
+    /// stroke and differs only in the tool it opened with and in fitting no curve
+    /// (§6.8). `restore` is the action a held modifier borrowed for this one gesture,
+    /// to be put back when it ends.
+    Shape { restore: Option<ShapeAction> },
     /// A knob on the panel, kept for the whole drag — see the module note.
     Knob(Knob),
+    /// One of the Select section's dials, with where the drag has moved it.
+    ///
+    /// The fraction is kept rather than read back at the release, because the mask's
+    /// dial *previews*: what the engine reports is still the committed value, so a
+    /// release that asked it would spend an action putting the dial back where it
+    /// started.
+    Dial { dial: select::Dial, fraction: f32 },
+    /// A drag on the transform widget. The whole of what it does is
+    /// `Grab::follow` — see `crate::transform`. Boxed: a warp grab carries the whole
+    /// 4×4 mesh and its solved basis, which would otherwise be the size of every
+    /// other thing a press can hold.
+    Transform(Box<Grab>),
     /// The layers panel's opacity track.
     Opacity,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
@@ -103,6 +124,21 @@ pub struct Canvas {
     regions: Regions,
     /// The same, for the layers panel on the other side.
     layer_regions: layers::Regions,
+    /// The same, for the Select section and for the transform bar.
+    select_regions: select::Regions,
+    bar_regions: transform::Regions,
+    /// What a press on the transform widget would take hold of, as of the last move
+    /// — the cursor, and nothing else. Meaningless with no mode live.
+    hover: Hint,
+    /// The transform gesture in flight, if any (§16.6).
+    ///
+    /// **The mode is this one `Option`**, which is the web frontend's rule arrived at
+    /// from the other side: over there four modes in four signals had to be kept
+    /// mutually exclusive by every entry point remembering to, and the fix was one
+    /// value that cannot hold two. This frontend has one mode so far, so "two at
+    /// once" is not yet a state it could reach — but the shape is the one to grow
+    /// into rather than a second `Option` beside this.
+    mode: Option<TransformUi>,
     /// The engine's projection, refreshed after every command — what the layers
     /// panel draws and what a command's gate reads (§5).
     ///
@@ -160,6 +196,10 @@ impl Canvas {
             dirty: true,
             regions: Regions::default(),
             layer_regions: layers::Regions::default(),
+            select_regions: select::Regions::default(),
+            bar_regions: transform::Regions::default(),
+            hover: Hint::Move,
+            mode: None,
             obs,
             path: None,
             written: 0,
@@ -173,6 +213,25 @@ impl Canvas {
     }
 
     fn press(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // A live transform owns the canvas: its bar first, then the widget, and a
+        // press that reached neither is still not paint. This is the web app's
+        // full-viewport catcher without the catcher — one hit test in one place
+        // rather than an element stacked over the surface (the module note).
+        if let Some(ui) = self.mode {
+            if let Some(region) = transform::hit(&self.bar_regions, ev.position) {
+                self.bar_act(ui, region, cx);
+                return;
+            }
+            if !panel::within(ev.position)
+                && !self.over_layers(window, ev.position)
+                && let Some(view) = self.view()
+            {
+                let at = canvas_at(view, ev.position, window.scale_factor());
+                self.held = Some(Held::Transform(Box::new(grab_at(ui, at, view))));
+                return;
+            }
+        }
+
         // The layers panel is on the right, so it is asked first for the same reason
         // the brush panel is: a press is paint only where neither column claims it.
         if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
@@ -188,6 +247,41 @@ impl Canvas {
         }
         if self.over_layers(window, ev.position) {
             return;
+        }
+
+        // The Select section shares the brush panel's column, so it is asked with it.
+        match select::hit(&self.select_regions, ev.position) {
+            Some(select::Region::Tool(i)) => {
+                if let Some(tool) = stark_chrome::selection::SHAPE_TOOLS.get(i) {
+                    self.run(select::tool_command(*tool), window, cx);
+                }
+                return;
+            }
+            Some(select::Region::Action(i)) => {
+                if let Some(action) = stark_chrome::selection::SHAPE_ACTIONS.get(i) {
+                    // Picking what a shape *does* also hands back a tool to draw it
+                    // with: all five answers are about a gesture that has not been
+                    // made, and with the brush in hand there is nothing for one to be
+                    // an answer about (§6.8).
+                    self.send(ViewCommand::SetShapeAction(*action), cx);
+                    self.arm_shape(cx);
+                }
+                return;
+            }
+            Some(select::Region::Dial(dial)) => {
+                let fraction =
+                    select::fraction_at(&self.select_regions, dial, ev.position).unwrap_or(0.0);
+                self.held = Some(Held::Dial { dial, fraction });
+                self.turn_dial(dial, fraction, cx);
+                return;
+            }
+            Some(select::Region::Act(i)) => {
+                if let Some(command) = select::SELECT_ACTS.get(i) {
+                    self.run(*command, window, cx);
+                }
+                return;
+            }
+            None => {}
         }
 
         // Then the brush panel: its column is where a press stops being paint.
@@ -249,6 +343,26 @@ impl Canvas {
             return;
         }
 
+        let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        // A held modifier borrows the shape action for this one gesture — whether it
+        // does is `stark_chrome::selection`'s answer, and a `Some` is what has to be
+        // put back on release.
+        let restore = if tool.is_selection() {
+            let action = self
+                .obs
+                .as_ref()
+                .map_or_else(Default::default, |o| o.shape_action);
+            match stark_chrome::selection::override_for(action, mods) {
+                Some(next) => {
+                    self.send(ViewCommand::SetShapeAction(next), cx);
+                    Some(action)
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
         let (scale, now) = (window.scale_factor(), self.elapsed());
         let smoothing = self.brush.config.smoothing;
         let Some(r) = self.renderer.as_mut() else {
@@ -256,7 +370,7 @@ impl Canvas {
         };
         let view = r.view();
         r.process(GestureCommand::Start {
-            tool: Tool::Brush,
+            tool,
             sample: sample_at(view, ev.position, scale, now),
             // Both are canvas-space lengths the frontend alone can state, and both
             // are mapped by `stark_chrome::input` rather than here — which is the
@@ -266,14 +380,43 @@ impl Canvas {
             // The resolution is a *mouse's*, in this surface's device px: winit gives
             // no pen, so there is nothing finer to report yet.
             tolerance: chrome_input::tolerance(view, chrome_input::MOUSE_RESOLUTION),
-            rope: chrome_input::rope(view, smoothing),
+            // Zero for the shape tools, which fit no curve: a marquee's corner is
+            // where the hand put it, and towing it would round the corner off.
+            rope: if tool.is_selection() {
+                0.0
+            } else {
+                chrome_input::rope(view, smoothing)
+            },
         });
-        self.held = Some(Held::Stroke);
+        self.held = Some(if tool.is_selection() {
+            Held::Shape { restore }
+        } else {
+            Held::Stroke
+        });
         self.repaint(cx);
     }
 
     fn drag(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         match self.held {
+            Some(Held::Transform(ref grab)) => {
+                let grab = **grab;
+                let (Some(ui), Some(view)) = (self.mode, self.view()) else {
+                    return;
+                };
+                let at = canvas_at(view, ev.position, window.scale_factor());
+                // `ui` is what the validity clamps hold at — the last shape the
+                // family could express — and the *start* is inside the grab, so a
+                // long drag stays one map (`stark_chrome::transform`).
+                let next = grab.follow(ui, at, stark_chrome::transform::SNAP_PX / view.zoom);
+                self.compose(next, cx);
+            }
+            Some(Held::Dial { dial, .. }) => {
+                if let Some(fraction) = select::fraction_at(&self.select_regions, dial, ev.position)
+                {
+                    self.held = Some(Held::Dial { dial, fraction });
+                    self.turn_dial(dial, fraction, cx);
+                }
+            }
             Some(Held::Knob(knob)) => {
                 // Recomputed from the pointer's x alone, so a drag that has wandered
                 // off the track vertically still moves the knob it took hold of.
@@ -298,7 +441,7 @@ impl Canvas {
                 self.brush.tune.flow = (flow - dy * TUNE_FLOW_PER_PX).clamp(0.0, MAX_FLOW);
                 self.send_brush(cx);
             }
-            Some(Held::Stroke) => {
+            Some(Held::Stroke | Held::Shape { .. }) => {
                 let (scale, now) = (window.scale_factor(), self.elapsed());
                 let Some(r) = self.renderer.as_mut() else {
                     return;
@@ -309,19 +452,56 @@ impl Canvas {
                 });
                 self.repaint(cx);
             }
-            None => {}
+            // Resting. With a transform live, report what a press here would take
+            // hold of, so the cursor says which of the three drags the widget is
+            // offering at this point — the affine's rim, inside and outside are one
+            // shape with three meanings, and nothing else distinguishes them.
+            None => {
+                if let (Some(ui), Some(view)) = (self.mode, self.view()) {
+                    let at = canvas_at(view, ev.position, window.scale_factor());
+                    let hint = grab_at(ui, at, view).hint();
+                    if hint != self.hover {
+                        self.hover = hint;
+                        // The cursor is set during *paint*, so a changed hint owes a
+                        // frame; an unchanged one owes nothing, which is what keeps a
+                        // resting pointer from repainting the window.
+                        self.repaint(cx);
+                    }
+                }
+            }
         }
     }
 
     /// End whatever the press took hold of — for a stroke, the one edge that commits
     /// an action (§4).
     fn release(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
-        // A committed stroke is a document change like any other: the roster it
-        // may have added to has to reach the panel.
-        if matches!(self.held.take(), Some(Held::Stroke)) {
-            self.send(GestureCommand::End, cx);
-        } else {
-            self.repaint(cx);
+        match self.held.take() {
+            // A committed stroke is a document change like any other: the roster it
+            // may have added to has to reach the panel.
+            Some(Held::Stroke) => self.send(GestureCommand::End, cx),
+            Some(Held::Shape { restore }) => {
+                self.send(GestureCommand::End, cx);
+                // The borrowed action goes back *after* the gesture, which is also
+                // after the gesture disarmed the tool (§6.8) — so this restores a
+                // setting and re-arms nothing, which is the order that makes the
+                // momentary rule hold under a modifier-drag.
+                if let Some(action) = restore {
+                    self.send(ViewCommand::SetShapeAction(action), cx);
+                }
+            }
+            // The mask's strength was previewed for the length of the drag; the
+            // release is what spends an action on it (§6.8).
+            Some(Held::Dial {
+                dial: dial @ select::Dial::MaskOpacity,
+                fraction,
+            }) => {
+                self.send(ViewCommand::PreviewSelectionOpacity(None), cx);
+                self.send(DocCommand::SetSelectionOpacity(dial.value_at(fraction)), cx);
+            }
+            // A transform is *not* committed on release: the gesture goes on being
+            // composed until Done, which is what makes it one undo step however many
+            // drags built it (§16.6).
+            _ => self.repaint(cx),
         }
     }
 
@@ -601,6 +781,159 @@ impl Canvas {
         }
     }
 
+    /// Enter transform mode around whatever is selected (§16.6).
+    ///
+    /// Where the widget mounts and on which layer are `stark_chrome::transform`'s
+    /// answers, so the two frontends cannot come to disagree about what an unbounded
+    /// selection means.
+    fn begin_transform(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(o) = self.obs.as_ref() else { return };
+        let Some(entry) = stark_chrome::transform::entry(o) else {
+            return;
+        };
+        let ui = stark_chrome::transform::mount(entry.layer, Family::Free, entry.hull, o.view.zoom);
+        self.hold(ui, cx);
+    }
+
+    /// Replace what the mode is composing and **show** it.
+    ///
+    /// One door for every gesture, so the preview can never lag the state: a mutation
+    /// that reached the mode without the preview would leave a picture on screen that
+    /// "Done" would not reproduce.
+    fn compose(&mut self, ui: TransformUi, cx: &mut Context<'_, Self>) {
+        self.mode = Some(ui);
+        self.send(
+            ViewCommand::PreviewTransform(Some((ui.layer(), ui.map()))),
+            cx,
+        );
+    }
+
+    /// Replace what the mode is composing **without** showing it.
+    ///
+    /// For the two moves that compose nothing: entering, and switching to a family
+    /// that carries the deformation across. Previewing an identity is not free — the
+    /// preview resamples the selected paint (§16.6), so an entry that showed one would
+    /// harden the selection's edge before the hand had done anything — and a carry's
+    /// preview is by definition the one already on screen.
+    fn hold(&mut self, ui: TransformUi, cx: &mut Context<'_, Self>) {
+        self.mode = Some(ui);
+        self.repaint(cx);
+    }
+
+    /// One of the transform bar's controls.
+    fn bar_act(&mut self, ui: TransformUi, region: transform::Region, cx: &mut Context<'_, Self>) {
+        match region {
+            transform::Region::Family(i) => {
+                if let Some((to, _)) = transform::FAMILIES.get(i) {
+                    self.switch_family(ui, *to, cx);
+                }
+            }
+            transform::Region::Flip(i) => {
+                if let TransformUi::Affine { rect, ts } = ui {
+                    let ts = if i == 0 {
+                        ts.flipped_h()
+                    } else {
+                        ts.flipped_v()
+                    };
+                    self.compose(TransformUi::Affine { rect, ts }, cx);
+                }
+            }
+            transform::Region::Act(i) => match transform::BAR_ACTS.get(i) {
+                Some(Command::CancelMode) => self.cancel_mode(cx),
+                Some(Command::FinishMode) => self.finish_mode(cx),
+                _ => {}
+            },
+        }
+    }
+
+    /// Switch which family is composing — carrying the deformation when the new
+    /// family holds it exactly, and committing it first when it cannot.
+    fn switch_family(&mut self, ui: TransformUi, to: Family, cx: &mut Context<'_, Self>) {
+        let zoom = self.obs.as_ref().map_or(1.0, |o| o.view.zoom);
+        match stark_chrome::transform::switch(ui, to, zoom) {
+            Switch::Nothing => {}
+            Switch::Carried(next) => self.compose(next, cx),
+            Switch::Fresh(next) => self.hold(next, cx),
+            Switch::Commit { map, then } => {
+                // One honest undo step for what could not ride across, and the
+                // commit clears the preview itself — so there is no frame showing
+                // the document untransformed between the two.
+                self.send(
+                    DocCommand::Transform {
+                        layer: ui.layer(),
+                        map,
+                    },
+                    cx,
+                );
+                self.hold(then, cx);
+            }
+        }
+    }
+
+    /// Commit the gesture and leave the mode — the bar's Done, and Enter's.
+    fn finish_mode(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(ui) = self.mode.take() else { return };
+        if ui.is_identity() {
+            // Nothing composed: drop the preview rather than spend an undo step on a
+            // transform that would change no pixel.
+            self.send(ViewCommand::PreviewTransform(None), cx);
+        } else {
+            self.send(
+                DocCommand::Transform {
+                    layer: ui.layer(),
+                    map: ui.map(),
+                },
+                cx,
+            );
+        }
+        self.held = None;
+    }
+
+    /// Leave the mode keeping nothing — the bar's Cancel, and Escape's.
+    fn cancel_mode(&mut self, cx: &mut Context<'_, Self>) {
+        if self.mode.take().is_some() {
+            self.send(ViewCommand::PreviewTransform(None), cx);
+        }
+        self.held = None;
+    }
+
+    /// Hand back a shape tool without naming one.
+    ///
+    /// The action row is what asks: picking what a shape *does* is a statement about
+    /// a gesture that has not been made, and with the brush in hand there is nothing
+    /// for it to be a statement about. Which of the three it hands back is not this
+    /// frontend's to remember yet — the rectangle is what a marquee means when
+    /// nothing says otherwise, and remembering the last one armed is a signal the web
+    /// app keeps and this one has nowhere to.
+    fn arm_shape(&mut self, cx: &mut Context<'_, Self>) {
+        let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        if !tool.is_selection() {
+            self.send(ViewCommand::SetTool(Tool::SelectRect), cx);
+        }
+    }
+
+    /// Move one of the Select section's dials.
+    fn turn_dial(&mut self, dial: select::Dial, fraction: f32, cx: &mut Context<'_, Self>) {
+        let v = dial.value_at(fraction);
+        match dial {
+            select::Dial::Feather => self.send(ViewCommand::SetSelectionFeather(v), cx),
+            select::Dial::FillOpacity => self.send(ViewCommand::SetShapeOpacity(v), cx),
+            // Previewed while the hand is on it and committed on release — the mask's
+            // strength is the document's, so a drag that logged per sample would
+            // spend a hundred undo steps crossing the track.
+            select::Dial::MaskOpacity => {
+                self.send(ViewCommand::PreviewSelectionOpacity(Some(v)), cx)
+            }
+        }
+    }
+
+    /// The view the pointer is mapped through. `None` before there is a device —
+    /// there is no identity to stand in for it, because a view carries the viewport
+    /// and a made-up one would put every mapped point somewhere wrong.
+    fn view(&self) -> Option<ViewTransform> {
+        self.renderer.as_ref().map(Renderer::view)
+    }
+
     /// Run whatever the shipped chord table says this keystroke asks for.
     ///
     /// **The whole of the keyboard, and it is nine lines**, because the table is
@@ -622,9 +955,31 @@ impl Canvas {
     /// no-op arm, so the day it lands the compiler has nothing to say and the reader
     /// does.
     fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // The registry's own gate, asked once for every door — the button, the chord
+        // and the palette this frontend has not got yet (§25). A row that dimmed
+        // itself but let its chord through would be two answers to one question.
+        if !command.enabled(self.obs.as_ref()) {
+            return;
+        }
         let doc = match command {
             Command::Undo => Some(DocCommand::Undo),
             Command::Redo => Some(DocCommand::Redo),
+            // Covering everything *is* selecting nothing, so Ctrl+A and Ctrl+D are
+            // one act (§6.8) — which is the registry's claim, and this is it honoured
+            // rather than restated.
+            Command::Deselect => Some(DocCommand::Select(SelectionOp::select_all())),
+            Command::InvertSelection => Some(DocCommand::InvertSelection),
+            Command::FloatSelection => self.obs.as_ref().map(|o| DocCommand::FloatSelection {
+                layer: o.active_layer,
+            }),
+            // The color comes off the brush, which is the same choice a Fill *gesture*
+            // makes: a fill lays the paint in hand. How far it covers is not a
+            // question this act asks — it fills the selection, so the selection's own
+            // coverage answers it.
+            Command::FillSelection => self.obs.as_ref().map(|o| DocCommand::Fill {
+                layer: o.active_layer,
+                op: FillOp::of_selection(Srgb::new(self.brush.tune.color)),
+            }),
             _ => None,
         };
         match command {
@@ -633,11 +988,26 @@ impl Canvas {
             Command::SaveDocument => self.save(window, cx),
             Command::OpenDocument => self.open(window, cx),
             Command::ExportImage => self.export(window, cx),
+            Command::SelectRect => self.arm_tool(Tool::SelectRect, cx),
+            Command::SelectEllipse => self.arm_tool(Tool::SelectEllipse, cx),
+            Command::SelectLasso => self.arm_tool(Tool::SelectLasso, cx),
+            Command::Transform => self.begin_transform(cx),
+            Command::CancelMode => self.cancel_mode(cx),
+            Command::FinishMode => self.finish_mode(cx),
             _ => {}
         }
         if let Some(doc) = doc {
             self.send(doc, cx);
         }
+    }
+
+    /// Arm a shape tool, or put it down if it is the one already in hand.
+    fn arm_tool(&mut self, tool: Tool, cx: &mut Context<'_, Self>) {
+        let current = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        self.send(
+            ViewCommand::SetTool(stark_chrome::selection::arm(current, tool)),
+            cx,
+        );
     }
 
     /// Step the brush's size by a factor, clamped to the range the panel offers.
@@ -695,9 +1065,30 @@ impl Render for Canvas {
             Some(Held::Knob(k)) => Some(k),
             _ => None,
         };
-        let chrome = panel::brush_panel(&self.brush, dragging, EFFECTS, &self.regions);
+        let chrome = panel::brush_panel(
+            &self.brush,
+            dragging,
+            EFFECTS,
+            &self.regions,
+            select::select_panel(self.obs.as_ref(), &self.bindings, &self.select_regions),
+        );
         let rows = self.rows();
         let roster = layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions);
+        // The mode's two pieces are built here, where `self` is still borrowable —
+        // the surface below takes a mutable borrow of the renderer that outlives the
+        // rest of the tree.
+        let mode = self.mode;
+        let (bar, overlay) = match mode {
+            Some(ui) => (
+                Some(transform::bar(ui, &self.bindings, &self.bar_regions)),
+                self.view()
+                    .map(|view| transform::overlay(ui, view, window.scale_factor(), self.hover)),
+            ),
+            None => {
+                self.bar_regions.borrow_mut().clear();
+                (None, None)
+            }
+        };
 
         let Some(r) = self.renderer.as_mut() else {
             return unavailable();
@@ -716,9 +1107,15 @@ impl Render for Canvas {
             .child(chrome)
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .h_full()
-                    .child(wgpu_surface(r.surface()).size_full()),
+                    .child(wgpu_surface(r.surface()).size_full())
+                    // Over the surface rather than beside it: the widget is drawn in
+                    // canvas space and the surface is what canvas space maps onto, so
+                    // the overlay's own bounds are the frame the mapping lands in.
+                    .children(overlay)
+                    .children(bar),
             )
             .child(roster)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
@@ -740,16 +1137,35 @@ impl Render for Canvas {
 /// The panel's width comes off first: the surface begins where the panel ends, and
 /// `screen_to_canvas` maps out of the *surface's* space rather than the window's.
 fn sample_at(view: ViewTransform, position: Point<Pixels>, scale: f32, time: f64) -> InputSample {
-    let x = f32::from(position.x) - panel::WIDTH;
-    let screen = Vec2::new(x * scale, f32::from(position.y) * scale);
     InputSample {
-        pos: view.screen_to_canvas(screen),
+        pos: canvas_at(view, position, scale),
         // A mouse is always pressed home (`ModSource::Pressure`), and reports no
         // tilt at all.
         pressure: 1.0,
         tilt: Vec2::ZERO,
         time,
     }
+}
+
+/// What a press at `at` would take hold of, with both grab radii converted out of
+/// screen px by the zoom — so a handle is equally grabbable at any magnification.
+fn grab_at(ui: TransformUi, at: Vec2, view: ViewTransform) -> Grab {
+    Grab::take(
+        ui,
+        at,
+        stark_chrome::transform::RIM_BAND_PX / view.zoom,
+        stark_chrome::transform::HANDLE_PX / view.zoom,
+    )
+}
+
+/// A window position in canvas px.
+///
+/// Split out of [`sample_at`] because the transform widget wants the point without
+/// the pen fields around it — and because one mapping is the whole of what keeps the
+/// widget under the pointer that grabbed it.
+fn canvas_at(view: ViewTransform, position: Point<Pixels>, scale: f32) -> Vec2 {
+    let x = f32::from(position.x) - panel::WIDTH;
+    view.screen_to_canvas(Vec2::new(x * scale, f32::from(position.y) * scale))
 }
 
 /// What the window shows when there is no wgpu device to paint with.

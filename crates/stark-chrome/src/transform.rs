@@ -275,6 +275,383 @@ impl TransformUi {
             TransformUi::Warp(w) => w.is_identity(),
         }
     }
+
+    /// Which family is composing.
+    pub fn family(&self) -> Family {
+        match self {
+            TransformUi::Affine { .. } => Family::Free,
+            TransformUi::Perspective(_) => Family::Perspective,
+            TransformUi::Warp(_) => Family::Warp,
+        }
+    }
+
+    /// The source rect this gesture was mounted around — the paint it is holding,
+    /// before the gesture moved it.
+    pub fn rect(&self) -> (Vec2, Vec2) {
+        match self {
+            TransformUi::Affine { rect, .. } => *rect,
+            TransformUi::Perspective(p) => p.rect,
+            TransformUi::Warp(w) => w.rect,
+        }
+    }
+
+    /// Where the paint has been carried to, as an axis-aligned bound — what a fresh
+    /// gesture should be mounted around after this one is committed.
+    pub fn image_rect(&self) -> (Vec2, Vec2) {
+        match self.map() {
+            TransformMap::Affine(a) => {
+                let rect = self.rect();
+                let corners = rect_corners(rect.0, rect.1).map(|c| a.transform_point2(c));
+                let lo = corners.iter().fold(corners[0], |m, p| m.min(*p));
+                let hi = corners.iter().fold(corners[0], |m, p| m.max(*p));
+                (lo, hi)
+            }
+            TransformMap::Perspective(p) => p.image_aabb().unwrap_or((p.min, p.max)),
+            TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
+        }
+    }
+}
+
+/// Half-width of the rim's / an edge's grab band, screen px — divided by the zoom to
+/// reach canvas px, so it is equally grabbable at any magnification.
+pub const RIM_BAND_PX: f32 = 10.0;
+
+/// Grab radius of a corner or control-point handle, screen px.
+pub const HANDLE_PX: f32 = 14.0;
+
+/// Screen-px floor for the widget's radius at entry, so a hairline selection still
+/// mounts a circle with an inside to translate by.
+pub const MIN_RADIUS_PX: f32 = 28.0;
+
+/// Screen-px floor for a perspective/warp source rect's extent at entry — a hairline
+/// hull still mounts a quad with corners apart enough to grab.
+pub const MIN_RECT_PX: f32 = 56.0;
+
+/// Pointer travel below which a gesture reads as a jiggle and snaps back to its start
+/// (screen px): an accidental touch must never resample the paint.
+pub const SNAP_PX: f32 = 2.0;
+
+/// The three families, as a selector.
+///
+/// An enum of its own rather than a `match` on [`TransformUi`], because a bar has to
+/// name the family the gesture is *not* currently in — that is what its chips are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Family {
+    Free,
+    Perspective,
+    Warp,
+}
+
+/// The layer a transform would act on, and the rectangle to mount it around.
+///
+/// Both answers come off one read of `ObservableState`, so they cannot be taken from
+/// two different moments — a hull from before a layer change and a layer from after
+/// would mount the widget around paint it is not holding.
+pub struct Entry {
+    pub layer: LayerId,
+    /// The selection's hull, or the paint's, or what is on screen — see [`entry`].
+    pub hull: (Vec2, Vec2),
+}
+
+/// What entering transform mode should act on, or `None` when nothing can be.
+///
+/// The layer is the active one, or the topmost paintable layer when a matte is
+/// selected — a matte refuses transforms the same way it refuses strokes (§15.2).
+///
+/// The rectangle is a ladder, because the widget must always exist: the selection's
+/// analytic hull; failing that (select-all, an inversion — an *unbounded* selection,
+/// which holds the whole layer) the painted content's bounds; failing that, on an
+/// empty canvas, what is on screen.
+pub fn entry(o: &stark_engine::ObservableState) -> Option<Entry> {
+    let layer = o
+        .layers
+        .iter()
+        .find(|l| l.id == o.active_layer && l.is_paintable())
+        .or_else(|| o.layers.iter().rev().find(|l| l.is_paintable()))
+        .map(|l| l.id)?;
+    let hull = o
+        .selection_hull
+        .or_else(|| crate::bounds::content(o))
+        .unwrap_or_else(|| crate::bounds::view(o));
+    Some(Entry { layer, hull })
+}
+
+/// Mount a fresh gesture of `family` around `rect`, at `zoom`.
+pub fn mount(layer: LayerId, family: Family, rect: (Vec2, Vec2), zoom: f32) -> TransformUi {
+    match family {
+        Family::Free => TransformUi::Affine {
+            rect,
+            ts: TransformState::begin(layer, rect, MIN_RADIUS_PX / zoom),
+        },
+        Family::Perspective => TransformUi::Perspective(PerspectiveUi::begin(
+            layer,
+            crate::bounds::inflate(rect, MIN_RECT_PX / zoom),
+        )),
+        Family::Warp => TransformUi::Warp(WarpUi::begin(
+            layer,
+            crate::bounds::inflate(rect, MIN_RECT_PX / zoom),
+        )),
+    }
+}
+
+/// What a press on the widget is about to move, and everything the drag needs from
+/// the moment it landed.
+///
+/// **The whole of a transform drag is this type plus [`follow`](Self::follow).** Each
+/// arm carries the gesture's *start* — which family, which part of it, where the
+/// pointer was, and the state it was in — because every shaping function below takes
+/// the start rather than the previous step (see the module note), so a drag is one
+/// accumulated map instead of a chain of them.
+///
+/// The mesh arm carries two more: the least-norm basis a surface drag moves along and
+/// its norm, both solved once at the press. Solved once because they are a property
+/// of *where the paint was grabbed*, and re-solving them per move would let the
+/// grabbed point slide out from under the pointer.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Grab {
+    Affine {
+        region: TransformRegion,
+        from: Vec2,
+        rect: (Vec2, Vec2),
+        start: TransformState,
+    },
+    Quad {
+        region: QuadRegion,
+        from: Vec2,
+        start: PerspectiveUi,
+    },
+    Mesh {
+        region: MeshRegion,
+        from: Vec2,
+        start: WarpUi,
+        basis: [f32; WARP_GRID * WARP_GRID],
+        norm: f32,
+    },
+}
+
+/// What a press would do here — for the cursor a frontend shows.
+///
+/// Three answers rather than each frontend's own spelling of them: a CSS cursor
+/// string and a `winit` cursor icon are different alphabets for one classification,
+/// and the classification is the part that could disagree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hint {
+    /// The whole thing moves.
+    Move,
+    /// Something is taken hold of and carried: a rim, a corner, a control point, the
+    /// surface itself.
+    Hold,
+    /// The shape is worked from outside it — the affine's stretch and shear.
+    Shape,
+}
+
+impl Grab {
+    /// Classify a press at `at` (canvas px).
+    ///
+    /// `band` is the rim's / an edge's grab half-width and `handle` a corner's or
+    /// control point's grab radius, both in **canvas** px — the caller divides its
+    /// own screen-px figures ([`RIM_BAND_PX`], [`HANDLE_PX`]) by the zoom, so a handle
+    /// is equally grabbable at any magnification.
+    pub fn take(ui: TransformUi, at: Vec2, band: f32, handle: f32) -> Self {
+        match ui {
+            TransformUi::Affine { rect, ts } => Grab::Affine {
+                region: ts.region(at, band),
+                from: at,
+                rect,
+                start: ts,
+            },
+            TransformUi::Perspective(p) => Grab::Quad {
+                region: p.region(at, handle, band),
+                from: at,
+                start: p,
+            },
+            TransformUi::Warp(w) => {
+                let region = w.region(at, handle);
+                // Only a surface drag has a basis to solve; a point drag moves one
+                // control point and a translate moves all of them.
+                let (basis, norm) = match region {
+                    MeshRegion::Inside => {
+                        let (_, basis, norm) = w.grab(at);
+                        (basis, norm)
+                    }
+                    _ => ([0.0; WARP_GRID * WARP_GRID], 1.0),
+                };
+                Grab::Mesh {
+                    region,
+                    from: at,
+                    start: w,
+                    basis,
+                    norm,
+                }
+            }
+        }
+    }
+
+    /// What the gesture stands for with the pointer at `at`.
+    ///
+    /// `current` is the state the *validity clamps* hold at — a drag the family
+    /// cannot express (a quad turned concave, a mesh folded over itself) holds at the
+    /// last valid shape rather than tearing through it, and "last valid" is a fact
+    /// about what the drag has reached rather than about where it began. It is
+    /// ignored by the affine family, which has no shape to be invalid.
+    ///
+    /// `snap` is the travel below which the gesture reads as a jiggle and returns its
+    /// start ([`SNAP_PX`] over the zoom): an accidental touch must never resample.
+    pub fn follow(self, current: TransformUi, at: Vec2, snap: f32) -> TransformUi {
+        match self {
+            Grab::Affine {
+                region,
+                from,
+                rect,
+                start,
+            } => {
+                let ts = match region {
+                    TransformRegion::Inside => start.translated(from, at, snap),
+                    TransformRegion::Rim => start.turned_scaled(from, at, snap),
+                    TransformRegion::Outside => start.stretched(from, at, snap),
+                };
+                TransformUi::Affine { rect, ts }
+            }
+            Grab::Quad {
+                region,
+                from,
+                start,
+            } => {
+                let cur = match current {
+                    TransformUi::Perspective(p) => p,
+                    _ => start,
+                };
+                let delta = at - from;
+                TransformUi::Perspective(match region {
+                    QuadRegion::Corner(i) => {
+                        PerspectiveUi::corner_dragged(start, cur, i, delta, snap)
+                    }
+                    QuadRegion::Edge(a, b) => {
+                        PerspectiveUi::edge_dragged(start, cur, (a, b), delta, snap)
+                    }
+                    QuadRegion::Inside | QuadRegion::Outside => {
+                        PerspectiveUi::translated(start, cur, delta, snap)
+                    }
+                })
+            }
+            Grab::Mesh {
+                region,
+                from,
+                start,
+                basis,
+                norm,
+            } => {
+                let cur = match current {
+                    TransformUi::Warp(w) => w,
+                    _ => start,
+                };
+                let delta = at - from;
+                TransformUi::Warp(match region {
+                    MeshRegion::Point(i) => WarpUi::point_dragged(start, cur, i, delta, snap),
+                    MeshRegion::Inside => {
+                        WarpUi::surface_dragged(start, cur, &basis, norm, delta, snap)
+                    }
+                    MeshRegion::Outside => WarpUi::translated(start, cur, delta, snap),
+                })
+            }
+        }
+    }
+
+    /// What a press that took this hold would do.
+    pub fn hint(self) -> Hint {
+        match self {
+            Grab::Affine { region, .. } => match region {
+                TransformRegion::Inside => Hint::Move,
+                TransformRegion::Rim => Hint::Hold,
+                TransformRegion::Outside => Hint::Shape,
+            },
+            Grab::Quad { region, .. } => match region {
+                QuadRegion::Corner(_) | QuadRegion::Edge(..) => Hint::Hold,
+                QuadRegion::Inside | QuadRegion::Outside => Hint::Move,
+            },
+            Grab::Mesh { region, .. } => match region {
+                MeshRegion::Point(_) | MeshRegion::Inside => Hint::Hold,
+                MeshRegion::Outside => Hint::Move,
+            },
+        }
+    }
+}
+
+/// What switching to another family costs (§16.8, §16.9).
+pub enum Switch {
+    /// Already there. Nothing to do, and saying so is not the same as an identity
+    /// carry — a bar that re-mounted on every press of the lit chip would throw away
+    /// the gesture in hand.
+    Nothing,
+    /// The deformation rode across exactly. Replace the gesture and keep going —
+    /// **and show it**: the map is a different one from the map on screen, exact to
+    /// within a resample, so the preview owes the new family's own picture.
+    Carried(TransformUi),
+    /// Nothing was composed, so the switch is free: no undo step, and nothing to
+    /// show that is not already shown. Separate from [`Carried`](Self::Carried)
+    /// because a carry has a deformation to re-preview and this has none, and a
+    /// preview of the identity is not free — it resamples the selected paint.
+    Fresh(TransformUi),
+    /// Commit what is composed — one honest undo step — then reopen around where the
+    /// paint now is. What a lossy carry would have hidden.
+    Commit {
+        map: TransformMap,
+        then: TransformUi,
+    },
+}
+
+/// Decide what switching `ui` to `to` should do, at `zoom`.
+///
+/// Three outcomes, and which one is a fact about the two families rather than a
+/// preference:
+///
+/// - An **orientation-preserving affine is exactly** a parallelogram perspective, and
+///   exactly a mesh whose smooth surface reproduces it — cubic interpolation
+///   reproduces affine functions. So it carries, and the artist keeps composing.
+/// - A **mirrored or degenerate** affine has no image in either: both of those maps
+///   preserve orientation. So it commits first.
+/// - Nothing composed yet carries trivially, whichever way it is going: there is no
+///   deformation to lose, so the switch is free and spends no undo step.
+///
+/// The last case is why this cannot be "carry when you can, commit otherwise": a
+/// perspective quad nobody has dragged has to reach the warp family without an undo
+/// step appearing for it, and `is_identity` is what says so.
+pub fn switch(ui: TransformUi, to: Family, zoom: f32) -> Switch {
+    if ui.family() == to {
+        return Switch::Nothing;
+    }
+    let layer = ui.layer();
+    if let TransformUi::Affine { rect, ts } = ui
+        && ts.affine().matrix2.determinant() > 0.0
+    {
+        let affine = ts.affine();
+        let inflated = crate::bounds::inflate(rect, MIN_RECT_PX / zoom);
+        let carried = match to {
+            Family::Free => unreachable!("the same family returned above"),
+            Family::Perspective => {
+                let mut p = PerspectiveUi::begin(layer, inflated);
+                p.corners = p.corners.map(|c| affine.transform_point2(c));
+                TransformUi::Perspective(p)
+            }
+            Family::Warp => {
+                let mut w = WarpUi::begin(layer, inflated);
+                for pt in &mut w.points {
+                    *pt = affine.transform_point2(*pt);
+                }
+                TransformUi::Warp(w)
+            }
+        };
+        if carried.map().usable() {
+            return Switch::Carried(carried);
+        }
+    }
+    if ui.is_identity() {
+        return Switch::Fresh(mount(layer, to, ui.rect(), zoom));
+    }
+    Switch::Commit {
+        map: ui.map(),
+        then: mount(layer, to, ui.image_rect(), zoom),
+    }
 }
 
 /// Where a pointer stands relative to the perspective quad (§16.8) — which
@@ -864,5 +1241,95 @@ mod gesture_tests {
         let w = WarpUi::begin(LayerId::ROOT, rect());
         assert_eq!(WarpUi::point_dragged(w, w, 5, Vec2::splat(0.1), 0.5), w);
         assert_eq!(WarpUi::translated(w, w, Vec2::splat(0.1), 0.5), w);
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+
+    fn rect() -> (Vec2, Vec2) {
+        (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0))
+    }
+
+    fn free() -> TransformUi {
+        mount(LayerId::ROOT, Family::Free, rect(), 1.0)
+    }
+
+    /// Switching to the family already composing is not a re-mount: a bar that took
+    /// the lit chip as an instruction would throw the gesture away on a stray press.
+    #[test]
+    fn the_lit_family_is_left_alone() {
+        assert!(matches!(switch(free(), Family::Free, 1.0), Switch::Nothing));
+    }
+
+    /// An orientation-preserving affine *is* a parallelogram perspective, so it rides
+    /// across and the artist keeps composing — no undo step, no reopen.
+    #[test]
+    fn an_ordinary_affine_carries_into_the_other_families() {
+        let TransformUi::Affine { rect, ts } = free() else {
+            unreachable!()
+        };
+        let turned = TransformUi::Affine {
+            rect,
+            ts: ts
+                .turned_scaled(Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0), 0.5)
+                .translated(Vec2::ZERO, Vec2::new(20.0, -5.0), 0.5),
+        };
+        for to in [Family::Perspective, Family::Warp] {
+            let Switch::Carried(next) = switch(turned, to, 1.0) else {
+                panic!("an ordinary affine should carry into {to:?}");
+            };
+            assert_eq!(next.family(), to);
+            // Carried *exactly*: the paint under the widget must not move on a
+            // switch, or the family chips would be an edit.
+            let before = turned.image_rect();
+            let after = next.image_rect();
+            for (a, b) in [(before.0, after.0), (before.1, after.1)] {
+                assert!(
+                    (a - b).length() < 0.01,
+                    "the carry moved the paint: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    /// A mirrored affine has no image in either — both of those maps preserve
+    /// orientation — so it commits first, and the reopen is around where the paint
+    /// now is rather than where it started.
+    #[test]
+    fn a_mirrored_affine_commits_before_it_leaves() {
+        let TransformUi::Affine { rect, ts } = free() else {
+            unreachable!()
+        };
+        let mirrored = TransformUi::Affine {
+            rect,
+            ts: ts
+                .flipped_h()
+                .translated(Vec2::ZERO, Vec2::new(500.0, 0.0), 0.5),
+        };
+        let Switch::Commit { map, then } = switch(mirrored, Family::Perspective, 1.0) else {
+            panic!("a mirrored affine cannot carry");
+        };
+        assert!(matches!(map, TransformMap::Affine(_)));
+        assert_eq!(then.family(), Family::Perspective);
+        // Reopened around the moved paint: the translation above put it 500 to the
+        // right, so a quad still sitting over the origin would be the widget having
+        // let go of the picture.
+        assert!(then.rect().0.x > 300.0, "reopened at {:?}", then.rect());
+    }
+
+    /// Nothing composed yet costs nothing to switch, whichever way it goes — an undo
+    /// step appearing for a family chip nobody dragged under would be a lie about
+    /// what happened.
+    #[test]
+    fn an_untouched_gesture_switches_free() {
+        let fresh = mount(LayerId::ROOT, Family::Perspective, rect(), 1.0);
+        assert!(fresh.is_identity());
+        let Switch::Fresh(next) = switch(fresh, Family::Warp, 1.0) else {
+            panic!("an identity should never spend an undo step");
+        };
+        assert_eq!(next.family(), Family::Warp);
+        assert!(next.is_identity());
     }
 }

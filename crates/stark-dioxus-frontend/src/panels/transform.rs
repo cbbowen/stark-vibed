@@ -35,7 +35,6 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use super::frame::{content_rect, view_rect};
 use crate::icons::{self, icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
@@ -45,31 +44,11 @@ use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
 use stark_chrome::commands::Command;
 use stark_chrome::transform::{
-    MeshRegion, PerspectiveUi, QuadRegion, TransformRegion, TransformState, TransformUi, WARP_GRID,
-    WarpUi,
+    Family, Grab, HANDLE_PX, Hint, PerspectiveUi, RIM_BAND_PX, SNAP_PX, Switch, TransformState,
+    TransformUi, WARP_GRID, WarpUi,
 };
 use stark_engine::ViewTransform;
-use stark_model::document::TransformMap;
 use stark_model::geom::Vec2;
-
-/// Half-width of the rim's / an edge's grab band, screen px — converted to
-/// canvas px by the zoom, so it is equally grabbable at any magnification.
-const RIM_BAND_PX: f32 = 10.0;
-
-/// Grab radius of a corner or control-point handle, screen px.
-const HANDLE_PX: f32 = 14.0;
-
-/// Screen-px floor for the widget's radius at entry, so a hairline selection
-/// still mounts a circle with an inside to translate by.
-const MIN_RADIUS_PX: f32 = 28.0;
-
-/// Screen-px floor for a perspective/warp source rect's extent at entry — a
-/// hairline hull still mounts a quad with corners apart enough to grab.
-const MIN_RECT_PX: f32 = 56.0;
-
-/// Pointer travel below which a gesture reads as a jiggle and snaps back to its
-/// start (screen px): an accidental touch must never resample the paint.
-const SNAP_PX: f32 = 2.0;
 
 /// Enter transform mode around the current selection, in the Free (affine)
 /// family.
@@ -87,44 +66,25 @@ pub fn begin_transform(state: AppState) {
     crate::modes::leave(state);
     let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else { return };
-    let layer = o
-        .layers
-        .iter()
-        .find(|l| l.id == o.active_layer && l.is_paintable())
-        .or_else(|| o.layers.iter().rev().find(|l| l.is_paintable()))
-        .map(|l| l.id);
-    let Some(layer) = layer else { return };
-    let hull = o
-        .selection_hull
-        .or_else(|| content_rect(o))
-        .unwrap_or_else(|| view_rect(o));
-    let min_radius = MIN_RADIUS_PX / o.view.zoom;
-    let rect = inflate(hull, MIN_RECT_PX / o.view.zoom);
+    // Which layer and which rectangle are both `stark_chrome::transform`'s answers,
+    // and they come off one read: a hull from before a layer change with a layer
+    // from after would mount the widget around paint it is not holding.
+    let Some(entry) = stark_chrome::transform::entry(o) else {
+        return;
+    };
+    let zoom = o.view.zoom;
     drop(obs);
     // `enter`, not a write: it is what puts down whatever else was composing,
     // and the only way in (`crate::modes`).
     crate::modes::enter(
         state,
-        Composing::Transform(TransformUi::Affine {
-            rect,
-            ts: TransformState::begin(layer, hull, min_radius),
-        }),
+        Composing::Transform(stark_chrome::transform::mount(
+            entry.layer,
+            Family::Free,
+            entry.hull,
+            zoom,
+        )),
     );
-}
-
-/// `rect`, grown symmetrically wherever an axis is thinner than `min` — the
-/// perspective/warp source rect must have corners a hand can tell apart.
-fn inflate(rect: (Vec2, Vec2), min: f32) -> (Vec2, Vec2) {
-    let (mut lo, mut hi) = rect;
-    for axis in 0..2 {
-        let (a, b) = (lo[axis], hi[axis]);
-        if b - a < min {
-            let pad = (min - (b - a)) * 0.5;
-            lo[axis] = a - pad;
-            hi[axis] = b + pad;
-        }
-    }
-    (lo, hi)
 }
 
 /// Update the gesture and show its consequence — every mutation funnels through
@@ -136,111 +96,29 @@ fn update(state: AppState, ui: TransformUi) {
     preview::TRANSFORM.show(state, (ui.layer(), ui.map()));
 }
 
-/// The three chips on the bar. A selector enum of its own (rather than
-/// matching on `TransformUi`) so the bar can name a family the gesture is not
-/// currently in.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Family {
-    Free,
-    Perspective,
-    Warp,
-}
-
-fn family_of(ui: &TransformUi) -> Family {
-    match ui {
-        TransformUi::Affine { .. } => Family::Free,
-        TransformUi::Perspective(_) => Family::Perspective,
-        TransformUi::Warp(_) => Family::Warp,
-    }
-}
-
-/// Switch the composing family. Carries the accumulated deformation when the
-/// new family holds it exactly; otherwise commits it (one undo step) and
-/// reopens fresh around the moved paint — never a silent approximation.
+/// Switch the composing family — the bar's half of a decision
+/// `stark_chrome::transform::switch` makes: carry the deformation, or commit it
+/// first (one honest undo step) and reopen around the moved paint.
 fn switch_family(state: AppState, ui: TransformUi, to: Family) {
-    if family_of(&ui) == to {
-        return;
-    }
-    let layer = ui.layer();
-    let fresh = |rect: (Vec2, Vec2), zoom: f32| match to {
-        Family::Free => TransformUi::Affine {
-            rect,
-            ts: TransformState::begin(layer, rect, MIN_RADIUS_PX / zoom),
-        },
-        Family::Perspective => TransformUi::Perspective(PerspectiveUi::begin(
-            layer,
-            inflate(rect, MIN_RECT_PX / zoom),
-        )),
-        Family::Warp => TransformUi::Warp(WarpUi::begin(layer, inflate(rect, MIN_RECT_PX / zoom))),
-    };
     let zoom = state
         .obs
         .peek()
         .as_ref()
         .map(|o| o.view.zoom)
         .unwrap_or(1.0);
-
-    // Lossless carries: an orientation-preserving affine is exactly a
-    // parallelogram perspective, and exactly a mesh whose smooth surface
-    // reproduces it (cubic interpolation reproduces affine functions).
-    if let TransformUi::Affine { rect, ts } = ui {
-        let affine = ts.affine();
-        if affine.matrix2.determinant() > 0.0 {
-            let carried = match to {
-                Family::Free => unreachable!("same family returned above"),
-                Family::Perspective => {
-                    let mut p = PerspectiveUi::begin(layer, inflate(rect, MIN_RECT_PX / zoom));
-                    p.corners = p.corners.map(|c| affine.transform_point2(c));
-                    TransformUi::Perspective(p)
-                }
-                Family::Warp => {
-                    let mut w = WarpUi::begin(layer, inflate(rect, MIN_RECT_PX / zoom));
-                    for pt in &mut w.points {
-                        *pt = affine.transform_point2(*pt);
-                    }
-                    TransformUi::Warp(w)
-                }
-            };
-            if carried.map().usable() {
-                update(state, carried);
-                return;
-            }
+    match stark_chrome::transform::switch(ui, to, zoom) {
+        Switch::Nothing => {}
+        // `update`: the carried map is the new family's own, exact to within a
+        // resample, and the preview owes that rather than the one it replaced.
+        Switch::Carried(next) => update(state, next),
+        // `advance`, not `update`: there is no deformation to show, and previewing
+        // the identity would resample the selected paint for nothing.
+        Switch::Fresh(next) => crate::modes::advance(state, Composing::Transform(next)),
+        Switch::Commit { map, then } => {
+            preview::TRANSFORM.commit(state, (ui.layer(), map));
+            crate::modes::advance(state, Composing::Transform(then));
         }
-        // A mirrored or degenerate affine has no image in the other families
-        // (their maps preserve orientation): commit it first, below.
     }
-
-    if ui.is_identity() {
-        // Nothing composed yet: switching is free, around the same paint.
-        let rect = match ui {
-            TransformUi::Affine { rect, .. } => rect,
-            TransformUi::Perspective(p) => p.rect,
-            TransformUi::Warp(w) => w.rect,
-        };
-        crate::modes::advance(state, Composing::Transform(fresh(rect, zoom)));
-        return;
-    }
-
-    // The deformation cannot ride into the new family exactly: commit it —
-    // one honest undo step — and reopen around where the paint now is.
-    let map = ui.map();
-    let moved = match &map {
-        TransformMap::Affine(a) => {
-            let rect = match ui {
-                TransformUi::Affine { rect, .. } => rect,
-                _ => unreachable!("only the affine family reaches here with an affine map"),
-            };
-            let corners =
-                stark_model::document::rect_corners(rect.0, rect.1).map(|c| a.transform_point2(c));
-            let lo = corners.iter().fold(corners[0], |m, p| m.min(*p));
-            let hi = corners.iter().fold(corners[0], |m, p| m.max(*p));
-            (lo, hi)
-        }
-        TransformMap::Perspective(p) => p.image_aabb().unwrap_or((p.min, p.max)),
-        TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
-    };
-    preview::TRANSFORM.commit(state, (layer, map));
-    crate::modes::advance(state, Composing::Transform(fresh(moved, zoom)));
 }
 
 /// Commit the gesture and leave the mode — the bar's "Done", and Enter's
@@ -275,7 +153,7 @@ pub fn TransformBar() -> Element {
     let Some(ui) = crate::modes::composing(state).and_then(Composing::transform) else {
         return rsx! {};
     };
-    let family = family_of(&ui);
+    let family = ui.family();
     let chip = |on: bool| if on { "chip active" } else { "chip" };
 
     rsx! {
@@ -363,36 +241,6 @@ pub fn TransformBar() -> Element {
     }
 }
 
-/// An in-flight drag: which family and region it started in (locked at the
-/// press — crossing a boundary mid-drag must not change what the hand is
-/// doing), where it started in canvas px, and the state as it was then.
-/// Everything is recomputed from the start rather than accumulated, so
-/// rounding cannot drift over a long drag; it lives in canvas space, so
-/// panning or zooming mid-gesture cannot corrupt it.
-#[derive(Clone, Copy)]
-enum Drag {
-    Affine {
-        region: TransformRegion,
-        from: Vec2,
-        rect: (Vec2, Vec2),
-        start: TransformState,
-    },
-    Quad {
-        region: QuadRegion,
-        from: Vec2,
-        start: PerspectiveUi,
-    },
-    Mesh {
-        region: MeshRegion,
-        from: Vec2,
-        start: WarpUi,
-        /// Surface-grab data, computed once at the press: the basis weights at
-        /// the grabbed grid fraction and their squared norm (§16.9).
-        basis: [f32; WARP_GRID * WARP_GRID],
-        norm: f32,
-    },
-}
-
 /// The transform widget: a full-viewport catcher that owns every pointer event
 /// and classifies it against the current family's control surface (the maths
 /// lives on [`TransformState`] / [`PerspectiveUi`] / [`WarpUi`]), plus the
@@ -402,7 +250,7 @@ enum Drag {
 #[component]
 pub fn TransformOverlay() -> Element {
     let state = use_context::<AppState>();
-    let mut drag = use_signal(|| None::<Drag>);
+    let mut drag = use_signal(|| None::<Grab>);
     // The cursor the resting pointer has earned, for feedback only.
     let mut hover = use_signal(|| "");
     // The canvas's own navigation bindings, live on the catcher: composing a
@@ -426,67 +274,17 @@ pub fn TransformOverlay() -> Element {
     let grab = HANDLE_PX / view.zoom;
     let snap = SNAP_PX / view.zoom;
 
-    let classify = move |pc: Vec2| -> (Drag, &'static str) {
-        match ui {
-            TransformUi::Affine { rect, ts } => {
-                let region = ts.region(pc, band);
-                let cursor = match region {
-                    TransformRegion::Inside => "cursor: move;",
-                    TransformRegion::Rim => "cursor: grab;",
-                    TransformRegion::Outside => "cursor: crosshair;",
-                };
-                (
-                    Drag::Affine {
-                        region,
-                        from: pc,
-                        rect,
-                        start: ts,
-                    },
-                    cursor,
-                )
-            }
-            TransformUi::Perspective(p) => {
-                let region = p.region(pc, grab, band);
-                let cursor = match region {
-                    QuadRegion::Corner(_) => "cursor: grab;",
-                    QuadRegion::Edge(..) => "cursor: grab;",
-                    QuadRegion::Inside | QuadRegion::Outside => "cursor: move;",
-                };
-                (
-                    Drag::Quad {
-                        region,
-                        from: pc,
-                        start: p,
-                    },
-                    cursor,
-                )
-            }
-            TransformUi::Warp(w) => {
-                let region = w.region(pc, grab);
-                let (basis, norm) = match region {
-                    MeshRegion::Inside => {
-                        let (_, basis, norm) = w.grab(pc);
-                        (basis, norm)
-                    }
-                    _ => ([0.0; WARP_GRID * WARP_GRID], 1.0),
-                };
-                let cursor = match region {
-                    MeshRegion::Point(_) => "cursor: grab;",
-                    MeshRegion::Inside => "cursor: grab;",
-                    MeshRegion::Outside => "cursor: move;",
-                };
-                (
-                    Drag::Mesh {
-                        region,
-                        from: pc,
-                        start: w,
-                        basis,
-                        norm,
-                    },
-                    cursor,
-                )
-            }
-        }
+    // What a press here would take hold of, and how this frontend spells the cursor
+    // for it. The classification is `stark_chrome::transform`'s — the CSS below is a
+    // spelling of it, and a spelling is all a frontend owes (§11.2).
+    let classify = move |pc: Vec2| -> (Grab, &'static str) {
+        let grabbed = Grab::take(ui, pc, band, grab);
+        let cursor = match grabbed.hint() {
+            Hint::Move => "cursor: move;",
+            Hint::Hold => "cursor: grab;",
+            Hint::Shape => "cursor: crosshair;",
+        };
+        (grabbed, cursor)
     };
 
     let mut follow = move |e: &Event<PointerData>| {
@@ -503,65 +301,7 @@ pub fn TransformOverlay() -> Element {
         let current = crate::modes::composing_now(state)
             .and_then(Composing::transform)
             .unwrap_or(ui);
-        match d {
-            Drag::Affine {
-                region,
-                from,
-                rect,
-                start,
-            } => {
-                let ts = match region {
-                    TransformRegion::Inside => start.translated(from, pc, snap),
-                    TransformRegion::Rim => start.turned_scaled(from, pc, snap),
-                    TransformRegion::Outside => start.stretched(from, pc, snap),
-                };
-                update(state, TransformUi::Affine { rect, ts });
-            }
-            Drag::Quad {
-                region,
-                from,
-                start,
-            } => {
-                let cur = match current {
-                    TransformUi::Perspective(p) => p,
-                    _ => start,
-                };
-                let delta = pc - from;
-                let next = match region {
-                    QuadRegion::Corner(i) => {
-                        PerspectiveUi::corner_dragged(start, cur, i, delta, snap)
-                    }
-                    QuadRegion::Edge(a, b) => {
-                        PerspectiveUi::edge_dragged(start, cur, (a, b), delta, snap)
-                    }
-                    QuadRegion::Inside | QuadRegion::Outside => {
-                        PerspectiveUi::translated(start, cur, delta, snap)
-                    }
-                };
-                update(state, TransformUi::Perspective(next));
-            }
-            Drag::Mesh {
-                region,
-                from,
-                start,
-                basis,
-                norm,
-            } => {
-                let cur = match current {
-                    TransformUi::Warp(w) => w,
-                    _ => start,
-                };
-                let delta = pc - from;
-                let next = match region {
-                    MeshRegion::Point(i) => WarpUi::point_dragged(start, cur, i, delta, snap),
-                    MeshRegion::Inside => {
-                        WarpUi::surface_dragged(start, cur, &basis, norm, delta, snap)
-                    }
-                    MeshRegion::Outside => WarpUi::translated(start, cur, delta, snap),
-                };
-                update(state, TransformUi::Warp(next));
-            }
-        }
+        update(state, d.follow(current, pc, snap));
     };
     let mut finish = move |e: &Event<PointerData>| {
         follow(e);

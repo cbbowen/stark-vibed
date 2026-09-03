@@ -35,7 +35,9 @@ mod keys;
 mod layers;
 mod panel;
 mod render;
+mod select;
 mod store;
+mod transform;
 mod window;
 
 use stark_engine::GpuContext;

@@ -415,8 +415,7 @@ fn step_radius(state: AppState, factor: f32) {
 /// an armed tool then makes is a different act with a gate of its own, which
 /// the canvas has always asked (`crate::input`).
 fn arm_tool(state: AppState, tool: Tool) {
-    let already = crate::panels::select::current_tool(state) == tool;
-    let next = if already { Tool::Brush } else { tool };
+    let next = stark_chrome::selection::arm(crate::panels::select::current_tool(state), tool);
     // Which of the three was last in hand, kept where the session cannot keep it:
     // a selecting gesture disarms to `Tool::Brush` (§6.8), so the engine's own
     // `tool` has forgotten which marquee drew by the time anything asks. Recorded
