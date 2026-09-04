@@ -1191,6 +1191,27 @@ the exit criterion is an act, not a diff.
   close enough today is a menu hanging beside its own title the day one is renamed,
   which is the same rule a hand-derived panel broke in N2.
 
+  **And navigation** — the wheel zooms about the cursor, the middle button pans,
+  space-drag pans and space+accelerator scrubs the zoom. §11.2 named these thresholds
+  as a Tier B move and they went down as `stark_chrome::nav`: which press is a pan and
+  which a zoom, how far a scrub travels per doubling, and what a notch is worth. The
+  last of those had been a bare `1.15` in the middle of the web's wheel handler; it is
+  `WHEEL_STEP` now, and a notch means the same thing in both apps.
+  What stays in each frontend is the bookkeeping, which is genuinely different: the
+  web tracks pointer ids to pair two fingers into a pinch and holds its drag in a
+  `Signal`; the native app has a mouse, a wheel and one `Held`. **Touch is the web's
+  alone** until wgpui reports fingers, so `TWIST_DEADZONE`, `MIN_SPAN` and the tap
+  discrimination stayed where they are — moving a rule with one consumer would be
+  moving it for the shape of the thing rather than for a second reader.
+
+  One thing the move settled that neither app had right. The registry claims space
+  before any binding can have it, and says so in a comment — "a frontend's keydown
+  arms the pan off the key itself" — and it tests **both** of the key's names, because
+  Alt takes the character away. Each frontend then tested one: the web the typed
+  character, the native app the key name. So `keys::is_space` is one predicate all
+  three ask, and a frontend can no longer think space is down while the table thinks
+  it is a chord.
+
   **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
   (§15), the navigator and timeline mode. Each is a large panel with an overlay of
   its own, which is why they sequence after the stack that will hold them.

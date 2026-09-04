@@ -12,6 +12,7 @@
 //! `a_tap_can_never_have_painted` is what says so.
 
 use super::*;
+use stark_chrome::nav::{self, Mode};
 
 /// How far a two-finger gesture has to twist before it turns the canvas at all,
 /// radians (about 6°).
@@ -56,16 +57,6 @@ const _: () = assert!(
     DWELL > TAP_TIME,
     "a hold-to-sample the hand lifted promptly would undo the stroke before it"
 );
-
-/// How far the accelerator+space drag has to travel to **double** the zoom, in page
-/// px (§18.1.9).
-///
-/// Set from the range it has to cover rather than by taste: the view's whole zoom
-/// range is about ten doublings (`ViewTransform::MIN_ZOOM`..`MAX_ZOOM`), so at this
-/// rate a sweep of roughly one screen width takes the canvas from as far out as it
-/// goes to as far in — reachable in one gesture, without a short drag overshooting
-/// the picture.
-const ZOOM_DRAG_DOUBLE: f32 = 180.0;
 
 /// The view-navigation bindings — two-finger pan/zoom/turn, middle-drag and
 /// space-drag pan, space+accelerator scrubby zoom, cursor-anchored wheel zoom —
@@ -115,24 +106,6 @@ struct Drag {
     /// a zoom does not hand the canvas to the pan mid-motion, under a hand that is
     /// still making one gesture.
     mode: Mode,
-}
-
-/// What a one-pointer view drag does.
-#[derive(Copy, Clone)]
-enum Mode {
-    /// Move the canvas with the pointer.
-    Pan,
-    /// Scale the canvas about the **press** position (page px) as the pointer is
-    /// dragged right or up — the scrubby zoom of every raster editor, for the hand
-    /// that is already holding space (§18.1.9). Rebelle's two directions, taken
-    /// together rather than one or the other, so the hand does not have to know which
-    /// axis this app chose.
-    ///
-    /// The anchor is fixed for the gesture rather than following the pointer, because
-    /// a zoom is a scale *about a point*: re-anchoring each move would slide the
-    /// canvas out from under the hand while it scaled, and the point the drag started
-    /// on is the one the user aimed at.
-    Zoom { anchor: Vec2 },
 }
 
 /// The fingers on one surface, and the two-finger gesture they are making
@@ -229,18 +202,22 @@ impl Nav {
         if is_finger(e) {
             return self.finger_down(e);
         }
-        let mode = match e.trigger_button() {
-            // The middle button is the pan whatever is held down with it: it is the
-            // binding for a hand already on the mouse, and there is no second gesture
-            // there for a modifier to pick out.
-            Some(MouseButton::Auxiliary) => Some(Mode::Pan),
-            _ if is_contact(e) && *self.state.space_down.peek() => Some(if accel(e.modifiers()) {
-                Mode::Zoom { anchor: page_xy(e) }
-            } else {
-                Mode::Pan
-            }),
+        // Which press means what is `stark_chrome::nav`'s, so the two frontends
+        // cannot come to disagree about what a middle-drag is. What stays here is
+        // reading a DOM event for the three facts it takes.
+        let button = match e.trigger_button() {
+            Some(MouseButton::Auxiliary) => Some(nav::Button::Middle),
+            _ if is_contact(e) => Some(nav::Button::Left),
             _ => None,
         };
+        let mode = button.and_then(|button| {
+            nav::press(
+                button,
+                page_xy(e),
+                *self.state.space_down.peek(),
+                accel(e.modifiers()),
+            )
+        });
         let Some(mode) = mode else { return false };
         e.prevent_default(); // suppress middle-click autoscroll
         e.stop_propagation();
@@ -270,34 +247,7 @@ impl Nav {
             return false;
         };
         let p = page_xy(e);
-        let command = match in_flight.mode {
-            // `Pan` is incremental, so the anchor is re-set each move.
-            Mode::Pan => Some(ViewCommand::Pan {
-                delta: p - in_flight.last,
-            }),
-            Mode::Zoom { anchor } => {
-                // Right and up both zoom in — page y grows downward, which is the whole
-                // of why the second term is subtracted. **Summed** rather than
-                // projected onto the diagonal, so a drag along either axis alone runs
-                // at exactly the documented rate and one that asks for both gets both;
-                // either way this is linear in the pointer's position, so the zoom is a
-                // function of where the pointer *is* and a drag that wanders out and
-                // back leaves the canvas where it found it.
-                //
-                // Exponential in that distance, which is what makes the gesture feel
-                // the same at every zoom level: adding a fixed step to a multiplicative
-                // quantity instead would crawl when zoomed out and leap when zoomed in.
-                let step = p - in_flight.last;
-                let travel = step.x - step.y;
-                // A pointer that has not moved along the gesture's axis is not asking
-                // for a zoom of 1.0, it is not asking for a zoom at all — dispatching
-                // one would repaint the canvas to leave it exactly as it was.
-                (travel != 0.0).then(|| ViewCommand::Zoom {
-                    anchor,
-                    factor: (travel / ZOOM_DRAG_DOUBLE).exp2(),
-                })
-            }
-        };
+        let command = in_flight.mode.moved(in_flight.last, p);
         drag.set(Some(Drag {
             last: p,
             ..in_flight
@@ -387,17 +337,14 @@ impl Nav {
     pub fn wheel(self, e: Event<WheelData>) {
         e.prevent_default();
         e.stop_propagation();
+        // A browser reports the wheel downward-positive, like a document being
+        // scrolled; `nav::wheel` takes notches the way a hand turns them, so the sign
+        // is flipped at this edge rather than in the shared rule.
         let dy = e.delta().strip_units().y;
-        if dy != 0.0 {
-            let factor = if dy < 0.0 { 1.15 } else { 1.0 / 1.15 };
-            let p = e.page_coordinates();
-            dispatch(
-                self.state,
-                ViewCommand::Zoom {
-                    anchor: Vec2::new(p.x as f32, p.y as f32),
-                    factor,
-                },
-            );
+        let p = e.page_coordinates();
+        let anchor = Vec2::new(p.x as f32, p.y as f32);
+        if let Some(command) = nav::wheel(anchor, -dy.signum() as f32) {
+            dispatch(self.state, command);
         }
     }
 

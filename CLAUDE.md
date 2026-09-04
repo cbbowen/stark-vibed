@@ -88,7 +88,8 @@ crates/
                    gesture is about to do to the selection or to the paint, the canvas
                    rectangles a frontend asks the document for, the layer tree's
                    arithmetic, the Oklab picker's gamut geometry, the icon catalog — which
-                   glyph each control wears, and why — the list-drag gesture, both
+                   glyph each control wears, and why — the view-navigation bindings, the
+                   list-drag gesture, both
                    asset libraries — one type generic in what an id is a *reading* of,
                    the import policy a decoder does not answer, the shipped catalog and
                    the build script that hashes it — the record format every client keeps

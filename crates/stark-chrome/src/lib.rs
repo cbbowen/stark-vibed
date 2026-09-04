@@ -73,6 +73,7 @@ pub mod input;
 pub mod keys;
 pub mod layer_tree;
 pub mod library;
+pub mod nav;
 pub mod panels;
 pub mod prefs;
 pub mod presets;

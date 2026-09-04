@@ -559,7 +559,7 @@ pub fn capture(stroke: &Keystroke<'_>) -> Capture {
     // Space is claimed before the table whatever is held with it — a frontend's
     // keydown arms the pan off the key itself — so it is nobody's chord, and it is
     // asked for by both names because Alt is about to take the character away.
-    if stroke.code == "Space" || stroke.typed == Some(' ') {
+    if crate::keys::is_space(stroke) {
         return Capture::Pending;
     }
     // The rack's own reading of the digit row, asked rather than restated — and

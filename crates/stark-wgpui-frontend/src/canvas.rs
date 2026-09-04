@@ -18,6 +18,7 @@ use stark_chrome::commands::{Bindings, Command};
 use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_chrome::input as chrome_input;
 use stark_chrome::keys::Mods;
+use stark_chrome::nav;
 use stark_chrome::panels::PanelId;
 use stark_chrome::transform::{Family, Grab, Hint, Switch, TransformUi};
 use stark_engine::ObservableState;
@@ -27,8 +28,9 @@ use stark_model::AssetNeed;
 use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
 use stark_model::{AssetId, Srgb, SubstrateId, Vec2};
 use wgpui::{
-    AnyElement, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, Window, div, prelude::*, rgb, wgpu_surface,
+    AnyElement, Context, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window,
+    div, prelude::*, rgb, wgpu_surface,
 };
 
 use crate::brush::Brush;
@@ -96,6 +98,14 @@ enum Held {
     /// release that asked it would spend an action putting the dial back where it
     /// started.
     Dial { dial: select::Dial, fraction: f32 },
+    /// A view drag — a pan or the scrubby zoom (§18.1.7). What it *is* was decided
+    /// at the press and is held for the gesture, so letting go of the accelerator
+    /// halfway through a zoom does not hand the canvas to the pan under a moving
+    /// hand (`stark_chrome::nav`).
+    Navigate {
+        mode: nav::Mode,
+        last: Point<Pixels>,
+    },
     /// A drag on the transform widget. The whole of what it does is
     /// `Grab::follow` — see `crate::transform`. Boxed: a warp grab carries the whole
     /// 4×4 mesh and its solved basis, which would otherwise be the size of every
@@ -144,6 +154,15 @@ pub struct Canvas {
     /// Which panels this client has folded away, remembered across sessions
     /// (`stark_chrome::visibility`).
     folded: std::collections::HashSet<PanelId>,
+    /// Whether space is down — the modifier that turns a left drag into a pan
+    /// (§18.1.7).
+    ///
+    /// Tracked rather than read off the event, because a `MouseDownEvent` carries
+    /// the *modifier* keys and space is not one of them. So the keyboard is where it
+    /// is learnt, which means it has to be un-learnt on focus loss too: a window that
+    /// loses focus mid-hold never sees the key go up, and the next press would pan
+    /// instead of paint.
+    space: bool,
     /// The menu whose rows are showing, if any (`crate::menu`). Not remembered: a
     /// menu is open for the length of one decision.
     menu_open: Option<usize>,
@@ -264,6 +283,7 @@ impl Canvas {
             wheel,
             pictures: color::Pictures::default(),
             folded: stark_chrome::visibility::stored_collapsed(),
+            space: false,
             menu_open: None,
             menu_regions: menu::Regions::default(),
             select_regions: select::Regions::default(),
@@ -468,6 +488,22 @@ impl Canvas {
             None => {}
         }
 
+        // Navigation before paint, and before the drag table: a press that is
+        // looking around is not a press on the picture, whatever else it would have
+        // meant. Which press that is is `stark_chrome::nav`'s answer.
+        if let Some(mode) = nav::press(
+            nav::Button::Left,
+            screen_at(ev.position, window.scale_factor()),
+            self.space,
+            mods.ctrl,
+        ) {
+            self.held = Some(Held::Navigate {
+                mode,
+                last: ev.position,
+            });
+            return;
+        }
+
         // The drag table before the paint path, exactly as the web canvas asks it:
         // a modified press is a *gesture*, and which one is the table's answer rather
         // than a ladder of modifier tests here (§25.3).
@@ -540,6 +576,21 @@ impl Canvas {
 
     fn drag(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         match self.held {
+            Some(Held::Navigate { mode, last }) => {
+                if let Some(command) = mode.moved(
+                    screen_at(last, window.scale_factor()),
+                    screen_at(ev.position, window.scale_factor()),
+                ) {
+                    self.send(command, cx);
+                }
+                // The anchor moves with the hand for a pan and stays put for a zoom,
+                // which is `Mode`'s own distinction — what this has to keep either way
+                // is where the pointer was last seen.
+                self.held = Some(Held::Navigate {
+                    mode,
+                    last: ev.position,
+                });
+            }
             Some(Held::Transform(ref grab)) => {
                 let grab = **grab;
                 let (Some(ui), Some(view)) = (self.mode, self.view()) else {
@@ -994,6 +1045,53 @@ impl Canvas {
             &folded,
         );
         self.repaint(cx);
+    }
+
+    /// A middle-button press: the pan for a hand already on the mouse, whatever else
+    /// is held down with it.
+    fn press_middle(
+        &mut self,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(mode) = nav::press(
+            nav::Button::Middle,
+            screen_at(ev.position, window.scale_factor()),
+            self.space,
+            false,
+        ) else {
+            return;
+        };
+        self.held = Some(Held::Navigate {
+            mode,
+            last: ev.position,
+        });
+        self.repaint(cx);
+    }
+
+    /// The wheel: a cursor-anchored zoom (§18.1.7).
+    ///
+    /// A canvas zooms where a document would scroll, which is the convention every
+    /// raster editor shares — and the rate is the crate's, so a notch is worth the
+    /// same in both apps.
+    fn wheel(&mut self, ev: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // A press on a panel scrolls it; only the canvas zooms. Asked the way every
+        // other press is (`panel::within`, `over_layers`), so the three columns agree
+        // about where each begins.
+        if panel::within(ev.position) || self.over_layers(window, ev.position) {
+            return;
+        }
+        let notches = match ev.delta {
+            // A mouse reports whole notches; a trackpad reports pixels, which are
+            // brought to the same scale rather than measured (`stark_chrome::nav`).
+            ScrollDelta::Lines(d) => d.y,
+            ScrollDelta::Pixels(d) => f32::from(d.y) / nav::WHEEL_PIXELS_PER_NOTCH,
+        };
+        let anchor = screen_at(ev.position, window.scale_factor());
+        if let Some(command) = nav::wheel(anchor, notches) {
+            self.send(command, cx);
+        }
     }
 
     /// Enter transform mode around whatever is selected (§16.6).
@@ -1454,7 +1552,15 @@ impl Canvas {
     /// shared: what Ctrl+Z means was settled once (§25) and this frontend only has to
     /// say what a keystroke *is* (`crate::keys`) and what an act *does* below.
     fn key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let Some(command) = self.bindings.lookup(&crate::keys::stroke(&ev.keystroke)) else {
+        let stroke = crate::keys::stroke(&ev.keystroke);
+        // Space is nobody's chord — the registry says so and claims it before the
+        // table — because a frontend arms the pan off the key itself. Asked through
+        // the shared reading so this app and that rule cannot come apart.
+        if stark_chrome::keys::is_space(&stroke) {
+            self.space = true;
+            return;
+        }
+        let Some(command) = self.bindings.lookup(&stroke) else {
             return;
         };
         // Escape shuts an open menu before it cancels anything else. The chord table
@@ -1464,6 +1570,17 @@ impl Canvas {
             return self.repaint(cx);
         }
         self.run(command, window, cx);
+    }
+
+    /// Space going up, and the one other thing that ends a hold: losing focus.
+    ///
+    /// A key-up is not a chord — the table answers presses — so this reaches nothing
+    /// else. It exists because the modifier that makes a left drag a pan is a *key*,
+    /// and a key that is never seen to rise stays down for good.
+    fn key_up(&mut self, ev: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<'_, Self>) {
+        if stark_chrome::keys::is_space(&crate::keys::stroke(&ev.keystroke)) {
+            self.space = false;
+        }
     }
 
     /// Do what a command means here.
@@ -1695,6 +1812,7 @@ impl Render for Canvas {
             // something asks: an unfocused window dispatches no chord at all.
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
+            .on_key_up(cx.listener(Self::key_up))
             .child(menubar)
             .child(
                 div()
@@ -1717,6 +1835,10 @@ impl Render for Canvas {
                     .child(roster),
             )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::press_middle))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::release))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::release))
+            .on_scroll_wheel(cx.listener(Self::wheel))
             .on_mouse_move(cx.listener(Self::drag))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
             // A release the view never saw still ends what it was holding: the
@@ -1754,6 +1876,17 @@ fn grab_at(ui: TransformUi, at: Vec2, view: ViewTransform) -> Grab {
         stark_chrome::transform::RIM_BAND_PX / view.zoom,
         stark_chrome::transform::HANDLE_PX / view.zoom,
     )
+}
+
+/// A window position in the **screen** px the view is denominated in — logical px
+/// times the display's scale factor, with the panel's width taken off.
+///
+/// Not `canvas_at`: a pan is a screen-space delta and a zoom anchors on a screen-space
+/// point, so both stay in the frame the surface renders in rather than the one the
+/// paint lives in (`ViewCommand::Pan`, `ViewCommand::Zoom`).
+fn screen_at(position: Point<Pixels>, scale: f32) -> Vec2 {
+    let x = f32::from(position.x) - panel::WIDTH;
+    Vec2::new(x * scale, f32::from(position.y) * scale)
 }
 
 /// A window position in canvas px.

@@ -108,6 +108,21 @@ impl<'a> Keystroke<'a> {
     }
 }
 
+/// Whether this keystroke is the **space bar**, by either of its names.
+///
+/// Both, because Alt takes the character away: a layout reports space as the typed
+/// `' '` ordinarily and as the positional `"Space"` under a modifier that consumes
+/// it, and a reader that knew only one would lose the key exactly when a modifier is
+/// held — which is when the scrubby zoom wants it (§18.1.9).
+///
+/// Here rather than in either frontend because three places ask: the chord table,
+/// which claims space before any binding can have it, and each app's keydown, which
+/// arms the pan off the key itself. One authority, so a frontend cannot come to think
+/// space is down while the table thinks it is a chord.
+pub fn is_space(stroke: &Keystroke<'_>) -> bool {
+    stroke.code == "Space" || stroke.typed == Some(' ')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
