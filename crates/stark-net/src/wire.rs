@@ -127,14 +127,17 @@ use iroh::EndpointId;
 /// 24: the opacity ceiling became a pen target (§6.2) — `PaintModulations`,
 /// `WetModulations` and `EraseModulations` each gained `opacity`: a field added
 /// to a struct every stroke gossips, which a file fills from its default and
-/// the wire cannot.
-pub(crate) const ALPN: &[u8] = b"stark/collab/24";
+/// the wire cannot;
+/// 25: `Srgb` widened past the cube (§6.5). The same bytes in the same fields,
+/// which a peer on 24 clamps — the same log, a narrower picture of it, which is
+/// the disagreement the ALPN exists to keep from meeting.
+pub(crate) const ALPN: &[u8] = b"stark/collab/25";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 24;
+pub(crate) const PROTO: u32 = 25;
 
 /// Upper bound on an encoded request, over any transport.
 ///

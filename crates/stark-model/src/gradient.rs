@@ -77,7 +77,7 @@ impl Gradient {
     /// no ramp to rescale).
     ///
     /// **Only the positions are checked**, because only the positions can be wrong:
-    /// an [`Srgb`] is inside the cube by construction.
+    /// an [`Srgb`] is finite and bounded by construction.
     ///
     /// The only door, and it refuses: a caller that traced a line expecting a ramp
     /// needs to hear "these samples do not describe one" (§22.2), and so does a file
@@ -217,8 +217,9 @@ fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
 
 fn from_lab(lab: [f32; 3]) -> Srgb {
     let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
-    // A lerp between in-gamut colors can leave the sRGB cube (Oklab is wider), and
-    // the constructor is where that is held.
+    // A lerp between two stops can leave the sRGB cube (Oklab is wider), and that
+    // is **kept**: extended sRGB is what a color is (§6.5), so the excursion is a
+    // wide color rather than an error. The constructor holds only the bound.
     Srgb::new([s[0], s[1], s[2]])
 }
 

@@ -71,12 +71,14 @@ fn zoom(engine: &mut Engine, factor: f32) {
 
 /// A half-float texel back to the 8-bit code the SDR path would have stored — the
 /// decode is the transfer's own, the encode is sRGB's, and the clamp is the 8-bit
-/// store's.
+/// store's. Per channel, so the P3 transfers are out of its reach: `wide.rs` is where
+/// a change of primaries is measured.
 fn code(transfer: Transfer, v: f32) -> i32 {
     let lin = match transfer {
         Transfer::Linear => v,
-        Transfer::ExtendedSrgb => v.signum() * srgb_to_linear(v.abs()),
-        Transfer::Srgb => srgb_to_linear(v),
+        Transfer::ExtendedSrgb => srgb_to_linear(v),
+        Transfer::Srgb => srgb_to_linear(v.clamp(0.0, 1.0)),
+        p3 => unreachable!("{p3:?} changes primaries, which one channel cannot undo"),
     };
     (linear_to_srgb(lin.clamp(0.0, 1.0)) * 255.0).round() as i32
 }

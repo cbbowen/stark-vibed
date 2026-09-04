@@ -16,7 +16,7 @@ use crate::document::{CompositeParams, DocState, Layer, LayerContent};
 use crate::error::{ExportError, Produces};
 use crate::gpu::{
     CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
-    SelectionOutline,
+    Output, SelectionOutline,
 };
 use crate::image::RgbaImage;
 use crate::view::ViewTransform;
@@ -61,9 +61,15 @@ enum Chrome {
 enum Attachments<'a> {
     /// The screen's own, cached across frames ([`Engine::compositor`]).
     Screen,
-    /// The caller's, so whether they outlive the call is decided by whoever knows
-    /// whether the render repeats — see [`Offscreen`].
-    Offscreen(&'a mut Offscreen),
+    /// The caller's, for a second surface on the same screen — the navigator's
+    /// miniature — presented as the screen is (§6.5). Whether they outlive the call
+    /// is decided by whoever knows whether the render repeats — see [`Offscreen`].
+    Surface(&'a mut Offscreen),
+    /// The caller's, for a picture bound for a file or the CPU: an export, a
+    /// thumbnail, a golden. Rendered [`Output::SDR`] whatever the screen is showing,
+    /// which is what keeps the screen's headroom and gamut out of a file (§6.5,
+    /// §15.6).
+    Export(&'a mut Offscreen),
 }
 
 /// Which document a render draws: the one being *shown*, or the committed one
@@ -225,7 +231,7 @@ impl Engine {
             background,
             Chrome::Hidden,
             content,
-            Attachments::Offscreen(into),
+            Attachments::Surface(into),
         );
     }
 
@@ -375,6 +381,12 @@ impl Engine {
         // Rust splits disjoint fields and not method calls, which is the whole of why
         // this is written out.
 
+        // What display the picture is for (§6.5): the screen's own setting for the
+        // screen and a surface beside it, SDR for anything bound for a file.
+        let output = match attachments {
+            Attachments::Screen | Attachments::Surface(_) => self.compositor_pipeline.output(),
+            Attachments::Export(_) => Output::SDR,
+        };
         let scene = CompositeScene {
             substrate_color: bg_channels,
             substrate_resid: bg_resid,
@@ -385,6 +397,7 @@ impl Engine {
             outlines: &outlines,
             transparent: background == Background::Transparent,
             guides: &guide_scenes,
+            output,
         };
         // The three compositing passes and the draws inside them, encoded and
         // submitted (§6.3). CPU time to *record* them, like every row here — WebGPU
@@ -399,12 +412,9 @@ impl Engine {
                 self.compositor
                     .render(&self.compositor_pipeline, target, view, scene)
             }
-            Attachments::Offscreen(into) => into.get(&self.compositor_pipeline).render(
-                &self.compositor_pipeline,
-                target,
-                view,
-                scene,
-            ),
+            Attachments::Surface(into) | Attachments::Export(into) => into
+                .get(&self.compositor_pipeline)
+                .render(&self.compositor_pipeline, target, view, scene),
         }
     }
 
@@ -495,7 +505,8 @@ impl Engine {
             Background::Substrate,
             Chrome::Shown,
             Rendered::Live,
-            Attachments::Offscreen(&mut Offscreen::default()),
+            // The screen's own display, which is the whole of what this reads back.
+            Attachments::Surface(&mut Offscreen::default()),
         );
         crate::gpu::readback::read_rgba16f_blocking(&self.shared.gpu, &target, size)
     }
@@ -530,7 +541,7 @@ impl Engine {
             background,
             chrome,
             content,
-            Attachments::Offscreen(into),
+            Attachments::Export(into),
         );
         (target, size)
     }

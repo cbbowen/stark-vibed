@@ -239,6 +239,10 @@ pub struct CompositeScene<'a> {
     /// anything that is not the screen — chrome, on the same argument as
     /// `outlines`.
     pub guides: &'a [stark_model::document::GuideScene],
+    /// The display this render is presented on (§6.5): the screen's for the screen
+    /// and any surface beside it, [`Output::SDR`] for a render bound for a file —
+    /// decided where the attachments are (`Engine::render_view`).
+    pub output: Output,
 }
 
 /// The pipelines themselves — the six passes, their layouts and samplers, and the
@@ -1298,9 +1302,8 @@ impl Compositor {
     /// is written against `view` alone, so supersampling is one substitution at the
     /// top and one pass at the bottom rather than a parameter every pass has to carry.
     ///
-    /// The target's format picks the passes, and an 8-bit target is rendered
-    /// [`Output::SDR`] whatever the pipeline's [`Output`] says (§6.5, §15.6): that is
-    /// every export and every golden, so the screen's headroom cannot reach a file.
+    /// The target's format picks the passes; the scene says what display it is for,
+    /// and an 8-bit target is given no headroom whatever it was asked for (§6.5).
     pub fn render(
         &mut self,
         p: &CompositorPipeline,
@@ -1316,13 +1319,14 @@ impl Compositor {
             outlines,
             transparent,
             guides,
+            output,
         } = scene;
         let format = target.texture().format();
         let tp = p.target_passes(format);
         let output = if is_eight_bit(format) {
-            Output::SDR
+            Output::new(output.transfer(), 1.0)
         } else {
-            p.output
+            output
         };
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the substrate and the impasto relief aliasing

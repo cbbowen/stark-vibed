@@ -18,7 +18,7 @@
 /// Magnitudes are clamped to the half-float max, so no input produces an infinity, and
 /// subnormals flush to zero — negligible at the scales either caller works at
 /// (radiance, and a color channel).
-pub(crate) fn f32_to_f16(x: f32) -> u16 {
+pub fn f32_to_f16(x: f32) -> u16 {
     let sign = u16::from(x.is_sign_negative()) << 15;
     // The NaN case is tested rather than clamped, and not as a courtesy: `clamp`
     // *returns* the NaN, whose exponent field is `0xff` and would come out of the

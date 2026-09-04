@@ -310,13 +310,16 @@ impl Renderer {
         match self.config.color_space {
             wgpu::SurfaceColorSpace::ExtendedSrgb => Transfer::ExtendedSrgb,
             wgpu::SurfaceColorSpace::ExtendedSrgbLinear => Transfer::Linear,
+            wgpu::SurfaceColorSpace::DisplayP3 => Transfer::DisplayP3,
+            wgpu::SurfaceColorSpace::ExtendedDisplayP3 => Transfer::ExtendedDisplayP3,
             _ => Transfer::Srgb,
         }
     }
 
-    /// Whether the canvas can show anything above white (§6.5).
+    /// Whether the canvas can show anything above white (§6.5) — a wide *gamut* is
+    /// not range, so a `display-p3` canvas answers no.
     pub fn hdr_capable(&self) -> bool {
-        self.transfer() != stark_engine::Transfer::Srgb
+        self.transfer().is_hdr()
     }
 
     /// How far above SDR white the display says it can go (§6.5). On the web:
@@ -820,30 +823,40 @@ impl Renderer {
     }
 }
 
-/// The format and color space the main canvas is configured with (§6.5): HDR when
-/// the browser offers an fp16 canvas under extended tone mapping *and* the display
-/// is HDR right now. The first alone is every fp16 browser, tone-mapping or not
-/// (wgpu advertises it on the format), and would charge SDR users a double-width
-/// swapchain for nothing. Decided once: the engine's pipelines are compiled for one
-/// format (§6.4). Otherwise a non-sRGB 8-bit format — the media pass encodes sRGB
-/// itself, so an sRGB surface would double-encode.
+/// The format and color space the main canvas is configured with (§6.5): as much
+/// range and as much gamut as the display in front of it actually has.
+///
+/// **Both halves ask what the display *is*, not what the format allows.** wgpu
+/// advertises the extended spaces on every fp16-capable browser, tone-mapping or not,
+/// and `display-p3` on every canvas whatever the panel — so picking on the
+/// capability alone would charge an SDR sRGB user a double-width swapchain and a
+/// gamut conversion for nothing. What the web can say about a display is two CSS
+/// media queries, and they are exactly the two questions: `dynamic-range` and
+/// `color-gamut`.
+///
+/// Decided once, because the engine's pipelines are compiled for one format (§6.4);
+/// a display swapped afterwards is seen on the next load. The 8-bit fallback is a
+/// non-sRGB format, as it always was — the media pass encodes the transfer itself, so
+/// an `*Srgb` surface would encode it twice.
 fn pick_surface(
     caps: &wgpu::SurfaceCapabilities,
     display: &wgpu::DisplayHdrInfo,
 ) -> (wgpu::TextureFormat, wgpu::SurfaceColorSpace) {
-    let hdr_display = display
-        .coarse
-        .as_ref()
-        .and_then(|c| c.high_dynamic_range)
-        .unwrap_or(false);
-    let extended = caps
-        .color_spaces(wgpu::TextureFormat::Rgba16Float)
-        .contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB);
-    if hdr_display && extended {
-        return (
-            wgpu::TextureFormat::Rgba16Float,
-            wgpu::SurfaceColorSpace::ExtendedSrgb,
-        );
+    let coarse = display.coarse.as_ref();
+    let hdr = coarse.and_then(|c| c.high_dynamic_range).unwrap_or(false);
+    let wide = matches!(
+        coarse.and_then(|c| c.gamut),
+        Some(wgpu::DisplayGamut::DisplayP3 | wgpu::DisplayGamut::Rec2020)
+    );
+    let f16 = wgpu::TextureFormat::Rgba16Float;
+    let offers =
+        |format, space: wgpu::SurfaceColorSpaces| caps.color_spaces(format).contains(space);
+
+    if hdr && wide && offers(f16, wgpu::SurfaceColorSpaces::EXTENDED_DISPLAY_P3) {
+        return (f16, wgpu::SurfaceColorSpace::ExtendedDisplayP3);
+    }
+    if hdr && offers(f16, wgpu::SurfaceColorSpaces::EXTENDED_SRGB) {
+        return (f16, wgpu::SurfaceColorSpace::ExtendedSrgb);
     }
     let format = caps
         .formats
@@ -851,6 +864,11 @@ fn pick_surface(
         .copied()
         .find(|f| !f.is_srgb())
         .unwrap_or(caps.formats[0]);
+    // Wide gamut without the range: an 8-bit `display-p3` canvas, which is what a
+    // laptop panel with P3 coverage and no HDR mode has to offer.
+    if wide && offers(format, wgpu::SurfaceColorSpaces::DISPLAY_P3) {
+        return (format, wgpu::SurfaceColorSpace::DisplayP3);
+    }
     (format, wgpu::SurfaceColorSpace::Auto)
 }
 

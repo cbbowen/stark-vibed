@@ -856,7 +856,7 @@ mod tests {
     /// given hot values (the clamp must not turn two stops into a degenerate one) and
     /// that the sanitizer is the identity on it.
     #[test]
-    fn a_gradient_maps_stops_are_inside_the_cube_before_it_is_sanitized() {
+    fn a_gradient_maps_stops_are_bounded_before_it_is_sanitized() {
         use crate::Srgb;
         use crate::gradient::{Gradient, GradientStop};
         let hot = Gradient::new(vec![
@@ -870,8 +870,8 @@ mod tests {
             },
         ])
         .expect("clamping must not degenerate the ramp");
-        assert_eq!(hot.stops()[0].color.get(), [0.0, 0.5, 1.0]);
-        assert_eq!(hot.stops()[1].color.get(), [0.25, 1.0, 0.75]);
+        assert_eq!(hot.stops()[0].color.get(), [-2.0, 0.5, Srgb::EXTENT]);
+        assert_eq!(hot.stops()[1].color.get(), [0.25, 2.0, 0.75]);
 
         let filter = Filter::GradientMap(Some(hot));
         assert_eq!(

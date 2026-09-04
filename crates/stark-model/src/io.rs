@@ -609,8 +609,10 @@ mod tests {
             colors,
             vec![
                 [0.25, 0.5, 0.75],
-                // Clamped on the way in rather than refused — the file opens.
-                [0.0, 1.0, 0.0],
+                // Funnelled on the way in rather than refused — the file opens. Not
+                // *clamped* to the cube any more: a color outside it is a wide-gamut
+                // color now, and only an unbounded one is held (§6.5, `Srgb`).
+                [-1.0, 2.0, 0.0],
                 [0.1, 0.2, 0.3],
             ],
         );

@@ -67,7 +67,7 @@ impl Renderer {
 
     /// Whether the window can show anything above white (§6.5).
     pub fn hdr_capable(&self) -> bool {
-        self.transfer != Transfer::Srgb
+        self.transfer.is_hdr()
     }
 
     /// Tell the engine what the window is (§6.5): the surface's transfer — stated

@@ -37,8 +37,8 @@ through the same gate, so a stored or received stop list cannot smuggle in an
 unsampleable ramp). A `Gradient` in hand is always sampleable, which is the
 §1 habit of ruling out a class rather than enumerating its instances.
 
-Stops store **straight sRGB**, because that is the convention on every CPU
-color boundary — `PaintEffect::color`, the matte and substrate colors, the
+Stops store **straight extended sRGB**, because that is the convention on every
+CPU color boundary — `PaintEffect::color`, the matte and substrate colors, the
 eyedropper's answer (§6.5) — and a gradient's stops are exactly that kind of
 value: colors the picker could show and the brush could wear. Interpolation
 between stops happens **in Oklab** (`Gradient::sample`), the same argument as

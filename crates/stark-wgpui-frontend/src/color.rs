@@ -20,6 +20,15 @@ use wgpui::{
     rgb,
 };
 
+/// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
+/// window's**. The window's swapchain may be scRGB and the engine paints in any
+/// gamut it has; these pictures are RGBA8 sprites wgpui's shaders read as sRGB, so a
+/// wider rim would draw an outer ring of colors clamped on their way to the screen.
+/// A wide color is reachable meanwhile by typing it
+/// (`stark_ui::color::parse_color`); a wide carrier is what would move this
+/// (§11.2, the wide-gamut wheel).
+const WHEEL_GAMUT: stark_model::color::Gamut = stark_model::color::Gamut::Srgb;
+
 /// The wheel's side, logical px — and the ramp's width, so the two controls line up
 /// in a column narrower than the panel.
 const WHEEL: f32 = 168.0;
@@ -52,13 +61,13 @@ impl Default for Wheel {
 impl Wheel {
     /// Where `rgb` sits, keeping `hue` for a color that has none.
     pub fn of(rgb: [f32; 3], hue: f32) -> Self {
-        let (l, hue, sat) = color::on_wheel(rgb, hue);
+        let (l, hue, sat) = color::on_wheel(WHEEL_GAMUT, rgb, hue);
         Self { l, hue, sat }
     }
 
     /// The straight-sRGB color this position *is*.
     pub fn rgb(self) -> [f32; 3] {
-        color::wheel_color(self.l, self.hue, self.sat)
+        color::wheel_color(WHEEL_GAMUT, self.l, self.hue, self.sat)
     }
 }
 
@@ -154,7 +163,7 @@ impl Pictures {
             let picture = texture(
                 FIELD_N,
                 FIELD_N,
-                &color::wheel_rgb(key as f32 / 255.0),
+                &color::wheel_rgb(WHEEL_GAMUT, key as f32 / 255.0),
                 inside_the_rim,
             )?;
             self.wheel = Some((key, picture));
@@ -169,7 +178,12 @@ impl Pictures {
             (sat.clamp(0.0, 1.0) * 255.0).round() as u32,
         );
         if self.track.as_ref().is_none_or(|(k, _)| *k != key) {
-            let picture = texture(RAMP_N, 1, &color::ramp_rgb(hue, sat), |_, _| 255)?;
+            let picture = texture(
+                RAMP_N,
+                1,
+                &color::ramp_rgb(WHEEL_GAMUT, hue, sat),
+                |_, _| 255,
+            )?;
             self.track = Some((key, picture));
         }
         self.track.as_ref().map(|(_, p)| p.clone())
@@ -286,7 +300,7 @@ pub fn color_panel(
                     div()
                         .text_xs()
                         .text_color(rgb(0x9aa0a6))
-                        .child(color::hex_of(rgb_now)),
+                        .child(color::notation_of(rgb_now)),
                 ),
         )
 }

@@ -703,7 +703,9 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
 
 - **Why Oklab end-to-end:** pigment mixing, gradient interpolation and wet blends
   are perceptually uniform — no muddy mid-tones from sRGB lerps, no hue shifts
-  through grey. This is the math behind the "old masters" blending goal.
+  through grey. This is the math behind the "old masters" blending goal. It is
+  also what makes a wide gamut free: Oklab is unbounded, so a color outside the
+  sRGB cube is an ordinary `(L, a, b)` and not a second representation.
 - **Determinism:** the sRGB↔Oklab matrices and transfer functions are fixed
   constants shared by Rust and WESL, so ingest and present are reproducible
   across runs and peers — required by goldens (§9) and convergence (§12).
@@ -757,11 +759,63 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
     is seen on the next launch. The 8-bit dither turns itself off on a deep
     target (`media::dither_step`).
 
-  What this is *not*: wide-gamut paint. Every color the document carries is an
-  `Srgb`, in the cube by construction (§6.7), so an HDR session paints exactly the
-  colors an SDR one does — the light above white is the whole of the difference.
-  Display P3 and PQ (HDR10) surfaces, and a runtime retarget when a window moves
-  between displays, are the same mechanism with more arms and are not built.
+- **Wide-gamut paint: the cube stopped being the bound.** Range is the light;
+  *gamut* is which colors exist at all, and it is the document's own question
+  rather than the display's. `Srgb` is now **extended sRGB** — CSS Color 4's
+  `srgb`, the sRGB primaries and transfer continued past the cube, in which a
+  channel outside `[0, 1]` names a color outside the sRGB gamut. Its funnel holds
+  every channel finite and inside `Srgb::EXTENT`, and nothing narrower: a value
+  that used to be clamped to the cube now passes as the wide color it is. Four
+  consequences, and one non-consequence:
+  - **The wire moved and the file did not** (§8, §19). Same bytes, same fields,
+    same names, so every document opens either way — but a build from before
+    clamps what it reads, which is the same log and a narrower picture of it.
+    That is a disagreement two *peers* must not have, so the ALPN went to 25
+    (`stark-net::wire`), and a file's own reconciliation is untouched.
+  - **The transfer is odd and unbounded.** `srgb_to_linear` and its inverse are
+    mirrored through zero and continued past one, so a negative channel follows
+    the curve rather than the linear toe it used to land on. On `[0, 1]` they are
+    the sRGB curve bit for bit, which is what keeps every golden where it was.
+  - **The floors moved into light.** A wide color's *linear sRGB* has a negative
+    channel, so the guards that used to read `max(lin, 0)` would have clipped its
+    chroma. They floor in XYZ instead (`lib/color.wesl::floor_light`), which is
+    non-negative for every real color and still catches the overshoot they were
+    put there for — the Drago curve's, and the accumulator's. In the cube it is
+    the identity, and by an early return rather than by rounding.
+  - **The tonemap's black point stopped being able to *add*.** It subtracts the
+    sheen the fragment's own BRDF contributed, "but not more than the darkest
+    channel can give" — written `min(min(c.rgb), black_point)`, which for a
+    *negative* darkest channel subtracted a negative and lifted every channel
+    instead. That was never the sheen coming off; it was an accidental
+    desaturation toward white, and on a wide color it destroys the color
+    outright. Reading the intent literally (`clamp(min(c.rgb), 0, black_point)` —
+    a channel with no sheen gives none) is what the pass does now. It moved five
+    color-jitter goldens, which is the whole visible extent of it: a jittered
+    color that leaves the gamut clips at the 8-bit store where it used to be
+    lifted.
+  - **Two more surface transfers**, since a gamut needs somewhere to go: Display
+    P3 under the sRGB curve (an 8-bit `display-p3` canvas — wide gamut, no
+    headroom) and under the extended one (an fp16 P3 canvas). The web frontend
+    asks the display both questions (`dynamic-range` and `color-gamut`) and
+    takes the widest surface it admits to.
+  - **The pigment space is the exception, and says so.** Mixbox's polynomial was
+    trained on the sRGB cube and its LUT is indexed by it, so `rgb_to_latent`
+    holds a color to the cube on the way in (§6.7). A pigment document paints
+    the colors pigment has.
+
+  What this is *not*, yet: a **wide wheel**. The picker's geometry takes a
+  `Gamut` and fits its rim to it (`stark-ui::color`), but both frontends pass
+  `Gamut::Srgb`, because a wheel is a *picture* and neither carrier can show more
+  — a `data:` URL a browser reads as sRGB on one side, an RGBA8 sprite wgpui
+  decodes as sRGB on the other. A wider rim on either would draw an outer ring of
+  clamped color, which is the defect the fit exists to remove. What is reachable
+  meanwhile is the readout, which speaks CSS Color 4: it prints
+  `color(display-p3 …)` for a color the cube cannot hold and reads back either
+  spelling. A tagged carrier is what would move it. Nor is **wide-gamut import**:
+  a placed picture is RGBA8 sRGB by the identity contract §19 froze, so a wide
+  one needs a second picture kind rather than a wider reading of this one.
+  PQ (HDR10) surfaces and a runtime retarget when a window moves between displays
+  are the same mechanism with more arms and are not built.
 - **Dither at the encode, and only there.** The walk from f32 down to the
   target's 8-bit codes — the media pass's store, and the resolve's re-encode
   when the view is supersampled (§6.4) — is the one place banding is born, so

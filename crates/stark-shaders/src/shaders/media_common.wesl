@@ -208,8 +208,9 @@ fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
 
     var c = color;
     // Lift the sheen off the darkest channel, so paint over a black substrate reads
-    // black. Clamped to `x` so no channel is driven negative.
-    c = c - min(min(c.r, min(c.g, c.b)), black_point);
+    // black — by at most the sheen, and never by a negative channel: a wide-gamut
+    // color has one, and it is chroma, not light to lift (§6.5).
+    c = c - clamp(min(c.r, min(c.g, c.b)), 0.0, black_point);
 
     let peak = max(c.r, max(c.g, c.b));
     if peak < start_compression {

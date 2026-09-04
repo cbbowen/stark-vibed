@@ -11,10 +11,20 @@ use dioxus::prelude::*;
 
 use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
+use stark_model::color::Gamut;
 use stark_ui::color::{
-    FIELD_N, Grab, RAMP_N, ab_field_rgb, hex_of, on_wheel, parse_hex, ramp_rgb, wheel_color,
+    FIELD_N, Grab, RAMP_N, ab_field_rgb, notation_of, on_wheel, parse_color, ramp_rgb, wheel_color,
     wheel_rgb, wheel_xy,
 };
+
+/// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
+/// canvas's**. The engine paints in any gamut the surface has, and this control's
+/// pictures are `data:` URLs a browser reads as sRGB, so a wider rim here would draw
+/// an outer ring of colors clamped on their way to the screen — the very thing the
+/// fit exists to remove. A wide color is reachable meanwhile by typing it
+/// (`stark_ui::color::parse_color`); a tagged carrier is what would move this
+/// (§11, the wide-gamut wheel).
+const WHEEL_GAMUT: Gamut = Gamut::Srgb;
 
 #[component]
 pub fn ColorPanel() -> Element {
@@ -99,7 +109,7 @@ pub fn OklabPicker(
     #[props(default)] oncommit: Option<EventHandler<[f32; 3]>>,
     #[props(default)] seed: u64,
 ) -> Element {
-    let (il, ih, is) = on_wheel(init, 0.0);
+    let (il, ih, is) = on_wheel(WHEEL_GAMUT, init, 0.0);
     let mut l = use_signal(|| il);
     let mut hue = use_signal(|| ih);
     let mut sat = use_signal(|| is);
@@ -119,7 +129,7 @@ pub fn OklabPicker(
             return;
         }
         seeded.set(seed);
-        let (nl, nh, ns) = on_wheel(init, *hue.peek());
+        let (nl, nh, ns) = on_wheel(WHEEL_GAMUT, init, *hue.peek());
         l.set(nl);
         hue.set(nh);
         sat.set(ns);
@@ -136,14 +146,14 @@ pub fn OklabPicker(
     let (mx, my) = wheel_xy(hue(), sat());
     let (wx, wy) = (mx * 100.0, my * 100.0);
     let lx = l() * 100.0; // L: 0→left, 1→right
-    let rgb = wheel_color(l(), hue(), sat());
+    let rgb = wheel_color(WHEEL_GAMUT, l(), hue(), sat());
     let well = format!(
         "background: rgb({:.2}% {:.2}% {:.2}%);",
         rgb[0] * 100.0,
         rgb[1] * 100.0,
         rgb[2] * 100.0
     );
-    let shown = draft().unwrap_or_else(|| hex_of(rgb));
+    let shown = draft().unwrap_or_else(|| notation_of(rgb));
 
     rsx! {
         div { class: "color-pick",
@@ -224,7 +234,7 @@ fn apply_color(
     hue: Signal<f32>,
     sat: Signal<f32>,
 ) {
-    handler.call(wheel_color(l(), hue(), sat()));
+    handler.call(wheel_color(WHEEL_GAMUT, l(), hue(), sat()));
 }
 
 /// End a drag on `grab`, reporting the settled color through `oncommit` once —
@@ -311,10 +321,10 @@ fn commit_hex(
     // the signal would keep that borrow alive across the `else`, and the writes
     // below would find it still held.
     let typed = draft.write().take();
-    let Some(rgb) = typed.as_deref().and_then(parse_hex) else {
+    let Some(rgb) = typed.as_deref().and_then(parse_color) else {
         return;
     };
-    let (nl, nh, ns) = on_wheel(rgb, hue());
+    let (nl, nh, ns) = on_wheel(WHEEL_GAMUT, rgb, hue());
     l.set(nl);
     hue.set(nh);
     sat.set(ns);
@@ -376,12 +386,12 @@ fn bmp_data_url(w: usize, h: usize, rgb: &[u8]) -> String {
 
 /// The picker's wheel at lightness `l`.
 fn wheel_data_url(l: f32) -> String {
-    bmp_data_url(FIELD_N, FIELD_N, &wheel_rgb(l))
+    bmp_data_url(FIELD_N, FIELD_N, &wheel_rgb(WHEEL_GAMUT, l))
 }
 
 /// The `L` slider's track at this hue and relative chroma.
 fn l_ramp_data_url(hue: f32, sat: f32) -> String {
-    bmp_data_url(RAMP_N, 1, &ramp_rgb(hue, sat))
+    bmp_data_url(RAMP_N, 1, &ramp_rgb(WHEEL_GAMUT, hue, sat))
 }
 
 /// The flat `a`/`b` plane a filter's chroma dial is drawn over (§21.5).

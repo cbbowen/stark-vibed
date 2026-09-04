@@ -64,6 +64,17 @@ fn light_to_linear(c: vec3<f32>) -> vec3<f32> {
     );
 }
 
+// Linear sRGB floored **in light** (§6.5): XYZ is non-negative for every real color
+// where a wide-gamut color's linear sRGB is not, so a floor there keeps the chroma a
+// per-channel floor would clip, and still catches an overshoot below zero light. The
+// identity — bit for bit, not to rounding — for a color in the cube.
+fn floor_light(lin: vec3<f32>) -> vec3<f32> {
+    if all(lin >= vec3<f32>(0.0)) {
+        return lin;
+    }
+    return light_to_linear(max(linear_to_light(lin), vec3<f32>(0.0)));
+}
+
 fn oklab_to_linear_srgb(lab: vec3<f32>) -> vec3<f32> {
     let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
     let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;

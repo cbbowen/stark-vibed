@@ -54,7 +54,7 @@
 // linear sRGB rather than on XYZ, and that is the same operation: the two encodings
 // differ by a fixed linear matrix, and a scalar gain commutes with it.
 
-import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, light_to_linear};
+import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, light_to_linear, floor_light};
 
 // Filter codes — the shader ABI for `document::Filter`, so they live next to the
 // shader rather than on the enum, which has no business knowing a `u32`. Mirrored
@@ -188,11 +188,11 @@ const CONTRAST_PIVOT: f32 = 0.5981;
 fn adjust_color(lab_in: vec3<f32>, p: vec4<f32>, q: vec4<f32>) -> vec3<f32> {
     // Exposure, in stops, on the light itself rather than on `L` — see the header.
     // The trip stops at linear sRGB because a scalar gain commutes with the fixed
-    // matrix between it and XYZ. `max(…, 0)` because the accumulator can hold a
-    // Drago overshoot or an out-of-gamut mixture whose linear form dips below zero,
-    // and Oklab's signed cube root would happily carry that through into a hue no
-    // color has.
-    let exposed = max(oklab_to_linear_srgb(lab_in) * exp2(p.x), vec3<f32>(0.0));
+    // matrix between it and XYZ. Floored in light: the accumulator can hold a Drago
+    // overshoot below zero, which Oklab's signed cube root would carry into a hue no
+    // color has — and a wide-gamut color's negative sRGB channel, which is chroma to
+    // keep (§6.5).
+    let exposed = floor_light(oklab_to_linear_srgb(lab_in) * exp2(p.x));
     var lab = linear_srgb_to_oklab(exposed);
 
     // Contrast: a gain on lightness about mid-grey.

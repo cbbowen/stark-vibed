@@ -45,6 +45,9 @@ pub use composite::{
 pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use environment::{Environment, EnvironmentId};
 pub use fill::FillRenderer;
+/// For a frontend writing half floats into a texture of its own — the native picker's
+/// wide-gamut wheel (§6.5) — rather than a second spelling of the conversion there.
+pub use half::f32_to_f16;
 pub use merge::MergeRenderer;
 pub use place::PlaceRenderer;
 pub use registry::Registry;

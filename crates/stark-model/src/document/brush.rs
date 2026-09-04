@@ -1327,7 +1327,7 @@ impl BrushEffect {
     pub fn sanitized(self) -> Self {
         match self {
             Self::Paint(p) => Self::Paint(PaintEffect {
-                color: p.color.map(clamp01),
+                color: crate::Srgb::new(p.color).get(),
                 // In `[0, 1]` by the field's own doc, for the erase twin's
                 // reason: a ceiling on the fraction laid, meaningless past 1.
                 opacity: clamp01(finite_or(p.opacity, 1.0)),
@@ -1338,7 +1338,7 @@ impl BrushEffect {
                 modulation: p.modulation.sanitized(),
             }),
             Self::Wet(w) => Self::Wet(WetEffect {
-                color: w.color.map(clamp01),
+                color: crate::Srgb::new(w.color).get(),
                 opacity: clamp01(finite_or(w.opacity, 1.0)),
                 // Floored but not capped, for `PaintEffect::flow`'s reason: a
                 // rate, whose ceiling is a slider's.
@@ -2141,18 +2141,23 @@ mod tests {
         };
         let unit = |b: &BrushParams| {
             let mut v = vec![b.tooth.give, b.effect.opacity()];
-            if let Some(p) = b.paint() {
-                v.push(p.color[0]);
-            }
             if let Some(w) = b.wet() {
                 v.extend([
-                    w.color[0],
                     w.dynamics.add,
                     w.dynamics.lift,
                     w.dynamics.deposit,
                     w.dynamics.bleed,
                 ]);
             }
+            v
+        };
+        // The colors are neither of the two lists above: a brush color is extended
+        // sRGB, so it may be negative and may pass 1 — what it may not be is
+        // unbounded or a `NaN` (§6.5, `Srgb`).
+        let colors = |b: &BrushParams| {
+            let mut v = vec![];
+            v.extend(b.paint().map(|p| p.color).unwrap_or_default());
+            v.extend(b.wet().map(|w| w.color).unwrap_or_default());
             v
         };
         for (name, poke) in pokes {
@@ -2168,6 +2173,11 @@ mod tests {
                 // …the ones this crate quotes in [0, 1] are in it…
                 for v in unit(&clean) {
                     assert!((0.0..=1.0).contains(&v), "{name} = {f} escaped [0, 1]");
+                }
+                // …a color is finite and bounded, in either direction…
+                for v in colors(&clean) {
+                    let bound = crate::Srgb::EXTENT;
+                    assert!((-bound..=bound).contains(&v), "{name} = {f} left {v}");
                 }
                 // …and the stretch cannot outrun its own saturation point.
                 assert!((0.0..=BrushParams::MAX_STRETCH).contains(&clean.stretch));

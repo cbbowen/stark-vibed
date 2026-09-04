@@ -53,7 +53,7 @@ impl Parcel {
         }
     }
 
-    /// The same paint with every color inside the sRGB cube and an axis the ramp pass
+    /// The same paint with every color finite and bounded and an axis the ramp pass
     /// can evaluate — the parcel's half of the funnel
     /// [`FillOp::with_paint`](super::FillOp::with_paint) is, and of
     /// [`ActionKind::sanitized`](super::ActionKind::sanitized) where a matte's paint
@@ -70,8 +70,8 @@ impl Parcel {
     /// and it cannot make a `NaN`.
     pub fn sanitized(self) -> Self {
         match self {
-            // Nothing to hold: an `Srgb` is inside the cube by construction, and a
-            // ramp's stops are `Srgb`s. What is left is the *axis*, which is the
+            // Nothing to hold: an `Srgb` is finite and bounded by construction, and
+            // a ramp's stops are `Srgb`s. What is left is the *axis*, which is the
             // one thing here a type could not answer.
             Self::Solid(_) => self,
             Self::Gradient(GradientParcel { gradient, axis }) if axis.usable() => {

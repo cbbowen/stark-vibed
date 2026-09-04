@@ -1176,10 +1176,9 @@ impl Command {
         match self {
             Command::Undo => o.is_some_and(|o| o.can_undo),
             // The transfer is the surface's whether or not the switch is on (a
-            // frontend flips only the headroom), so sRGB means nothing to switch (§6.5).
-            Command::ToggleHdr => {
-                o.is_some_and(|o| o.output.transfer() != stark_engine::Transfer::Srgb)
-            }
+            // frontend flips only the headroom), so a surface with no range above
+            // white has nothing to switch — a wide *gamut* is not range (§6.5).
+            Command::ToggleHdr => o.is_some_and(|o| o.output.transfer().is_hdr()),
             Command::Redo => o.is_some_and(|o| o.can_redo),
             Command::Deselect
             | Command::InvertSelection

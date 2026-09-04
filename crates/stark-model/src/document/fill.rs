@@ -304,7 +304,7 @@ mod tests {
         // The **paint** is not among the hostile values here, and cannot be: a
         // `Parcel::Solid` holds an `Srgb`, which has no constructor that admits one
         // out of the cube. That half is asked of the bytes instead, in
-        // `color::tests::a_color_from_the_wire_is_inside_the_cube`.
+        // `color::tests::a_color_from_the_wire_is_finite_and_bounded`.
         let hostile = FillOp {
             shape: SelectionShape::Rect {
                 min: Vec2::ZERO,

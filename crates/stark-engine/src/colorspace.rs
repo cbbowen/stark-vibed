@@ -135,8 +135,10 @@ pub trait ColorSpace {
     /// leave behind (§6.7), in one conversion.
     ///
     /// The parameter says "straight display RGB" in the type rather than in this
-    /// line: an [`Srgb`] is in the cube by construction, so neither implementation
-    /// has to wonder whether it was handed one that is not (§6.5).
+    /// line: an [`Srgb`] is finite and bounded by construction, so neither
+    /// implementation has to wonder whether it was handed a `NaN`. It may well be
+    /// **outside the sRGB cube** — extended sRGB is what a document carries (§6.5) —
+    /// which is a colorimetric space's to represent and a pigment space's to hold.
     ///
     /// **One method because it is one evaluation.** These were two, and every caller
     /// in the crate asked both back to back — which in Mixbox ran the pigment
@@ -288,6 +290,10 @@ impl ColorSpace for MixboxColorSpace {
     }
 
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent {
+        // The pigment space *is* the sRGB cube: the polynomial was trained on it and
+        // the LUT is indexed by it, so a wide-gamut color is held to the cube here
+        // (§6.5, §6.7) — the one door a document's color enters this space by.
+        let rgb = rgb.map(|c| c.clamp(0.0, 1.0));
         // Mixbox latent = [c0, c1, c2, c3, residual…]. The concentrations and the
         // remainder `rgb − poly(c)` — which is what makes the round trip below exact
         // rather than approximate — are two halves of **one** evaluation.

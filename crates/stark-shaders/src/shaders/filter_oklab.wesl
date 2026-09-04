@@ -12,7 +12,7 @@
 // round trip, which is the point: in a colorimetric space the three channels are
 // the whole color, and they are already Oklab (§6.7).
 
-import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, linear_to_light};
+import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, linear_to_light, floor_light};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
@@ -53,9 +53,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
             let w = ca_weight(s);
             let y = ca_lum(w);
             let lab_s = cs.rgb / max(cs.a, COVERAGE_EPS);
-            // `max(…, 0)`: the accumulator can hold an out-of-gamut mixture whose
-            // linear form dips below zero, and light does not go negative.
-            lin_acc += w * max(oklab_to_linear_srgb(lab_s), vec3<f32>(0.0)) * cs.a;
+            // Floored in light, not per channel: light does not go negative, but a
+            // wide-gamut color's sRGB channel does (§6.5).
+            lin_acc += w * floor_light(oklab_to_linear_srgb(lab_s)) * cs.a;
             w_acc += w;
             cov_acc += y * cs.a;
             h_acc += y * hs;
@@ -127,9 +127,8 @@ fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
         h = textureSampleLevel(back_aux, back_samp, src.uv, 0.0).x;
     }
     let lab = cb.rgb / max(cb.a, COVERAGE_EPS);
-    // `max(…, 0)` for the gather's reason: an out-of-gamut mixture's linear form
-    // can dip below zero, and light does not go negative.
-    let light = linear_to_light(max(oklab_to_linear_srgb(lab), vec3<f32>(0.0)));
+    // Floored as light, for the gather's reason (§6.5).
+    let light = max(linear_to_light(oklab_to_linear_srgb(lab)), vec3<f32>(0.0));
     return BlurOut(
         vec4<f32>(light * cb.a, cb.a),
         vec4<f32>(h, 1.0, 0.0, 0.0),

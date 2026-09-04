@@ -3,6 +3,7 @@
 //! exceeds white; the light glinting off it does (§6.3), and headroom is where that
 //! goes instead of into the tonemap's roll-off.
 
+use stark_model::color::Gamut;
 use stark_shaders::mirror::display as d;
 
 /// How a target's texels encode light — `lib/display.wesl`'s selector on the host.
@@ -13,14 +14,21 @@ use stark_shaders::mirror::display as d;
 /// neither.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Transfer {
-    /// The sRGB OETF over `[0,1]` — every 8-bit target, and every export.
+    /// The sRGB OETF over `[0,1]` — every 8-bit sRGB target, and every export.
     #[default]
     Srgb,
     /// The sRGB OETF continued past 1 and mirrored through 0 — an fp16 canvas under
     /// the web's `"extended"` tone mapping.
     ExtendedSrgb,
-    /// Linear light, `1.0` = SDR white — scRGB, the native HDR surface.
+    /// Linear light, `1.0` = SDR white — scRGB, the native HDR surface. Unbounded on
+    /// sRGB primaries, so it carries a wide-gamut color in a negative channel.
     Linear,
+    /// Display P3 primaries under the sRGB OETF over `[0,1]` — an 8-bit
+    /// `display-p3` canvas: wide gamut, no headroom.
+    DisplayP3,
+    /// Display P3 primaries under the extended OETF — an fp16 `display-p3` canvas
+    /// under extended tone mapping.
+    ExtendedDisplayP3,
 }
 
 impl Transfer {
@@ -30,15 +38,36 @@ impl Transfer {
             Self::Srgb => d::TRANSFER_SRGB,
             Self::ExtendedSrgb => d::TRANSFER_EXTENDED_SRGB,
             Self::Linear => d::TRANSFER_LINEAR,
+            Self::DisplayP3 => d::TRANSFER_DISPLAY_P3,
+            Self::ExtendedDisplayP3 => d::TRANSFER_EXTENDED_DISPLAY_P3,
         };
         id as f32
+    }
+
+    /// Whether a surface read in this transfer can show anything above SDR white.
+    pub fn is_hdr(self) -> bool {
+        matches!(
+            self,
+            Self::ExtendedSrgb | Self::Linear | Self::ExtendedDisplayP3
+        )
+    }
+
+    /// The gamut a surface read in this transfer can show (§6.5) — what a picker
+    /// fits its wheel to. scRGB is unbounded and so wide; it is credited with P3,
+    /// which is what the displays that offer it have.
+    pub fn gamut(self) -> Gamut {
+        match self {
+            Self::Srgb | Self::ExtendedSrgb => Gamut::Srgb,
+            Self::Linear | Self::DisplayP3 | Self::ExtendedDisplayP3 => Gamut::DisplayP3,
+        }
     }
 }
 
 /// The display a render is presented on (§6.5). A view setting like
-/// [`MediaParams`](super::MediaParams), per engine — and one an 8-bit render never
-/// reads: it is [`SDR`](Self::SDR) by construction (`Compositor::render`), so a file
-/// written from an HDR session is the picture an SDR viewer sees.
+/// [`MediaParams`](super::MediaParams), per engine — and one an export never reads:
+/// a render for a file is [`SDR`](Self::SDR) by the attachments it is drawn through
+/// (`Engine::render_view`), so a file written from an HDR or wide-gamut session is
+/// the picture an sRGB viewer sees.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Output {
     transfer: Transfer,
@@ -79,8 +108,8 @@ impl Default for Output {
 }
 
 /// Whether `format` is one of the 8-bit targets: what an export is drawn into, what
-/// the display dither is for (§6.5), and what is rendered [`Output::SDR`] whatever
-/// the screen is showing. The one list, so those three cannot disagree.
+/// the display dither is for (§6.5), and what can carry nothing above white whatever
+/// it is asked for. The one list, so those three cannot disagree.
 pub(super) fn is_eight_bit(format: wgpu::TextureFormat) -> bool {
     use wgpu::TextureFormat as F;
     matches!(format, F::Rgba8Unorm | F::Bgra8Unorm)
@@ -107,6 +136,15 @@ mod tests {
         assert_eq!(Output::new(Transfer::Linear, f32::NAN).headroom(), 1.0);
         assert_eq!(Output::new(Transfer::Linear, 4.0).headroom(), 4.0);
         assert_eq!(Output::default(), Output::SDR);
+    }
+
+    #[test]
+    fn a_transfer_says_what_its_surface_can_show() {
+        assert!(!Transfer::Srgb.is_hdr());
+        assert!(!Transfer::DisplayP3.is_hdr());
+        assert!(Transfer::ExtendedDisplayP3.is_hdr() && Transfer::Linear.is_hdr());
+        assert_eq!(Transfer::ExtendedSrgb.gamut(), Gamut::Srgb);
+        assert_eq!(Transfer::DisplayP3.gamut(), Gamut::DisplayP3);
     }
 
     #[test]

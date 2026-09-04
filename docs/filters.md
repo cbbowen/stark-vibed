@@ -718,8 +718,8 @@ repaints every color with its greyscale — so the kind's payload is an `Option`
 the same shape as an angle dialled before its spread (§21.10), keeping §21.3's
 byte-level neutral rule and costing `Filter` its old `Copy` (the day its own doc
 comment named). Sanitizing holds the one thing `Gradient::new`'s gate does not —
-stop colors clamped to the sRGB cube — since a finite `1e30` reaches every texel
-as surely as a `NaN` gain.
+stop colors held finite and bounded (§6.5) — since a finite `1e30` reaches every
+texel as surely as a `NaN` gain.
 
 **The ramp rides the filter uniform**: a lane of sixteen `(L, a, b, t)` stops —
 converted from the stops' sRGB once, host-side, in `FilterDraw::new` — with the
