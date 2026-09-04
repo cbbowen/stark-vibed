@@ -17,7 +17,6 @@
 use std::collections::HashSet;
 
 use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::Command;
 use stark_chrome::panels::PanelId;
 use stark_model::document::BrushShape;
 use wgpui::{
@@ -38,19 +37,6 @@ const PADDING: f32 = 12.0;
 /// The panel's width in logical px. Wide enough for a label, a value and a track that
 /// still resolves a hundred steps.
 pub const WIDTH: f32 = 232.0;
-
-/// The file acts, in the order the row draws them.
-///
-/// A row of buttons rather than a chord or a menu, and both of those are absences
-/// rather than choices: the shipped table binds no Ctrl+S — the web app reaches these
-/// through its command palette, which this frontend has not got (§25) — and wgpui
-/// installs platform menus on macOS alone. Named by the registry all the same, so the
-/// words are the ones every other surface uses.
-pub const FILE_ACTS: [Command; 3] = [
-    Command::OpenDocument,
-    Command::SaveDocument,
-    Command::ExportImage,
-];
 
 /// The knobs the panel offers, in the order it draws them.
 pub const KNOBS: [Knob; 4] = [Knob::Size, Knob::Flow, Knob::Hardness, Knob::Opacity];
@@ -339,33 +325,6 @@ pub fn brush_panel(
         .border_r_1()
         .border_color(rgb(0x35393d))
         .text_color(rgb(0xe8eaed))
-        .child(
-            div()
-                .flex()
-                .gap_1()
-                .children(FILE_ACTS.iter().enumerate().map(|(i, command)| {
-                    div()
-                        .relative()
-                        .flex_1()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .text_xs()
-                        .text_center()
-                        .text_color(rgb(0xb0b4b8))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap_1()
-                        .child(probe(regions, Region::File(i)))
-                        // The registry's glyph and the registry's word, which is what
-                        // makes this row the same control as the web app's menu entry
-                        // rather than a second one that resembles it (§25).
-                        .child(crate::icons::icon(command.icon(), 0xb0b4b8))
-                        .child(command.word())
-                })),
-        )
         .child(section(regions, folded, PanelId::Color, color))
         .child(section(regions, folded, PanelId::Brush, brush_body))
         .child(section(regions, folded, PanelId::Select, select))
@@ -437,8 +396,6 @@ fn title(regions: &Regions, folded: &HashSet<PanelId>, id: PanelId) -> impl Into
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
     Knob(Knob),
-    /// One of [`FILE_ACTS`], by index.
-    File(usize),
     Effect(usize),
     Preset(usize),
     /// A section's title bar — pressing it folds the section away.

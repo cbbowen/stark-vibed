@@ -37,6 +37,7 @@ mod gallery;
 mod icons;
 mod keys;
 mod layers;
+mod menu;
 mod panel;
 mod render;
 mod select;

@@ -36,6 +36,7 @@ use crate::color;
 use crate::files::{self, Done};
 use crate::gallery;
 use crate::layers::{self, Act};
+use crate::menu;
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
 use crate::select;
@@ -143,6 +144,10 @@ pub struct Canvas {
     /// Which panels this client has folded away, remembered across sessions
     /// (`stark_chrome::visibility`).
     folded: std::collections::HashSet<PanelId>,
+    /// The menu whose rows are showing, if any (`crate::menu`). Not remembered: a
+    /// menu is open for the length of one decision.
+    menu_open: Option<usize>,
+    menu_regions: menu::Regions,
     /// The same, for the Select section, the transform bar and the two galleries.
     select_regions: select::Regions,
     color_regions: color::Regions,
@@ -259,6 +264,8 @@ impl Canvas {
             wheel,
             pictures: color::Pictures::default(),
             folded: stark_chrome::visibility::stored_collapsed(),
+            menu_open: None,
+            menu_regions: menu::Regions::default(),
             select_regions: select::Regions::default(),
             color_regions: color::Regions::default(),
             bar_regions: transform::Regions::default(),
@@ -289,6 +296,45 @@ impl Canvas {
             shift: ev.modifiers.shift,
             alt: ev.modifiers.alt,
         };
+
+        // The menu bar first, and *before* the mode below: an open menu is over the
+        // whole window, so a press it does not want is a press that closes it rather
+        // than one that reaches the canvas. That is the whole of what "modal" means
+        // here, and it is two lines rather than a catcher.
+        match menu::hit(&self.menu_regions, ev.position) {
+            Some(menu::Region::Title(i)) => {
+                // The lit title closes it, which is the escape hatch every other
+                // armed control in this app offers through the control that armed it.
+                self.menu_open = if self.menu_open == Some(i) {
+                    None
+                } else {
+                    Some(i)
+                };
+                return self.repaint(cx);
+            }
+            Some(menu::Region::Row(i, j)) => {
+                self.menu_open = None;
+                if let Some(command) = menu::command(i, j) {
+                    self.run(command, window, cx);
+                }
+                return self.repaint(cx);
+            }
+            // The bar's own background, and anywhere else: both close an open menu.
+            // A press on the bar that missed a title is not a press on the canvas
+            // either, so it stops here rather than falling through to paint.
+            Some(menu::Region::Bar) => {
+                let was = self.menu_open.take();
+                if was.is_some() {
+                    return self.repaint(cx);
+                }
+                return;
+            }
+            None if self.menu_open.is_some() => {
+                self.menu_open = None;
+                return self.repaint(cx);
+            }
+            None => {}
+        }
 
         // A live transform owns the canvas: its bar first, then the widget, and a
         // press that reached neither is still not paint. This is the web app's
@@ -389,12 +435,6 @@ impl Canvas {
 
         // Then the brush panel: its column is where a press stops being paint.
         match panel::hit(&self.regions, ev.position) {
-            Some(Region::File(i)) => {
-                if let Some(command) = panel::FILE_ACTS.get(i) {
-                    self.run(*command, window, cx);
-                }
-                return;
-            }
             Some(Region::Knob(knob)) => {
                 self.held = Some(Held::Knob(knob));
                 if let Some(f) = panel::fraction_at(&self.regions, knob, ev.position) {
@@ -1417,6 +1457,12 @@ impl Canvas {
         let Some(command) = self.bindings.lookup(&crate::keys::stroke(&ev.keystroke)) else {
             return;
         };
+        // Escape shuts an open menu before it cancels anything else. The chord table
+        // says Escape means `CancelMode`, and it still does — what this adds is that
+        // the nearest thing to cancel is the menu the hand just opened.
+        if command == Command::CancelMode && self.menu_open.take().is_some() {
+            return self.repaint(cx);
+        }
         self.run(command, window, cx);
     }
 
@@ -1589,6 +1635,15 @@ impl Render for Canvas {
             substrate_bytes,
             &self.gallery_regions,
         );
+        // Built before the panels so its regions are recorded first — which does not
+        // matter for the hit test (the lists are separate) but keeps the bar's own
+        // drop-down measured on the frame it opens.
+        let menubar = menu::bar(
+            self.menu_open,
+            self.obs.as_ref(),
+            &self.bindings,
+            &self.menu_regions,
+        );
         let picker = color::color_panel(self.wheel, &mut self.pictures, &self.color_regions);
         let chrome = panel::brush_panel(
             &self.brush,
@@ -1635,24 +1690,32 @@ impl Render for Canvas {
         div()
             .size_full()
             .flex()
+            .flex_col()
             // The keyboard answers whatever has focus, and nothing has it unless
             // something asks: an unfocused window dispatches no chord at all.
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
-            .child(chrome)
+            .child(menubar)
             .child(
                 div()
-                    .relative()
                     .flex_1()
-                    .h_full()
-                    .child(wgpu_surface(r.surface()).size_full())
-                    // Over the surface rather than beside it: the widget is drawn in
-                    // canvas space and the surface is what canvas space maps onto, so
-                    // the overlay's own bounds are the frame the mapping lands in.
-                    .children(overlay)
-                    .children(bar),
+                    .min_h_0()
+                    .flex()
+                    .child(chrome)
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .h_full()
+                            .child(wgpu_surface(r.surface()).size_full())
+                            // Over the surface rather than beside it: the widget is drawn in
+                            // canvas space and the surface is what canvas space maps onto, so
+                            // the overlay's own bounds are the frame the mapping lands in.
+                            .children(overlay)
+                            .children(bar),
+                    )
+                    .child(roster),
             )
-            .child(roster)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_move(cx.listener(Self::drag))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::release))

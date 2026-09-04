@@ -1161,6 +1161,36 @@ the exit criterion is an act, not a diff.
   the shipped images, so the two frontends cannot come to `include_str!` different
   ones.
 
+  **And a menu bar**, which is the first surface this frontend has that the web app
+  does not want: a browser tab already has a menu bar above it, and the web answers
+  the same need with the search palette (§25.4). wgpui carries a `Menu` type and a
+  `set_menus`, but it installs anything only on macOS — so the bar is drawn, which is
+  what every cross-platform native app does anyway.
+
+  Everything *about* a row is the registry's: its name (the full one, since a menu
+  row stands alone where a chip sits under a header that has already named the
+  subject), its mark, the chord that also reaches it, and whether the document makes
+  it available. So a greyed "Deselect" and a dim panel button are one control's
+  answer rather than two. **Which** commands, and in which menu, is this frontend's —
+  and that is not a reluctance to share: the menus differ because the apps implement
+  different subsets, so a shared table would be a list one of them has to filter.
+  Every row is an act `Canvas::run` answers, checked by a test, because a menu
+  offering a dead act is worse than a short menu.
+
+  Open, Save and Export moved off the brush panel into it, which is where they always
+  belonged — the panel row existed because the shipped chord table binds no file acts
+  and this frontend had nowhere else to put them (N5).
+
+  Two things the bar needed that are worth recording. The drop-down is **deferred**:
+  the bar is the window's *first* child, because it is the top row of a column, and a
+  first child paints under everything after it — so the panel hung off it was drawn
+  and then covered by the canvas. `deferred` keeps the layout where it is and moves
+  the paint to last, which is the one case that wants two answers to "where in the
+  tree is this". And the drop-down's offset is **measured**, off the previous frame's
+  title bounds, after a first cut derived it from a character count: a count that is
+  close enough today is a menu hanging beside its own title the day one is renamed,
+  which is the same rule a hand-derived panel broke in N2.
+
   **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
   (§15), the navigator and timeline mode. Each is a large panel with an overlay of
   its own, which is why they sequence after the stack that will hold them.
