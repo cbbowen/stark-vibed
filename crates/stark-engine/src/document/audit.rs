@@ -149,7 +149,8 @@ fn selections_agree(a: &Selection, b: &Selection) -> bool {
 /// them into, since that is the granularity undo restores them at.
 fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
     Prop::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|p| differs(a, b, *p))
         .collect()
 }
@@ -161,8 +162,8 @@ fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
 /// compiling and the audit quietly stops covering the property, in the one checker
 /// that carries §12.6 on every fold. Every other reader of `Prop` is already held to
 /// the variant list by the compiler — `patch::capture_resource` matches, `Prop::ALL`
-/// has `every_prop_is_named_in_all`, `patch`'s round-trip test matches — and this was
-/// the last one that did not.
+/// is generated from the enum's own list, `patch`'s round-trip test matches — and
+/// this was the last one that did not.
 ///
 /// Its order is [`Prop::ALL`]'s, which is why [`props`] can collect straight from it.
 fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {

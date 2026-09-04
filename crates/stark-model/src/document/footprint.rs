@@ -35,10 +35,30 @@ fn claim(lo: Vec2, hi: Vec2, ring: i32) -> TileRect {
     TileRect::covering(lo, hi, ring).unwrap_or(TileRect::ALL)
 }
 
-/// A per-layer property, at the granularity undo needs to restore it: each
-/// variant is overwritten wholesale by the actions that write it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Prop {
+/// The per-layer properties **as a roster**, the device `roster!` is for `ActionTag`
+/// (`action.rs`): the enum and [`Prop::ALL`] come out of one list, so a property
+/// cannot be missing from `ALL` — there is no second list to be missing from.
+///
+/// Worth a macro because the omission is silent in both directions: `ALL` is what
+/// [`Resource::Layer`] expands to, so a property absent from it makes that coarse
+/// claim quietly *finer* than it says (§12.6), and undo restores what the expansion
+/// captured, so the property stops coming back too.
+macro_rules! props {
+    ($($(#[$m:meta])* $variant:ident,)*) => {
+        /// A per-layer property, at the granularity undo needs to restore it: each
+        /// variant is overwritten wholesale by the actions that write it.
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        pub enum Prop { $($(#[$m])* $variant,)* }
+
+        impl Prop {
+            /// Every property, which is what [`Resource::Layer`] stands for the paint
+            /// and the existence of.
+            pub const ALL: &'static [Prop] = &[$(Prop::$variant,)*];
+        }
+    };
+}
+
+props! {
     Blend,
     /// Whether the layer clips to the paint beneath it (§14.4).
     /// Its own resource beside `Blend` rather than folded into it: the two are
@@ -61,27 +81,6 @@ pub enum Prop {
     /// offset they reconcile the canvas-anchored mask against travels in the action
     /// (`frame`), not in the state.
     Translation,
-}
-
-impl Prop {
-    /// Every property, which is what [`Resource::Layer`] stands for the paint and the
-    /// existence of.
-    ///
-    /// Hand-written, and held honest by `every_prop_is_named_in_all` below: Rust
-    /// cannot enumerate an enum's variants, so what is available is a match that
-    /// stops compiling until a new variant is *visited* — the device
-    /// `Modulations::all` uses for a struct's fields. A `Prop` missing here would
-    /// make a coarse claim quietly finer than it says it is.
-    pub const ALL: [Prop; 8] = [
-        Prop::Blend,
-        Prop::Clip,
-        Prop::Opacity,
-        Prop::Visible,
-        Prop::Name,
-        Prop::Matte,
-        Prop::Filter,
-        Prop::Translation,
-    ];
 }
 
 /// One addressable piece of document state.
@@ -705,31 +704,6 @@ mod tests {
         !compute_footprint(a).conflicts(&compute_footprint(b))
     }
 
-    /// [`Prop::ALL`] is what [`Resource::Layer`] expands to, so a property missing
-    /// from it would make the coarse claim quietly finer than it says it is — and
-    /// finer is the direction §12.6 cannot survive.
-    ///
-    /// The match is the guard: exhaustive with no `_` arm, so a new `Prop` does not
-    /// compile until it is named here, next to the assertion that `ALL` has grown with
-    /// it. It forces a visit rather than proving the correspondence, which is as far as
-    /// Rust goes without a derive.
-    #[test]
-    fn every_prop_is_named_in_all() {
-        for prop in Prop::ALL {
-            match prop {
-                Prop::Blend
-                | Prop::Clip
-                | Prop::Opacity
-                | Prop::Visible
-                | Prop::Name
-                | Prop::Matte
-                | Prop::Filter
-                | Prop::Translation => {}
-            }
-        }
-        assert_eq!(Prop::ALL.len(), 8, "a new Prop needs a place in ALL");
-    }
-
     /// Every [`Resource`] variant is visited, and one of each meets **exactly** what
     /// it names: itself, plus whatever [`Resource::Layer`] coarsens over.
     ///
@@ -741,10 +715,10 @@ mod tests {
     /// diverges peers, where [`Prop`]'s equivalent mistake only makes a coarse claim
     /// finer than it says.
     ///
-    /// So the visit is forced here instead, exactly as [`every_prop_is_named_in_all`]
-    /// forces one: the array below does not compile until a new variant is named in
-    /// it, and naming it means saying whether it is about a layer — which is the
-    /// only thing `overlaps` needs to know about it.
+    /// So the visit is forced here instead: the match below does not compile until a
+    /// new variant is named in it, and naming it means saying whether it is about a
+    /// layer — the only thing `overlaps` needs to know about it. The array's own
+    /// length assertion is a reminder, not a guard.
     #[test]
     fn every_resource_is_visited_and_meets_exactly_what_it_names() {
         let layer = LayerId::solo(4);
@@ -829,7 +803,7 @@ mod tests {
             Resource::Layer(a),
         ]
         .into_iter()
-        .chain(Prop::ALL.map(|p| Resource::Prop(a, p)));
+        .chain(Prop::ALL.iter().map(|p| Resource::Prop(a, *p)));
         for r in finer {
             assert!(whole.overlaps(&r), "{whole:?} must meet {r:?}");
             assert!(r.overlaps(&whole), "…and from the other side");

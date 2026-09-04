@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::document::action::clamp_frame;
 use crate::document::{BrushParams, FillOp, LayerId, SelectionOp};
 use crate::geom::Vec2;
 use crate::path::ControlPoint;
@@ -149,7 +150,7 @@ impl GestureFrame {
                         layer: head.layer,
                         brush: head.brush.sanitized(),
                         seed: head.seed,
-                        translation: head.translation,
+                        translation: clamp_frame(head.translation),
                     })
                 }),
                 from,
@@ -166,11 +167,21 @@ impl GestureFrame {
                 // marks a point on.
                 start: at_least_zero(start, 0.0),
             },
-            // Gated already, and structurally rather than by a call: neither op can
-            // be deserialized except through `SelectionOp::at` or
-            // `FillOp::with_paint` (`#[serde(from)]`), so there is nothing left here
-            // for a second pass to find.
-            Self::Selection { .. } | Self::Fill { .. } => self,
+            // Gated already, and structurally rather than by a call: the op cannot
+            // be deserialized except through `SelectionOp::at` (`#[serde(from)]`),
+            // so there is nothing left here for a second pass to find.
+            Self::Selection { .. } => self,
+            // The fill's op likewise, through `FillOp::with_paint`. Its frame is not
+            // part of the op, so it is clamped here.
+            Self::Fill {
+                id,
+                op,
+                translation,
+            } => Self::Fill {
+                id,
+                op,
+                translation: clamp_frame(translation),
+            },
         }
     }
 }
@@ -256,7 +267,7 @@ impl PeerFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{BrushDynamics, BrushEffect, BrushParams, LayerId};
+    use crate::document::{BrushDynamics, BrushEffect, BrushParams, FRAME_LIMIT, LayerId};
     use crate::path::ControlPoint;
 
     /// A frame carrying every shape of bad number this funnel is for.
@@ -283,7 +294,7 @@ mod tests {
                         ..BrushParams::default()
                     },
                     seed: 0,
-                    translation: crate::geom::IVec2::ZERO,
+                    translation: crate::geom::IVec2::splat(i32::MAX),
                 })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
@@ -311,8 +322,28 @@ mod tests {
             start, 0.0,
             "a marker is a place on the curve, not before it"
         );
-        let brush = head.expect("the head survives").brush;
-        assert!(brush.size.is_finite(), "a radius sizes a dispatch");
+        let head = head.expect("the head survives");
+        assert!(head.brush.size.is_finite(), "a radius sizes a dispatch");
+        assert_eq!(
+            head.translation,
+            crate::geom::IVec2::splat(FRAME_LIMIT),
+            "a live stroke's frame is spent by the renderer a committed one is",
+        );
+
+        // The fill arm carries a frame too, and it is the same offset.
+        let f = PeerFrame {
+            gesture: Some(GestureFrame::Fill {
+                id: 1,
+                op: FillOp::of_selection(crate::Srgb::new([0.0; 3])),
+                translation: crate::geom::IVec2::splat(i32::MIN),
+            }),
+            ..hostile()
+        }
+        .sanitized();
+        let Some(GestureFrame::Fill { translation, .. }) = f.gesture else {
+            panic!("the gesture kept its shape");
+        };
+        assert_eq!(translation, crate::geom::IVec2::splat(-FRAME_LIMIT));
     }
 
     /// [`PeerFrame::sanitized`] claims to be idempotent, which is what lets the door

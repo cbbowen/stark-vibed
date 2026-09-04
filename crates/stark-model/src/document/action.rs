@@ -1063,8 +1063,10 @@ impl ActionTag {
 /// edge.
 pub const FRAME_LIMIT: i32 = 1 << 23;
 
-/// [`FRAME_LIMIT`], applied — the funnel's arm for every whole-pixel offset.
-fn clamp_frame(v: crate::geom::IVec2) -> crate::geom::IVec2 {
+/// [`FRAME_LIMIT`], applied — the funnel's arm for every whole-pixel offset, the
+/// presence wire's included (`peer::GestureFrame::sanitized`): a live gesture's
+/// frame is spent by the renderer a committed one's is.
+pub(crate) fn clamp_frame(v: crate::geom::IVec2) -> crate::geom::IVec2 {
     v.clamp(
         crate::geom::IVec2::splat(-FRAME_LIMIT),
         crate::geom::IVec2::splat(FRAME_LIMIT),

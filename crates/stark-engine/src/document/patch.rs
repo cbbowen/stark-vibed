@@ -279,7 +279,7 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
             capture_resource(&Resource::Existence(*id), to, from, ops);
             capture_resource(&Resource::Paint(*id, TileRect::ALL), to, from, ops);
             for prop in Prop::ALL {
-                capture_resource(&Resource::Prop(*id, prop), to, from, ops);
+                capture_resource(&Resource::Prop(*id, *prop), to, from, ops);
             }
         }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),

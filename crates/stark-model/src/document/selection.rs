@@ -101,12 +101,12 @@ impl SelectionShape {
     /// refusal, an empty write and an over-claim, which are the safe answers in their
     /// three directions.
     ///
-    /// **The lasso is tested rather than folded**, exactly as `stroke_rect` is and for
-    /// its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so a fold
-    /// steps over a bad vertex and leaves the box looking tight — it then quantizes
-    /// cleanly, and the NaN reaches `selection.wesl`'s coverage ramp, where `clamp` on
-    /// a NaN is unspecified. That is two clients disagreeing about a mask, which §6.8
-    /// says may not happen.
+    /// **Every lasso vertex is tested**, the first included, as `stroke_rect` does and
+    /// for its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so an
+    /// untested vertex leaves the box looking tight — it then quantizes cleanly, and
+    /// the NaN reaches `selection.wesl`'s coverage ramp, where `clamp` on a NaN is
+    /// unspecified. That is two clients disagreeing about a mask, which §6.8 says may
+    /// not happen.
     pub fn bounds(&self) -> Option<(Vec2, Vec2)> {
         let finite = |lo: Vec2, hi: Vec2| (lo.is_finite() && hi.is_finite()).then_some((lo, hi));
         match self {
@@ -117,12 +117,13 @@ impl SelectionShape {
                 finite(*center - r, *center + r)
             }
             Self::Lasso(points) => {
-                let mut it = points.iter();
-                let first = *it.next()?;
-                let (lo, hi) = it.try_fold((first, first), |(lo, hi), p| {
+                // Seeded from the first vertex and folded over *all* of them,
+                // that one included: min/max with itself is the identity, and a
+                // seed the fold skips is a vertex nothing tests.
+                let first = *points.first()?;
+                points.iter().try_fold((first, first), |(lo, hi), p| {
                     p.is_finite().then(|| (lo.min(*p), hi.max(*p)))
-                })?;
-                finite(lo, hi)
+                })
             }
         }
     }
