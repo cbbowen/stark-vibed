@@ -106,6 +106,19 @@ fn main() {
         console_error_panic_hook::set_once();
         install_tracing();
     }
+    // Before anything reads the browser's store, say what the store *is*: the format
+    // is `stark_chrome`'s and shared with the native frontend, and where the bytes go
+    // is this frontend's alone (§11.2). Nothing here fails without it — every read
+    // answers "nothing stored" — which is why it is an install rather than a
+    // constructor everything else threads, and why it is **here** rather than in the
+    // root's body: `AppState::new` reads four records while it is building its
+    // signals, so a hook in the body is already too late for them, whatever it sits
+    // above. The native frontend installs in its own `main` for the same reason.
+    stark_chrome::storage::install(platform::LocalStore);
+    // Then drop the keys the old formats were kept under, so their bytes are not
+    // still spending this origin's quota (`storage::drop_retired`, which says when to
+    // delete this line).
+    stark_chrome::storage::drop_retired();
     dioxus::launch(app);
 }
 
@@ -167,17 +180,6 @@ fn app() -> Element {
     // signals, so it wants no engine and cannot be left unbound by a start that
     // fails before there is one.
     use_hook(|| files::guard_unload(state));
-
-    // Before anything reads the browser's store, say what the store *is*: the format
-    // is `stark_chrome`'s and shared with the native frontend, and where the bytes go
-    // is this frontend's alone (§11.2). Nothing here fails without it — every read
-    // would answer "nothing stored" — which is why it is an install rather than a
-    // constructor everything else threads.
-    use_hook(|| stark_chrome::storage::install(platform::LocalStore));
-    // Then drop the keys the old formats were kept under, so their bytes are not
-    // still spending this origin's quota (`storage::drop_retired`, which says when to
-    // delete this line).
-    use_hook(stark_chrome::storage::drop_retired);
 
     // The brush presets follow the browser rather than the document (seeded with
     // the built-ins on a browser that has never stored any). The shape library

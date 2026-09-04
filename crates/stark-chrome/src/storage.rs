@@ -116,6 +116,11 @@
 //! is not required and no call here fails without one. It is how a test runs, and how
 //! a frontend that has not grown persistence yet behaves — every read answers "nothing
 //! stored", every write warns.
+//!
+//! It is *also* what a frontend that installs one too late looks like from in here,
+//! and those two are worth telling apart: the first is a decision and the second is a
+//! bug that costs the user a setting. Neither can be told from the answer, so the
+//! first read with no backend says so once ([`warn_no_store`]).
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -387,7 +392,29 @@ fn backend() -> Option<&'static dyn Backend> {
 /// The untyped half, private so [`save`]/[`load`] are the only way in or out — which
 /// is what makes "one format" a property of the module rather than a habit.
 fn get(store: Store) -> Option<String> {
-    backend()?.get(store.named().0)
+    let Some(backend) = backend() else {
+        warn_no_store();
+        return None;
+    };
+    backend.get(store.named().0)
+}
+
+/// Say — once — that a record was read with no store installed.
+///
+/// The caller cannot tell that from "this client has stored nothing": both are `None`
+/// and both take the default, which is right for the second and a silently lost
+/// setting for the first. The web frontend read four records that way for a release,
+/// `install` having sat below `AppState::new` in the root's body.
+///
+/// Once, because the answer cannot change: a store is installed before the first read
+/// or the process runs without one.
+fn warn_no_store() {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            "a record was read before a store was installed; every read here answers \"nothing stored\""
+        );
+    }
 }
 
 fn set(store: Store, value: &str) {

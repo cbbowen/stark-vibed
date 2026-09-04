@@ -816,6 +816,15 @@ and nothing below ever asks which frontend it is in.
 `storage.rs` funnels to today, so this is a six-method trait with one impl per
 frontend and no design left to do.
 
+**Each frontend installs it in `main`, before the app runs.** Not a rule of taste:
+a read with no store installed answers `None`, which is the same answer as "this
+client has nothing stored", so the caller takes its default and nothing says why.
+The web app installed in the root component's body for a release, below
+`AppState::new` — which seeds the four entries of the visibility menu (§25.6) while
+it builds its signals — so the panel stack opened empty for a browser whose record
+said otherwise. `storage`'s first read with no backend now warns once, which is the
+only place that difference can be told.
+
 #### What a native platform layer owes
 
 `platform.rs` is 1778 lines of web answers to a shorter list of questions. The

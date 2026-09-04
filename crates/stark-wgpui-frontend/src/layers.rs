@@ -191,7 +191,7 @@ pub fn layers_panel(
         .border_color(rgb(0x35393d))
         .text_color(rgb(0xe8eaed))
         .child(div().text_sm().text_color(rgb(0x9aa0a6)).child("Layers"))
-       // The selected layer's two continuous knobs.
+        // The selected layer's two continuous knobs.
         .child(
             div()
                 .flex()
