@@ -30,8 +30,8 @@
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use stark_ui::icons::Icon;
 use stark_engine::command::Tool;
+use stark_ui::icons::Icon;
 
 use stark_engine::command::InputSample;
 use stark_model::ColorSpaceId;
@@ -52,10 +52,10 @@ use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
+use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::Command;
-use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";

@@ -13,9 +13,9 @@
 //! ids are known before anything is imported and the presets open resolved. The web
 //! frontend has to wait for its fetches and seeds them afterwards.
 
+use stark_engine::command::ViewCommand;
 use stark_ui::brush_config::{BrushConfig, Transient};
 use stark_ui::presets::{BuiltinShapes, PresetEntry, shipped};
-use stark_engine::command::ViewCommand;
 
 /// The brush the app opens on and the library it can be swapped for.
 pub struct Brush {

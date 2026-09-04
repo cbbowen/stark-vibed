@@ -20,10 +20,10 @@
 //! Every point is mapped canvas → screen through the live [`ViewTransform`], so a pan
 //! or a zoom mid-gesture moves the widget with the paint rather than away from it.
 
-use stark_ui::commands::{Bindings, Command};
-use stark_ui::transform::{Family, Hint, TransformUi, WARP_GRID};
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
+use stark_ui::commands::{Bindings, Command};
+use stark_ui::transform::{Family, Hint, TransformUi, WARP_GRID};
 use wgpui::{
     Bounds, HitboxBehavior, IntoElement, PathBuilder, Pixels, Point, canvas, div, prelude::*, px,
     rgb, rgba,

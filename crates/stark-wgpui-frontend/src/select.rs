@@ -12,12 +12,12 @@
 //! its own: this frontend has one column of chrome, and a second floating surface is
 //! a design (§25.7) rather than a stage.
 
-use stark_ui::commands::{Bindings, Command};
-use stark_ui::icons::Icon;
-use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
 use stark_engine::ObservableState;
 use stark_engine::command::Tool;
 use stark_model::document::ShapeAction;
+use stark_ui::commands::{Bindings, Command};
+use stark_ui::icons::Icon;
+use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
 use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, div, prelude::*, px, rgb};
 
 /// The acts a selection can be put through, in the order the row draws them.

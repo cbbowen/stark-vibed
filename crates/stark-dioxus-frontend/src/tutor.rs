@@ -114,12 +114,12 @@ use crate::icons::icon;
 use crate::layout::{PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::{AppState, root_signal};
-use stark_ui::panels::PanelId;
-use stark_ui::prefs::ChromeHiding;
-use stark_ui::storage::Store;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_model::document::BrushParams;
+use stark_ui::panels::PanelId;
+use stark_ui::prefs::ChromeHiding;
+use stark_ui::storage::Store;
 
 /// How long a gap between two reports of the same deed makes them two deeds, in
 /// seconds.

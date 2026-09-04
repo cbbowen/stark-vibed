@@ -42,14 +42,14 @@ use crate::slots::{self, Grip};
 use crate::state::{
     AppState, BrushRing, Dwell, FlowBar, TowUi, TuneReadout, dispatch, update_brush,
 };
-use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::PickScope;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
 use stark_model::document::{LayerId, ShapeAction};
 use stark_model::geom::Vec2;
+use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::commands::PickScope;
 
 mod carry;
 mod keys;

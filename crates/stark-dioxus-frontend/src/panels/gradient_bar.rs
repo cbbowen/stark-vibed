@@ -38,10 +38,10 @@ use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, use_obs};
 use crate::widgets::CommandButton;
-use stark_ui::commands::Command;
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
+use stark_ui::commands::Command;
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost

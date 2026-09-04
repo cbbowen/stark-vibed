@@ -24,8 +24,8 @@
 //! the brush editor's gallery and can be named by a default preset.
 
 use dioxus::prelude::*;
-use stark_ui::assets;
 use stark_model::document::BrushShape;
+use stark_ui::assets;
 
 use crate::render::Renderer;
 use crate::state::AppState;

@@ -59,9 +59,9 @@ use crate::platform::normalize_substrate_image;
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Modal;
+use stark_model::ColorSpaceId;
 use stark_ui::assets::{self, Pick};
 use stark_ui::library::{self, Thumbs};
-use stark_model::ColorSpaceId;
 
 /// The bundled height map behind a catalog row, by the row's path.
 ///

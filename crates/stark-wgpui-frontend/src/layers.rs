@@ -18,11 +18,11 @@
 //! both — `carry_onto` and `release_to` — so a row's two buttons are a `Some` each
 //! rather than a rule written here.
 
-use stark_ui::icons::Icon;
-use stark_ui::layer_tree::{self, Row};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
+use stark_ui::icons::Icon;
+use stark_ui::layer_tree::{self, Row};
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, Window, canvas, div, prelude::*, px, rgb,
 };

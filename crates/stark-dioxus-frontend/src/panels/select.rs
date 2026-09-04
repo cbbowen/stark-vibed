@@ -4,18 +4,18 @@
 
 use crate::commands;
 use dioxus::prelude::*;
-use stark_ui::icons::Icon;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
+use stark_ui::icons::Icon;
 
 use crate::icons::{icon, icon_tinted, label};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider, slider_fill};
-use stark_ui::commands::Command;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
+use stark_ui::commands::Command;
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.

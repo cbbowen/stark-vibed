@@ -8,9 +8,9 @@ use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{CommandButton, Modal, Slider};
+use stark_model::document::{BrushShape, OrientationSource};
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::Command;
-use stark_model::document::{BrushShape, OrientationSource};
 
 /// The longest taper the editor offers, in brush radii
 /// (`BrushParams::start_taper_length`). Twenty radii is ten stroke widths of run-in

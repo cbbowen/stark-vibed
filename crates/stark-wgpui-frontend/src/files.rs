@@ -36,8 +36,8 @@
 
 use std::path::{Path, PathBuf};
 
-use stark_ui::files::DOC_EXT;
 use stark_engine::{Background, ExportScale, Rendered};
+use stark_ui::files::DOC_EXT;
 
 use crate::render::Renderer;
 

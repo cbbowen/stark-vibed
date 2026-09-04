@@ -47,13 +47,13 @@ use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, slider_fill};
-use stark_ui::commands::Command;
-use stark_ui::layer_tree::{INDENT, Row, landing, rows};
-use stark_ui::reorder::{Grab, Motion};
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::LayerId;
 use stark_model::document::{BlendMode, DRAGO_K_RANGE, Place};
+use stark_ui::commands::Command;
+use stark_ui::layer_tree::{INDENT, Row, landing, rows};
+use stark_ui::reorder::{Grab, Motion};
 
 /// Add a paint layer where the artist is working (`Command::AddLayer`): into
 /// the selected layer's own stack, above it — not always the document's,

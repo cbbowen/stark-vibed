@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
+use stark_model::AssetId;
 use stark_ui::assets::{Entry, Kind, Shapes, Shipped};
 use stark_ui::library::Thumbs;
-use stark_model::AssetId;
 use wgpui::{
     Bounds, ImageSource, IntoElement, Pixels, Point, RenderImage, canvas, div, img, prelude::*, px,
     rgb,

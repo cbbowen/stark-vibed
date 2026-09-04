@@ -16,9 +16,9 @@
 
 use std::collections::HashSet;
 
+use stark_model::document::BrushShape;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::panels::PanelId;
-use stark_model::document::BrushShape;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
     prelude::*, px, rgb,

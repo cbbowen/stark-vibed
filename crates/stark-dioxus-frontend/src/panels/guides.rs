@@ -47,12 +47,12 @@ use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
 use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
 use crate::widgets::{CommandButton, slider_fill};
-use stark_ui::commands::Command;
-use stark_ui::reorder::{Grab, Motion, Slide};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide, PlaneTrace};
 use stark_model::geom::Vec2;
+use stark_ui::commands::Command;
+use stark_ui::reorder::{Grab, Motion, Slide};
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
 /// side never learns what they are. The colors belong to the app rather than

@@ -1420,8 +1420,7 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
 /// out of the bytes.
 #[cfg(target_arch = "wasm32")]
 pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let (width, height, rgba) =
-        decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?;
+    let (width, height, rgba) = decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?;
     stark_ui::assets::substrate_png(stark_ui::assets::Decoded {
         width,
         height,

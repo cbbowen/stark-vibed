@@ -39,8 +39,8 @@ use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
-use stark_ui::prefs::ChromeHiding;
 use stark_engine::command::ViewCommand;
+use stark_ui::prefs::ChromeHiding;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
 /// Done or by clicking the backdrop (as the other dialogs are).

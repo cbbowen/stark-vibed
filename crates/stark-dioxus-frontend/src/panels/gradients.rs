@@ -28,8 +28,8 @@ use crate::layout::chrome_dimmed;
 use crate::platform::{capture_pointer, select_all};
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
-use stark_ui::commands::Command;
 use stark_model::geom::Vec2;
+use stark_ui::commands::Command;
 
 /// How far the pointer must move, in **screen** px, before the trace keeps
 /// another point. Screen rather than canvas px because it is decimation of the

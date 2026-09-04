@@ -64,7 +64,6 @@ use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
-use stark_ui::commands::Command;
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
@@ -72,6 +71,7 @@ use stark_model::color::linear_to_srgb;
 use stark_model::document::LayerId;
 use stark_model::document::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::gradient::Gradient;
+use stark_ui::commands::Command;
 
 /// One slider on the bar: what it is called, its range, and the two ends of the
 /// round trip through the filter's own parameter struct `F`.
