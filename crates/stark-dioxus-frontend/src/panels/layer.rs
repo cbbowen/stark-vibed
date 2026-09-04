@@ -178,6 +178,170 @@ pub fn LayerPanel() -> Element {
         None => !l.has_backdrop,
     });
     rsx! {
+        if let Some(l) = selected {
+            div { class: "slider-row marked",
+                div { class: "slider-label",
+                    {icon(stark_chrome::icons::BLEND)}
+                    {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
+                }
+                // Blend and clip are one row because they are one question — *how does
+                // this layer meet what is below it* — and they share the answer's two
+                // halves: the mode says how the paint combines, the toggle says where it
+                // is allowed to land. Both go inert together at the bottom of the
+                // document, which is the other thing the shared row makes visible.
+                //
+                // On a **filter** the two halves come apart, and the row is where you
+                // can see that they were always two: a filter has no source, so the
+                // mode has nothing to describe and goes inert — but "where is this
+                // allowed to land" still has an answer, and the chip stays live to
+                // give it (§21.4).
+                div { class: "row blend-row",
+                    select {
+                        class: "select",
+                        // The mode's own description, so the difference between the two
+                        // light modes is readable without painting a test stroke.
+                        title: "{blend_hint(l.blend, &l)}",
+                        // Inert at the bottom of the document, where there is nothing to
+                        // blend with and every mode is the identity
+                        // (§14.4.3). Shown rather than hidden: the control belongs to the
+                        // layer wherever it sits, and a row that loses a control when it
+                        // is dragged to the bottom reads as a bug.
+                        disabled: blend_inert,
+                        onchange: move |e| {
+                            if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
+                                dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
+                            }
+                        },
+                        for mode in BlendMode::ALL {
+                            option {
+                                value: "{mode.label()}",
+                                // `same_mode`, not `==`: the list is of modes at their
+                                // default settings, and a Radiance layer whose Bend has
+                                // been dragged is still on the Radiance row. Under `==`
+                                // it would show no row selected at all — and picking one
+                                // to fix that would reset the very number the drag set.
+                                selected: mode.same_mode(l.blend),
+                                "{mode.label()}"
+                            }
+                        }
+                    }
+                    // A lit chip rather than a tick-box and a sentence. The sentence was
+                    // there because the *word* "Clip" is the thing nobody guesses the
+                    // meaning of — but a sentence is not a label, it is a tooltip that
+                    // had been promoted into the panel, and it cost the control a row of
+                    // its own. It is a tooltip again here, and the glyph carries what a
+                    // one-word label could not.
+                    button {
+                        class: if l.clip { "chip active" } else { "chip" },
+                        title: "{clip_hint(&l)}",
+                        // Inert only where there is nothing beneath — and where a mode
+                        // over nothing is harmlessly the identity, a clip over nothing
+                        // would erase the layer, which is the whole reason this one has
+                        // to be stopped rather than merely left to do nothing
+                        // (§14.4.3).
+                        disabled: clip_inert,
+                        onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
+                        {icon(stark_chrome::icons::CLIP)}
+                    }
+                }
+            }
+            // `marked`, as `widgets::Slider` sets it on the rows it builds: these two are
+            // hand-rolled (one splits its samples between a preview and one commit, the
+            // other holds a picker and a chip rather than a track), but they wear a glyph,
+            // so they fold onto one line in minimal mode exactly as the component's rows do.
+            div { class: "slider-row marked",
+                // The "— of the group" qualifier rides inside the hideable word rather
+                // than beside it. It is not a second fact about the control; it is the
+                // sentence saying what *this* opacity fades (§14.3), and half a
+                // sentence left standing in minimal mode would read as a bug.
+                div { class: "slider-label",
+                    {icon(stark_chrome::icons::OPACITY)}
+                    // A filter's opacity is its **strength** (§21.4), and the word is
+                    // worth changing: "50% opacity" on a color adjustment invites
+                    // the reading that the filter is half transparent, when what it
+                    // is is half applied.
+                    {label(match (l.is_group, l.filter.is_some()) {
+                        (true, _) => "Opacity \u{2014} of the group",
+                        (false, true) => "Strength",
+                        (false, false) => "Opacity",
+                    })}
+                }
+                input {
+                    class: "slider",
+                    style: slider_fill(0.0, 100.0, l.opacity * 100.0),
+                    r#type: "range", min: "0", max: "100", step: "any",
+                    value: "{(l.opacity * 100.0) as i32}",
+                    title: "{opacity_hint(&l)}",
+                    // Previewed per sample, committed once when the drag settles: a
+                    // layer's opacity is document state, so one adjustment must cost
+                    // one undo step — and one replicated action — rather than one per
+                    // pointer move, which is the bargain the frame drag and the canvas
+                    // color already make (§14.6). The engine renders the preview and
+                    // reports it back through `observe`, so the track and the canvas
+                    // both follow the pointer.
+                    oninput: move |e| {
+                        if let Ok(v) = e.value().parse::<f32>() {
+                            preview::LAYER_OPACITY.during(state, fading, (l.id, v / 100.0));
+                        }
+                    },
+                    // Three ways to end, because a range control has three — see
+                    // `Preview::settle`, which holds the why (and is idempotent, so
+                    // arriving twice is free).
+                    onchange: move |_| preview::LAYER_OPACITY.settle(state, fading),
+                    onpointerup: move |_| preview::LAYER_OPACITY.settle(state, fading),
+                    onpointercancel: move |_| preview::LAYER_OPACITY.settle(state, fading),
+                }
+            }
+            // Radiance's own parameter — the first a mode has had (§18.0.4). The row
+            // is here only while the mode is: a Bend on a Multiply layer would be a
+            // control for a number that mode's curve has no place for, and the
+            // document could not hold the setting it appeared to offer. That is the
+            // same argument that put `k` on the variant rather than beside it, read
+            // out into the panel.
+            if let BlendMode::Drago { k } = l.blend {
+                div { class: "slider-row marked",
+                    div { class: "slider-label",
+                        {icon(stark_chrome::icons::BEND)}
+                        {label("Bend")}
+                    }
+                    input {
+                        class: "slider",
+                        style: slider_fill(bend_ends().0, bend_ends().1, k.log2()),
+                        r#type: "range", step: "any",
+                        // In **octaves of `k`**, not in `k`. The bend is a scale, so
+                        // what it does to the curve is a matter of ratio: half of 0.2
+                        // is a different mode and half of 3 is barely a change. A
+                        // linear track would spend most of its travel in the flat end
+                        // and cross the whole interesting range in its first few px.
+                        min: "{bend_ends().0}", max: "{bend_ends().1}",
+                        // The document's own value, which during a drag is the
+                        // preview's — the engine renders it and reports it back
+                        // through `observe`, so the track and the canvas follow the
+                        // pointer together, exactly as the opacity slider above does.
+                        value: "{k.log2()}",
+                        title: "{BEND_HINT}",
+                        // Inert with its mode: a bend over nothing bends nothing.
+                        disabled: blend_inert,
+                        // Previewed per sample, committed once when the drag settles —
+                        // the same bargain, through the same pair. The whole mode
+                        // travels rather than the number, because that is what both
+                        // ends of the bargain take.
+                        oninput: move |e| {
+                            if let Ok(stops) = e.value().parse::<f32>() {
+                                let next = BlendMode::Drago { k: stops.exp2() };
+                                preview::LAYER_BLEND.during(state, bending, (l.id, next));
+                            }
+                        },
+                        onchange: move |_| preview::LAYER_BLEND.settle(state, bending),
+                        onpointerup: move |_| preview::LAYER_BLEND.settle(state, bending),
+                        onpointercancel: move |_| preview::LAYER_BLEND.settle(state, bending),
+                    }
+                }
+            }
+        }
+
+        hr {}
+
         div { class: "layer-header",
             // A frame is a layer, so making one belongs here rather than in a
             // panel of its own (§15.7). Both adds render their command whole
@@ -259,170 +423,6 @@ pub fn LayerPanel() -> Element {
                             at: l.at,
                         });
                     },
-                }
-            }
-        }
-
-        hr {}
-
-        if let Some(l) = selected {
-            // `marked`, as `widgets::Slider` sets it on the rows it builds: these two are
-            // hand-rolled (one splits its samples between a preview and one commit, the
-            // other holds a picker and a chip rather than a track), but they wear a glyph,
-            // so they fold onto one line in minimal mode exactly as the component's rows do.
-            div { class: "slider-row marked",
-                // The "— of the group" qualifier rides inside the hideable word rather
-                // than beside it. It is not a second fact about the control; it is the
-                // sentence saying what *this* opacity fades (§14.3), and half a
-                // sentence left standing in minimal mode would read as a bug.
-                div { class: "slider-label",
-                    {icon(stark_chrome::icons::OPACITY)}
-                    // A filter's opacity is its **strength** (§21.4), and the word is
-                    // worth changing: "50% opacity" on a color adjustment invites
-                    // the reading that the filter is half transparent, when what it
-                    // is is half applied.
-                    {label(match (l.is_group, l.filter.is_some()) {
-                        (true, _) => "Opacity \u{2014} of the group",
-                        (false, true) => "Strength",
-                        (false, false) => "Opacity",
-                    })}
-                }
-                input {
-                    class: "slider",
-                    style: slider_fill(0.0, 100.0, l.opacity * 100.0),
-                    r#type: "range", min: "0", max: "100", step: "any",
-                    value: "{(l.opacity * 100.0) as i32}",
-                    title: "{opacity_hint(&l)}",
-                    // Previewed per sample, committed once when the drag settles: a
-                    // layer's opacity is document state, so one adjustment must cost
-                    // one undo step — and one replicated action — rather than one per
-                    // pointer move, which is the bargain the frame drag and the canvas
-                    // color already make (§14.6). The engine renders the preview and
-                    // reports it back through `observe`, so the track and the canvas
-                    // both follow the pointer.
-                    oninput: move |e| {
-                        if let Ok(v) = e.value().parse::<f32>() {
-                            preview::LAYER_OPACITY.during(state, fading, (l.id, v / 100.0));
-                        }
-                    },
-                    // Three ways to end, because a range control has three — see
-                    // `Preview::settle`, which holds the why (and is idempotent, so
-                    // arriving twice is free).
-                    onchange: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                    onpointerup: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                    onpointercancel: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                }
-            }
-            div { class: "slider-row marked",
-                div { class: "slider-label",
-                    {icon(stark_chrome::icons::BLEND)}
-                    {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
-                }
-                // Blend and clip are one row because they are one question — *how does
-                // this layer meet what is below it* — and they share the answer's two
-                // halves: the mode says how the paint combines, the toggle says where it
-                // is allowed to land. Both go inert together at the bottom of the
-                // document, which is the other thing the shared row makes visible.
-                //
-                // On a **filter** the two halves come apart, and the row is where you
-                // can see that they were always two: a filter has no source, so the
-                // mode has nothing to describe and goes inert — but "where is this
-                // allowed to land" still has an answer, and the chip stays live to
-                // give it (§21.4).
-                div { class: "row blend-row",
-                    select {
-                        class: "select",
-                        // The mode's own description, so the difference between the two
-                        // light modes is readable without painting a test stroke.
-                        title: "{blend_hint(l.blend, &l)}",
-                        // Inert at the bottom of the document, where there is nothing to
-                        // blend with and every mode is the identity
-                        // (§14.4.3). Shown rather than hidden: the control belongs to the
-                        // layer wherever it sits, and a row that loses a control when it
-                        // is dragged to the bottom reads as a bug.
-                        disabled: blend_inert,
-                        onchange: move |e| {
-                            if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
-                                dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
-                            }
-                        },
-                        for mode in BlendMode::ALL {
-                            option {
-                                value: "{mode.label()}",
-                                // `same_mode`, not `==`: the list is of modes at their
-                                // default settings, and a Radiance layer whose Bend has
-                                // been dragged is still on the Radiance row. Under `==`
-                                // it would show no row selected at all — and picking one
-                                // to fix that would reset the very number the drag set.
-                                selected: mode.same_mode(l.blend),
-                                "{mode.label()}"
-                            }
-                        }
-                    }
-                    // A lit chip rather than a tick-box and a sentence. The sentence was
-                    // there because the *word* "Clip" is the thing nobody guesses the
-                    // meaning of — but a sentence is not a label, it is a tooltip that
-                    // had been promoted into the panel, and it cost the control a row of
-                    // its own. It is a tooltip again here, and the glyph carries what a
-                    // one-word label could not.
-                    button {
-                        class: if l.clip { "chip active" } else { "chip" },
-                        title: "{clip_hint(&l)}",
-                        // Inert only where there is nothing beneath — and where a mode
-                        // over nothing is harmlessly the identity, a clip over nothing
-                        // would erase the layer, which is the whole reason this one has
-                        // to be stopped rather than merely left to do nothing
-                        // (§14.4.3).
-                        disabled: clip_inert,
-                        onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
-                        {icon(stark_chrome::icons::CLIP)}
-                    }
-                }
-            }
-            // Radiance's own parameter — the first a mode has had (§18.0.4). The row
-            // is here only while the mode is: a Bend on a Multiply layer would be a
-            // control for a number that mode's curve has no place for, and the
-            // document could not hold the setting it appeared to offer. That is the
-            // same argument that put `k` on the variant rather than beside it, read
-            // out into the panel.
-            if let BlendMode::Drago { k } = l.blend {
-                div { class: "slider-row marked",
-                    div { class: "slider-label",
-                        {icon(stark_chrome::icons::BEND)}
-                        {label("Bend")}
-                    }
-                    input {
-                        class: "slider",
-                        style: slider_fill(bend_ends().0, bend_ends().1, k.log2()),
-                        r#type: "range", step: "any",
-                        // In **octaves of `k`**, not in `k`. The bend is a scale, so
-                        // what it does to the curve is a matter of ratio: half of 0.2
-                        // is a different mode and half of 3 is barely a change. A
-                        // linear track would spend most of its travel in the flat end
-                        // and cross the whole interesting range in its first few px.
-                        min: "{bend_ends().0}", max: "{bend_ends().1}",
-                        // The document's own value, which during a drag is the
-                        // preview's — the engine renders it and reports it back
-                        // through `observe`, so the track and the canvas follow the
-                        // pointer together, exactly as the opacity slider above does.
-                        value: "{k.log2()}",
-                        title: "{BEND_HINT}",
-                        // Inert with its mode: a bend over nothing bends nothing.
-                        disabled: blend_inert,
-                        // Previewed per sample, committed once when the drag settles —
-                        // the same bargain, through the same pair. The whole mode
-                        // travels rather than the number, because that is what both
-                        // ends of the bargain take.
-                        oninput: move |e| {
-                            if let Ok(stops) = e.value().parse::<f32>() {
-                                let next = BlendMode::Drago { k: stops.exp2() };
-                                preview::LAYER_BLEND.during(state, bending, (l.id, next));
-                            }
-                        },
-                        onchange: move |_| preview::LAYER_BLEND.settle(state, bending),
-                        onpointerup: move |_| preview::LAYER_BLEND.settle(state, bending),
-                        onpointercancel: move |_| preview::LAYER_BLEND.settle(state, bending),
-                    }
                 }
             }
         }

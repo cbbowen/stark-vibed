@@ -191,6 +191,52 @@ pub fn layers_panel(
         .border_color(rgb(0x35393d))
         .text_color(rgb(0xe8eaed))
         .child(div().text_sm().text_color(rgb(0x9aa0a6)).child("Layers"))
+       // The selected layer's two continuous knobs.
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .pt_2()
+                .child(
+                    div()
+                        .relative()
+                        .mt_1()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(rgb(0x2a2d31))
+                        .text_xs()
+                        .text_color(rgb(0xb0b4b8))
+                        .child(probe(regions, Region::Blend))
+                        .child(format!("Blend: {}", blend_word(blend))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .text_color(rgb(0x9aa0a6))
+                        .child("Opacity")
+                        .child(format!("{opacity:.2}")),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .h(px(18.))
+                        .w_full()
+                        .rounded_sm()
+                        .bg(rgb(0x2a2d31))
+                        .child(probe(regions, Region::Opacity))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(wgpui::relative(opacity.clamp(0.0, 1.0)))
+                                .rounded_sm()
+                                .bg(rgb(0x40474e)),
+                        ),
+                ),
+        )
         // The acts on the whole stack, above the roster they act on.
         .child(
             div().flex().gap_1().children(
@@ -306,52 +352,6 @@ pub fn layers_panel(
                             })
                     }),
             ),
-        )
-        // The selected layer's two continuous knobs.
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .pt_2()
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .text_xs()
-                        .text_color(rgb(0x9aa0a6))
-                        .child("Opacity")
-                        .child(format!("{opacity:.2}")),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .h(px(18.))
-                        .w_full()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .child(probe(regions, Region::Opacity))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(wgpui::relative(opacity.clamp(0.0, 1.0)))
-                                .rounded_sm()
-                                .bg(rgb(0x40474e)),
-                        ),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .mt_1()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .text_xs()
-                        .text_color(rgb(0xb0b4b8))
-                        .child(probe(regions, Region::Blend))
-                        .child(format!("Blend: {}", blend_word(blend))),
-                ),
         )
 }
 
