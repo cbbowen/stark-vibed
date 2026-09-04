@@ -2,7 +2,7 @@
 
 wgpui `0.3.4` from the crates.io source (`registry/src/.../wgpui-0.3.4`,
 upstream commit `5e94b544ff` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus four local patches. Substituted for the crates.io crate via
+tree**, plus five local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest. License: Apache-2.0
 (`LICENSE.md`, kept).
 
@@ -158,6 +158,40 @@ independent of anything Stark wants. Colour emoji are still garbled here for a
 separate reason (they draw as stripes, which is a stride fault rather than a channel
 one); that is untouched and unfixed.
 
+## Patch 5 — a resized surface gets new bind groups
+
+`WgpuRenderer::surface_bind_groups` caches, per `SurfaceId`, the two bind groups
+that name the surface's two textures. It was keyed on the id alone, and
+`SurfaceRegistry::resize` replaces both textures — so after a resize the
+compositor went on sampling the pair from before it. `DoubleBuffer` carries a
+`generation` now, bumped by `resize`; the cache holds the generation it was built
+at and rebuilds when the two differ.
+
+### Why
+
+**It froze the canvas on the last frame before any window resize, and made the
+app look dead.** The engine kept painting: it rendered into the new back buffer
+and swapped, correctly, at the correct new size — a probe on `Renderer::paint`
+showed every frame going where it should, with no wgpu error raised. But the
+compositor's bind groups still named the *old* textures, so nothing drawn after
+the resize was ever read. And because `swap_buffers` goes on alternating
+`db.front`, the cached pair was sampled 0, 1, 0, 1 — the window flickering
+between the last two frames drawn *before* the resize, for as long as anything
+asked for a repaint.
+
+That is the shape of the symptom worth remembering: every stroke, pan and zoom
+after a resize did land in the document, and none of them could be seen. The
+report read as "resizing breaks all the canvas functionality", and the fault was
+one stale cache in the compositor rather than anything in the frontend's own
+resize path — which is why reproducing it took screenshots. Logs said it worked.
+
+There is no identity on a `wgpu::TextureView` to compare — no `global_id` in
+wgpu 30 — so the pair carries a number instead. Bumping is `wrapping_add`, which
+is a formality at one bump per resize.
+
+Upstreamable, and worth it: any wgpui app with a `wgpu_surface` in a resizable
+window hits this on the first resize.
+
 ## The deletion
 
 `examples/` is gone, and with it the thirty `[[example]]` blocks that named its
@@ -191,10 +225,11 @@ verbatim" that would otherwise be worth keeping for the clean update diff.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply all four changes: the
+Unpack the new version over this directory, then re-apply all six changes: the
 `flume` line in each manifest, the `DeviceDescriptor` threading, the
-`WindowBounds` plumbing, and the deletion — `rm -rf examples/` and strip the
-`[[example]]` blocks the new manifests bring back.
+`WindowBounds` plumbing, the RGBA `RenderImage`, the surface bind-group
+generation, and the deletion — `rm -rf examples/` and strip the `[[example]]`
+blocks the new manifests bring back.
 
 Dropping this directory takes more than the `flume` fix landing upstream now:
 patch 2 has to land too, in some form, or the frontend goes back to a device it

@@ -1300,8 +1300,15 @@ pub struct WgpuRenderer {
     path_intermediate_view: Option<wgpu::TextureView>,
 
     // cache bind groups for each double-buffered surface (index 0/1)
-    surface_bind_groups:
-        Mutex<HashMap<crate::platform::surface_registry::SurfaceId, [wgpu::BindGroup; 2]>>,
+    //
+    // STARK PATCH: keyed by texture generation as well as by id. A bind group holds
+    // the *texture view* it was built from, and `SurfaceRegistry::resize` replaces
+    // both textures — so without this the compositor went on sampling the pair from
+    // before the resize, and the window showed the last two frames alternating
+    // forever while everything drawn since went into textures nobody read.
+    surface_bind_groups: Mutex<
+        HashMap<crate::platform::surface_registry::SurfaceId, (u64, [wgpu::BindGroup; 2])>,
+    >,
 }
 
 impl WgpuRenderer {
@@ -1784,8 +1791,16 @@ impl WgpuRenderer {
 
                                     // fetch or create cached bind groups for this surface
                                     let surface_bind_group = {
+                                        // STARK PATCH: which pair of textures the
+                                        // surface is on. A cached group built from an
+                                        // earlier pair names textures that are gone.
+                                        let generation = self
+                                            .context
+                                            .surface_registry
+                                            .generation(*surface_id)
+                                            .unwrap_or(0);
                                         let mut cache = self.surface_bind_groups.lock().unwrap();
-                                        let entry = cache.entry(*surface_id).or_insert_with(|| {
+                                        let build = || {
                                             // create both groups for front index 0 and 1
                                             let v0 = self
                                                 .context
@@ -1834,9 +1849,18 @@ impl WgpuRenderer {
                                                     ],
                                                 })
                                             };
-                                            [create_bg(&v0), create_bg(&v1)]
-                                        });
-                                        entry[idx].clone()
+                                            (generation, [create_bg(&v0), create_bg(&v1)])
+                                        };
+                                        // STARK PATCH: rebuilt when the surface has
+                                        // been resized since, kept otherwise.
+                                        let stale = match cache.get(surface_id) {
+                                            Some((built, _)) => *built != generation,
+                                            None => true,
+                                        };
+                                        if stale {
+                                            cache.insert(*surface_id, build());
+                                        }
+                                        cache[surface_id].1[idx].clone()
                                     };
 
                                     pass.set_pipeline(&self.pipelines.surfaces_pipeline);

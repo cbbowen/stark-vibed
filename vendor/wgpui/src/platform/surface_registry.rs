@@ -14,6 +14,10 @@ struct DoubleBuffer {
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
+    // STARK PATCH: which pair of textures these are. Bumped by `resize`, which
+    // replaces both — so a consumer that caches anything derived from a view (the
+    // renderer's bind groups) can tell that what it cached is of the previous pair.
+    generation: u64,
     // true when a present event has been fired but not yet consumed by
     // the renderer.  We coalesce multiple calls to `present()` so the
     // application doesn't flood the event loop at thousands of FPS.
@@ -63,8 +67,10 @@ impl SurfaceRegistry {
             if db.width == width && db.height == height {
                 return;
             }
+            // STARK PATCH: the new pair is a generation on from the one it replaces.
+            let generation = db.generation.wrapping_add(1);
             let new_db = Self::create_double_buffer(device, width, height, db.format);
-            *db = new_db;
+            *db = DoubleBuffer { generation, ..new_db };
         }
     }
 
@@ -105,6 +111,17 @@ impl SurfaceRegistry {
             let back = 1 - db.front;
             (db.views[back].clone(), (db.width, db.height))
         })
+    }
+
+    /// STARK PATCH: which generation of textures this surface is on.
+    ///
+    /// Every `resize` replaces both textures, so anything a consumer built from a
+    /// view — a bind group above all — refers to a texture that is gone. There is no
+    /// identity on a `wgpu::TextureView` to compare, so the pair carries a number
+    /// instead, and a cache that holds the number it was built at can tell.
+    pub fn generation(&self, id: SurfaceId) -> Option<u64> {
+        let surfaces = self.surfaces.lock().unwrap();
+        surfaces.get(&id).map(|db| db.generation)
     }
 
     /// Get the current front buffer index (0 or 1).
@@ -209,6 +226,7 @@ impl SurfaceRegistry {
             height: h,
             format,
             present_pending: std::sync::atomic::AtomicBool::new(false),
+            generation: 0,
         }
     }
 }

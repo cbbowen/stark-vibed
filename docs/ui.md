@@ -678,7 +678,7 @@ Three differences from §11 above are the interesting ones:
   factor is the whole of the mapping — and the input tolerance and the smoothing
   rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
 
-wgpui is **vendored** (`vendor/wgpui`) for four patches. The first is one line:
+wgpui is **vendored** (`vendor/wgpui`) for five patches. The first is one line:
 upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
 `flume` only for macOS, Linux and FreeBSD, so the published crate does not
 compile on Windows at all. The second is the `DeviceDescriptor` above. The third
@@ -686,9 +686,20 @@ makes `WindowBounds` reach the platform whole, so a window can be reopened where
 it was (§11.2, N1). The fourth makes `RenderImage` RGBA: every producer swapped
 red and blue on the way in, which is right on Metal and wrong on the
 `Rgba8Unorm` atlas this fork uploads to — so every image wgpui loaded was drawn
-with the two exchanged (§11.2, N8). See `vendor/wgpui/VENDORING.md`, which also
-records what the second one *removed* — `Application::headless`, whose flag the
-new signature displaced and which upstream had never honoured.
+with the two exchanged (§11.2, N8). The fifth rebuilds the compositor's cached
+bind groups when a surface is resized: they name the surface's two textures and
+`resize` replaces both, so after any resize the window went on sampling the pair
+from before it — and since the swap keeps alternating, it flickered between the
+last two frames drawn while every stroke since went into textures nobody read.
+See `vendor/wgpui/VENDORING.md`, which also records what the second one
+*removed* — `Application::headless`, whose flag the new signature displaced and
+which upstream had never honoured.
+
+The fourth and fifth are the two this frontend has found by *being* the second
+consumer, and they are the same shape: a fork that moved GPUI's compositor onto
+wgpu, with one thing left behind. Neither is reachable from the web frontend at
+all, and neither was caught by a test — one needed a coloured picture, the other
+needed a screenshot after a resize.
 
 [wgpui]: https://github.com/muktidaya/wgpui
 
