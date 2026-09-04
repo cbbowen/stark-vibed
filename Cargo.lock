@@ -9243,19 +9243,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stark-chrome"
-version = "0.0.0"
-dependencies = [
- "png",
- "serde",
- "serde_json",
- "stark-assetid",
- "stark-engine",
- "stark-model",
- "tracing",
-]
-
-[[package]]
 name = "stark-dioxus-frontend"
 version = "0.0.0"
 dependencies = [
@@ -9266,10 +9253,10 @@ dependencies = [
  "serde",
  "serde_json",
  "stark-assetid",
- "stark-chrome",
  "stark-engine",
  "stark-model",
  "stark-net",
+ "stark-ui",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
@@ -9376,6 +9363,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "stark-ui"
+version = "0.0.0"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+ "stark-assetid",
+ "stark-engine",
+ "stark-model",
+ "tracing",
+]
+
+[[package]]
 name = "stark-wgpui-frontend"
 version = "0.0.0"
 dependencies = [
@@ -9385,9 +9385,9 @@ dependencies = [
  "serde",
  "serde_json",
  "stark-assetid",
- "stark-chrome",
  "stark-engine",
  "stark-model",
+ "stark-ui",
  "wgpu",
  "wgpui",
 ]

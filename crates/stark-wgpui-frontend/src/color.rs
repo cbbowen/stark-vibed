@@ -3,7 +3,7 @@
 //!
 //! **Nothing about which colors exist is decided here.** The gamut's rim, the fit that
 //! makes the wheel a wheel, the pictures of both and what a fine drag spends are
-//! `stark_chrome::color`, measured constants and all. What is here is a toolkit's
+//! `stark_ui::color`, measured constants and all. What is here is a toolkit's
 //! half: two textures, two hit regions, and a marker.
 //!
 //! The picker is **seeded, not driven**. It holds a hue that survives a trip to the
@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use stark_chrome::color::{self, FIELD_N, RAMP_N};
+use stark_ui::color::{self, FIELD_N, RAMP_N};
 use wgpui::{
     Bounds, ImageSource, IntoElement, Pixels, Point, RenderImage, canvas, div, img, prelude::*, px,
     rgb,

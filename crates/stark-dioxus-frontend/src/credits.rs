@@ -119,7 +119,7 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(stark_chrome::icons::DONE)}
+                    {icon(stark_ui::icons::DONE)}
                     "Done"
                 }
             }

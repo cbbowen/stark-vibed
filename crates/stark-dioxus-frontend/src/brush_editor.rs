@@ -30,7 +30,7 @@
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 use stark_engine::command::Tool;
 
 use stark_engine::command::InputSample;
@@ -52,9 +52,9 @@ use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
-use stark_chrome::brush_config::{BrushConfig, BrushEffectType, Transient};
-use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::Command;
+use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
+use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::commands::Command;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
@@ -133,7 +133,7 @@ impl ModRow {
     /// show against their own opacity sliders.
     fn glyph(self) -> Option<Icon> {
         match self {
-            Self::Opacity => Some(stark_chrome::icons::OPACITY),
+            Self::Opacity => Some(stark_ui::icons::OPACITY),
             _ => None,
         }
     }
@@ -455,29 +455,29 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
     };
 
-    // What the header's "Overwrite preset" can do (`stark_chrome::presets::overwrite`), asked
+    // What the header's "Overwrite preset" can do (`stark_ui::presets::overwrite`), asked
     // of the library, the name in hand and the brush as they are *now* — so the
     // button wakes with the first edit that moves the brush off its preset.
     let in_hand = (state.preset_in_hand)();
     let verdict =
-        stark_chrome::presets::overwrite(&state.presets.read(), in_hand.as_deref(), &(brush, tune));
-    let overwrite_ready = matches!(verdict, stark_chrome::presets::Overwrite::Ready(_));
+        stark_ui::presets::overwrite(&state.presets.read(), in_hand.as_deref(), &(brush, tune));
+    let overwrite_ready = matches!(verdict, stark_ui::presets::Overwrite::Ready(_));
     let overwrite_title = match &verdict {
-        stark_chrome::presets::Overwrite::Nothing => {
+        stark_ui::presets::Overwrite::Nothing => {
             "The brush was not taken from a preset \u{2014} save a new one".to_string()
         }
-        stark_chrome::presets::Overwrite::Builtin(name) => format!(
+        stark_ui::presets::Overwrite::Builtin(name) => format!(
             "\u{201C}{name}\u{201D} is one of the app's own presets, which it keeps up to date \
              \u{2014} save a new one instead"
         ),
-        stark_chrome::presets::Overwrite::Unchanged(name) => {
+        stark_ui::presets::Overwrite::Unchanged(name) => {
             format!("\u{201C}{name}\u{201D} already is this brush")
         }
-        stark_chrome::presets::Overwrite::Ready(name) => {
+        stark_ui::presets::Overwrite::Ready(name) => {
             format!("Replace \u{201C}{name}\u{201D} with the brush in hand")
         }
     };
-    let save_new_title = stark_chrome::commands::advertised(
+    let save_new_title = stark_ui::commands::advertised(
         "Keep the brush in hand under a new name",
         Command::SavePreset,
         &state.bindings.read(),
@@ -501,7 +501,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 // Saving lives here rather than on the Brush panel because the brush
                 // worth keeping is the one that has just been tuned.
                 div { class: "be-header-actions",
-                    // Dead in every arm of `stark_chrome::presets::overwrite` but one, and the
+                    // Dead in every arm of `stark_ui::presets::overwrite` but one, and the
                     // tooltip says which: a built-in is rebuilt next start, so the
                     // write would not last; a brush still equal to its preset has
                     // nothing to write.
@@ -522,7 +522,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             presets::overwrite_in_hand(state);
                             on_close.call(());
                         },
-                        {icon(stark_chrome::icons::SAVE)}
+                        {icon(stark_ui::icons::SAVE)}
                         "Overwrite preset"
                     }
                     // Its own words, the registry's act (§25.1): the command is
@@ -534,11 +534,11 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                         class: "btn btn-secondary",
                         title: "{save_new_title}",
                         onclick: move |_| commands::run(Command::SavePreset, state),
-                        {icon(stark_chrome::icons::ADD)}
+                        {icon(stark_ui::icons::ADD)}
                         "Save new preset"
                     }
                     button { class: "btn btn-primary", onclick: move |_| on_close.call(()),
-                        {icon(stark_chrome::icons::DONE)}
+                        {icon(stark_ui::icons::DONE)}
                         "Done"
                     }
                 }
@@ -574,12 +574,12 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 div { class: "be-preview-hint", "Test stroke — draw here to replace it" }
                 // The turning arrow Undo wears, because putting the preview back
                 // *is* an undo — narrowed to the one stroke this dialog owns
-                // (`stark_chrome::icons::RESET`).
+                // (`stark_ui::icons::RESET`).
                 button {
                     class: "be-preview-reset",
                     title: "Restore the default test stroke",
                     onclick: move |_| reset_stroke(state, preview),
-                    {icon(stark_chrome::icons::RESET)}
+                    {icon(stark_ui::icons::RESET)}
                 }
             }
 
@@ -587,7 +587,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                 Section {
                     part: BrushPart::Tip,
                     title: "Tip", desc: "The footprint the stroke sweeps along the path.",
-                    glyph: stark_chrome::icons::TIP,
+                    glyph: stark_ui::icons::TIP,
                     open: tip_open,
                     ShapeGallery {}
                     // Orientation is what aims the footprint (§6.6), and there
@@ -658,7 +658,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     part: BrushPart::Paint,
                     title: effect_title,
                     desc: effect_desc,
-                    glyph: stark_chrome::icons::PAINT,
+                    glyph: stark_ui::icons::PAINT,
                     open: paint_open,
                     // What a stroke of this brush **does** (§6.2, §6.12):
                     // paint, wet paint, or erase. Chips rather than a dial,
@@ -763,7 +763,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     Section {
                         part: BrushPart::Color,
                         title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
-                        glyph: stark_chrome::icons::COLOR,
+                        glyph: stark_ui::icons::COLOR,
                         open: color_open,
                         div { class: "brush-shapes",
                             for kind in [NoiseKind::Simplex, NoiseKind::White, NoiseKind::Voronoi, NoiseKind::Mosaic] {
@@ -800,7 +800,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     Section {
                         part: BrushPart::Wet,
                         title: "Wet", desc: "Canvas paint on the move — smudge, knife, blur.",
-                        glyph: stark_chrome::icons::WET,
+                        glyph: stark_ui::icons::WET,
                         open: wet_open,
                         // The source axis (§6.2): how much of the brush's own paint
                         // is in the mix, as a share the shared Flow scales. At 0 the
@@ -878,7 +878,7 @@ fn mod_slider(
                 onclick: move |_| open.set(if expanded { None } else { Some(row) }),
                 match m {
                     Some(m) => rsx! { "{source_label(m.source)}" },
-                    None => rsx! { {icon(stark_chrome::icons::MODULATE)} },
+                    None => rsx! { {icon(stark_ui::icons::MODULATE)} },
                 }
             }
         }
@@ -1097,7 +1097,7 @@ fn ShapeGallery() -> Element {
                     key: "{name}",
                     class: card(active),
                     onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "asset-thumb", style: stark_chrome::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: stark_ui::library::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                 }
             }
@@ -1106,9 +1106,9 @@ fn ShapeGallery() -> Element {
                     key: "{key}",
                     class: card(brush_shape == BrushShape::Stamp(id)),
                     onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "asset-thumb", style: stark_chrome::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: stark_ui::library::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
-                    // `stark_chrome::icons::REMOVE`, as on every other row the application lets you
+                    // `stark_ui::icons::REMOVE`, as on every other row the application lets you
                     // take something out of — the library of stamps is one more roster.
                     button {
                         class: "asset-remove",
@@ -1117,7 +1117,7 @@ fn ShapeGallery() -> Element {
                             e.stop_propagation();
                             crate::shapes::remove(state, id);
                         },
-                        {icon(stark_chrome::icons::REMOVE)}
+                        {icon(stark_ui::icons::REMOVE)}
                     }
                 }
             }
@@ -1128,7 +1128,7 @@ fn ShapeGallery() -> Element {
                         crate::shapes::import_file(state, name, bytes);
                     });
                 },
-                div { class: "asset-thumb plus", {icon(stark_chrome::icons::ADD)} }
+                div { class: "asset-thumb plus", {icon(stark_ui::icons::ADD)} }
                 div { class: "asset-name", "Import\u{2026}" }
             }
         }
@@ -1153,7 +1153,7 @@ fn ShapeGallery() -> Element {
 /// The chevron beside it stays a character on purpose. It is the one mark here whose
 /// meaning is its *rotation*, and the set has no right-pointing caret to rotate —
 /// borrowing the Layers panel's would put the glyph that deliberately refuses to
-/// rotate (`stark_chrome::icons::FOLD_OPEN`) into a control that must.
+/// rotate (`stark_ui::icons::FOLD_OPEN`) into a control that must.
 #[component]
 fn Section(
     part: BrushPart,
@@ -1344,7 +1344,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
     // test stroke is a hand, and replaying it through the tow is what lets the
     // slider show its work on the stroke beside it.
-    let rope = stark_chrome::input::rope(r.view(), brush.smoothing);
+    let rope = stark_ui::input::rope(r.view(), brush.smoothing);
     r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
     r.paint();
     drop(guard);
@@ -1463,7 +1463,7 @@ fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<Pointer
         // Towed like the main canvas (§6.11): the preview is where the brush
         // is felt out, so drawing on it under smoothing has to feel like the
         // brush, not like the brush with its string cut.
-        rope: stark_chrome::input::rope(r.view(), state.brush.peek().smoothing),
+        rope: stark_ui::input::rope(r.view(), state.brush.peek().smoothing),
     });
     r.paint();
     drop(guard);

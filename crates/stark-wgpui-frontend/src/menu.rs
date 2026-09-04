@@ -21,7 +21,7 @@
 //! filter. The day the web app grows a menu bar, what moves down is whatever the two
 //! then agree about.
 
-use stark_chrome::commands::{Bindings, Command};
+use stark_ui::commands::{Bindings, Command};
 use stark_engine::ObservableState;
 use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb};
 

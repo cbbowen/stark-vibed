@@ -1,21 +1,21 @@
 //! The two asset galleries: brush stamps and canvas substrates (§6.4, §6.6, §11.2 N7).
 //!
 //! One module for two libraries, because they are one object twice over — which is
-//! `stark_chrome::assets`' claim, and this is it taken at its word: the rows, the
+//! `stark_ui::assets`' claim, and this is it taken at its word: the rows, the
 //! cards, the hit regions and the import are written once and instantiated at
-//! [`Shapes`](stark_chrome::assets::Shapes) and
-//! [`Substrates`](stark_chrome::assets::Substrates).
+//! [`Shapes`](stark_ui::assets::Shapes) and
+//! [`Substrates`](stark_ui::assets::Substrates).
 //!
 //! What is this frontend's is the *carrier*. A card's picture — which texels, and
 //! whether they are coverage or height — is the crate's; turning them into something
 //! a toolkit can draw is not, and here that means a texture rather than the web's
 //! data URL. The cache in front of it is the crate's too, generic in exactly that
-//! difference (`stark_chrome::library::Thumbs`).
+//! difference (`stark_ui::library::Thumbs`).
 
 use std::sync::Arc;
 
-use stark_chrome::assets::{Entry, Kind, Shapes, Shipped};
-use stark_chrome::library::Thumbs;
+use stark_ui::assets::{Entry, Kind, Shapes, Shipped};
+use stark_ui::library::Thumbs;
 use stark_model::AssetId;
 use wgpui::{
     Bounds, ImageSource, IntoElement, Pixels, Point, RenderImage, canvas, div, img, prelude::*, px,
@@ -30,7 +30,7 @@ const CARD: f32 = 46.0;
 ///
 /// **Two caches, never one.** The same grayscale PNG canonicalizes to one id under
 /// both readings and means two different fields, so a shared table would hand a
-/// substrate the picture of a stamp (`stark_chrome::assets`).
+/// substrate the picture of a stamp (`stark_ui::assets`).
 static SHAPE_CARDS: Thumbs<Arc<RenderImage>> = Thumbs::new();
 static SUBSTRATE_CARDS: Thumbs<Arc<RenderImage>> = Thumbs::new();
 
@@ -268,7 +268,7 @@ fn face(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_chrome::assets::Substrates;
+    use stark_ui::assets::Substrates;
 
     /// The two libraries draw out of two caches. One would hand a substrate the
     /// picture of a stamp, since a grayscale PNG lands on one id under both readings.
@@ -283,8 +283,8 @@ mod tests {
         let png = crate::assets::bundled("shape/Pencil.png").expect("the pencil ships");
         let (w, h, rgba) = crate::assets::card_rgba::<Shapes>(png).expect("it reduces");
         assert_eq!(rgba.len(), (w * h * 4) as usize);
-        assert!(w <= stark_chrome::library::THUMB_DIM);
-        assert!(h <= stark_chrome::library::THUMB_DIM);
+        assert!(w <= stark_ui::library::THUMB_DIM);
+        assert!(h <= stark_ui::library::THUMB_DIM);
     }
 
     /// A stamp's card is white ink with the coverage in alpha, so the panel shows

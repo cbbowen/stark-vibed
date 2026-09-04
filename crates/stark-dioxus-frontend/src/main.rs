@@ -107,18 +107,18 @@ fn main() {
         install_tracing();
     }
     // Before anything reads the browser's store, say what the store *is*: the format
-    // is `stark_chrome`'s and shared with the native frontend, and where the bytes go
+    // is `stark_ui`'s and shared with the native frontend, and where the bytes go
     // is this frontend's alone (§11.2). Nothing here fails without it — every read
     // answers "nothing stored" — which is why it is an install rather than a
     // constructor everything else threads, and why it is **here** rather than in the
     // root's body: `AppState::new` reads four records while it is building its
     // signals, so a hook in the body is already too late for them, whatever it sits
     // above. The native frontend installs in its own `main` for the same reason.
-    stark_chrome::storage::install(platform::LocalStore);
+    stark_ui::storage::install(platform::LocalStore);
     // Then drop the keys the old formats were kept under, so their bytes are not
     // still spending this origin's quota (`storage::drop_retired`, which says when to
     // delete this line).
-    stark_chrome::storage::drop_retired();
+    stark_ui::storage::drop_retired();
     dioxus::launch(app);
 }
 
@@ -197,7 +197,7 @@ fn app() -> Element {
     // the app in — the engine-owned half of them waits for the renderer below
     // (`crate::prefs`).
     use_hook(|| prefs::load(state));
-    // And this browser's rebound shortcuts (`stark_chrome::commands::Bindings`) — before the
+    // And this browser's rebound shortcuts (`stark_ui::commands::Bindings`) — before the
     // first keystroke could ask the table, like everything above it.
     use_hook(|| commands::load(state));
     // And its rebound canvas drags (§25.8), which the very first press asks and
@@ -331,7 +331,7 @@ fn app() -> Element {
             // leaves a step in the undo history. Once per app start, not per
             // document: a new document keeps the brush the user is holding.
             presets::apply_first(state);
-            update_brush(state, |_, t| t.color = stark_chrome::color::INITIAL_COLOR);
+            update_brush(state, |_, t| t.color = stark_ui::color::INITIAL_COLOR);
 
             // The settings that live in the engine rather than in a signal — there is
             // one, and it is read by the session this block may be about to join, so it

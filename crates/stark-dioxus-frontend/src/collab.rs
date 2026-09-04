@@ -85,7 +85,7 @@ pub fn share(state: AppState) {
 
         let opts = NetOptions {
             secret: Some(id.secret),
-            resolvable: stark_chrome::assets::resolvable(),
+            resolvable: stark_ui::assets::resolvable(),
             ..Default::default()
         };
         match CollabSession::host(doc, opts).await {
@@ -135,7 +135,7 @@ pub fn join(state: AppState, ticket_text: String) {
         // session.
         let opts = NetOptions {
             secret: Some(id.secret),
-            resolvable: stark_chrome::assets::resolvable(),
+            resolvable: stark_ui::assets::resolvable(),
             ..Default::default()
         };
         match CollabSession::join(&ticket, opts).await {
@@ -685,7 +685,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                             copied.set(false);
                                         });
                                     },
-                                    {icon(stark_chrome::icons::COPY_TO_CLIPBOARD)}
+                                    {icon(stark_ui::icons::COPY_TO_CLIPBOARD)}
                                     if copied() { "Copied" } else { "Copy" }
                                 }
                             }
@@ -740,7 +740,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(stark_chrome::icons::DONE)}
+                    {icon(stark_ui::icons::DONE)}
                     "Done"
                 }
             }

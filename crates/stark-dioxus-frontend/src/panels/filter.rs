@@ -52,7 +52,7 @@
 //! Dragging it *is* pulling the spectrum apart. Two tracks could not show that the
 //! two numbers are one arrow, and no slider can show what the fringe will look like.
 
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 use std::sync::LazyLock;
 
 use dioxus::prelude::*;
@@ -64,7 +64,7 @@ use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
@@ -143,7 +143,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Stops of light. +1 is twice as much, \u{2212}1 is half \u{2014} applied \
                to the light itself, so it brightens the way an exposure does rather \
                than the way a brightness slider does.",
-        glyph: Some(stark_chrome::icons::EXPOSURE),
+        glyph: Some(stark_ui::icons::EXPOSURE),
         range: ColorAdjust::EXPOSURE,
         step: None,
         scale: 1.0,
@@ -158,7 +158,7 @@ const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
                one tone. It moves lightness only \u{2014} the colors keep their \
                saturation, which is not true of a contrast curve in sRGB.",
-        glyph: Some(stark_chrome::icons::CONTRAST),
+        glyph: Some(stark_ui::icons::CONTRAST),
         range: ColorAdjust::CONTRAST,
         step: None,
         scale: 1.0,
@@ -341,14 +341,14 @@ fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
 }
 
 /// The mark a shape's chip wears — the bokeh itself, at the setting the chip hands
-/// out ([`stark_chrome::icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
+/// out ([`stark_ui::icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
 /// the whole content of the choice, so the picture says more than the word does, and
 /// the run is one of the few that reads with the words gone.
 fn aperture_glyph(aperture: &Aperture) -> Icon {
     match aperture {
-        Aperture::Disc { .. } => stark_chrome::icons::APERTURE_DISC,
-        Aperture::Blades { .. } => stark_chrome::icons::APERTURE_BLADES,
-        Aperture::Oval { .. } => stark_chrome::icons::APERTURE_OVAL,
+        Aperture::Disc { .. } => stark_ui::icons::APERTURE_DISC,
+        Aperture::Blades { .. } => stark_ui::icons::APERTURE_BLADES,
+        Aperture::Oval { .. } => stark_ui::icons::APERTURE_OVAL,
     }
 }
 
@@ -562,7 +562,7 @@ pub fn AddFilterButton() -> Element {
                     let show = !open();
                     open.set(show);
                 },
-                {icon(stark_chrome::icons::ADD_FILTER)}
+                {icon(stark_ui::icons::ADD_FILTER)}
                 {label("Filter")}
             }
             if open() {
@@ -1322,7 +1322,7 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
                             DocCommand::SetFilter(id, Filter::GradientMap(Some(g.reversed()))),
                         );
                     },
-                    {icon(stark_chrome::icons::SWAP)}
+                    {icon(stark_ui::icons::SWAP)}
                     {label("Reverse")}
                 }
             }
@@ -1417,7 +1417,7 @@ pub fn FilterBar() -> Element {
             // no single slider here is "the filter", so what the mark identifies is
             // the bar, and through it the layer you are tuning.
             span { class: "bar-label",
-                {icon(stark_chrome::icons::FILTER)}
+                {icon(stark_ui::icons::FILTER)}
                 {label(bar_label)}
             }
 
@@ -1447,20 +1447,20 @@ pub fn FilterBar() -> Element {
                 onclick: move |_| {
                     dispatch(state, DocCommand::SetFilter(info.id, neutral.clone()));
                 },
-                {icon(stark_chrome::icons::RESET)}
+                {icon(stark_ui::icons::RESET)}
                 {label("Neutral")}
             }
             button {
                 class: "chip",
                 // Esc performs this same act (`commands`' ladder) — advertised
                 // through the registry, the frame bar's reason.
-                title: stark_chrome::commands::advertised(
+                title: stark_ui::commands::advertised(
                     "Stop tuning and go back to painting \u{2014} the filter stays",
                     Command::CancelMode,
                     &state.bindings.read(),
                 ),
                 onclick: move |_| done_grading(state),
-                {icon(stark_chrome::icons::DONE)}
+                {icon(stark_ui::icons::DONE)}
                 {label("Done")}
             }
         }

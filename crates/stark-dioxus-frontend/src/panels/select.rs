@@ -4,7 +4,7 @@
 
 use crate::commands;
 use dioxus::prelude::*;
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
 
@@ -13,7 +13,7 @@ use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, Slider, slider_fill};
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
 
@@ -54,7 +54,7 @@ use stark_model::document::{FillOp, ShapeAction};
 ///   *is* painting, and blocking in is done many times in a row.
 ///
 /// The four selecting actions also set a *default* that shift / alt override for one
-/// gesture (see [`stark_chrome::selection::modifier_mode`]) — the modifiers are inert
+/// gesture (see [`stark_ui::selection::modifier_mode`]) — the modifiers are inert
 /// under Fill, which has no combining to do.
 ///
 /// Add is the one whose word the mask algebra would not have honoured: a union with
@@ -105,29 +105,29 @@ pub fn SelectPanel() -> Element {
     // that is about evenness rather than about glyphs — five icons over five words
     // keeps the row one row, and one entry left bare would break it the same way `∩`
     // did.
-    /// The mark and the prose for each of `stark_chrome::selection::SHAPE_ACTIONS`,
+    /// The mark and the prose for each of `stark_ui::selection::SHAPE_ACTIONS`,
     /// in that order — which is where the row's *membership* and its words live now,
     /// since both frontends draw it. What stays here is what is this one's: an inline
     /// SVG, and a sentence with room to be a sentence.
     const MARKS: [(Icon, &str); 5] = [
         (
-            stark_chrome::icons::SELECTION_NEW,
+            stark_ui::icons::SELECTION_NEW,
             "Select this region, replacing the current selection",
         ),
         (
-            stark_chrome::icons::SELECTION_ADD,
+            stark_ui::icons::SELECTION_ADD,
             "Add this region to the selection (or hold shift). With nothing \n             selected, this selects just the region",
         ),
         (
-            stark_chrome::icons::SELECTION_SUB,
+            stark_ui::icons::SELECTION_SUB,
             "Cut this region out of the selection (or hold alt)",
         ),
         (
-            stark_chrome::icons::SELECTION_ISECT,
+            stark_ui::icons::SELECTION_ISECT,
             "Keep only the overlap with the selection (or hold shift+alt)",
         ),
         (
-            stark_chrome::icons::PAINT_BUCKET,
+            stark_ui::icons::PAINT_BUCKET,
             "Fill this region with the brush's paint instead of selecting it. \
              Stays armed, so you can keep blocking in",
         ),
@@ -165,11 +165,11 @@ pub fn SelectPanel() -> Element {
         // the four selecting actions the gesture's disarm takes it away along
         // with the tool.
         if armed {
-            Slider { label: "Feather", glyph: stark_chrome::icons::FEATHER, min: 0.0, max: 64.0, value: feather,
+            Slider { label: "Feather", glyph: stark_ui::icons::FEATHER, min: 0.0, max: 64.0, value: feather,
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
         div { class: "tool-row stacked segmented",
-            for (a, (glyph, hint)) in stark_chrome::selection::SHAPE_ACTIONS.into_iter().zip(MARKS) {
+            for (a, (glyph, hint)) in stark_ui::selection::SHAPE_ACTIONS.into_iter().zip(MARKS) {
                 button {
                     class: chip(action == a),
                     title: "{hint}",
@@ -189,7 +189,7 @@ pub fn SelectPanel() -> Element {
                     } else {
                         {icon(glyph)}
                     }
-                    {label(stark_chrome::selection::action_word(a))}
+                    {label(stark_ui::selection::action_word(a))}
                 }
             }
         }
@@ -205,7 +205,7 @@ pub fn SelectPanel() -> Element {
         // times, and each sits where its time is: this one with the gesture's
         // settings, the mask's with the acts on the whole selection.
         if filling {
-            Slider { label: "Opacity", glyph: stark_chrome::icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
+            Slider { label: "Opacity", glyph: stark_ui::icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
                 oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
         }
     }
@@ -275,7 +275,7 @@ pub fn SelectionBar() -> Element {
                 // the bar is *this panel's* state made visible, so it says so with the
                 // panel's glyph rather than a second picture of a marquee.
                 span { class: "bar-label",
-                    {icon(stark_chrome::icons::SELECTION)}
+                    {icon(stark_ui::icons::SELECTION)}
                     {label("Selection")}
                 }
 
@@ -310,7 +310,7 @@ pub fn SelectionBar() -> Element {
                 // so a drag that logged every value it crossed would spend an
                 // undo step per pointer move on an adjustment the hand made once.
                 span { class: "bar-sub",
-                    {icon(stark_chrome::icons::OPACITY)}
+                    {icon(stark_ui::icons::OPACITY)}
                     {label("Opacity")}
                 }
                 input {
@@ -364,7 +364,7 @@ pub fn SelectionBar() -> Element {
                     onclick: move |_| commands::run(Command::FillSelection, state),
                     // At full strength: this fill's coverage is the mask's own
                     // (`FillOp::of_selection`), so there is no thinner wash to show.
-                    {icon_tinted(stark_chrome::icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}
+                    {icon_tinted(stark_ui::icons::PAINT_BUCKET, [brush_color[0], brush_color[1], brush_color[2], 1.0])}
                     {label(Command::FillSelection.word())}
                 }
                 // The same act as Fill with the parcel varying along a dragged

@@ -1,6 +1,6 @@
 //! Reading *this browser's* pointer events against the drag table (§25).
 //!
-//! The table itself is `stark_chrome::drags` — the actions, the chords, the presets,
+//! The table itself is `stark_ui::drags` — the actions, the chords, the presets,
 //! the stored rows. What is here is the half that could not travel: which button a
 //! DOM event presses, whether an action stands down given the app's state, the four
 //! doors that write signals, and the settings UI that draws the rows.
@@ -13,17 +13,17 @@ use crate::icons::icon;
 use crate::input::{accel, is_contact};
 use crate::state::AppState;
 use crate::widgets::Modal;
-use stark_chrome::drags::{
+use stark_ui::drags::{
     DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, DragRow, Offer,
     capture, chord_label,
 };
-use stark_chrome::keys::Mods;
+use stark_ui::keys::Mods;
 
 /// The three modifiers as a DOM event reports them — the one translation from
 /// [`Modifiers`], shared by the press path and the key tracker so the two cannot read
 /// the same keystroke differently.
 ///
-/// The frontend's half of `stark_chrome::keys::Mods`, for the reason the chord
+/// The frontend's half of `stark_ui::keys::Mods`, for the reason the chord
 /// table's `stroke` is a frontend's: only this side knows that the accelerator is
 /// Command on a Mac.
 pub fn mods_of(m: Modifiers) -> Mods {
@@ -145,7 +145,7 @@ fn claims(action: DragAction, state: AppState) -> bool {
 /// that *reads* the canvas back would read the hypothesis as paint — which
 /// is a wrong color for the eyedropper and a wrong layer for the hit test.
 pub fn load(state: AppState) {
-    let Some(rows) = stark_chrome::storage::load_list::<DragRow>() else {
+    let Some(rows) = stark_ui::storage::load_list::<DragRow>() else {
         return;
     };
     let mut overrides = Vec::new();
@@ -208,7 +208,7 @@ fn save(state: AppState) {
             offered: *state.drag_offer.peek() == Offer::Offered,
         }))
         .collect();
-    stark_chrome::storage::save_list(&rows);
+    stark_ui::storage::save_list(&rows);
 }
 
 /// The ⚙ dialog's drag section (§25.8): the presets as a run of chips, then a
@@ -335,14 +335,14 @@ fn DragBindingRow(action: DragAction, capturing: Signal<Option<DragAction>>) -> 
                                 r#type: "button",
                                 title: "Leave this act with no drag at all",
                                 onclick: move |_| unbind(state, action),
-                                {icon(stark_chrome::icons::CLOSE)}
+                                {icon(stark_ui::icons::CLOSE)}
                             }
                         } else {
                             span {
                                 class: "menu-shortcut bind-chip bind-add",
                                 title: "Bind a drag: click, then hold the keys you want and press again",
                                 onpointerdown: press,
-                                {icon(stark_chrome::icons::ADD)}
+                                {icon(stark_ui::icons::ADD)}
                             }
                         }
                     }
@@ -419,7 +419,7 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(stark_chrome::icons::DONE)}
+                    {icon(stark_ui::icons::DONE)}
                     "Not now"
                 }
             }

@@ -2,7 +2,7 @@
 //!
 //! **Almost nothing here is a decision.** What the rows *are* — which are folded
 //! away, which can be removed, what Carry and Release would each mean, how deep a
-//! drop lands — is `stark_chrome::layer_tree`, and has been since N0: it was already
+//! drop lands — is `stark_ui::layer_tree`, and has been since N0: it was already
 //! split out of the web panel because it was the part that could be tested. This
 //! module is the markup over it, plus one thing the tree cannot answer: where each
 //! row was laid out, so a press can find it.
@@ -18,8 +18,8 @@
 //! both — `carry_onto` and `release_to` — so a row's two buttons are a `Some` each
 //! rather than a rule written here.
 
-use stark_chrome::icons::Icon;
-use stark_chrome::layer_tree::{self, Row};
+use stark_ui::icons::Icon;
+use stark_ui::layer_tree::{self, Row};
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
@@ -130,7 +130,7 @@ fn blend_word(mode: BlendMode) -> &'static str {
 
 /// A small square control — an eye, a carry, a clip mark.
 ///
-/// The mark is `stark_chrome::icons`' rather than a character: which glyph a control
+/// The mark is `stark_ui::icons`' rather than a character: which glyph a control
 /// wears says what the control *means*, and the two frontends agreeing about that is
 /// the whole reason the catalog is shared (§11.2 N8).
 #[derive(IntoElement)]
@@ -240,15 +240,15 @@ pub fn layers_panel(
         // The acts on the whole stack, above the roster they act on.
         .child(
             div().flex().gap_1().children(
-                // The catalog's own marks (`stark_chrome::icons`), so the three
+                // The catalog's own marks (`stark_ui::icons`), so the three
                 // acts here and the three in the web app's header are one control
                 // apiece rather than two that resemble each other. A stack gaining a
                 // member, a copy of one, and the destructive one — which is what a
                 // trash says everywhere.
                 [
-                    (Region::Add, stark_chrome::icons::ADD_LAYER),
-                    (Region::Duplicate, stark_chrome::icons::DUPLICATE),
-                    (Region::Remove, stark_chrome::icons::REMOVE),
+                    (Region::Add, stark_ui::icons::ADD_LAYER),
+                    (Region::Duplicate, stark_ui::icons::DUPLICATE),
+                    (Region::Remove, stark_ui::icons::REMOVE),
                 ]
                 .map(|(region, glyph)| Chip {
                     glyph,
@@ -284,9 +284,9 @@ pub fn layers_panel(
                             )
                             .child(Chip {
                                 glyph: if row.info.visible {
-                                    stark_chrome::icons::VISIBLE
+                                    stark_ui::icons::VISIBLE
                                 } else {
-                                    stark_chrome::icons::HIDDEN
+                                    stark_ui::icons::HIDDEN
                                 },
                                 on: row.info.visible,
                                 region: Region::Visible(i),
@@ -300,9 +300,9 @@ pub fn layers_panel(
                             .child(if row.info.is_group {
                                 Chip {
                                     glyph: if row.collapsed {
-                                        stark_chrome::icons::FOLD_SHUT
+                                        stark_ui::icons::FOLD_SHUT
                                     } else {
-                                        stark_chrome::icons::FOLD_OPEN
+                                        stark_ui::icons::FOLD_OPEN
                                     },
                                     on: false,
                                     region: Region::Fold(i),
@@ -324,13 +324,13 @@ pub fn layers_panel(
                                     .child(layer_tree::layer_label(&row.info)),
                             )
                             .when(row.info.clip, |el| {
-                                el.child(crate::icons::icon(stark_chrome::icons::CLIP, 0x9aa0a6))
+                                el.child(crate::icons::icon(stark_ui::icons::CLIP, 0x9aa0a6))
                             })
                             // Carry and Release are a `Some` each rather than a rule
                             // written here — see the module note.
                             .when(row.carry_onto.is_some(), |el| {
                                 el.child(Chip {
-                                    glyph: stark_chrome::icons::CARRY,
+                                    glyph: stark_ui::icons::CARRY,
                                     on: false,
                                     region: Region::Carry(i),
                                     regions: regions.clone(),
@@ -338,14 +338,14 @@ pub fn layers_panel(
                             })
                             .when(row.release_to.is_some(), |el| {
                                 el.child(Chip {
-                                    glyph: stark_chrome::icons::RELEASE,
+                                    glyph: stark_ui::icons::RELEASE,
                                     on: false,
                                     region: Region::Release(i),
                                     regions: regions.clone(),
                                 })
                             })
                             .child(Chip {
-                                glyph: stark_chrome::icons::CLIP,
+                                glyph: stark_ui::icons::CLIP,
                                 on: row.info.clip,
                                 region: Region::Clip(i),
                                 regions: regions.clone(),

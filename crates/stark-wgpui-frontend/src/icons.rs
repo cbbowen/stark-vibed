@@ -1,6 +1,6 @@
 //! The icons the controls wear, as this toolkit draws them (§11, §25).
 //!
-//! **Which glyph a control wears is `stark_chrome::icons`', prose and all.** What is
+//! **Which glyph a control wears is `stark_ui::icons`', prose and all.** What is
 //! here is the carrier, and it is a different one from the web's: over there an icon
 //! is inlined into the DOM so `fill="currentColor"` resolves against the control,
 //! here it is rasterized to an **alpha mask** and tinted by the element's own text
@@ -22,7 +22,7 @@
 
 use std::borrow::Cow;
 
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 use wgpui::{AssetSource, IntoElement, Result, SharedString, Styled, px, rgb, svg};
 
 /// The path prefix an icon is asked for under.
@@ -48,11 +48,11 @@ impl AssetSource for Icons {
         // `None` rather than an error for an unknown stem: the renderer treats a
         // missing asset as nothing to draw, and the catalog's own test is what rules
         // out a name with no file behind it.
-        Ok(stark_chrome::icons::by_stem(stem).map(|text| Cow::Borrowed(text.as_bytes())))
+        Ok(stark_ui::icons::by_stem(stem).map(|text| Cow::Borrowed(text.as_bytes())))
     }
 
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(stark_chrome::icons::ALL
+        Ok(stark_ui::icons::ALL
             .iter()
             .map(|icon| SharedString::from(format!("{PREFIX}{}", icon.0)))
             .collect())
@@ -94,7 +94,7 @@ mod tests {
     /// says — the whole of what this source owes.
     #[test]
     fn every_catalogued_icon_is_served() {
-        for mark in stark_chrome::icons::ALL {
+        for mark in stark_ui::icons::ALL {
             let served = Icons
                 .load(&path(*mark))
                 .expect("the source does not fail")

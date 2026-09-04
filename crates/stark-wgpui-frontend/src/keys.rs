@@ -1,11 +1,11 @@
 //! This window's keystrokes, as the shared chord table reads them (§25).
 //!
-//! The table is `stark_chrome::commands`; what is here is the one translation this
-//! frontend owes it — wgpui's `Keystroke` into a `stark_chrome::keys::Keystroke`.
+//! The table is `stark_ui::commands`; what is here is the one translation this
+//! frontend owes it — wgpui's `Keystroke` into a `stark_ui::keys::Keystroke`.
 //!
 //! # The one thing wgpui cannot say
 //!
-//! A chord names its key one of two ways (`stark_chrome::commands::ChordKey`): by the
+//! A chord names its key one of two ways (`stark_ui::commands::ChordKey`): by the
 //! **character** it types, which survives a change of layout, or by its **position**,
 //! which survives a change of *character* — `[` and `]` step the brush down and up
 //! precisely because they sit side by side.
@@ -22,12 +22,12 @@
 //! below, which stores as `Code("")` and would never fire. The list is where that
 //! stops being true, one row at a time — and a wgpui that grows a `code` deletes it.
 
-use stark_chrome::keys::{Keystroke, Mods, Role};
+use stark_ui::keys::{Keystroke, Mods, Role};
 
 /// The accelerator: Ctrl on Windows and Linux, Command on a Mac.
 ///
 /// wgpui reports both — `control` and `platform` — and which one a chord means is
-/// exactly the fact only a frontend holds (`stark_chrome::keys`).
+/// exactly the fact only a frontend holds (`stark_ui::keys`).
 fn accel(m: &wgpui::Modifiers) -> bool {
     if cfg!(target_os = "macos") {
         m.platform
@@ -100,7 +100,7 @@ fn one_char(s: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_chrome::commands::{Bindings, Command};
+    use stark_ui::commands::{Bindings, Command};
 
     fn press(key: &str, ctrl: bool, shift: bool) -> wgpui::Keystroke {
         wgpui::Keystroke {

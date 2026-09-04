@@ -4,7 +4,7 @@
 //! Three rows and up to three dials, and almost nothing here decides anything. Which
 //! tools there are and what a press on a lit one means, which actions there are and
 //! what each is called, what a held modifier does to one — all of it is
-//! `stark_chrome::selection`, and the five acts are the registry's. What is this
+//! `stark_ui::selection`, and the five acts are the registry's. What is this
 //! module's is where the rows sit and how they are measured, which is the same split
 //! the brush panel already makes (`crate::panel`).
 //!
@@ -12,9 +12,9 @@
 //! its own: this frontend has one column of chrome, and a second floating surface is
 //! a design (§25.7) rather than a stage.
 
-use stark_chrome::commands::{Bindings, Command};
-use stark_chrome::icons::Icon;
-use stark_chrome::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
+use stark_ui::commands::{Bindings, Command};
+use stark_ui::icons::Icon;
+use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
 use stark_engine::ObservableState;
 use stark_engine::command::Tool;
 use stark_model::document::ShapeAction;
@@ -175,7 +175,7 @@ pub fn select_panel(
         .child(
             // At most one of the three is lit, and none lit *is* the brush: arming is
             // momentary, so a fourth chip for painting would be one that can never be
-            // off (`stark_chrome::selection`).
+            // off (`stark_ui::selection`).
             div()
                 .flex()
                 .gap_1()
@@ -256,17 +256,17 @@ fn shortened(command: Command, bindings: &Bindings) -> String {
 /// The mark for one of the five actions.
 ///
 /// The web app's row draws these five and this one draws the same five, from the
-/// catalog both read (`stark_chrome::icons`) — which matters more here than usual:
+/// catalog both read (`stark_ui::icons`) — which matters more here than usual:
 /// the row's whole claim is that Add, Sub and Isect are one question answered three
 /// ways, and that claim is carried by the glyphs being a family.
 fn action_mark(action: ShapeAction) -> Icon {
     use stark_model::document::SelectionMode;
     match action {
-        ShapeAction::Select(SelectionMode::Replace) => stark_chrome::icons::SELECTION_NEW,
-        ShapeAction::Select(SelectionMode::Union) => stark_chrome::icons::SELECTION_ADD,
-        ShapeAction::Select(SelectionMode::Subtract) => stark_chrome::icons::SELECTION_SUB,
-        ShapeAction::Select(SelectionMode::Intersect) => stark_chrome::icons::SELECTION_ISECT,
-        ShapeAction::Fill => stark_chrome::icons::PAINT_BUCKET,
+        ShapeAction::Select(SelectionMode::Replace) => stark_ui::icons::SELECTION_NEW,
+        ShapeAction::Select(SelectionMode::Union) => stark_ui::icons::SELECTION_ADD,
+        ShapeAction::Select(SelectionMode::Subtract) => stark_ui::icons::SELECTION_SUB,
+        ShapeAction::Select(SelectionMode::Intersect) => stark_ui::icons::SELECTION_ISECT,
+        ShapeAction::Fill => stark_ui::icons::PAINT_BUCKET,
     }
 }
 

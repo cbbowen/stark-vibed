@@ -26,7 +26,7 @@
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 
 use crate::gradients;
 use crate::icons::{icon, label};
@@ -38,7 +38,7 @@ use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, GradientAxisKind, GradientTarget, GradientUi, use_obs};
 use crate::widgets::CommandButton;
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
@@ -384,24 +384,24 @@ pub fn GradientBar() -> Element {
             // The library's mark: the bar is that library's ramp being
             // put to work, so it wears the library's glyph.
             span { class: "bar-label",
-                {icon(stark_chrome::icons::GRADIENT)}
+                {icon(stark_ui::icons::GRADIENT)}
                 {label("Gradient")}
             }
             // The ramp in hand, and the library behind it: clicking the strip
             // flies the pop-out up (§22.3).
             GradientWell { strip, title: well_title }
             span { class: "bar-sep" }
-            {kind_chip(GradientAxisKind::Linear, stark_chrome::icons::GRADIENT_LINEAR, "Linear")}
-            {kind_chip(GradientAxisKind::Radial, stark_chrome::icons::GRADIENT_RADIAL, "Radial")}
+            {kind_chip(GradientAxisKind::Linear, stark_ui::icons::GRADIENT_LINEAR, "Linear")}
+            {kind_chip(GradientAxisKind::Radial, stark_ui::icons::GRADIENT_RADIAL, "Radial")}
             span { class: "bar-sep" }
             // The way out that keeps nothing, worn whole off the registry with
             // its Esc advertisement (MODAL_DESIGN.md).
             CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: stark_chrome::commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
+                title: stark_ui::commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
                 onclick: move |_| finish(state),
-                {icon(stark_chrome::icons::DONE)}
+                {icon(stark_ui::icons::DONE)}
                 {label("Done")}
             }
         }

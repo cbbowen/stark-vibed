@@ -32,10 +32,10 @@ use crate::state::{AppState, use_obs_opt};
 use crate::substrates::NewDocumentModal;
 use crate::widgets::{self, PopoutId};
 use crate::{collab, drags, files, timings};
-use stark_chrome::commands::{Command, VisibilityToggle};
+use stark_ui::commands::{Command, VisibilityToggle};
 
 /// A vertical rail on the far left (§11): the command search, the visibility
-/// menu — what is on screen, panel or not (`stark_chrome::commands::VisibilityToggle`) — and
+/// menu — what is on screen, panel or not (`stark_ui::commands::VisibilityToggle`) — and
 /// the ⚙. The first two fly a surface out to the right and are the same
 /// arrangement twice ([`CommandSearch`], [`VisibilityMenu`]); the search is the
 /// way to every simple command by name — Undo advertises its Ctrl+Z there now, in
@@ -73,7 +73,7 @@ pub fn CommandRail() -> Element {
             role: "menubar",
             // The way to every simple command by name, in the slot the catch-all
             // ☰ menu held — the menu became a palette the day the registry could
-            // list itself (`stark_chrome::commands::ALL`).
+            // list itself (`stark_ui::commands::ALL`).
             CommandSearch {}
             VisibilityMenu {}
             // This client's preferences: a plain button, for the reason above.
@@ -110,7 +110,7 @@ pub fn CommandRail() -> Element {
     }
 }
 
-/// The map of what is on screen (§25.5): one row per `stark_chrome::commands::VisibilityToggle`,
+/// The map of what is on screen (§25.5): one row per `stark_ui::commands::VisibilityToggle`,
 /// flying out to the right of the rail. The floating panels, and the chrome that
 /// stands outside their stack. Each entry wears its own mark — a panel's is the one
 /// its title bar wears — so the menu is a picture of the window rather than a list
@@ -167,11 +167,11 @@ fn VisibilityMenu() -> Element {
                         platform::focus(t);
                     }
                 },
-                {icon_large(stark_chrome::icons::PANELS)}
+                {icon_large(stark_ui::icons::PANELS)}
             }
             if open {
                 div { class: "rail-menu",
-                    // One loop over one list (`stark_chrome::commands::VisibilityToggle`), which
+                    // One loop over one list (`stark_ui::commands::VisibilityToggle`), which
                     // is where what the menu holds — and in what order — is
                     // written down. Every row is a registry command, so the same
                     // act is reachable by search and by a chord of the user's own,
@@ -251,7 +251,7 @@ fn CmdItem(command: Command) -> Element {
 /// The command search (§11): the rail's first entry, and the way to every
 /// simple command by name. It opens like the menu beside it and stands in the
 /// same spot, but the keyboard goes to a **field**, resting on the file family
-/// (`stark_chrome::commands::BASIC`) and narrowing to `stark_chrome::commands::search` as the query grows.
+/// (`stark_ui::commands::BASIC`) and narrowing to `stark_ui::commands::search` as the query grows.
 /// Arrows move the highlight, Enter runs it, Escape puts the palette away; a
 /// row is the same row the menu draws, printed from the same registry.
 ///
@@ -286,7 +286,7 @@ fn CommandSearch() -> Element {
     // The field's node, so a chip click can hand the keyboard back to it —
     // the chord about to be pressed must land where the capture listens.
     let mut field: Signal<Option<Event<MountedData>>> = use_signal(|| None);
-    let shown = use_memo(move || stark_chrome::commands::search(&query.read()));
+    let shown = use_memo(move || stark_ui::commands::search(&query.read()));
 
     rsx! {
         div {
@@ -316,7 +316,7 @@ fn CommandSearch() -> Element {
                     }
                     open.set(show);
                 },
-                {icon_large(stark_chrome::icons::SEARCH)}
+                {icon_large(stark_ui::icons::SEARCH)}
             }
             if open() {
                 div { class: "command-palette",
@@ -340,25 +340,25 @@ fn CommandSearch() -> Element {
                         onkeydown: move |e| {
                             // While a capture is armed, every keystroke is the
                             // capture's: none may reach the query, and none the
-                            // browser (`stark_chrome::commands::capture` says what one means).
+                            // browser (`stark_ui::commands::capture` says what one means).
                             if let Some(command) = capturing() {
                                 e.prevent_default();
                                 let code = e.code().to_string();
-                                match stark_chrome::commands::capture(&commands::stroke_of(
+                                match stark_ui::commands::capture(&commands::stroke_of(
                                     e.modifiers(),
                                     &e.key(),
                                     &code,
                                 )) {
-                                    stark_chrome::commands::Capture::Chord(chord) => {
+                                    stark_ui::commands::Capture::Chord(chord) => {
                                         commands::rebind(state, command, chord);
                                         capturing.set(None);
                                     }
-                                    stark_chrome::commands::Capture::Clear => {
+                                    stark_ui::commands::Capture::Clear => {
                                         commands::unbind(state, command);
                                         capturing.set(None);
                                     }
-                                    stark_chrome::commands::Capture::Cancel => capturing.set(None),
-                                    stark_chrome::commands::Capture::Pending => {}
+                                    stark_ui::commands::Capture::Cancel => capturing.set(None),
+                                    stark_ui::commands::Capture::Pending => {}
                                 }
                                 return;
                             }
@@ -481,7 +481,7 @@ fn run_from_palette(state: AppState, mut open: Signal<bool>, command: Command) {
 /// the chord as a clickable chip, a hover-revealed `+` where there is none yet,
 /// or the capture prompt while this row is the one listening. Click, then press
 /// the new chord — the field keeps the keyboard and reads it
-/// (`stark_chrome::commands::capture`), so picking a binding is the same gesture as using one.
+/// (`stark_ui::commands::capture`), so picking a binding is the same gesture as using one.
 ///
 /// The one chip that only prints is Import's: its Ctrl+V is the browser's
 /// paste, true whatever the table says, so offering to move it would be
@@ -529,7 +529,7 @@ fn BindChip(
                 class: "menu-shortcut bind-chip bind-add",
                 title: "Add a shortcut: click, then press it",
                 onpointerdown: grab,
-                {icon(stark_chrome::icons::ADD)}
+                {icon(stark_ui::icons::ADD)}
             }
         }
     }

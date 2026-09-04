@@ -2,7 +2,7 @@
 //!
 //! Two halves, and only the first is this frontend's own work. **What** ships, what
 //! each is called, what an imported image becomes, and how a library is kept are all
-//! `stark_chrome::assets`. What is here is the two things a native binary answers
+//! `stark_ui::assets`. What is here is the two things a native binary answers
 //! differently from a browser: where the shipped bytes come from, and who decodes.
 //!
 //! # The shipped images are in the binary
@@ -20,7 +20,7 @@
 //! problem from N5 goes away: it can open a lean file that names a shipped substrate,
 //! because it has one.
 //!
-//! The id table is still `stark_chrome::assets`' and still computed at build time.
+//! The id table is still `stark_ui::assets`' and still computed at build time.
 //! Not because it is needed to avoid a fetch here — there is no fetch — but because a
 //! peer must be told what this build can resolve *before* it hashes 17 MB to find
 //! out (§12.4).
@@ -30,10 +30,10 @@
 //! The `image` crate, cut to the raster formats worth the compile. It replaces the
 //! browser in exactly one step of four: decode, resample, decide, encode. The middle
 //! pair is where the two frontends genuinely differ (two resamplers, so an oversized
-//! file can land on two ids — `stark_chrome::assets` states it), and the last two are
+//! file can land on two ids — `stark_ui::assets` states it), and the last two are
 //! shared.
 
-use stark_chrome::assets::{self, Decoded};
+use stark_ui::assets::{self, Decoded};
 
 /// Every image this build ships, by the catalog path that names it.
 ///
@@ -90,7 +90,7 @@ pub fn shipped_shape_files() -> impl Iterator<Item = (&'static assets::Shipped, 
 /// which is the whole of what this frontend gains by carrying the bytes. The web
 /// app's equivalent cannot answer until its fetches land, and says so: its two stamp
 /// presets stand on the round tip until then.
-pub fn builtin_shapes() -> stark_chrome::presets::BuiltinShapes {
+pub fn builtin_shapes() -> stark_ui::presets::BuiltinShapes {
     let stamp = |name: &str| {
         assets::shipped(name)
             .and_then(|row| row.path)
@@ -98,7 +98,7 @@ pub fn builtin_shapes() -> stark_chrome::presets::BuiltinShapes {
             .map(stark_model::document::BrushShape::Stamp)
             .unwrap_or_default()
     };
-    stark_chrome::presets::BuiltinShapes {
+    stark_ui::presets::BuiltinShapes {
         bristles: stamp(assets::BRISTLES),
         pencil: stamp(assets::PENCIL),
     }
@@ -106,7 +106,7 @@ pub fn builtin_shapes() -> stark_chrome::presets::BuiltinShapes {
 
 /// Decode an image file to straight RGBA8, no larger than `cap` on its longest edge.
 ///
-/// The size comes from `stark_chrome::assets::fit` rather than from arithmetic here,
+/// The size comes from `stark_ui::assets::fit` rather than from arithmetic here,
 /// so the two frontends ask their own resampler for the same size even though the
 /// resamplers differ.
 ///
@@ -151,7 +151,7 @@ pub fn as_substrate(bytes: &[u8]) -> Result<Vec<u8>, String> {
 
 /// A card's picture as RGBA8, ready for a texture.
 ///
-/// The texels and their reading are `stark_chrome::assets::card`; this is the one
+/// The texels and their reading are `stark_ui::assets::card`; this is the one
 /// step that is a toolkit's — the web frontend encodes the same numbers as a data URL
 /// instead (`crate::cards` over there).
 ///

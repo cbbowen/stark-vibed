@@ -19,9 +19,9 @@ use dioxus::prelude::*;
 
 use crate::collab;
 use crate::render::Renderer;
-use stark_chrome::commands::PickScope;
-use stark_chrome::commands::VisibilityToggle;
-use stark_chrome::prefs::Prefs;
+use stark_ui::commands::PickScope;
+use stark_ui::commands::VisibilityToggle;
+use stark_ui::prefs::Prefs;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
@@ -193,9 +193,9 @@ pub struct Signals {
     /// modifier set, so a press or release that happened while the window was
     /// not focused is caught up on the next keystroke. Only ever *shown*: the
     /// resting cursor and the eyedropper's options bar ask the drag table what
-    /// a press under these would open (`stark_chrome::drags::armed`), which is what makes a
+    /// a press under these would open (`stark_ui::drags::armed`), which is what makes a
     /// modifier binding discoverable before it is used.
-    pub held_mods: Signal<stark_chrome::keys::Mods>,
+    pub held_mods: Signal<stark_ui::keys::Mods>,
     /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
     /// or a run of wheel zooming). The floating chrome fades out while it is set,
     /// handing the screen back to the painting — see
@@ -234,7 +234,7 @@ pub struct Signals {
     /// is in hand whatever this holds, because half a dozen other things ask that
     /// question for their own reasons (a thumbnail deferring its work, the eyedropper
     /// bar). What the setting changes is who looks faded, not what is happening.
-    pub chrome_hiding: Signal<stark_chrome::prefs::ChromeHiding>,
+    pub chrome_hiding: Signal<stark_ui::prefs::ChromeHiding>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
@@ -281,7 +281,7 @@ pub struct Signals {
     /// pointer move needed to notice.
     pub brush_cursor: Signal<Option<Vec2>>,
     /// The live brush's **durable** half, as this frontend configures it
-    /// ([`BrushConfig`](stark_chrome::brush_config::BrushConfig)): the shared tip
+    /// ([`BrushConfig`](stark_ui::brush_config::BrushConfig)): the shared tip
     /// knobs, **every** effect with the switch between them — so toggling
     /// Paint ↔ Erase forgets nothing, the hand's color above all — and the
     /// stroke-smoothing feel (§6.11). The size and flow it is being worked
@@ -291,15 +291,15 @@ pub struct Signals {
     /// through [`update_brush`] — the one door — so nothing here reads a brush
     /// back off the observable, and what the engine cannot represent (the
     /// inactive effect, the feel) never has to round-trip through it.
-    pub brush: Signal<stark_chrome::brush_config::BrushConfig>,
+    pub brush: Signal<stark_ui::brush_config::BrushConfig>,
     /// The live brush's **transient** half — the size and flow the hand is
     /// working the tool at (`brush_config::Transient`, §18.1.9). Its own
     /// signal beside [`brush`](Self::brush) rather than a pair of fields on
     /// it, so a tuning drag at pointer rate wakes only what shows a number,
     /// never the chrome that shows the tool — and so "the same tool" is plain
-    /// equality on the durable half (`stark_chrome::presets::same_tool`). Written through
+    /// equality on the durable half (`stark_ui::presets::same_tool`). Written through
     /// [`update_brush`], the same one door.
-    pub transient: Signal<stark_chrome::brush_config::Transient>,
+    pub transient: Signal<stark_ui::brush_config::Transient>,
     /// The tow string on screen while a smoothing brush draws (§6.11), in the
     /// canvas element's own px — `None` when there is nothing to show. Its own
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
@@ -381,10 +381,10 @@ pub struct Signals {
     pub substrates: SubstratesState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
-    pub presets: Signal<Vec<stark_chrome::presets::PresetEntry>>,
+    pub presets: Signal<Vec<stark_ui::presets::PresetEntry>>,
     /// The preset the brush in hand was taken from, by name — and still, after
     /// every edit since. That is what tells it apart from the Brush panel's
-    /// highlighted row (`stark_chrome::presets::same_tool`): the row says the brush still *is*
+    /// highlighted row (`stark_ui::presets::same_tool`): the row says the brush still *is*
     /// a preset, this says which one it *descends from*, and the brush editor's
     /// "Overwrite preset" is a question about the second — as is what a held
     /// number binds itself to at the release (`slots::Held::settle`), since a
@@ -442,28 +442,28 @@ pub struct Signals {
     /// The floating panel stack: order, which are open, and the in-flight
     /// gestures (`crate::layout::PanelLayout`). Here rather than provided as
     /// its own context because the panels' commands live in the registry now
-    /// (`stark_chrome::commands::Command::TogglePanel`), and a command reaches everything it
+    /// (`stark_ui::commands::Command::TogglePanel`), and a command reaches everything it
     /// acts on through this one handle.
     pub panels: crate::layout::PanelLayout,
-    /// This browser's chord table (`stark_chrome::commands::Bindings`): the shipped defaults
+    /// This browser's chord table (`stark_ui::commands::Bindings`): the shipped defaults
     /// with the user's rebindings laid over them. A signal so a shortcut column
     /// re-renders the moment a rebind lands; seeded from storage at app start
     /// (`commands::load`) and written back on every rebind.
-    pub bindings: Signal<stark_chrome::commands::Bindings>,
-    /// This browser's drag table (`stark_chrome::drags::DragBindings`): the shipped rows with
+    pub bindings: Signal<stark_ui::commands::Bindings>,
+    /// This browser's drag table (`stark_ui::drags::DragBindings`): the shipped rows with
     /// the user's own laid over them (§25.8). A signal for the chord table's
     /// reason and one more of its own — the resting cursor asks it what a press
     /// under the held modifiers would open, so a rebind has to move the promise
     /// in the same frame it moves the press.
-    pub drags: Signal<stark_chrome::drags::DragBindings>,
+    pub drags: Signal<stark_ui::drags::DragBindings>,
     /// Whether this browser has been offered a table of drag presets, and
     /// whether one is waiting for the hand to come off the canvas
-    /// (`stark_chrome::drags::Offer`, §25.8).
+    /// (`stark_ui::drags::Offer`, §25.8).
     ///
     /// Not in [`Dialogs`] though it raises one: the flag there is *whether the
     /// dialog is up*, and this is the durable fact that decides whether it ever
     /// will be — seeded from storage at app start alongside the table above.
-    pub drag_offer: Signal<stark_chrome::drags::Offer>,
+    pub drag_offer: Signal<stark_ui::drags::Offer>,
 }
 
 /// The root-mounted dialogs: one flag per modal, raised by the command that
@@ -800,9 +800,9 @@ impl AppState {
             // at mount, before any engine exists, and the first stroke has to
             // lay the color the marker shows (`main` pushes the same
             // configuration to the engine once one is up).
-            brush: root_signal(stark_chrome::brush_config::BrushConfig::default),
-            transient: root_signal(|| stark_chrome::brush_config::Transient {
-                color: stark_chrome::color::INITIAL_COLOR,
+            brush: root_signal(stark_ui::brush_config::BrushConfig::default),
+            transient: root_signal(|| stark_ui::brush_config::Transient {
+                color: stark_ui::color::INITIAL_COLOR,
                 ..Default::default()
             }),
             tow: root_signal(|| None),
@@ -830,7 +830,7 @@ impl AppState {
             // rather than in a load hook, so the first render is already the
             // screen the artist left.
             navigator: root_signal(|| {
-                stark_chrome::visibility::stored_showing(VisibilityToggle::Navigator)
+                stark_ui::visibility::stored_showing(VisibilityToggle::Navigator)
             }),
             tutor: crate::tutor::TutorState::new(),
             popout: root_signal(|| None),
@@ -891,7 +891,7 @@ impl TimelineState {
             // rather than in a load hook, so the first render is already the
             // screen the artist left.
             open: root_signal(|| {
-                stark_chrome::visibility::stored_showing(VisibilityToggle::Timeline)
+                stark_ui::visibility::stored_showing(VisibilityToggle::Timeline)
             }),
             playing: root_signal(|| false),
             speed: root_signal(|| 1.0),
@@ -918,7 +918,7 @@ impl SlotState {
             // The rack's pin is one of the four entries of the visibility menu
             // this browser remembers (`crate::visibility`, §25.6).
             pinned: root_signal(|| {
-                stark_chrome::visibility::stored_showing(VisibilityToggle::QuickBrushes)
+                stark_ui::visibility::stored_showing(VisibilityToggle::QuickBrushes)
             }),
         }
     }
@@ -1093,7 +1093,7 @@ pub struct TimelineState {
 /// that keeps a picking drag from asking for samples faster than the GPU answers
 /// them, and the flag that says the drag is under way. (Whether the eyedropper is
 /// *armed* is no longer a flag of its own: it is the drag table's answer to the
-/// modifiers currently held — `stark_chrome::drags::armed` over
+/// modifiers currently held — `stark_ui::drags::armed` over
 /// [`Signals::held_mods`](crate::state::Signals::held_mods).)
 ///
 /// The options live here rather than in the engine because nothing in the engine
@@ -1543,7 +1543,7 @@ pub fn resize(state: AppState, width: u32, height: u32) {
     });
 }
 
-/// Read the current [`BrushConfig`](stark_chrome::brush_config::BrushConfig), mutate a
+/// Read the current [`BrushConfig`](stark_ui::brush_config::BrushConfig), mutate a
 /// copy, and commit it: the signal takes the new configuration and the engine
 /// takes its projection (`ViewCommand::SetBrush`), in that door and no other —
 /// which is what keeps the two views of the brush the same brush.
@@ -1569,8 +1569,8 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 pub fn update_brush(
     state: AppState,
     f: impl FnOnce(
-        &mut stark_chrome::brush_config::BrushConfig,
-        &mut stark_chrome::brush_config::Transient,
+        &mut stark_ui::brush_config::BrushConfig,
+        &mut stark_ui::brush_config::Transient,
     ),
 ) {
     let mut config = *state.brush.peek();
@@ -1608,8 +1608,8 @@ pub fn update_brush(
 /// itself would be a fight. Stretch giving way is visible instead — the slider's own
 /// top moves with it, and the editor says why (`ModRow::range`).
 fn hold_the_tip_drawable(
-    b: &mut stark_chrome::brush_config::BrushConfig,
-    t: stark_chrome::brush_config::Transient,
+    b: &mut stark_ui::brush_config::BrushConfig,
+    t: stark_ui::brush_config::Transient,
 ) {
     b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params(t)));
 }
@@ -1634,23 +1634,23 @@ mod tests {
     #[test]
     fn the_clamp_leaves_every_brush_drawable() {
         for size in [
-            stark_chrome::brush_config::MIN_RADIUS,
+            stark_ui::brush_config::MIN_RADIUS,
             30.0,
             110.0,
             250.0,
-            stark_chrome::brush_config::MAX_RADIUS,
+            stark_ui::brush_config::MAX_RADIUS,
         ] {
             for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
                 for bleed in [0.0, 0.6] {
-                    let t = stark_chrome::brush_config::Transient {
+                    let t = stark_ui::brush_config::Transient {
                         size,
                         ..Default::default()
                     };
-                    let mut b = stark_chrome::brush_config::BrushConfig {
+                    let mut b = stark_ui::brush_config::BrushConfig {
                         stretch: knob,
                         ..Default::default()
                     };
-                    b.effect = stark_chrome::brush_config::BrushEffectType::Wet;
+                    b.effect = stark_ui::brush_config::BrushEffectType::Wet;
                     b.wet.bleed = bleed;
                     hold_the_tip_drawable(&mut b, t);
                     let reach = t.size * BrushParams::elongation(b.stretch);
@@ -1676,17 +1676,17 @@ mod tests {
     #[test]
     fn the_clamp_leaves_a_small_tip_alone() {
         for size in [
-            stark_chrome::brush_config::MIN_RADIUS,
+            stark_ui::brush_config::MIN_RADIUS,
             30.0,
             110.0,
             250.0,
             400.0,
         ] {
-            let t = stark_chrome::brush_config::Transient {
+            let t = stark_ui::brush_config::Transient {
                 size,
                 ..Default::default()
             };
-            let mut b = stark_chrome::brush_config::BrushConfig {
+            let mut b = stark_ui::brush_config::BrushConfig {
                 stretch: BrushParams::MAX_STRETCH,
                 ..Default::default()
             };

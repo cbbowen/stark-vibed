@@ -1,6 +1,6 @@
 //! The icons the controls wear, as this frontend draws them (§11, §25).
 //!
-//! **Which glyph a control wears is `stark_chrome::icons`'**, prose and all — it is a
+//! **Which glyph a control wears is `stark_ui::icons`'**, prose and all — it is a
 //! statement about what the control means, and two apps disagreeing about that would
 //! be two apps. What is here is the carrier.
 //!
@@ -20,10 +20,10 @@
 //! alpha mask, tinted per draw — which is why the catalog is shared and this is not.
 
 use dioxus::prelude::*;
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 
 /// The SVG source for a mark. Empty for a name this build ships no file for, which
-/// `stark_chrome::icons::tests::every_icon_has_its_file` rules out — so what a missing
+/// `stark_ui::icons::tests::every_icon_has_its_file` rules out — so what a missing
 /// one costs is a blank span rather than a panic in a render.
 fn svg(mark: Icon) -> &'static str {
     mark.svg().unwrap_or_default()

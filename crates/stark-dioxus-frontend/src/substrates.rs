@@ -39,7 +39,7 @@
 //!
 //! So the library is `crate::shapes` for substrates, down to the storage: rows (a name
 //! and an id) in `localStorage`, height maps in the blob store beside them (§25.6),
-//! and the shared parts of both in `stark_chrome::library`. Import runs through
+//! and the shared parts of both in `stark_ui::library`. Import runs through
 //! [`normalize_substrate_image`], which is where
 //! the one real difference between the two lives — a stamp's polarity is a spelling
 //! and a substrate's polarity *is the substrate*, so nothing here inverts anything.
@@ -59,14 +59,14 @@ use crate::platform::normalize_substrate_image;
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Modal;
-use stark_chrome::assets::{self, Pick};
-use stark_chrome::library::{self, Thumbs};
+use stark_ui::assets::{self, Pick};
+use stark_ui::library::{self, Thumbs};
 use stark_model::ColorSpaceId;
 
 /// The bundled height map behind a catalog row, by the row's path.
 ///
 /// **The one thing the catalog cannot carry.** Which substrates ship, what they are
-/// called and how they are described are `stark_chrome::assets::SHIPPED_SUBSTRATES`,
+/// called and how they are described are `stark_ui::assets::SHIPPED_SUBSTRATES`,
 /// because a name is what a preset asks for and a second catalog would be a second
 /// answer. An `Asset` is not: `asset!` is a proc macro that demands a path literal in
 /// this crate, so the files are spelled here — and a test checks the two agree.
@@ -89,7 +89,7 @@ pub fn bundled(row: &assets::Shipped) -> Option<Asset> {
 
 /// One imported substrate, **with its bytes in hand** — `crate::shapes`'s
 /// `ShapeEntry` for substrates, which is to say the same crate type under the other
-/// name (`stark_chrome::assets`).
+/// name (`stark_ui::assets`).
 pub type SubstrateEntry = assets::Entry;
 
 /// This library's gallery thumbnails ([`Thumbs`]) — the *height field* each id names.
@@ -716,7 +716,7 @@ pub fn SubstrateGallery() -> Element {
                             e.stop_propagation();
                             remove(state, id);
                         },
-                        {crate::icons::icon(stark_chrome::icons::REMOVE)}
+                        {crate::icons::icon(stark_ui::icons::REMOVE)}
                     }
                 }
             }
@@ -736,7 +736,7 @@ pub fn SubstrateGallery() -> Element {
                         import_file(state, name, bytes);
                     });
                 },
-                div { class: "asset-thumb plus", {crate::icons::icon(stark_chrome::icons::ADD)} }
+                div { class: "asset-thumb plus", {crate::icons::icon(stark_ui::icons::ADD)} }
                 div { class: "asset-name", "Import\u{2026}" }
             }
         }

@@ -135,13 +135,13 @@ pub fn TimingModal(on_close: EventHandler<()>) -> Element {
                         timing::reset();
                         stats.set(timing::snapshot());
                     },
-                    {icon(stark_chrome::icons::RESET)}
+                    {icon(stark_ui::icons::RESET)}
                     "Reset"
                 }
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(stark_chrome::icons::DONE)}
+                    {icon(stark_ui::icons::DONE)}
                     "Done"
                 }
             }

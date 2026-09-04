@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use stark_chrome::storage::{Backend, Stored};
+use stark_ui::storage::{Backend, Stored};
 
 /// Two directories, resolved once at startup.
 pub struct Files {
@@ -37,7 +37,7 @@ impl Files {
     ///
     /// `None` when the platform will not say where they are, which is the same case
     /// as a browser with storage disabled: the app runs and forgets everything
-    /// (`stark_chrome::storage`'s "failure is silence").
+    /// (`stark_ui::storage`'s "failure is silence").
     ///
     /// Hand-rolled rather than through `directories`/`dirs`: what is wanted is two
     /// paths from two environment variables, and the crates that answer that question
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn no_key_escapes_its_directory() {
         let f = files(std::path::Path::new("/tmp/x"));
-        for store in stark_chrome::storage::Store::ALL {
+        for store in stark_ui::storage::Store::ALL {
             let (key, _) = store.named();
             let path = f.path(key);
             assert!(

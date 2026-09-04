@@ -12,7 +12,7 @@
 //! preset here and keeps a transient half beside the name, so the tool on a
 //! number is whatever the preset is *now* (§18.1.8). That is what makes an
 //! overwrite of a preset reach every number bound to it — and what
-//! [`same_tool`](stark_chrome::presets::same_tool) is for, the test that sets the transient half aside.
+//! [`same_tool`](stark_ui::presets::same_tool) is for, the test that sets the transient half aside.
 //!
 //! # Two kinds of entry, one list
 //!
@@ -49,8 +49,8 @@ use stark_model::document::BrushShape;
 use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
-use stark_chrome::brush_config::{BrushConfig, Transient};
-use stark_chrome::presets::{
+use stark_ui::brush_config::{BrushConfig, Transient};
+use stark_ui::presets::{
     self, BuiltinShapes, Overwrite, PresetEntry, is_builtin, overwrite, persist, read_storage,
 };
 
@@ -62,7 +62,7 @@ pub fn worn(state: AppState) -> (BrushConfig, Transient) {
 }
 
 /// The app's shipped presets, resolved against *this* canvas — the one thing
-/// `stark_chrome::presets::shipped` cannot do for itself.
+/// `stark_ui::presets::shipped` cannot do for itself.
 ///
 /// A preset reaching for a bundled shape names it by content id, and an id is the
 /// hash of the bytes, so it is not knowable until they have been imported
@@ -75,8 +75,8 @@ fn default_presets(state: AppState) -> Vec<PresetEntry> {
 
 fn builtins_for(state: AppState) -> Option<BuiltinShapes> {
     Some(BuiltinShapes {
-        bristles: builtins::shape(state, stark_chrome::assets::BRISTLES)?,
-        pencil: builtins::shape(state, stark_chrome::assets::PENCIL)?,
+        bristles: builtins::shape(state, stark_ui::assets::BRISTLES)?,
+        pencil: builtins::shape(state, stark_ui::assets::PENCIL)?,
     })
 }
 

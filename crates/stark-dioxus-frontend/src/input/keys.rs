@@ -158,7 +158,7 @@ fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     // Alt is the eyedropper's, and only a bare digit is ours.
     if !accel(m)
         && !m.contains(Modifiers::ALT)
-        && let Some(slot) = stark_chrome::slots::of_code(&e.code())
+        && let Some(slot) = stark_ui::slots::of_code(&e.code())
     {
         slots::hold(state, slot, Grip::Key);
         e.prevent_default();
@@ -190,14 +190,14 @@ fn handle_keyup(state: AppState, e: &platform::KeyEvent) {
     // Unguarded by `KeyEvent::on_text_entry` like the two above, and for the same
     // reason: focus can move between a press and its release, and a release that
     // never arrived would leave the brush swapped.
-    if let Some(slot) = stark_chrome::slots::of_code(&e.code()) {
+    if let Some(slot) = stark_ui::slots::of_code(&e.code()) {
         slots::release(state, slot, Grip::Key);
     }
     track_mods(state, e.modifiers());
 }
 
 /// Record which modifiers are held, so the resting cursor can say what a press
-/// would do — the drag table's advertisement half (`stark_chrome::drags::armed`, §18.0.2).
+/// would do — the drag table's advertisement half (`stark_ui::drags::armed`, §18.0.2).
 ///
 /// Read off the event's **modifier set** rather than off the keys themselves: a
 /// keystroke that arrives after a modifier was pressed or released while the
@@ -216,8 +216,8 @@ fn track_mods(state: AppState, m: Modifiers) {
         // back as paint: the wrong color for one and the wrong layer for the
         // other (§18.1.10). Asked of the table rather than named here, so a
         // rebinding moves it (§25.5).
-        if stark_chrome::drags::armed(&state.drags.peek(), now)
-            .is_some_and(stark_chrome::drags::DragAction::shadows_paint)
+        if stark_ui::drags::armed(&state.drags.peek(), now)
+            .is_some_and(stark_ui::drags::DragAction::shadows_paint)
         {
             clear_hover_mark(state);
         }

@@ -54,7 +54,7 @@ use stark_model::geom::{Extent2, Vec2};
 
 use crate::platform::base64_encode;
 use crate::state::{AppState, root_signal};
-use stark_chrome::brush_config::{BrushConfig, Transient};
+use stark_ui::brush_config::{BrushConfig, Transient};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
 /// `.preset-row` — 36 px tall in a 300 px panel), so it stays crisp on a dense
@@ -320,7 +320,7 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
             brush: w.params(keyed_tune),
             color: keyed_tune.color,
         });
-        let rope = stark_chrome::input::rope(view, w.smoothing);
+        let rope = stark_ui::input::rope(view, w.smoothing);
         rig.engine
             .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
         // The whole rig document, which is only ever the thumbnail in flight — there

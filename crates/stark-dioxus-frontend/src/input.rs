@@ -42,8 +42,8 @@ use crate::slots::{self, Grip};
 use crate::state::{
     AppState, BrushRing, Dwell, FlowBar, TowUi, TuneReadout, dispatch, update_brush,
 };
-use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::PickScope;
+use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::commands::PickScope;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
@@ -461,7 +461,7 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 
 /// How finely a pointer report resolves position, in **CSS px**.
 ///
-/// The device's half of `stark_chrome::input::tolerance` — what this browser knows
+/// The device's half of `stark_ui::input::tolerance` — what this browser knows
 /// and the shared map cannot: which kind of pointer this is, and how many physical
 /// pixels a CSS one is. A mouse walks the screen in whole physical pixels, so
 /// `1 / devicePixelRatio` CSS px is its floor; a pen or a finger comes off a
@@ -469,15 +469,15 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 fn input_resolution(e: &Event<PointerData>) -> f32 {
     let dpr = platform::device_pixel_ratio();
     let physical = match e.pointer_type().as_str() {
-        "pen" | "touch" => stark_chrome::input::PEN_RESOLUTION,
-        _ => stark_chrome::input::MOUSE_RESOLUTION,
+        "pen" | "touch" => stark_ui::input::PEN_RESOLUTION,
+        _ => stark_ui::input::MOUSE_RESOLUTION,
     };
     physical / dpr
 }
 
 /// The fitting tolerance to declare for a gesture starting with `e`, in canvas px.
 pub fn input_tolerance_in(view: ViewTransform, e: &Event<PointerData>) -> f32 {
-    stark_chrome::input::tolerance(view, input_resolution(e))
+    stark_ui::input::tolerance(view, input_resolution(e))
 }
 
 /// [`input_tolerance_in`] against the main canvas's view; `None` before the engine
@@ -489,11 +489,11 @@ pub fn input_tolerance(state: AppState, e: &Event<PointerData>) -> Option<f32> {
 /// The §6.11 rope for the live brush against the main canvas's view, in canvas px.
 /// Zero (no tow at all) when the amount is zero or there is no view yet.
 ///
-/// The map itself is `stark_chrome::input::rope`, shared with the native frontend;
+/// The map itself is `stark_ui::input::rope`, shared with the native frontend;
 /// what is here is only *which* brush and *which* view.
 pub fn input_rope(state: AppState) -> f32 {
     match view_of(state) {
-        Some(view) => stark_chrome::input::rope(view, state.brush.peek().smoothing),
+        Some(view) => stark_ui::input::rope(view, state.brush.peek().smoothing),
         None => 0.0,
     }
 }
@@ -600,8 +600,8 @@ const HOVER_REACH_CANVAS_PX: f32 = 8.0;
 /// stroke would.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
     if *state.space_down.peek()
-        || stark_chrome::drags::armed(&state.drags.peek(), *state.held_mods.peek())
-            .is_some_and(stark_chrome::drags::DragAction::shadows_paint)
+        || stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
+            .is_some_and(stark_ui::drags::DragAction::shadows_paint)
         || *state.pick.dragging.peek()
         || crate::panels::timeline::is_playing(state)
     {

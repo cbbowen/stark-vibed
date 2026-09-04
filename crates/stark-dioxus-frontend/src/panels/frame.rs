@@ -35,7 +35,7 @@ use crate::layout::chrome_dimmed;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::LayerId;
@@ -131,7 +131,7 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
     let Some(o) = obs.as_ref() else {
         return (Vec2::new(-256.0, -256.0), Vec2::new(256.0, 256.0));
     };
-    stark_chrome::bounds::content(o).unwrap_or_else(|| stark_chrome::bounds::view(o))
+    stark_ui::bounds::content(o).unwrap_or_else(|| stark_ui::bounds::view(o))
 }
 
 /// **The frame that says where the piece ends**: the topmost matte layer with a
@@ -318,10 +318,10 @@ pub fn FrameBar() -> Element {
             // identifies is the bar, and through it the mode you are in.
             span { class: "bar-label",
                 if rect.is_some() {
-                    {icon(stark_chrome::icons::FRAME)}
+                    {icon(stark_ui::icons::FRAME)}
                     {label("Frame")}
                 } else {
-                    {icon(stark_chrome::icons::BACKGROUND)}
+                    {icon(stark_ui::icons::BACKGROUND)}
                     {label("Background")}
                 }
             }
@@ -364,7 +364,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to everything painted so far",
                     onclick: move |_| {
-                        let rect = state.obs.peek().as_ref().and_then(stark_chrome::bounds::content);
+                        let rect = state.obs.peek().as_ref().and_then(stark_ui::bounds::content);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to art"
@@ -373,7 +373,7 @@ pub fn FrameBar() -> Element {
                     class: "chip",
                     title: "Fit the frame to the current view",
                     onclick: move |_| {
-                        let rect = state.obs.peek().as_ref().map(stark_chrome::bounds::view);
+                        let rect = state.obs.peek().as_ref().map(stark_ui::bounds::view);
                         if let Some((min, max)) = rect { set_rect(min, max); }
                     },
                     "Fit to view"
@@ -448,7 +448,7 @@ pub fn FrameBar() -> Element {
                 onclick: move |_| {
                     crate::panels::gradient_bar::begin_matte(state, info.id, &paint_for_begin);
                 },
-                {icon(stark_chrome::icons::GRADIENT)}
+                {icon(stark_ui::icons::GRADIENT)}
                 {label("Gradient")}
             }
 
@@ -467,7 +467,7 @@ pub fn FrameBar() -> Element {
                     title: "Add a background: an opaque layer under the whole painting \u{2014} \
                             flat or gradient, the underpainting's color",
                     onclick: move |_| add_backing(state),
-                    {icon(stark_chrome::icons::BACKGROUND)}
+                    {icon(stark_ui::icons::BACKGROUND)}
                     {label("Add background")}
                 }
             }
@@ -479,13 +479,13 @@ pub fn FrameBar() -> Element {
                 // Esc performs this same act (`commands`' ladder), so the chip
                 // advertises the key the way the mode bars' Done advertises
                 // Enter — through the registry, so a rebind follows.
-                title: stark_chrome::commands::advertised(
+                title: stark_ui::commands::advertised(
                     "Stop composing and go back to painting \u{2014} the frame stays",
                     Command::CancelMode,
                     &state.bindings.read(),
                 ),
                 onclick: move |_| done_composing(state),
-                {icon(stark_chrome::icons::DONE)}
+                {icon(stark_ui::icons::DONE)}
                 {label("Done")}
             }
         }

@@ -42,8 +42,8 @@ use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
-use stark_chrome::commands::Command;
-use stark_chrome::transform::{
+use stark_ui::commands::Command;
+use stark_ui::transform::{
     Family, Grab, HANDLE_PX, Hint, PerspectiveUi, RIM_BAND_PX, SNAP_PX, Switch, TransformState,
     TransformUi, WARP_GRID, WarpUi,
 };
@@ -66,10 +66,10 @@ pub fn begin_transform(state: AppState) {
     crate::modes::leave(state);
     let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else { return };
-    // Which layer and which rectangle are both `stark_chrome::transform`'s answers,
+    // Which layer and which rectangle are both `stark_ui::transform`'s answers,
     // and they come off one read: a hull from before a layer change with a layer
     // from after would mount the widget around paint it is not holding.
-    let Some(entry) = stark_chrome::transform::entry(o) else {
+    let Some(entry) = stark_ui::transform::entry(o) else {
         return;
     };
     let zoom = o.view.zoom;
@@ -78,7 +78,7 @@ pub fn begin_transform(state: AppState) {
     // and the only way in (`crate::modes`).
     crate::modes::enter(
         state,
-        Composing::Transform(stark_chrome::transform::mount(
+        Composing::Transform(stark_ui::transform::mount(
             entry.layer,
             Family::Free,
             entry.hull,
@@ -97,7 +97,7 @@ fn update(state: AppState, ui: TransformUi) {
 }
 
 /// Switch the composing family — the bar's half of a decision
-/// `stark_chrome::transform::switch` makes: carry the deformation, or commit it
+/// `stark_ui::transform::switch` makes: carry the deformation, or commit it
 /// first (one honest undo step) and reopen around the moved paint.
 fn switch_family(state: AppState, ui: TransformUi, to: Family) {
     let zoom = state
@@ -106,7 +106,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
         .as_ref()
         .map(|o| o.view.zoom)
         .unwrap_or(1.0);
-    match stark_chrome::transform::switch(ui, to, zoom) {
+    match stark_ui::transform::switch(ui, to, zoom) {
         Switch::Nothing => {}
         // `update`: the carried map is the new family's own, exact to within a
         // resample, and the preview owes that rather than the one it replaced.
@@ -164,7 +164,7 @@ pub fn TransformBar() -> Element {
             // in for that one for the gesture's duration, so it carries the glyph of
             // the button that raised it.
             span { class: "bar-label",
-                {icon(stark_chrome::icons::TRANSFORM)}
+                {icon(stark_ui::icons::TRANSFORM)}
                 {label("Transform")}
             }
 
@@ -177,21 +177,21 @@ pub fn TransformBar() -> Element {
                 class: chip(family == Family::Free),
                 title: "Move, scale, rotate, shear — the ellipse widget",
                 onclick: move |_| switch_family(state, ui, Family::Free),
-                {icon(stark_chrome::icons::TRANSFORM)}
+                {icon(stark_ui::icons::TRANSFORM)}
                 {label("Free")}
             }
             button {
                 class: chip(family == Family::Perspective),
                 title: "Drag the corners into a perspective (§16.8)",
                 onclick: move |_| switch_family(state, ui, Family::Perspective),
-                {icon(stark_chrome::icons::PERSPECTIVE)}
+                {icon(stark_ui::icons::PERSPECTIVE)}
                 {label("Perspective")}
             }
             button {
                 class: chip(family == Family::Warp),
                 title: "Bend the paint through a mesh (§16.9)",
                 onclick: move |_| switch_family(state, ui, Family::Warp),
-                {icon(stark_chrome::icons::WARP)}
+                {icon(stark_ui::icons::WARP)}
                 {label("Warp")}
             }
             if family == Family::Free {
@@ -206,7 +206,7 @@ pub fn TransformBar() -> Element {
                             update(state, TransformUi::Affine { rect, ts: ts.flipped_h() });
                         }
                     },
-                    {icon(stark_chrome::icons::FLIP_H)}
+                    {icon(stark_ui::icons::FLIP_H)}
                     {label("Flip")}
                 }
                 button {
@@ -217,7 +217,7 @@ pub fn TransformBar() -> Element {
                             update(state, TransformUi::Affine { rect, ts: ts.flipped_v() });
                         }
                     },
-                    {icon(stark_chrome::icons::FLIP_V)}
+                    {icon(stark_ui::icons::FLIP_V)}
                     {label("Flip")}
                 }
             }
@@ -228,13 +228,13 @@ pub fn TransformBar() -> Element {
             CommandButton { command: Command::CancelMode }
             button {
                 class: "chip",
-                title: stark_chrome::commands::advertised(
+                title: stark_ui::commands::advertised(
                     "Apply the transform \u{2014} one undo step",
                     Command::FinishMode,
                     &state.bindings.read(),
                 ),
                 onclick: move |_| finish(state),
-                {icon(stark_chrome::icons::DONE)}
+                {icon(stark_ui::icons::DONE)}
                 {label("Done")}
             }
         }
@@ -275,7 +275,7 @@ pub fn TransformOverlay() -> Element {
     let snap = SNAP_PX / view.zoom;
 
     // What a press here would take hold of, and how this frontend spells the cursor
-    // for it. The classification is `stark_chrome::transform`'s — the CSS below is a
+    // for it. The classification is `stark_ui::transform`'s — the CSS below is a
     // spelling of it, and a spelling is all a frontend owes (§11.2).
     let classify = move |pc: Vec2| -> (Grab, &'static str) {
         let grabbed = Grab::take(ui, pc, band, grab);

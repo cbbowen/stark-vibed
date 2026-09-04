@@ -20,7 +20,7 @@
 //! # Which panels are open follows the browser
 //!
 //! **Every panel starts closed**, and what is open is this browser's, kept between
-//! visits the way the shape and preset libraries are (`stark_chrome::storage`). The
+//! visits the way the shape and preset libraries are (`stark_ui::storage`). The
 //! opening screen is therefore the painting and nothing else, and the panels that
 //! come back are the ones the artist actually reached for — a stack assembled by
 //! use rather than a default arrangement everybody has to disassemble.
@@ -50,17 +50,17 @@ use crate::icons::icon;
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::{AppState, root_signal};
-use stark_chrome::panels::PanelId;
-use stark_chrome::reorder::{Grab, Motion, Slide};
+use stark_ui::panels::PanelId;
+use stark_ui::reorder::{Grab, Motion, Slide};
 
 /// The panel's mark, worn by its title bar and by the entry that reopens it in the
-/// visibility menu (`stark_chrome::commands::VisibilityToggle`) — `PanelId::glyph`
+/// visibility menu (`stark_ui::commands::VisibilityToggle`) — `PanelId::glyph`
 /// inlined, which is this frontend's whole share of it.
 ///
 /// A free function rather than a method for the orphan rule's sake, and a wrapper at
 /// all only because an icon here is inline SVG: *which* mark is the crate's now, and
 /// turning it into markup is what is left (§11.2 N8).
-pub fn panel_glyph(id: PanelId) -> stark_chrome::icons::Icon {
+pub fn panel_glyph(id: PanelId) -> stark_ui::icons::Icon {
     id.glyph()
 }
 
@@ -71,7 +71,7 @@ const MIN_PANEL_HEIGHT: f32 = 140.0;
 /// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
 /// restores their slot); the stack renders `order` minus `hidden`. A field of
 /// [`AppState`] (`state.panels`) rather than a context of its own, because the panel
-/// toggles are registry commands now (`stark_chrome::commands::Command::TogglePanel`) and a command
+/// toggles are registry commands now (`stark_ui::commands::Command::TogglePanel`) and a command
 /// reaches everything it acts on through that one handle.
 ///
 /// No panel geometry is kept here — a drag reads it off the DOM at the moment it starts
@@ -121,8 +121,8 @@ impl PanelLayout {
             // back — read here, before the first render, so the stack the artist
             // left is the first one drawn rather than one that assembles itself a
             // frame later (`crate::visibility`, §25.6).
-            hidden: root_signal(stark_chrome::visibility::stored_hidden),
-            collapsed: root_signal(stark_chrome::visibility::stored_collapsed),
+            hidden: root_signal(stark_ui::visibility::stored_hidden),
+            collapsed: root_signal(stark_ui::visibility::stored_collapsed),
             drag: root_signal(|| None),
             heights: root_signal(PanelLayout::default_heights),
             resize: root_signal(|| None),
@@ -260,7 +260,7 @@ pub fn panel_key(id: PanelId) -> String {
 
 /// Whether a floating-chrome container (the panel stack, the command rail, the
 /// selection bar) is faded out of the way right now — a canvas gesture is in flight
-/// *and* this browser has asked for that ([`ChromeHiding`](stark_chrome::prefs::ChromeHiding)),
+/// *and* this browser has asked for that ([`ChromeHiding`](stark_ui::prefs::ChromeHiding)),
 /// since "Always show" is
 /// the answer no to both.
 ///
@@ -467,7 +467,7 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 }
 
 /// Show `id` if it is hidden, hide it if it is not — what the panel's row in the
-/// visibility menu runs (`stark_chrome::commands::VisibilityToggle::Panel`).
+/// visibility menu runs (`stark_ui::commands::VisibilityToggle::Panel`).
 ///
 /// The wake goes through [`open_panel`], so it happens on the half of the toggle that
 /// opens and not on the half that closes.
@@ -812,17 +812,17 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     // Which way this panel is folded, at the far end of the grip —
                     // inside it, so the mark is part of what you click rather than a
                     // second control beside it. One glyph rotated rather than a pair:
-                    // unlike the layer tree's fold (`stark_chrome::icons::FOLD_OPEN`), which points at
+                    // unlike the layer tree's fold (`stark_ui::icons::FOLD_OPEN`), which points at
                     // rows drawn *above* it in both states and so cannot turn, a panel's
                     // content is below its bar and the caret means the direction it will
                     // go.
-                    span { class: "panel-fold", {icon(stark_chrome::icons::FOLD_OPEN)} }
+                    span { class: "panel-fold", {icon(stark_ui::icons::FOLD_OPEN)} }
                 }
                 button {
                     class: "panel-close",
                     title: "Close panel",
                     onclick: move |_| close_panel(state, layout, id),
-                    {icon(stark_chrome::icons::CLOSE)}
+                    {icon(stark_ui::icons::CLOSE)}
                 }
             }
             // The panel's content as **one** thing, so folding it away is one rule

@@ -950,7 +950,7 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// This browser as a [`Backend`](stark_chrome::storage::Backend): `localStorage` for
+/// This browser as a [`Backend`](stark_ui::storage::Backend): `localStorage` for
 /// the rows, IndexedDB for the bytes.
 ///
 /// The six methods are the six functions below, unchanged — the trait exists because
@@ -961,7 +961,7 @@ pub fn copy_to_clipboard(text: &str) {
 /// window.
 pub struct LocalStore;
 
-impl stark_chrome::storage::Backend for LocalStore {
+impl stark_ui::storage::Backend for LocalStore {
     fn get(&self, key: &str) -> Option<String> {
         local_get(key)
     }
@@ -977,7 +977,7 @@ impl stark_chrome::storage::Backend for LocalStore {
     fn blob_get_many<'a>(
         &'a self,
         keys: &'a [String],
-    ) -> stark_chrome::storage::Stored<'a, Vec<Option<Vec<u8>>>> {
+    ) -> stark_ui::storage::Stored<'a, Vec<Option<Vec<u8>>>> {
         Box::pin(blob_get_many(keys))
     }
 
@@ -985,17 +985,17 @@ impl stark_chrome::storage::Backend for LocalStore {
         &'a self,
         key: &'a str,
         bytes: &'a [u8],
-    ) -> stark_chrome::storage::Stored<'a, bool> {
+    ) -> stark_ui::storage::Stored<'a, bool> {
         Box::pin(blob_put(key, bytes))
     }
 
-    fn blob_delete<'a>(&'a self, key: &'a str) -> stark_chrome::storage::Stored<'a, ()> {
+    fn blob_delete<'a>(&'a self, key: &'a str) -> stark_ui::storage::Stored<'a, ()> {
         Box::pin(blob_delete(key))
     }
 }
 
 /// What this browser has stored under `key`, per origin — the raw half of
-/// [`stark_chrome::storage`], which is where the format and the failure policy live.
+/// [`stark_ui::storage`], which is where the format and the failure policy live.
 #[cfg(target_arch = "wasm32")]
 pub fn local_get(key: &str) -> Option<String> {
     web_sys::window()?
@@ -1016,7 +1016,7 @@ pub fn local_set(key: &str, value: &str) -> bool {
         .is_some_and(|store| store.set_item(key, value).is_ok())
 }
 
-/// Drop whatever is stored under `key`. Only [`stark_chrome::storage::drop_retired`] calls
+/// Drop whatever is stored under `key`. Only [`stark_ui::storage::drop_retired`] calls
 /// this, and it says how long either of them is worth keeping.
 #[cfg(target_arch = "wasm32")]
 pub fn local_remove(key: &str) {
@@ -1027,7 +1027,7 @@ pub fn local_remove(key: &str) {
 
 // --- the blob store --------------------------------------------------------
 //
-// The raw half of [`stark_chrome::storage`]'s second door. `localStorage` above is *text*,
+// The raw half of [`stark_ui::storage`]'s second door. `localStorage` above is *text*,
 // and a few megabytes of it per origin shared across every record this browser keeps
 // — so bytes go to IndexedDB instead, which is quota'd against the disk, and which
 // does its reading and writing off the thread the canvas paints on (§25.6).
@@ -1162,7 +1162,7 @@ pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
 ///
 /// A full disk surfaces as this request's own error rather than as a short write,
 /// which is what makes awaiting the request the answer to "did it land" — and what
-/// lets `stark_chrome::storage` keep saying so in one line.
+/// lets `stark_ui::storage` keep saying so in one line.
 #[cfg(target_arch = "wasm32")]
 pub async fn blob_put(key: &str, bytes: &[u8]) -> bool {
     use wasm_bindgen::JsValue;
@@ -1392,15 +1392,15 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
 /// any format the browser can display can be imported (JPEG, WebP, GIF, …).
 ///
 /// **The browser's half only**: decode, and downscale to the size
-/// `stark_chrome::assets::fit` asks for. What the pixels then mean — that a light
+/// `stark_ui::assets::fit` asks for. What the pixels then mean — that a light
 /// border is paper with ink on it, and the inversion that follows — is the crate's,
 /// so the two frontends cannot come to read one file two ways.
 ///
 /// Returns the PNG bytes and whether the inversion fired (so the UI can say so).
 #[cfg(target_arch = "wasm32")]
 pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
-    let (width, height, rgba) = decode_to_canvas(bytes, stark_chrome::assets::SHAPE_CAP).await?;
-    stark_chrome::assets::shape_png(stark_chrome::assets::Decoded {
+    let (width, height, rgba) = decode_to_canvas(bytes, stark_ui::assets::SHAPE_CAP).await?;
+    stark_ui::assets::shape_png(stark_ui::assets::Decoded {
         width,
         height,
         rgba,
@@ -1411,7 +1411,7 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
 /// decoder — any format it can display can become a substrate (JPEG, WebP, TIFF, …).
 ///
 /// [`normalize_shape_image`]'s sibling, and the same split: the browser decodes and
-/// resamples, `stark_chrome::assets::substrate_png` decides. What it decides — grey by
+/// resamples, `stark_ui::assets::substrate_png` decides. What it decides — grey by
 /// luminance, no inversion, alpha composited over white rather than multiplied in —
 /// is the whole of what a substrate is as against a stamp (§6.4), and is stated there.
 ///
@@ -1421,8 +1421,8 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
 #[cfg(target_arch = "wasm32")]
 pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let (width, height, rgba) =
-        decode_to_canvas(bytes, stark_chrome::assets::SUBSTRATE_CAP).await?;
-    stark_chrome::assets::substrate_png(stark_chrome::assets::Decoded {
+        decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?;
+    stark_ui::assets::substrate_png(stark_ui::assets::Decoded {
         width,
         height,
         rgba,
@@ -1459,8 +1459,8 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<(u32, u32, Vec<u8>
     }
     // The *size* is the shared rule's, even though the resampling is not: two
     // frontends asking their own resampler for two different sizes would be a
-    // divergence that did not have to exist (`stark_chrome::assets`).
-    let (w, h) = stark_chrome::assets::fit(sw, sh, cap);
+    // divergence that did not have to exist (`stark_ui::assets`).
+    let (w, h) = stark_ui::assets::fit(sw, sh, cap);
 
     let document = window.document().ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = document

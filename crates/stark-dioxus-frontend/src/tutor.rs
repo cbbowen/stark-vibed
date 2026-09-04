@@ -21,7 +21,7 @@
 //! not a tutorial mode with a Skip button.
 //!
 //! Each lesson is given **once, ever** — the ledger follows this browser the way
-//! the shape and preset libraries do (`stark_chrome::storage`) — and the tally keeps
+//! the shape and preset libraries do (`stark_ui::storage`) — and the tally keeps
 //! running across visits, because "the third stroke" is not a claim about one
 //! session.
 //!
@@ -114,9 +114,9 @@ use crate::icons::icon;
 use crate::layout::{PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
 use crate::state::{AppState, root_signal};
-use stark_chrome::panels::PanelId;
-use stark_chrome::prefs::ChromeHiding;
-use stark_chrome::storage::Store;
+use stark_ui::panels::PanelId;
+use stark_ui::prefs::ChromeHiding;
+use stark_ui::storage::Store;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_model::document::BrushParams;
@@ -384,7 +384,7 @@ impl TutorState {
             armed: root_signal(|| false),
             // Seeded from the preference defaults rather than written out again:
             // `prefs::load` overwrites it at app start (`crate::prefs`).
-            enabled: root_signal(|| stark_chrome::prefs::Prefs::default().tips),
+            enabled: root_signal(|| stark_ui::prefs::Prefs::default().tips),
             epoch: root_signal(|| 0),
             not_reaching: root_signal(|| 0),
         }
@@ -1687,7 +1687,7 @@ pub(crate) enum Row {
     Given { given: String },
 }
 
-impl stark_chrome::storage::Entry for Row {
+impl stark_ui::storage::Entry for Row {
     const STORE: Store = Store::Tutor;
 }
 
@@ -1695,7 +1695,7 @@ impl stark_chrome::storage::Entry for Row {
 /// nothing and one whose store is damaged want the same thing, which is to be
 /// treated as new.
 fn stored() -> Ledger {
-    let Some(rows) = stark_chrome::storage::load_list::<Row>() else {
+    let Some(rows) = stark_ui::storage::load_list::<Row>() else {
         return Ledger::default();
     };
     let mut book = Ledger::default();
@@ -1725,7 +1725,7 @@ fn save(state: AppState) {
         given: k.to_string(),
     });
     let rows: Vec<Row> = deeds.chain(given).collect();
-    stark_chrome::storage::save_list(&rows);
+    stark_ui::storage::save_list(&rows);
 }
 
 /// The lesson card: one at a time, floating beside the thing it points at.
@@ -1958,7 +1958,7 @@ pub fn TutorCard() -> Element {
             class: if lesson.anchor.inside_dialog() { "over-dialog" },
             style: "{place}",
             div { class: "tutor-head",
-                span { class: "tutor-mark", {icon(stark_chrome::icons::TOUR)} }
+                span { class: "tutor-mark", {icon(stark_ui::icons::TOUR)} }
                 span { class: "tutor-title", "{lesson.title}" }
             }
             div { class: "tutor-body", "{lesson.body}" }
@@ -1978,7 +1978,7 @@ pub fn TutorCard() -> Element {
                 button {
                     class: if more { "chip tutor-done tutor-next" } else { "chip tutor-done" },
                     onclick: move |_| dismiss(state, i),
-                    {icon(if more { stark_chrome::icons::NEXT } else { stark_chrome::icons::DONE })}
+                    {icon(if more { stark_ui::icons::NEXT } else { stark_ui::icons::DONE })}
                     if more { "Next" } else { "Got it" }
                 }
             }

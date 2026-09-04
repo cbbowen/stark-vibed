@@ -126,7 +126,7 @@ fn defaults() -> impl Iterator<Item = (DragChord, DragAction)> {
 /// as a signal, so a settings row and the resting cursor both move the moment a
 /// rebind lands.
 ///
-/// Only the *overrides* are state, exactly as `stark_chrome::commands::Bindings` holds only
+/// Only the *overrides* are state, exactly as `stark_ui::commands::Bindings` holds only
 /// its own: an action the user never touched keeps its default row, minus any
 /// chord an override has claimed — so a default moved in a later build reaches a
 /// browser that stored this table before the move.
@@ -484,7 +484,7 @@ impl DragPreset {
 
 /// What a press means to a rebinding capture (the settings dialog's row).
 ///
-/// The pointer's counterpart to `stark_chrome::commands::Capture`, and shorter by one arm:
+/// The pointer's counterpart to `stark_ui::commands::Capture`, and shorter by one arm:
 /// erasing a binding is a control of its own here, because a press cannot say
 /// "nothing" the way Backspace can.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -494,7 +494,7 @@ pub enum DragCapture {
     /// The capture is called off, the binding left as it was.
     ///
     /// This is what a **bare contact** is spent on, and it is the choice
-    /// `stark_chrome::commands::capture` makes with Escape: the one press that can never be a
+    /// `stark_ui::commands::capture` makes with Escape: the one press that can never be a
     /// binding is the one that can be the way out. A bare left press *is*
     /// painting (§25.3), so it was never a chord this table could hold, and a
     /// user who clicks the chip and thinks better of it clicks it again.

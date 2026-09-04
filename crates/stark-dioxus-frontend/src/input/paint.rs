@@ -78,12 +78,12 @@ impl Paint {
         // the engine is holding.
 
         // The marquee modifiers may override the *combine mode* for the length of
-        // this one gesture; whether they do is `stark_chrome::selection`'s answer,
+        // this one gesture; whether they do is `stark_ui::selection`'s answer,
         // and a `Some` is what has to be put back on release (below).
         let action = current_action(state);
         if tool.is_selection()
             && let Some(next) =
-                stark_chrome::selection::override_for(action, crate::drags::mods_of(e.modifiers()))
+                stark_ui::selection::override_for(action, crate::drags::mods_of(e.modifiers()))
         {
             let mut restore = self.restore;
             restore.set(Some(action));

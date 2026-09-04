@@ -103,7 +103,7 @@ pub fn GpuFailureModal() -> Element {
                         crate::files::save_document(state);
                         saved.set(true);
                     },
-                    {icon(stark_chrome::icons::SAVE)}
+                    {icon(stark_ui::icons::SAVE)}
                     if saved() { "Save again" } else { "Save the painting" }
                 }
             }

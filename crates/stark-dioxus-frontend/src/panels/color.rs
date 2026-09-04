@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 
 use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
-use stark_chrome::color::{
+use stark_ui::color::{
     FIELD_N, Grab, RAMP_N, ab_field_rgb, hex_of, on_wheel, parse_hex, ramp_rgb, wheel_color,
     wheel_rgb, wheel_xy,
 };
@@ -326,7 +326,7 @@ fn commit_hex(
 
 // --- the pictures ----------------------------------------------------------------
 //
-// The numbers are `stark_chrome::color`'s — a wheel is a picture of which colors
+// The numbers are `stark_ui::color`'s — a wheel is a picture of which colors
 // exist, and two answers to that would be two apps. What is left here is the
 // carrier: a `data:` URL, because a `background-image` takes one.
 
@@ -397,7 +397,7 @@ mod tests {
     /// padding is the one way to get that wrong, and a one-pixel-wide ramp needs it.
     ///
     /// The only test left here: everything this panel used to check about the *wheel*
-    /// went down with the wheel (`stark_chrome::color`), and what is left is the
+    /// went down with the wheel (`stark_ui::color`), and what is left is the
     /// carrier.
     #[test]
     fn a_bmp_is_the_size_its_header_says() {

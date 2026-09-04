@@ -48,7 +48,7 @@ Status lives here and nowhere else.
 | — | Placed images (§23) | done — import, paste and drop, as one action that lands a layer of paint; placement onto an *existing* layer (§23.5) remains |
 | — | The guided tour (§24) | done — five lessons off the `dispatch` seam; a lesson is a row in one table |
 | 14 | Mutable medium — horizontal flux (§14 open / §6.2) | **not started** |
-| N | Native frontend to parity (§11.2) | N0–N7 done — `stark-chrome` holds the pure modules, the record format and its `Backend`, the input maps, the preset table, both binding registries, the unsaved-work rule, the whole of a transform gesture (the algebra, the grab, the family switch), and both asset libraries (one generic type, the import policy, the shipped catalog and the build-time id table); the native app keeps a store, reopens where it was, paints with any shipped preset or stamp from a panel, answers the shipped chords, arranges its layers, selects/fills/transforms in all three families, imports brush shapes and canvas substrates, and saves/opens/exports through the platform dialogs — writing **lean** files that name shipped content and settling it out of its own binary on open. N8 **started** — the panel column is a folding, scrolling stack keyed by `PanelId` and the Oklab picker's geometry and the icon catalog came down with it, so the native app paints in colour, wears the same Phosphor glyphs the web one does, carries a drawn menu bar the file acts moved into, and pans and zooms the view; guides, gradients, filters, frames, the navigator and timeline mode remain. N9 **not started** |
+| N | Native frontend to parity (§11.2) | N0–N7 done — `stark-ui` holds the pure modules, the record format and its `Backend`, the input maps, the preset table, both binding registries, the unsaved-work rule, the whole of a transform gesture (the algebra, the grab, the family switch), and both asset libraries (one generic type, the import policy, the shipped catalog and the build-time id table); the native app keeps a store, reopens where it was, paints with any shipped preset or stamp from a panel, answers the shipped chords, arranges its layers, selects/fills/transforms in all three families, imports brush shapes and canvas substrates, and saves/opens/exports through the platform dialogs — writing **lean** files that name shipped content and settling it out of its own binary on open. N8 **started** — the panel column is a folding, scrolling stack keyed by `PanelId` and the Oklab picker's geometry and the icon catalog came down with it, so the native app paints in colour, wears the same Phosphor glyphs the web one does, carries a drawn menu bar the file acts moved into, and pans and zooms the view; guides, gradients, filters, frames, the navigator and timeline mode remain. N9 **not started** |
 
 Step 14, restated against what actually shipped: the Dry/Knife/Wet enum variants
 collapsed into **one tool** (`add`/`lift`/`deposit`/`charge`), every axis a flux
@@ -67,7 +67,7 @@ which is exactly the leverage the frontend/backend split was meant to provide.
 Step N is the one numbered row that is not engine work, and it is staged in
 §11.2 rather than here: ten stages that carry `stark-wgpui-frontend` from a
 canvas and one brush to the acts the web app can do, most of them a move of
-frontend code down into a `stark-chrome` both consume. It is listed at all
+frontend code down into a `stark-ui` both consume. It is listed at all
 because status lives in this file — the design, the tiers and the exit criteria
 are §11.2's.
 

@@ -12,15 +12,15 @@
 //! What the hit test tests against is the layout wgpui actually produced, not one
 //! this side derived — see `panel::Regions`.
 
-use stark_chrome::assets;
-use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::{Bindings, Command};
-use stark_chrome::drags::{DragAction, DragBindings, DragButton, DragChord};
-use stark_chrome::input as chrome_input;
-use stark_chrome::keys::Mods;
-use stark_chrome::nav;
-use stark_chrome::panels::PanelId;
-use stark_chrome::transform::{Family, Grab, Hint, Switch, TransformUi};
+use stark_ui::assets;
+use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::commands::{Bindings, Command};
+use stark_ui::drags::{DragAction, DragBindings, DragButton, DragChord};
+use stark_ui::input as chrome_input;
+use stark_ui::keys::Mods;
+use stark_ui::nav;
+use stark_ui::panels::PanelId;
+use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
@@ -86,10 +86,10 @@ enum Held {
     /// A knob on the panel, kept for the whole drag — see the module note.
     Knob(Knob),
     /// One of the color picker's two controls, with what the press meant — see
-    /// `stark_chrome::color::Grab`, which decides that once and holds it.
+    /// `stark_ui::color::Grab`, which decides that once and holds it.
     Pick {
         region: color::Region,
-        grab: stark_chrome::color::Grab,
+        grab: stark_ui::color::Grab,
     },
     /// One of the Select section's dials, with where the drag has moved it.
     ///
@@ -101,7 +101,7 @@ enum Held {
     /// A view drag — a pan or the scrubby zoom (§18.1.7). What it *is* was decided
     /// at the press and is held for the gesture, so letting go of the accelerator
     /// halfway through a zoom does not hand the canvas to the pan under a moving
-    /// hand (`stark_chrome::nav`).
+    /// hand (`stark_ui::nav`).
     Navigate {
         mode: nav::Mode,
         last: Point<Pixels>,
@@ -118,7 +118,7 @@ enum Held {
     Tune {
         /// Where the drag started, in logical px, and the tune it started from — so
         /// a long drag is one map from the press rather than a chain of steps, which
-        /// is `stark_chrome::transform`'s rule applied to a knob.
+        /// is `stark_ui::transform`'s rule applied to a knob.
         from: Point<Pixels>,
         size: f32,
         flow: f32,
@@ -152,7 +152,7 @@ pub struct Canvas {
     /// Its two pictures, kept between frames: a wheel is `FIELD_N²` gamut lookups.
     pictures: color::Pictures,
     /// Which panels this client has folded away, remembered across sessions
-    /// (`stark_chrome::visibility`).
+    /// (`stark_ui::visibility`).
     folded: std::collections::HashSet<PanelId>,
     /// Whether space is down — the modifier that turns a left drag into a pan
     /// (§18.1.7).
@@ -202,7 +202,7 @@ pub struct Canvas {
     /// document that has never been written — which is what the title says.
     path: Option<std::path::PathBuf>,
     /// The revision this client last wrote out. The other half of "is there anything
-    /// to lose" (`stark_chrome::files::unsaved`); the engine supplies the first.
+    /// to lose" (`stark_ui::files::unsaved`); the engine supplies the first.
     written: u64,
     /// What the window's title bar last said. Kept so the title is set when it
     /// *changes* rather than every frame: a title is a platform call, and the frame
@@ -234,7 +234,7 @@ impl Canvas {
         // brush the app opens on may *be* one of them — a preset that resolved after
         // the first frame would paint one stroke round (`crate::brush`).
         //
-        // Their ids are known without this (`stark_chrome::assets::shipped_id`, hashed
+        // Their ids are known without this (`stark_ui::assets::shipped_id`, hashed
         // at build time); what the import buys is the engine holding the bytes, so a
         // stroke can actually be stamped with one.
         let mut failure = None;
@@ -258,7 +258,7 @@ impl Canvas {
         let substrates = pollster::block_on(assets::load::<assets::Substrates>());
         // The color the session opens on is the crate's, so the picker and the brush
         // start on one color rather than the picker showing something the first stroke
-        // would not lay (`stark_chrome::color::INITIAL_COLOR`).
+        // would not lay (`stark_ui::color::INITIAL_COLOR`).
         let wheel = color::Wheel::default();
         let mut brush = Brush::new(crate::assets::builtin_shapes());
         brush.tune.color = wheel.rgb();
@@ -282,7 +282,7 @@ impl Canvas {
             layer_regions: layers::Regions::default(),
             wheel,
             pictures: color::Pictures::default(),
-            folded: stark_chrome::visibility::stored_collapsed(),
+            folded: stark_ui::visibility::stored_collapsed(),
             space: false,
             menu_open: None,
             menu_regions: menu::Regions::default(),
@@ -401,11 +401,11 @@ impl Canvas {
             // what makes a small adjustment possible.
             let held = match region {
                 color::Region::Wheel => {
-                    stark_chrome::color::wheel_xy(self.wheel.hue, self.wheel.sat)
+                    stark_ui::color::wheel_xy(self.wheel.hue, self.wheel.sat)
                 }
                 color::Region::Track => (self.wheel.l, 0.5),
             };
-            let grab = stark_chrome::color::Grab::take(at, held, mods.shift);
+            let grab = stark_ui::color::Grab::take(at, held, mods.shift);
             self.held = Some(Held::Pick { region, grab });
             self.pick(region, grab, at, cx);
             return;
@@ -421,13 +421,13 @@ impl Canvas {
         // The Select section shares the brush panel's column, so it is asked with it.
         match select::hit(&self.select_regions, ev.position) {
             Some(select::Region::Tool(i)) => {
-                if let Some(tool) = stark_chrome::selection::SHAPE_TOOLS.get(i) {
+                if let Some(tool) = stark_ui::selection::SHAPE_TOOLS.get(i) {
                     self.run(select::tool_command(*tool), window, cx);
                 }
                 return;
             }
             Some(select::Region::Action(i)) => {
-                if let Some(action) = stark_chrome::selection::SHAPE_ACTIONS.get(i) {
+                if let Some(action) = stark_ui::selection::SHAPE_ACTIONS.get(i) {
                     // Picking what a shape *does* also hands back a tool to draw it
                     // with: all five answers are about a gesture that has not been
                     // made, and with the brush in hand there is nothing for one to be
@@ -490,7 +490,7 @@ impl Canvas {
 
         // Navigation before paint, and before the drag table: a press that is
         // looking around is not a press on the picture, whatever else it would have
-        // meant. Which press that is is `stark_chrome::nav`'s answer.
+        // meant. Which press that is is `stark_ui::nav`'s answer.
         if let Some(mode) = nav::press(
             nav::Button::Left,
             screen_at(ev.position, window.scale_factor()),
@@ -523,14 +523,14 @@ impl Canvas {
 
         let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
         // A held modifier borrows the shape action for this one gesture — whether it
-        // does is `stark_chrome::selection`'s answer, and a `Some` is what has to be
+        // does is `stark_ui::selection`'s answer, and a `Some` is what has to be
         // put back on release.
         let restore = if tool.is_selection() {
             let action = self
                 .obs
                 .as_ref()
                 .map_or_else(Default::default, |o| o.shape_action);
-            match stark_chrome::selection::override_for(action, mods) {
+            match stark_ui::selection::override_for(action, mods) {
                 Some(next) => {
                     self.send(ViewCommand::SetShapeAction(next), cx);
                     Some(action)
@@ -551,7 +551,7 @@ impl Canvas {
             tool,
             sample: sample_at(view, ev.position, scale, now),
             // Both are canvas-space lengths the frontend alone can state, and both
-            // are mapped by `stark_chrome::input` rather than here — which is the
+            // are mapped by `stark_ui::input` rather than here — which is the
             // point of that module: this frontend had its own copy of the rope's
             // constant and its own quadratic for exactly one commit (§11.2).
             //
@@ -599,8 +599,8 @@ impl Canvas {
                 let at = canvas_at(view, ev.position, window.scale_factor());
                 // `ui` is what the validity clamps hold at — the last shape the
                 // family could express — and the *start* is inside the grab, so a
-                // long drag stays one map (`stark_chrome::transform`).
-                let next = grab.follow(ui, at, stark_chrome::transform::SNAP_PX / view.zoom);
+                // long drag stays one map (`stark_ui::transform`).
+                let next = grab.follow(ui, at, stark_ui::transform::SNAP_PX / view.zoom);
                 self.compose(next, cx);
             }
             Some(Held::Pick { region, grab }) => {
@@ -748,9 +748,9 @@ impl Canvas {
     }
 
     /// The rows the layers panel draws, worked out by the tree.
-    fn rows(&self) -> Vec<stark_chrome::layer_tree::Row> {
+    fn rows(&self) -> Vec<stark_ui::layer_tree::Row> {
         match &self.obs {
-            Some(o) => stark_chrome::layer_tree::rows(&o.layers, &self.collapsed),
+            Some(o) => stark_ui::layer_tree::rows(&o.layers, &self.collapsed),
             None => Vec::new(),
         }
     }
@@ -777,7 +777,7 @@ impl Canvas {
     fn unsaved(&self) -> bool {
         self.obs
             .as_ref()
-            .is_some_and(|o| stark_chrome::files::unsaved(o.edited, o.doc_revision, self.written))
+            .is_some_and(|o| stark_ui::files::unsaved(o.edited, o.doc_revision, self.written))
     }
 
     /// Write the document, asking for a path unless this window already has one.
@@ -810,7 +810,7 @@ impl Canvas {
         // per process is what every platform gives.
         let ask = cx.prompt_for_new_path(
             &self.directory(),
-            Some(&stark_chrome::files::default_name()),
+            Some(&stark_ui::files::default_name()),
         );
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
             let done = match ask.await {
@@ -1005,11 +1005,11 @@ impl Canvas {
     /// `grab` is what the press decided this gesture means and is applied *before*
     /// the position is read as a value — an ordinary drag is the pointer, a fine one
     /// is a fifth of its travel from where the marker stood
-    /// (`stark_chrome::color::Grab`).
+    /// (`stark_ui::color::Grab`).
     fn pick(
         &mut self,
         region: color::Region,
-        grab: stark_chrome::color::Grab,
+        grab: stark_ui::color::Grab,
         at: (f32, f32),
         cx: &mut Context<'_, Self>,
     ) {
@@ -1040,8 +1040,8 @@ impl Canvas {
         // What is *showing* is every panel this frontend has: folding is the only
         // thing it offers, so nothing is ever hidden outright, and the three entries
         // that are not panels belong to surfaces it has not got (§25).
-        stark_chrome::visibility::persist(
-            |what| matches!(what, stark_chrome::commands::VisibilityToggle::Panel(_)),
+        stark_ui::visibility::persist(
+            |what| matches!(what, stark_ui::commands::VisibilityToggle::Panel(_)),
             &folded,
         );
         self.repaint(cx);
@@ -1084,7 +1084,7 @@ impl Canvas {
         }
         let notches = match ev.delta {
             // A mouse reports whole notches; a trackpad reports pixels, which are
-            // brought to the same scale rather than measured (`stark_chrome::nav`).
+            // brought to the same scale rather than measured (`stark_ui::nav`).
             ScrollDelta::Lines(d) => d.y,
             ScrollDelta::Pixels(d) => f32::from(d.y) / nav::WHEEL_PIXELS_PER_NOTCH,
         };
@@ -1096,15 +1096,15 @@ impl Canvas {
 
     /// Enter transform mode around whatever is selected (§16.6).
     ///
-    /// Where the widget mounts and on which layer are `stark_chrome::transform`'s
+    /// Where the widget mounts and on which layer are `stark_ui::transform`'s
     /// answers, so the two frontends cannot come to disagree about what an unbounded
     /// selection means.
     fn begin_transform(&mut self, cx: &mut Context<'_, Self>) {
         let Some(o) = self.obs.as_ref() else { return };
-        let Some(entry) = stark_chrome::transform::entry(o) else {
+        let Some(entry) = stark_ui::transform::entry(o) else {
             return;
         };
-        let ui = stark_chrome::transform::mount(entry.layer, Family::Free, entry.hull, o.view.zoom);
+        let ui = stark_ui::transform::mount(entry.layer, Family::Free, entry.hull, o.view.zoom);
         self.hold(ui, cx);
     }
 
@@ -1163,7 +1163,7 @@ impl Canvas {
     /// family holds it exactly, and committing it first when it cannot.
     fn switch_family(&mut self, ui: TransformUi, to: Family, cx: &mut Context<'_, Self>) {
         let zoom = self.obs.as_ref().map_or(1.0, |o| o.view.zoom);
-        match stark_chrome::transform::switch(ui, to, zoom) {
+        match stark_ui::transform::switch(ui, to, zoom) {
             Switch::Nothing => {}
             Switch::Carried(next) => self.compose(next, cx),
             Switch::Fresh(next) => self.hold(next, cx),
@@ -1422,7 +1422,7 @@ impl Canvas {
         bytes: &[u8],
         cx: &mut Context<'_, Self>,
     ) {
-        let name = stark_chrome::library::display_name(
+        let name = stark_ui::library::display_name(
             &file_name,
             match which {
                 gallery::Which::Shapes => "Imported shape",
@@ -1480,7 +1480,7 @@ impl Canvas {
     }
 
     /// Put an entry in its library and on disk — **bytes before the row that names
-    /// them**, which is `stark_chrome::assets`' order and its reason.
+    /// them**, which is `stark_ui::assets`' order and its reason.
     ///
     /// A repeat import is free and silent: content addressing means the id is already
     /// there, so the entry is not added twice.
@@ -1556,7 +1556,7 @@ impl Canvas {
         // Space is nobody's chord — the registry says so and claims it before the
         // table — because a frontend arms the pan off the key itself. Asked through
         // the shared reading so this app and that rule cannot come apart.
-        if stark_chrome::keys::is_space(&stroke) {
+        if stark_ui::keys::is_space(&stroke) {
             self.space = true;
             return;
         }
@@ -1578,7 +1578,7 @@ impl Canvas {
     /// else. It exists because the modifier that makes a left drag a pan is a *key*,
     /// and a key that is never seen to rise stays down for good.
     fn key_up(&mut self, ev: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<'_, Self>) {
-        if stark_chrome::keys::is_space(&crate::keys::stroke(&ev.keystroke)) {
+        if stark_ui::keys::is_space(&crate::keys::stroke(&ev.keystroke)) {
             self.space = false;
         }
     }
@@ -1642,7 +1642,7 @@ impl Canvas {
     fn arm_tool(&mut self, tool: Tool, cx: &mut Context<'_, Self>) {
         let current = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
         self.send(
-            ViewCommand::SetTool(stark_chrome::selection::arm(current, tool)),
+            ViewCommand::SetTool(stark_ui::selection::arm(current, tool)),
             cx,
         );
     }
@@ -1873,8 +1873,8 @@ fn grab_at(ui: TransformUi, at: Vec2, view: ViewTransform) -> Grab {
     Grab::take(
         ui,
         at,
-        stark_chrome::transform::RIM_BAND_PX / view.zoom,
-        stark_chrome::transform::HANDLE_PX / view.zoom,
+        stark_ui::transform::RIM_BAND_PX / view.zoom,
+        stark_ui::transform::HANDLE_PX / view.zoom,
     )
 }
 

@@ -12,7 +12,7 @@
 //! `a_tap_can_never_have_painted` is what says so.
 
 use super::*;
-use stark_chrome::nav::{self, Mode};
+use stark_ui::nav::{self, Mode};
 
 /// How far a two-finger gesture has to twist before it turns the canvas at all,
 /// radians (about 6°).
@@ -202,7 +202,7 @@ impl Nav {
         if is_finger(e) {
             return self.finger_down(e);
         }
-        // Which press means what is `stark_chrome::nav`'s, so the two frontends
+        // Which press means what is `stark_ui::nav`'s, so the two frontends
         // cannot come to disagree about what a middle-drag is. What stays here is
         // reading a DOM event for the three facts it takes.
         let button = match e.trigger_button() {

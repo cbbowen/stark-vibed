@@ -19,12 +19,12 @@
 //! copy per browser would only be a second, staler one.
 //!
 //! **Adding a shape is a file plus a row in the catalog**
-//! ([`stark_chrome::assets::SHIPPED_SHAPES`]) plus its `asset!` literal below — it
+//! ([`stark_ui::assets::SHIPPED_SHAPES`]) plus its `asset!` literal below — it
 //! then appears in
 //! the brush editor's gallery and can be named by a default preset.
 
 use dioxus::prelude::*;
-use stark_chrome::assets;
+use stark_ui::assets;
 use stark_model::document::BrushShape;
 
 use crate::render::Renderer;
@@ -33,7 +33,7 @@ use crate::state::AppState;
 /// The bundled PNG behind a catalog row, by the row's path.
 ///
 /// **The one thing the catalog cannot carry.** Which shapes ship and what they are
-/// called are `stark_chrome::assets::SHIPPED_SHAPES`, because a name is what a preset
+/// called are `stark_ui::assets::SHIPPED_SHAPES`, because a name is what a preset
 /// asks for and a second catalog would be a second answer to what this build has. An
 /// `Asset` is not: `asset!` is a proc macro that demands a path literal inside this
 /// crate, so the files are spelled here — and `crate::builtin_ids` has the test that

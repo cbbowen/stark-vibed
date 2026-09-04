@@ -20,7 +20,7 @@ stark-model = { workspace = true }
 # The frontend's model, shared with the web app (§11.2): the record format and the
 # keys it keeps them under, and — as this frontend grows — the brush, the layer tree
 # and the rest of what a chrome is written in.
-stark-chrome = { path = "../stark-chrome" }
+stark-ui = { path = "../stark-ui" }
 # The records this frontend keeps are serde structs like every other (§25.6).
 serde = { workspace = true }
 
@@ -50,7 +50,7 @@ quanta = "0.12"
 # frontend's — any format it can display can become a brush shape — and this is the
 # native equivalent, cut to the formats worth the compile: the raster ones a person
 # is likely to have a texture or a scanned brush in. What the pixels then *mean* is
-# `stark_chrome::assets`, so this crate decodes and resamples and decides nothing.
+# `stark_ui::assets`, so this crate decodes and resamples and decides nothing.
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
@@ -67,7 +67,7 @@ image = { version = "0.25", default-features = false, features = [
 pollster = "0.4"
 
 [dev-dependencies]
-# Round-tripping a record in a test. The format is `stark-chrome`'s at run time,
+# Round-tripping a record in a test. The format is `stark-ui`'s at run time,
 # so this is here to *check* one rather than to write one.
 serde_json = "1"
 # Re-deriving a shipped asset's id in a test, to check that the bytes in the binary

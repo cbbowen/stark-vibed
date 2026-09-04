@@ -29,7 +29,7 @@ stark-model = { workspace = true }
 # two halves, the transform algebra, the layer tree's arithmetic, the list-drag
 # gesture and the asset libraries' thumbnails. Everything in it was this crate's
 # until there were two of us.
-stark-chrome = { path = "../stark-chrome" }
+stark-ui = { path = "../stark-ui" }
 stark-engine = { path = "../stark-engine", default-features = false }
 stark-net = { path = "../stark-net", default-features = false }
 dioxus = { version = "0.7.10", features = ["web", "asset"] }

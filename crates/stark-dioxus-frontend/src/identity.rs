@@ -1,5 +1,5 @@
 //! This client's identity as the *network* wants it: the bytes
-//! [`stark_chrome::identity`] keeps, turned into the `SecretKey` an
+//! [`stark_ui::identity`] keeps, turned into the `SecretKey` an
 //! [`ActorId`](stark_model::document::ActorId) derives from.
 //!
 //! Two lines and a type, because that is the whole of what does not travel. Which
@@ -11,7 +11,7 @@
 //!
 //! The minting is here for the same reason. `SecretKey::generate` is where the CSPRNG
 //! choice belongs, so the shared crate asks for a closure rather than choosing one
-//! (`stark_chrome::identity::get`).
+//! (`stark_ui::identity::get`).
 
 use stark_net::SecretKey;
 
@@ -25,7 +25,7 @@ pub struct ClientIdentity {
 
 /// This client's identity, minting and storing one on first run.
 pub fn get() -> ClientIdentity {
-    let stored = stark_chrome::identity::get(|| SecretKey::generate().to_bytes());
+    let stored = stark_ui::identity::get(|| SecretKey::generate().to_bytes());
     ClientIdentity {
         secret: SecretKey::from_bytes(&stored.secret),
         boot: stored.boot,

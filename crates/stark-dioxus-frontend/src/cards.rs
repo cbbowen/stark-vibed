@@ -1,13 +1,13 @@
 //! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6).
 //!
 //! What the picture *is* — the canonical field an id names, reduced to a card's size,
-//! and whether it is coverage or height — is `stark_chrome::assets::card`. All that is
+//! and whether it is coverage or height — is `stark_ui::assets::card`. All that is
 //! left here is the encoding, and it is a DOM idiom: a `background-image` takes a URL,
 //! so the texels become a PNG and the PNG becomes base64. The native frontend hands
 //! the same numbers to a texture instead, which is exactly why the numbers and not the
 //! encoding are what moved down.
 
-use stark_chrome::assets::{Card, Ink};
+use stark_ui::assets::{Card, Ink};
 
 /// A `data:` URL for `card`, or `None` if the encode failed.
 ///

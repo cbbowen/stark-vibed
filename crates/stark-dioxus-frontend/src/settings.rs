@@ -39,7 +39,7 @@ use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
-use stark_chrome::prefs::ChromeHiding;
+use stark_ui::prefs::ChromeHiding;
 use stark_engine::command::ViewCommand;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
@@ -202,7 +202,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 button {
                     class: "btn btn-primary",
                     onclick: move |_| on_close.call(()),
-                    {icon(stark_chrome::icons::DONE)}
+                    {icon(stark_ui::icons::DONE)}
                     "Done"
                 }
             }

@@ -23,7 +23,7 @@
 //! is the one tool, [`render`] is the surface the engine paints into, and [`canvas`]
 //! is the view that turns mouse events into a gesture. Two are what this frontend
 //! *keeps*: [`store`] is where a record goes on this platform — the native half of
-//! `stark_chrome::storage` — and [`window`] is the one record that is nobody else's.
+//! `stark_ui::storage` — and [`window`] is the one record that is nobody else's.
 //!
 //! There is still no chrome, no document state and no panels. The plan from here is
 //! §11.2.
@@ -89,7 +89,7 @@ fn main() {
     // treats as "nothing stored" rather than as a failure, so there is nothing to
     // handle here beyond declining to install.
     if let Some(files) = store::Files::resolve() {
-        stark_chrome::storage::install(files);
+        stark_ui::storage::install(files);
     }
 
     Application::new(&device_descriptor())

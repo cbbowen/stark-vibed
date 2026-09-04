@@ -1,6 +1,6 @@
 //! The brush in hand: which tool, at what size, flow and colour (§6.2, §18.1.8).
 //!
-//! Both halves, as `stark-chrome` splits them — the **durable**
+//! Both halves, as `stark-ui` splits them — the **durable**
 //! [`BrushConfig`] (what the tool *is*) beside the **transient** [`Transient`] (the
 //! size, flow and colour the hand is working it at). The split is not this
 //! frontend's invention and not the web one's either: it is what a preset stores and
@@ -13,8 +13,8 @@
 //! ids are known before anything is imported and the presets open resolved. The web
 //! frontend has to wait for its fetches and seeds them afterwards.
 
-use stark_chrome::brush_config::{BrushConfig, Transient};
-use stark_chrome::presets::{BuiltinShapes, PresetEntry, shipped};
+use stark_ui::brush_config::{BrushConfig, Transient};
+use stark_ui::presets::{BuiltinShapes, PresetEntry, shipped};
 use stark_engine::command::ViewCommand;
 
 /// The brush the app opens on and the library it can be swapped for.

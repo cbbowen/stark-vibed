@@ -16,8 +16,8 @@
 
 use std::collections::HashSet;
 
-use stark_chrome::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::panels::PanelId;
+use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::panels::PanelId;
 use stark_model::document::BrushShape;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
@@ -64,7 +64,7 @@ impl Knob {
 
     /// The knob's range. Size and flow are the app's own bounds — the ones a tuning
     /// drag clamps against too, which is why they live beside the brush rather than
-    /// on a panel (`stark_chrome::brush_config`).
+    /// on a panel (`stark_ui::brush_config`).
     fn range(self) -> (f32, f32) {
         match self {
             Knob::Size => (MIN_RADIUS, MAX_RADIUS),
@@ -335,7 +335,7 @@ pub fn brush_panel(
 /// Keyed by [`PanelId`], which is the vocabulary both frontends name a panel in
 /// (§11) — so what this client left folded is stored under the same word the web app
 /// stores its own under, and a variant renamed costs the row rather than mis-matching
-/// it (`stark_chrome::visibility`).
+/// it (`stark_ui::visibility`).
 ///
 /// **Folded rather than hidden.** A hidden panel is one a person has to remember
 /// exists; a folded one leaves its title behind, which is the whole difference in a
@@ -383,7 +383,7 @@ fn title(regions: &Regions, folded: &HashSet<PanelId>, id: PanelId) -> impl Into
 // this hand-derived every offset from the Tailwind-shaped spacing the tree asks for —
 // and was wrong: a press where the arithmetic said "Airbrush" selected Hard Eraser,
 // because the guessed row pitch was 26 px and Taffy had laid out 39. Two descriptions
-// of one layout is exactly the drift `stark-chrome` exists to stop, one scale down,
+// of one layout is exactly the drift `stark-ui` exists to stop, one scale down,
 // and the answer is the same: have one of them ask the other.
 //
 // So each control carries a zero-cost `canvas` element whose *prepaint* writes its

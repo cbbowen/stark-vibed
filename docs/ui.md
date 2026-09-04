@@ -755,7 +755,7 @@ panels rather than between two frontends.
 So the test for "does this belong below" has a cheap proxy: **code with tests has
 already moved.**
 
-#### The crate: `stark-chrome`
+#### The crate: `stark-ui`
 
 `frontend → chrome → engine → model`, and it must compile to wasm, because the web
 app is one of its two consumers. Its invariant is `stark-net`'s, one level up:
@@ -848,7 +848,7 @@ native ones:
 Each names what lands, what moves down with it, and one thing you can then *do* —
 the exit criterion is an act, not a diff.
 
-- **N0 — the crate, empty of opinion.** Create `stark-chrome`; move the five pure
+- **N0 — the crate, empty of opinion.** Create `stark-ui`; move the five pure
   modules into it. **No `pub use` shims**: a shim would give every moved type two
   public paths, which is the one thing CLAUDE.md's module rule forbids, so the call
   sites move with the code. *Exit:* the web app is untouched and its tests run from
@@ -1064,7 +1064,7 @@ the exit criterion is an act, not a diff.
 
   The two libraries were **one object written twice** in the web frontend —
   `shapes.rs` and `substrates.rs` were near line-for-line the same file — so what
-  came down is a `stark_chrome::assets` generic in the single thing that differs:
+  came down is a `stark_ui::assets` generic in the single thing that differs:
   what the id is a *reading of*. `Kind` carries it, `Shapes` and `Substrates`
   instantiate it, and the records, the two-store load, the persist and the
   write-ordering are written once. A row is still `{name, id}` on disk, so every
@@ -1084,7 +1084,7 @@ the exit criterion is an act, not a diff.
   **The id table moved down with the catalog.** Which assets ship, what they are
   called and what each is described as were two catalogs the moment there were two
   frontends; they are one now, and so is the build script that hashes them —
-  `stark-chrome/build.rs`, reading the frontend's `assets/` directory. That
+  `stark-ui/build.rs`, reading the frontend's `assets/` directory. That
   directory is still a crate boundary pointing the wrong way (`asset!` refuses a
   path outside its own crate), but the coupling is contained in one more place
   rather than one per frontend, which is the containment `stark-testdata` already
@@ -1133,7 +1133,7 @@ the exit criterion is an act, not a diff.
 
   **Color was the gap.** N2 deferred it — "a colour well is its own design rather
   than a fifth slider" — and the native app could paint in one colour until now.
-  It is also the best Tier B move left in the tree: `stark_chrome::color` is the
+  It is also the best Tier B move left in the tree: `stark_ui::color` is the
   gamut's rim by bisection, the fit that makes the wheel a wheel, the two pictures
   and what a fine drag spends, and **every constant in it was measured** — a
   bisection bracket, a `GAMUT_BRIDGE` priced at 4/255 in one channel, a rim
@@ -1213,7 +1213,7 @@ the exit criterion is an act, not a diff.
 
   **And navigation** — the wheel zooms about the cursor, the middle button pans,
   space-drag pans and space+accelerator scrubs the zoom. §11.2 named these thresholds
-  as a Tier B move and they went down as `stark_chrome::nav`: which press is a pan and
+  as a Tier B move and they went down as `stark_ui::nav`: which press is a pan and
   which a zoom, how far a scrub travels per doubling, and what a notch is worth. The
   last of those had been a bare `1.15` in the middle of the web's wheel handler; it is
   `WHEEL_STEP` now, and a notch means the same thing in both apps.

@@ -10,7 +10,7 @@
 //! the window is where it was.
 
 use serde::{Deserialize, Serialize};
-use stark_chrome::storage::{self, Record, Store};
+use stark_ui::storage::{self, Record, Store};
 use wgpui::{App, Bounds, WindowBounds, px, size};
 
 /// The window's place, in logical pixels.

@@ -48,7 +48,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens, the rays drawn from the vanishing points through the cursor |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
 | [glossary.md](docs/glossary.md) | — | One name per thing, and the file that owns it: the canvas **substrate** and what it is not (backdrop, `Background`, backing, surface, ground), the input **tolerance**, the stamp **extent** vs the CRDT `Footprint`. Read it before coining a term |
-| [ui.md](docs/ui.md) | §11, §25 | The two frontends: the Dioxus web app — the one dispatch seam, the panels and the surface they float over — and the native wgpui one beside it (§11.1), which is what makes "frontend-agnostic" a tested claim, then the staged plan to bring it to parity and the `stark-chrome` crate that keeps the two from growing a second copy of every rule (§11.2). Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
+| [ui.md](docs/ui.md) | §11, §25 | The two frontends: the Dioxus web app — the one dispatch seam, the panels and the surface they float over — and the native wgpui one beside it (§11.1), which is what makes "frontend-agnostic" a tested claim, then the staged plan to bring it to parity and the `stark-ui` crate that keeps the two from growing a second copy of every rule (§11.2). Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
@@ -81,7 +81,7 @@ crates/
     build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
-  stark-chrome/    the **frontend's model** (§11.2): what a chrome is written in, below
+  stark-ui/    the **frontend's model** (§11.2): what a chrome is written in, below
                    any toolkit. The brush's durable/transient halves, the whole of a
                    transform gesture — the algebra, what a press takes hold of and what
                    a drag makes of it, what switching families costs — what a shape
@@ -114,7 +114,7 @@ crates/
                    the engine renders into. **The second consumer** — the thing that
                    turns "frontend-agnostic" from a claim into a tested one. On its
                    way to parity a stage at a time (§11.2), and every stage's real
-                   product is what it pushed down into `stark-chrome`. It does NOT
+                   product is what it pushed down into `stark-ui`. It does NOT
                    own the device, which is what it found first — see `GpuContext`
 vendor/            third-party, EXCLUDED from the workspace
 ```
@@ -130,7 +130,7 @@ lives in the model; if it holds a tile it is a cache and lives in the engine.
 The one crack in that: large image assets live in
 `stark-dioxus-frontend/assets/` because Dioxus's `asset!` rejects paths outside
 its own crate. Three things reach in: the engine's *tests* through
-`stark_testdata::assets`, `stark-chrome`'s build script (which hashes them into the
+`stark_testdata::assets`, `stark-ui`'s build script (which hashes them into the
 shipped-id table both frontends read), and `stark-wgpui-frontend`'s
 `include_bytes!`. Those are the modules that break if the frontend reorganizes,
 and they are the only ones.

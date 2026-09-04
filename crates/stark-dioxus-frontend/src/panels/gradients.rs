@@ -28,7 +28,7 @@ use crate::layout::chrome_dimmed;
 use crate::platform::{capture_pointer, select_all};
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 use stark_model::geom::Vec2;
 
 /// How far the pointer must move, in **screen** px, before the trace keeps
@@ -75,7 +75,7 @@ pub fn GradientWell(strip: Option<String>, title: &'static str) -> Element {
                     class: "bar-gradient-strip empty",
                     title: "{title}",
                     onclick: flip,
-                    {icon(stark_chrome::icons::GRADIENT)}
+                    {icon(stark_ui::icons::GRADIENT)}
                 }
             }
             if open {
@@ -131,7 +131,7 @@ fn GradientPopout() -> Element {
                         }
                         gradients::set_armed(state, arm);
                     },
-                    {icon(stark_chrome::icons::TRACE_GRADIENT)}
+                    {icon(stark_ui::icons::TRACE_GRADIENT)}
                     {label(if busy { "Sampling\u{2026}" } else if armed { "Cancel" } else { "Trace" })}
                 }
             }
@@ -255,7 +255,7 @@ fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
                     e.stop_propagation();
                     gradients::remove(state, &remove_name);
                 },
-                {icon(stark_chrome::icons::REMOVE)}
+                {icon(stark_ui::icons::REMOVE)}
             }
         }
     }
@@ -279,7 +279,7 @@ pub fn TraceBar() -> Element {
                 class: "selection-bar trace-bar mode-bar chrome",
                 class: if chrome_dimmed(state) { "dimmed" },
                 span { class: "bar-label",
-                    {icon(stark_chrome::icons::GRADIENT)}
+                    {icon(stark_ui::icons::GRADIENT)}
                     {label("Trace")}
                 }
                 span { class: "bar-sep" }

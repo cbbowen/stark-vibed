@@ -28,8 +28,8 @@ use crate::panels::select::current_tool;
 use crate::platform::capture_pointer;
 use crate::render::CANVAS_ID;
 use crate::state::{AppState, resize, use_obs};
-use stark_chrome::commands::Command;
-use stark_chrome::drags::DragAction;
+use stark_ui::commands::Command;
+use stark_ui::drags::DragAction;
 
 /// The full-window painting surface (a WebGPU canvas the engine draws into).
 #[component]
@@ -95,7 +95,7 @@ pub fn Canvas() -> Element {
     let (paintable, tool) = look().unwrap_or((false, stark_engine::command::Tool::Brush));
     // The pick chord (Alt by default) arms the eyedropper over the brush, and the
     // cursor says so before it is used — the only thing that makes a modifier
-    // binding discoverable. Asked of the drag table (`stark_chrome::drags::armed`), the same
+    // binding discoverable. Asked of the drag table (`stark_ui::drags::armed`), the same
     // table the press will ask, so the promise moves with the binding. Not over a
     // selection tool, where alt already means "subtract from the selection"
     // (§6.8), so the cursor promises the pick exactly where a press would
@@ -108,7 +108,7 @@ pub fn Canvas() -> Element {
     // pick does — Shift is the union marquee there (§6.8) — which is the gate the
     // action itself declares, restated here because `armed` answers the table
     // about a chord and this is a question about the tool in hand.
-    let armed = stark_chrome::drags::armed(&state.drags.read(), (state.held_mods)());
+    let armed = stark_ui::drags::armed(&state.drags.read(), (state.held_mods)());
     let over_paint = !(state.space_down)() && !tool.is_selection();
     let sampling = armed == Some(DragAction::PickColor) && over_paint;
     let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;

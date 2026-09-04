@@ -114,11 +114,11 @@ pub fn LightingPanel() -> Element {
         }
     });
     rsx! {
-        Slider { label: "Impasto", glyph: stark_chrome::icons::IMPASTO, min: 0.0, max: 1.0, value: p.height_strength,
+        Slider { label: "Impasto", glyph: stark_ui::icons::IMPASTO, min: 0.0, max: 1.0, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: "Texture", glyph: stark_chrome::icons::TEXTURE, min: 0.0, max: 1.0, value: p.substrate_strength,
+        Slider { label: "Texture", glyph: stark_ui::icons::TEXTURE, min: 0.0, max: 1.0, value: p.substrate_strength,
             oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
-        Slider { label: "Gloss", glyph: stark_chrome::icons::GLOSS, min: 0.0, max: 0.35, value: p.specular,
+        Slider { label: "Gloss", glyph: stark_ui::icons::GLOSS, min: 0.0, max: 0.35, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
         // The canvas colour, and the surface it is laid on: the two choices in this
         // panel that are made by *looking*, and so the two that want more room than a
@@ -136,7 +136,7 @@ pub fn LightingPanel() -> Element {
         // and it is what the pop-out is placed against — see `PopoutId::in_stack`
         // for why the row is the right box to measure.
         div { class: "slider-row marked", "data-popout": "substrate-color",
-            div { class: "slider-label", {icon(stark_chrome::icons::CANVAS)} {label("Background")} }
+            div { class: "slider-label", {icon(stark_ui::icons::CANVAS)} {label("Background")} }
             button {
                 class: swatch_class,
                 style: "{swatch}",
@@ -144,7 +144,7 @@ pub fn LightingPanel() -> Element {
             }
         }
         div { class: "slider-row marked", "data-popout": "substrate-gallery",
-            div { class: "slider-label", {icon(stark_chrome::icons::SURFACE)} {label("Surface")} }
+            div { class: "slider-label", {icon(stark_ui::icons::SURFACE)} {label("Surface")} }
             crate::substrates::SubstrateWell {}
         }
         // How large the substrate is laid (§6.4). A raw range rather than `Slider`,
@@ -159,7 +159,7 @@ pub fn LightingPanel() -> Element {
         // the mark and the figure — which is the pair that was worth keeping anyway.
         div { class: "slider-row marked",
             div { class: "slider-label",
-                {icon(stark_chrome::icons::SUBSTRATE_SCALE)}
+                {icon(stark_ui::icons::SUBSTRATE_SCALE)}
                 {label("Scale")}
                 "{scale.percent()}%"
             }
@@ -192,7 +192,7 @@ pub fn LightingPanel() -> Element {
             }
         }
         div { class: "slider-row marked",
-            div { class: "slider-label", {icon(stark_chrome::icons::LIGHT)} {label("Light")} }
+            div { class: "slider-label", {icon(stark_ui::icons::LIGHT)} {label("Light")} }
             select {
                 class: "select",
                 onchange: move |e| {

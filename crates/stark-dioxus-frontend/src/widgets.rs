@@ -2,11 +2,11 @@
 
 use crate::commands;
 use dioxus::prelude::*;
-use stark_chrome::icons::Icon;
+use stark_ui::icons::Icon;
 
 use crate::icons::{icon, label as label_span};
 use crate::state::{AppState, use_obs_opt};
-use stark_chrome::commands::Command;
+use stark_ui::commands::Command;
 
 /// A button that runs a [`Command`], wearing the command's own mark, word and
 /// tooltip (`crate::commands`) — so a control and the act it reaches cannot
@@ -88,7 +88,7 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
 /// marked yet, **not** because a slider is expected to go without one. A control's mark
 /// is the half of it that survives its label, so anything reachable wants one; a `None`
 /// here is a row that would be blank if the words were hidden, and is a to-do rather
-/// than a decision (see [`stark_chrome::icons::SIZE`]).
+/// than a decision (see [`stark_ui::icons::SIZE`]).
 ///
 /// Which is exactly why the word is wrapped as hideable ([`crate::icons::label`]) only
 /// when there *is* a mark to fall back on. An unmarked slider keeps its word in minimal

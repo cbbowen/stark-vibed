@@ -19,9 +19,9 @@ use crate::layout::chrome_dimmed;
 use crate::panels::select::current_tool;
 use crate::state::AppState;
 use crate::widgets::CommandButton;
-use stark_chrome::commands::Command;
-use stark_chrome::commands::PickScope;
-use stark_chrome::drags::DragAction;
+use stark_ui::commands::Command;
+use stark_ui::commands::PickScope;
+use stark_ui::drags::DragAction;
 
 /// The eyedropper's sampled patch, as the prior art names it: a point sample, or the
 /// mean of an N×N square around it. A radius is what the engine takes
@@ -42,7 +42,7 @@ pub fn PickBar() -> Element {
     // mid-stroke must not pop a bar up over the painting — and `dragging` covers
     // the pick itself, which deliberately leaves `canvas_active` alone so the
     // Color panel stays legible while sampling.
-    let armed = stark_chrome::drags::armed(&state.drags.read(), (state.held_mods)())
+    let armed = stark_ui::drags::armed(&state.drags.read(), (state.held_mods)())
         == Some(DragAction::PickColor)
         && !(state.pick.dragging)()
         && !(state.canvas_active)()
@@ -66,7 +66,7 @@ pub fn PickBar() -> Element {
             // of the eyedropper appearing beside the cursor is the shortest version of
             // that argument the bar can make.
             span { class: "bar-label",
-                {icon(stark_chrome::icons::EYEDROPPER)}
+                {icon(stark_ui::icons::EYEDROPPER)}
                 {label("Eyedropper")}
             }
 
@@ -103,7 +103,7 @@ pub fn PickBar() -> Element {
                         the whole document over the canvas color, so bare canvas \
                         and thin paint answer with what the eye sees",
                 onclick: move |_| group_only.set(!grouped),
-                {icon(stark_chrome::icons::GROUP_ONLY)}
+                {icon(stark_ui::icons::GROUP_ONLY)}
                 {label("Group")}
             }
 

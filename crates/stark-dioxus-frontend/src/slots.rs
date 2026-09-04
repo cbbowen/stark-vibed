@@ -88,9 +88,9 @@ use crate::icons::icon;
 use crate::layout::chrome_dimmed;
 use crate::presets;
 use crate::state::AppState;
-use stark_chrome::brush_config::{BrushConfig, Transient};
-use stark_chrome::presets::PresetEntry;
-use stark_chrome::storage::{self, Store};
+use stark_ui::brush_config::{BrushConfig, Transient};
+use stark_ui::presets::PresetEntry;
+use stark_ui::storage::{self, Store};
 
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;
@@ -149,7 +149,7 @@ pub fn empty_rack() -> Rack {
 /// nothing; `presets::remove` empties such slots outright ([`unbind`]) so the
 /// case stays a guard and not a state.
 pub fn resolve(library: &[PresetEntry], slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
-    stark_chrome::presets::find(library, &slot.preset).map(|e| (e.brush, slot.transient))
+    stark_ui::presets::find(library, &slot.preset).map(|e| (e.brush, slot.transient))
 }
 
 /// [`resolve`] against the app's library, for the callers that have only the
@@ -549,9 +549,9 @@ pub fn release_all(state: AppState) {
 /// aside) is separately lit, which is a different question and only looks like
 /// the same one while a key is down: pinned and idle nothing is held, and the lit
 /// row is then the only thing saying which slot is in hand. Lit on the stricter
-/// of the library's two tests (`stark_chrome::presets::same_brush`), the size and flow counted
+/// of the library's two tests (`stark_ui::presets::same_brush`), the size and flow counted
 /// — a slot *is* a size and a flow, where the preset rows light for the tool at
-/// any size (`stark_chrome::presets::same_tool`). Reading the live brush costs nothing per
+/// any size (`stark_ui::presets::same_tool`). Reading the live brush costs nothing per
 /// stroke — a sample dispatches quietly and never refreshes the observable
 /// (`state::dispatch_sample`), so this re-renders when the brush *changes*, not
 /// while one is painting.
@@ -711,7 +711,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                             // own. Held wins in the stylesheet: it is what the user is
                             // doing right now rather than a state they are in.
                             class: if brush.is_none() { "empty" }
-                                   else if brush.is_some_and(|b| stark_chrome::presets::same_brush(&(live, live_tune), &b)) { "active" },
+                                   else if brush.is_some_and(|b| stark_ui::presets::same_brush(&(live, live_tune), &b)) { "active" },
                             class: if Some(slot) == held { "held" },
                             style: "{bg}",
                             title,
@@ -737,7 +737,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                             },
                             span { class: "slot-row-digit",
                                 if slot == ERASER {
-                                    {icon(stark_chrome::icons::ERASER)}
+                                    {icon(stark_ui::icons::ERASER)}
                                 } else {
                                     "{slot}"
                                 }
@@ -750,7 +750,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                 // written yet has nothing there for it to take.
                                 //
                                 // The trash every other roster in the app wears
-                                // (`stark_chrome::icons::REMOVE`) — presets, layers, guides,
+                                // (`stark_ui::icons::REMOVE`) — presets, layers, guides,
                                 // shapes, gradients — because emptying a row of
                                 // this one is the same act, revealed on the same
                                 // hover and answering it in the same red ink.
@@ -800,7 +800,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                         pressed.set(None);
                                         clear(state, slot);
                                     },
-                                    {icon(stark_chrome::icons::REMOVE)}
+                                    {icon(stark_ui::icons::REMOVE)}
                                 }
                             }
                         }
@@ -979,7 +979,7 @@ pub fn seed_defaults(state: AppState) {
 
 // --- persistence ----------------------------------------------------------
 //
-// One `stark_chrome::storage` entry per **assigned** slot. The format and the
+// One `stark_ui::storage` entry per **assigned** slot. The format and the
 // skip-a-damaged-entry rule live there, so what is this module's own is that an entry
 // names its digit rather than sitting at a position: a rack with holes stores as the
 // few entries it has, and one whose digit is out of range is dropped instead of
@@ -1222,7 +1222,7 @@ mod tests {
         let (tool, tune) = resolve(&library, &slot).expect("the library has the name");
         assert_eq!(tune, self::tune(64.0, 0.2), "the slot's own tune");
         assert!(
-            stark_chrome::presets::same_tool(&tool, &pen),
+            stark_ui::presets::same_tool(&tool, &pen),
             "…on the preset's tool, feel included"
         );
         let gone = QuickBrush {

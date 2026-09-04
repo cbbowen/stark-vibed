@@ -36,7 +36,7 @@
 
 use std::path::{Path, PathBuf};
 
-use stark_chrome::files::DOC_EXT;
+use stark_ui::files::DOC_EXT;
 use stark_engine::{Background, ExportScale, Rendered};
 
 use crate::render::Renderer;
@@ -63,12 +63,12 @@ pub enum Done {
 /// The document as bytes, **lean**: what any build can resolve out of its own
 /// catalog is named rather than carried (§8's version 6).
 ///
-/// The list is `stark_chrome::assets::resolvable`, which is the same list the web
+/// The list is `stark_ui::assets::resolvable`, which is the same list the web
 /// frontend passes — so the two write files of the same shape, and a document on the
 /// linen substrate is a few kilobytes on both rather than fourteen megabytes on one.
 pub fn save_bytes(renderer: &Renderer) -> Result<Vec<u8>, String> {
     renderer
-        .save_bytes_resolvable(&stark_chrome::assets::resolvable())
+        .save_bytes_resolvable(&stark_ui::assets::resolvable())
         .map_err(|e| format!("could not serialize the document: {e}"))
 }
 

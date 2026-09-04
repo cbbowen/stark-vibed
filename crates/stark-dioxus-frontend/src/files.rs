@@ -69,7 +69,7 @@ pub fn unsaved(state: AppState) -> bool {
         .obs
         .peek()
         .as_ref()
-        .is_some_and(|o| stark_chrome::files::unsaved(o.edited, o.doc_revision, written))
+        .is_some_and(|o| stark_ui::files::unsaved(o.edited, o.doc_revision, written))
 }
 
 /// The committed revision the chrome is being shown — what a file written now would
@@ -101,7 +101,7 @@ fn mark_written(state: AppState, revision: u64) {
 /// own files (`crate::builtin_ids`), and the catalog is append-only so that keeps
 /// working.
 pub fn save_document(state: AppState) {
-    let resolvable = stark_chrome::assets::resolvable();
+    let resolvable = stark_ui::assets::resolvable();
     let bytes = state
         .renderer
         .read()
@@ -114,7 +114,7 @@ pub fn save_document(state: AppState) {
         Some(Ok(bytes)) => {
             match download_bytes(
                 &bytes,
-                &stark_chrome::files::default_name(),
+                &stark_ui::files::default_name(),
                 "application/octet-stream",
             ) {
                 Ok(()) => {
@@ -140,7 +140,7 @@ pub fn open_document(state: AppState) {
     // so the signals are copied out of the capture on each call rather than
     // mutated in place. `Signal` is `Copy`, which is what makes that free.
     pick_file(
-        &format!(".{}", stark_chrome::files::DOC_EXT),
+        &format!(".{}", stark_ui::files::DOC_EXT),
         move |_name, bytes| open_bytes(state, bytes),
     );
 }
@@ -408,7 +408,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
                     },
                     // The same mark the menu entry that opened this dialog wears,
                     // and it stays put while the word swaps to "Exporting…".
-                    {icon(stark_chrome::icons::EXPORT)}
+                    {icon(stark_ui::icons::EXPORT)}
                     if busy() { "Exporting\u{2026}" } else { "Export" }
                 }
             }

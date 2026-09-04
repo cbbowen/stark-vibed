@@ -1,7 +1,7 @@
 //! What a command *does*, and what it says about itself that only this frontend
 //! knows (§25).
 //!
-//! The registry itself is `stark_chrome::commands` — the variants, the chords, the
+//! The registry itself is `stark_ui::commands` — the variants, the chords, the
 //! words, the tables. What is here is the half that could not travel:
 //!
 //! - **`run`** dispatches, opens dialogs, writes signals and asks gates that are the
@@ -22,12 +22,12 @@ use stark_model::document::SelectionOp;
 use crate::input::accel;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
-use stark_chrome::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_chrome::commands::{Bindings, Chord, Command, StoredBinding};
-use stark_chrome::keys::{Keystroke, Mods, Role};
+use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::commands::{Bindings, Chord, Command, StoredBinding};
+use stark_ui::keys::{Keystroke, Mods, Role};
 
 pub fn load(state: AppState) {
-    let Some(stored) = stark_chrome::storage::load_list::<StoredBinding>() else {
+    let Some(stored) = stark_ui::storage::load_list::<StoredBinding>() else {
         return;
     };
     let overrides = stored
@@ -68,10 +68,10 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
             chord: chord.clone(),
         })
         .collect();
-    stark_chrome::storage::save_list(&stored);
+    stark_ui::storage::save_list(&stored);
 }
 
-/// This browser's keydown, as the shared tables read it (`stark_chrome::keys`).
+/// This browser's keydown, as the shared tables read it (`stark_ui::keys`).
 ///
 /// **The one translation this frontend owes the registry**, and the reason the
 /// registry could travel at all: `accel` is Ctrl here and Command on a Mac, `typed`
@@ -358,7 +358,7 @@ fn step_radius(state: AppState, factor: f32) {
 /// an armed tool then makes is a different act with a gate of its own, which
 /// the canvas has always asked (`crate::input`).
 fn arm_tool(state: AppState, tool: Tool) {
-    let next = stark_chrome::selection::arm(crate::panels::select::current_tool(state), tool);
+    let next = stark_ui::selection::arm(crate::panels::select::current_tool(state), tool);
     // Which of the three was last in hand, kept where the session cannot keep it:
     // a selecting gesture disarms to `Tool::Brush` (§6.8), so the engine's own
     // `tool` has forgotten which marquee drew by the time anything asks. Recorded

@@ -7,7 +7,7 @@
 //! hold is a reason for the conversion to differ between frontends — so this is where
 //! the conversion lives, and the frontend supplies only what it alone can know.
 //!
-//! **This module is the first thing `stark-chrome` was built to prevent.** The native
+//! **This module is the first thing `stark-ui` was built to prevent.** The native
 //! frontend was one commit old and already carried its own `ROPE_MAX_SCREEN_PX = 160`
 //! and its own copy of the quadratic map, because the web one's was unreachable — so
 //! the same brush at the same smoothing was towed by two constants nothing held

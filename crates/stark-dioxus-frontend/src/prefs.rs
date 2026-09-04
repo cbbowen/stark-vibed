@@ -15,7 +15,7 @@
 //! lines rather than a new key and a new pair of read/write functions:
 //!
 //! 1. a field on [`Prefs`], with the default it should have — both in
-//!    `stark_chrome::prefs`, which is where the record is;
+//!    `stark_ui::prefs`, which is where the record is;
 //! 2. a line in [`capture`], reading it back out of the live app;
 //! 3. a line in [`apply_view`] or [`apply_engine`] — whichever owns it — pushing
 //!    it back in at startup.
@@ -30,7 +30,7 @@
 //! on the struct is what makes that work: a preference added later reads as its
 //! default out of every value stored before it existed, rather than the whole record
 //! failing to parse and silently resetting everything the user had set. The format's
-//! side of that bargain — and the reason it is JSON — is `stark_chrome::storage`'s, and this
+//! side of that bargain — and the reason it is JSON — is `stark_ui::storage`'s, and this
 //! record is the one it was first argued for (§25.6).
 //!
 //! It matters more here than in the libraries, because this is the one record where
@@ -38,7 +38,7 @@
 //! one preset, while a `Prefs` nobody can read costs every setting at once. Which is
 //! still the right answer — a half-applied read is worse than the defaults — but it is
 //! why an enum stored in this struct must be lenient about a name it does not know
-//! (`stark_chrome::prefs::ChromeHiding`) rather than refusing and taking its neighbours down.
+//! (`stark_ui::prefs::ChromeHiding`) rather than refusing and taking its neighbours down.
 //!
 //! # Why loading happens twice
 //!
@@ -54,11 +54,11 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
-use stark_chrome::prefs::Prefs;
-use stark_chrome::storage;
+use stark_ui::prefs::Prefs;
+use stark_ui::storage;
 use stark_engine::command::ViewCommand;
 
-// The three below were an `impl Prefs` until the record moved to `stark_chrome`
+// The three below were an `impl Prefs` until the record moved to `stark_ui`
 // (§11.2, N1). The orphan rule then refused them, which is the boundary reporting
 // itself (CLAUDE.md): each reads or writes *this frontend's signals*, so none of
 // them was ever the record's business — `Prefs` is a serde struct and these are the

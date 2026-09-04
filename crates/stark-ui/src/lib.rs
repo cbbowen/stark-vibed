@@ -120,7 +120,7 @@ mod tests {
         }
         assert!(
             found.is_empty(),
-            "a toolkit type reached stark-chrome, which is what it exists not to name (§11.2):\n{}",
+            "a toolkit type reached stark-ui, which is what it exists not to name (§11.2):\n{}",
             found.join("\n")
         );
     }

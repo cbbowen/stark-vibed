@@ -30,7 +30,7 @@ use stark_model::geom::Vec2;
 use stark_model::gradient::Gradient;
 
 use crate::state::{AppState, root_signal};
-use stark_chrome::storage::{self, Store};
+use stark_ui::storage::{self, Store};
 
 /// How wide a patch each trace sample averages, in canvas px (radius 2 = 5×5).
 ///
@@ -343,7 +343,7 @@ pub fn css_strip(g: &Gradient) -> String {
 //
 // [`GradientEntry`] is the stored entry, so there is nothing here but the two calls:
 // the format and the rule it exists for — one damaged entry is skipped rather than
-// poisoning the library — are stated in `stark_chrome::storage`, once, for all four
+// poisoning the library — are stated in `stark_ui::storage`, once, for all four
 // libraries. What this library leans on it for is `Gradient`'s own deserialization
 // gate: a tampered entry is refused there and dropped here, rather than becoming an
 // unsampleable ramp.

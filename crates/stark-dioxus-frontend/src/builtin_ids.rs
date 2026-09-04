@@ -1,6 +1,6 @@
 //! What the app already has, by content id (§6.6, §6.4, §12.4).
 //!
-//! The table of ids is `stark_chrome::assets` — hashed at build time, in the crate
+//! The table of ids is `stark_ui::assets` — hashed at build time, in the crate
 //! both frontends depend on, so there is one answer to "what does this build already
 //! have" rather than one per frontend. What is left here is the two halves that need
 //! this frontend's own vocabulary: an id becomes a `dioxus::Asset` to fetch, and a
@@ -16,9 +16,9 @@ use stark_model::SubstrateId;
 use stark_net::AssetNeed;
 
 /// The bundled file behind a content id, if this build ships it — for actually making
-/// good on what `stark_chrome::assets::resolvable` promised.
+/// good on what `stark_ui::assets::resolvable` promised.
 pub fn asset_for(id: AssetId) -> Option<dioxus::prelude::Asset> {
-    let path = stark_chrome::assets::shipped_at(id)?.path?;
+    let path = stark_ui::assets::shipped_at(id)?.path?;
     crate::builtins::bundled_at(path).or_else(|| crate::substrates::bundled_at(path))
 }
 
@@ -84,18 +84,18 @@ mod tests {
     /// string. Two spellings of one filename is exactly the kind of thing that drifts.
     ///
     /// The other half — that a catalog path is a file that was actually hashed — is
-    /// `stark_chrome::assets`', where the id table is. This half cannot move with it:
+    /// `stark_ui::assets`', where the id table is. This half cannot move with it:
     /// an `Asset` is a `dioxus` type and the crate below names none.
     #[test]
     fn every_catalog_row_has_the_file_this_frontend_bundles() {
-        for row in stark_chrome::assets::SHIPPED_SHAPES
+        for row in stark_ui::assets::SHIPPED_SHAPES
             .iter()
-            .chain(stark_chrome::assets::SHIPPED_SUBSTRATES)
+            .chain(stark_ui::assets::SHIPPED_SUBSTRATES)
         {
             let Some(path) = row.path else { continue };
             assert!(
                 super::asset_for(
-                    stark_chrome::assets::shipped_id(path).expect("a catalog row is hashed")
+                    stark_ui::assets::shipped_id(path).expect("a catalog row is hashed")
                 )
                 .is_some(),
                 "the catalog names {path} and no `asset!` in this frontend does"
@@ -107,9 +107,9 @@ mod tests {
     /// weight in the deploy that the manifest still carries.
     #[test]
     fn nothing_this_frontend_bundles_is_unreachable() {
-        let claimed: Vec<&str> = stark_chrome::assets::SHIPPED_SHAPES
+        let claimed: Vec<&str> = stark_ui::assets::SHIPPED_SHAPES
             .iter()
-            .chain(stark_chrome::assets::SHIPPED_SUBSTRATES)
+            .chain(stark_ui::assets::SHIPPED_SUBSTRATES)
             .filter_map(|s| s.path)
             .collect();
         for path in [

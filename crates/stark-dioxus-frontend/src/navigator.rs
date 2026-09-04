@@ -376,7 +376,7 @@ pub fn NavigatorOverlay() -> Element {
                 // rebind — and it is not said at all for a browser whose
                 // rebinds left the mirror with no key to press.
                 title: {
-                    let mirror = stark_chrome::commands::Command::MirrorView
+                    let mirror = stark_ui::commands::Command::MirrorView
                         .shortcut(&state.bindings.read());
                     let mut title = "Click to go there, or drag to move the view around \
                                      the piece. Right-drag to turn the canvas: the \

@@ -96,7 +96,7 @@ pub struct Chord {
 /// **spatial** binding is about where the key sits — `[` and `]` step the brush
 /// down and up precisely because they are side by side — so it names the
 /// position (`KeyboardEvent.code`) and survives the layouts that type something
-/// else there, which is the rack's own argument (`stark_chrome::slots::of_code`, §18.1.8).
+/// else there, which is the rack's own argument (`stark_ui::slots::of_code`, §18.1.8).
 ///
 /// A capture makes the same choice ([`capture`]): a key that types a character
 /// is taken as the character, and a key that types nothing — an F-key, an

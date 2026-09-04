@@ -1,14 +1,14 @@
 //! The one piece of the list-drag gesture that cannot leave a frontend: swallowing
 //! the click a finished drag leaves behind.
 //!
-//! Everything else — [`Grab`](stark_chrome::reorder::Grab), the column arithmetic and
-//! what a displaced row does about it — is `stark_chrome::reorder`, because it is
+//! Everything else — [`Grab`](stark_ui::reorder::Grab), the column arithmetic and
+//! what a displaced row does about it — is `stark_ui::reorder`, because it is
 //! arithmetic over boxes and the hand. This is not: it reads and clears a `Signal`,
 //! which is the definition of chrome (§11.2).
 
 use dioxus::prelude::*;
 
-use stark_chrome::reorder::Grab;
+use stark_ui::reorder::Grab;
 
 /// Whether the `click` the browser has just sent belongs to a drag that already
 /// landed — and clears the grab either way, so the next press starts clean.

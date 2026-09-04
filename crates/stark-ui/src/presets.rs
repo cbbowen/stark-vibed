@@ -498,7 +498,7 @@ pub fn overwrite(
 
 // --- persistence ----------------------------------------------------------
 //
-// One entry per **user** preset, through `stark_chrome::storage`, which is where the format
+// One entry per **user** preset, through `stark_ui::storage`, which is where the format
 // and the skip-a-damaged-entry rule live. What is this module's own is which entries
 // are written and which two fields are not:
 //

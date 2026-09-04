@@ -3,7 +3,7 @@
 //!
 //! **Almost nothing is decided here.** What a press takes hold of, what a drag makes
 //! of it, what switching families costs, where the widget mounts and how big its grab
-//! bands are — all of it is `stark_chrome::transform`, and the whole of the drag
+//! bands are — all of it is `stark_ui::transform`, and the whole of the drag
 //! reaching this frontend is `Grab::take` on the press and `Grab::follow` on the move.
 //! What is left is what a frontend alone can do: put a bar somewhere, draw three
 //! shapes, and say which cursor its own toolkit spells a [`Hint`] with.
@@ -20,8 +20,8 @@
 //! Every point is mapped canvas → screen through the live [`ViewTransform`], so a pan
 //! or a zoom mid-gesture moves the widget with the paint rather than away from it.
 
-use stark_chrome::commands::{Bindings, Command};
-use stark_chrome::transform::{Family, Hint, TransformUi, WARP_GRID};
+use stark_ui::commands::{Bindings, Command};
+use stark_ui::transform::{Family, Hint, TransformUi, WARP_GRID};
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
 use wgpui::{
@@ -280,13 +280,13 @@ const GRID: u32 = 0xa8c4e0aa;
 const HANDLE: u32 = 0xe8eaedee;
 
 /// A handle's half-width, logical px. Smaller than the *grab* radius
-/// (`stark_chrome::transform::HANDLE_PX`) on purpose: a target should be easier to
+/// (`stark_ui::transform::HANDLE_PX`) on purpose: a target should be easier to
 /// hit than it looks, never harder — asserted below, where a later edit to either
 /// figure fails the build rather than a test.
 const HANDLE_HALF: f32 = 3.5;
 
 const _: () = assert!(
-    HANDLE_HALF < stark_chrome::transform::HANDLE_PX,
+    HANDLE_HALF < stark_ui::transform::HANDLE_PX,
     "a handle must be grabbable at least as far out as it is drawn"
 );
 
