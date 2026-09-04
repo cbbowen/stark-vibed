@@ -12,6 +12,12 @@
 //! What the hit test tests against is the layout wgpui actually produced, not one
 //! this side derived — see `panel::Regions`.
 
+use stark_engine::ObservableState;
+use stark_engine::ViewTransform;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_model::AssetNeed;
+use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
+use stark_model::{AssetId, Srgb, SubstrateId, Vec2};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Bindings, Command};
@@ -20,13 +26,8 @@ use stark_ui::input as chrome_input;
 use stark_ui::keys::Mods;
 use stark_ui::nav;
 use stark_ui::panels::PanelId;
+use stark_ui::prefs::{Hdr, Prefs};
 use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
-use stark_engine::ObservableState;
-use stark_engine::ViewTransform;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
-use stark_model::AssetNeed;
-use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
-use stark_model::{AssetId, Srgb, SubstrateId, Vec2};
 use wgpui::{
     AnyElement, Context, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window,
@@ -198,6 +199,9 @@ pub struct Canvas {
     /// Kept rather than asked per frame: `observe()` walks the roster, and a frame
     /// that changed nothing would rebuild it for a panel that would draw the same.
     obs: Option<ObservableState>,
+    /// This client's HDR choice (§6.5), from the record the web app keeps it in;
+    /// the engine is told this met with the window (`Renderer::apply_hdr`).
+    hdr: Hdr,
     /// The file this window holds, once one has been saved or opened. `None` for a
     /// document that has never been written — which is what the title says.
     path: Option<std::path::PathBuf>,
@@ -230,6 +234,12 @@ pub struct Canvas {
 impl Canvas {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Self>) -> Self {
         let mut renderer = Renderer::new(window);
+        // Before the first projection is read below, so the View menu opens knowing
+        // whether its HDR row has anything to switch (§6.5).
+        let hdr = stark_ui::storage::load::<Prefs>().map_or_else(Hdr::default, |p| p.hdr);
+        if let Some(r) = renderer.as_mut() {
+            r.apply_hdr(hdr, window.display_headroom());
+        }
         // The shipped stamps go in before the first brush is chosen, because the
         // brush the app opens on may *be* one of them — a preset that resolved after
         // the first frame would paint one stroke round (`crate::brush`).
@@ -296,6 +306,7 @@ impl Canvas {
             hover: Hint::Move,
             mode: None,
             obs,
+            hdr,
             path: None,
             written: 0,
             title: String::new(),
@@ -400,9 +411,7 @@ impl Canvas {
             // *from* — the press itself then picks nothing, which is the whole of
             // what makes a small adjustment possible.
             let held = match region {
-                color::Region::Wheel => {
-                    stark_ui::color::wheel_xy(self.wheel.hue, self.wheel.sat)
-                }
+                color::Region::Wheel => stark_ui::color::wheel_xy(self.wheel.hue, self.wheel.sat),
                 color::Region::Track => (self.wheel.l, 0.5),
             };
             let grab = stark_ui::color::Grab::take(at, held, mods.shift);
@@ -808,10 +817,7 @@ impl Canvas {
         }
         // The dialogs are the *app's*, not the window's — one file picker at a time
         // per process is what every platform gives.
-        let ask = cx.prompt_for_new_path(
-            &self.directory(),
-            Some(&stark_ui::files::default_name()),
-        );
+        let ask = cx.prompt_for_new_path(&self.directory(), Some(&stark_ui::files::default_name()));
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
             let done = match ask.await {
                 Ok(Ok(Some(path))) => match files::write(&path, &bytes) {
@@ -1631,11 +1637,27 @@ impl Canvas {
             Command::Transform => self.begin_transform(cx),
             Command::CancelMode => self.cancel_mode(cx),
             Command::FinishMode => self.finish_mode(cx),
+            Command::ToggleHdr => self.toggle_hdr(window, cx),
             _ => {}
         }
         if let Some(doc) = doc {
             self.send(doc, cx);
         }
+    }
+
+    /// Flip the HDR switch (§6.5): show it, and keep it. Ungated — a view act.
+    /// Read-modify-write, so the preferences this frontend does not apply survive.
+    fn toggle_hdr(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
+        self.hdr.on = !self.hdr.on;
+        let display = window.display_headroom();
+        if let Some(r) = self.renderer.as_mut() {
+            r.apply_hdr(self.hdr, display);
+            self.obs = Some(r.observe());
+        }
+        let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
+        prefs.hdr = self.hdr;
+        stark_ui::storage::save(&prefs);
+        self.repaint(cx);
     }
 
     /// Arm a shape tool, or put it down if it is the one already in hand.

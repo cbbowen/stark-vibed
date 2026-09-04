@@ -21,8 +21,8 @@
 //! filter. The day the web app grows a menu bar, what moves down is whatever the two
 //! then agree about.
 
-use stark_ui::commands::{Bindings, Command};
 use stark_engine::ObservableState;
+use stark_ui::commands::{Bindings, Command};
 use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb};
 
 /// The bar's height, logical px.
@@ -46,7 +46,7 @@ pub struct Menu {
 /// Every row is a command this frontend actually answers (`Canvas::run`) — a menu
 /// that offers a dead act is worse than one that is short, because the act looks
 /// available and does nothing. The absences are therefore real: no New, no Import, no
-/// Share, and no View menu at all until there is something in it.
+/// Share, and a View menu of one row, because one is what this frontend answers.
 pub const MENUS: &[Menu] = &[
     Menu {
         title: "File",
@@ -60,6 +60,11 @@ pub const MENUS: &[Menu] = &[
     Menu {
         title: "Edit",
         rows: &[Some(Command::Undo), Some(Command::Redo)],
+    },
+    Menu {
+        title: "View",
+        // The HDR switch (§6.5); Mirror waits until this frontend answers it.
+        rows: &[Some(Command::ToggleHdr)],
     },
     Menu {
         title: "Select",

@@ -19,14 +19,14 @@ use dioxus::prelude::*;
 
 use crate::collab;
 use crate::render::Renderer;
-use stark_ui::commands::PickScope;
-use stark_ui::commands::VisibilityToggle;
-use stark_ui::prefs::Prefs;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
 use stark_model::document::{GuideId, LayerId};
 use stark_model::geom::Vec2;
+use stark_ui::commands::PickScope;
+use stark_ui::commands::VisibilityToggle;
+use stark_ui::prefs::Prefs;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
 /// the component that declares it.
@@ -235,6 +235,10 @@ pub struct Signals {
     /// question for their own reasons (a thumbnail deferring its work, the eyedropper
     /// bar). What the setting changes is who looks faded, not what is happening.
     pub chrome_hiding: Signal<stark_ui::prefs::ChromeHiding>,
+    /// This browser's HDR choice (§6.5), stored with the other preferences. The
+    /// engine's [`Output`](stark_engine::Output) is derived from it and the surface
+    /// (`panels::lighting::apply_output`), never the other way round.
+    pub hdr: Signal<stark_ui::prefs::Hdr>,
     /// Whether the brush editor dialog is open (rendered at the app root so its
     /// backdrop escapes the panels' `backdrop-filter` containing blocks).
     pub brush_editor_open: Signal<bool>,
@@ -789,6 +793,9 @@ impl AppState {
             canvas_active: root_signal(|| false),
             panels_asleep: root_signal(|| false),
             chrome_hiding: root_signal(Default::default),
+            // Seeded from the preference defaults rather than written out again:
+            // `prefs::load` overwrites it at app start (`crate::prefs`).
+            hdr: root_signal(|| Prefs::default().hdr),
             brush_editor_open: root_signal(|| false),
             preset_save_open: root_signal(|| false),
             color_epoch: root_signal(|| 0),
@@ -890,9 +897,7 @@ impl TimelineState {
             // three entries of that menu (`crate::visibility`, §25.6) — here
             // rather than in a load hook, so the first render is already the
             // screen the artist left.
-            open: root_signal(|| {
-                stark_ui::visibility::stored_showing(VisibilityToggle::Timeline)
-            }),
+            open: root_signal(|| stark_ui::visibility::stored_showing(VisibilityToggle::Timeline)),
             playing: root_signal(|| false),
             speed: root_signal(|| 1.0),
             task: root_signal(|| None),
@@ -1568,10 +1573,7 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 /// so answering would cost a discarded value at every one of them.
 pub fn update_brush(
     state: AppState,
-    f: impl FnOnce(
-        &mut stark_ui::brush_config::BrushConfig,
-        &mut stark_ui::brush_config::Transient,
-    ),
+    f: impl FnOnce(&mut stark_ui::brush_config::BrushConfig, &mut stark_ui::brush_config::Transient),
 ) {
     let mut config = *state.brush.peek();
     let mut tune = *state.transient.peek();

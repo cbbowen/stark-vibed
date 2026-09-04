@@ -303,6 +303,31 @@ impl Renderer {
         self.engine.environment_loaded(id)
     }
 
+    /// The transfer the canvas reads its texels in (§6.5), off the surface
+    /// configuration so the engine cannot be told another.
+    pub fn transfer(&self) -> stark_engine::Transfer {
+        use stark_engine::Transfer;
+        match self.config.color_space {
+            wgpu::SurfaceColorSpace::ExtendedSrgb => Transfer::ExtendedSrgb,
+            wgpu::SurfaceColorSpace::ExtendedSrgbLinear => Transfer::Linear,
+            _ => Transfer::Srgb,
+        }
+    }
+
+    /// Whether the canvas can show anything above white (§6.5).
+    pub fn hdr_capable(&self) -> bool {
+        self.transfer() != stark_engine::Transfer::Srgb
+    }
+
+    /// How far above SDR white the display says it can go (§6.5). On the web:
+    /// `Some(1.0)` for an SDR display, `None` for an HDR one — the browser says only
+    /// which — and the headroom slider stands in for `None`.
+    pub fn display_headroom(&self) -> Option<f32> {
+        self.surface
+            .display_hdr_info(&self.adapter)
+            .tone_map_headroom()
+    }
+
     /// Register frontend-fetched HDR bytes for a lighting environment (§6.3) — or
     /// `Err` if they are not an HDR this build can read, in which case nothing is
     /// stored and the canvas keeps the light it has.
@@ -455,7 +480,8 @@ impl Renderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
-            color_space: wgpu::SurfaceColorSpace::default(),
+            // And to its color space: the engine encodes for one transfer (§6.5).
+            color_space: self.config.color_space,
         };
         self.overview = Some(Overview {
             canvas,
@@ -794,6 +820,40 @@ impl Renderer {
     }
 }
 
+/// The format and color space the main canvas is configured with (§6.5): HDR when
+/// the browser offers an fp16 canvas under extended tone mapping *and* the display
+/// is HDR right now. The first alone is every fp16 browser, tone-mapping or not
+/// (wgpu advertises it on the format), and would charge SDR users a double-width
+/// swapchain for nothing. Decided once: the engine's pipelines are compiled for one
+/// format (§6.4). Otherwise a non-sRGB 8-bit format — the media pass encodes sRGB
+/// itself, so an sRGB surface would double-encode.
+fn pick_surface(
+    caps: &wgpu::SurfaceCapabilities,
+    display: &wgpu::DisplayHdrInfo,
+) -> (wgpu::TextureFormat, wgpu::SurfaceColorSpace) {
+    let hdr_display = display
+        .coarse
+        .as_ref()
+        .and_then(|c| c.high_dynamic_range)
+        .unwrap_or(false);
+    let extended = caps
+        .color_spaces(wgpu::TextureFormat::Rgba16Float)
+        .contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB);
+    if hdr_display && extended {
+        return (
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::SurfaceColorSpace::ExtendedSrgb,
+        );
+    }
+    let format = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| !f.is_srgb())
+        .unwrap_or(caps.formats[0]);
+    (format, wgpu::SurfaceColorSpace::Auto)
+}
+
 /// Why the app could not start (§5, `crate::failure`).
 ///
 /// **A different fact from `ObservableState::gpu_failure`**, and the difference is
@@ -911,7 +971,8 @@ impl Renderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
-            color_space: wgpu::SurfaceColorSpace::default(),
+            // And to its color space: the engine encodes for one transfer (§6.5).
+            color_space: self.config.color_space,
         };
         surface.configure(&self.engine.gpu().device, &config);
         let engine = Engine::new_sharing(&self.engine, Extent2::new(width, height));
@@ -972,15 +1033,9 @@ async fn finish_init(
     let (width, height) = canvas.laid_out_size();
     canvas.set_buffer_size(width, height);
 
-    // Pick a non-sRGB format: the media pass already encodes display sRGB, so an
-    // sRGB surface would double-encode (§6.5).
     let caps = surface.get_capabilities(&adapter);
-    let format = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|f| !f.is_srgb())
-        .unwrap_or(caps.formats[0]);
+    let (format, color_space) = pick_surface(&caps, &surface.display_hdr_info(&adapter));
+    tracing::info!(?format, ?color_space, "canvas surface");
 
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -991,7 +1046,7 @@ async fn finish_init(
         alpha_mode: caps.alpha_modes[0],
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
-        color_space: wgpu::SurfaceColorSpace::default(),
+        color_space,
     };
     surface.configure(&gpu.device, &config);
 

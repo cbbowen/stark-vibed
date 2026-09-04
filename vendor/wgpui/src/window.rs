@@ -4537,6 +4537,23 @@ impl Window {
         self.platform_window.gpu_specs()
     }
 
+    /// STARK PATCH: the color space this window's swapchain is presented in —
+    /// `ExtendedSrgbLinear` on the HDR path, `Auto` on the 8-bit one — or `None` off
+    /// the WGPU renderer. What a surface made by [`create_wgpu_surface`] has to be
+    /// rendered for: its texels are composited into the swapchain unconverted.
+    ///
+    /// [`create_wgpu_surface`]: Self::create_wgpu_surface
+    pub fn surface_color_space(&self) -> Option<wgpu::SurfaceColorSpace> {
+        self.platform_window.surface_color_space()
+    }
+
+    /// STARK PATCH: how far above SDR white the display behind this window can go,
+    /// where the platform reports it. Advisory, and live — re-ask after the window
+    /// moves.
+    pub fn display_headroom(&self) -> Option<f32> {
+        self.platform_window.display_headroom()
+    }
+
     /// Perform titlebar double-click action.
     /// This is macOS specific.
     pub fn titlebar_double_click(&self) {

@@ -97,7 +97,11 @@ than a correction bolted on:
 - **The tonemap is a reference curve, not a look.** Khronos "PBR Neutral", with
   its black point set to the sheen this fragment's BRDF actually contributed
   instead of an assumed F0 = 0.04, and its highlight knee at 1.0 instead of 0.8 so
-  nothing representable is reshaped on the way to the display.
+  nothing representable is reshaped on the way to the display. "Representable"
+  means by *this* display: on an HDR surface the knee sits at the display's
+  headroom instead (§6.5), the same curve stretched to however many times white
+  the surface can show, so the glints of glossy impasto reach the screen and still
+  nothing it could have shown is reshaped.
 
 Exactness in `[0,1]` and a filmic shoulder are not both available: a curve that
 is the identity up to 1 has nowhere to bend. The shoulder is what was given up,
@@ -693,7 +697,8 @@ module (`color.rs`, with matching WESL helpers):
 ```
 input (sRGB picker / image) ──→ Oklab  (on ingest: BrushParams, imported tiles)
         Oklab  ←──────────────── all storage, mixing, compositing, history
-Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
+Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB — below)
+                                  (only in the media pass's final blit)
 ```
 
 - **Why Oklab end-to-end:** pigment mixing, gradient interpolation and wet blends
@@ -704,7 +709,59 @@ Oklab ──→ display (sRGB/Rec.2020) (only in the media pass's final blit)
   across runs and peers — required by goldens (§9) and convergence (§12).
 - **Extensibility:** `CanvasMeta.color_space` records the working space so a
   future wide-gamut or spectral pipeline is a new variant, not a rewrite; the
-  display transform is chosen from the surface format at present time.
+  display transform is chosen from the surface at present time (next bullet).
+- **HDR output: the display is a view setting.** The paint is reflectance and
+  never exceeds white; what does is the *light* — the environment's lamps
+  glinting off glossy impasto (§6.3) — and on an 8-bit surface the tonemap rolls
+  those into `[0,1]`. An HDR surface can show them, and the whole of what that
+  takes is two facts about the surface, carried as one value the frontend states
+  (`Output`, `ViewCommand::SetOutput`): its **transfer** — how its texels encode
+  light: sRGB over `[0,1]`, the same curve continued past 1 and mirrored through 0
+  (an fp16 canvas under the web's "extended" tone mapping), or none at all (scRGB,
+  the native swapchain) — and its **headroom**, how many times SDR white it can
+  show. The media pass tonemaps into the headroom and encodes by the transfer
+  (`lib/display.wesl`, one selector for it and for the resolve's decode/encode
+  pair, so the two cannot disagree); everything upstream is untouched, since it
+  was linear light in a working space already. Three consequences, each
+  structural rather than a rule to remember:
+  - **An 8-bit target is SDR, whatever the screen is showing.** `Compositor::render`
+    renders a `Rgba8Unorm`/`Bgra8Unorm` target with `Output::SDR` regardless of the
+    pipeline's setting, and an export is drawn into one (`export_format`: the
+    screen's format when that is 8-bit, `Rgba8Unorm` under a deep HDR surface, with
+    a second set of the four target passes compiled for it). So a PNG written from
+    an HDR session is the picture an SDR viewer of it sees, every golden is
+    unchanged, and the screen's headroom cannot reach a file by a frontend
+    forgetting to say so. `tests/hdr.rs` pins it.
+  - **"HDR off" is a preview of the export.** The Lighting panel's switch (and
+    `Command::ToggleHdr`) sets the headroom to 1 and nothing else: the transfer
+    stays the surface's, and at headroom 1 the curve is the SDR curve exactly, so
+    what the artist sees is what the file will hold. The switch appears only on a
+    surface that can show more — on an SDR screen there is nothing to compare.
+    Beside it, a **headroom** slider stands in where the platform will not say how
+    bright the display goes: the web reports only *that* a display is HDR (CSS
+    `dynamic-range`), where Windows reports nits and macOS an EDR multiplier
+    (`wgpu::DisplayHdrInfo::tone_map_headroom`). Both are this client's standing
+    choice (`prefs::Hdr`), kept whether or not the current screen can honour it.
+  - **The surface is chosen once.** The web frontend configures `Rgba16Float` in
+    `ExtendedSrgb` when the browser offers an fp16 canvas under extended tone
+    mapping *and* the display is HDR right now (the first alone is every fp16
+    browser, tone-mapping or not); the native frontend reads the swapchain wgpui
+    configured — linear scRGB on an HDR display, with wgpui's own shaders decoding
+    their output for it (`vendor/wgpui/VENDORING.md`, patch 6). Both ask whether
+    the display is HDR *now*, not whether the format is offered: DXGI advertises
+    scRGB on every Windows surface, and the web's `dynamic-range: high` means a
+    panel *can* show HDR — a capable panel running in an SDR mode clips what an
+    extended canvas puts above white rather than rolling it off, and the switch
+    is the way out. The engine's pipelines are compiled for one format (§6.4), so
+    a display that becomes HDR after launch, or a window carried to an SDR one,
+    is seen on the next launch. The 8-bit dither turns itself off on a deep
+    target (`media::dither_step`).
+
+  What this is *not*: wide-gamut paint. Every color the document carries is an
+  `Srgb`, in the cube by construction (§6.7), so an HDR session paints exactly the
+  colors an SDR one does — the light above white is the whole of the difference.
+  Display P3 and PQ (HDR10) surfaces, and a runtime retarget when a window moves
+  between displays, are the same mechanism with more arms and are not built.
 - **Dither at the encode, and only there.** The walk from f32 down to the
   target's 8-bit codes — the media pass's store, and the resolve's re-encode
   when the view is supersampled (§6.4) — is the one place banding is born, so

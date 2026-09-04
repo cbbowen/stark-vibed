@@ -6,6 +6,7 @@
 //! over the substrate into the target. This is the "old masters" payoff.
 
 use super::attachment::Trio;
+use super::display::Output;
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
@@ -85,26 +86,34 @@ impl Default for MediaParams {
 /// clamped — must render that code at every pixel rather than speckle its
 /// neighbours, and ±half a step is the widest swing with that property
 /// (`lib/noise.wesl::dither2` keeps it *strictly* inside the half, so the
-/// rounding tie between two codes is unreachable). The formats listed are every
-/// 8-bit target a compositor is built for; anything else — the f16 targets picks
-/// render into never come through here, but a future deep surface would — gets 0
-/// until it demonstrably bands, because dither a target does not need is only
-/// noise.
-///
-/// The sRGB-suffixed formats are **not** listed, and their absence is the same rule
-/// `CompositorPipeline::new` asserts: this pass encodes sRGB itself, so a target that
-/// encodes it again is one no compositor is built for. Listing them here said the
-/// opposite.
+/// rounding tie between two codes is unreachable). A deep target — an HDR surface,
+/// or the f16 targets picks render into — gets 0 until it demonstrably bands,
+/// because dither a target does not need is only noise.
 pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
-    use wgpu::TextureFormat as F;
-    match format {
-        F::Rgba8Unorm | F::Bgra8Unorm => 1.0 / 255.0,
-        _ => 0.0,
+    if super::display::is_eight_bit(format) {
+        1.0 / 255.0
+    } else {
+        0.0
     }
 }
 
-/// The media pass — the pipeline and its layout, which is the whole of what is
-/// shareable about it.
+/// The media pass's bind group layout, shared by the pipeline compiled for each
+/// target format ([`TargetPasses`](super::TargetPasses)) so a consumer's bind group
+/// is valid against either.
+pub(super) fn media_layout(
+    device: &wgpu::Device,
+    color_space: &dyn ColorSpace,
+) -> wgpu::BindGroupLayout {
+    desc::layout_for(
+        device,
+        "stark media bgl",
+        MEDIA_SLOTS,
+        wgpu::ShaderStages::FRAGMENT,
+        color_space.has_resid(),
+    )
+}
+
+/// The media pass — the pipeline, compiled for one target format.
 ///
 /// The parameters it is tuned to live on the
 /// [`CompositorPipeline`](super::CompositorPipeline) beside the other view settings,
@@ -117,28 +126,20 @@ pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
 /// beside it cost nothing.
 pub(super) struct MediaPass {
     pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) bgl: wgpu::BindGroupLayout,
 }
 
 impl MediaPass {
     pub(super) fn new(
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
+        bgl: &wgpu::BindGroupLayout,
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark media"),
             source: wgpu::ShaderSource::Wgsl(color_space.media_shader().into()),
         });
-        let bgl = desc::layout_for(
-            device,
-            "stark media bgl",
-            MEDIA_SLOTS,
-            frag,
-            color_space.has_resid(),
-        );
-        let layout = desc::pipeline_layout(device, "stark media layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark media layout", &[Some(bgl)]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark media pipeline",
@@ -147,7 +148,7 @@ impl MediaPass {
             ("vs_main", "fs_main"),
             target,
         );
-        Self { pipeline, bgl }
+        Self { pipeline }
     }
 
     /// Encode pass B: normals off the composited height field, lit by the
@@ -219,6 +220,9 @@ pub(super) struct MediaScene<'a> {
     /// consumer's [`MediaParams::dither`] asks for the undithered reference. The
     /// shader scales its store's quantization dither by it (§6.5).
     pub(super) dither_step: f32,
+    /// The display this render is presented on (§6.5) — [`Output::SDR`] for every
+    /// 8-bit target (`Compositor::render`).
+    pub(super) output: Output,
 }
 
 impl MediaScene<'_> {
@@ -258,6 +262,12 @@ impl MediaScene<'_> {
                 0.0,
             ],
             view_m: self.view.inverse_linear().to_cols_array(),
+            out: [
+                self.output.transfer().lane(),
+                self.output.headroom(),
+                0.0,
+                0.0,
+            ],
         }
     }
 }
@@ -282,7 +292,8 @@ pub(super) struct OffscreenDesc<'a> {
     pub(super) size: Extent2,
     /// The channel formats the accumulator carries (§6.7).
     pub(super) formats: crate::gpu::channels::ChannelFormats,
-    pub(super) media: &'a MediaPass,
+    /// The layout the media bind group is built against ([`media_layout`]).
+    pub(super) media_bgl: &'a wgpu::BindGroupLayout,
     /// The consumer's own uniform buffer, which this bind group names.
     pub(super) media_buf: &'a wgpu::Buffer,
     pub(super) substrate: &'a SubstrateMap,
@@ -312,14 +323,14 @@ impl Offscreen {
     pub(super) fn rebind(
         &mut self,
         device: &wgpu::Device,
-        media: &MediaPass,
+        media_bgl: &wgpu::BindGroupLayout,
         media_buf: &wgpu::Buffer,
         substrate: &SubstrateMap,
         environment: &Environment,
     ) {
         self.bg = media_bind_group(
             device,
-            media,
+            media_bgl,
             media_buf,
             substrate,
             environment,
@@ -340,7 +351,7 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         device,
         size,
         formats,
-        media,
+        media_bgl,
         media_buf,
         substrate,
         environment,
@@ -351,7 +362,14 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
         ("stark comp color", "stark comp aux", "stark comp resid"),
         formats,
     );
-    let bg = media_bind_group(device, media, media_buf, substrate, environment, &channels);
+    let bg = media_bind_group(
+        device,
+        media_bgl,
+        media_buf,
+        substrate,
+        environment,
+        &channels,
+    );
     Offscreen { channels, bg }
 }
 
@@ -365,7 +383,7 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
 /// trio for a swap would cost a viewport of memory.
 fn media_bind_group(
     device: &wgpu::Device,
-    media: &MediaPass,
+    media_bgl: &wgpu::BindGroupLayout,
     media_buf: &wgpu::Buffer,
     substrate: &SubstrateMap,
     environment: &Environment,
@@ -375,7 +393,7 @@ fn media_bind_group(
     desc::bind_group_for(
         device,
         "stark media bg",
-        &media.bgl,
+        media_bgl,
         MEDIA_SLOTS,
         resid.is_some(),
         |i| match i {

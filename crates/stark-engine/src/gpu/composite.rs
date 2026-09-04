@@ -43,6 +43,7 @@
 mod attachment;
 mod blend;
 mod blur;
+mod display;
 mod filter;
 mod group;
 mod guides;
@@ -70,10 +71,13 @@ use stark_model::geom::Extent2;
 pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchTargets};
 use blur::{BlurFrame, BlurPass};
+pub(crate) use display::export_format;
+use display::is_eight_bit;
+pub use display::{Output, Transfer};
 pub(crate) use filter::{FilterPass, FilterUniform};
 use guides::{GuidePass, GuideUniform};
 use media::MediaPass;
-use overlay::{OverlayInstance, OverlayPass};
+use overlay::{OverlayInstance, OverlayLayouts, OverlayPass};
 use plan::{Phase, Plan, Slot, Step};
 use resolve::{ResolvePass, Supersampled, supersample};
 use stark_shaders::mirror::composite::binding as cb;
@@ -170,7 +174,7 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
     ViewGroups {
         sampler: &p.view.sampler,
         tiles: &p.tiles.view_bgl,
-        overlay: &p.overlay.view_bgl,
+        overlay: &p.layouts.overlay.view,
     }
 }
 
@@ -280,22 +284,90 @@ pub struct CompositorPasses {
     /// time it runs a texel is XYZ light. The per-space halves (the decode and the
     /// resolve arm) live in `filter`'s shader, where the space's brackets are.
     blur: BlurPass,
-    overlay: OverlayPass,
-    guides: GuidePass,
-    /// `media_pass`, not `media`: [`CompositorPipeline`] reaches this whole struct
-    /// through `Deref` *and* has a `media()` of its own returning the
-    /// [`MediaParams`], so a bare `media` made `p.media` and `p.media()` two
-    /// different things one character apart — and the field, being the `Deref`'d one,
-    /// is the half a reader is least expecting.
-    media_pass: MediaPass,
-    resolve: ResolvePass,
+    /// The layouts passes B–E bind a consumer's state against, built once so a
+    /// consumer's bind groups are valid against whichever [`TargetPasses`] a render
+    /// picks.
+    layouts: TargetLayouts,
+    /// Passes B–E compiled for the screen's format.
+    screen: TargetPasses,
+    /// The same four for the 8-bit format an export is drawn in (§15.6); `None` when
+    /// the screen's format already is one ([`export_format`]).
+    export: Option<TargetPasses>,
 
     /// Offscreen channel formats, from the color space (§6.7) — including whether
     /// there is a residual at all, which decides the third attachment on every pass A
     /// target and is the space's answer rather than a per-target choice.
     formats: ChannelFormats,
-    /// What passes B–D write, and therefore what the supersampled target carries.
+    /// The screen's format — what `screen` was compiled for.
     target_format: wgpu::TextureFormat,
+}
+
+/// The bind group layouts of the four passes that write a frame's target — the half
+/// that does not depend on the target format, so there is one set of these and one
+/// set of pipelines per format.
+struct TargetLayouts {
+    media: wgpu::BindGroupLayout,
+    overlay: OverlayLayouts,
+    guides: wgpu::BindGroupLayout,
+    resolve: wgpu::BindGroupLayout,
+}
+
+impl TargetLayouts {
+    fn new(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Self {
+        Self {
+            media: media::media_layout(device, color_space),
+            overlay: OverlayLayouts::new(device),
+            guides: guides::guide_layout(device),
+            resolve: resolve::resolve_layout(device),
+        }
+    }
+}
+
+/// Passes B–E — the lit image, the outlines, the guides and the presentation
+/// resolve — compiled against one target format (§6.4). An HDR session renders into
+/// two: the screen's float surface and the 8-bit texture an export is read back from.
+/// Pass A is not here: it writes the accumulator, whose formats are the color
+/// space's whatever the target.
+pub(crate) struct TargetPasses {
+    format: wgpu::TextureFormat,
+    overlay: OverlayPass,
+    guides: GuidePass,
+    media: MediaPass,
+    resolve: ResolvePass,
+}
+
+impl TargetPasses {
+    fn new(
+        device: &wgpu::Device,
+        color_space: &dyn ColorSpace,
+        layouts: &TargetLayouts,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        // **The target may not be an sRGB format**, and this is the one place that can
+        // say so. The media pass encodes the display transfer itself
+        // (`media_common.wesl::finish`) and the resolve averages in light around its
+        // own decode/encode pair — so a `*UnormSrgb` target has the hardware encode on
+        // top of that and decode on every `textureLoad`, and the frame comes out
+        // gamma-squared. Nothing *fails*: it is a picture, just the wrong one, which is
+        // exactly the class §1 spends structure to rule out rather than to document.
+        // The rule was real but lived in the frontend that happened to obey it
+        // (`stark-dioxus-frontend`'s surface configuration), so every other embedder
+        // — and one test — was free to get it wrong.
+        assert!(
+            !format.is_srgb(),
+            "a compositor renders to a non-sRGB format: the media pass encodes the display \
+             transfer itself (§6.5), so {format:?} would be encoded twice",
+        );
+        // Passes B–E all write the one target the frame is presented from.
+        let target = [desc::target(format)];
+        Self {
+            format,
+            overlay: OverlayPass::new(device, format, &layouts.overlay),
+            guides: GuidePass::new(device, format, &layouts.guides),
+            media: MediaPass::new(device, color_space, &layouts.media, &target),
+            resolve: ResolvePass::new(device, &layouts.resolve, &target),
+        }
+    }
 }
 
 /// One pick's draws, prepared once and recorded from many times
@@ -341,6 +413,10 @@ pub struct CompositorPipeline {
     /// Lighting parameters for the media pass (§6.3) — a view setting like the two
     /// below, copied into each renderer's own media uniform on every render.
     media_params: MediaParams,
+    /// The display the screen is presented on (§6.5) — a view setting like
+    /// `media_params`, read by a render into a deep format alone: an 8-bit render is
+    /// [`Output::SDR`] by construction ([`Compositor::render`]).
+    output: Output,
     // The canvas substrate (bump) sampled by the media pass for relief.
     substrate: SubstrateMap,
     // The HDR lighting environment sampled by the media pass (§6.3).
@@ -443,6 +519,9 @@ pub struct Compositor {
     /// zoomed-in and 1:1 case — means passes B–D write the caller's target directly
     /// and `ss` is `None`, so a view that never zooms out never allocates any of it.
     ss: u32,
+    /// The format this consumer last rendered into, which [`Self::ss_target`] has to
+    /// match (§6.4). Meaningless while [`Self::accum`] is `None`.
+    format: wgpu::TextureFormat,
     /// Everything that exists only while this view is zoomed out — see
     /// [`Supersampled`].
     ss_target: Option<Supersampled>,
@@ -527,24 +606,15 @@ impl CompositorPipeline {
         environment: Environment,
         shared: SharedPasses,
     ) -> Self {
-        // **The target may not be an sRGB format**, and this is the one place that can
-        // say so. The media pass encodes display sRGB itself
-        // (`media_common.wesl::finish`) and the resolve averages in light around its
-        // own decode/encode pair — so a `*UnormSrgb` target has the hardware encode on
-        // top of that and decode on every `textureLoad`, and the frame comes out
-        // gamma-squared. Nothing *fails*: it is a picture, just the wrong one, which is
-        // exactly the class §1 spends structure to rule out rather than to document.
-        // The rule was real but lived in the frontend that happened to obey it
-        // (`stark-dioxus-frontend`'s surface configuration), so every other embedder
-        // — and one test — was free to get it wrong.
-        assert!(
-            !target_format.is_srgb(),
-            "a compositor renders to a linear target: the media pass encodes display              sRGB itself (§6.5), so {target_format:?} would be encoded twice",
-        );
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
-        // Passes B–E all write the one target the frame is presented from.
-        let screen = [desc::target(target_format)];
+        let layouts = TargetLayouts::new(device, color_space);
+        let screen = TargetPasses::new(device, color_space, &layouts, target_format);
+        // An export is drawn into an 8-bit texture whatever the screen is (§15.6), so
+        // a deep screen needs a second set of the four; an SDR session pays nothing.
+        let export = (export_format(target_format) != target_format).then(|| {
+            TargetPasses::new(device, color_space, &layouts, export_format(target_format))
+        });
 
         let SharedPasses {
             blend,
@@ -556,10 +626,9 @@ impl CompositorPipeline {
             blend,
             filter,
             blur: BlurPass::new(ctx),
-            overlay: OverlayPass::new(device, target_format),
-            guides: GuidePass::new(device, target_format),
-            media_pass: MediaPass::new(device, color_space, &screen),
-            resolve: ResolvePass::new(device, &screen),
+            layouts,
+            screen,
+            export,
             view: View::new(device),
             ctx: ctx.clone(),
             formats,
@@ -570,6 +639,7 @@ impl CompositorPipeline {
             substrate,
             environment,
             MediaParams::default(),
+            Output::SDR,
         )
     }
 
@@ -587,10 +657,12 @@ impl CompositorPipeline {
         substrate: SubstrateMap,
         environment: Environment,
         media_params: MediaParams,
+        output: Output,
     ) -> Self {
         Self {
             passes,
             media_params,
+            output,
             substrate,
             environment,
             generation: next_generation(),
@@ -611,6 +683,34 @@ impl CompositorPipeline {
     /// Adjust the media/lighting parameters (§6.3).
     pub fn set_media(&mut self, media: MediaParams) {
         self.media_params = media;
+    }
+
+    /// The display the screen is presented on (§6.5).
+    pub fn output(&self) -> Output {
+        self.output
+    }
+
+    /// State the display the screen is presented on (§6.5). No attachment is
+    /// rebuilt; the next render reads it into its uniforms.
+    pub fn set_output(&mut self, output: Output) {
+        self.output = output;
+    }
+
+    /// The four target passes compiled for `format` — the screen's or the export's
+    /// (§15.6). Any other format is a texture no compositor was built for.
+    fn target_passes(&self, format: wgpu::TextureFormat) -> &TargetPasses {
+        if format == self.screen.format {
+            return &self.screen;
+        }
+        match &self.export {
+            Some(export) if export.format == format => export,
+            _ => panic!(
+                "no compositor passes for a {format:?} target: this engine renders to \
+                 {:?} and exports through {:?}",
+                self.screen.format,
+                export_format(self.screen.format),
+            ),
+        }
     }
 
     /// Swap the canvas substrate (bump) so the next render shades against it
@@ -650,7 +750,7 @@ impl CompositorPipeline {
     fn rebind_media(&self, accum: &mut media::Offscreen, media_buf: &wgpu::Buffer) {
         accum.rebind(
             &self.ctx.device,
-            &self.media_pass,
+            &self.layouts.media,
             media_buf,
             &self.substrate,
             &self.environment,
@@ -662,7 +762,7 @@ impl CompositorPipeline {
             device: &self.ctx.device,
             size,
             formats: self.formats,
-            media: &self.media_pass,
+            media_bgl: &self.layouts.media,
             media_buf,
             substrate: &self.substrate,
             environment: &self.environment,
@@ -689,6 +789,7 @@ impl Compositor {
             // 1:1 until a render says otherwise — `ensure_targets` is what decides,
             // because only a render knows the zoom.
             ss: 1,
+            format: pipeline.target_format,
             ss_target: None,
             scratch: None,
             blur: None,
@@ -733,11 +834,18 @@ impl Compositor {
     /// this", and its only caller discarded that — the borrow collides with the
     /// `&mut self` calls that must follow. A promise the borrow checker cannot let
     /// anyone keep is not one worth making.
-    fn ensure_targets(&mut self, p: &CompositorPipeline, target_size: Extent2, ss: u32) {
+    fn ensure_targets(
+        &mut self,
+        p: &CompositorPipeline,
+        target_size: Extent2,
+        ss: u32,
+        format: wgpu::TextureFormat,
+    ) {
         let size = Extent2::new(target_size.width * ss, target_size.height * ss);
         let current = self.accum.is_some()
             && size == self.size
             && ss == self.ss
+            && format == self.format
             && self.generation == p.generation;
         if current {
             // The cheap half: the attachments stand, and only the group naming the
@@ -755,6 +863,7 @@ impl Compositor {
         } else {
             self.size = size;
             self.ss = ss;
+            self.format = format;
             self.generation = p.generation;
             // The rebuild names the current pair by construction.
             self.bindings = p.bindings;
@@ -772,7 +881,7 @@ impl Compositor {
             // above, which is what returns the memory the moment the artist zooms back
             // in to paint.
             self.ss_target = (ss > 1)
-                .then(|| Supersampled::new(&p.ctx.device, size, p.target_format, &p.resolve));
+                .then(|| Supersampled::new(&p.ctx.device, size, format, &p.layouts.resolve));
         }
     }
 
@@ -1188,6 +1297,10 @@ impl Compositor {
     /// result down at the end (§6.4). Everything between here and the resolve
     /// is written against `view` alone, so supersampling is one substitution at the
     /// top and one pass at the bottom rather than a parameter every pass has to carry.
+    ///
+    /// The target's format picks the passes, and an 8-bit target is rendered
+    /// [`Output::SDR`] whatever the pipeline's [`Output`] says (§6.5, §15.6): that is
+    /// every export and every golden, so the screen's headroom cannot reach a file.
     pub fn render(
         &mut self,
         p: &CompositorPipeline,
@@ -1204,6 +1317,13 @@ impl Compositor {
             transparent,
             guides,
         } = scene;
+        let format = target.texture().format();
+        let tp = p.target_passes(format);
+        let output = if is_eight_bit(format) {
+            Output::SDR
+        } else {
+            p.output
+        };
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the substrate and the impasto relief aliasing
         // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
@@ -1223,7 +1343,7 @@ impl Compositor {
             &p.ctx.device.limits(),
             resolve::attachment_bytes(
                 p.formats,
-                p.target_format,
+                format,
                 &plan.scratch,
                 blur::has_blur(&plan.filters),
             ),
@@ -1233,7 +1353,7 @@ impl Compositor {
         // export, the navigator's miniature — goes through a `Compositor` of its own,
         // so the substrate's attachments (and the frame already presented from them)
         // are never resized out from under it and rebuilt on the next frame.
-        self.ensure_targets(p, view.viewport, ss);
+        self.ensure_targets(p, view.viewport, ss, format);
         // From here down, `view` is the supersampled one and `target` is the only
         // thing that still knows the real size — which is exactly the split the
         // resolve at the bottom closes.
@@ -1286,7 +1406,7 @@ impl Compositor {
         // supersampled intermediate carries the target's own format (§6.4) — and 0
         // when this consumer's params ask for the undithered reference (§6.5).
         let dither_step = if p.media_params.dither {
-            media::dither_step(p.target_format)
+            media::dither_step(format)
         } else {
             0.0
         };
@@ -1313,7 +1433,7 @@ impl Compositor {
         );
 
         // Pass B: normals off the height field, lit, tonemapped, over the substrate.
-        p.media_pass.encode(
+        tp.media.encode(
             &p.ctx,
             &mut encoder,
             &self.media_buf,
@@ -1328,11 +1448,12 @@ impl Compositor {
                 substrate_resid: bg_resid,
                 transparent,
                 dither_step,
+                output,
             },
         );
 
         // Pass C: the selection outlines, over the lit image (§17.3).
-        p.overlay.encode(
+        tp.overlay.encode(
             &p.ctx,
             &mut encoder,
             &mut self.overlay_instances,
@@ -1348,7 +1469,7 @@ impl Compositor {
         // Pass D: the drawing guides, over the lit image and the outlines — the
         // perspective grid is chrome the whole canvas is read *through*, so it is the
         // topmost thing drawn (§20.4).
-        p.guides.encode(
+        tp.guides.encode(
             &p.ctx,
             &mut encoder,
             &mut self.guide_uniforms,
@@ -1361,8 +1482,17 @@ impl Compositor {
         // (§6.4). Absent at 1:1, where `draw_target` *is* the caller's target and the
         // picture is already the size it was asked for.
         if let Some(ss_target) = &self.ss_target {
-            p.resolve
-                .encode(&p.ctx, &mut encoder, ss_target, ss, dither_step, target);
+            tp.resolve.encode(
+                &p.ctx,
+                &mut encoder,
+                ss_target,
+                resolve::ResolveScene {
+                    n: ss,
+                    dither_step,
+                    transfer: output.transfer(),
+                },
+                target,
+            );
         }
 
         p.ctx.queue.submit([encoder.finish()]);

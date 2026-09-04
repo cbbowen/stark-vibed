@@ -71,7 +71,7 @@ impl Tool {
     }
 }
 
-use crate::gpu::{EnvironmentId, MediaParams};
+use crate::gpu::{EnvironmentId, MediaParams, Output};
 use stark_model::AssetId;
 use stark_model::Srgb;
 use stark_model::document::{
@@ -881,6 +881,9 @@ pub enum ViewCommand {
     SetMediaParams(MediaParams),
     /// Switch the HDR lighting environment (§6.3).
     SetEnvironment(EnvironmentId),
+    /// State the display the screen is presented on (§6.5). A view setting, like
+    /// the two above, and one an export never reads.
+    SetOutput(Output),
 
     /// How much resident tile memory history retention may hold before the engine
     /// starts giving up undo depth, in bytes (§5).

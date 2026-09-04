@@ -206,6 +206,10 @@ pub enum Command {
     /// Mirror the view about the screen's vertical midline, whatever angle the
     /// canvas is at (`ViewTransform::mirror_screen_h`).
     MirrorView,
+    /// Show the canvas with the display's headroom, or as an export would look
+    /// (§6.5). A view act; enabled only where the surface can show anything above
+    /// white.
+    ToggleHdr,
     BrushSmaller,
     BrushLarger,
     /// Open the "New document…" dialog (`main::NewDocumentModal`).
@@ -672,6 +676,7 @@ pub const ALL: &[Command] = &[
     Command::Credits,
     Command::Settings,
     Command::MirrorView,
+    Command::ToggleHdr,
     Command::BrushSmaller,
     Command::BrushLarger,
     Command::CancelMode,
@@ -833,6 +838,7 @@ impl Command {
             Command::SelectEllipse => "Ellipse select",
             Command::SelectLasso => "Lasso select",
             Command::MirrorView => "Mirror view",
+            Command::ToggleHdr => "HDR",
             Command::BrushSmaller => "Shrink brush",
             Command::BrushLarger => "Enlarge brush",
             Command::NewDocument => "New document\u{2026}",
@@ -903,6 +909,7 @@ impl Command {
             Command::SelectEllipse => crate::icons::CIRCLE,
             Command::SelectLasso => crate::icons::LASSO,
             Command::MirrorView => crate::icons::MIRROR_VIEW,
+            Command::ToggleHdr => crate::icons::HDR,
             Command::BrushSmaller | Command::BrushLarger => crate::icons::SIZE,
             Command::NewDocument => crate::icons::NEW_DOCUMENT,
             Command::OpenDocument => crate::icons::OPEN_DOC,
@@ -1010,6 +1017,7 @@ impl Command {
             // that has it, and an alias is for another word for *this* act.
             Command::SelectLasso => &["Freehand select", "Free select"],
             Command::MirrorView => &["Flip horizontal"],
+            Command::ToggleHdr => &["High dynamic range", "SDR preview", "Preview export"],
             Command::BrushSmaller => &["Decrease brush size"],
             Command::BrushLarger => &["Increase brush size"],
             Command::NewDocument => &["New canvas", "New file"],
@@ -1092,6 +1100,9 @@ impl Command {
                 }
             },
             Command::MirrorView => "Mirror the view left-to-right",
+            Command::ToggleHdr => {
+                "Show the light above white, or the canvas as an export will look (§6.5)"
+            }
             Command::BrushSmaller => "Step the brush size down",
             Command::BrushLarger => "Step the brush size up",
             Command::EditBrush => "Open the full brush editor",
@@ -1164,6 +1175,11 @@ impl Command {
     pub fn enabled(self, o: Option<&ObservableState>) -> bool {
         match self {
             Command::Undo => o.is_some_and(|o| o.can_undo),
+            // The transfer is the surface's whether or not the switch is on (a
+            // frontend flips only the headroom), so sRGB means nothing to switch (§6.5).
+            Command::ToggleHdr => {
+                o.is_some_and(|o| o.output.transfer() != stark_engine::Transfer::Srgb)
+            }
             Command::Redo => o.is_some_and(|o| o.can_redo),
             Command::Deselect
             | Command::InvertSelection

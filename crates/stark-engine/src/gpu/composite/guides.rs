@@ -103,20 +103,34 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
     }
 }
 
+/// The guide pass's bind group layout, shared by the pipeline compiled for each
+/// target format ([`TargetPasses`](super::TargetPasses)).
+pub(super) fn guide_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    desc::layout_for(
+        device,
+        "stark guides bgl",
+        GUIDE_SLOTS,
+        wgpu::ShaderStages::FRAGMENT,
+        false,
+    )
+}
+
 pub(super) struct GuidePass {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) bgl: wgpu::BindGroupLayout,
 }
 
 impl GuidePass {
-    pub(super) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
+    pub(super) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        bgl: &wgpu::BindGroupLayout,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark guides"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().into()),
         });
-        let bgl = desc::layout_for(device, "stark guides bgl", GUIDE_SLOTS, frag, false);
-        let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl)]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark guides pipeline",
@@ -130,7 +144,10 @@ impl GuidePass {
                 Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             )],
         );
-        Self { pipeline, bgl }
+        Self {
+            pipeline,
+            bgl: bgl.clone(),
+        }
     }
 
     /// Encode pass D: one fullscreen triangle per visible guide, over everything

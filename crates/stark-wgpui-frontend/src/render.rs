@@ -8,17 +8,23 @@
 //! bargain the browser canvas makes, with no readback and no encode.
 
 use stark_engine::command::{InputCommand, ViewCommand};
-use stark_engine::{Engine, GpuContext, ObservableState, ViewTransform};
+use stark_engine::{Engine, GpuContext, ObservableState, Output, Transfer, ViewTransform};
 use stark_model::geom::Extent2;
+use stark_ui::prefs::Hdr;
 use wgpui::{WgpuSurfaceHandle, Window};
 
-/// The format the engine renders through, and so the format the surface's two
-/// buffers carry.
-///
-/// **Not an sRGB format**: the media pass already encodes display sRGB (§6.5), so an
-/// sRGB target would encode it twice. wgpui picks its own window format by the same
-/// test (`!f.is_srgb()`), so what this writes reaches the screen unconverted.
-pub const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The format the engine renders through and the transfer the window reads it in
+/// (§6.5), read off the swapchain wgpui configured (`vendor/wgpui/VENDORING.md`,
+/// patch 6): the engine's texels are composited into it unconverted. **Never an
+/// sRGB format**: the media pass encodes the transfer itself.
+fn target_for(window: &Window) -> (wgpu::TextureFormat, Transfer) {
+    match window.surface_color_space() {
+        Some(wgpu::SurfaceColorSpace::ExtendedSrgbLinear) => {
+            (wgpu::TextureFormat::Rgba16Float, Transfer::Linear)
+        }
+        _ => (wgpu::TextureFormat::Rgba8Unorm, Transfer::Srgb),
+    }
+}
 
 /// One surface, one engine, and the resize that keeps them agreeing.
 pub struct Renderer {
@@ -27,6 +33,8 @@ pub struct Renderer {
     /// The viewport the engine was last told about, in device px — see
     /// [`paint`](Self::paint), which is where it is corrected.
     viewport: (u32, u32),
+    /// How the window reads the surface's texels (§6.5), fixed with the format.
+    transfer: Transfer,
 }
 
 impl Renderer {
@@ -37,19 +45,43 @@ impl Renderer {
     /// panicking, for the reason the web frontend's `StartupFailure` gives.
     pub fn new(window: &Window) -> Option<Self> {
         let (width, height) = device_pixels(window);
-        let surface = window.create_wgpu_surface(width, height, TARGET_FORMAT)?;
+        let (format, transfer) = target_for(window);
+        let surface = window.create_wgpu_surface(width, height, format)?;
         // The engine is *given* its wgpu resources (CLAUDE.md), and here that is
         // forced rather than chosen: the handle carries a device and a queue and
         // nothing else. It also replaces wgpui's device callbacks with the engine's
         // (`GpuContext::from_parts`), which is the right way round — the engine is
         // what has to stop issuing work when the device dies.
         let gpu = GpuContext::from_parts(surface.device().clone(), surface.queue().clone());
-        let engine = Engine::new(gpu, TARGET_FORMAT, Extent2::new(width, height));
+        let mut engine = Engine::new(gpu, format, Extent2::new(width, height));
+        // The transfer is the surface's from the first frame; `apply_hdr` moves only
+        // the headroom.
+        engine.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
         Some(Self {
             surface,
             engine,
             viewport: (width, height),
+            transfer,
         })
+    }
+
+    /// Whether the window can show anything above white (§6.5).
+    pub fn hdr_capable(&self) -> bool {
+        self.transfer != Transfer::Srgb
+    }
+
+    /// Tell the engine what the window is (§6.5): the surface's transfer — stated
+    /// even with the switch off, since `Command::ToggleHdr`'s `enabled` reads it —
+    /// and the headroom: the display's where reported (`Window::display_headroom`),
+    /// `choice`'s where not, and 1 with the switch off.
+    pub fn apply_hdr(&mut self, choice: Hdr, display_headroom: Option<f32>) {
+        let headroom = if choice.on && self.hdr_capable() {
+            display_headroom.unwrap_or_else(|| choice.clamped_headroom())
+        } else {
+            1.0
+        };
+        self.engine
+            .process(ViewCommand::SetOutput(Output::new(self.transfer, headroom)));
     }
 
     /// Send a command to the engine — the **only** way to move engine state through a

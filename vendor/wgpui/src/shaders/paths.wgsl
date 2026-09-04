@@ -31,5 +31,12 @@ fn vs_path(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
 
 @fragment
 fn fs_path(input: PathVarying) -> @location(0) vec4<f32> {
-    return textureSample(t_sprite, s_sprite, input.texture_coords);
+    let c = textureSample(t_sprite, s_sprite, input.texture_coords);
+    // STARK PATCH: the intermediate holds premultiplied sRGB-encoded color, so a
+    // linear swapchain gets it un-premultiplied, decoded and re-premultiplied.
+    if globals.linear_output != 0u {
+        let a = max(c.a, 1e-6);
+        return vec4<f32>(stark_to_linear(c.rgb / a) * a, c.a);
+    }
+    return c;
 }

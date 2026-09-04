@@ -47,30 +47,47 @@ pub struct SelectionOutline<'a> {
 /// act through, theirs is a thing you need only be aware of.
 pub(super) const PEER_OUTLINE_ALPHA: f32 = 0.55;
 
+/// The overlay pass's two layouts, shared by the pipeline compiled for each target
+/// format ([`TargetPasses`](super::TargetPasses)) so a consumer's view bind group
+/// ([`ViewBindings`](super::view::ViewBindings)) is valid against either.
+pub(super) struct OverlayLayouts {
+    /// Group 0's layout, for the consumer that owns the buffer behind it.
+    pub(super) view: wgpu::BindGroupLayout,
+    pub(super) tile: wgpu::BindGroupLayout,
+}
+
+impl OverlayLayouts {
+    pub(super) fn new(device: &wgpu::Device) -> Self {
+        let frag = wgpu::ShaderStages::FRAGMENT;
+        // Its own view bind group rather than pass A's: the fragment stage needs the
+        // uniform too (it converts a canvas-space distance to screen px with the
+        // zoom), and pass A declares it vertex-only.
+        Self {
+            view: desc::layout_for(device, "stark overlay view bgl", VIEW_SLOTS, frag, false),
+            tile: desc::layout_for(device, "stark overlay tile bgl", MASK_SLOTS, frag, false),
+        }
+    }
+}
+
 pub(super) struct OverlayPass {
     pub(super) pipeline: wgpu::RenderPipeline,
-    /// Group 0's layout, for the consumer that owns the buffer behind it
-    /// ([`ViewBindings`](super::view::ViewBindings)).
-    pub(super) view_bgl: wgpu::BindGroupLayout,
     pub(super) tile_bgl: wgpu::BindGroupLayout,
 }
 
 impl OverlayPass {
-    pub(super) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
+    pub(super) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        layouts: &OverlayLayouts,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection overlay"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().into()),
         });
-        // Its own view bind group rather than pass A's: the fragment stage needs the
-        // uniform too (it converts a canvas-space distance to screen px with the
-        // zoom), and pass A declares it vertex-only.
-        let view_bgl = desc::layout_for(device, "stark overlay view bgl", VIEW_SLOTS, frag, false);
-        let tile_bgl = desc::layout_for(device, "stark overlay tile bgl", MASK_SLOTS, frag, false);
         let layout = desc::pipeline_layout(
             device,
             "stark overlay layout",
-            &[Some(&view_bgl), Some(&tile_bgl)],
+            &[Some(&layouts.view), Some(&layouts.tile)],
         );
         let pipeline = desc::render_pipeline(
             device,
@@ -96,8 +113,7 @@ impl OverlayPass {
         );
         Self {
             pipeline,
-            view_bgl,
-            tile_bgl,
+            tile_bgl: layouts.tile.clone(),
         }
     }
 

@@ -94,11 +94,51 @@ impl From<ChromeHiding> for String {
     }
 }
 
+/// The Lighting panel's HDR switch and the headroom slider under it (§6.5). Off,
+/// the canvas is drawn as an export would be. `headroom` stands in where the
+/// platform will not say how bright the display goes (the web says only *whether*
+/// it is HDR). Kept whether or not the current surface can show HDR.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hdr {
+    pub on: bool,
+    /// Times SDR white; a stored value outside the slider's range reads back clamped.
+    pub headroom: f32,
+}
+
+impl Hdr {
+    pub const MIN_HEADROOM: f32 = 1.0;
+    /// Three stops over white — past what a consumer display drives above its SDR
+    /// white.
+    pub const MAX_HEADROOM: f32 = 8.0;
+
+    /// The headroom as this record stores it, held to the slider's range.
+    pub fn clamped_headroom(self) -> f32 {
+        if self.headroom.is_finite() {
+            self.headroom.clamp(Self::MIN_HEADROOM, Self::MAX_HEADROOM)
+        } else {
+            Self::default().headroom
+        }
+    }
+}
+
+impl Default for Hdr {
+    fn default() -> Self {
+        Self {
+            // On: previewing an export is the exception, not the session.
+            on: true,
+            // One stop over white — what every HDR panel drives; a brighter one
+            // leaves headroom unused rather than clipping.
+            headroom: 2.0,
+        }
+    }
+}
+
 /// Every preference the ⚙ dialog sets, in the form they are stored in.
 ///
 /// `#[serde(default)]` is what makes the struct extensible across versions — see
 /// the module comment.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     /// Whether holding a stroke still snaps it to a line or an ellipse (§6.9).
@@ -126,6 +166,9 @@ pub struct Prefs {
     /// Whether a stroke's commit keeps the pixels its preview already drew, rather
     /// than drawing the stroke again when the pen lifts (§6.2).
     pub fast_commit: bool,
+    /// The HDR switch and headroom (§6.5) — set from the Lighting panel rather than
+    /// the dialog, stored here because it is a standing choice like every other row.
+    pub hdr: Hdr,
 }
 
 impl Record for Prefs {
@@ -169,6 +212,7 @@ impl Default for Prefs {
             // pair where a disagreement would be near-invisible — both settings
             // paint the same stroke.
             fast_commit: stark_engine::DEFAULT_FAST_COMMIT,
+            hdr: Hdr::default(),
         }
     }
 }
@@ -203,5 +247,18 @@ mod tests {
             !ChromeHiding::WhilePainting.sleeps(),
             "the stack comes straight back",
         );
+    }
+
+    /// A stored headroom outside the slider's range reads back inside it.
+    #[test]
+    fn a_stored_headroom_is_held_to_the_slider() {
+        let wild = |headroom: f32| Hdr { on: true, headroom }.clamped_headroom();
+        assert_eq!(wild(0.25), Hdr::MIN_HEADROOM);
+        assert_eq!(wild(64.0), Hdr::MAX_HEADROOM);
+        assert_eq!(wild(f32::NAN), Hdr::default().headroom);
+        assert_eq!(wild(3.0), 3.0);
+        // A record stored before the field existed reads as the default.
+        let old: Prefs = serde_json::from_str("{}").expect("an empty record reads");
+        assert_eq!(old.hdr, Hdr::default());
     }
 }

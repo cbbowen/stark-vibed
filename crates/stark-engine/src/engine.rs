@@ -46,13 +46,13 @@ use crate::command::{DocCommand, GestureCommand, InputCommand, PeerCommand, View
 use crate::document::{
     ApplyCtx, CanvasBounds, DocState, Layer, LayerContent, LinearTimeline, Timeline,
 };
-use crate::gpu::MediaParams;
 use crate::gpu::channels::Zeroes;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
     FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Substrate,
     SubstrateMap, TilePool, TransformRenderer,
 };
+use crate::gpu::{MediaParams, Output};
 use crate::peer::Peers;
 use crate::session::ShapeResult;
 use crate::view::ViewTransform;
@@ -634,6 +634,9 @@ pub struct ObservableState {
     // moment anything else changes them (§4).
     /// Media/lighting parameters of the painterly pass (§6.3).
     pub media: crate::gpu::MediaParams,
+    /// The display the screen is presented on (§6.5) — what
+    /// [`ViewCommand::SetOutput`](crate::command::ViewCommand) set.
+    pub output: crate::gpu::Output,
     /// The HDR lighting environment in use (§6.3).
     pub environment: EnvironmentId,
 
@@ -732,6 +735,9 @@ pub struct EngineShared {
     /// The media/lighting parameters a sibling opens with (§6.3) — a seed, not a
     /// shared value; see the note on the type.
     media: MediaParams,
+    /// The display a sibling opens presenting to (§6.5) — a seed on `media`'s terms,
+    /// since a sibling's surface is the same screen's.
+    output: Output,
 }
 
 impl EngineShared {
@@ -1048,6 +1054,7 @@ impl Engine {
             shared.apply.substrates.current(),
             shared.environment.current(),
             shared.media,
+            shared.output,
         );
         let compositor = Compositor::new(&compositor_pipeline);
         Self::assemble(
@@ -1131,6 +1138,7 @@ impl Engine {
         );
         EngineShared {
             media: self.compositor_pipeline.media(),
+            output: self.compositor_pipeline.output(),
             ..self.shared.clone()
         }
     }
@@ -1812,6 +1820,7 @@ impl Engine {
                 }
             },
             ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
+            ViewCommand::SetOutput(output) => self.compositor_pipeline.set_output(output),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
             ViewCommand::SetHistoryBudget(bytes) => self.history_budget = bytes,
             ViewCommand::SetFastCommit(on) => self.fast_commit = on,
@@ -2157,6 +2166,7 @@ impl Engine {
                     .collect()
             }),
             media: self.compositor_pipeline.media(),
+            output: self.compositor_pipeline.output(),
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),
             substrate: doc.substrate,
@@ -2214,6 +2224,11 @@ impl Engine {
     /// The current media/lighting parameters (§6.3).
     pub fn media_params(&self) -> crate::gpu::MediaParams {
         self.compositor_pipeline.media()
+    }
+
+    /// The display the screen is presented on (§6.5).
+    pub fn output(&self) -> Output {
+        self.compositor_pipeline.output()
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use
@@ -2747,6 +2762,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     let shared = EngineShared {
         passes: compositor_pipeline.passes(),
         media: compositor_pipeline.media(),
+        output: compositor_pipeline.output(),
         gpu: gpu.clone(),
         target_format,
         color_space: cs.clone(),

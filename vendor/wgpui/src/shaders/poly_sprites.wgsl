@@ -1,7 +1,9 @@
 struct Globals {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
-    pad: u32,
+    // STARK PATCH: 1 when the swapchain is linear (scRGB), and every fragment
+    // shader decodes its sRGB-encoded output on the way out (see `blend_color`).
+    linear_output: u32,
 }
 
 struct Bounds {
@@ -84,10 +86,19 @@ fn distance_from_clip_rect(unit_vertex: vec2<f32>, bounds: Bounds, clip_bounds: 
     return distance_from_clip_rect_impl(position, clip_bounds);
 }
 
+// STARK PATCH: the sRGB decode a linear (scRGB) swapchain needs on the way out;
+// the pipeline works and blends in sRGB-encoded values.
+fn stark_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
 fn blend_color(color: vec4<f32>, alpha_factor: f32) -> vec4<f32> {
     let alpha = color.a * alpha_factor;
     let multiplier = select(1.0, alpha, globals.premultiplied_alpha != 0u);
-    return vec4<f32>(color.rgb * multiplier, alpha);
+    let rgb = select(color.rgb, stark_to_linear(color.rgb), globals.linear_output != 0u);
+    return vec4<f32>(rgb * multiplier, alpha);
 }
 
 fn pick_corner_radius(center_to_point: vec2<f32>, radii: Corners) -> f32 {

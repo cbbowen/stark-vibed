@@ -54,9 +54,9 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
+use stark_engine::command::ViewCommand;
 use stark_ui::prefs::Prefs;
 use stark_ui::storage;
-use stark_engine::command::ViewCommand;
 
 // The three below were an `impl Prefs` until the record moved to `stark_ui`
 // (§11.2, N1). The orphan rule then refused them, which is the boundary reporting
@@ -94,6 +94,9 @@ fn capture(state: AppState) -> Prefs {
             .peek()
             .as_ref()
             .map_or(stark_engine::DEFAULT_FAST_COMMIT, |o| o.fast_commit),
+        // Off the signal, not the projection: the projection holds what the surface
+        // was told, and the choice has to outlive a screen that cannot show HDR.
+        hdr: *state.hdr.peek(),
     }
 }
 
@@ -103,10 +106,12 @@ fn apply_view(prefs: Prefs, state: AppState) {
     let mut minimal = state.minimal;
     let mut tips = state.tutor.enabled;
     let mut hiding = state.chrome_hiding;
+    let mut hdr = state.hdr;
     assist.set(prefs.assist);
     minimal.set(prefs.minimal);
     tips.set(prefs.tips);
     hiding.set(prefs.chrome_hiding);
+    hdr.set(prefs.hdr);
 }
 
 /// Push the preferences the **engine** owns, as commands. Needs a renderer;
@@ -118,6 +123,8 @@ fn apply_engine(prefs: Prefs, state: AppState) {
     );
     dispatch(state, ViewCommand::SetHistoryBudget(prefs.history_budget));
     dispatch(state, ViewCommand::SetFastCommit(prefs.fast_commit));
+    // The HDR choice met with the surface, which only exists now (§6.5).
+    crate::panels::lighting::apply_output(state);
 }
 
 /// Apply this browser's stored preferences to the frontend. Called once at app

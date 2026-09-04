@@ -5,6 +5,7 @@
 //! target directly and this is never bound, so painting at 100% costs exactly
 //! what it always did.
 
+use super::display::Transfer;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
@@ -133,27 +134,41 @@ pub(super) fn attachment_bytes(
 /// pessimistic side of the round-up is the safe side of a memory budget.
 const BLUR_BYTES_PER_PX: u64 = 2 * (2 * (16 + 8) + 8);
 
-/// The resolve pass — the pipeline and its layout. The uniform it reads (`n`, the
-/// sample count) is the *rendering* consumer's: `n` is a function of that target's
-/// zoom, so the substrate and a miniature beside it disagree about it by construction.
-/// It rides in the [`Supersampled`] set, which is exactly the state that exists only
-/// while a view is zoomed out.
+/// The resolve pass's bind group layout, shared by the pipeline compiled for each
+/// target format ([`TargetPasses`](super::TargetPasses)) so a [`Supersampled`]
+/// set's bind group is valid against either.
+pub(super) fn resolve_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    desc::layout_for(
+        device,
+        "stark resolve bgl",
+        RESOLVE_SLOTS,
+        wgpu::ShaderStages::FRAGMENT,
+        false,
+    )
+}
+
+/// The resolve pass — the pipeline, compiled for one target format. The uniform it
+/// reads (`n`, the sample count) is the *rendering* consumer's: `n` is a function of
+/// that target's zoom, so the substrate and a miniature beside it disagree about it
+/// by construction. It rides in the [`Supersampled`] set, which is exactly the state
+/// that exists only while a view is zoomed out.
 pub(super) struct ResolvePass {
     pipeline: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
 }
 
 impl ResolvePass {
-    pub(super) fn new(device: &wgpu::Device, target: &[Option<wgpu::ColorTargetState>]) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
+    pub(super) fn new(
+        device: &wgpu::Device,
+        bgl: &wgpu::BindGroupLayout,
+        target: &[Option<wgpu::ColorTargetState>],
+    ) -> Self {
         // A fullscreen pass reading the supersampled target with `textureLoad` at an
         // integer block of its own choosing, so nothing here needs a sampler.
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark resolve"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().into()),
         });
-        let bgl = desc::layout_for(device, "stark resolve bgl", RESOLVE_SLOTS, frag, false);
-        let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl)]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.
         let pipeline = desc::fullscreen_pipeline(
@@ -164,7 +179,7 @@ impl ResolvePass {
             ("vs_main", "fs_main"),
             target,
         );
-        Self { pipeline, bgl }
+        Self { pipeline }
     }
 
     /// Encode pass E: everything the passes above drew, box-averaged in light down to
@@ -177,15 +192,19 @@ impl ResolvePass {
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         ss: &Supersampled,
-        n: u32,
-        dither_step: f32,
+        scene: ResolveScene,
         target: &wgpu::TextureView,
     ) {
         ctx.queue.write_buffer(
             &ss.buf,
             0,
             bytemuck::bytes_of(&ResolveUniform {
-                n: [n as f32, dither_step, 0.0, 0.0],
+                n: [
+                    scene.n as f32,
+                    scene.dither_step,
+                    scene.transfer.lane(),
+                    0.0,
+                ],
             }),
         );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -199,6 +218,17 @@ impl ResolvePass {
         pass.set_bind_group(0, &ss.bg, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+/// What one resolve needs beyond the supersampled set (§6.4).
+pub(super) struct ResolveScene {
+    /// Samples per axis.
+    pub(super) n: u32,
+    /// One code of the target's encoding, or 0 (`media::dither_step`, §6.5).
+    pub(super) dither_step: f32,
+    /// The transfer the media pass wrote the supersampled texels in, so the decode
+    /// and the encode around the average are a pair (§6.5).
+    pub(super) transfer: Transfer,
 }
 
 /// Where passes B–D write when the view is zoomed out, and what pass E reads it back
@@ -222,7 +252,7 @@ impl Supersampled {
         device: &wgpu::Device,
         size: Extent2,
         format: wgpu::TextureFormat,
-        pass: &ResolvePass,
+        bgl: &wgpu::BindGroupLayout,
     ) -> Self {
         let target = super::Attachment::new(device, size, format, "stark supersampled");
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -231,18 +261,19 @@ impl Supersampled {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bg = desc::bind_group_for(
-            device,
-            "stark resolve bg",
-            &pass.bgl,
-            RESOLVE_SLOTS,
-            false,
-            |i| match i {
-                rb::R => buf.as_entire_binding(),
-                rb::SRC => wgpu::BindingResource::TextureView(target.view()),
-                other => unreachable!("`RESOLVE_SLOTS` lists no binding {other}"),
-            },
-        );
+        let bg =
+            desc::bind_group_for(
+                device,
+                "stark resolve bg",
+                bgl,
+                RESOLVE_SLOTS,
+                false,
+                |i| match i {
+                    rb::R => buf.as_entire_binding(),
+                    rb::SRC => wgpu::BindingResource::TextureView(target.view()),
+                    other => unreachable!("`RESOLVE_SLOTS` lists no binding {other}"),
+                },
+            );
         Self { target, bg, buf }
     }
 

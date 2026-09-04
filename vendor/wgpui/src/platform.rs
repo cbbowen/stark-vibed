@@ -422,6 +422,20 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         None
     }
 
+    /// STARK PATCH: the color space the window's swapchain is presented in, or
+    /// `None` on platforms that don't use the WGPU renderer. An embedder rendering
+    /// into a `WgpuSurface` writes for this.
+    fn surface_color_space(&self) -> Option<wgpu::SurfaceColorSpace> {
+        None
+    }
+
+    /// STARK PATCH: how far above SDR white the display behind this window can go,
+    /// where the platform reports it; `None` where it does not, or off the WGPU
+    /// renderer.
+    fn display_headroom(&self) -> Option<f32> {
+        None
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None

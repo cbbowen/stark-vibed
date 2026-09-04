@@ -205,6 +205,42 @@ frontend is written against — the crate's rustdoc is, and `docs/` is kept. A
 blob that size is in git history for good, which is what tips a "copied
 verbatim" that would otherwise be worth keeping for the clean update diff.
 
+## Patch 6 — an HDR swapchain, and the shaders decode for it (sites marked `STARK PATCH`)
+
+`src/platform/renderer.rs`: where the window's surface is configured, prefer
+`Rgba16Float` in `SurfaceColorSpace::ExtendedSrgbLinear` (scRGB) when the surface
+advertises it — an HDR display on Windows (DXGI) or macOS (EDR) — else the 8-bit
+non-sRGB format as before. `WGPUI_HDR=0` in the environment keeps the 8-bit path.
+The `GlobalParams` padding lane becomes `linear_output`, set to 1 on the scRGB
+swapchain; `WgpuRenderer::surface_color_space` and `display_headroom` report the
+choice and the display's headroom. `src/platform.rs`, `src/platform/window.rs`,
+`src/window.rs`: `surface_color_space()` and `display_headroom()` on
+`PlatformWindow` (defaulting to `None`) and on the public `Window`.
+
+`src/shaders/*.wgsl`: the `Globals` struct's `pad` lane is `linear_output`, and
+every fragment shader that writes the swapchain decodes its sRGB-encoded output to
+linear when it is set — `blend_color` in each of `mono_sprites`, `path_common`,
+`poly_sprites`, `quads`, `shadows` and `underlines` (a `stark_to_linear` helper
+beside each), and `fs_path` in `paths.wgsl`, whose intermediate is premultiplied
+and so is un-premultiplied, decoded and re-premultiplied. `surfaces.wgsl` is
+untouched: an embedder's surface is composited in as written, which is the point.
+
+### Why
+
+wgpui's shaders work and blend in sRGB-encoded values written to a non-sRGB 8-bit
+swapchain; on a linear one the same values read gamma-lifted. Stark renders its
+canvas into a `WgpuSurface` and wants the swapchain to carry light above SDR white
+(§6.5), which only a float, linear (or PQ) swapchain can. So the swapchain goes
+linear where the display allows, and the chrome's output is decoded at the last
+step. Blending then happens in linear light, which reads a shade thinner at
+antialiased text edges — the physically right answer, and a small difference. An
+`*Srgb` swapchain was not an option: its hardware encode would fight the shaders'
+own.
+
+Not upstreamable as is — upstream would want the color space to be a
+`WindowOptions` choice rather than "HDR when the display has it" — but the shader
+half is what any such option would need.
+
 ## Notes
 
 - `.cargo/config.toml` came with the published crate and is inert here: cargo
@@ -225,11 +261,12 @@ verbatim" that would otherwise be worth keeping for the clean update diff.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply all six changes: the
+Unpack the new version over this directory, then re-apply all seven changes: the
 `flume` line in each manifest, the `DeviceDescriptor` threading, the
 `WindowBounds` plumbing, the RGBA `RenderImage`, the surface bind-group
-generation, and the deletion — `rm -rf examples/` and strip the `[[example]]`
-blocks the new manifests bring back.
+generation, the HDR swapchain with its shader decode, and the deletion —
+`rm -rf examples/` and strip the `[[example]]` blocks the new manifests bring
+back.
 
 Dropping this directory takes more than the `flume` fix landing upstream now:
 patch 2 has to land too, in some form, or the frontend goes back to a device it

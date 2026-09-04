@@ -122,7 +122,9 @@ impl color::Background {
 struct GlobalParams {
     viewport_size: [f32; 2],
     premultimated_alpha: u32,
-    pad: u32,
+    /// STARK PATCH: 1 on a linear (scRGB) swapchain, when every shader decodes its
+    /// sRGB-encoded output to linear on the way out. Was the padding lane.
+    linear_output: u32,
 }
 
 impl GlobalParams {
@@ -139,7 +141,7 @@ impl GlobalParams {
             format: wgpu::VertexFormat::Uint32,
         },
         wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GlobalParams, pad) as wgpu::BufferAddress,
+            offset: std::mem::offset_of!(GlobalParams, linear_output) as wgpu::BufferAddress,
             shader_location: 2,
             format: wgpu::VertexFormat::Uint32,
         },
@@ -1334,15 +1336,45 @@ impl WgpuRenderer {
 
         let surface_capabilities = surface.get_capabilities(&context.adapter);
 
+        // STARK PATCH: an HDR swapchain where the platform offers one — `Rgba16Float`
+        // as linear scRGB. Every shader then decodes its sRGB-encoded output on the
+        // way out (`linear_output`), so the chrome is unchanged and an embedder's
+        // `WgpuSurface` can carry light above white. `WGPUI_HDR=0` keeps the 8-bit path.
+        //
+        // The display has to be HDR *now*, not merely the format supported: DXGI
+        // advertises the scRGB color space on every Windows surface, SDR monitors
+        // included, and a double-width swapchain there buys nothing.
+        let display = surface.display_hdr_info(&context.adapter);
+        let display_is_hdr = display
+            .coarse
+            .as_ref()
+            .and_then(|c| c.high_dynamic_range)
+            .unwrap_or(false)
+            || display.tone_map_headroom().is_some_and(|h| h > 1.0);
+        let hdr = std::env::var("WGPUI_HDR").map_or(true, |v| v != "0")
+            && display_is_hdr
+            && surface_capabilities
+                .color_spaces(wgpu::TextureFormat::Rgba16Float)
+                .contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB_LINEAR);
         // NOTE(mdeand): The shaders (hsla_to_rgba) output sRGB values directly, so we need a
         // NOTE(mdeand): non-sRGB surface format to avoid a double linear-to-sRGB conversion.
         // NOTE(mdeand): Prefer a non-sRGB format; fall back to whatever is available.
-        let format = surface_capabilities
-            .formats
-            .iter()
-            .find(|f| !f.is_srgb())
-            .copied()
-            .unwrap_or(surface_capabilities.formats[0]);
+        let (format, color_space) = if hdr {
+            (
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::SurfaceColorSpace::ExtendedSrgbLinear,
+            )
+        } else {
+            (
+                surface_capabilities
+                    .formats
+                    .iter()
+                    .find(|f| !f.is_srgb())
+                    .copied()
+                    .unwrap_or(surface_capabilities.formats[0]),
+                wgpu::SurfaceColorSpace::Auto,
+            )
+        };
 
         let alpha_mode = if surface_capabilities
             .alpha_modes
@@ -1378,7 +1410,7 @@ impl WgpuRenderer {
         let surface_configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            color_space,
             width,
             height,
             present_mode,
@@ -1433,6 +1465,27 @@ impl WgpuRenderer {
         Ok(renderer)
     }
 
+    /// STARK PATCH: the color space the swapchain is presented in — `Auto` on the
+    /// 8-bit path, `ExtendedSrgbLinear` on the HDR one. What an embedder rendering
+    /// into a `WgpuSurface` has to write for.
+    pub fn surface_color_space(&self) -> wgpu::SurfaceColorSpace {
+        self.surface_configuration.color_space
+    }
+
+    /// STARK PATCH: whether every shader decodes its output to linear on the way out
+    /// — true exactly on the scRGB swapchain.
+    fn linear_output(&self) -> bool {
+        self.surface_configuration.color_space == wgpu::SurfaceColorSpace::ExtendedSrgbLinear
+    }
+
+    /// STARK PATCH: how far above SDR white the display behind this window can go,
+    /// where the platform reports it (`wgpu::DisplayHdrInfo::tone_map_headroom`).
+    pub fn display_headroom(&self) -> Option<f32> {
+        self.surface
+            .display_hdr_info(&self.context.adapter)
+            .tone_map_headroom()
+    }
+
     pub fn draw(&self, scene: &Scene) {
         let mut command_encoder =
             self.context
@@ -1466,7 +1519,8 @@ impl WgpuRenderer {
                 wgpu::CompositeAlphaMode::PreMultiplied => 1,
                 _ => 0,
             },
-            pad: 0,
+            // STARK PATCH: see `linear_output`.
+            linear_output: u32::from(self.linear_output()),
         };
 
         self.context.queue.write_buffer(

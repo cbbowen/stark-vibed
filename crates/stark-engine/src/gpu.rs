@@ -37,10 +37,10 @@ pub(crate) mod uniforms;
 // changed — `GroupContent`, `MergeSide`, `Resource` and `MaskHandle` were re-exported
 // for a public path nobody outside took and nothing inside used, which only became
 // visible once the compiler could see they had no reader at all.
-pub(crate) use composite::{BlendPass, FilterPass};
+pub(crate) use composite::{BlendPass, FilterPass, export_format};
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
-    MatteDraw, MediaParams, Offscreen, SelectionOutline,
+    MatteDraw, MediaParams, Offscreen, Output, SelectionOutline, Transfer,
 };
 pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use environment::{Environment, EnvironmentId};

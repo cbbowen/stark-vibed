@@ -2,10 +2,10 @@
 // the per-color-space media shaders. Each variant only differs in how it derives
 // the un-lit linear *base color* from the composited channels; everything else —
 // the bindings, the fullscreen vertex, the impasto normal-from-height, the
-// directional lighting + paint gloss, and the composite-over-background + sRGB
+// directional lighting + paint gloss, and the composite-over-background + display
 // encode — lives here so it is written once.
 
-import package::lib::color::{linear_to_srgb};
+import package::lib::display::{encode_display};
 import package::lib::noise::{dither2};
 import package::lib::paint_common::{PAINT_EPS};
 
@@ -35,6 +35,10 @@ struct Media {
     // length scale — rotation and mirroring leave lengths alone — which is what the
     // relief slope below wants, and what it would be wrong to take from this matrix.
     view_m: vec4<f32>,
+    // The display (§6.5): `.x` the transfer the target expects (`lib/display.wesl`'s
+    // selector, as a float), `.y` the headroom the tonemap compresses into — times
+    // SDR white; 1 on any SDR surface and on every export. `.zw` unused.
+    out: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
@@ -220,6 +224,14 @@ fn commerce_tonemap(color: vec3<f32>, black_point: f32) -> vec3<f32> {
     return mix(c, vec3<f32>(new_peak), g);
 }
 
+// The same curve for a display that can show `headroom` times SDR white (§6.5): run
+// in that display's units and scaled back, so the knee sits at `headroom` and only
+// what overflows *this* surface is rolled off. At `headroom = 1` it is
+// `commerce_tonemap` exactly, which is what keeps every golden where it was.
+fn tonemap_to(color: vec3<f32>, black_point: f32, headroom: f32) -> vec3<f32> {
+    return headroom * commerce_tonemap(color / headroom, black_point / headroom);
+}
+
 // Light the un-lit linear `base` color by image-based lighting from the HDR
 // environment (§6.3): diffuse irradiance sampled (blurred) in the relief
 // normal direction, plus a specular reflection that sharpens with `paint` so
@@ -277,8 +289,9 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     // — only the uniform dielectric floor over the whole canvas comes off.
     let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure;
     // Straight (un-premultiplied) alpha: PNG stores straight, and the color here is
-    // the paint's own, not paint-times-coverage.
-    let srgb = linear_to_srgb(commerce_tonemap(lit, sheen));
+    // the paint's own, not paint-times-coverage. Compressed into the display's
+    // headroom and encoded in the transfer this surface reads (§6.5).
+    let encoded = encode_display(u32(m.out.x), tonemap_to(lit, sheen, m.out.y));
     // Quantization dither (§6.5): the store below is the pipeline's one walk from
     // f32 down to the target's 8-bit codes, so its rounding is made stochastic —
     // ±half a code, uniform, `lib::noise`'s law — and a ramp too gentle for the
@@ -288,5 +301,5 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     // export (§15.6). `sub_b.z` is one code of the target's encoding — and 0 for
     // a target deep enough not to band, which turns all of this off.
     let d = dither2(vec2u(p), DITHER_SEED) * m.sub_b.z;
-    return vec4<f32>(srgb + d.x, alpha + d.y);
+    return vec4<f32>(encoded + d.x, alpha + d.y);
 }

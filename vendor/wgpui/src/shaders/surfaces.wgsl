@@ -1,7 +1,9 @@
 struct Globals {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
-    pad: u32,
+    // STARK PATCH: 1 when the swapchain is linear (scRGB), and every fragment
+    // shader decodes its sRGB-encoded output on the way out (see `blend_color`).
+    linear_output: u32,
 }
 
 struct Bounds {

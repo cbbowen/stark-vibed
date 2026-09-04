@@ -11,8 +11,9 @@ use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
 use crate::widgets::{PopoutId, Slider, slider_fill};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
-use stark_engine::{EnvironmentId, MediaParams};
+use stark_engine::{EnvironmentId, MediaParams, Output, Transfer};
 use stark_model::{SubstrateId, SubstrateScale};
+use stark_ui::prefs::Hdr;
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -86,6 +87,21 @@ pub fn LightingPanel() -> Element {
     // What a release would lay down (`preview::SUBSTRATE_SCALE`). Held rather than read
     // back off `scale` at commit time, which reports the *preview* mid-drag.
     let laying = use_signal(|| None::<SubstrateScale>);
+    // The display (§6.5): this browser's choice (`state::Signals::hdr`), and what
+    // the canvas in front of it can do. `renderer_ready` is the subscription and
+    // `peek` the read: the renderer signal is written on every dispatch, and this
+    // panel must not wake per pointer sample.
+    let hdr = *state.hdr.read();
+    let ready = *state.renderer_ready.read();
+    let (hdr_capable, display_headroom) = if ready {
+        state
+            .renderer
+            .peek()
+            .as_ref()
+            .map_or((false, None), |r| (r.hdr_capable(), r.display_headroom()))
+    } else {
+        (false, None)
+    };
     let swatch = format!(
         "background: rgb({:.1}% {:.1}% {:.1}%);",
         c[0] * 100.0,
@@ -205,7 +221,69 @@ pub fn LightingPanel() -> Element {
                 }
             }
         }
+        // The HDR switch (§6.5): off is the picture an export makes. Only on a
+        // canvas that can show more; `marked` by hand on the rows above's terms.
+        if hdr_capable {
+            div { class: "slider-row marked",
+                div { class: "slider-label", {icon(stark_ui::icons::HDR)} {label("HDR")} }
+                input {
+                    class: "setting-check",
+                    r#type: "checkbox",
+                    checked: hdr.on,
+                    onchange: move |e| set_hdr(state, |h| h.on = e.checked()),
+                }
+            }
+            // The slider stands in for a headroom the platform will not report
+            // (`Renderer::display_headroom`); a figure the screen states is used as is.
+            if hdr.on && display_headroom.is_none() {
+                Slider { label: "Headroom", glyph: stark_ui::icons::HDR,
+                    min: Hdr::MIN_HEADROOM, max: Hdr::MAX_HEADROOM, value: hdr.clamped_headroom(),
+                    oninput: move |v| change_hdr(state, move |h| h.headroom = v),
+                    onsettle: move |_| crate::prefs::save(state) }
+            }
+        }
     }
+}
+
+/// Tell the engine what the screen is (§6.5): the surface's transfer — stated even
+/// with the switch off, since `Command::ToggleHdr`'s `enabled` reads it — and the
+/// headroom: the display's where reported, this browser's choice where not, and 1
+/// with the switch off. Run once the renderer is up (`prefs::load_engine`) and
+/// whenever either half moves.
+pub fn apply_output(state: AppState) {
+    let choice = *state.hdr.peek();
+    let Some((transfer, display)) = state
+        .renderer
+        .peek()
+        .as_ref()
+        .map(|r| (r.transfer(), r.display_headroom()))
+    else {
+        return;
+    };
+    let headroom = if choice.on && transfer != Transfer::Srgb {
+        display.unwrap_or_else(|| choice.clamped_headroom())
+    } else {
+        1.0
+    };
+    dispatch(
+        state,
+        ViewCommand::SetOutput(Output::new(transfer, headroom)),
+    );
+}
+
+/// Change this browser's HDR choice and show it — the slider's per-sample half,
+/// which saves nothing.
+fn change_hdr(state: AppState, f: impl FnOnce(&mut Hdr)) {
+    let mut hdr = state.hdr;
+    f(&mut hdr.write());
+    apply_output(state);
+}
+
+/// Change this browser's HDR choice, show it, and keep it — the one door for the
+/// switch and the command.
+pub fn set_hdr(state: AppState, f: impl FnOnce(&mut Hdr)) {
+    change_hdr(state, f);
+    crate::prefs::save(state);
 }
 
 /// The canvas colour's picker, as flown out beside the Lighting panel

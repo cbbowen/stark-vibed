@@ -247,6 +247,24 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
         .expect("one texture in, one string out")
 }
 
+/// Blocking readback of one `Rgba16Float` texture to `f32` — four per texel, rows
+/// top-down — on [`read_rgba8_blocking`]'s terms: native, for the suite. The format
+/// is asserted here for [`read_many_rgba16f`]'s reason.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rgba16f_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
+    assert_eq!(
+        texture.format(),
+        wgpu::TextureFormat::Rgba16Float,
+        "read_rgba16f_blocking decodes four halves a texel",
+    );
+    let (buffer, rows) = begin_read(ctx, &[texture], size);
+    map_blocking(ctx, &buffer);
+    let bytes = take_rows(buffer, &rows)
+        .pop()
+        .expect("one texture in, one string out");
+    decode_rgba16f(&bytes)
+}
+
 /// Map `buffer` and block until it is, panicking on either failure.
 ///
 /// The native half of [`wait_mapped`] with the async machinery taken off, and

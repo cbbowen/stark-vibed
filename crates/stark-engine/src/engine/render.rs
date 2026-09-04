@@ -462,7 +462,42 @@ impl Engine {
             Rendered::Live,
         );
         let pixels = crate::gpu::readback::read_rgba8_blocking(&self.shared.gpu, &target, size);
-        RgbaImage::from_target_bytes(size.width, size.height, pixels, self.shared.target_format)
+        RgbaImage::from_target_bytes(size.width, size.height, pixels, target.format())
+    }
+
+    /// Render the current canvas through the **screen's** passes into a half-float
+    /// texture and read it back as `f32` — four per texel, rows top-down, in the
+    /// transfer the engine's [`Output`](crate::Output) names (§6.5). Only for an
+    /// engine built on an `Rgba16Float` target. `pub` for the suite and nothing else,
+    /// on [`render_to_image`](Self::render_to_image)'s terms.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub fn render_to_floats(&mut self) -> Vec<f32> {
+        let format = self.shared.target_format;
+        assert_eq!(
+            format,
+            wgpu::TextureFormat::Rgba16Float,
+            "render_to_floats reads a half-float screen, and this engine presents to {format:?}",
+        );
+        let view = self.session.view;
+        let size = view.viewport;
+        let target = self.offscreen_target(
+            "stark hdr probe target",
+            format,
+            size,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_view(
+            &target_view,
+            view,
+            None,
+            Background::Substrate,
+            Chrome::Shown,
+            Rendered::Live,
+            Attachments::Offscreen(&mut Offscreen::default()),
+        );
+        crate::gpu::readback::read_rgba16f_blocking(&self.shared.gpu, &target, size)
     }
 
     /// Render through an explicit view into an offscreen texture, ready to be read
@@ -478,9 +513,11 @@ impl Engine {
         content: Rendered,
     ) -> (wgpu::Texture, Extent2) {
         let size = view.viewport;
+        // 8-bit whatever the screen is (§15.6): the compositor renders an 8-bit target
+        // SDR, so this format is the whole of what makes an export one.
         let target = self.offscreen_target(
             "stark export target",
-            self.shared.target_format,
+            crate::gpu::export_format(self.shared.target_format),
             size,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
@@ -679,7 +716,7 @@ impl Engine {
         // Captured, not read through `self`: the future deliberately does not
         // borrow the engine.
         let gpu = self.shared.gpu.clone();
-        let format = self.shared.target_format;
+        let format = target.format();
         Ok(async move {
             let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await?;
             Ok(RgbaImage::from_target_bytes(

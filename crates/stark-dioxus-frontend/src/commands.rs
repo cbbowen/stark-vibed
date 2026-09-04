@@ -142,6 +142,7 @@ pub fn active(command: Command, state: AppState) -> Option<bool> {
         Command::ToggleTimeline => Some(*state.timeline.open.read()),
         Command::ToggleNavigator => Some(*state.navigator.read()),
         Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
+        Command::ToggleHdr => Some(state.hdr.read().on),
         // Exactly one of the three is lit, always, which is the claim that
         // the row is one question rather than three switches — and it is
         // read here so a chord pressed under the bar moves the light the
@@ -185,6 +186,11 @@ pub fn run(command: Command, state: AppState) {
         Command::SelectEllipse => arm_tool(state, Tool::SelectEllipse),
         Command::SelectLasso => arm_tool(state, Tool::SelectLasso),
         Command::MirrorView => dispatch(state, ViewCommand::MirrorH),
+        // Ungated: a view act, which commits nothing (§25.2).
+        Command::ToggleHdr => {
+            let on = !state.hdr.peek().on;
+            crate::panels::lighting::set_hdr(state, |h| h.on = on);
+        }
         Command::BrushSmaller => step_radius(state, 1.0 / SIZE_STEP),
         Command::BrushLarger => step_radius(state, SIZE_STEP),
         Command::NewDocument => open_dialog(state.dialogs.new_document),

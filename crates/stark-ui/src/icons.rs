@@ -136,6 +136,9 @@ icons! {
     // picture of all three at once, and a mark beside it would be a second, worse one.
     EXPOSURE => "sun-bold",
     CONTRAST => "circle-half-bold",
+    // The HDR switch (§6.5) wears the exposure's sun — what it turns on is the light
+    // above white — under a name of its own, since the two controls mean two things.
+    HDR => "sun-bold",
     // The focal blur's three aperture shapes (§21.12), each drawn as the bokeh it
     // makes — which is the one thing a lens shape has to say, and the reason these
     // three are marks at all where the filter's other choices are words.

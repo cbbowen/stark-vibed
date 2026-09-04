@@ -394,6 +394,22 @@ impl PlatformWindow for CrossWindow {
             .map(|renderer| renderer.borrow().gpu_specs())
     }
 
+    // STARK PATCH: the swapchain's color space and the display's headroom, for an
+    // embedder that renders into a `WgpuSurface` on this window.
+    fn surface_color_space(&self) -> Option<wgpu::SurfaceColorSpace> {
+        self.0
+            .renderer
+            .get()
+            .map(|renderer| renderer.borrow().surface_color_space())
+    }
+
+    fn display_headroom(&self) -> Option<f32> {
+        self.0
+            .renderer
+            .get()
+            .and_then(|renderer| renderer.borrow().display_headroom())
+    }
+
     fn update_ime_position(&self, bounds: crate::Bounds<crate::Pixels>) {
         let window = self.window();
         window.set_ime_cursor_area(
