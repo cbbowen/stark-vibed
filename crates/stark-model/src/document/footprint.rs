@@ -353,30 +353,9 @@ pub fn compute_footprint(action: &Action) -> Footprint {
             ],
             writes: vec![Resource::Paint(rec.layer, stroke_rect(rec))],
         },
-        // Both anchors are read — the sibling to insert above and the layer whose
-        // stack to insert into — because either being absent changes where the
-        // layer lands (§14.8). A matte arrives the same way and claims the same
-        // things, so the arms share a body: what a new layer *is* differs, where
-        // it lands does not. The matte's anchor is a `Place` (§15.5),
-        // whose `anchor()` is the same optional sibling the other two carry.
-        ActionKind::AddLayer { id, carrier, above }
-        | ActionKind::AddFilter {
-            id, carrier, above, ..
-        } => Footprint {
-            reads: [*carrier, *above]
-                .into_iter()
-                .flatten()
-                .map(Resource::Existence)
-                .collect(),
-            // [`Resource::Layer`] for the minted id, as every action that mints one
-            // claims: what it writes is *everything about a layer that did not exist*,
-            // and naming that as `Existence` plus whichever finer resources the arm
-            // happens to touch would be the same claim said three ways.
-            writes: vec![Resource::Layer(*id), Resource::StackOrder],
-        },
         // A placed image is an `AddLayer` that arrives with paint and a name in it
-        // (§23), so it claims what one claims plus those two — and claims the paint as
-        // the **whole layer**, not as the box the image covers.
+        // (§23), so it joins them here — and claims the paint as the **whole layer**,
+        // not as the box the image covers.
         //
         // That is not a conservative shrug, it is the one thing worth saying about this
         // footprint. Every other action that writes tiles has to derive its box twice —
@@ -385,26 +364,18 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // to keep in step: the layer did not exist before this action, so *all* of its
         // paint is this action's by construction, whatever box the image happens to
         // cover. `image_tiles` is then the only quantization of that box in the tree.
-        ActionKind::PlaceImage {
+        ActionKind::AddLayer { id, carrier, above }
+        | ActionKind::AddFilter {
             id, carrier, above, ..
-        } => Footprint {
-            reads: [*carrier, *above]
-                .into_iter()
-                .flatten()
-                .map(Resource::Existence)
-                .collect(),
-            writes: vec![Resource::Layer(*id), Resource::StackOrder],
-        },
+        }
+        | ActionKind::PlaceImage {
+            id, carrier, above, ..
+        } => mint(*id, *carrier, *above),
+        // The matte's anchor is a `Place` (§15.5), whose `anchor()` is the same
+        // optional sibling the other three carry.
         ActionKind::AddMatte {
             id, carrier, at, ..
-        } => Footprint {
-            reads: [*carrier, at.anchor()]
-                .into_iter()
-                .flatten()
-                .map(Resource::Existence)
-                .collect(),
-            writes: vec![Resource::Layer(*id), Resource::StackOrder],
-        },
+        } => mint(*id, *carrier, at.anchor()),
         // A copy is a function of *everything it copies* — every tile and every
         // property of every layer in the subtree — which is the whole reason the
         // action names its sources rather than only its root (§14.8). Claiming
@@ -533,38 +504,12 @@ pub fn compute_footprint(action: &Action) -> Footprint {
             layer,
             map,
             translation: frame,
-        } => Footprint {
-            reads: vec![Resource::Existence(*layer)],
-            writes: vec![
-                Resource::Paint(
-                    *layer,
-                    gated_rect(
-                        (map.min - frame.as_vec2(), map.max - frame.as_vec2()),
-                        map.image_aabb()
-                            .map(|(lo, hi)| (lo - frame.as_vec2(), hi - frame.as_vec2())),
-                    ),
-                ),
-                Resource::Selection(actor),
-            ],
-        },
+        } => mapped_write(*layer, actor, map.min, map.max, map.image_aabb(), *frame),
         ActionKind::TransformWarp {
             layer,
             map,
             translation: frame,
-        } => Footprint {
-            reads: vec![Resource::Existence(*layer)],
-            writes: vec![
-                Resource::Paint(
-                    *layer,
-                    gated_rect(
-                        (map.min - frame.as_vec2(), map.max - frame.as_vec2()),
-                        map.image_aabb()
-                            .map(|(lo, hi)| (lo - frame.as_vec2(), hi - frame.as_vec2())),
-                    ),
-                ),
-                Resource::Selection(actor),
-            ],
-        },
+        } => mapped_write(*layer, actor, map.min, map.max, map.image_aabb(), *frame),
         // A fill reads the mask that bounds it and writes the paint its region
         // reaches — the same shape of footprint a stroke has. A fill bounded only
         // by the selection has no analytic box, so it claims the whole layer, the
@@ -649,6 +594,56 @@ pub fn fill_rect(op: &super::fill::FillOp) -> TileRect {
         return TileRect::ALL;
     };
     claim(lo, hi, 0)
+}
+
+/// What **every action that mints a layer** claims.
+///
+/// Both anchors are read — the sibling to insert above and the layer whose stack to
+/// insert into — because either being absent changes where the layer lands (§14.8).
+/// What a new layer *is* differs between those actions; where it lands does not.
+///
+/// [`Resource::Layer`] for the minted id: what it writes is *everything about a layer
+/// that did not exist*, and naming that as `Existence` plus whichever finer resources
+/// the arm happens to touch would be the same claim said three ways.
+fn mint(id: LayerId, carrier: Option<LayerId>, anchor: Option<LayerId>) -> Footprint {
+    Footprint {
+        reads: [carrier, anchor]
+            .into_iter()
+            .flatten()
+            .map(Resource::Existence)
+            .collect(),
+        writes: vec![Resource::Layer(id), Resource::StackOrder],
+    }
+}
+
+/// A rect-scoped transform's claim: the map's source rect unioned with its image by
+/// [`gated_rect`], both brought into the layer's frame first.
+///
+/// One body for both families — a correction made to the perspective arm and not to
+/// the warp arm would be a §12.6 break showing up on exactly one of them, and nothing
+/// in the claim depends on which map drew the rect.
+fn mapped_write(
+    layer: LayerId,
+    actor: ActorId,
+    min: Vec2,
+    max: Vec2,
+    image: Option<(Vec2, Vec2)>,
+    frame: crate::geom::IVec2,
+) -> Footprint {
+    let frame = frame.as_vec2();
+    Footprint {
+        reads: vec![Resource::Existence(layer)],
+        writes: vec![
+            Resource::Paint(
+                layer,
+                gated_rect(
+                    (min - frame, max - frame),
+                    image.map(|(lo, hi)| (lo - frame, hi - frame)),
+                ),
+            ),
+            Resource::Selection(actor),
+        ],
+    }
 }
 
 fn prop_write(id: LayerId, prop: Prop) -> Footprint {
