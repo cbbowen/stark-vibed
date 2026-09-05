@@ -77,6 +77,7 @@ pub mod path;
 pub(crate) mod peer;
 pub(crate) mod pictures;
 mod presence;
+mod projection;
 pub(crate) mod session;
 pub(crate) mod spline;
 pub mod timing;

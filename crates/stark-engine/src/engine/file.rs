@@ -12,11 +12,9 @@
 //! than asserted alongside them, so a wrong binding cannot be expressed.
 
 use stark_model::DocError;
-use std::sync::Arc;
 
-use super::{Authoring, Engine, GpuBuild, GpuKeep, ROOT_LAYER, build_gpu};
+use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
-use crate::colorspace::ColorSpace;
 use crate::document::{DocState, LinearTimeline, Timeline, effective_actions};
 use crate::gpu::EnvironmentId;
 use crate::gpu::substrate::Substrate;
@@ -641,44 +639,6 @@ impl Engine {
     fn apply_environment(&mut self) {
         self.compositor_pipeline
             .set_environment(self.shared.environment.current());
-    }
-
-    /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
-    /// document is already empty (no tiles of the old format are referenced).
-    /// Takes the *resolved* space rather than an id, which is what keeps this
-    /// infallible: every caller has already had to obtain one, so there is no
-    /// "unsupported space" case left to handle here or to forget.
-    fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
-        // Cloned out before the rebuild: the registry lives on `self.shared.apply`, which is
-        // replaced below, and a `SubstrateMap` is two reference-counted wgpu handles.
-        let substrate = self.shared.apply.substrates.current();
-        let environment = self.shared.environment.current();
-        let built = build_gpu(GpuBuild {
-            // What a rebuild does not touch, moved through into the new context —
-            // stated as a list rather than as four arguments, because "what survives
-            // a color-space change" is the interesting half of this function.
-            keep: GpuKeep {
-                gpu: self.shared.gpu.clone(),
-                assets: self.shared.apply.assets.clone(),
-                selection: self.shared.apply.selection.clone(),
-                scratch: self.shared.scratch.clone(),
-                substrates: self.shared.apply.substrates.clone(),
-                environments: self.shared.environment.clone(),
-            },
-            target_format: self.shared.target_format,
-            cs: &cs,
-            substrate: &substrate,
-            environment: &environment,
-        });
-        // Whole, not field by field: anything added to the shared half is rebuilt
-        // here by construction rather than by somebody remembering this line — which
-        // now includes the compiled `passes`, and that one matters. Assigned
-        // piecemeal, a rebuild left `shared.passes` naming the pipelines it had just
-        // replaced, so the next sibling built off `shared()` would have taken the old
-        // ones. `Engine::shared`'s `debug_assert` is the guard on exactly that.
-        self.shared = built.shared;
-        self.compositor = built.compositor;
-        self.compositor_pipeline = built.compositor_pipeline;
     }
 
     /// Reset to an empty document (one root layer) before a load/replay. Also

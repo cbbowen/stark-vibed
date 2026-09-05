@@ -26,6 +26,7 @@ use crate::document::{ApplyCtx, DocState, PreparedStroke};
 use crate::gpu::StrokeSpans;
 use crate::gpu::stroke::Progress;
 use crate::peer::{GestureView, LiveGesture, Peer};
+use crate::projection::Revision;
 use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::{TileCoord, TileRect};
 
@@ -61,7 +62,7 @@ pub(super) struct Preview {
     heads: BTreeMap<ActorId, FrozenHead>,
     /// Bumped whenever the document the previews are composited onto changes. A
     /// [`FrozenHead`] stamped with an older epoch is stale and discarded.
-    epoch: u64,
+    epoch: Revision,
     /// Bumped every time the fold is **rebuilt** — a counter for "what is shown has
     /// moved", where [`epoch`](Self::epoch) is "what is shown was *replaced*".
     ///
@@ -72,7 +73,7 @@ pub(super) struct Preview {
     /// stroke in flight commits nothing, so `doc_revision` is still, and it replaces
     /// no document, so `epoch` is still. A draw list keyed on those two alone would
     /// hold the frame at the moment the stroke began (C4).
-    fold: u64,
+    fold: Revision,
     /// Whether the fold no longer reflects the gestures and document it folds —
     /// set by [`Engine::mark_live_stale`], cleared by the [`Engine::flush_live`]
     /// that services it. The deferral is what turns N mutations per frame (every
@@ -93,7 +94,7 @@ impl Preview {
     /// drag preview standing in for it is the other, and [`set_doc`](Self::set_doc)
     /// routes through here rather than restating it.
     pub(super) fn invalidate(&mut self) {
-        self.epoch += 1;
+        self.epoch.bump();
         self.prepared = None;
     }
 
@@ -136,9 +137,10 @@ impl Preview {
         self.heads.len()
     }
 
-    /// The invalidation epoch a cached head is stamped against.
+    /// The invalidation epoch a cached head is stamped against, as the number
+    /// `render::DrawKey` keys on.
     pub(super) fn epoch(&self) -> u64 {
-        self.epoch
+        self.epoch.get()
     }
 
     /// This client's stroke as the last fold drew it, for its commit to take — see
@@ -150,7 +152,7 @@ impl Preview {
 
     /// How many times the fold has been rebuilt — see [`fold`](Self::fold).
     pub(super) fn fold(&self) -> u64 {
-        self.fold
+        self.fold.get()
     }
 
     /// Rebuild the fold: `committed` (or the drag standing in for it) with every
@@ -192,7 +194,7 @@ impl Preview {
         // Before the early return as much as after it: dropping the fold is a change
         // to what is shown exactly as building one is, and it is the transition a
         // pen-up makes.
-        self.fold += 1;
+        self.fold.bump();
         // Whatever the last fold prepared described the last fold's stroke. This one
         // either draws the stroke again and prepares it afresh below, or has no such
         // stroke — and either way the old tiles are not the ones to commit.
@@ -485,7 +487,7 @@ pub(super) struct FrozenHead {
     /// replaces the base — a commit, an undo, a remote merge, a load, a drag preview
     /// — bumps the epoch, and a head from an earlier one is discarded rather than
     /// drawn over a canvas that no longer exists.
-    epoch: u64,
+    epoch: Revision,
     /// Whether this head was rooted at the *fold* rather than at the committed
     /// document, because another live stroke had already claimed tiles it reaches.
     /// The fold is rebuilt from scratch on every move, so such a head can never be
