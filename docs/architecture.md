@@ -65,12 +65,12 @@ stark/
 │   │       │   ├── action.rs    # Action + ActionKind: what a mutation *says* (§4)
 │   │       │   ├── fold.rs      # Materialize + Logged: that a log folds (§5)
 │   │       │   ├── footprint.rs # what an action reads/writes (§12.6)
-│   │       │   ├── brush.rs     # BrushParams and its modulations (§6.2)
+│   │       │   ├── brush/       # the pen mappings, the effects, and the tip (§6.2)
 │   │       │   ├── layer.rs     # LayerId, BlendMode, Place, MattePaint (§14, §15)
 │   │       │   ├── selection.rs # SelectionOp and its shapes (§6.8)
 │   │       │   ├── fill.rs      # FillOp, and the box it writes (§18.0.4)
 │   │       │   ├── filter.rs    # the filter parameters (§21)
-│   │       │   ├── guide.rs     # the perspective guide, and all §20 derives (§20.5)
+│   │       │   ├── guide/       # the perspective guide, and all §20 derives (§20.5)
 │   │       │   ├── transform.rs # the maps, and the homography solve (§16)
 │   │       │   └── warp.rs      # the warp lattice (§16.9)
 │   │       ├── io.rs           # the save format, which *is* the action log (§8)
@@ -190,7 +190,7 @@ Four modules are cut down the middle by that line and keep the same file name on
 both sides — `document/layer.rs`, `document/selection.rs`, `document/fill.rs`,
 `document/transform.rs`. Reading an import tells you which half you are in.
 
-`document/guide.rs` (§20.5) is the module the rule places *whole*, and it is worth
+`document/guide/` (§20.5) is the module the rule places *whole*, and it is worth
 knowing why. Everything §20 derives from a perspective — its vanishing points, its
 fans, the draw-ready `GuideScene`, the `Scaffold` a snapped stroke is held to — is
 a pure function of the camera and touches no state, no device and no shader, which
