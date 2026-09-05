@@ -18,7 +18,9 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{ActorId, LayerId};
+use stark_model::document::{
+    ActorId, BrushDynamics, BrushEffect, BrushParams, LayerId, ToothParams,
+};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};
@@ -406,6 +408,81 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     assert!(
         images_match(&committed, &snap(&mut a), 0),
         "the commit must land the same pixels on both peers"
+    );
+}
+
+/// The local twin of `presence.rs`'s
+/// `every_free_payload_in_a_frame_is_gated_at_the_one_door`: a brush handed in by
+/// the *frontend* is held to exactly what a peer's is.
+///
+/// `ViewCommand::SetBrush` and `PeerFrame::sanitized` are the two ways a brush
+/// reaches the renderer without becoming an action first, so `ActionKind::sanitized`
+/// never sees either — and `preview == committed` needs both to hold. Reachable
+/// rather than theoretical: `stark-ui`'s `BrushConfig` is `#[serde(default)]` over
+/// browser-local JSON, and `serde_json` reads `1e400` as an infinity.
+///
+/// Read back off a published frame because the session's brush has no other public
+/// reading, and the frame is built from the field the renderer draws from.
+#[test]
+fn a_brush_from_the_frontend_is_held_like_one_from_a_peer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.start_collaboration(ActorId(1));
+    engine.process(ViewCommand::set_brush(BrushParams {
+        size: f32::NAN,
+        jitter: f32::INFINITY,
+        tooth: ToothParams {
+            give: -3.0,
+            softness: f32::NEG_INFINITY,
+        },
+        effect: BrushEffect::wet_with(
+            [0.0; 3],
+            BrushDynamics {
+                lift: f32::INFINITY,
+                ..Default::default()
+            },
+        ),
+        ..BrushParams::default()
+    }));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(CROSSING[0]),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+
+    let frame = engine
+        .take_presence(0.05)
+        .frame
+        .expect("a shared client publishes the gesture it just started");
+    let Some(GestureFrame::Stroke {
+        head: Some(head), ..
+    }) = frame.gesture
+    else {
+        panic!("a gesture's first frame carries its head");
+    };
+    let brush = head.brush;
+    assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
+    assert_eq!(
+        brush.tooth.give, 0.0,
+        "the tooth's give is quoted in [0, 1]"
+    );
+    assert_eq!(
+        brush.tooth.softness,
+        ToothParams::DEFAULT_SOFTNESS,
+        "a contact transition of minus infinity is no width the shader can divide by",
+    );
+    assert_eq!(
+        brush.jitter,
+        BrushParams::default().jitter,
+        "an infinite deposit jitter drives the gate `1 + 2ε·centered` negative",
+    );
+    // An infinity falls back to the field's own default rather than to the clamp's
+    // ceiling, `finite_or` running before `clamp01` — see the peer-side twin.
+    assert_eq!(
+        brush.wet().expect("a wet brush").dynamics.lift,
+        BrushDynamics::default().lift,
     );
 }
 

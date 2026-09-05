@@ -104,26 +104,38 @@ pub fn rect_corners(min: Vec2, max: Vec2) -> [Vec2; 4] {
 }
 
 impl PerspectiveMap {
+    /// The forward and inverse maps of a **usable** perspective — the whole gate
+    /// and the solve, once. `None` for anything `apply` would refuse.
+    ///
+    /// The gate and the solve are one function because they were two: a caller
+    /// that wanted only the matrices reached past the gate and got a map `apply`
+    /// rejects, and one that wanted both paid the f64 general-quad solve twice.
+    /// Everything below is defined in terms of this.
+    pub fn resolve(&self) -> Option<(Homography, Homography)> {
+        let gated = self.min.is_finite()
+            && self.max.is_finite()
+            && self.max.x > self.min.x
+            && self.max.y > self.min.y
+            && self.corners.iter().all(|c| c.is_finite())
+            && convex_positive(&self.corners);
+        gated.then(|| self.homographies()).flatten()
+    }
+
     /// Whether this perspective may be applied: finite, a proper rect, and a
     /// strictly convex, positively oriented target quad. Convexity is not
     /// taste — it is exactly the condition under which the homography keeps
     /// the whole source rect on the near side of its horizon (`w > 0`), so
     /// nothing inside the rect can be flung through infinity.
     pub fn usable(&self) -> bool {
-        self.min.is_finite()
-            && self.max.is_finite()
-            && self.max.x > self.min.x
-            && self.max.y > self.min.y
-            && self.corners.iter().all(|c| c.is_finite())
-            && convex_positive(&self.corners)
-            && self.homographies().is_some()
+        self.resolve().is_some()
     }
 
     /// The forward map, for chrome that draws the transformed space (grid
     /// lines are straight, so two endpoints per line suffice). `None` when
-    /// unusable.
+    /// unusable — the same "unusable" `apply` means, which is why it is
+    /// [`resolve`](Self::resolve) and not the bare solve.
     pub fn forward(&self) -> Option<Homography> {
-        self.homographies().map(|(f, _)| f)
+        self.resolve().map(|(f, _)| f)
     }
 
     /// A conservative bound on where the map carries paint: the target quad's
@@ -144,6 +156,11 @@ impl PerspectiveMap {
         })
     }
 
+    /// [`resolve`](Self::resolve)'s solve half — **private**, because on its own it
+    /// answers a weaker question than any caller wants: `near_side` tests `w > 0`,
+    /// which says nothing about orientation, so a reflected quad derives cleanly here
+    /// and is refused there.
+    ///
     /// Forward and inverse homographies, derived deterministically from the
     /// corners. Three tiers, each preserving more exactness than the last
     /// (§16.4):
@@ -157,7 +174,7 @@ impl PerspectiveMap {
     /// - **a general quad** — derived in f64 (square-to-quad, composed with
     ///   the rect normalization; the inverse is the adjugate) and rounded to
     ///   f32 once. f64 on the CPU is deterministic, so peers agree.
-    pub fn homographies(&self) -> Option<(Homography, Homography)> {
+    fn homographies(&self) -> Option<(Homography, Homography)> {
         let base = rect_corners(self.min, self.max);
         if self.corners == base {
             return Some((Homography::IDENTITY, Homography::IDENTITY));
@@ -241,6 +258,10 @@ impl PerspectiveMap {
 /// Whether a target quad is strictly convex and positively oriented (the same
 /// orientation as the rect it images — canvas axes, y down). A crossed or
 /// reflected quad would run the map through its own horizon.
+///
+/// The threshold is **absolute, on an area in px²**, so it is a floor on how thin a
+/// quad may be at canvas scale — not the dimensionless one `near_side` applies to a
+/// projective weight. The two are the same condition only up to that assumption.
 fn convex_positive(c: &[Vec2; 4]) -> bool {
     let b = [c[0], c[1], c[3], c[2]];
     (0..4).all(|i| {

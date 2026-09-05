@@ -1696,7 +1696,12 @@ impl Engine {
                 self.mark_live_stale();
             }
             ViewCommand::SetBrush { brush, color } => {
-                self.session.brush = brush;
+                // Held here for the reason `PeerFrame::sanitized` holds a peer's:
+                // a committed stroke's brush is held by `ActionKind::sanitized`,
+                // and a live one is drawn by the same renderer without ever
+                // becoming an action, so nothing else would. `preview ==
+                // committed` needs both doors (§6.2).
+                self.session.brush = brush.sanitized();
                 self.session.color = color;
                 self.mark_live_stale();
             }

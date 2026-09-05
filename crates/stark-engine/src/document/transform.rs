@@ -338,10 +338,7 @@ pub(crate) fn gated_geometry(map: &TransformMap) -> Option<((Vec2, Vec2), GatedM
     match map {
         TransformMap::Affine(_) => None,
         TransformMap::Perspective(p) => {
-            if !p.usable() {
-                return None;
-            }
-            let (fwd, inv) = p.homographies()?;
+            let (fwd, inv) = p.resolve()?;
             Some((
                 (p.min, p.max),
                 GatedMap {
@@ -860,7 +857,7 @@ mod tests {
             corners: rect_corners(Vec2::new(-64.0, 32.0), Vec2::new(192.0, 288.0)),
         };
         assert!(p.usable());
-        let (f, i) = p.homographies().unwrap();
+        let (f, i) = p.resolve().unwrap();
         // Bitwise the identity matrix, not an approximation of it — §16.4's
         // identity invariant rides on the fragment's arithmetic being exact.
         assert_eq!(f, Homography::IDENTITY);
@@ -887,7 +884,7 @@ mod tests {
             );
         }
         // And the inverse really inverts, across the rect's interior.
-        let (_, inv) = p.homographies().unwrap();
+        let (_, inv) = p.resolve().unwrap();
         for t in [
             Vec2::new(0.3, 0.6),
             Vec2::new(0.9, 0.1),
@@ -924,6 +921,13 @@ mod tests {
             corners: [base[0], base[1], base[0], base[1]],
         };
         assert!(!sliver.usable());
+        // Chrome asks `forward`, which is the same gate. It was not: the mirrored
+        // quad is a parallelogram, so the solve alone derives a clean matrix for it,
+        // and `w > 0` says nothing about orientation — the overlay drew a receding
+        // grid for a map `apply` refuses.
+        for p in [crossed, mirrored, sliver] {
+            assert!(p.forward().is_none());
+        }
     }
 
     #[test]
@@ -937,7 +941,7 @@ mod tests {
             max,
             corners: rect_corners(min, max).map(|c| c + shift),
         };
-        let (f, i) = p.homographies().unwrap();
+        let (f, i) = p.resolve().unwrap();
         assert_eq!(f.rows[2], [0.0, 0.0, 1.0]);
         assert_eq!(i.rows[2], [0.0, 0.0, 1.0]);
         assert_eq!(

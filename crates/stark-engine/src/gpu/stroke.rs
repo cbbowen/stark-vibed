@@ -377,6 +377,10 @@ impl StrokeRenderer {
 
     /// Resolve the constants both render paths read for one stroke — see
     /// [`StrokeConstants`] for why they are resolved here rather than at each path.
+    ///
+    /// Every brush number below arrives held by `BrushParams::sanitized`, at all
+    /// three doors — the commit, `ViewCommand::SetBrush`, and a peer's frame — so a
+    /// clamp here could only be a second, weaker copy of a bound the model owns.
     fn stroke_constants(
         &self,
         rec: &StrokeRecord,
@@ -394,24 +398,17 @@ impl StrokeRenderer {
         StrokeConstants {
             channels: l.lat,
             resid: [l.res[0], l.res[1], l.res[2], 0.0],
-            // Clamped where the record becomes numbers, the color's rule: the
-            // ceiling is quoted in [0, 1] (`BrushEffect::opacity`) and a wire
-            // value past it is nonsense, not a stronger setting. The mask's
-            // opacity is the ceiling's other factor (§6.8), folded in here so it
-            // reaches every place the dial does — the integrate, the erase, the
-            // loop's mint and the charge — through the one number.
-            opacity: rec.brush.effect.opacity().clamp(0.0, 1.0) * selection.opacity(),
+            // The mask's opacity is the ceiling's other factor (§6.8), folded in
+            // here so it reaches every place the dial does — the integrate, the
+            // erase, the loop's mint and the charge — through the one number.
+            opacity: rec.brush.effect.opacity() * selection.opacity(),
             ceiling_lane: rec.brush.effect.opacity_modulated(),
             substrate_uv_scale: substrate.relief * substrate.uv_scale,
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
             namp,
             noise_seed: noise_seed(rec.seed),
-            // Clamped where the record becomes numbers, like the color above: the
-            // gate is `1 + 2ε·centered` with `centered ∈ (−½, ½)`, so any ε ≤ 1
-            // keeps it positive and a wire value beyond that is nonsense, not a
-            // stronger setting.
-            jitter_eps: rec.brush.jitter.clamp(0.0, 1.0),
+            jitter_eps: rec.brush.jitter,
             jitter_seed: jitter_seed(rec.seed),
         }
     }
