@@ -59,9 +59,10 @@ use crate::view::{Extent2, ViewTransform};
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::document::{
-    Action, ActionId, ActionKind, ActorId, GuideId, LayerId, PerspectiveGuide, Scaffold,
-    ShapeAction, StrokeRecord,
+    Action, ActionId, ActionKind, ActorId, BlendMode, Filter, GuideId, LayerId, Parcel,
+    PerspectiveGuide, Scaffold, ShapeAction, StrokeRecord,
 };
+use stark_model::geom::{IVec2, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// The starting layer present in every new document.
@@ -158,6 +159,23 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     let trimmed = name?;
     let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
     (!capped.is_empty()).then(|| T::from(capped))
+}
+
+/// The payload of a setter: a document command whose drag previews by folding the
+/// very action its release commits (§21.6). One variant per `DocCommand` /
+/// `ViewCommand::Preview*` pair, and both mint their kind through
+/// [`Engine::setter_kind`].
+enum Setter {
+    LayerBlend(LayerId, BlendMode),
+    LayerOpacity(LayerId, f32),
+    SelectionOpacity(f32),
+    Filter(LayerId, Filter),
+    MatteRect(LayerId, Vec2, Vec2),
+    MattePaint(LayerId, Parcel),
+    SubstrateColor(Srgb),
+    SubstrateScale(SubstrateScale),
+    Translate(LayerId, IVec2),
+    Guide(GuideId, PerspectiveGuide),
 }
 
 /// A list [`ObservableState`] carries: **shared rather than copied**, because a
@@ -1160,7 +1178,8 @@ impl Engine {
     /// mattes) displaced by the same delta. Filters are left out rather than
     /// named-and-refused: a move naming one would answer "not a no-op" forever,
     /// and a drag out and back would log a step that does nothing. Read off the
-    /// committed document, like every mint.
+    /// committed document, like every mint. An absent layer expands to no moves,
+    /// which `is_noop_on` then declines to log.
     fn translate_moves(
         &self,
         layer: LayerId,
@@ -1183,6 +1202,35 @@ impl Engine {
             .filter(|id| doc.layer(*id).is_some_and(|l| l.is_translatable()))
             .map(|id| (id, self.frame_of(id) + delta))
             .collect()
+    }
+
+    /// The action a setter commits — and the very one its preview folds (§21.6).
+    ///
+    /// **One function, so `preview == committed` (§1.3) is a property of the code
+    /// rather than of a setter's two arms agreeing.** Whatever a kind needs beyond its payload
+    /// is read here, once, off the committed document: the canvas-to-frame conversion
+    /// a matte's rect and paint carry (§14.12), and the subtree a translate expands to.
+    fn setter_kind(&self, setter: Setter) -> ActionKind {
+        match setter {
+            Setter::LayerBlend(id, blend) => ActionKind::SetLayerBlend(id, blend),
+            Setter::LayerOpacity(id, opacity) => ActionKind::SetLayerOpacity(id, opacity),
+            Setter::SelectionOpacity(opacity) => ActionKind::SetSelectionOpacity(opacity),
+            Setter::Filter(id, filter) => ActionKind::SetFilter(id, filter),
+            Setter::MatteRect(id, min, max) => {
+                let d = self.frame_of(id).as_vec2();
+                ActionKind::SetMatteRect(id, min - d, max - d)
+            }
+            Setter::MattePaint(id, paint) => {
+                let d = self.frame_of(id).as_vec2();
+                ActionKind::SetMattePaint(id, paint.translated(-d))
+            }
+            Setter::SubstrateColor(rgb) => ActionKind::SetSubstrateColor(rgb),
+            Setter::SubstrateScale(scale) => ActionKind::SetSubstrateScale(scale),
+            Setter::Translate(layer, to) => ActionKind::TranslateLayers {
+                moves: self.translate_moves(layer, to),
+            },
+            Setter::Guide(id, guide) => ActionKind::SetGuide(id, guide),
+        }
     }
 
     /// Apply one input command (§4).
@@ -1370,7 +1418,7 @@ impl Engine {
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             DocCommand::SetSelectionOpacity(opacity) => {
-                self.commit(ActionKind::SetSelectionOpacity(opacity))
+                self.commit(self.setter_kind(Setter::SelectionOpacity(opacity)))
             }
             DocCommand::Fill { layer, op } => {
                 // The command's op is on the canvas, where every gesture is; the
@@ -1420,11 +1468,7 @@ impl Engine {
                 }
             }
             DocCommand::TranslateLayer { layer, to } => {
-                // The very expansion the preview folded (`translate_moves`), so
-                // preview == committed holds for the subtree too. An absent layer
-                // expands to nothing, which `is_noop_on` then declines to log.
-                let moves = self.translate_moves(layer, to);
-                self.commit(ActionKind::TranslateLayers { moves });
+                self.commit(self.setter_kind(Setter::Translate(layer, to)))
             }
             DocCommand::FloatSelection { layer } => {
                 // Asked before an action is spent, exactly as `MergeLayerDown`
@@ -1457,7 +1501,7 @@ impl Engine {
                 self.apply_document_substrate();
             }
             DocCommand::SetSubstrateScale(scale) => {
-                self.commit(ActionKind::SetSubstrateScale(scale));
+                self.commit(self.setter_kind(Setter::SubstrateScale(scale)));
                 // The same call for the same reason, and it is the same *state*: a
                 // `SubstrateMap` is built from the substrate and its scale together, so laying
                 // the substrate larger invalidates the bound substrate exactly as switching
@@ -1529,22 +1573,17 @@ impl Engine {
                 // selects it, which is what raises its bar.
             }
             DocCommand::SetFilter(id, filter) => {
-                self.commit(ActionKind::SetFilter(id, filter));
+                self.commit(self.setter_kind(Setter::Filter(id, filter)))
             }
             DocCommand::SetMatteRect(id, min, max) => {
-                // The command's rect is on the canvas, where the handles live;
-                // the action's is in the layer's frame — `DocCommand::Fill`'s
-                // conversion, made where the gesture becomes an action (§14.12).
-                let d = self.frame_of(id).as_vec2();
-                self.commit(ActionKind::SetMatteRect(id, min - d, max - d))
+                self.commit(self.setter_kind(Setter::MatteRect(id, min, max)))
             }
             DocCommand::SetMattePaint(id, paint) => {
-                // A gradient's axis is geometry too, and the same conversion
-                // carries it into the frame; a solid rides through.
-                let d = self.frame_of(id).as_vec2();
-                self.commit(ActionKind::SetMattePaint(id, paint.translated(-d)))
+                self.commit(self.setter_kind(Setter::MattePaint(id, paint)))
             }
-            DocCommand::SetSubstrateColor(rgb) => self.commit(ActionKind::SetSubstrateColor(rgb)),
+            DocCommand::SetSubstrateColor(rgb) => {
+                self.commit(self.setter_kind(Setter::SubstrateColor(rgb)))
+            }
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries (§14.8).
@@ -1626,11 +1665,11 @@ impl Engine {
                 }
             }
             DocCommand::SetLayerBlend(id, blend) => {
-                self.commit(ActionKind::SetLayerBlend(id, blend))
+                self.commit(self.setter_kind(Setter::LayerBlend(id, blend)))
             }
             DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
             DocCommand::SetLayerOpacity(id, opacity) => {
-                self.commit(ActionKind::SetLayerOpacity(id, opacity))
+                self.commit(self.setter_kind(Setter::LayerOpacity(id, opacity)))
             }
             DocCommand::SetLayerVisible(id, visible) => {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
@@ -1655,7 +1694,9 @@ impl Engine {
                 });
             }
             DocCommand::RemoveGuide(id) => self.commit(ActionKind::RemoveGuide(id)),
-            DocCommand::SetGuide(id, guide) => self.commit(ActionKind::SetGuide(id, guide)),
+            DocCommand::SetGuide(id, guide) => {
+                self.commit(self.setter_kind(Setter::Guide(id, guide)))
+            }
             DocCommand::SetGuideName(id, name) => {
                 self.commit(ActionKind::SetGuideName(id, normalize_name(name)))
             }
@@ -1663,14 +1704,15 @@ impl Engine {
         }
     }
 
-    /// Show the document the action `kind` would leave behind, without logging it —
-    /// the body every `Preview*` setter arm below shares (§21.5).
+    /// Show the document committing `setter` would leave behind, without logging it —
+    /// the body every `Preview*` setter arm below shares (§21.6).
     ///
     /// `None` clears the preview, which is what the release of a drag that changed
     /// nothing sends. The sanitize and the fold both happen inside
     /// [`crate::document::apply::preview_of`], which is the point: an arm cannot forget a
     /// step it does not perform. See that function for the two arms that had.
-    fn preview_setter(&mut self, kind: Option<ActionKind>) {
+    fn preview_setter(&mut self, setter: Option<Setter>) {
+        let kind = setter.map(|s| self.setter_kind(s));
         let actor = self.actor();
         let preview = kind.map(|kind| {
             crate::document::apply::preview_of(
@@ -1743,20 +1785,13 @@ impl Engine {
                 }
             }
             ViewCommand::PreviewGuide(drag) => {
-                self.preview_setter(drag.map(|(id, guide)| ActionKind::SetGuide(id, guide)));
+                self.preview_setter(drag.map(|(id, guide)| Setter::Guide(id, guide)));
             }
             ViewCommand::PreviewMatteRect(drag) => {
-                // The drag reports canvas corners; the fold wants the layer's
-                // frame — the commit's own conversion, so preview == committed
-                // (§14.12).
-                let kind = drag.map(|(id, min, max)| {
-                    let d = self.frame_of(id).as_vec2();
-                    ActionKind::SetMatteRect(id, min - d, max - d)
-                });
-                self.preview_setter(kind);
+                self.preview_setter(drag.map(|(id, min, max)| Setter::MatteRect(id, min, max)));
             }
             ViewCommand::PreviewSubstrateColor(rgb) => {
-                self.preview_setter(rgb.map(ActionKind::SetSubstrateColor));
+                self.preview_setter(rgb.map(Setter::SubstrateColor));
             }
             // The preview moves the *document* the compositor reads, and stops there:
             // no `apply_document_substrate`, so nothing is baked while the hand is on
@@ -1766,40 +1801,29 @@ impl Engine {
             // Paint already down looks right immediately;
             // what the next stroke will bite is right from the commit.
             ViewCommand::PreviewSubstrateScale(scale) => {
-                self.preview_setter(scale.map(ActionKind::SetSubstrateScale));
+                self.preview_setter(scale.map(Setter::SubstrateScale));
             }
             ViewCommand::PreviewParcel(pick) => {
-                // Into the layer's frame, as the commit converts — see
-                // `PreviewMatteRect`.
-                let kind = pick.map(|(id, paint)| {
-                    let d = self.frame_of(id).as_vec2();
-                    ActionKind::SetMattePaint(id, paint.translated(-d))
-                });
-                self.preview_setter(kind);
+                self.preview_setter(pick.map(|(id, paint)| Setter::MattePaint(id, paint)));
             }
             ViewCommand::PreviewSelectionOpacity(opacity) => {
-                self.preview_setter(opacity.map(ActionKind::SetSelectionOpacity));
+                self.preview_setter(opacity.map(Setter::SelectionOpacity));
             }
             ViewCommand::PreviewLayerOpacity(set) => {
-                self.preview_setter(
-                    set.map(|(id, opacity)| ActionKind::SetLayerOpacity(id, opacity)),
-                );
+                self.preview_setter(set.map(|(id, opacity)| Setter::LayerOpacity(id, opacity)));
             }
             ViewCommand::PreviewFilter(set) => {
-                self.preview_setter(set.map(|(id, filter)| ActionKind::SetFilter(id, filter)));
+                self.preview_setter(set.map(|(id, filter)| Setter::Filter(id, filter)));
             }
             ViewCommand::PreviewLayerBlend(set) => {
-                self.preview_setter(set.map(|(id, blend)| ActionKind::SetLayerBlend(id, blend)));
+                self.preview_setter(set.map(|(id, blend)| Setter::LayerBlend(id, blend)));
             }
             ViewCommand::PreviewTransform(t) => {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
                 self.set_doc_preview(preview);
             }
             ViewCommand::PreviewTranslate(set) => {
-                let kind = set.map(|(layer, to)| ActionKind::TranslateLayers {
-                    moves: self.translate_moves(layer, to),
-                });
-                self.preview_setter(kind);
+                self.preview_setter(set.map(|(layer, to)| Setter::Translate(layer, to)));
             }
             ViewCommand::PreviewFill(f) => {
                 let preview = f.and_then(|(layer, op)| self.preview_fill(layer, &op));
