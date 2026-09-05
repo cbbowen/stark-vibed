@@ -483,8 +483,11 @@ fn mesh_overlay(state: AppState, w: WarpUi, view: ViewTransform) -> Element {
     let mut lines = String::new();
     // Once for the whole overlay rather than once per sample: this is
     // `WARP_GRID * 2 * (SAMPLES + 1)` evaluations — 400 at an 8-wide grid — and
-    // it redraws every frame of a drag.
-    let surface = map.prepared();
+    // it redraws every frame of a drag. `WarpUi` builds a `WARP_GRID` mesh, which
+    // is well-shaped by construction.
+    let Some(surface) = map.prepared() else {
+        return rsx! {};
+    };
     for k in 0..WARP_GRID {
         let t = k as f32 / (WARP_GRID - 1) as f32;
         lines += &polyline((0..=SAMPLES).map(|s| {

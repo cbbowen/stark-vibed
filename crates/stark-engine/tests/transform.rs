@@ -654,7 +654,7 @@ fn warp_carries_paint_with_its_surface() {
     assert!(map.usable());
     let size = GATE.1 - GATE.0;
     let t = (c - GATE.0) / size;
-    let expected = map.eval(t);
+    let expected = map.prepared().expect("well-shaped").eval(t);
     transform_map(&mut engine, TransformMap::Warp(map));
     let img = engine.render_to_image();
     assert!(

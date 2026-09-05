@@ -112,10 +112,9 @@ impl SelectionShape {
         match self {
             Self::All => None,
             Self::Rect { min, max } => finite(*min, *max),
-            Self::Ellipse { center, radii } => {
-                let r = radii.abs();
-                finite(*center - r, *center + r)
-            }
+            // Radii are non-negative out of [`sanitized`], so there is no sign to
+            // compensate for here.
+            Self::Ellipse { center, radii } => finite(*center - *radii, *center + *radii),
             Self::Lasso(points) => {
                 // Seeded from the first vertex and folded over *all* of them,
                 // that one included: min/max with itself is the identity, and a
@@ -132,9 +131,17 @@ impl SelectionShape {
     /// shape's half of the funnel [`SelectionOp::at`] and
     /// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are.
     ///
-    /// Only the lasso has anything to hold. The analytic shapes carry four floats
-    /// each and are already answered by [`bounds`](Self::bounds), which refuses what
-    /// it cannot measure rather than rounding it into a different rectangle.
+    /// The rect carries four floats already answered by [`bounds`](Self::bounds),
+    /// which refuses what it cannot measure rather than rounding it into a different
+    /// rectangle. The ellipse's radii are the one analytic value with a *nearest
+    /// legal* reading — a radius is a distance, so a negative one describes the same
+    /// ellipse — and normalizing it here is what lets `bounds` and
+    /// `gpu::selection::shader_params` stop each compensating for it separately.
+    ///
+    /// **The rect is deliberately left inverted.** `max < min` is not a mistake to
+    /// repair there: the plan, the footprint and `selection.wesl` all read it as the
+    /// empty region, so ordering the corners would change what an existing document
+    /// means.
     ///
     /// **Decimated rather than refused**, on `Gradient`'s argument (§19): a long
     /// loop describes a perfectly good region and simply describes it with more
@@ -154,6 +161,10 @@ impl SelectionShape {
                     .map(|i| points[crate::pick_index(i, points.len(), MAX_LASSO_POINTS)])
                     .collect(),
             ),
+            Self::Ellipse { center, radii } => Self::Ellipse {
+                center,
+                radii: radii.abs(),
+            },
             shape => shape,
         }
     }
@@ -391,6 +402,42 @@ mod tests {
         let landed = back(&wire(&hot));
         assert_eq!(landed.opacity, 1.0, "opacity is clamped into range");
         assert_eq!(landed.feather, 0.0, "a NaN feather lands on zero, not NaN");
+
+        // A negative radius describes the same ellipse, so it is normalized rather
+        // than refused — and normalized *here*, so `bounds` and the shader's params
+        // stop each carrying their own `abs`. The rect is left alone on purpose: an
+        // inverted one already means "empty" everywhere that reads it.
+        let flipped = SelectionOp {
+            shape: SelectionShape::Ellipse {
+                center: Vec2::splat(3.0),
+                radii: Vec2::new(-7.0, 5.0),
+            },
+            ..hot
+        };
+        let landed = back(&wire(&flipped));
+        assert_eq!(
+            *landed.shape(),
+            SelectionShape::Ellipse {
+                center: Vec2::splat(3.0),
+                radii: Vec2::new(7.0, 5.0),
+            },
+        );
+        assert_eq!(
+            landed.shape().bounds(),
+            Some((Vec2::new(-4.0, -2.0), Vec2::new(10.0, 8.0))),
+        );
+        let inverted_rect = SelectionShape::Rect {
+            min: Vec2::splat(10.0),
+            max: Vec2::ZERO,
+        };
+        assert_eq!(
+            *back(&wire(&SelectionOp {
+                shape: inverted_rect.clone(),
+                ..hot
+            }))
+            .shape(),
+            inverted_rect,
+        );
 
         // A NaN *opacity* is the one `f32::clamp` would let through, which is why
         // this gate spells the bound `clamp01` and not `clamp`.

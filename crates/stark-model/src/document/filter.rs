@@ -124,6 +124,7 @@ impl Filter {
 
     /// The same **kind** of filter at its neutral setting — what the bar's
     /// "Neutral" chip puts back, said once here rather than per panel arm.
+    #[must_use]
     pub fn neutral(&self) -> Self {
         match self {
             Filter::Color(_) => Filter::Color(ColorAdjust::NEUTRAL),
@@ -145,6 +146,7 @@ impl Filter {
     /// against one it did not. The bounds matter more than they look: a `NaN`
     /// saturation reaches a fullscreen pass and poisons every texel of the frame,
     /// and nothing downstream can notice.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
@@ -271,6 +273,7 @@ impl ColorAdjust {
     /// A non-finite value falls back to the **neutral** setting for that knob rather
     /// than to a bound: `NaN` says nothing about which end of the range was meant,
     /// and the identity is the one answer that cannot make a picture worse.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
             exposure: finite_in(self.exposure, 0.0, Self::EXPOSURE),
@@ -348,6 +351,7 @@ impl ChromaticAberration {
     /// value falls back to the **neutral** setting for that knob, for
     /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
     /// the range was meant, and the identity cannot make a picture worse.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
             spread: finite_in(self.spread, 0.0, Self::SPREAD),
@@ -524,6 +528,7 @@ impl Aperture {
     /// rather than a measurement, so there is no unusable value to read it off — a
     /// `NaN` squeeze is a broken oval, not a request for a disc — and repairing the
     /// one number is the whole of the repair.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
             Aperture::Disc { obstruction } => Aperture::Disc {
@@ -603,6 +608,7 @@ impl FocalBlur {
     /// value falls back to the **neutral** setting, for
     /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
     /// the range was meant, and the identity cannot make a picture worse.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
             radius: finite_in(self.radius, 0.0, Self::RADIUS),

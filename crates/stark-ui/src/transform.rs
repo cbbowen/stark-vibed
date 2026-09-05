@@ -919,10 +919,9 @@ impl WarpUi {
     pub fn grab(&self, p: Vec2) -> (Vec2, [f32; WARP_GRID * WARP_GRID], f32) {
         let map = self.map();
         // The delta grid hoisted out of the search: this is 81 coarse probes plus
-        // six refinement passes of 25, and `WarpMap::eval` rebuilds the grid on
-        // every call. Same arithmetic to the bit (`Prepared::eval`), which §16.4's
-        // identity invariant requires.
-        let surface = map.prepared();
+        // six refinement passes of 25, each of which would otherwise rebuild it.
+        // `WARP_GRID` is 4, so the mesh is always well-shaped.
+        let surface = map.prepared().expect("a WARP_GRID mesh is well-shaped");
         let mut best = (Vec2::splat(0.5), f32::INFINITY);
         let scan = |from: Vec2, step: f32, best: &mut (Vec2, f32)| {
             for j in -2..=2i32 {
@@ -951,7 +950,7 @@ impl WarpUi {
             scan(from, step, &mut best);
             step *= 0.5;
         }
-        let basis = map.basis(best.0);
+        let basis = surface.basis(best.0);
         let mut b = [0.0f32; WARP_GRID * WARP_GRID];
         b.copy_from_slice(&basis);
         let norm: f32 = b.iter().map(|w| w * w).sum();
@@ -1203,11 +1202,11 @@ mod gesture_tests {
         let w = WarpUi::begin(LayerId::ROOT, rect());
         let grab_at = Vec2::new(20.0, -10.0);
         let (t, basis, norm) = w.grab(grab_at);
-        let before = w.map().eval(t);
+        let before = w.map().prepared().expect("well-shaped").eval(t);
         assert!(before.distance(grab_at) < 1.0, "grab missed: {before:?}");
         let delta = Vec2::new(18.0, 12.0);
         let dragged = WarpUi::surface_dragged(w, w, &basis, norm, delta, 0.5);
-        let after = dragged.map().eval(t);
+        let after = dragged.map().prepared().expect("well-shaped").eval(t);
         assert!(
             after.distance(before + delta) < 0.1,
             "the paint under the finger moved {:?}, the finger moved {delta:?}",

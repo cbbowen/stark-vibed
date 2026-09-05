@@ -684,10 +684,11 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 
     let (kind, b) = match &op.shape() {
         SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
         SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
-        SelectionShape::Ellipse { center, radii } => (
-            sel::KIND_ELLIPSE,
-            [center.x, center.y, radii.x.abs(), radii.y.abs()],
-        ),
+        // Radii non-negative by `SelectionShape::sanitized`, which every op passes
+        // through — the shader takes them as written.
+        SelectionShape::Ellipse { center, radii } => {
+            (sel::KIND_ELLIPSE, [center.x, center.y, radii.x, radii.y])
+        }
         SelectionShape::Lasso(_) => (sel::KIND_LASSO, [0.0; 4]),
     };
     (

@@ -23,7 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{at_least_zero, clamp01, finite_or};
+use crate::{at_least_zero, clamp01, finite_in, finite_or};
 
 /// The brush tip shape (§6.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
@@ -245,6 +245,15 @@ pub struct ColorDynamics {
     /// Noise amplitude per color channel, in the color space's own units
     /// (noise is signed, so a channel wanders ±amplitude). All 0 = off — the
     /// exact historical constant-color deposit.
+    ///
+    /// Floored at 0 and capped at [`Srgb::EXTENT`](crate::Srgb::EXTENT) by
+    /// [`sanitized`](ColorDynamics::sanitized) — the one knob here with a ceiling,
+    /// because it is the one this crate *owns*. It is an offset in a color space
+    /// this crate defines, so the bound is the same one `Srgb` already states for a
+    /// color's distance from zero, and for the same reason: far past any display
+    /// gamut, and small enough that a half-float tile cannot overflow through any
+    /// pass. A rate's ceiling is a slider's and so may not be invented here
+    /// ([`BrushDynamics::sanitized`]); a color-space offset's is not.
     pub amplitude: [f32; 3],
 }
 
@@ -264,12 +273,13 @@ impl ColorDynamics {
         self.amplitude.iter().any(|a| *a != 0.0)
     }
 
-    /// Every number a number — see [`BrushParams::sanitized`]. Amplitudes and
-    /// frequencies are floored at zero (an amplitude is a distance the channel
-    /// wanders either way, a frequency a scale) and capped by neither, for
-    /// [`BrushDynamics::sanitized`]'s reason.
+    /// Every number a number — see [`BrushParams::sanitized`]. Both are floored at
+    /// zero (an amplitude is a distance the channel wanders either way, a frequency
+    /// a scale), and only the amplitude is capped: see its own doc for why this is
+    /// the bound the crate owns and the frequency's is not.
     pub fn sanitized(self) -> Self {
         let d = Self::default();
+        let extent = crate::Srgb::EXTENT;
         Self {
             noise: self.noise,
             frequency: [
@@ -277,9 +287,9 @@ impl ColorDynamics {
                 at_least_zero(self.frequency[1], d.frequency[1]),
             ],
             amplitude: [
-                at_least_zero(self.amplitude[0], d.amplitude[0]),
-                at_least_zero(self.amplitude[1], d.amplitude[1]),
-                at_least_zero(self.amplitude[2], d.amplitude[2]),
+                finite_in(self.amplitude[0], d.amplitude[0], (0.0, extent)),
+                finite_in(self.amplitude[1], d.amplitude[1], (0.0, extent)),
+                finite_in(self.amplitude[2], d.amplitude[2], (0.0, extent)),
             ],
         }
     }
@@ -1159,10 +1169,11 @@ pub struct LiquifyEffect {
     /// of a textured stamp — follow proportionally less, which is what makes
     /// the falloff the *tip's* rather than a second knob here.
     ///
-    /// **The quoted range is load-bearing, not taste** ([`BrushParams::sanitized`]
-    /// clamps to it): the renderer's per-segment gather reads a snapshot whose
-    /// margin is sized by the segment's own travel, so "paint cannot outrun the
-    /// brush" is what keeps every read inside it (§6.13).
+    /// **The quoted range is load-bearing, not taste**: the renderer's per-segment
+    /// gather reads a snapshot whose margin is sized by the segment's own travel, so
+    /// "paint cannot outrun the brush" is what keeps every read inside it (§6.13).
+    /// Both doors hold it — [`BrushParams::sanitized`] for what arrives, and
+    /// [`BrushEffect::set_flow`] for what a slider writes.
     ///
     /// A fraction of *travel*, so scrubbing keeps carrying — there is no
     /// ceiling a worked spot saturates at, which is why this effect has no
@@ -1267,12 +1278,22 @@ impl BrushEffect {
     }
 
     /// Write the effect's overall rate — [`flow`](Self::flow)'s other half.
+    ///
+    /// The three laying rates take the number as given: their ceilings are a
+    /// slider's, and a bound this crate does not own is not one it may invent
+    /// ([`BrushDynamics::sanitized`]). [`LiquifyEffect::strength`] is the one that
+    /// *is* owned here — `[0, 1]` is what keeps the per-segment gather inside the
+    /// snapshot its own travel sized (§6.13) — so this door holds it, as
+    /// `BrushConfig::params` and `max_flow` already do on the frontend's side.
+    ///
+    /// Spelled as `sanitized` spells it, so the two doors land a `NaN` in the same
+    /// place: full drag, the setting that cannot make a stroke do nothing.
     pub fn set_flow(&mut self, flow: f32) {
         match self {
             Self::Paint(p) => p.flow = flow,
             Self::Wet(w) => w.flow = flow,
             Self::Erase(e) => e.flow = flow,
-            Self::Liquify(l) => l.strength = flow,
+            Self::Liquify(l) => l.strength = clamp01(finite_or(flow, 1.0)),
         }
     }
 
@@ -2088,7 +2109,7 @@ mod tests {
             b.wet_mut().expect("just made wet")
         }
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 21] = [
+        let pokes: [Poke; 23] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("erase.opacity", |b, f| {
@@ -2117,8 +2138,14 @@ mod tests {
             ("wet.deposit", |b, f| wet(b).dynamics.deposit = f),
             ("wet.charge", |b, f| wet(b).dynamics.charge = f),
             ("wet.bleed", |b, f| wet(b).dynamics.bleed = f),
-            ("jitter.amplitude", |b, f| {
+            ("jitter.amplitude.0", |b, f| {
+                paint(b).color_dynamics.amplitude[0] = f
+            }),
+            ("jitter.amplitude.1", |b, f| {
                 paint(b).color_dynamics.amplitude[1] = f
+            }),
+            ("jitter.amplitude.2", |b, f| {
+                paint(b).color_dynamics.amplitude[2] = f
             }),
             ("jitter.frequency", |b, f| {
                 paint(b).color_dynamics.frequency[0] = f
@@ -2141,6 +2168,8 @@ mod tests {
                 b.effect.flow(),
                 b.effect.opacity(),
             ];
+            v.extend(b.color_dynamics().frequency);
+            v.extend(b.color_dynamics().amplitude);
             if let Some(w) = b.wet() {
                 v.extend([
                     w.dynamics.add,
@@ -2194,6 +2223,13 @@ mod tests {
                 }
                 // …and the stretch cannot outrun its own saturation point.
                 assert!((0.0..=BrushParams::MAX_STRETCH).contains(&clean.stretch));
+                // A jitter amplitude is an offset in the color space this crate
+                // defines, so it carries `Srgb`'s ceiling rather than a slider's
+                // (`ColorDynamics::amplitude`) — an unbounded one reaches an f16
+                // tile as an infinity.
+                for a in clean.color_dynamics().amplitude {
+                    assert!((0.0..=crate::Srgb::EXTENT).contains(&a), "{name} = {f}");
+                }
                 // Idempotent, or a load would be a small edit every time.
                 assert_eq!(clean.sanitized(), clean, "{name} = {f}");
             }
@@ -2282,6 +2318,19 @@ mod tests {
         };
         let w = e.make_wet();
         assert_eq!((w.flow, w.opacity), (2.0, 0.5));
+        // Liquify is the one effect whose rate has a ceiling this crate owns
+        // (`LiquifyEffect::strength`, §6.13), so the setter holds it where the other
+        // three pass the number through — and lands a NaN where `sanitized` lands
+        // one, since two doors onto a field that disagree about NaN is the thing
+        // holding a range by hand costs you.
+        let mut warp = BrushParams {
+            effect: BrushEffect::Liquify(LiquifyEffect::default()),
+            ..BrushParams::default()
+        };
+        for (wrote, held) in [(2.5, 1.0), (-1.0, 0.0), (f32::NAN, 1.0), (0.4, 0.4)] {
+            warp.effect.set_flow(wrote);
+            assert_eq!(warp.effect.flow(), held, "set_flow({wrote})");
+        }
     }
 
     /// **`radius` is a pure scale on the mark**, which is the whole of why `drain` is

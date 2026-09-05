@@ -245,10 +245,6 @@ impl Lattice {
 }
 
 impl WarpMap {
-    /// The undeformed mesh over `[min, max]`: control points on the rect's
-    /// uniform grid. This is the *reference* every identity comparison is made
-    /// against — frontends must start from these exact points, not re-derive
-    /// their own, for "untouched" to stay bit-exact.
     /// The same mesh shifted whole by `d` — source rect and every control point
     /// alike, so the deformation it describes is unchanged, merely restated in
     /// shifted coordinates ([`TransformMap::under_translation`]'s warp arm).
@@ -271,6 +267,10 @@ impl WarpMap {
         }
     }
 
+    /// The undeformed mesh over `[min, max]`: control points on the rect's
+    /// uniform grid. This is the *reference* every identity comparison is made
+    /// against — frontends must start from these exact points, not re-derive
+    /// their own, for "untouched" to stay bit-exact.
     pub fn identity(min: Vec2, max: Vec2, cols: u32, rows: u32) -> Self {
         let mut points = Vec::with_capacity((cols * rows) as usize);
         for j in 0..rows {
@@ -288,7 +288,15 @@ impl WarpMap {
     }
 
     /// The undeformed position of control node `(i, j)`.
-    pub fn base(&self, i: u32, j: u32) -> Vec2 {
+    ///
+    /// **Private, and that is the gate**: [`grid_base`] divides by `cols - 1`, which
+    /// underflows on the `cols == 0` a log can carry. Every caller in this module is
+    /// downstream of [`shape_ok`](Self::shape_ok) — [`lattice`](Self::lattice) checks
+    /// it, and [`deltas`](Self::deltas) is only reached through `lattice` or
+    /// [`prepared`](Self::prepared) — so there is no unvalidated caller left to
+    /// defend against, which is the [`Lattice`] pattern (§1) rather than a check per
+    /// call site. `pub(crate)` would still admit one from elsewhere in the model.
+    fn base(&self, i: u32, j: u32) -> Vec2 {
         grid_base(self.min, self.max, self.cols, self.rows, i, j)
     }
 
@@ -370,8 +378,11 @@ impl WarpMap {
     }
 
     /// Which control cell the grid fraction `t` falls in on one axis, and how far
-    /// through it — the shared half of [`eval`](Self::eval) and
-    /// [`basis`](Self::basis).
+    /// through it — the shared half of [`Prepared::eval`] and [`Prepared::basis`].
+    ///
+    /// `n >= 2` is the caller's, and `Prepared` is what holds it: `n - 2` underflows
+    /// below that, and in release the wrapped `k` indexes off the end of the delta
+    /// row instead.
     fn locate(t: f32, n: usize) -> (usize, f32) {
         let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
         let k = (u.floor() as usize).min(n - 2);
@@ -381,8 +392,8 @@ impl WarpMap {
     /// The control points as **deviations** from the undeformed grid — the only
     /// thing the Hermite arithmetic ever sees (see the module header).
     ///
-    /// Hoisted out of [`eval`](Self::eval) so a caller evaluating the surface many
-    /// times can compute it once: see [`prepared`](Self::prepared).
+    /// Computed once per [`prepared`](Self::prepared) rather than per evaluation, so
+    /// a caller walking the surface pays for the grid once.
     fn deltas(&self) -> Vec<Vec2> {
         (0..self.rows)
             .flat_map(|j| (0..self.cols).map(move |i| (i, j)))
@@ -390,47 +401,25 @@ impl WarpMap {
             .collect()
     }
 
-    /// The mesh with its delta grid computed once, for a caller that is about to
-    /// evaluate the surface many times (§16.9).
+    /// The mesh as something the surface can be **evaluated** through, with its
+    /// delta grid computed once (§16.9). `None` when the map is malformed.
     ///
-    /// **The frontend is that caller, in a loop.** Finding the grabbed point is a
-    /// search over the surface and drawing the mesh is one `eval` per point of
-    /// every curve, so a drag was rebuilding the whole delta grid — a `Vec`
-    /// allocation and `cols · rows` subtractions — per sample, tens to hundreds of
-    /// times a frame. Nothing about the answer changes between them.
-    pub fn prepared(&self) -> Prepared<'_> {
-        Prepared {
+    /// **The one door to [`Prepared::eval`] and [`Prepared::basis`]**, and the
+    /// [`Lattice`] pattern applied to them: both index a control cell, and a grid
+    /// narrower than two points per axis — which the wire can state and
+    /// `shape_ok` refuses — underflows `locate` before either sees it. Checking once here makes them total instead of leaving
+    /// a check the reader of a logged mesh could forget (§1).
+    ///
+    /// **The frontend is the caller that wants the hoist, in a loop.** Finding the
+    /// grabbed point is a search over the surface and drawing the mesh is one `eval`
+    /// per point of every curve, so a drag was rebuilding the whole delta grid — a
+    /// `Vec` allocation and `cols · rows` subtractions — per sample, tens to hundreds
+    /// of times a frame. Nothing about the answer changes between them.
+    pub fn prepared(&self) -> Option<Prepared<'_>> {
+        self.shape_ok().then(|| Prepared {
             map: self,
             deltas: self.deltas(),
-        }
-    }
-
-    /// The smooth surface at grid fraction `t ∈ [0,1]²` — what a frontend draws
-    /// its mesh curves with and inverts to find the grabbed point.
-    ///
-    /// Evaluating more than one point? [`prepared`](Self::prepared) hoists the
-    /// delta grid this rebuilds on every call.
-    pub fn eval(&self, t: Vec2) -> Vec2 {
-        self.prepared().eval(t)
-    }
-
-    /// Per-control-point influence at grid fraction `t`: how far the surface
-    /// point moves per unit move of each control point (row-major, like
-    /// `points`). Weights sum to 1. The exact-follow surface drag rests on
-    /// this (§16.9).
-    pub fn basis(&self, t: Vec2) -> Vec<f32> {
-        let (cols, rows) = (self.cols as usize, self.rows as usize);
-        let (kx, fx) = Self::locate(t.x, cols);
-        let (ky, fy) = Self::locate(t.y, rows);
-        let cx = axis_basis(cols, kx, fx);
-        let cy = axis_basis(rows, ky, fy);
-        let mut out = Vec::with_capacity(cols * rows);
-        for wy in &cy {
-            for wx in &cx {
-                out.push(wx * wy);
-            }
-        }
-        out
+        })
     }
 
     /// A conservative bound on where the warp can carry paint (the fine
@@ -441,20 +430,21 @@ impl WarpMap {
     }
 }
 
-/// A [`WarpMap`] with its delta grid already computed — see
-/// [`WarpMap::prepared`]. Borrows the map, so it cannot outlive an edit to it.
+/// A [`WarpMap`] known to be well-shaped, with its delta grid already computed —
+/// see [`WarpMap::prepared`], the only way to one. Borrows the map, so it cannot
+/// outlive an edit to it.
+///
+/// The validated handle, on [`Lattice`]'s argument: the methods below index control
+/// cells that a two-point-per-axis grid guarantees exist, so they are total rather
+/// than merely lucky in the frontend that happens to build a 4×4.
 pub struct Prepared<'a> {
     map: &'a WarpMap,
     deltas: Vec<Vec2>,
 }
 
 impl Prepared<'_> {
-    /// The smooth surface at grid fraction `t ∈ [0,1]²`.
-    ///
-    /// Bit-for-bit what [`WarpMap::eval`] computes — it *is* what `eval` computes,
-    /// which is what keeps the hoist from being a second implementation that could
-    /// drift from the first. §16.4's identity invariant is stated bitwise, so a
-    /// reordering here would be a real difference and not a rounding one.
+    /// The smooth surface at grid fraction `t ∈ [0,1]²` — what a frontend draws its
+    /// mesh curves with and inverts to find the grabbed point.
     pub fn eval(&self, t: Vec2) -> Vec2 {
         let (cols, rows) = (self.map.cols as usize, self.map.rows as usize);
         let (kx, fx) = WarpMap::locate(t.x, cols);
@@ -477,6 +467,25 @@ impl Prepared<'_> {
             fy,
         );
         Vec2::new(bx, by) + delta
+    }
+
+    /// Per-control-point influence at grid fraction `t`: how far the surface
+    /// point moves per unit move of each control point (row-major, like
+    /// `points`). Weights sum to 1. The exact-follow surface drag rests on
+    /// this (§16.9).
+    pub fn basis(&self, t: Vec2) -> Vec<f32> {
+        let (cols, rows) = (self.map.cols as usize, self.map.rows as usize);
+        let (kx, fx) = WarpMap::locate(t.x, cols);
+        let (ky, fy) = WarpMap::locate(t.y, rows);
+        let cx = axis_basis(cols, kx, fx);
+        let cy = axis_basis(rows, ky, fy);
+        let mut out = Vec::with_capacity(cols * rows);
+        for wy in &cy {
+            for wx in &cx {
+                out.push(wx * wy);
+            }
+        }
+        out
     }
 }
 
@@ -523,7 +532,7 @@ mod tests {
         let mut map = WarpMap::identity(min, max, 4, 4);
         map.points[5] += Vec2::new(20.0, -14.0); // an interior node
         let t = Vec2::new(1.0 / 3.0, 1.0 / 3.0);
-        let at = map.eval(t);
+        let at = map.prepared().expect("a 4x4 mesh is well-shaped").eval(t);
         assert!(
             (at - map.points[5]).length() < 1e-3,
             "surface at the node's fraction is {at:?}, node is {:?}",
@@ -538,20 +547,21 @@ mod tests {
         map.points[6] += Vec2::new(-11.0, 7.0);
         map.points[9] += Vec2::new(4.0, 13.0);
         let t = Vec2::new(0.41, 0.77);
-        let b = map.basis(t);
+        let surface = map.prepared().expect("a 4x4 mesh is well-shaped");
+        let b = surface.basis(t);
         let sum: f32 = b.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "weights sum to {sum}");
         // Moving every control point by its weighted share moves the surface
         // point by exactly the sum of shares — linearity, which the
         // exact-follow drag depends on.
-        let before = map.eval(t);
+        let before = surface.eval(t);
         let delta = Vec2::new(9.0, -5.0);
         let norm: f32 = b.iter().map(|w| w * w).sum();
         let mut moved = map.clone();
         for (p, w) in moved.points.iter_mut().zip(&b) {
             *p += delta * (*w / norm);
         }
-        let after = moved.eval(t);
+        let after = moved.prepared().expect("still well-shaped").eval(t);
         assert!(
             (after - (before + delta)).length() < 1e-2,
             "surface moved {:?}, wanted {delta:?}",
@@ -559,31 +569,43 @@ mod tests {
         );
     }
 
-    /// The hoist must be the **same arithmetic**, not merely a close one.
-    ///
-    /// §16.4's identity invariant is stated bitwise and the watertightness of the
-    /// rasterized quads rests on shared points agreeing to the bit, so a `Prepared`
-    /// that reassociated anything would be a second implementation quietly disagreeing
-    /// with the first.
+    /// **The surface can only be evaluated through the funnel**, and the funnel
+    /// refuses every mesh the wire can state but the arithmetic cannot take: a grid
+    /// narrower than two points an axis underflows `locate`'s `n - 2` and indexes
+    /// off the end of a delta row. `WarpUi` always builds a 4x4, so nothing today
+    /// reaches it — reading a *logged* mesh back to draw it would.
     #[test]
-    fn preparing_changes_nothing_about_the_answer() {
+    fn only_a_well_shaped_mesh_can_be_evaluated() {
         let (min, max) = rect();
-        let mut map = WarpMap::identity(min, max, 4, 4);
-        map.points[5] += Vec2::new(21.0, -13.0);
-        map.points[9] += Vec2::new(-7.0, 18.0);
-        let prepared = map.prepared();
-        for j in 0..=16 {
-            for i in 0..=16 {
-                let t = Vec2::new(i as f32 / 16.0, j as f32 / 16.0);
-                assert_eq!(prepared.eval(t), map.eval(t), "at {t:?}");
-            }
+        for bad in [
+            WarpMap::identity(min, max, 1, 4),
+            WarpMap::identity(min, max, 4, 1),
+            WarpMap::identity(max, min, 4, 4),
+            WarpMap::identity(min, max, 4, MAX_WARP_GRID + 1),
+            WarpMap {
+                cols: 0,
+                ..WarpMap::identity(min, max, 4, 4)
+            },
+            WarpMap {
+                points: vec![],
+                ..WarpMap::identity(min, max, 4, 4)
+            },
+        ] {
+            assert!(bad.prepared().is_none(), "{bad:?} is not evaluable");
         }
-        // Including the untouched mesh, whose every point must still be its base.
+
+        // And the untouched mesh evaluates onto its base **bitwise**, which is what
+        // §16.4's identity invariant is stated as.
         let flat = WarpMap::identity(min, max, 3, 5);
-        let flat_prepared = flat.prepared();
-        for i in 0..=8 {
-            let t = Vec2::splat(i as f32 / 8.0);
-            assert_eq!(flat_prepared.eval(t), flat.eval(t));
+        let surface = flat.prepared().expect("well-shaped");
+        for j in 0..flat.rows {
+            for i in 0..flat.cols {
+                let t = Vec2::new(
+                    i as f32 / (flat.cols - 1) as f32,
+                    j as f32 / (flat.rows - 1) as f32,
+                );
+                assert_eq!(surface.eval(t), flat.base(i, j), "node ({i}, {j})");
+            }
         }
     }
 
@@ -605,7 +627,7 @@ mod tests {
             let n = n as f32;
             *p += Vec2::new(n.sin() * 23.0, n.cos() * 17.0);
         }
-        let prepared = map.prepared();
+        let prepared = map.prepared().expect("a 5x4 mesh is well-shaped");
         let (cols, rows) = (map.cols as usize, map.rows as usize);
 
         for j in 0..=20 {

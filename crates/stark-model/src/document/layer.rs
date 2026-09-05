@@ -435,6 +435,7 @@ impl BlendMode {
     /// [`ColorAdjust::sanitized`](super::ColorAdjust::sanitized)'s argument: `NaN`
     /// says nothing about which end was meant, and the default is the one answer that
     /// cannot make a picture worse.
+    #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
             Self::Drago { k } => Self::Drago {
@@ -532,6 +533,7 @@ impl MatteRegion {
     /// no-op on a region that has none, matching `SetMatteRect`'s no-op on a
     /// layer that is not a matte: the action names a property this region does
     /// not have.
+    #[must_use]
     pub fn with_rect(&self, min: Vec2, max: Vec2) -> Self {
         match self {
             Self::OutsideRect { .. } => Self::OutsideRect { min, max },
@@ -544,6 +546,7 @@ impl MatteRegion {
     /// at the mint, [`Parcel::translated`](super::Parcel::translated)'s pair.
     /// [`Everything`](Self::Everything) has no position and rides through, the
     /// reading that same pair gives a solid.
+    #[must_use]
     pub fn translated(&self, by: Vec2) -> Self {
         match self {
             Self::OutsideRect { min, max } => Self::OutsideRect {
