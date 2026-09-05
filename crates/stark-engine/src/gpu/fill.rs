@@ -258,7 +258,7 @@ impl FillRenderer {
                     f::F => ubuf.as_entire_binding(),
                     f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
                     f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
-                    f::REGION => wgpu::BindingResource::TextureView(&region_mask),
+                    f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
                     f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
                     f::BASE_RESID => wgpu::BindingResource::TextureView(
                         under.resid.expect("a residual build has a base residual"),

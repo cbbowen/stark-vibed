@@ -490,7 +490,7 @@ impl StrokeRenderer {
                 self,
                 base_t,
                 scratch.targets(),
-                &mask_view,
+                mask_view.view(),
                 &opacity_buf,
                 &self.zeroes.aux,
             );

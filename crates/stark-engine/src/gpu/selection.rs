@@ -285,10 +285,10 @@ impl SelectionRenderer {
     /// `stroke_constants` already multiplies it into the one ceiling both renderers
     /// read (§6.2). A reader with no such ceiling takes [`gate_for`](Self::gate_for)
     /// instead, so the scalar cannot be left on the floor.
-    pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> wgpu::TextureView {
+    pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> MaskSource {
         match selection.tile(coord) {
-            Some(handle) => handle.view().clone(),
-            None => self.constant(selection.outside()),
+            Some(handle) => MaskSource::Tile(handle.clone()),
+            None => MaskSource::Constant(self.constant(selection.outside())),
         }
     }
 
@@ -297,7 +297,7 @@ impl SelectionRenderer {
     /// own to carry the opacity in; see [`mask_for`](Self::mask_for).
     pub fn gate_for(&self, selection: &Selection, coord: TileCoord) -> Gate {
         Gate {
-            view: self.mask_for(selection, coord),
+            mask: self.mask_for(selection, coord),
             opacity: selection.opacity(),
         }
     }
@@ -547,7 +547,7 @@ impl SelectionRenderer {
                 false,
                 |i| match i {
                     sb::P => slots.resource(),
-                    sb::PREV => wgpu::BindingResource::TextureView(&prev_view),
+                    sb::PREV => wgpu::BindingResource::TextureView(prev_view.view()),
                     sb::EDGES => wgpu::BindingResource::TextureView(edges),
                     other => unreachable!("`RASTERIZE_SLOTS` lists no binding {other}"),
                 },
@@ -603,6 +603,33 @@ impl SelectionRenderer {
     }
 }
 
+/// The mask bound for one tile, **holding whatever keeps it alive**.
+///
+/// A `TextureView` on its own keeps the texture alive and nothing else: the pool slot
+/// behind a mask tile is reserved by its handle, and a reader left with only the view
+/// after the `Selection` dropped would read a slot the pool has re-handed out — or,
+/// past a `tick` that `destroy()`ed it, nothing at all. That is the class
+/// [`TexHandle`](crate::gpu::tile::TexHandle) closes by never handing out a texture,
+/// reopened from the other side. So a tile answers with the handle, and the constant
+/// — which no pool owns — with its view. Every current reader keeps the selection
+/// alive anyway; the point is that one no longer has to.
+pub enum MaskSource {
+    /// The selection's own tile at this coordinate.
+    Tile(crate::gpu::tile::MaskHandle),
+    /// The constant coverage that reigns outside its tile set ([`Selection::outside`]).
+    Constant(wgpu::TextureView),
+}
+
+impl MaskSource {
+    /// The coverage, to bind.
+    pub fn view(&self) -> &wgpu::TextureView {
+        match self {
+            MaskSource::Tile(handle) => handle.view(),
+            MaskSource::Constant(view) => view,
+        }
+    }
+}
+
 /// The selection as a **gating** pass reads it over one tile (§6.8): the coverage
 /// bound as a texture, and the scalar the shader multiplies every read of it by.
 ///
@@ -615,14 +642,14 @@ impl SelectionRenderer {
 /// alone, and only because their ceiling took the scalar first
 /// (`SelectionRenderer::mask_for`).
 pub struct Gate {
-    view: wgpu::TextureView,
+    mask: MaskSource,
     opacity: f32,
 }
 
 impl Gate {
     /// The coverage, to bind.
     pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
+        self.mask.view()
     }
 
     /// The scalar to multiply every read of it by, for the pass's uniform.

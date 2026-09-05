@@ -407,7 +407,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
                 let landing = Landing {
                     base: base_targets(self.r, pristine.as_ref()),
                     parcel: &work,
-                    mask: &mask,
+                    mask: mask.view(),
                 };
                 bind(&landing)
             };

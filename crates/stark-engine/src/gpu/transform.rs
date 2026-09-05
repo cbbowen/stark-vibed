@@ -919,7 +919,7 @@ impl TransformRenderer {
         // The residue reads the destination's *old* coverage — a real tile or
         // the outside constant, through the same clamped-read pattern.
         let old = self.selection.mask_for(selection, dest);
-        let base_draw = (self.gated_base_bg(scope, g.rect, dest), mask_bg(&old));
+        let base_draw = (self.gated_base_bg(scope, g.rect, dest), mask_bg(old.view()));
         let mut draws: Vec<(wgpu::BindGroup, wgpu::BindGroup)> = Vec::new();
         for idx in unit_idxs {
             let unit = &g.units[*idx];
@@ -930,7 +930,7 @@ impl TransformRenderer {
                 // here would apply it twice, once to the tiles and once to the
                 // reading of them (§6.8).
                 self.gated_bg(scope, unit, g.inv, g.rect, dest, 1.0),
-                mask_bg(&src),
+                mask_bg(src.view()),
             ));
         }
 
