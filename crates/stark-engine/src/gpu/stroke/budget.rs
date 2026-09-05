@@ -607,7 +607,7 @@ pub(super) fn extent_cell(shape: &BrushShape, radius: f32) -> u32 {
 /// a fraction of the shoulder are ones the coverage cannot carry. [`extent_cell`]
 /// spends that as *coarsening* (the cell the coarse deposit may evaluate at), the
 /// taper's subdivision as *smoothness* (the radius step a segment boundary may take
-/// without printing, `segments::Taper`).
+/// without printing, `segments::taper::Taper`).
 pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
     match shape {
         BrushShape::Round { hardness } => 3.0 * (1.0 - hardness.clamp(0.0, 1.0)),

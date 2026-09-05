@@ -302,7 +302,7 @@ impl StrokeCarry {
 ///   trailing factor is 1 — and stays 1, since the stroke only gets longer;
 /// * it is at least the leading taper's length past the start, which together with
 ///   the first condition proves the stroke is already longer than the two zones
-///   together, so the "scale both to fit" compression ([`Taper`](super::segments::Taper))
+///   together, so the "scale both to fit" compression ([`Taper`](super::segments::taper::Taper))
 ///   is 1 and likewise stays 1.
 ///
 /// Both are tested on **chords**, which under-estimate arc length — so a span
