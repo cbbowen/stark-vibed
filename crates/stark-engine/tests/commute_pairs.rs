@@ -39,22 +39,24 @@
 //!
 //! # What it costs
 //!
-//! Minutes, not seconds, and quadratic in its table — which is why it is `#[ignore]`d
-//! and why `.config/nextest.toml` gives it a window of its own. Measure before quoting
-//! a number: it was ~20 s when this was written and is ~150 s on the box these words
-//! were last checked on, run alone. Under the suite it contends for the adapter with
-//! everything else and takes longer still.
+//! Quadratic in its table, and seconds rather than the minutes it was: measure before
+//! quoting a number, but it is ~5 s on the box these words were last checked on.
 //!
-//! **The cost is the documents, not the actions.** Every commuting pair builds *six*
-//! engines — two for the ordered pair, and two apiece for the two splice directions,
-//! since each of those also joins a fresh peer — and every engine replays the base log.
-//! So trimming rows barely moves it, and the levers that worked were keeping the
-//! strokes small and synthesizing the substrate rather than decoding the bundled one.
+//! **The engines were the cost, and it was `Engine::new`, not the replay.**
+//! Constructing one is ~140 ms of pipelines; joining the seven-action base log into
+//! one that already exists is ~2 ms, and a render is ~1.5 ms. Six documents per
+//! commuting pair at 184 pairs is ~1100 of them, which was the whole 150 s. So the
+//! table builds **one** engine and re-joins it per trial — `join_collaboration`
+//! replaces the document wholesale, and that a re-joined peer draws what a fresh one
+//! draws is asserted at the end of the test rather than assumed.
 //!
-//! One of the six is avoidable and has not been taken: the canonical half of
-//! [`spliced_and_canonical`] is a function of `second` alone — the log it materializes
-//! is always `[first, second, Undo(first)]`, whose effective sequence is `[second]` —
-//! so it is computed once per *pair* where once per *row* would do.
+//! What remains is the joins, so the substrate is still synthesized rather than
+//! decoded from the bundled 2.6 MB map ([`base`]) — a join decodes the file's content
+//! — and the strokes are still kept small.
+//!
+//! It is still `#[ignore]`d, and the cost that justified that is gone: what is left
+//! is whether a software adapter on CI is as quick about it, which nothing here has
+//! measured.
 
 mod common;
 
@@ -92,19 +94,21 @@ const INNER: LayerId = LayerId::solo(2);
 /// A document both runs start from: two layers with paint on them, one of them
 /// carrying a third that is also painted, a selection, and a picture placed — enough
 /// that the pairs below have something to act on and something to disturb.
-fn base() -> Option<DocumentFile> {
-    let mut e = engine_or_skip()?;
+///
+/// Takes `e` **before anything else has**: it shares the engine's current document
+/// rather than joining a file, so an engine already carrying a painting would put it
+/// in the base.
+fn base(e: &mut Engine) -> DocumentFile {
     e.start_collaboration(ACTOR);
     // A substrate with real relief, so the deposition tooth has something to read
     // (§6.4). On the flat builtin a stroke is not a function of the substrate at
     // all, and the pairs most worth asking about would be vacuous.
     //
     // Synthesized rather than `stark_testdata::assets::rough()`, and that is a cost
-    // decision this table has to make: every peer replays the log, so the substrate
-    // is decoded once per engine, and this test builds a couple of hundred of them.
-    // The bundled rough map is 2.6 MB and cost more than the rest of the table put
-    // together when it was decoded per engine. What the tooth needs is *relief*, not
-    // resolution.
+    // decision this table has to make: a join decodes the file's content, and this
+    // test makes upwards of a thousand of them. The bundled rough map is 2.6 MB and
+    // cost more than the rest of the table put together. What the tooth needs is
+    // *relief*, not resolution.
     let grain = e
         .import_substrate(&grain())
         .expect("the synthesized height map imports");
@@ -116,7 +120,7 @@ fn base() -> Option<DocumentFile> {
     for (layer, y) in [(A, 90.0f32), (LayerId::solo(1), 150.0)] {
         e.process(PeerCommand::SetActiveLayer(layer));
         common::paint(
-            &mut e,
+            e,
             [0.8, 0.3, 0.2],
             10.0,
             &[Vec2::new(20.0, y), Vec2::new(140.0, y)],
@@ -136,14 +140,14 @@ fn base() -> Option<DocumentFile> {
     });
     e.process(PeerCommand::SetActiveLayer(INNER));
     common::paint(
-        &mut e,
+        e,
         [0.2, 0.5, 0.8],
         10.0,
         &[Vec2::new(30.0, 200.0), Vec2::new(150.0, 200.0)],
     );
     e.process(PeerCommand::SetActiveLayer(A));
     let _ = e.take_outbox();
-    Some(e.document_file())
+    e.document_file()
 }
 
 /// A small, high-contrast grayscale height map — a canvas substrate with real grain
@@ -176,37 +180,40 @@ fn grain() -> Vec<u8> {
     out
 }
 
-/// A fresh document at [`base`], ready to be handed actions.
-fn peer(file: &DocumentFile) -> Option<Engine> {
-    let mut e = engine_or_skip()?;
+/// Put `e` on `file` as [`ACTOR`], ready to be handed actions.
+///
+/// A re-join, not a construction: a joiner replaces the document wholesale, and
+/// `Engine::new` is two orders of magnitude dearer than the replay (see the module
+/// note on cost). Draining the outbox is what makes the peer's *own* commits the only
+/// thing a caller can take out of it.
+fn peer(e: &mut Engine, file: &DocumentFile) {
     e.join_collaboration(file, ACTOR)
         .expect("join a session this build can render");
     let _ = e.take_outbox();
-    Some(e)
 }
 
 /// The action a command commits, minted once so the pair below replays one payload
 /// rather than re-deriving it (see the module note on `seed`).
-fn mint(file: &DocumentFile, command: impl Into<InputCommand>) -> Option<Action> {
-    let mut e = peer(file)?;
+fn mint(e: &mut Engine, file: &DocumentFile, command: impl Into<InputCommand>) -> Option<Action> {
+    peer(e, file);
     e.process(command);
     e.take_outbox().into_iter().next()
 }
 
 /// [`mint_stroke`] aimed at a **named layer** rather than at whichever one the peer
 /// opens on — what a row inside a group needs, since the point of it is the layer.
-fn mint_on(file: &DocumentFile, layer: LayerId, path: &[Vec2]) -> Option<Action> {
-    let mut e = peer(file)?;
+fn mint_on(e: &mut Engine, file: &DocumentFile, layer: LayerId, path: &[Vec2]) -> Option<Action> {
+    peer(e, file);
     e.process(PeerCommand::SetActiveLayer(layer));
     let mut brush = common::brush([0.9, 0.6, 0.1], 6.0);
     brush.tooth.give = 0.25;
-    common::stroke_with(&mut e, brush, path);
+    common::stroke_with(e, brush, path);
     e.take_outbox().into_iter().next()
 }
 
 /// The stroke a gesture commits — a command cannot spell one.
-fn mint_stroke(file: &DocumentFile, y: f32) -> Option<Action> {
-    let mut e = peer(file)?;
+fn mint_stroke(e: &mut Engine, file: &DocumentFile, y: f32) -> Option<Action> {
+    peer(e, file);
     let mut brush = common::brush([0.2, 0.4, 0.9], 6.0);
     // A biting tooth, so the substrate actually reaches the paint: with the inert
     // default (`give` at 1.0) a stroke is not a function of the substrate at all and
@@ -215,7 +222,7 @@ fn mint_stroke(file: &DocumentFile, y: f32) -> Option<Action> {
     // Short and narrow on purpose: this table is quadratic in its rows and every
     // stroke row is rendered twice per pair, so the stroke is sized to be a stroke
     // and no larger.
-    common::stroke_with(&mut e, brush, &[Vec2::new(30.0, y), Vec2::new(96.0, y)]);
+    common::stroke_with(e, brush, &[Vec2::new(30.0, y), Vec2::new(96.0, y)]);
     e.take_outbox().into_iter().next()
 }
 
@@ -231,11 +238,11 @@ fn at(action: &Action, lamport: u64) -> Action {
 }
 
 /// The document that results from applying `first` and then `second`.
-fn ordered(file: &DocumentFile, first: &Action, second: &Action) -> Option<RgbaImage> {
-    let mut e = peer(file)?;
+fn ordered(e: &mut Engine, file: &DocumentFile, first: &Action, second: &Action) -> RgbaImage {
+    peer(e, file);
     e.merge_remote(at(first, 100));
     e.merge_remote(at(second, 101));
-    Some(e.render_to_image())
+    e.render_to_image()
 }
 
 /// The **inverse** half of the commutation claim: `first` applied, `second` applied
@@ -259,11 +266,12 @@ fn ordered(file: &DocumentFile, first: &Action, second: &Action) -> Option<RgbaI
 /// `DocCommand::Undo`, because the table keeps one actor throughout (see [`ACTOR`])
 /// and a local undo would take the *later* of the two.
 fn spliced_and_canonical(
+    e: &mut Engine,
     file: &DocumentFile,
     first: &Action,
     second: &Action,
-) -> Option<(RgbaImage, RgbaImage)> {
-    let mut e = peer(file)?;
+) -> (RgbaImage, RgbaImage) {
+    peer(e, file);
     let first = at(first, 100);
     e.merge_remote(first.clone());
     e.merge_remote(at(second, 101));
@@ -274,10 +282,14 @@ fn spliced_and_canonical(
         },
         kind: ActionKind::Undo(first.id),
     });
+    // The spliced log, taken before the re-join below empties the document.
+    let log = e.document_file();
     let spliced = e.render_to_image();
-    // A fresh peer joining the same log rewinds nothing and splices nothing, so what
-    // it draws is what the log *means* — the comparison §12.6 makes convergence out
-    // of, and the one `commute.rs` holds its own scenarios to.
+    // A peer joining the same log rewinds nothing and splices nothing, so what it
+    // draws is what the log *means* — the comparison §12.6 makes convergence out of,
+    // and the one `commute.rs` holds its own scenarios to. It is the same engine
+    // because a join replaces the document wholesale; that it is equivalent to a
+    // fresh one is asserted at the end of the test rather than assumed.
     //
     // **Joining as [`ACTOR`], not as a stranger.** A selection is per-author (§17.3)
     // and its outline is chrome drawn for its *owner* — `show_peer_selections` is off
@@ -286,11 +298,8 @@ fn spliced_and_canonical(
     // difference of 216 levels that is about who is looking rather than about what
     // the log says. The materialization is identical either way; only the viewpoint
     // has to match.
-    let mut fresh = engine_or_skip()?;
-    fresh
-        .join_collaboration(&e.document_file(), ACTOR)
-        .expect("join a session this build can render");
-    Some((spliced, fresh.render_to_image()))
+    peer(e, &log);
+    (spliced, e.render_to_image())
 }
 
 /// One of most things the vocabulary can do, as `(name, action)`.
@@ -300,7 +309,7 @@ fn spliced_and_canonical(
 /// edit writes the one coarse `Resource::Guides`, so guides only ever conflict with
 /// each other and a guide's identity is its own action id, which re-stamping would
 /// move. What is here is everything that paints, gates, restructures or presents.
-fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
+fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)> {
     let ramp = Parcel::Solid(Srgb::new([0.2, 0.5, 0.9]));
     let mut out = Vec::new();
     let mut push = |name: &'static str, action: Option<Action>| {
@@ -315,10 +324,11 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     // `commute.rs::undo_and_redo_splice_past_disjoint_peer_strokes` already asks
     // end-to-end. This table's job is breadth across the vocabulary; where a pair is
     // covered better elsewhere, it does not need to pay for it here as well.
-    push("stroke", mint_stroke(file, 60.0));
+    push("stroke", mint_stroke(e, file, 60.0));
     push(
         "fill",
         mint(
+            e,
             file,
             DocCommand::Fill {
                 layer: A,
@@ -334,6 +344,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push(
         "select",
         mint(
+            e,
             file,
             DocCommand::Select(SelectionOp::new(
                 SelectionMode::Replace,
@@ -342,14 +353,18 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
             )),
         ),
     );
-    push("invert-selection", mint(file, DocCommand::InvertSelection));
+    push(
+        "invert-selection",
+        mint(e, file, DocCommand::InvertSelection),
+    );
     push(
         "selection-opacity",
-        mint(file, DocCommand::SetSelectionOpacity(0.4)),
+        mint(e, file, DocCommand::SetSelectionOpacity(0.4)),
     );
     push(
         "substrate-scale",
         mint(
+            e,
             file,
             DocCommand::SetSubstrateScale(SubstrateScale::new(200)),
         ),
@@ -357,27 +372,35 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push(
         "substrate-color",
         mint(
+            e,
             file,
             DocCommand::SetSubstrateColor(Srgb::new([0.9, 0.85, 0.7])),
         ),
     );
     push(
         "blend",
-        mint(file, DocCommand::SetLayerBlend(A, BlendMode::Multiply)),
+        mint(e, file, DocCommand::SetLayerBlend(A, BlendMode::Multiply)),
     );
-    push("opacity", mint(file, DocCommand::SetLayerOpacity(A, 0.5)));
-    push("visible", mint(file, DocCommand::SetLayerVisible(A, false)));
+    push(
+        "opacity",
+        mint(e, file, DocCommand::SetLayerOpacity(A, 0.5)),
+    );
+    push(
+        "visible",
+        mint(e, file, DocCommand::SetLayerVisible(A, false)),
+    );
     push(
         "clip",
-        mint(file, DocCommand::SetLayerClip(LayerId::solo(1), true)),
+        mint(e, file, DocCommand::SetLayerClip(LayerId::solo(1), true)),
     );
     push(
         "rename",
-        mint(file, DocCommand::SetLayerName(A, Some("wash".into()))),
+        mint(e, file, DocCommand::SetLayerName(A, Some("wash".into()))),
     );
     push(
         "add-layer",
         mint(
+            e,
             file,
             DocCommand::AddLayer {
                 carrier: None,
@@ -387,13 +410,17 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     );
     // A **group** removal, which takes `INNER` with it: the row whose footprint has
     // to name the whole subtree, and the reason the three rows after it exist.
-    push("remove-group", mint(file, DocCommand::RemoveLayer(GROUP)));
+    push(
+        "remove-group",
+        mint(e, file, DocCommand::RemoveLayer(GROUP)),
+    );
     // Edits *inside* that group. Each of these names a layer the removal never
     // names, so each is a pair the old footprint declared commuting — a stroke,
     // a property, and the layer's own departure by a second route.
     push(
         "paint-in-group",
         mint_on(
+            e,
             file,
             INNER,
             &[Vec2::new(40.0, 205.0), Vec2::new(120.0, 195.0)],
@@ -401,16 +428,21 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     );
     push(
         "opacity-in-group",
-        mint(file, DocCommand::SetLayerOpacity(INNER, 0.4)),
+        mint(e, file, DocCommand::SetLayerOpacity(INNER, 0.4)),
     );
     push(
         "rename-in-group",
-        mint(file, DocCommand::SetLayerName(INNER, Some("inner".into()))),
+        mint(
+            e,
+            file,
+            DocCommand::SetLayerName(INNER, Some("inner".into())),
+        ),
     );
-    push("duplicate", mint(file, DocCommand::DuplicateLayer(A)));
+    push("duplicate", mint(e, file, DocCommand::DuplicateLayer(A)));
     push(
         "move-layer",
         mint(
+            e,
             file,
             DocCommand::MoveLayer {
                 id: A,
@@ -422,6 +454,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push(
         "transform",
         mint(
+            e,
             file,
             DocCommand::Transform {
                 layer: A,
@@ -432,6 +465,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push(
         "add-matte",
         mint(
+            e,
             file,
             DocCommand::AddMatte {
                 carrier: None,
@@ -444,6 +478,7 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
     push(
         "add-filter",
         mint(
+            e,
             file,
             DocCommand::AddFilter {
                 carrier: None,
@@ -472,10 +507,15 @@ fn vocabulary(file: &DocumentFile) -> Vec<(&'static str, Action)> {
 #[test]
 #[ignore]
 fn a_pair_that_claims_to_commute_does() {
-    let Some(file) = base() else {
+    // **One engine for the whole table**, re-joined per trial. Every document below
+    // is a `join_collaboration` away, and that is the difference between minutes and
+    // seconds here (see the module note on cost). That a re-joined peer is
+    // indistinguishable from a fresh one is asserted at the end, not assumed.
+    let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let vocab = vocabulary(&file);
+    let file = base(&mut engine);
+    let vocab = vocabulary(&mut engine, &file);
     assert!(
         vocab.len() >= 20,
         "the table lost rows: {} actions minted",
@@ -483,6 +523,8 @@ fn a_pair_that_claims_to_commute_does() {
     );
 
     let (mut commuting, mut conflicting) = (0usize, 0usize);
+    // The last pair checked, kept for the reuse assertion below.
+    let mut last: Option<(&str, &str, &Action, &Action, RgbaImage)> = None;
     for (i, (a_name, a)) in vocab.iter().enumerate() {
         for (b_name, b) in vocab.iter().skip(i + 1) {
             if compute_footprint(a).conflicts(&compute_footprint(b)) {
@@ -490,9 +532,8 @@ fn a_pair_that_claims_to_commute_does() {
                 continue;
             }
             commuting += 1;
-            let (Some(ab), Some(ba)) = (ordered(&file, a, b), ordered(&file, b, a)) else {
-                return;
-            };
+            let ab = ordered(&mut engine, &file, a, b);
+            let ba = ordered(&mut engine, &file, b, a);
             assert!(
                 images_match(&ab, &ba, 0),
                 "{a_name} and {b_name} are declared to commute, and do not.\n\
@@ -504,9 +545,7 @@ fn a_pair_that_claims_to_commute_does() {
             // since either of the pair may be the one undone
             // ([`spliced_and_canonical`]).
             for (x_name, x, y_name, y) in [(a_name, a, b_name, b), (b_name, b, a_name, a)] {
-                let Some((spliced, canonical)) = spliced_and_canonical(&file, x, y) else {
-                    return;
-                };
+                let (spliced, canonical) = spliced_and_canonical(&mut engine, &file, x, y);
                 assert!(
                     images_match(&spliced, &canonical, 0),
                     "undoing {x_name} past {y_name} — declared to commute — does not \
@@ -516,6 +555,7 @@ fn a_pair_that_claims_to_commute_does() {
                     compute_footprint(y),
                 );
             }
+            last = Some((a_name, b_name, a, b, ab));
         }
     }
 
@@ -525,5 +565,19 @@ fn a_pair_that_claims_to_commute_does() {
         commuting >= 35,
         "only {commuting} pairs claim to commute ({conflicting} conflict); \
          this test is close to vacuous",
+    );
+
+    // **The premise the whole table rests on, asked of the thing that depends on it.**
+    // Every document above came out of re-joining one engine, which is only the same
+    // as building one per trial if a join leaves nothing of the last document behind.
+    // So the last pair is asked again of an engine that has rendered nothing: a
+    // difference here would mean every comparison above was between two states of one
+    // dirty engine rather than between two materializations of a log.
+    let (a_name, b_name, a, b, ab) = last.expect("a commuting pair was checked");
+    let mut fresh = engine_or_skip().expect("the device this run already built an engine on");
+    assert!(
+        images_match(&ab, &ordered(&mut fresh, &file, a, b), 0),
+        "{a_name} then {b_name} renders differently on the re-joined engine than on a \
+         fresh one — this test's engine reuse is unsound, and every result above with it",
     );
 }

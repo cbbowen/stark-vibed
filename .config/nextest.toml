@@ -68,14 +68,16 @@ test-group = 'gpu'
 
 # `commute_pairs` is quadratic in the vocabulary by construction: it asks every pair
 # of actions that claims to commute to produce the same document in either order
-# (§12.6), which is two fresh documents and two renders per pair. ~18 s alone, ~100 s
-# under a full GPU group, against a default ceiling of 240 s — close enough to the
-# kill threshold on a smaller CI box to be worth stating rather than discovering.
+# (§12.6), which is six documents per commuting pair and 184 such pairs.
 #
-# The cost is the *documents*, not the actions: every peer replays the base log, so
-# the engine builds dominate and trimming rows barely moves it. Raising the ceiling
-# here is therefore the honest lever — the alternative was dropping coverage from the
-# one test that checks the reads half of every footprint.
+# It cost ~150 s when this window was written, and the cost was `Engine::new` — ~140 ms
+# of pipelines per construction — not the replay it was blamed on: joining the base log
+# into an engine that already exists is ~2 ms. It now builds **one** engine and re-joins
+# it per trial, and takes ~5 s alone.
+#
+# The window is kept as insurance rather than as a necessity, and it is reached only
+# under `--run-ignored`: a software adapter is a long way from the one that number was
+# measured on.
 [[profile.default.overrides]]
 filter = 'test(a_pair_that_claims_to_commute_does)'
 slow-timeout = { period = "120s", terminate-after = 5 }
