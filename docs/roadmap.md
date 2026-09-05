@@ -1260,7 +1260,7 @@ not compiled with (`DocError::UnsupportedColorSpace`, a licensing constraint, §
 and one whose content cannot be resolved. So the discipline the rung actually asks for
 is: tombstone rather than delete, let the caps only rise, and let a value that has
 gone out of range be *repaired* on the way in rather than turned away — the policy
-`FillOp` already states and `Gradient` is the one exception to (§8).
+`FillOp` states and `Gradient`, the one exception, was brought under (§8, §22.1).
 
 ---
 

@@ -71,22 +71,11 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
                 color: Srgb::new([0.75, n, 1.0]),
             },
         ])
-        // A ramp whose stops are not finite is not a ramp at all, and `new` says so
-        // (§22.1) — so the poisoned run falls back to a clean ramp on a poisoned
-        // *axis*, which is the part of a gradient parcel this file is about.
-        .unwrap_or_else(|| {
-            Gradient::new(vec![
-                GradientStop {
-                    t: 0.0,
-                    color: Srgb::BLACK,
-                },
-                GradientStop {
-                    t: 1.0,
-                    color: Srgb::WHITE,
-                },
-            ])
-            .expect("a two-stop ramp")
-        })
+        // `n` reaches the *colors* only, and `Srgb` bounds those on the way in; `new`
+        // checks positions, which are the literals above. So the poisoned run is a
+        // clean ramp on a poisoned *axis*, which is the part of a gradient parcel this
+        // file is about (§22.4).
+        .expect("a two-stop ramp")
     };
     let axis = GradientAxis::Linear { from: v, to: v };
 

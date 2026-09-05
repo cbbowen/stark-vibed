@@ -283,9 +283,11 @@ What is left that no encoding can absorb is a rename without an alias, and a
 **meaning** changed with the names untouched — reusing a variant for something else,
 or narrowing what a field may hold. Nothing in a file can notice the second; it is not
 a format problem and never was. One consequence reaches the invariant funnels: a gate
-that *refuses* on the way in (`Gradient`, alone in this) cannot be tightened later
-without unloading files that were valid when saved, so a new condition there has to
-arrive as repair rather than refusal.
+that *refuses* on the way in cannot be tightened later without unloading files that
+were valid when saved, so a new condition there has to arrive as repair rather than
+refusal. `Gradient` was the one gate that refused, and no longer does — a stop list
+that names no ramp is repaired into one (§22.1), which is what makes every funnel in
+the log a repairing one.
 
 **Two doors, and only one is bounded.** `DocumentFile::from_bytes` opens a file the
 user owns; `from_untrusted_bytes` opens a peer's snapshot (§12.4) and refuses a body
@@ -312,22 +314,25 @@ type here.
 A schema can also be found by **tracing** — driving a type's `Deserialize` impl with
 synthetic values and recording what it asks for. Tracing needs no derive and reads the
 real impl, which makes it the obvious default; it is also unusable here. Three types in
-the log gate their own invariants in `Deserialize` (`FillOp` and `SelectionOp` clamp
-through a `serde(from)` mirror, `Gradient` *refuses* through a `try_from`), and a funnel
-that turns away a one-element stop list cannot describe itself to a file. Worse, it
-poisons everything containing it: no `Action`, no `DocumentFile`, no gossip payload could
-be traced either.
+the log gate their own invariants in `Deserialize` — `FillOp`, `SelectionOp` and
+`Gradient`, each clamping or repairing through a `serde(from)` mirror — and a funnel
+driven with synthetic values cannot describe itself to a file. Worse, it poisons
+everything containing it: no `Action`, no `DocumentFile`, no gossip payload could be
+traced either.
 
 So each of the three states its wire shape outright:
 
 ```rust
-#[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
+#[serde(from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]
 pub struct Gradient { stops: Vec<GradientStop> }
 ```
 
-The schema, the columns and the bytes are then the stop list's, nothing drives the
-conversion to find that out, and `Gradient::new` stays a refusal — which is the point.
+The schema, the columns and the bytes are then the stop list's, and nothing drives the
+conversion to find that out. That the conversion is *infallible* is a second thing it
+buys: `carbonite::compat`'s probe writes a one-element sequence, so a funnel that
+refused one returned `Inconclusive` for every type containing it — which was every type
+in the document.
 `carbonite(as)` is one declaration for both directions, so a one-sided `serde(from)` is a
 compile error naming the attribute to add; that is why the two mirror types are
 bidirectional now.

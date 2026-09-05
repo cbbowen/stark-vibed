@@ -32,10 +32,14 @@ function rather than laying it as paint.
 `stark_model::gradient::Gradient` is a list of color stops — a position `t` in
 `[0,1]` and a color — with three invariants held **by construction** rather
 than checked by consumers: at least two stops, positions ascending, endpoints
-at 0 and 1 (`Gradient::new` normalizes and refuses; deserialization funnels
-through the same gate, so a stored or received stop list cannot smuggle in an
-unsampleable ramp). A `Gradient` in hand is always sampleable, which is the
-§1 habit of ruling out a class rather than enumerating its instances.
+at 0 and 1. A `Gradient` in hand is always sampleable, which is the §1 habit of
+ruling out a class rather than enumerating its instances — and the two doors that
+build one reach it differently. `Gradient::new` **refuses** a list that names no
+ramp, because a caller who traced a line needs to hear so (§22.2).
+Deserialization **repairs** one instead: an empty list becomes black→white, a lone
+stop a flat ramp of its own color, a non-finite position drops its stop. A refusal
+there would refuse the whole document over one malformed ramp, which §19 does not
+permit; a well-formed ramp is untouched by either door.
 
 Stops store **straight extended sRGB**, because that is the convention on every
 CPU color boundary — `PaintEffect::color`, the matte and substrate colors, the

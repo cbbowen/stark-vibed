@@ -150,7 +150,7 @@ impl Filter {
             Filter::Color(c) => Filter::Color(c.sanitized()),
             Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
             // A `Gradient`'s structural invariants (two stops, ascending, finite) are
-            // held by construction — deserialization funnels through `Gradient::new` —
+            // held by construction — deserialization repairs into them (§22.1) —
             // and its stops' *range* is held by `Srgb`. So this arm has nothing to do,
             // and stays an arm rather than a catch-all: it is where a gradient map's
             // knobs would go if it grew one, and the match is exhaustive for

@@ -233,8 +233,8 @@ impl SelectionMode {
 /// **Deserialization funnels through [`SelectionOp::at`]**, so an op that arrives from
 /// a file or a peer holds the same invariants as one a gesture built: non-negative
 /// feather, opacity in `0..=1`, and full strength on the unbounded shape. Same device
-/// as [`Gradient`](crate::gradient::Gradient)'s `try_from` — a funnel is worth nothing
-/// if there is a second door.
+/// as [`Gradient`](crate::gradient::Gradient)'s repairing `From` — a funnel is worth
+/// nothing if there is a second door.
 ///
 /// `Raw` mirrors the fields **in order**, so the encoding is unchanged (§8) —
 /// `an_op_from_the_wire_is_normalized` pins that.

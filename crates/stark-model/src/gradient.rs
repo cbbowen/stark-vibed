@@ -40,30 +40,29 @@ pub struct GradientStop {
 
 /// A color ramp: at least two stops, positions ascending, endpoints at 0 and 1.
 ///
-/// The invariants are held by construction — [`Gradient::new`] normalizes and
-/// refuses rather than every consumer re-checking, and deserialization funnels
-/// through the same gate — so a `Gradient` in hand is always sampleable.
+/// The invariants are held by construction on both doors, which answer a list that
+/// names no ramp differently and deliberately:
 ///
-/// The stop list is the wire shape in both directions, and that is what lets the funnel
-/// stay a *refusal* (§8): `carbonite(as)` states the schema as `Vec<GradientStop>`, so
-/// nothing drives `try_from` to find out what the type looks like, and a stored list
-/// that names no ramp is turned away instead of having to be accepted so that the type
-/// could describe itself.
+/// - [`new`](Self::new) **refuses**. The authoring path: a caller who traced a line
+///   needs to hear that the samples describe one (§22.2).
+/// - `Deserialize`/`Schema` **repair**, through `From<Vec<GradientStop>>`. A refusal
+///   here would take the whole document with it — a ramp sits inside a `Parcel`, a
+///   `Filter::GradientMap` and a [`FillOp`](crate::document::FillOp)'s parcel, where it
+///   would be refused *before* that op's own clamp could run — and §19 admits only two
+///   refusals on the load path, neither of them a malformed ramp.
 ///
-/// **Which makes these invariants unable to tighten without repair.** This is the one
-/// refusing funnel on the load path, and it takes the whole document with it — a ramp
-/// sits inside a `Parcel`, a `Filter::GradientMap`, and a
-/// [`FillOp`](crate::document::FillOp)'s parcel, where it is refused *before* that
-/// op's own clamp can run. Adding a condition here — monotonic lightness, say — would
-/// retroactively unload files that were valid when saved, which §19 does not permit.
-/// A tightened invariant has to arrive as **repair on the way in**, with
-/// [`new`](Self::new) left refusing for the *authoring* path, where a caller who
-/// traced a line does need to hear that the samples describe no ramp.
+/// So a condition added here — monotonic lightness, say — can only arrive as a repair,
+/// since refusing it would retroactively unload files that were valid when saved.
+/// [`MAX_STOPS`] is the one added so far, which is why it thins rather than refuses,
+/// on both doors alike.
 ///
-/// [`MAX_STOPS`] is the one condition added that way, which is why it thins rather
-/// than refuses.
+/// The stop list is the wire shape in both directions: `carbonite(as)` states the
+/// schema as `Vec<GradientStop>`, so nothing drives the conversion to find out what the
+/// type looks like (§8). Being infallible, it also leaves `carbonite::compat`'s probe a
+/// verdict to give about every type a ramp sits inside — the probe writes one-element
+/// sequences, and a funnel that refused one returned no answer for `Action` either.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
-#[serde(try_from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
+#[serde(from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]
 pub struct Gradient {
     stops: Vec<GradientStop>,
@@ -79,9 +78,9 @@ impl Gradient {
     /// **Only the positions are checked**, because only the positions can be wrong:
     /// an [`Srgb`] is finite and bounded by construction.
     ///
-    /// The only door, and it refuses: a caller that traced a line expecting a ramp
-    /// needs to hear "these samples do not describe one" (§22.2), and so does a file
-    /// carrying a stop list that is not one.
+    /// **The authoring door, and it refuses**: a caller that traced a line expecting a
+    /// ramp needs to hear "these samples do not describe one" (§22.2). A file carrying
+    /// the same list is repaired instead — see [`Gradient`].
     ///
     /// **Except for the count, which is thinned rather than refused.** Every other
     /// condition here is about a list that names no ramp at all; a long list names one
@@ -146,6 +145,17 @@ impl Gradient {
         ])
     }
 
+    /// A two-stop ramp, `a` at 0 and `b` at 1. Normalized as written, so it needs no
+    /// pass through [`new`](Self::new) — which could not refuse it anyway.
+    fn ends(a: Srgb, b: Srgb) -> Self {
+        Self {
+            stops: vec![
+                GradientStop { t: 0.0, color: a },
+                GradientStop { t: 1.0, color: b },
+            ],
+        }
+    }
+
     /// The same ramp run the other way: `reversed().sample(t) == sample(1 - t)`.
     ///
     /// A captured gradient runs in whatever direction the hand traced, which is
@@ -176,10 +186,31 @@ impl From<Gradient> for Vec<GradientStop> {
     }
 }
 
-impl TryFrom<Vec<GradientStop>> for Gradient {
-    type Error = &'static str;
-    fn try_from(stops: Vec<GradientStop>) -> Result<Self, Self::Error> {
-        Gradient::new(stops).ok_or("a gradient needs two finite stops at distinct positions")
+/// The load path's door, and it repairs (§19): whatever a file, a peer or a stored
+/// library entry carries comes back as a ramp.
+///
+/// The normalization is [`Gradient::new`]'s — same sort, same thinning, same rescale —
+/// so a ramp that arrives well-formed is the one `new` would have built, bit for bit.
+/// Only the three shapes `new` calls no ramp at all are answered here rather than
+/// refused.
+impl From<Vec<GradientStop>> for Gradient {
+    fn from(mut stops: Vec<GradientStop>) -> Self {
+        // A non-finite position names no place on the ramp, and any place chosen for it
+        // would be one the file did not write — so the stop goes, and what is left is
+        // repaired by the rules below.
+        stops.retain(|s| s.t.is_finite());
+        // The color a pile of stops at one position samples as (`sample` reads the
+        // earlier side of a hard edge), and the one thing a lone stop carries that
+        // black→white would discard.
+        let held = stops.first().map(|s| s.color);
+        match (Gradient::new(stops), held) {
+            (Some(g), _) => g,
+            (None, Some(c)) => Self::ends(c, c),
+            // Nothing arrived, so there is nothing to preserve: black→white is the ramp
+            // that states no choice — the identity of the gradient map, dark at 0
+            // (§22.5).
+            (None, None) => Self::ends(Srgb::BLACK, Srgb::WHITE),
+        }
     }
 }
 
@@ -460,23 +491,142 @@ mod tests {
         }
     }
 
-    /// What a stored ramp can smuggle past the funnel: nothing.
+    /// What a stored ramp can smuggle past the funnel: nothing. What it can be refused
+    /// for: nothing either (§19).
     ///
-    /// Serde's `try_from` routes through this impl, so this is the test of what a
-    /// file, a peer, or a library entry in browser storage can land — and it
-    /// **refuses**. `carbonite(as)` states the shape as the stop list, so nothing
-    /// drives the conversion to find out what the type looks like (§8).
+    /// Driven through the *encoding*, since a stop list is exactly what a file carries
+    /// and that is the path the funnel exists for. The per-case repairs are asserted
+    /// below; this says the two things true of every case.
     #[test]
     fn deserialization_funnels_through_the_same_gate() {
-        assert!(Gradient::try_from(vec![stop(0.0, [0.0; 3]), stop(1.0, [1.0; 3])]).is_ok());
-        assert!(Gradient::try_from(vec![stop(0.5, [0.0; 3])]).is_err());
-        assert!(Gradient::try_from(vec![]).is_err());
-        assert!(Gradient::try_from(vec![stop(f32::NAN, [0.0; 3]), stop(1.0, [1.0; 3])]).is_err());
+        for stops in [
+            vec![],
+            vec![stop(0.5, [1.0; 3])],
+            vec![stop(0.5, [0.0; 3]), stop(0.5, [1.0; 3])],
+            vec![stop(f32::NAN, [0.0; 3]), stop(1.0, [1.0; 3])],
+            vec![stop(0.0, [0.0; 3]), stop(1.0, [1.0; 3])],
+        ] {
+            let g = loaded(stops);
+            let n = g.stops().len();
+            assert!((2..=MAX_STOPS).contains(&n), "{n} stops");
+            assert_eq!((g.stops()[0].t, g.stops()[n - 1].t), (0.0, 1.0));
+            assert!(g.stops().windows(2).all(|w| w[0].t <= w[1].t));
+        }
+    }
 
-        // …and it refuses through the *encoding* too, not just the constructor: a stop
-        // list is exactly what a file carries, so this is the path that matters.
-        let lone = carbonite::to_vec_static(&vec![stop(0.5, [1.0; 3])]).expect("encodes");
-        assert!(carbonite::from_slice_static::<Gradient>(&lone).is_err());
+    /// Decode a stop list the way a file does: bytes in, `Gradient` out.
+    fn loaded(stops: Vec<GradientStop>) -> Gradient {
+        let bytes = carbonite::to_vec_static(&stops).expect("encodes");
+        carbonite::from_slice_static::<Gradient>(&bytes).expect("a stop list always loads")
+    }
+
+    /// **The load path repairs; it does not refuse** (§19).
+    ///
+    /// Each case asserts the ramp that comes back, not merely that one does — a
+    /// repair is only worth the refusal it replaces if it is the *stated* one.
+    #[test]
+    fn an_empty_stop_list_loads_as_black_to_white() {
+        let g = loaded(vec![]);
+        assert_eq!(g.stops().len(), 2);
+        assert_eq!((g.stops()[0].t, g.stops()[1].t), (0.0, 1.0));
+        assert_eq!(g.stops()[0].color, Srgb::BLACK);
+        assert_eq!(g.stops()[1].color, Srgb::WHITE);
+    }
+
+    #[test]
+    fn a_lone_stop_loads_as_a_flat_ramp_of_its_own_color() {
+        let c = Srgb::new([0.8, 0.2, 0.1]);
+        let g = loaded(vec![stop(0.5, c.get())]);
+        assert_eq!(
+            g.stops(),
+            &[
+                GradientStop { t: 0.0, color: c },
+                GradientStop { t: 1.0, color: c },
+            ],
+        );
+    }
+
+    #[test]
+    fn stops_at_one_position_load_as_a_flat_ramp() {
+        let c = Srgb::new([0.1, 0.6, 0.3]);
+        let g = loaded(vec![stop(0.25, c.get()), stop(0.25, [0.9, 0.9, 0.9])]);
+        assert_eq!(
+            g.stops(),
+            &[
+                GradientStop { t: 0.0, color: c },
+                GradientStop { t: 1.0, color: c },
+            ],
+        );
+    }
+
+    #[test]
+    fn a_non_finite_position_drops_its_stop_and_the_rest_is_repaired() {
+        let a = Srgb::new([1.0, 0.0, 0.0]);
+        let b = Srgb::new([0.0, 0.0, 1.0]);
+        let g = loaded(vec![
+            stop(0.0, a.get()),
+            stop(f32::NAN, [0.0; 3]),
+            stop(1.0, b.get()),
+            stop(f32::INFINITY, [0.0; 3]),
+        ]);
+        assert_eq!(
+            g.stops(),
+            &[
+                GradientStop { t: 0.0, color: a },
+                GradientStop { t: 1.0, color: b },
+            ],
+        );
+
+        // And when dropping leaves too little to be a ramp, the rules above apply
+        // to what is left rather than to what arrived.
+        let lone = loaded(vec![stop(f32::NAN, [0.0; 3]), stop(0.5, a.get())]);
+        assert_eq!(
+            lone.stops(),
+            &[
+                GradientStop { t: 0.0, color: a },
+                GradientStop { t: 1.0, color: a },
+            ],
+        );
+    }
+
+    /// **A well-formed ramp comes back bit for bit.** The load-bearing one: a repair
+    /// that perturbed valid data would be worse than the refusal it replaced.
+    #[test]
+    fn a_well_formed_ramp_survives_the_load_path_unchanged() {
+        let stops = vec![
+            stop(0.0, [0.13, 0.27, 0.41]),
+            stop(0.317, [0.91, 0.52, 0.08]),
+            stop(0.742, [0.04, 0.66, 0.55]),
+            stop(1.0, [0.98, 0.99, 0.97]),
+        ];
+        let g = Gradient::new(stops.clone()).expect("a ramp");
+        assert_eq!(g.stops(), stops.as_slice());
+        assert_eq!(loaded(stops.clone()).stops(), stops.as_slice());
+
+        // Round-tripping the `Gradient` itself, which is what a document does — and
+        // its bytes *are* the stop list's, which is what `carbonite(as)` promises and
+        // what keeps the repair off the encoding (§8).
+        let bytes = carbonite::to_vec_static(&g).expect("encodes");
+        assert_eq!(bytes, carbonite::to_vec_static(&stops).expect("encodes"));
+        assert_eq!(
+            carbonite::from_slice_static::<Gradient>(&bytes).expect("decodes"),
+            g,
+        );
+    }
+
+    /// The two paths stay distinguished: the load path repairs, the authoring one
+    /// still tells a caller their trace named no ramp (§22.2).
+    #[test]
+    fn new_still_refuses_what_the_load_path_repairs() {
+        for stops in [
+            vec![],
+            vec![stop(0.5, [1.0; 3])],
+            vec![stop(0.5, [1.0; 3]), stop(0.5, [0.0; 3])],
+            vec![stop(f32::NAN, [1.0; 3]), stop(1.0, [0.0; 3])],
+        ] {
+            assert!(Gradient::new(stops.clone()).is_none());
+            assert_eq!(loaded(stops).stops().len(), 2);
+        }
     }
 
     /// **A ramp can never be longer than the array every consumer reads it into.**
