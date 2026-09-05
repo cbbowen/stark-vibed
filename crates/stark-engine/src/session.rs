@@ -480,11 +480,6 @@ impl Session {
         &self.name
     }
 
-    /// Set the display name the user chose. **Sticky**: hosting or joining a session
-    /// mints this client a new actor id, and
-    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
-    /// here. Setting it empty gives the choice back, and peers resume showing the
-    /// id-derived default.
     /// Edge softness for the next shape gesture, floored at zero.
     ///
     /// A setter rather than a `pub` field, for the reason every `ViewTransform`
@@ -530,6 +525,11 @@ impl Session {
         self.cursor
     }
 
+    /// Set the display name the user chose. **Sticky**: hosting or joining a session
+    /// mints this client a new actor id, and
+    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
+    /// here. Setting it empty gives the choice back, and peers resume showing the
+    /// id-derived default.
     pub fn set_name(&mut self, name: String) {
         let name = name.trim();
         self.name_chosen = !name.is_empty();
@@ -777,6 +777,16 @@ impl Session {
     /// change it mid-drag is this drag.
     /// `frame` is the active layer's frame at the press (§14.12) — read by a
     /// gesture that resolves to a *fill*; a selecting one never consults it.
+    ///
+    /// A non-finite `pos` starts **no drag** — [`set_cursor`](Self::set_cursor)'s
+    /// filter, at the other door a canvas position enters this session through.
+    /// [`ShapeDrag::to_shape`]'s degeneracy tests do not close the class behind
+    /// it: for the reason [`SelectionShape::bounds`] gives, an all-NaN drag went
+    /// past them as a `Rect { min: NaN, max: NaN }` and an infinite corner as an
+    /// unbounded one. The model refuses both downstream, so no peer diverged —
+    /// but the release had already spent an undo step on an op that changes no
+    /// pixel. The press's other effects stand, the ordinal bump included: it did
+    /// abandon what was in flight, and that abandonment is what the bump records.
     pub fn start_selection(
         &mut self,
         tool: Tool,
@@ -792,7 +802,7 @@ impl Session {
         self.hover = None;
         self.gesture_ordinal += 1;
         let [r, g, b] = self.color;
-        self.selecting = Some(ShapeDrag {
+        self.selecting = pos.is_finite().then(|| ShapeDrag {
             tool,
             action: against_selection(self.shape_action, has_selection),
             feather: self.selection_feather,
@@ -811,8 +821,14 @@ impl Session {
         });
     }
 
-    /// Extend the in-flight shape gesture.
+    /// Extend the in-flight shape gesture. A non-finite `pos` is dropped at the
+    /// door for [`start_selection`](Self::start_selection)'s reason — and the
+    /// lasso keeps every point it is given, so one such report would sit in the
+    /// logged polyline for the rest of the gesture.
     pub fn selection_to(&mut self, pos: Vec2) {
+        if !pos.is_finite() {
+            return;
+        }
         if let Some(drag) = self.selecting.as_mut() {
             drag.push(pos);
         }
@@ -1148,6 +1164,19 @@ impl Session {
 
     // --- the hover mark (§18.1.10) --------------------------------------------
 
+    /// Whether the hand is free to hover: nothing in flight, and a tool that
+    /// paints rather than drags a shape.
+    ///
+    /// **Both halves of the mark read it** — the door reports enter through
+    /// ([`hover_to`](Self::hover_to)) and the fold that draws it
+    /// ([`hover_view`](Self::hover_view)) — because the door is not free: an
+    /// accepted report bumps the gesture ordinal, and a bump mid-stroke makes
+    /// every peer discard its assembly and restart (§17.5) and drops the local
+    /// renderer's cached head, for a mark the fold would decline to draw.
+    fn hovering(&self) -> bool {
+        self.in_flight.is_none() && self.selecting.is_none() && !self.tool.is_selection()
+    }
+
     /// Feed the hover mark one report: append it to the trailing window of
     /// recent reports, refit the window, and lay the **probe** — the stroke a
     /// drag begun this instant would open, `reach` canvas px from the cursor
@@ -1181,6 +1210,10 @@ impl Session {
     /// screen-fixed length grew in canvas terms as the view zoomed out —
     /// promising more painting the less closely you looked.
     ///
+    /// A report arriving while the hand is not [`hovering`](Self::hovering) is
+    /// refused outright, rather than kept for a fold that would decline to draw
+    /// it — see there for what accepting one costs.
+    ///
     /// A non-finite report is refused at the door for
     /// [`stroke_to`](Self::stroke_to)'s reason — the window *remembers* — and
     /// a report within a tolerance of the last is dropped: it carries nothing the
@@ -1189,7 +1222,7 @@ impl Session {
     /// changed, so a caller can skip the refold for a report that changed
     /// nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
-        if !sample.is_admissible() || !reach.is_finite() {
+        if !self.hovering() || !sample.is_admissible() || !reach.is_finite() {
             return false;
         }
         if let Some(h) = self.hover.as_ref()
@@ -1265,18 +1298,18 @@ impl Session {
     /// gesture would commit: the prediction is synthesized, its rendering is
     /// inherited.
     ///
-    /// `None` while a real gesture is in flight — a fact always outranks a
-    /// hypothesis, and the fold may hold at most one gesture per actor — and
-    /// under a selection tool, which drags a shape rather than the brush. An
-    /// unpaintable active layer needs no test here: the stroke renderer refuses
-    /// it exactly as a commit would.
+    /// `None` unless the hand is [`hovering`](Self::hovering): a fact outranks a
+    /// hypothesis and the fold holds at most one gesture per actor, so neither a
+    /// stroke nor a shape drag leaves room for the mark — and a selection tool
+    /// drags a shape rather than the brush. An unpaintable active layer needs no
+    /// test here: the stroke renderer refuses it exactly as a commit would.
     pub fn hover_view(
         &self,
         actor: ActorId,
         seed: u64,
         translation: stark_model::geom::IVec2,
     ) -> Option<GestureView> {
-        if self.in_flight.is_some() || self.selecting.is_some() || self.tool.is_selection() {
+        if !self.hovering() {
             return None;
         }
         let h = self.hover.as_ref()?;
@@ -1504,5 +1537,149 @@ mod tests {
         );
         s.selection_to(Vec2::splat(10.0));
         assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill { .. })));
+    }
+
+    /// The tolerance the hover tests report at; positions below are spaced well
+    /// clear of it, so nothing is dropped as sub-tolerance drift.
+    const TOLERANCE: f32 = 1.0;
+
+    /// One hover report, far enough from the last to be accepted.
+    fn hover(s: &mut Session, at: Vec2) -> bool {
+        s.hover_to(InputSample::at(at), TOLERANCE, 50.0)
+    }
+
+    /// Press a shape gesture at `pos`, with nothing already selected.
+    fn press(s: &mut Session, tool: Tool, pos: Vec2) {
+        s.start_selection(tool, pos, false, stark_model::geom::IVec2::ZERO);
+    }
+
+    /// With the hand free the mark is laid, and each accepted report takes its
+    /// own ordinal — the baseline the three refusals below are measured against,
+    /// so none of them can pass by the door having been shut on everything.
+    #[test]
+    fn a_hover_with_the_hand_free_still_lays_the_mark() {
+        let mut s = session(ShapeAction::default());
+        let ordinal = s.gesture_ordinal();
+        assert!(hover(&mut s, Vec2::ZERO));
+        assert!(hover(&mut s, Vec2::new(20.0, 0.0)));
+        assert_eq!(s.gesture_ordinal(), ordinal + 2);
+        assert!(s.hover_held());
+        let view = s.hover_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO);
+        assert!(view.is_some(), "the free hand's mark did not fold");
+    }
+
+    /// A hover report arriving mid-stroke is refused, ordinal untouched. The
+    /// fold already declined to draw one; what it could not undo was the door's
+    /// side effects — an ordinal bump is a gesture *restart* on the wire (§17.5),
+    /// so a frontend that forgot to gate its moves restarted every peer per
+    /// pointer report of the stroke it was drawing.
+    #[test]
+    fn a_hover_during_a_stroke_does_not_advance_the_gesture_ordinal() {
+        let mut s = session(ShapeAction::default());
+        s.start_stroke(
+            Tool::Brush,
+            InputSample::at(Vec2::ZERO),
+            0,
+            TOLERANCE,
+            0.0,
+            stark_model::geom::IVec2::ZERO,
+        );
+        let ordinal = s.gesture_ordinal();
+        assert!(!hover(&mut s, Vec2::new(20.0, 0.0)));
+        assert_eq!(s.gesture_ordinal(), ordinal);
+        assert!(!s.hover_held());
+    }
+
+    /// Same for a shape gesture being dragged out: the other in-flight slot.
+    ///
+    /// The tool is put back to the brush, or this would pass on the conjunct the
+    /// test below is about — a press arms both at once.
+    #[test]
+    fn a_hover_during_a_shape_drag_does_not_advance_the_gesture_ordinal() {
+        let mut s = session(ShapeAction::default());
+        press(&mut s, Tool::SelectRect, Vec2::ZERO);
+        s.tool = Tool::Brush;
+        let ordinal = s.gesture_ordinal();
+        assert!(!hover(&mut s, Vec2::new(20.0, 0.0)));
+        assert_eq!(s.gesture_ordinal(), ordinal);
+        assert!(!s.hover_held());
+    }
+
+    /// A selection tool refuses the report at the door, not merely at the fold.
+    /// It is the condition that holds across a whole stretch of moves rather
+    /// than a gesture, so it is where the waste piled up: two full solves and a
+    /// spent ordinal per pointer move, building a window the fold declined every
+    /// time.
+    #[test]
+    fn a_selection_tool_refuses_the_hover_report_not_just_the_fold() {
+        let mut s = session(ShapeAction::default());
+        s.tool = Tool::SelectRect;
+        let ordinal = s.gesture_ordinal();
+        assert!(!hover(&mut s, Vec2::ZERO));
+        assert!(!hover(&mut s, Vec2::new(20.0, 0.0)));
+        assert_eq!(s.gesture_ordinal(), ordinal);
+        assert!(!s.hover_held());
+    }
+
+    /// A non-finite press encloses nothing rather than a region of NaN, so the
+    /// release has nothing to commit — [`ShapeDrag::to_shape`]'s degeneracy
+    /// tests never have to catch it, because no drag was started to run them.
+    ///
+    /// **Released with no move behind it**, which is the case that reached the
+    /// log: a later report covers the bad axis, `min`/`max` returning the finite
+    /// operand ([`SelectionShape::bounds`]), so a NaN *drag* was already refused
+    /// by the degeneracy test. The second half drags anyway, for the infinite
+    /// corner, which passed that test as an unbounded rect.
+    #[test]
+    fn a_non_finite_press_starts_no_shape_drag() {
+        for pos in [
+            Vec2::splat(f32::NAN),
+            Vec2::new(f32::INFINITY, 0.0),
+            Vec2::new(0.0, f32::NEG_INFINITY),
+        ] {
+            let mut s = session(ShapeAction::Select(SelectionMode::Replace));
+            press(&mut s, Tool::SelectRect, pos);
+            assert!(!s.is_selecting(), "{pos} opened a drag");
+            assert_eq!(s.end_shape(), None, "{pos} alone committed an op");
+
+            let mut s = session(ShapeAction::Select(SelectionMode::Replace));
+            press(&mut s, Tool::SelectRect, pos);
+            s.selection_to(Vec2::splat(10.0));
+            assert_eq!(s.preview_shape(), None, "{pos} drew a region");
+            assert_eq!(s.end_shape(), None, "{pos} dragged into an op");
+        }
+    }
+
+    /// And a non-finite move leaves the drag exactly as the last usable report
+    /// left it. The marquee would only have carried it until the next move; the
+    /// lasso keeps every point it is given, so one such report would sit in the
+    /// logged polyline for the rest of the gesture.
+    #[test]
+    fn a_non_finite_move_does_not_reach_the_shape_drag() {
+        let junk = [Vec2::splat(f32::NAN), Vec2::new(0.0, f32::INFINITY)];
+
+        let mut s = session(ShapeAction::Select(SelectionMode::Replace));
+        press(&mut s, Tool::SelectRect, Vec2::ZERO);
+        s.selection_to(Vec2::splat(10.0));
+        let drawn = s.preview_shape().expect("the marquee encloses a region");
+        for p in junk {
+            s.selection_to(p);
+        }
+        assert_eq!(s.preview_shape(), Some(drawn));
+
+        let mut s = session(ShapeAction::Select(SelectionMode::Replace));
+        press(&mut s, Tool::SelectLasso, Vec2::ZERO);
+        for p in [
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ] {
+            s.selection_to(p);
+        }
+        let drawn = s.preview_shape().expect("the loop encloses a region");
+        for p in junk {
+            s.selection_to(p);
+        }
+        assert_eq!(s.preview_shape(), Some(drawn));
     }
 }
