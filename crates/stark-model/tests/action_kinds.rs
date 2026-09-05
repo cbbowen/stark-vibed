@@ -27,6 +27,9 @@ use stark_model::document::{
     PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, ToothParams,
     WarpMap, affine_usable, rect_corners,
 };
+// `Quat` and `Vec3` come straight from glam: `geom` re-exports only what the
+// document is *addressed* in, and a guide's pose is not that (§20.5).
+use glam::{Quat, Vec3};
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
@@ -255,11 +258,16 @@ fn poisoned_filter(n: f32) -> Filter {
     }
 }
 
-/// A camera with `n` in every lane the guide pass reads (§20.4).
+/// A camera with `n` in every lane the guide pass reads (§20.4) — the rotation
+/// and the lattice included, which are the two the funnel treats unlike the rest:
+/// the rotation is the crate's one repair that is not a clamp, and the lattice is
+/// replaced whole rather than per component.
 fn poisoned_guide(n: f32) -> PerspectiveGuide {
     PerspectiveGuide {
         center: Vec2::splat(n),
         focal: n,
+        rotation: Quat::from_xyzw(n, n, n, n),
+        lattice: Vec3::splat(n),
         opacity: n,
         ..PerspectiveGuide::default()
     }

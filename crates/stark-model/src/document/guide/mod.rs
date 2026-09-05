@@ -111,6 +111,29 @@ const MIN_FOCAL: f32 = 1.0;
 /// down the world Z axis, the 1-point case — is the honest answer instead.
 const MIN_QUAT_SQ: f32 = 1e-12;
 
+/// The rotation a guide is held to: itself if it is already one, renormalized if it
+/// names a direction, and the identity if it names none.
+///
+/// **The upper bound is the one that bites.** `length_squared` overflows `f32` at a
+/// component of ~1.8e19, and `Quat::normalize` then divides by an infinite length and
+/// returns `Quat(0, 0, 0, 0)` — finite, so the funnel reports it clean, and not a
+/// rotation, so `Mat3::from_quat` of it is the zero matrix. Worse, it is not *stable*:
+/// a second pass reads that zero as "no direction" and answers `IDENTITY`, so a guide
+/// logged through one funnel reloads as a different guide through the next — the
+/// load-is-a-small-edit the §20.5 bargain rests on not happening.
+///
+/// A quaternion that large is corruption or a hostile peer rather than a pose anyone
+/// stated, so it lands where the too-small ones land instead of being rescaled to
+/// recover a direction nobody meant.
+fn pose(q: Quat) -> Quat {
+    let sq = q.length_squared();
+    match q {
+        q if q.is_finite() && q.is_normalized() => q,
+        q if q.is_finite() && sq.is_finite() && sq > MIN_QUAT_SQ => q.normalize(),
+        _ => Quat::IDENTITY,
+    }
+}
+
 /// A lattice whose corner sits closer than this many cells to the eye names no
 /// grid (§20.3). Not a tolerance: there all three planes pass through the eye,
 /// every family's index is constant, and what the fans would draw is not an
@@ -399,11 +422,7 @@ impl PerspectiveGuide {
             // no direction left to normalize towards looks down the world Z axis,
             // which is the identity pose and the honest answer to "no rotation
             // was stated".
-            rotation: match self.rotation {
-                q if q.is_finite() && q.is_normalized() => q,
-                q if q.is_finite() && q.length_squared() > MIN_QUAT_SQ => q.normalize(),
-                _ => Quat::IDENTITY,
-            },
+            rotation: pose(self.rotation),
             lens: self.lens,
             lattice: if self.lattice.is_finite() {
                 self.lattice
@@ -1591,5 +1610,132 @@ mod tests {
         let up = Scaffold::of(std::slice::from_ref(&g));
         assert!(up.axes.is_empty());
         assert!(up.planes.is_empty());
+    }
+
+    /// **A rotation that is already one is left exactly alone**, and one that is
+    /// not settles in a single pass.
+    ///
+    /// The rotation arm is the only repair in this crate that is not a clamp, and
+    /// the whole "run at mint *and* at state entry without a load becoming a small
+    /// edit" bargain rests on [`Quat::normalize`] landing inside
+    /// [`Quat::is_normalized`]'s tolerance — so the second pass has nothing left to
+    /// do. Bit-for-bit, because a pose nudged by an ulp on every load is still a
+    /// document that changes when it is opened.
+    #[test]
+    fn a_rotation_already_normal_is_untouched_and_a_stretched_one_settles_at_once() {
+        let unit = Quat::from_rotation_z(0.7) * Quat::from_rotation_x(-0.3);
+        let g = PerspectiveGuide {
+            rotation: unit,
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(
+            g.rotation.to_array(),
+            unit.to_array(),
+            "a unit quaternion must come through the funnel untouched",
+        );
+
+        // Twice as long: a drag's accumulated error past the tolerance.
+        let stretched = Quat::from_xyzw(unit.x * 2.0, unit.y * 2.0, unit.z * 2.0, unit.w * 2.0);
+        assert!(!stretched.is_normalized(), "the fixture must need repair");
+        let once = PerspectiveGuide {
+            rotation: stretched,
+            ..Default::default()
+        }
+        .sanitized();
+        assert!(once.rotation.is_normalized());
+        assert!(
+            (once.rotation.dot(unit).abs() - 1.0).abs() < 1e-5,
+            "renormalizing must keep the pose, not just the length",
+        );
+        assert_eq!(
+            once.sanitized().rotation.to_array(),
+            once.rotation.to_array(),
+            "a second pass moved a rotation the first pass repaired",
+        );
+    }
+
+    /// A quaternion with **no direction left to normalize towards** reads as the
+    /// identity pose — looking down the world Z axis, the 1-point case — rather
+    /// than as whatever the division amplifies its rounding into.
+    #[test]
+    fn a_rotation_with_no_direction_left_reads_as_the_identity_pose() {
+        let tiny = MIN_QUAT_SQ.sqrt() * 0.5;
+        for q in [
+            Quat::from_xyzw(0.0, 0.0, 0.0, 0.0),
+            Quat::from_xyzw(tiny, 0.0, 0.0, 0.0),
+            Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0),
+            Quat::from_xyzw(0.0, f32::INFINITY, 0.0, 0.0),
+        ] {
+            let g = PerspectiveGuide {
+                rotation: q,
+                ..Default::default()
+            }
+            .sanitized();
+            assert_eq!(g.rotation, Quat::IDENTITY, "{q:?} named a pose");
+        }
+    }
+
+    /// The camera's own numbers: the focal length floors where [`ray`] and
+    /// [`project`] stop being a projection at all, and the two vectors fall back
+    /// to the default pose rather than reaching a uniform lane as a `NaN` (§20.4).
+    ///
+    /// [`ray`]: PerspectiveGuide::ray
+    /// [`project`]: PerspectiveGuide::project
+    #[test]
+    fn a_camera_floors_its_focal_length_and_falls_back_for_a_place_it_cannot_read() {
+        let d = PerspectiveGuide::default();
+        for bad in [0.0, -900.0, 0.5, f32::NAN, f32::NEG_INFINITY] {
+            let g = PerspectiveGuide {
+                focal: bad,
+                ..Default::default()
+            }
+            .sanitized();
+            assert!(g.focal >= MIN_FOCAL, "focal {bad} sanitized to {}", g.focal);
+        }
+        // A finite focal length already past the floor is left where it is.
+        assert_eq!(
+            PerspectiveGuide {
+                focal: 42.0,
+                ..Default::default()
+            }
+            .sanitized()
+            .focal,
+            42.0,
+        );
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let g = PerspectiveGuide {
+                center: Vec2::new(120.0, bad),
+                lattice: Vec3::new(bad, 4.0, 8.0),
+                ..Default::default()
+            }
+            .sanitized();
+            assert_eq!(g.center, d.center, "a center holding {bad} was kept");
+            assert_eq!(g.lattice, d.lattice, "a lattice holding {bad} was kept");
+        }
+    }
+
+    /// [`Lens`] is read by variant **name**, not position (§8).
+    ///
+    /// Two unit variants, which is the quiet case: there is no payload to arrive
+    /// mangled, so a positional read would open every saved rectilinear guide as a
+    /// fisheye and every fisheye as a rectilinear, with nothing in the file — and
+    /// nothing in the loader — able to say so.
+    #[test]
+    fn a_lens_is_read_by_variant_name_not_position() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "Lens")]
+        enum Old {
+            Fisheye,
+            Rectilinear,
+        }
+
+        let read = |old: &Old| {
+            carbonite::from_slice_static::<Lens>(&carbonite::to_vec_static(old).expect("encodes"))
+                .expect("a declaration order this build does not use still reads")
+        };
+
+        assert_eq!(read(&Old::Rectilinear), Lens::Rectilinear);
+        assert_eq!(read(&Old::Fisheye), Lens::Fisheye);
     }
 }
