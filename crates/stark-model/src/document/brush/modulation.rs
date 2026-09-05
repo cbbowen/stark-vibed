@@ -2,12 +2,6 @@
 //! it shapes that into, and the five records naming which of a brush's knobs one
 //! may be pointed at.
 //!
-//! **A modulation can only ever scale a parameter down.** Every bound the renderer
-//! derives from a brush's numbers — the frozen-span radius bound, the region fit,
-//! the choice of render path, the flattener's exchange step — is stated against the
-//! brush's own values and stays sound without any part of it knowing that
-//! modulation exists.
-//!
 //! The layer the other two sit on: nothing here reaches an effect or
 //! [`BrushParams`](super::BrushParams) in code, which is what lets both reach it.
 

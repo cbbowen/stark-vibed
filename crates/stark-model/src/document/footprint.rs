@@ -13,9 +13,13 @@
 //! bounding box of its path (padded past any reach of the tip), a transform
 //! claims its entire layer, and every structural edit claims the shared stack
 //! order. A false conflict only costs the fast path; a missed one would
-//! silently diverge peers, so every `apply` in `action.rs` must read only what
-//! its kind's footprint declares and write only what it declares — that
-//! locality is what makes the splice sound (see `timeline.rs`).
+//! silently diverge peers, so every arm of the fold — [`Materialize`] is
+//! implemented in `stark-engine`'s `document/apply.rs` — must read only what its
+//! kind's footprint declares and write only what it declares. That locality is what
+//! makes the splice sound (see `timeline.rs`), and `stark-engine`'s
+//! `document/audit.rs` holds every debug fold to it.
+//!
+//! [`Materialize`]: super::Materialize
 
 use super::action::{Action, ActionKind, ActorId, StrokeRecord};
 use super::brush::BrushParams;
@@ -325,10 +329,11 @@ pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     claim(min - pad, max + pad, 0)
 }
 
-/// The conservative footprint of an action, mirroring exactly what its arm of
-/// [`Action`]'s `apply` touches. `Undo` has an empty footprint because it is
-/// never materialized — the timeline resolves it into the effectiveness of its
-/// target instead.
+/// The conservative footprint of an action, mirroring exactly what its arm of the
+/// fold touches (`stark-engine`'s `document/apply.rs`, checked on every debug fold
+/// by its `document/audit.rs`). `Undo` has an empty footprint because it is never
+/// materialized — the timeline resolves it into the effectiveness of its target
+/// instead.
 pub fn compute_footprint(action: &Action) -> Footprint {
     let actor = action.id.actor;
     match &action.kind {

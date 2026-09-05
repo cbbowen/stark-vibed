@@ -14,11 +14,8 @@
 //!
 //! Two properties hold across all three, and most of the design follows from them:
 //!
-//! - **A modulation can only ever scale a parameter down** ([`Modulation`]). Every
-//!   bound the renderer derives from these numbers — the frozen-span radius bound,
-//!   the region fit, the choice of render path, the flattener's exchange step — is
-//!   stated against the brush's own values and stays sound without any part of it
-//!   knowing that modulation exists.
+//! - **A modulation can only ever scale a parameter down** — [`Modulation`] for what
+//!   that bound buys.
 //! - **Every number here decides stored pixels**, so replay, goldens and peers have
 //!   to agree on it to the last bit (§12.1). That is why the response curve is
 //!   rational rather than a `powf`, and why the values that arrive from files,
@@ -46,8 +43,9 @@ pub use modulation::{
 /// The brush tip shape (§6.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BrushShape {
-    /// Procedural soft disc. Edge softness in [0, 1): 0 = very soft, ~1 = hard
-    /// edge — meaningful only here, since it is what shapes this tip's falloff.
+    /// Procedural soft disc. Edge softness in [0, 1]: 0 = very soft, 1 = the hard
+    /// edge (supported, and what a shipped preset uses) — meaningful only here,
+    /// since it is what shapes this tip's falloff.
     Round { hardness: f32 },
     /// A sampled coverage mask, referenced by content id (an imported image).
     Stamp(crate::AssetId),
@@ -68,7 +66,7 @@ impl BrushShape {
     /// back on.
     pub const DEFAULT_HARDNESS: f32 = 0.5;
 
-    /// The same tip with its hardness inside the `[0, 1)` it is quoted in — see
+    /// The same tip with its hardness inside the `[0, 1]` it is quoted in — see
     /// [`BrushParams::sanitized`]. A `Stamp` carries no number to hold.
     pub fn sanitized(self) -> Self {
         match self {

@@ -1,63 +1,15 @@
 //! The native save format: the serialized action log (§8).
 //!
 //! The document *is* the list of actions, so the file is a compact action log
-//! rather than pixels — replaying it rebuilds the canvas, the full undo
-//! timeline, and (via `stark-engine`'s `Engine::replay_timelapse`) a timelapse.
+//! rather than pixels — replaying it rebuilds the canvas, the full undo timeline,
+//! and (via `stark-engine`'s `Engine::replay_timelapse`) a timelapse. The container
+//! is `MAGIC | deflate(carbonite(file))`, and carries **no version number**: the
+//! writer's schema rides at the head of the body and loading reconciles it against
+//! this build's types by name (§8). [`DocError::Legacy`] is what remains of the
+//! version ratchet — enough to recognize a pre-carbonite container and say so.
 //!
-//! ## No version number
-//!
-//! There is nothing in this container to bump. The body is a **carbonite** frame:
-//! the writer's schema — every struct, field name and variant the log used — sits
-//! at the head of the file, and loading reconciles it against *this* build's types
-//! by name, exactly as reading JSON would (§8). A field added since is filled from
-//! its `#[serde(default)]`, one removed is skipped, one renamed is found through
-//! its `#[serde(alias)]`, and a variant may be inserted anywhere rather than only
-//! appended. So a file this build writes stays readable by later ones, with no
-//! version to check.
-//!
-//! **What it cannot absorb is a type changing shape.** Reconciliation is by name over
-//! a *given* type: a scalar that became a struct is not a field to default or a name
-//! to alias, so a file written against the old one does not open, and says so as a
-//! decode failure rather than as a named refusal. That has happened once —
-//! `LayerId` became the id of the action that minted it (§17.9) — under §19's
-//! unclaimed beta rung, which is the permission such a change is taken with and the
-//! reason it is a decision rather than an accident. A build that has claimed that rung
-//! has no such permission, and a change of this kind then needs the type's old shape
-//! kept beside the new one.
-//!
-//! The schema is built at **compile time** (`#[derive(carbonite::Schema)]` on every
-//! type the log names), which is what lets a funnel keep refusing: the alternative,
-//! tracing a type's `Deserialize` impl, drives it with synthetic values, and the three
-//! types here that gate their own invariants — `FillOp`, `SelectionOp`, `Gradient` —
-//! turn those away. Each states its wire shape with `#[carbonite(as = "...")]`
-//! instead (§8).
-//!
-//! [`DocError::Legacy`] is what remains of the version ratchet: enough to recognize a
-//! pre-carbonite container and say so, since postcard wrote no field names and those
-//! bytes cannot be read without the exact schema that produced them.
-//!
-//! ## Two doors
-//!
-//! [`DocumentFile::from_bytes`] opens a file the user owns;
-//! [`DocumentFile::from_untrusted_bytes`] opens one that arrived from somewhere else
-//! (§12.4). They differ in one thing — whether the decompressed body is bounded —
-//! and the split exists because a single answer is wrong in both directions: a bound
-//! low enough to be worth having against a stranger is one an honest document can
-//! cross, since nothing caps how many pictures a document places (§23). There is no
-//! threat model in which the artist's own file is the attacker.
-//!
-//! ## File size
-//!
-//! Two levers keep files small:
-//! 1. **carbonite** — a columnar binary encoding: field names are paid for once, in
-//!    the schema, and not per value; integers are varints.
-//! 2. **deflate** — columnar layout is what a compressor wants, since one field's
-//!    values sit back to back, and sampled stroke paths are smooth.
-//!
-//! Both are pure Rust (deflate via miniz_oxide), so the format also works in the
-//! wasm/Dioxus frontend. Further wins (path simplification, delta/quantized samples,
-//! and the advisory raster `checkpoints` of §8) are additions a later build can make
-//! without a break.
+//! Everything here is pure Rust (deflate via miniz_oxide), so the format works in
+//! the wasm frontend too.
 
 use std::io::{Read, Write};
 
@@ -118,15 +70,9 @@ impl Default for BuildId {
 
 /// Canvas-wide metadata needed to reproduce the document (§8).
 ///
-/// **The tile stride is deliberately not here.** Nothing in a log is expressed in
-/// tile units — `TileCoord` and `TileRect` are not `Serialize` at all, and
-/// every action states itself in canvas px — so the stride reaches only *derived*
-/// things: which tiles a footprint quantizes to (§12.6), where an apron sits (§6.4),
-/// whether an action clears a tile cap. A document whose pixels come back slightly
-/// differently is exactly what §19 permits, whereas recording the stride would make
-/// `TILE_SIZE` unchangeable for the life of the format. An implementation detail is
-/// not a fact about a painting; older files that carry one are skipped over like any
-/// other dropped field (§8).
+/// **No tile stride** — an implementation detail is not a fact about a painting
+/// (§8, §19). Every document written before it stopped being recorded carries one,
+/// which loading skips over like any other dropped field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub struct CanvasMeta {
     pub color_space: ColorSpaceId,
@@ -257,8 +203,8 @@ impl DocumentFile {
         // put there first come out ahead of the deflate stream uncompressed — which is
         // what the container wants — and the whole compressed body is spared a copy.
         let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
-        encoder.write_all(&body)?;
-        Ok(encoder.finish()?)
+        encoder.write_all(&body).map_err(DocError::Deflate)?;
+        encoder.finish().map_err(DocError::Deflate)
     }
 
     /// Decode a container produced by [`DocumentFile::to_bytes`] that **this user
@@ -304,7 +250,7 @@ impl DocumentFile {
             // thirteen makes a well-formed one. So the sniff hangs off the inflate error
             // rather than running first — a current file that inflates is never asked
             // whether it looks old.
-            .map_err(|e| legacy_header(body).unwrap_or(DocError::Io(e)))?;
+            .map_err(|e| legacy_header(body).unwrap_or(DocError::Corrupt(e)))?;
         if let Some(limit) = limit
             && frame.len() as u64 > limit
         {

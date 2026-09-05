@@ -684,7 +684,7 @@ impl ActionKind {
     ///
     /// **Exhaustive, with no `_` arm, and that is the whole point of it.** A variant
     /// added to the enum stops this function compiling, three lines from the doc
-    /// comment that says why — the device `slot` in `tests/footprint.rs` also uses.
+    /// comment that says why — the device [`tag`](Self::tag) uses too.
     ///
     /// Note it reports what the action *names as minted*, not what applying it
     /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and the id it

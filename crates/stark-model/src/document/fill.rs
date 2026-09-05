@@ -103,26 +103,11 @@ pub struct FillOp {
     paint: Parcel,
     /// How strongly the fill covers where coverage is full: its **visible alpha**,
     /// in `0..=1`. The Select panel's Opacity slider, and the only strength knob a
-    /// fill has.
-    ///
-    /// Stated as coverage rather than as a height because that is the question the
-    /// control answers — *how much of what is underneath still shows?* — and
-    /// because a height cannot answer it. Coverage is `1 − exp(−K·mass)` (§6.1),
-    /// which approaches 1 asymptotically, so "opaque" is not a thickness anyone can
-    /// pick off a slider: at the brush's own flow it is 95%, and the last 5% is a
-    /// dozen more flow's worth. The shader inverts that law instead
-    /// (`fill.wesl`, the same inverse `slab.wesl` merges through) and lays
-    /// **fully opaque paint of exactly the mass this asks for** — so 1 covers, ½
-    /// covers half, and the number on the slider is the number on the canvas.
-    ///
-    /// Partial coverage — a feathered edge, or the selection gating the fill —
-    /// scales it, and since mass and thickness are the same thing for opaque
-    /// paint, a feathered edge is still a *thinning* of the paint rather than a
-    /// fade of its color.
-    ///
-    /// One opacity for the whole fill, gradient or not: the ramp varies the
-    /// *color* of the paint, never how much of it there is — a transition in
-    /// thickness would read as a lighting feature, not a color one (§22.4).
+    /// fill has. The shader inverts §6.1's coverage law (`fill.wesl`) and lays fully
+    /// opaque paint of exactly the mass this asks for, so the number on the slider
+    /// is the number on the canvas; partial coverage — a feathered edge, or the
+    /// selection gating the fill — scales it. One opacity for the whole fill: a
+    /// gradient varies the paint's *color*, never how much of it there is (§22.4).
     opacity: f32,
 }
 

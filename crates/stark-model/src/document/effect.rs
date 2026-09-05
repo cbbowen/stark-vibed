@@ -4,8 +4,8 @@
 //! ([`fold`](super::fold)) and *which actions commute*
 //! ([`footprint`](super::footprint)). Not a line of it names a `DocState`, an
 //! `ApplyCtx`, a tile or a renderer — it is `Action`, `ActionId` and `ActorId` and
-//! nothing else — so `stark-net`'s mirror can reason about an effective log without
-//! naming an engine type (§2), and the property this most wants tested (random
+//! nothing else, so which actions are effective is answerable without naming an
+//! engine type at all (§2), and the property this most wants tested (random
 //! `(actor, lamport, kind)` logs with undo, redo and late arrival, asserting that
 //! splicing agrees with rewind-and-replay) needs no GPU.
 //!

@@ -30,6 +30,17 @@ pub enum DocError {
     #[error("deserialization failed")]
     Deserialize(#[source] carbonite::Error),
 
+    /// The body is not a deflate stream this build can inflate — the corrupt or
+    /// truncated file. Distinct from [`Deserialize`](Self::Deserialize), which is a
+    /// body that *did* inflate and then was not a document.
+    #[error("this document is damaged: its body will not decompress")]
+    Corrupt(#[source] std::io::Error),
+
+    /// Compression failed on the way out. The sink is a `Vec`, so unreachable in
+    /// practice; named rather than `expect`ed.
+    #[error("compression failed")]
+    Deflate(#[source] std::io::Error),
+
     #[error("not a Stark document (bad magic)")]
     BadMagic,
 
@@ -118,9 +129,6 @@ pub enum DocError {
     /// legitimately starts short and heals, and does not come through here.
     #[error("this document names content that is neither bundled nor loaded: {0:?}")]
     MissingContent(Vec<AssetNeed>),
-
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
 }
 
 /// Convenience alias for the document layer.

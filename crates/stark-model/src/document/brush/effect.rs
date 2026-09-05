@@ -274,14 +274,9 @@ pub struct PaintEffect {
     /// [`flow`](Self::flow) that is the rate.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
-    /// The paint **height** laid per unit of swept optical depth (§6.1) —
-    /// this effect's one rate, playing exactly the role [`WetEffect::flow`]
-    /// plays for wet paint and [`EraseEffect::flow`] for the eraser: laying is
-    /// the whole of what this effect does, so its flow scales the whole effect
-    /// as every flow does. Its own field rather than a reading of a
-    /// [`BrushDynamics`], for the eraser's reason: this effect has no fluxes,
-    /// and a struct of knobs it would silently veto is the shape
-    /// [`BrushEffect`]'s own doc forbids.
+    /// The paint **height** laid per unit of swept optical depth (§6.1) — this
+    /// effect's one rate, and laying is the whole of what this effect does, so it
+    /// scales the whole effect. One knob per effect: [`BrushEffect::flow`].
     ///
     /// A *rate*, not a quantity — it never runs out on its own; see
     /// [`BrushParams::drain`](super::BrushParams::drain) for a stroke that does.
@@ -362,23 +357,16 @@ pub struct WetEffect {
     /// at 1.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
-    /// This effect's **overall rate** — how hard a pass of the tip works, playing
-    /// exactly the role [`PaintEffect::flow`] plays for paint and
-    /// [`EraseEffect::flow`] for the eraser: it scales *everything* the tool does
-    /// per pass. The mint is `add · flow` of height per unit swept optical depth;
-    /// the exchange runs at `flow` times its per-pass exponents, so a pass at
-    /// flow ½ lifts and lays back exactly what half a pass at flow 1 would; the
-    /// bleed diffuses `flow` times the diffusivity. 1 is the neutral pass; 0 is a
-    /// brush that does nothing at all.
+    /// This effect's **overall rate** — how hard a pass of the tip works: it scales
+    /// *everything* the tool does per pass. The mint is `add · flow` of height per
+    /// unit swept optical depth; the exchange runs at `flow` times its per-pass
+    /// exponents, so a pass at flow ½ lifts and lays back exactly what half a pass
+    /// at flow 1 would; the bleed diffuses `flow` times the diffusivity. 1 is the
+    /// neutral pass; 0 is a brush that does nothing at all.
     ///
-    /// Its own field beside [`dynamics`](Self::dynamics) rather than an axis
-    /// inside it, because it is a different *kind* of number: the axes are the
-    /// tool's identity — what a smudge, a knife, a loaded brush *is* — and the
-    /// flow is the hand's intensity, the knob the Flow slider and the tuning
-    /// drag move whichever effect is in force (§6.2). On a blend brush the
-    /// slider therefore blends more or less, instead of turning a blender into
-    /// a paint brush — which is what it did while the slider wrote the source
-    /// axis.
+    /// Beside [`dynamics`](Self::dynamics) rather than an axis inside it: the axes
+    /// are the tool's identity, the flow is the hand's intensity. One knob per
+    /// effect: [`BrushEffect::flow`].
     ///
     /// A *rate*, floored but not capped
     /// ([`BrushParams::sanitized`](super::BrushParams::sanitized)): the frontend's
@@ -436,11 +424,8 @@ pub struct EraseEffect {
     /// spot, so a stroke removes at most this fraction of what it finds; scrubbing
     /// walks the stroke's soft edge toward the cap rather than eating past it.
     pub opacity: f32,
-    /// The rate: how fast a pass builds `w` — the eraser's own flow, playing
-    /// exactly the role [`PaintEffect::flow`] plays for paint, and so the knob an
-    /// airbrush-style eraser turns down. Its own field rather than a reading of the
-    /// paint effect's, so switching a brush's effect never re-interprets a number
-    /// that meant something else.
+    /// The rate: how fast a pass builds `w` — the knob an airbrush-style eraser
+    /// turns down. One knob per effect: [`BrushEffect::flow`].
     pub flow: f32,
     /// The pen mappings onto this effect's own rate and ceiling
     /// ([`EraseModulations`]).
@@ -673,6 +658,9 @@ impl BrushEffect {
 
     /// Every number a number and every quoted range held — the effect's share of
     /// [`BrushParams::sanitized`](super::BrushParams::sanitized).
+    ///
+    /// Every effect's flow is floored but not capped: a rate, whose ceiling is a
+    /// slider's ([`WetEffect::flow`]).
     pub fn sanitized(self) -> Self {
         match self {
             Self::Paint(p) => Self::Paint(PaintEffect {
@@ -680,8 +668,6 @@ impl BrushEffect {
                 // In `[0, 1]` by the field's own doc, for the erase twin's
                 // reason: a ceiling on the fraction laid, meaningless past 1.
                 opacity: clamp01(finite_or(p.opacity, 1.0)),
-                // Floored but not capped, for `BrushDynamics::flow`'s reason: a
-                // rate, whose ceiling is a slider's.
                 flow: at_least_zero(p.flow, PaintEffect::default_flow()),
                 color_dynamics: p.color_dynamics.sanitized(),
                 modulation: p.modulation.sanitized(),
@@ -689,8 +675,6 @@ impl BrushEffect {
             Self::Wet(w) => Self::Wet(WetEffect {
                 color: crate::Srgb::new(w.color).get(),
                 opacity: clamp01(finite_or(w.opacity, 1.0)),
-                // Floored but not capped, for `PaintEffect::flow`'s reason: a
-                // rate, whose ceiling is a slider's.
                 flow: at_least_zero(w.flow, PaintEffect::default_flow()),
                 dynamics: w.dynamics.sanitized(),
                 color_dynamics: w.color_dynamics.sanitized(),
@@ -701,8 +685,6 @@ impl BrushEffect {
                 // a fraction of the visible opacity, and past 1 it would ask for
                 // less than none.
                 opacity: clamp01(finite_or(e.opacity, 1.0)),
-                // Floored but not capped, for `PaintEffect::flow`'s reason: a
-                // rate, whose ceiling is a slider's.
                 flow: at_least_zero(e.flow, 1.0),
                 modulation: e.modulation.sanitized(),
             }),

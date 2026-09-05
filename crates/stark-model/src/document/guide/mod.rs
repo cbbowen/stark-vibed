@@ -307,25 +307,8 @@ pub struct PerspectiveGuide {
     /// axis. Equivalently the corner they meet at, as a displacement from the
     /// eye in world-axis coordinates.
     ///
-    /// One vector is the whole of the grid's metric, and it has to be a world
-    /// quantity rather than a canvas one: a camera carries no world scale, so
-    /// the only thing about a cell that can be seen is how many of them lie
-    /// between the eye and a plane. Scaling this vector is therefore the density
-    /// control — twice as many cells to the same planes is a grid of half the
-    /// size — and turning it is where the grid sits.
-    ///
-    /// **The grid's phase is the eye, not the corner.** Every guide line lies a
-    /// whole number of cells from the *viewer*, so the foot of the perpendicular
-    /// from the eye to each plane is one of that plane's cell corners: look
-    /// straight down any axis and the crossing under the center of view is the
-    /// grid's own, at every scale and for any lattice whatever. Anchoring the
-    /// phase at the corner instead made that true only when the corner's
-    /// components happened to be whole — and a scale control that halves is
-    /// exactly what turns `(-4, 3, 6)` into `(-1, ¾, 1½)`, one axis on a line,
-    /// one a quarter off and one a half, which reads as three grids laid out
-    /// separately. Nothing about the corner needs to be round now, and the
-    /// scale expands and contracts *about the viewer* rather than pivoting on a
-    /// line some cells away.
+    /// **The grid's phase is the eye, not the corner** (§20.3), so nothing about
+    /// this vector needs to be round for the lines to be the grid's own.
     ///
     /// A zero component puts the eye *inside* the plane normal to that axis,
     /// whose grid then images onto its own vanishing line and has nothing to
