@@ -10,3 +10,6 @@
 # Stored `.stark` fixtures (`stark-model/tests/fixtures`) are evidence a past
 # build wrote; `text=auto`'s guess is not what a save format's bytes rest on.
 *.stark binary
+# Stored schema snapshots (`stark-model/tests/schemas`) are what a past build
+# shipped, for the same reason the fixtures above are.
+*.bin binary

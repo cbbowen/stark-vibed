@@ -337,6 +337,13 @@ in the document.
 compile error naming the attribute to add; that is why the two mirror types are
 bidirectional now.
 
+**The probe is a gate, not a note.** Each schema this crate ships is stored under
+`stark-model/tests/schemas/`, and `schema_compat.rs` asks `check_static` whether today's
+reader still takes it. That is what a stored `.stark` cannot do: a fixture proves its own
+bytes still open, and says nothing about a shape it does not contain. Renaming
+`BrushEffect::Wet` without an alias leaves every fixture green and every wet-brush
+document unopenable; the probe walks every variant under the schema, so it sees it.
+
 The other half is foreign types, which the orphan rule puts out of reach: only carbonite
 can implement its own trait for `glam::Vec2`, and it does, behind a cargo feature. What
 is left is four fields whose types belong to iroh or std — an `EndpointId`, two blob
