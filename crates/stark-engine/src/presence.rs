@@ -25,14 +25,20 @@
 //! and `tests::round_trip_survives_a_lossy_channel` drives one through a dropping,
 //! duplicating, delaying channel into the other.
 //!
+//! [`PresenceTx`] is the frame around the gesture: the name, the cursor, and the
+//! latch that decides when a [`PeerFrame`] goes out at all (§17.4, §17.5). It holds
+//! the [`GestureTx`], so the whole sending half is one value a session owns; the
+//! receiving half of the *frame* is [`Peers::merge`](crate::peer::Peers::merge).
+//!
 //! The wire *types* stay in [`crate::peer`], which is the public substrate. What lives
 //! here is the state that interprets them.
 
 use crate::path::frozen_spans_for;
-use crate::peer::LiveGesture;
+use crate::peer::{Identity, LiveGesture, default_name};
 use stark_model::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
+use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
-use stark_model::peer::{GESTURE_RESYNC, GestureFrame, StrokeHead};
+use stark_model::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
 
 /// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
 ///
@@ -176,6 +182,250 @@ impl GestureTx {
                     start,
                 })
             }
+        }
+    }
+}
+
+/// What this client last put on the wire, for change detection (see
+/// [`PresenceTx::publish`]). Compared rather than dirty-flagged: a comparison cannot
+/// be forgotten at a call site, and these are three cheap fields.
+///
+/// The gesture is *not* here: what the wire has been told about it is
+/// [`GestureTx`]'s business, and asking it ([`GestureTx::in_flight`]) beats keeping a
+/// second copy in step.
+#[derive(Clone, PartialEq)]
+struct Published {
+    active_layer: LayerId,
+    cursor: Option<Vec2>,
+    name: String,
+}
+
+impl Published {
+    /// Whether what was last published still describes the client — **the one place
+    /// the published field list lives**.
+    ///
+    /// It was written twice: once as this struct's `PartialEq`, and once by hand
+    /// inside [`PresenceTx::publish_due`]. A fourth field added here and forgotten
+    /// there makes `publish_due` answer `false` where `publish` would have produced a
+    /// frame, which is the fatal direction — that method's own doc says a pump
+    /// trusting it "would then drop that frame on the floor".
+    ///
+    /// Borrows the name rather than taking one, which is what lets the caller ask
+    /// before deciding to allocate.
+    fn matches(&self, active_layer: LayerId, cursor: Option<Vec2>, name: &str) -> bool {
+        self.active_layer == active_layer && self.cursor == cursor && self.name == name
+    }
+}
+
+/// The sending half of presence (§17.4): what this client publishes about itself
+/// that is not a gesture — its name and its cursor — and the latch that decides when
+/// a [`PeerFrame`] goes out.
+///
+/// The active layer and the gesture in flight ride every frame too, but they are the
+/// session's own facts, read on that side as well, so they arrive as arguments
+/// rather than being kept here in a second copy that could fall out of step.
+pub(crate) struct PresenceTx {
+    /// This client's display name; empty until it is set, in which case peers fall
+    /// back to [`default_name`]. Private because it has an invariant `name_chosen`
+    /// carries — see [`Self::set_name`].
+    name: String,
+    /// Whether [`name`](Self::name) is one the *user* chose rather than the
+    /// id-derived default. Sharing or joining a document mints this client a new
+    /// actor id and wants to refresh that default, but must not overwrite a name
+    /// somebody typed.
+    name_chosen: bool,
+    /// Where this client's pointer is, canvas space; `None` when it is off the
+    /// canvas.
+    ///
+    /// Sent to peers, and read on *this* side as well: a guide draws its rays
+    /// through the hand (§20.9), so what a collaborator watches and what this
+    /// client's own overlay is hung on are one fact rather than two that could
+    /// disagree about where the pointer is.
+    cursor: Option<Vec2>,
+    // The latch, not a queue (§17.5).
+    published: Option<Published>,
+    /// Which run of this client is publishing; see [`Identity::boot`]. Rides every
+    /// frame so a peer can order this run's frames against the previous one's.
+    boot: u64,
+    seq: u64,
+    sent_at: f64,
+    /// The gesture protocol's sending half — the watermarks recording what the wire
+    /// has been told about the gesture.
+    gesture: GestureTx,
+}
+
+impl PresenceTx {
+    pub(crate) fn new() -> Self {
+        Self {
+            name: String::new(),
+            name_chosen: false,
+            cursor: None,
+            published: None,
+            boot: 0,
+            seq: 0,
+            sent_at: f64::NEG_INFINITY,
+            gesture: GestureTx::new(),
+        }
+    }
+
+    /// This client's display name, as peers see it. Empty when none has been set, in
+    /// which case peers show [`default_name`] instead.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Set the display name the user chose. **Sticky**: hosting or joining a session
+    /// mints this client a new actor id, and
+    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
+    /// here. Setting it empty gives the choice back, and peers resume showing the
+    /// id-derived default.
+    pub(crate) fn set_name(&mut self, name: &str) {
+        let name = name.trim();
+        self.name_chosen = !name.is_empty();
+        self.name.clear();
+        self.name.push_str(name);
+    }
+
+    /// Where this client's pointer is, or `None` when it is off the canvas.
+    ///
+    /// **Filtered, because this one goes on the wire.** A canvas position is
+    /// `screen_to_canvas`'s output and can be non-finite (`command`'s own note), and
+    /// nothing gated it between the command and the frame every peer reads. It is
+    /// also what the guide rays are drawn through (§20.9), where a non-finite one
+    /// would be three traces of `NaN`.
+    pub(crate) fn set_cursor(&mut self, at: Option<Vec2>) {
+        self.cursor = at.filter(|p| p.is_finite());
+    }
+
+    /// Where this client's pointer is.
+    pub(crate) fn cursor(&self) -> Option<Vec2> {
+        self.cursor
+    }
+
+    /// Adopt the identity a session has given this client.
+    ///
+    /// Records the run counter every published frame carries, and takes the
+    /// id-derived name as a default — unless the user has chosen one. That used to
+    /// assign unconditionally, which meant pressing *Share* replaced a name someone
+    /// had typed with a hex id.
+    pub(crate) fn adopt_identity(&mut self, identity: Identity) {
+        self.boot = identity.boot;
+        if !self.name_chosen {
+            self.name = default_name(identity.actor);
+        }
+    }
+
+    /// The frame to send, if anything a peer would care about has changed since the
+    /// last call — otherwise `None` (§17.5).
+    ///
+    /// This is a **latch, not a queue**: it reports the *current* state, and the
+    /// path delta is computed here, at drain time, against what has actually been
+    /// sent. A pen reporting at 240 Hz against a 30 Hz publish tick therefore
+    /// coalesces losslessly — eight moves produce one frame carrying all eight
+    /// control points — which is exactly why presence is allowed to be lossy where
+    /// the action log is not.
+    ///
+    /// A frame goes out when something changed, when a gesture is in flight (its
+    /// path just grew), or every [`HEARTBEAT`] regardless, so a silent peer still
+    /// proves it is here. `ordinal` and `source` are the session's gesture in
+    /// flight, as [`GestureTx::encode`] takes them.
+    pub(crate) fn publish(
+        &mut self,
+        now: f64,
+        active_layer: LayerId,
+        ordinal: u64,
+        source: Option<GestureSource>,
+    ) -> Option<PeerFrame> {
+        // Every `GESTURE_RESYNC`, re-send the gesture's invariant head and its whole
+        // path. That repairs any receiver that missed a delta and primes any client
+        // that arrived mid-stroke — without either of them having to ask, which is
+        // what keeps the wire one-way and the sender stateless about its audience.
+        let resync = self.gesture.resync_due(now);
+
+        // Asked before anything is built: run against a fresh `Published`, the
+        // comparison clones the name on every tick of the pump — including the
+        // overwhelming majority that return `None` two lines later.
+        let changed = self
+            .published
+            .as_ref()
+            .is_none_or(|p| !p.matches(active_layer, self.cursor, &self.name))
+            // A live gesture's path grows every move, so its frame always differs.
+            || source.is_some()
+            // ...and one that has just ended still owes the frame that clears it.
+            || self.gesture.in_flight();
+        if !changed && now - self.sent_at < HEARTBEAT {
+            return None;
+        }
+
+        // The name only rides a frame when it changed, or on a resync — a peer that
+        // already knows it does not need it thirty times a second.
+        let name = (self.published.as_ref().is_none_or(|p| p.name != self.name) || resync)
+            .then(|| self.name.clone())
+            .filter(|n| !n.is_empty());
+
+        // Everything below this line commits to sending, which is the only point at
+        // which the watermarks may move: they record what the receiver has been told.
+        // Encoding *before* the early return above worked only because a gesture
+        // always forced `changed` — a coupling nothing stated and nothing checked.
+        let gesture = self.gesture.encode(ordinal, source, resync);
+        if resync {
+            self.gesture.stamp_resync(now);
+        }
+        self.sent_at = now;
+        self.seq += 1;
+        self.published = Some(Published {
+            active_layer,
+            cursor: self.cursor,
+            name: self.name.clone(),
+        });
+        Some(PeerFrame {
+            boot: self.boot,
+            seq: self.seq,
+            name,
+            active_layer,
+            cursor: self.cursor,
+            gesture,
+            leaving: false,
+        })
+    }
+
+    /// Whether [`publish`](Self::publish) could produce a frame. `gesturing` is
+    /// whether the session has a gesture in flight — a stroke or a shape drag.
+    ///
+    /// Deliberately **conservative**: it may say yes where `publish` then returns
+    /// `None`, but it must never say no where `publish` would have produced a frame,
+    /// because a pump that trusts it would then drop that frame on the floor. So it
+    /// tests the cheap fields directly and treats "a gesture exists" as "something
+    /// changed" without building the gesture frame to find out.
+    ///
+    /// It exists so an idle session costs nothing: without it the pump has to take a
+    /// mutable borrow of the engine thirty times a second to discover there was
+    /// nothing to send.
+    pub(crate) fn publish_due(&self, now: f64, active_layer: LayerId, gesturing: bool) -> bool {
+        now - self.sent_at >= HEARTBEAT
+            || gesturing
+            // A gesture that just ended: the frame clearing it is the one that stops
+            // peers drawing a stroke nobody is making any more.
+            || self.gesture.in_flight()
+            || self
+                .published
+                .as_ref()
+                .is_none_or(|p| !p.matches(active_layer, self.cursor, &self.name))
+    }
+
+    /// The farewell frame: one publish that removes this client from every peer's
+    /// roster at once, rather than making them wait out
+    /// [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT).
+    pub(crate) fn publish_leaving(&mut self, active_layer: LayerId) -> PeerFrame {
+        self.seq += 1;
+        PeerFrame {
+            boot: self.boot,
+            seq: self.seq,
+            name: None,
+            active_layer,
+            cursor: None,
+            gesture: None,
+            leaving: true,
         }
     }
 }
@@ -720,6 +970,73 @@ mod tests {
             Some(LiveGesture::Stroke(rec)) => rec.path.clone(),
             _ => Vec::new(),
         }
+    }
+
+    /// The latch (§17.5), driven without a `Session`: a frame goes out on the first
+    /// tick, on a change, and on the heartbeat — and never otherwise. `publish_due`
+    /// is asked before every `publish`, because its one rule is that it may not say
+    /// no where `publish` then produces a frame.
+    #[test]
+    fn the_latch_sends_on_change_and_on_the_heartbeat_only() {
+        fn tick(presence: &mut PresenceTx, now: f64) -> Option<PeerFrame> {
+            let due = presence.publish_due(now, LayerId::ROOT, false);
+            let frame = presence.publish(now, LayerId::ROOT, 0, None);
+            assert!(
+                due || frame.is_none(),
+                "publish_due said no at {now} and publish produced a frame"
+            );
+            frame
+        }
+        let mut presence = PresenceTx::new();
+
+        let first = tick(&mut presence, 0.0).expect("the first tick proves the client is here");
+        assert_eq!(first.seq, 1);
+        assert_eq!(first.name, None, "an unset name rides no frame");
+        assert!(
+            tick(&mut presence, HEARTBEAT * 0.1).is_none(),
+            "nothing changed"
+        );
+        let beat = tick(&mut presence, HEARTBEAT).expect("a silent peer still proves it is here");
+        assert_eq!(beat.seq, 2);
+
+        presence.set_name(" ada ");
+        let named = tick(&mut presence, HEARTBEAT * 1.1).expect("a new name is a change");
+        assert_eq!(named.name.as_deref(), Some("ada"), "the name is trimmed");
+        presence.set_cursor(Some(Vec2::new(f32::NAN, 1.0)));
+        assert!(
+            tick(&mut presence, HEARTBEAT * 1.2).is_none(),
+            "a NaN cursor is refused at the door, so nothing changed"
+        );
+        presence.set_cursor(Some(Vec2::new(2.0, 3.0)));
+        let moved = tick(&mut presence, HEARTBEAT * 1.3).expect("a cursor move is a change");
+        assert_eq!(moved.cursor, Some(Vec2::new(2.0, 3.0)));
+        assert_eq!(
+            moved.name, None,
+            "a peer that already knows the name is not told it again"
+        );
+
+        let bye = presence.publish_leaving(LayerId::ROOT);
+        assert!(bye.leaving);
+        assert_eq!(bye.seq, 5, "the farewell follows in sequence");
+        assert_eq!(bye.cursor, None);
+    }
+
+    /// [`PresenceTx::adopt_identity`] takes the id-derived name as a default and
+    /// leaves a chosen one alone — pressing *Share* used to replace a typed name with
+    /// a hex id. Emptying the name gives the choice back.
+    #[test]
+    fn adopting_an_identity_does_not_overwrite_a_chosen_name() {
+        let mut presence = PresenceTx::new();
+        presence.adopt_identity(Identity::new(ActorId(7), 3));
+        assert_eq!(presence.name(), default_name(ActorId(7)));
+        presence.set_name("ada");
+        presence.adopt_identity(Identity::new(ActorId(8), 4));
+        assert_eq!(presence.name(), "ada");
+        presence.set_name("   ");
+        presence.adopt_identity(Identity::new(ActorId(9), 5));
+        assert_eq!(presence.name(), default_name(ActorId(9)));
+        let bye = presence.publish_leaving(LayerId::ROOT);
+        assert_eq!(bye.boot, 5, "the run counter is the newest identity's");
     }
 
     /// Invariant 3, isolated: **one resync frame repairs a receiver that has missed
