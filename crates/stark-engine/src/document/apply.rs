@@ -14,9 +14,11 @@ use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
 use stark_model::document::ActorId;
-use stark_model::document::{Action, ActionId, ActionKind, Footprint, Materialize};
+use stark_model::document::{
+    Action, ActionId, ActionKind, Footprint, Materialize, Resource, compute_footprint,
+};
 
-use super::layer::{Layer, LayerContent};
+use super::layer::Layer;
 use super::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
@@ -891,7 +893,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
         // The payload is sanitized inside `insert_filter`/`set_filter` — the
         // funnel sits in state, where replayed files and remote peers land too,
-        // not only where a local command is minted (§21.5).
+        // not only where a local command is minted (§21.6).
         ActionKind::AddFilter {
             id,
             carrier,
@@ -965,7 +967,7 @@ impl Folded {
 }
 
 /// The document as committing `kind` would leave it, **without logging it** — the
-/// preview half of every setter command (§21.5).
+/// preview half of every setter command (§21.6).
 ///
 /// A drag previews by folding the very action its release will commit: the same
 /// [`apply`] arm, behind the same [`ActionKind::sanitized`] funnel. That is the whole
@@ -1005,155 +1007,271 @@ pub(crate) fn preview_of(
     apply(&action, state.clone(), ctx)
 }
 
-/// Whether applying this to `state` would leave it exactly as it found it —
-/// so a command that would spend an undo step on nothing can decline to log
-/// one (§5.4).
+/// Whether applying this to `state` would leave it exactly as it found it — so a
+/// command that would spend an undo step on nothing can decline to log one (§5.4).
 ///
-/// **The question belongs here, beside `apply`.** It was asked six times over
-/// in the engine's command handler, in four different shapes, each reaching
-/// into a layer's content to ask what kind of layer it is — and the comments
-/// there say why that is uncomfortable: it is "a second rule about what a matte
-/// is, kept somewhere `apply` cannot see". The four that had a check were not
-/// the four that needed one, either: `SetLayerVisible`, `SetLayerClip`,
-/// `SetMatteRect` and `SetSubstrateColor` had none, so setting a value to the value
-/// it already held cost an undo step that appears to do nothing when reached.
+/// **Answered by folding, not by a mirror of the fold.** This was a match with an
+/// arm per setter, each comparing the payload against the value it read out of the
+/// state — a fourth statement of every action's effect, beside the footprint, the
+/// fold and the patch, and the one nothing tied to the other three. It drifted
+/// twice: a blend on a filter and a rect the matte refuses both answered "an edit"
+/// here while `apply` folded them to nothing, and each spent an undo step that does
+/// nothing when reached. Now the fold answers, through the one enumeration of what
+/// can differ between two states ([`audit::changes_nothing`](super::audit)), and the
+/// match is gone.
 ///
-/// Asked of the action **as it will be logged**. The engine runs the sanitizing
-/// funnel (§21.5, §6.3) before it asks, so that replay puts back what was applied
-/// rather than re-deriving it — which means the payload compared here is the payload
-/// that would be stored, and a slider reporting `0.6000001` is clamped before it
-/// gets this far.
+/// Three answers are given before folding, and they are the whole of what is
+/// stated here by hand:
 ///
-/// Conservative in the one safe direction: everything whose effect is pixels
-/// answers `false`. A stroke, a fill or a transform *could* leave a layer
-/// byte-identical, but finding that out means doing the work, and the point of
-/// the question is to avoid it. A false "no" costs an undo step; a false "yes"
-/// would silently drop an edit.
+/// - **An `Undo` is `false`.** The timeline resolves it (§5.4); its fold is the
+///   identity whatever it undoes, so the fold is the one witness that cannot say.
+///   Not asked today — `commit_with_id` is its door — but the answer has to be right
+///   for the day it is.
+/// - **A write to paint, to which layers exist, or to the tree's shape is `false`**,
+///   read off the footprint. Finding out whether a stroke left a layer byte-identical
+///   means rendering it, and a structural edit's refusals — a cycle, a subtree the
+///   action no longer names — are the deterministic declines §12.1 wants in the log
+///   so that every peer declines together. A false "no" costs an undo step; a false
+///   "yes" would silently drop an edit.
+/// - **An action naming a layer the document lacks is `false`**, read off the same
+///   footprint: inert *here*, but a peer whose concurrent undo has just put that layer
+///   back applies it, and a log that omitted it would be a different log on the two
+///   clients (§12.1). The guide roster is one resource with no per-guide existence to
+///   read ([`Resource::Guides`]), so a guide edit naming an absent guide takes the
+///   fold's answer instead — the roster it leaves is the roster it found.
 ///
-/// That arm is also what lets the engine ask this of **every** action rather than of
-/// the ones somebody classified as setters (`Engine::commit`): a kind whose effect
-/// is pixels answers "no" by construction, so no arm has to choose a door by kind.
-///
-/// An action naming a layer that does not exist answers `false` too, and
-/// deliberately: it is inert *here*, but the same action reaching a peer whose
-/// tree is one step ahead is not, and a log that omits it would be a different
-/// log on the two clients (§12.1).
-///
-/// **Exhaustive, with no `_` arm**, for [`minted_layers`](ActionKind::minted_layers)'s
-/// reason: a variant added later must be made to answer rather than defaulted
-/// into the safe answer and forgotten.
+/// Everything else folds through [`apply_pure`] and is diffed. Asked of the action
+/// **as it will be logged**: the engine runs the sanitizing funnel (§21.6) first, so
+/// the payload folded here is the payload that would be stored.
 pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) -> bool {
-    // The layer this action names, or `false` from every arm below when it is
-    // absent — see the doc comment.
-    let layer = |id: LayerId| state.layer(id);
-    match kind {
-        ActionKind::SetLayerOpacity(id, opacity) => {
-            layer(*id).is_some_and(|l| l.composite.opacity == *opacity)
-        }
-        // Asked of the author's own mask, since that is the only one an action can
-        // address (§17.3) — and answerable at all only because this action moves no
-        // tiles: a slider dragged out and back logs nothing. With nothing selected
-        // the number is still a fact — the strength the next region takes, and
-        // the whole canvas's meanwhile (`Selection::opacity`) — so it is compared
-        // like any other, and logged when it moves.
-        ActionKind::SetSelectionOpacity(opacity) => {
-            state.selection_of(actor).opacity() == *opacity
-        }
-        ActionKind::SetLayerBlend(id, blend) => {
-            layer(*id).is_some_and(|l| l.composite.blend == *blend)
-        }
-        ActionKind::SetLayerClip(id, clip) => layer(*id).is_some_and(|l| l.composite.clip == *clip),
-        ActionKind::SetLayerVisible(id, visible) => {
-            layer(*id).is_some_and(|l| l.visible == *visible)
-        }
-        // Compared against the *stored* name, which is `None` for a layer that
-        // has never been named — so clearing an unnamed layer's name is the
-        // no-op it looks like. Commit-on-blur makes this the common case:
-        // leaving a field you only looked at must cost nothing.
-        ActionKind::SetLayerName(id, name) => {
-            layer(*id).is_some() && state.layer_name(*id) == name.as_deref()
-        }
-        // Asked of the layer's *content*, since only a filter has a filter to
-        // compare. A non-filter layer answers `false` and logs an action `apply`
-        // will no-op, rather than growing a rule about what a filter is.
-        ActionKind::SetFilter(id, filter) => {
-            layer(*id).and_then(|l| l.filter()).as_ref() == Some(filter)
-        }
-        ActionKind::SetMattePaint(id, paint) => matches!(
-            layer(*id).map(|l| &l.content),
-            Some(LayerContent::Matte { paint: current, .. }) if current == paint
-        ),
-        // A region with no rect answers `false`: `with_rect` leaves it alone, so
-        // the action is inert, but saying so here would be this file's third
-        // opinion about what an `Everything` matte is.
-        ActionKind::SetMatteRect(id, min, max) => {
-            layer(*id)
-                .and_then(|l| l.matte_region())
-                .and_then(|r| r.rect())
-                == Some((*min, *max))
-        }
-        ActionKind::SetSubstrateColor(rgb) => state.substrate_color == *rgb,
-        ActionKind::SetSubstrate(id) => state.substrate == *id,
-        ActionKind::SetSubstrateScale(scale) => state.substrate_scale == *scale,
-        // A guide edit that changes nothing, asked of the guide as it stands —
-        // and answering `false` for one that is not there, on this function's
-        // general rule: inert here, live on a peer whose roster is a step ahead.
-        ActionKind::SetGuide(id, guide) => {
-            state.guide(*id).is_some_and(|g| g.camera == *guide)
-        }
-        // Commit-on-blur makes a rename to the name it already has the common
-        // case: leaving a field you only looked at must cost nothing.
-        ActionKind::SetGuideName(id, name) => {
-            state.guide(*id).is_some_and(|g| g.name.as_deref() == name.as_deref())
-        }
-        // A move to where every named layer already stands — a matte included,
-        // whose frame moves like paint's (§15.2). Absent answers `false` on
-        // this function's general rule; a filter named with a nonzero offset
-        // answers `false` too and logs an action `apply` will no-op —
-        // `SetFilter`'s bargain, rather than a third opinion here about which
-        // layers have a frame to move (`Layer::is_translatable`).
-        ActionKind::TranslateLayers { moves } => moves
-            .iter()
-            .all(|(id, to)| layer(*id).is_some_and(|l| l.translation == *to)),
-        // A move is nothing when the guide already sits directly after the anchor.
-        // Asked of the roster rather than of the drag, so a row dropped back where
-        // it was picked up costs no undo step however the frontend spelled it.
-        ActionKind::MoveGuide { id, after } => {
-            let roster = state.guides();
-            let Some(i) = roster.iter().position(|g| g.id == *id) else {
-                return false;
-            };
-            // What it sits after today — `None` at the head of the roster.
-            let before = i
-                .checked_sub(1)
-                .map(|j| roster.get(j).expect("indexed from the roster").id);
-            // An anchor no longer in the roster lands the guide at the head, so it
-            // asks for the same place naming nothing asks for.
-            let anchor = after.filter(|a| roster.iter().any(|g| g.id == *a));
-            before == anchor
-        }
-        // Everything whose effect is pixels, or whose effect depends on a tree
-        // walk this question will not pay for.
-        ActionKind::CommitStroke(_)
-        | ActionKind::Fill { .. }
-        | ActionKind::Transform { .. }
-        | ActionKind::TransformPerspective { .. }
-        | ActionKind::TransformWarp { .. }
-        | ActionKind::Select(_)
-        | ActionKind::InvertSelection
-        | ActionKind::AddLayer { .. }
-        | ActionKind::AddMatte { .. }
-        | ActionKind::AddFilter { .. }
-        | ActionKind::PlaceImage { .. }
-        | ActionKind::DuplicateLayer { .. }
-        | ActionKind::RemoveLayer { .. }
-        | ActionKind::MergeLayerDown { .. }
-        | ActionKind::MoveLayer { .. }
-        | ActionKind::FloatSelection { .. }
-        // An add always changes the roster; a remove of an absent guide answers
-        // `false` for the reason every other absent-target arm does.
-        | ActionKind::AddGuide { .. }
-        | ActionKind::RemoveGuide(_)
-        | ActionKind::Undo(_) => false,
+    if matches!(kind, ActionKind::Undo(_)) {
+        return false;
+    }
+    let footprint = compute_footprint(&Action {
+        id: ActionId { lamport: 0, actor },
+        kind: kind.clone(),
+    });
+    if footprint.writes.iter().any(never_a_noop) {
+        return false;
+    }
+    let named = footprint.reads.iter().chain(&footprint.writes);
+    if named
+        .filter_map(layer_named)
+        .any(|id| !state.contains_layer(id))
+    {
+        return false;
+    }
+    match apply_pure(kind, state.clone(), actor) {
+        Folded::Done(after) => super::audit::changes_nothing(state, &after),
+        // The renderer's half: pixels, whose answer costs the work the question
+        // exists to avoid.
+        Folded::NeedsRenderer(_) => false,
+    }
+}
+
+/// Whether a write to this resource is one [`is_noop_on`] answers `false` to without
+/// folding: paint, a layer's presence, everything about a layer, the tree's shape.
+///
+/// Exhaustive, so a resource added later has to say which side it is on.
+fn never_a_noop(resource: &Resource) -> bool {
+    match resource {
+        Resource::Paint(..)
+        | Resource::Existence(_)
+        | Resource::Layer(_)
+        | Resource::StackOrder => true,
+        Resource::Prop(..)
+        | Resource::Selection(_)
+        | Resource::Substrate
+        | Resource::SubstrateColor
+        | Resource::Guides => false,
+    }
+}
+
+/// The layer this resource names, if it names one — what [`is_noop_on`] checks the
+/// document holds.
+fn layer_named(resource: &Resource) -> Option<LayerId> {
+    match resource {
+        Resource::Paint(id, _)
+        | Resource::Existence(id)
+        | Resource::Prop(id, _)
+        | Resource::Layer(id) => Some(*id),
+        Resource::StackOrder
+        | Resource::Selection(_)
+        | Resource::Substrate
+        | Resource::SubstrateColor
+        | Resource::Guides => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stark_model::Srgb;
+    use stark_model::document::{
+        BlendMode, ColorAdjust, Filter, GuideId, MatteRegion, Parcel, PerspectiveGuide, Place,
+    };
+    use stark_model::geom::{IVec2, Vec2};
+
+    const A: LayerId = LayerId::ROOT;
+    const MATTE: LayerId = LayerId::solo(3);
+    const FILTER: LayerId = LayerId::solo(4);
+    /// An id the document does not hold.
+    const ABSENT: LayerId = LayerId::solo(9);
+    const ACTOR: ActorId = ActorId(1);
+    const G1: GuideId = GuideId(ActionId {
+        lamport: 1,
+        actor: ACTOR,
+    });
+    const NO_GUIDE: GuideId = GuideId(ActionId {
+        lamport: 8,
+        actor: ACTOR,
+    });
+
+    const HOLE: (Vec2, Vec2) = (Vec2::ZERO, Vec2::splat(64.0));
+
+    /// A paint layer, a framed matte, a filter and one guide — one of everything the
+    /// ctx-free fold can refuse.
+    fn furnished() -> DocState {
+        DocState::with_layer(A)
+            .insert_matte(
+                MATTE,
+                None,
+                Place::Bottom,
+                MatteRegion::OutsideRect {
+                    min: HOLE.0,
+                    max: HOLE.1,
+                },
+                Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
+            )
+            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL))
+            .insert_guide(G1, PerspectiveGuide::default(), None, None)
+    }
+
+    fn noop(kind: ActionKind, state: &DocState) -> bool {
+        is_noop_on(&kind, state, ACTOR)
+    }
+
+    /// The first drift: `set_layer_blend` refuses a filter (§21.4), so the action
+    /// folds to nothing — and the hand-written arm compared the mode anyway.
+    #[test]
+    fn a_blend_the_filter_refuses_is_not_an_edit() {
+        let state = furnished();
+        assert!(noop(
+            ActionKind::SetLayerBlend(FILTER, BlendMode::Multiply),
+            &state
+        ));
+        // The same write on paint is the edit it looks like.
+        assert!(!noop(
+            ActionKind::SetLayerBlend(A, BlendMode::Multiply),
+            &state
+        ));
+    }
+
+    /// The second drift: `set_matte_rect` refuses a rect it cannot measure and a
+    /// region with no rect to move, and the hand-written arm compared corners anyway.
+    #[test]
+    fn a_rect_the_matte_refuses_is_not_an_edit() {
+        let state = furnished();
+        let nan = Vec2::splat(f32::NAN);
+        assert!(noop(ActionKind::SetMatteRect(MATTE, nan, nan), &state));
+        // The rect it already holds, and a real move.
+        assert!(noop(
+            ActionKind::SetMatteRect(MATTE, HOLE.0, HOLE.1),
+            &state
+        ));
+        assert!(!noop(
+            ActionKind::SetMatteRect(MATTE, HOLE.0, HOLE.1 + Vec2::ONE),
+            &state
+        ));
+        // A backing has no rect (§15.5): `with_rect` leaves it alone.
+        let backing = state.set_matte_region(MATTE, MatteRegion::Everything);
+        assert!(noop(
+            ActionKind::SetMatteRect(MATTE, HOLE.0, HOLE.1),
+            &backing
+        ));
+    }
+
+    /// A structural write answers `false` off the footprint, before any fold: an add
+    /// of an id the document already holds folds to nothing, and still logs.
+    #[test]
+    fn a_structural_write_is_never_a_noop() {
+        let state = furnished();
+        assert!(!noop(
+            ActionKind::AddLayer {
+                id: A,
+                carrier: None,
+                above: None,
+            },
+            &state
+        ));
+        assert!(!noop(
+            ActionKind::RemoveLayer {
+                id: ABSENT,
+                carried: Vec::new(),
+            },
+            &state
+        ));
+        assert!(!noop(
+            ActionKind::MoveLayer {
+                id: A,
+                carrier: None,
+                at: Place::Bottom,
+            },
+            &state
+        ));
+        // The renderer's half declines without folding at all — this one writes
+        // only the author's mask, so it is the fold's partition that answers.
+        assert!(!noop(ActionKind::InvertSelection, &state));
+        assert!(!noop(
+            ActionKind::Undo(ActionId {
+                lamport: 0,
+                actor: ACTOR,
+            }),
+            &state
+        ));
+    }
+
+    /// An action naming a layer the document lacks is logged (§12.1) — and the
+    /// engine's expansion of an absent layer into *no* moves is still the no-op it
+    /// relies on.
+    #[test]
+    fn naming_an_absent_layer_is_an_edit() {
+        let state = furnished();
+        assert!(!noop(ActionKind::SetLayerOpacity(ABSENT, 1.0), &state));
+        assert!(!noop(ActionKind::SetLayerName(ABSENT, None), &state));
+        assert!(!noop(
+            ActionKind::TranslateLayers {
+                moves: vec![(ABSENT, IVec2::ZERO)],
+            },
+            &state
+        ));
+        assert!(noop(
+            ActionKind::TranslateLayers { moves: Vec::new() },
+            &state
+        ));
+        // …where the same value on a layer that is there is not one.
+        assert!(noop(ActionKind::SetLayerOpacity(A, 1.0), &state));
+        assert!(noop(ActionKind::SetLayerName(A, None), &state));
+    }
+
+    /// A guide edit answers off the roster it leaves: the same camera is nothing,
+    /// a guide the roster lacks is nothing, and a real reshape is an edit.
+    #[test]
+    fn a_guide_edit_answers_off_the_roster_it_leaves() {
+        let state = furnished();
+        assert!(noop(
+            ActionKind::SetGuide(G1, PerspectiveGuide::default()),
+            &state
+        ));
+        assert!(noop(
+            ActionKind::SetGuide(NO_GUIDE, PerspectiveGuide::default()),
+            &state
+        ));
+        assert!(noop(ActionKind::RemoveGuide(NO_GUIDE), &state));
+        assert!(!noop(ActionKind::RemoveGuide(G1), &state));
+        assert!(!noop(
+            ActionKind::SetGuideName(G1, Some("horizon".into())),
+            &state
+        ));
     }
 }

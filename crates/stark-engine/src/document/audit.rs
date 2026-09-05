@@ -83,6 +83,12 @@ pub fn undeclared(before: &DocState, after: &DocState, footprint: &Footprint) ->
         .collect()
 }
 
+/// Whether two states are the same document — [`differences`] with nothing to
+/// hide behind, which is what `apply::is_noop_on` asks of a fold it has already run.
+pub(super) fn changes_nothing(before: &DocState, after: &DocState) -> bool {
+    differences(before, after).is_empty()
+}
+
 /// Panic unless every difference `action` made lies inside a resource it declared.
 #[cfg(debug_assertions)]
 pub(super) fn audit(before: &DocState, after: &DocState, action: &Action, footprint: &Footprint) {
@@ -234,7 +240,12 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
         for p in props(x, y) {
             out.push(Diff::Named(Resource::Prop(id, p)));
         }
-        if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles()) {
+        // A layer the fold did not touch still holds the *same persistent root*
+        // (`Layer::with_tiles`), so the common case is one pointer test rather than
+        // a scan of every tile of every layer on every fold in the workspace.
+        if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles())
+            && !tx.ptr_eq(ty)
+        {
             for (coord, handle) in tx.iter() {
                 if !ty.get(coord).is_some_and(|h| h.same(handle)) {
                     out.push(Diff::Tile(id, *coord));
