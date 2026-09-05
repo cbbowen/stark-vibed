@@ -58,13 +58,16 @@ fn env_flag(name: &str) -> bool {
 
 /// The device every engine in this test binary is built on.
 ///
-/// **One device per process, not one per test**, which is where this suite's time
-/// went. Measured on the machine that wrote this: a fresh `headless_engine` — request
-/// an adapter, request a device, then compile ~19 shaders and ~30 pipelines — is
-/// ~338 ms, while building an engine on a device that already exists is ~22 ms,
-/// because the driver has the compiled shaders. At 386 construction sites the
-/// difference is minutes of wall clock, and "the test suite is slow — run it once"
-/// was a rule contributors had to remember in place of fixing it.
+/// **One device per process** — which under `cargo nextest`, the runner this suite is
+/// meant to be run with, is one device per *test*: nextest gives every test its own
+/// process, so this cell is initialized once and donates to nobody. It pays only where
+/// one process runs many tests (`cargo test`), and there it is ~338 ms for a fresh
+/// context — adapter, device, ~19 shaders, ~30 pipelines — against ~22 ms for an
+/// engine on a device that already exists, because the driver has the compiled shaders.
+///
+/// So it is **not** what pays for the suite's wall clock as the suite is actually run;
+/// the `gpu` test group in `.config/nextest.toml` is, by bounding how many tests ask
+/// the driver for a device at once. Nothing here may assume a device it did not build.
 ///
 /// A `OnceLock` rather than a `thread_local`: libtest runs each test on a thread of
 /// its own, so a per-thread donor would be a per-test donor again. `GpuContext` is
@@ -78,9 +81,10 @@ fn env_flag(name: &str) -> bool {
 /// sees nothing of any other test. What is shared is the device and the driver's
 /// shader cache, neither of which any test asserts on.
 ///
-/// Two things to know if a test ever behaves oddly because of this. Tests in one
-/// binary now run concurrently against a *single* device rather than one each, which
-/// is less driver stress rather than more, but is a different shape of it. And the
+/// Two things to know if a test ever behaves oddly because of this — both under
+/// `cargo test`, since under nextest there is nothing to share. Tests in one binary
+/// run concurrently against a *single* device rather than one each, which is less
+/// driver stress rather than more, but is a different shape of it. And the
 /// device's health cell (§5) is shared, so a test that deliberately provoked a wgpu
 /// validation error would leave every later test in that binary observing a failed
 /// GPU — no test does, and one that wants to should build its own context.
@@ -534,6 +538,20 @@ pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
     worst <= tol
 }
 
+/// True if every texel of `img` is the same RGBA value — a render with no picture in
+/// it, whatever colour the flat is. An empty image counts as uniform.
+///
+/// The single-image half of what [`diff_fraction`] answers for a pair, and the one
+/// claim about a picture that holds on *any* adapter: what a stroke's texels come out
+/// to is the driver's business, that they are not all one value is not.
+pub fn is_uniform(img: &RgbaImage) -> bool {
+    let texels = img.pixels.as_chunks::<4>().0;
+    let Some((first, rest)) = texels.split_first() else {
+        return true;
+    };
+    rest.iter().all(|t| t == first)
+}
+
 /// Compare `img` against the committed golden `tests/golden/<name>.png`.
 ///
 /// If the golden file is absent it is created and the check passes — so
@@ -542,19 +560,42 @@ pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
 ///
 /// Which is why [`SKIP_GOLDEN`] exists: a committed golden can only match the one
 /// adapter it was blessed on, so a CI runner on a different adapter would fail on
-/// pixels rather than on behaviour. With it set the stroke is still *rendered* —
-/// so shader compilation, validation errors and panics are still caught — only
-/// the pixel comparison is dropped.
+/// pixels rather than on behaviour. Only the *pixel comparison* is dropped — the
+/// stroke is still rendered, so shader compilation, validation errors and panics are
+/// caught, and what does not depend on the adapter is still asserted: the render is
+/// not one flat colour, and it is the size the committed golden is. An absent golden
+/// is **not** blessed under the flag, since the adapter it would come from is the one
+/// the flag distrusts; there, only the first of the two holds.
+///
+/// The weakest form of `corpus::every_case_leaves_a_mark` — weakest because there is
+/// no before-render to difference against, so a case that paints over an undercoat is
+/// covered by the corpus battery and not by this — and here for that check's own
+/// reason: the tests whose whole assertion is this call reported `ok` under the flag
+/// for having not panicked.
 pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
-    if env_flag(SKIP_GOLDEN) {
-        eprintln!("golden {name}: rendered, comparison skipped ({SKIP_GOLDEN}=1)");
-        return;
-    }
+    // Above the [`SKIP_GOLDEN`] branch, and so one of the two things that round still
+    // says about the picture rather than about the process surviving it.
+    assert!(
+        !is_uniform(img),
+        "golden {name}: the {}x{} render is one flat colour {:?}, so there is no \
+         picture in it to compare",
+        img.width,
+        img.height,
+        img.pixels.first_chunk::<4>().copied().unwrap_or_default()
+    );
+
     let dir = golden_dir();
     fs::create_dir_all(&dir).expect("create golden dir");
     let path = dir.join(format!("{name}.png"));
+    let skip = env_flag(SKIP_GOLDEN);
 
     if !path.exists() {
+        // Blessing writes *this* adapter's pixels as the committed truth, which is the
+        // one thing the flag says they may not be taken for.
+        if skip {
+            eprintln!("golden {name}: absent, and {SKIP_GOLDEN}=1 does not bless");
+            return;
+        }
         write_png(&path, img);
         eprintln!("blessed new golden: {}", path.display());
         return;
@@ -566,6 +607,14 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
         (golden.width, golden.height),
         "golden {name}: size mismatch"
     );
+    if skip {
+        eprintln!(
+            "golden {name}: {}x{} rendered, not one flat colour; pixel comparison \
+             skipped ({SKIP_GOLDEN}=1)",
+            img.width, img.height
+        );
+        return;
+    }
 
     // **Worst-texel**, which is the same statistic the corpus battery holds every
     // other one of its checks to (`corpus::Report::check`) and is here for that

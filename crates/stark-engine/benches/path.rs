@@ -117,22 +117,23 @@ fn fit(c: &mut Criterion) {
             b.iter(|| path::fit(black_box(pts)));
         });
 
-        // The live form. `Session::stroke_to` is `fitter.push`, but the preview that
-        // follows it calls `preview_record` → `PathFitter::path`, so a gesture pays
-        // one whole `path()` *per pointer move* where the batch form pays one for the
-        // stroke. That difference is the only thing separating these two lines.
+        // The live form. `Session::stroke_to` is `fitter.push`, but the fold
+        // (`flush_live` → `gesture_view` → `preview_record`) and the presence frame
+        // (`publish` → `gesture_source`) both reach `StrokeBuilder::fitted` →
+        // `PathFitter::as_finished` — a whole free-window *solve*, not the cached
+        // `path()`. That third solve, over the two `push` already pays per report, is
+        // all that separates these two lines.
         //
-        // As measured it costs nothing — the two run within noise of each other on
-        // all four strokes — so this is a guard rather than a known cost: `path()`
-        // rebuilds a `Vec` over every knot, and it is one policy change away from
-        // being the O(n²) that a per-move call to it looks like.
+        // Once per report is the ceiling and not the rate: both readers run on a frame
+        // or publish cadence. So expect a constant factor over `batch`; a gap that
+        // *grows* with the stroke is the solve having escaped its window.
         g.bench_with_input(BenchmarkId::new("live", name), &pts, |b, pts| {
             b.iter_batched(
                 PathFitter::new,
                 |mut f| {
                     for s in pts {
                         f.push(*s);
-                        black_box(f.path());
+                        black_box(f.as_finished());
                     }
                     f.finish();
                     f.path()
