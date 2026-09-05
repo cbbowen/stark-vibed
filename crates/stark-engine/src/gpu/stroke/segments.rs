@@ -1692,4 +1692,10 @@ mod tests {
             moved.join("\n")
         );
     }
+    /// The reservation in `generate_segments_in` is sized on "each ~100 bytes"; this
+    /// is the number, so the comment cannot drift from the struct a second time.
+    #[test]
+    fn a_segment_is_the_size_the_reservation_assumes() {
+        assert_eq!(std::mem::size_of::<Segment>(), 104);
+    }
 }

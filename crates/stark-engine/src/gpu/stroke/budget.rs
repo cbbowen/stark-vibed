@@ -383,7 +383,7 @@ pub(super) const MAX_TIP_TURN: f32 = 0.1;
 /// step — but a segment is swept with *constant* attributes, so any brush quantity
 /// that varies with distance travelled and is applied per segment (rather than
 /// recovered per fragment, as the color-dynamics arc is) needs a length cap too.
-pub(crate) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
+pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.size);
