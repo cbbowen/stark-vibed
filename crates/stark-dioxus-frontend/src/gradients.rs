@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_entry_survives_the_round_trip_and_a_bad_one_is_refused() {
+    fn a_stored_entry_survives_the_round_trip_and_a_bad_one_is_repaired() {
         let entry = GradientEntry {
             name: "Dusk".into(),
             gradient: gradient(),
@@ -422,10 +422,14 @@ mod tests {
         assert_eq!(back.name, "Dusk");
         assert_eq!(back.gradient, entry.gradient);
 
-        // One stop is not a gradient; the entry is refused by `Gradient`'s own
-        // deserialization gate rather than read into an unsampleable ramp — and an
-        // entry that will not read is one `storage::load_list` drops.
-        let bad = r#"{"name":"Bad","gradient":[{"t":0.5,"color":[0.0,0.0,0.0]}]}"#;
-        assert!(serde_json::from_str::<GradientEntry>(bad).is_err());
+        // One stop names no ramp, and the load path repairs it into one rather than
+        // refusing (§22.1) — so the row survives `storage::load_list` as a flat ramp of
+        // its own color, under the name the artist gave it. It used to be dropped, which
+        // is silent loss of a row the artist can see and delete.
+        let bad = r#"{"name":"Bad","gradient":[{"t":0.5,"color":[0.25,0.5,0.75]}]}"#;
+        let back: GradientEntry = serde_json::from_str(bad).expect("a row still reads");
+        assert_eq!(back.name, "Bad");
+        assert_eq!(back.gradient.sample(0.0), Srgb::new([0.25, 0.5, 0.75]));
+        assert_eq!(back.gradient.sample(1.0), Srgb::new([0.25, 0.5, 0.75]));
     }
 }

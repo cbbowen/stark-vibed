@@ -313,12 +313,19 @@ type here.
 
 A schema can also be found by **tracing** — driving a type's `Deserialize` impl with
 synthetic values and recording what it asks for. Tracing needs no derive and reads the
-real impl, which makes it the obvious default; it is also unusable here. Three types in
-the log gate their own invariants in `Deserialize` — `FillOp`, `SelectionOp` and
-`Gradient`, each clamping or repairing through a `serde(from)` mirror — and a funnel
-driven with synthetic values cannot describe itself to a file. Worse, it poisons
-everything containing it: no `Action`, no `DocumentFile`, no gossip payload could be
-traced either.
+real impl, which makes it the obvious default; it is also unusable here, and what makes
+it so is `#[serde(alias)]`. serde reports an alias and the real field name in one list,
+so a trace cannot tell which of them the type *writes* — and the log's whole
+backward-compatibility story is aliases (`SetSurface`, `SetSurfaceScale`,
+`SetBackground`, and the positional `"0"`). `ActionKind` carries four, `CanvasMeta`
+another, so neither traces, and that poisons everything containing them: no `Action`, no
+`DocumentFile`, no gossip payload.
+
+The three invariant funnels — `FillOp`, `SelectionOp`, `Gradient` — are *not* the
+obstacle, though they were while `Gradient` refused (§22.1): a funnel that turned away
+the synthetic values could not describe itself, and one such type poisoned every type
+above it. All three clamp or repair through an infallible `serde(from)` now, and all
+three trace cleanly. The aliases are what remain, and they are not going anywhere.
 
 So each of the three states its wire shape outright:
 

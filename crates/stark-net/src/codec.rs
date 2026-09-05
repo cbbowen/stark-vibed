@@ -19,9 +19,15 @@
 //! on the types themselves. Nothing is discovered at runtime, so there is nothing to
 //! cache and nothing to fail on the first message of a session — and that is not an
 //! optimization but a requirement: a schema can also be found by *tracing* a type's
-//! `Deserialize` impl, and an `Action` cannot be traced, because the invariant funnels
-//! inside it (`FillOp`, `SelectionOp`, `Gradient`) refuse the synthetic values tracing
-//! feeds them. Every payload on this wire holds an `Action`.
+//! `Deserialize` impl, and an `Action` cannot be traced. `ActionKind` carries four
+//! `#[serde(alias)]`es, and serde reports an alias and the real name in one list, so a
+//! trace cannot tell which one the type writes. Every payload on this wire holds an
+//! `Action`.
+//!
+//! Not the invariant funnels inside it: `FillOp`, `SelectionOp` and `Gradient` all trace
+//! cleanly, since each clamps or repairs through an infallible `serde(from)`. They were
+//! the obstacle while `Gradient` refused (§22.1), which is worth knowing only so that
+//! making them traceable is not mistaken for a way out of this.
 
 use std::sync::LazyLock;
 
