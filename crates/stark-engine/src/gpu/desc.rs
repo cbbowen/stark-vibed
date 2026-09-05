@@ -22,7 +22,9 @@
 //! a list still says is [`How`] the host binds: through a sampler, as a dynamic-offset
 //! slot, in which stages, and (once) that a slot exists only where the space has a
 //! residual. Each of those four is a fact about the *host*, and each has a case in this
-//! codebase that proves it cannot be read off the declaration.
+//! codebase that proves it cannot be read off the declaration. [`Bindings`] holds a
+//! layout together with the list and the residual it was built from, so a group built
+//! through it cannot be handed a different pair.
 
 use crate::gpu::context::GpuContext;
 
@@ -281,8 +283,9 @@ fn slot_entry(
 /// The list of slots is the *only* thing written on the host, and it is written once:
 /// [`bind_group_for`] builds the matching group from the same list, so a layout and its
 /// group cannot disagree about which bindings are present, in what order, or of what
-/// type. Two hand-kept arrays per entry point joined by a magic element count — seven
-/// pairs of them for `dynamics.wesl` alone — is what that saves.
+/// type — given the same `resid`, which is what [`Bindings`] holds the two calls to.
+/// Two hand-kept arrays per entry point joined by a magic element count — seven pairs
+/// of them for `dynamics.wesl` alone — is what that saves.
 ///
 /// A bind group layout describes exactly one `@group`, so a list spanning two is a
 /// mistake in the list rather than a layout with a meaning: the assertion below is what
@@ -341,6 +344,64 @@ pub(crate) fn bind_group_for<'a>(
         layout,
         entries: &entries,
     })
+}
+
+/// A bind group layout **with the list and the residual it was built from**, so the
+/// group is built from the same pair by construction.
+///
+/// [`layout_for`] and [`bind_group_for`] each take `resid` as an argument, and nothing
+/// makes two calls agree. The disagreement is a group missing the entries its layout
+/// declares — a validation error only a pigment document reaches, which the build
+/// without Mixbox cannot render (§6.7). Four sites derived the flag from whatever was
+/// in hand (`input.resid.is_some()`, `tile.resid_view().is_some()`) rather than from
+/// the renderer's `ChannelFormats`; all agreed with their layouts, and nothing said
+/// they had to. Built once per layout where the renderer is, this answers instead.
+#[derive(Clone)]
+pub(crate) struct Bindings {
+    layout: wgpu::BindGroupLayout,
+    slots: &'static [Slot],
+    resid: bool,
+}
+
+impl Bindings {
+    /// [`layout_for`] over `slots`, keeping `slots` and `resid` for [`Self::group`].
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        label: &str,
+        slots: &'static [Slot],
+        vis: wgpu::ShaderStages,
+        resid: bool,
+    ) -> Self {
+        Self {
+            layout: layout_for(device, label, slots, vis, resid),
+            slots,
+            resid,
+        }
+    }
+
+    /// The layout, for a [`pipeline_layout`].
+    pub(crate) fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
+    }
+
+    /// [`bind_group_for`] against this layout — the same slots and the same residual
+    /// gate it was built with, so `resource` is asked for exactly the entries the
+    /// layout declares.
+    pub(crate) fn group<'a>(
+        &self,
+        device: &wgpu::Device,
+        label: &str,
+        resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
+    ) -> wgpu::BindGroup {
+        bind_group_for(
+            device,
+            label,
+            &self.layout,
+            self.slots,
+            self.resid,
+            resource,
+        )
+    }
 }
 
 /// A pipeline layout over `bgls`.
@@ -598,5 +659,34 @@ mod tests {
             },
             "QUAD_STRIP culls a face the transform needs drawn",
         );
+    }
+
+    /// The residual gate both [`layout_for`] and [`Bindings::group`] apply is
+    /// [`Slot::present`]: a `@if(resid)` declaration and a host-gated slot exist only
+    /// with the residual, and a plain one always. Device-free, so it can run where
+    /// the pigment build's bind groups themselves cannot be built.
+    #[test]
+    fn a_gated_slot_is_present_only_with_the_residual() {
+        use stark_shaders::mirror::fill::decl as fd;
+        const _: () = assert!(
+            fd::BASE_RESID.resid && !fd::BASE_COLOR.resid,
+            "the fixtures no longer stand for a gated and an ungated declaration",
+        );
+        let declared = Slot::at(fd::BASE_RESID);
+        let hosted = Slot::at(fd::BASE_COLOR).only_with_resid();
+        let plain = Slot::at(fd::BASE_COLOR);
+        for resid in [false, true] {
+            assert_eq!(
+                declared.present(resid),
+                resid,
+                "@if(resid) at resid={resid}"
+            );
+            assert_eq!(
+                hosted.present(resid),
+                resid,
+                "only_with_resid at resid={resid}"
+            );
+            assert!(plain.present(resid), "a plain slot at resid={resid}");
+        }
     }
 }

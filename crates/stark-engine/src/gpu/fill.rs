@@ -85,7 +85,7 @@ pub struct FillRenderer {
     /// once (§6.7).
     formats: ChannelFormats,
     pipeline: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
+    bindings: desc::Bindings,
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
     /// runs the same shader as a fill onto paint.
     zeroes: Zeroes,
@@ -116,14 +116,14 @@ impl FillRenderer {
             source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(formats.has_resid()).into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
-        let bgl = desc::layout_for(
+        let bindings = desc::Bindings::new(
             device,
             "stark fill bgl",
             FILL_SLOTS,
             frag,
             formats.has_resid(),
         );
-        let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(bindings.layout())]);
         let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
             device,
@@ -139,7 +139,7 @@ impl FillRenderer {
             color_space,
             formats,
             pipeline,
-            bgl,
+            bindings,
             zeroes,
             scratch,
             selection,
@@ -248,25 +248,18 @@ impl FillRenderer {
             // uniform above already carries (`SelectionRenderer::gate_for`).
             let gate_mask = self.selection.gate_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
-            let bg = desc::bind_group_for(
-                device,
-                "stark fill bg",
-                &self.bgl,
-                FILL_SLOTS,
-                self.formats.has_resid(),
-                |b| match b {
-                    f::F => ubuf.as_entire_binding(),
-                    f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
-                    f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
-                    f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
-                    f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
-                    f::BASE_RESID => wgpu::BindingResource::TextureView(
-                        under.resid.expect("a residual build has a base residual"),
-                    ),
-                    f::TILE => tile_slots.resource(),
-                    other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
-                },
-            );
+            let bg = self.bindings.group(device, "stark fill bg", |b| match b {
+                f::F => ubuf.as_entire_binding(),
+                f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
+                f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
+                f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
+                f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
+                f::BASE_RESID => wgpu::BindingResource::TextureView(
+                    under.resid.expect("a residual build has a base residual"),
+                ),
+                f::TILE => tile_slots.resource(),
+                other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
+            });
             scope.fullscreen_pass(
                 "stark fill tile",
                 &self.pipeline,

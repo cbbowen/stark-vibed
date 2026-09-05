@@ -45,9 +45,9 @@ use stark_shaders::mirror::slab::decl as sd;
 
 /// Which bindings `merge.wesl` reads, in layout order (§6.10).
 ///
-/// One list, read by both sides: [`layout_for`](desc::layout_for) builds the layout
-/// from it and [`bind_group_for`](desc::bind_group_for) the group, so neither can
-/// disagree with the other about which slots are present or of what type. The two
+/// One list, read by both sides: a [`Bindings`](desc::Bindings) builds the layout
+/// from it and every group after, so neither can disagree with the other about which
+/// slots are present or of what type. The two
 /// residual entries sit beside the colors they ride with rather than in a countable
 /// tail — the `@if(resid)` gate is on the declaration, so the `if resid { push }` this
 /// replaces had nothing left to say (§6.7).
@@ -125,12 +125,12 @@ pub struct MergeRenderer {
     /// The direct tile-space law: an unclipped `Normal` merge, settled in one pass
     /// (`merge.wesl`).
     direct: wgpu::RenderPipeline,
-    direct_bgl: wgpu::BindGroupLayout,
+    direct_bindings: desc::Bindings,
     /// The slab law's two directions (`slab.wesl`), which is what lets a merge through
     /// a blend mode borrow the compositor's own pass rather than restate its algebra.
     expand: wgpu::RenderPipeline,
     store: wgpu::RenderPipeline,
-    slab_bgl: wgpu::BindGroupLayout,
+    slab_bindings: desc::Bindings,
     /// **The compositor's blend pass, shared** — the same pipeline the screen runs,
     /// pointed at tile-sized targets (§14.11). A merged layer therefore cannot drift
     /// from the stack it replaced, which no amount of care in a second implementation
@@ -173,11 +173,16 @@ impl MergeRenderer {
             label: Some("stark merge"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(resid).into()),
         });
-        let direct_bgl = desc::layout_for(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
+        let direct_bindings =
+            desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
         let direct = desc::fullscreen_pipeline(
             device,
             "stark merge pipeline",
-            &desc::pipeline_layout(device, "stark merge layout", &[Some(&direct_bgl)]),
+            &desc::pipeline_layout(
+                device,
+                "stark merge layout",
+                &[Some(direct_bindings.layout())],
+            ),
             &merge_shader,
             ("vs_main", "fs_main"),
             &targets,
@@ -189,8 +194,9 @@ impl MergeRenderer {
             label: Some("stark slab"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(resid).into()),
         });
-        let slab_bgl = desc::layout_for(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
-        let slab_layout = desc::pipeline_layout(device, "stark slab layout", &[Some(&slab_bgl)]);
+        let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
+        let slab_layout =
+            desc::pipeline_layout(device, "stark slab layout", &[Some(slab_bindings.layout())]);
         let slab = |label, fs| {
             desc::fullscreen_pipeline(
                 device,
@@ -206,10 +212,10 @@ impl MergeRenderer {
             ctx: ctx.clone(),
             formats,
             direct,
-            direct_bgl,
+            direct_bindings,
             expand: slab("stark slab expand", "fs_expand"),
             store: slab("stark slab store", "fs_store"),
-            slab_bgl,
+            slab_bindings,
             blend,
             filter,
             zeroes,
@@ -413,13 +419,9 @@ impl MergeRenderer {
             t.resid
                 .expect("a residual is asked for only in a space that has one")
         }
-        let bg = desc::bind_group_for(
-            &self.ctx.device,
-            "stark merge bg",
-            &self.direct_bgl,
-            MERGE_SLOTS,
-            self.formats.has_resid(),
-            |b| match b {
+        let bg = self
+            .direct_bindings
+            .group(&self.ctx.device, "stark merge bg", |b| match b {
                 m::M => uniform.as_entire_binding(),
                 m::LOWER_COLOR => view(lower.color),
                 m::LOWER_AUX => view(lower.aux),
@@ -428,8 +430,7 @@ impl MergeRenderer {
                 m::LOWER_RESID => view(resid(lower)),
                 m::UPPER_RESID => view(resid(upper)),
                 other => unreachable!("`MERGE_SLOTS` lists no binding {other}"),
-            },
-        );
+            });
         pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
     }
 
@@ -469,20 +470,15 @@ impl MergeRenderer {
         input: Targets<'_>,
         out: &Channels,
     ) {
-        let bg = desc::bind_group_for(
-            &self.ctx.device,
-            "stark slab bg",
-            &self.slab_bgl,
-            SLAB_SLOTS,
-            input.resid.is_some(),
-            |b| match b {
+        let bg = self
+            .slab_bindings
+            .group(&self.ctx.device, "stark slab bg", |b| match b {
                 sl::S => uniform.as_entire_binding(),
                 sl::IN_COLOR => view(input.color),
                 sl::IN_AUX => view(input.aux),
                 sl::IN_RESID => view(input.resid.expect("a residual build has one")),
                 other => unreachable!("`SLAB_SLOTS` lists no binding {other}"),
-            },
-        );
+            });
         pass(scope, "stark slab tile", pipeline, &bg, &[], out);
     }
 

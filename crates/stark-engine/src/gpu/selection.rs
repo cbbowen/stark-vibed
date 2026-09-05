@@ -111,10 +111,10 @@ const MODE_INVERT: f32 = stark_shaders::mirror::selection::MODE_INVERT as f32;
 pub struct SelectionRenderer {
     ctx: GpuContext,
     rasterize_pipeline: wgpu::RenderPipeline,
-    rasterize_bgl: wgpu::BindGroupLayout,
+    rasterize_bindings: desc::Bindings,
     region_pipeline: wgpu::RenderPipeline,
-    region_view_bgl: wgpu::BindGroupLayout,
-    region_tile_bgl: wgpu::BindGroupLayout,
+    region_view_bindings: desc::Bindings,
+    region_tile_bindings: desc::Bindings,
     /// The 1×1 constant masks, one slot per quantized coverage byte, built on first
     /// ask (see [`Self::constant`]).
     ///
@@ -166,10 +166,13 @@ impl SelectionRenderer {
         // The mask targets take no blend: the shader does the combine and writes
         // straight through.
         let mask_target = [desc::target(MASK_FORMAT)];
-        let rasterize_bgl =
-            desc::layout_for(device, "stark selection bgl", RASTERIZE_SLOTS, frag, false);
-        let layout =
-            desc::pipeline_layout(device, "stark selection layout", &[Some(&rasterize_bgl)]);
+        let rasterize_bindings =
+            desc::Bindings::new(device, "stark selection bgl", RASTERIZE_SLOTS, frag, false);
+        let layout = desc::pipeline_layout(
+            device,
+            "stark selection layout",
+            &[Some(rasterize_bindings.layout())],
+        );
         let rasterize_pipeline = desc::fullscreen_pipeline(
             device,
             "stark selection pipeline",
@@ -184,14 +187,14 @@ impl SelectionRenderer {
             label: Some("stark selection region"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().into()),
         });
-        let region_view_bgl = desc::layout_for(
+        let region_view_bindings = desc::Bindings::new(
             device,
             "stark selection region view bgl",
             REGION_VIEW_SLOTS,
             wgpu::ShaderStages::VERTEX_FRAGMENT,
             false,
         );
-        let region_tile_bgl = desc::layout_for(
+        let region_tile_bindings = desc::Bindings::new(
             device,
             "stark selection region tile bgl",
             REGION_TILE_SLOTS,
@@ -201,7 +204,10 @@ impl SelectionRenderer {
         let region_layout = desc::pipeline_layout(
             device,
             "stark selection region layout",
-            &[Some(&region_view_bgl), Some(&region_tile_bgl)],
+            &[
+                Some(region_view_bindings.layout()),
+                Some(region_tile_bindings.layout()),
+            ],
         );
         let region_pipeline = desc::render_pipeline(
             device,
@@ -235,10 +241,10 @@ impl SelectionRenderer {
         Self {
             ctx: ctx.clone(),
             rasterize_pipeline,
-            rasterize_bgl,
+            rasterize_bindings,
             region_pipeline,
-            region_view_bgl,
-            region_tile_bgl,
+            region_view_bindings,
+            region_tile_bindings,
             constants,
             dummy_edges,
             scratch,
@@ -426,14 +432,11 @@ impl SelectionRenderer {
             label: "stark selection region uniform",
         });
         scope.write_lease(&ubuf, bytemuck::bytes_of(&u));
-        let view_bg = desc::bind_group_for(
-            device,
-            "stark selection region view bg",
-            &self.region_view_bgl,
-            REGION_VIEW_SLOTS,
-            false,
-            |_| ubuf.as_entire_binding(),
-        );
+        let view_bg =
+            self.region_view_bindings
+                .group(device, "stark selection region view bg", |_| {
+                    ubuf.as_entire_binding()
+                });
 
         let mut origins: Vec<MaskInstance> = Vec::new();
         let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
@@ -445,12 +448,9 @@ impl SelectionRenderer {
             origins.push(MaskInstance {
                 origin: off.to_array(),
             });
-            tile_bgs.push(desc::bind_group_for(
+            tile_bgs.push(self.region_tile_bindings.group(
                 device,
                 "stark selection region tile bg",
-                &self.region_tile_bgl,
-                REGION_TILE_SLOTS,
-                false,
                 |_| wgpu::BindingResource::TextureView(handle.view()),
             ));
         }
@@ -539,19 +539,14 @@ impl SelectionRenderer {
         for (i, coord) in coords.iter().enumerate() {
             let dst = pool.acquire_mask(AllocSource::SelectionMask);
             let prev_view = self.mask_for(prev, *coord);
-            let bg = desc::bind_group_for(
-                device,
-                "stark selection bg",
-                &self.rasterize_bgl,
-                RASTERIZE_SLOTS,
-                false,
-                |i| match i {
+            let bg = self
+                .rasterize_bindings
+                .group(device, "stark selection bg", |i| match i {
                     sb::P => slots.resource(),
                     sb::PREV => wgpu::BindingResource::TextureView(prev_view.view()),
                     sb::EDGES => wgpu::BindingResource::TextureView(edges),
                     other => unreachable!("`RASTERIZE_SLOTS` lists no binding {other}"),
-                },
-            );
+                });
             {
                 let mut pass = scope
                     .encoder()
