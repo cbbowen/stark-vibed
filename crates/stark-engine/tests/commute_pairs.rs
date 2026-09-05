@@ -54,9 +54,12 @@
 //! decoded from the bundled 2.6 MB map ([`base`]) — a join decodes the file's content
 //! — and the strokes are still kept small.
 //!
-//! It is still `#[ignore]`d, and the cost that justified that is gone: what is left
-//! is whether a software adapter on CI is as quick about it, which nothing here has
-//! measured.
+//! It runs unignored, which at ~150 s it could not. That matters more here than the
+//! seconds: this is the only instrument for the *reads* half of footprint honesty
+//! (`tests/footprint.rs` proves the writes half and says so), and a correctness gate
+//! nothing runs is one that reports `ok` having checked nothing — the failure
+//! CLAUDE.md names twice. The `.config/nextest.toml` window is what it runs behind:
+//! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
 mod common;
 
@@ -505,7 +508,6 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
 /// quietly made everything conflict — which would make this pass vacuously — shows up
 /// as the commuting count collapsing.
 #[test]
-#[ignore]
 fn a_pair_that_claims_to_commute_does() {
     // **One engine for the whole table**, re-joined per trial. Every document below
     // is a `join_collaboration` away, and that is the difference between minutes and

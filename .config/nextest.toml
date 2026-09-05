@@ -75,9 +75,10 @@ test-group = 'gpu'
 # into an engine that already exists is ~2 ms. It now builds **one** engine and re-joins
 # it per trial, and takes ~5 s alone.
 #
-# The window is kept as insurance rather than as a necessity, and it is reached only
-# under `--run-ignored`: a software adapter is a long way from the one that number was
-# measured on.
+# The window is insurance, and it is the reason this test can run unignored at all: ~5 s
+# is the number on a real adapter, and CI renders on lavapipe. ~1100 joins and as many
+# renders on a software rasterizer is the one part of this nobody has measured, so the
+# ceiling is sized for it to be far slower rather than for it to be 5 s.
 [[profile.default.overrides]]
 filter = 'test(a_pair_that_claims_to_commute_does)'
 slow-timeout = { period = "120s", terminate-after = 5 }
