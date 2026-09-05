@@ -39,11 +39,22 @@
 //!
 //! # What it costs
 //!
-//! One test of ~20 s, and quadratic in its table: every commuting pair builds two
-//! documents and renders both. That is the price of the coverage and it is worth
-//! knowing before adding a row — the two levers that mattered were keeping the
-//! strokes small and synthesizing the substrate rather than decoding the bundled
-//! one, which alone was the difference between 20 seconds and nearly three minutes.
+//! Minutes, not seconds, and quadratic in its table — which is why it is `#[ignore]`d
+//! and why `.config/nextest.toml` gives it a window of its own. Measure before quoting
+//! a number: it was ~20 s when this was written and is ~150 s on the box these words
+//! were last checked on, run alone. Under the suite it contends for the adapter with
+//! everything else and takes longer still.
+//!
+//! **The cost is the documents, not the actions.** Every commuting pair builds *six*
+//! engines — two for the ordered pair, and two apiece for the two splice directions,
+//! since each of those also joins a fresh peer — and every engine replays the base log.
+//! So trimming rows barely moves it, and the levers that worked were keeping the
+//! strokes small and synthesizing the substrate rather than decoding the bundled one.
+//!
+//! One of the six is avoidable and has not been taken: the canonical half of
+//! [`spliced_and_canonical`] is a function of `second` alone — the log it materializes
+//! is always `[first, second, Undo(first)]`, whose effective sequence is `[second]` —
+//! so it is computed once per *pair* where once per *row* would do.
 
 mod common;
 
@@ -91,8 +102,9 @@ fn base() -> Option<DocumentFile> {
     // Synthesized rather than `stark_testdata::assets::rough()`, and that is a cost
     // decision this table has to make: every peer replays the log, so the substrate
     // is decoded once per engine, and this test builds a couple of hundred of them.
-    // The bundled rough map is 2.6 MB and took the run from 20 seconds to nearly
-    // three minutes on its own. What the tooth needs is *relief*, not resolution.
+    // The bundled rough map is 2.6 MB and cost more than the rest of the table put
+    // together when it was decoded per engine. What the tooth needs is *relief*, not
+    // resolution.
     let grain = e
         .import_substrate(&grain())
         .expect("the synthesized height map imports");
