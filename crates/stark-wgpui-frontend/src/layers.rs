@@ -20,7 +20,7 @@
 
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
+use stark_model::document::{BlendMode, LayerId, Place};
 use stark_ui::icons::Icon;
 use stark_ui::layer_tree::{self, Row};
 use wgpui::{
@@ -90,42 +90,19 @@ pub fn opacity_at(regions: &Regions, at: Point<Pixels>) -> Option<f32> {
     (width > 0.0).then(|| ((f32::from(at.x) - left) / width).clamp(0.0, 1.0))
 }
 
-/// The blend modes the panel cycles through, with the word each wears (§6.3).
+/// The blend mode after `mode` in [`BlendMode::ALL`], wrapping.
 ///
-/// A cycle rather than a picker, because a pop-out is its own design (§25.7) and four
-/// is short enough to walk. Radiance carries a curve parameter of its own
-/// ([`DRAGO_K`]); the cycle starts it where the model does and leaves dialling it to
-/// a surface that has a slider — this panel has none for it yet, and says so rather
-/// than pretending the mode is one number poorer than it is.
-const BLENDS: &[(BlendMode, &str)] = &[
-    (BlendMode::Normal, "Normal"),
-    (BlendMode::Multiply, "Multiply"),
-    (BlendMode::Reinhard, "Glow"),
-    (BlendMode::Drago { k: DRAGO_K }, "Radiance"),
-];
-
-/// Whether two modes are the same *kind*, ignoring a parameter.
-///
-/// Radiance's `k` is the layer's own, so a layer already on Radiance at some other
-/// `k` is still on Radiance — comparing whole values would make the cycle skip it.
-fn same_kind(a: BlendMode, b: BlendMode) -> bool {
-    std::mem::discriminant(&a) == std::mem::discriminant(&b)
-}
-
-/// The blend mode after `mode` in [`BLENDS`], wrapping.
+/// A cycle rather than a picker, because a pop-out is its own design (§25.7) and the
+/// list is short enough to walk. `same_mode`, not `==`, so a layer already on
+/// Radiance at a `k` of its own is not skipped; `ALL` starts Radiance where the model
+/// does ([`DRAGO_K`](stark_model::document::DRAGO_K)) and leaves dialling it to a
+/// surface with a slider, which this panel is not yet.
 pub fn next_blend(mode: BlendMode) -> BlendMode {
-    let i = BLENDS
+    let i = BlendMode::ALL
         .iter()
-        .position(|(m, _)| same_kind(*m, mode))
+        .position(|m| m.same_mode(mode))
         .unwrap_or(0);
-    BLENDS[(i + 1) % BLENDS.len()].0
-}
-
-fn blend_word(mode: BlendMode) -> &'static str {
-    BLENDS
-        .iter()
-        .find(|(m, _)| same_kind(*m, mode))
-        .map_or("Normal", |(_, w)| *w)
+    BlendMode::ALL[(i + 1) % BlendMode::ALL.len()]
 }
 
 /// A small square control — an eye, a carry, a clip mark.
@@ -209,7 +186,7 @@ pub fn layers_panel(
                         .text_xs()
                         .text_color(rgb(0xb0b4b8))
                         .child(probe(regions, Region::Blend))
-                        .child(format!("Blend: {}", blend_word(blend))),
+                        .child(format!("Blend: {}", blend.label())),
                 )
                 .child(
                     div()
@@ -431,7 +408,7 @@ pub enum Act {
 mod tests {
     use super::*;
     use stark_engine::LayerInfo;
-    use stark_model::document::{ActionId, ActorId};
+    use stark_model::document::{ActionId, ActorId, DRAGO_K};
     use std::collections::HashSet;
 
     /// A stand-in layer, spelled out because `LayerInfo` is the engine's projection
@@ -479,26 +456,28 @@ mod tests {
     #[test]
     fn the_blend_cycle_closes() {
         let mut m = BlendMode::Normal;
-        let mut seen = vec![blend_word(m)];
-        for _ in 1..BLENDS.len() {
+        let mut seen = vec![m.label()];
+        for _ in 1..BlendMode::ALL.len() {
             m = next_blend(m);
-            seen.push(blend_word(m));
+            seen.push(m.label());
         }
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), BLENDS.len(), "every mode is on the cycle");
+        assert_eq!(
+            seen.len(),
+            BlendMode::ALL.len(),
+            "every mode is on the cycle"
+        );
         assert!(
-            same_kind(next_blend(m), BlendMode::Normal),
+            next_blend(m).same_mode(BlendMode::Normal),
             "and the cycle returns"
         );
 
         // A layer already on Radiance at its own `k` is still on Radiance — the
-        // cycle must not skip a mode because its parameter was dialled.
-        assert_eq!(blend_word(BlendMode::Drago { k: 3.0 }), "Radiance");
-        assert!(same_kind(
-            next_blend(BlendMode::Drago { k: 3.0 }),
-            BlendMode::Normal
-        ));
+        // cycle must not skip a mode, nor land elsewhere, because `k` was dialled.
+        let dialled = BlendMode::Drago { k: 3.0 };
+        assert_eq!(dialled.label(), "Radiance");
+        assert!(next_blend(dialled).same_mode(next_blend(BlendMode::Drago { k: DRAGO_K })));
     }
 
     /// The eye and the clip mark toggle what they show, rather than setting a fixed

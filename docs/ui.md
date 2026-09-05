@@ -954,11 +954,13 @@ the exit criterion is an act, not a diff.
 
   Two things the native panel does that the web one does not, and both are
   admissions. The blend picker is a **cycle** through four modes rather than a
-  pop-out, because a pop-out is §25.7's own design; it compares modes by
-  discriminant, so a Radiance layer at its own `k` is still on Radiance rather
-  than being skipped. And the opacity drag sends a document command per pointer
-  move where the web app previews and commits once (§14.6) — honest but coarse,
-  one history entry per sample. The preview pair is a stage of its own.
+  pop-out, because a pop-out is §25.7's own design; it walks `BlendMode::ALL` and
+  asks `same_mode`, the same list and the same question the web picker's rows are
+  built from, so the two offer the modes in one order and a Radiance layer at its
+  own `k` is still on Radiance rather than being skipped. And the opacity drag
+  sends a document command per pointer move where the web app previews and commits
+  once (§14.6) — honest but coarse, one history entry per sample. The preview
+  pair is a stage of its own.
 - **N5 — documents on disk.** `files` splits; save, open and export through the
   native dialogs. *Exit:* a `.stark` file round-trips between the two frontends,
   history intact. **Done**, and the first stage where the two frontends are
