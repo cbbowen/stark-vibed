@@ -400,12 +400,25 @@ impl Modulation {
         x / (m * (1.0 - x) + 1.0)
     }
 
-    /// `m` in [`shape`](Self::shape), from the `[-1, 1]` knob the UI shows. `curve = 0`
-    /// lands on `k = 0.5` and so on `m = 0` — every step of which is exact in binary,
-    /// which is what makes the linear case unconditional rather than lucky.
+    /// The bias the response and its slope bound are both written in, from the
+    /// `[-1, 1]` knob the UI shows: `curve` mapped affinely onto `[0, 1]` and held
+    /// off the ends by `MIN_BIAS`.
+    ///
+    /// One function rather than the expression twice, because [`bias`](Self::bias)
+    /// and [`max_slope`](Self::max_slope) have to agree: the flattener buys segments
+    /// against the slope this pins, and an under-estimate is the staircase `MIN_BIAS`
+    /// exists to prevent.
+    ///
+    /// `curve = 0` lands on `k = 0.5` and so on `m = 0` — every step of which is
+    /// exact in binary, which is what makes the linear case unconditional rather
+    /// than lucky.
+    fn k(&self) -> f32 {
+        (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS)
+    }
+
+    /// `m` in [`shape`](Self::shape), from [`k`](Self::k).
     fn bias(&self) -> f32 {
-        let k = (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS);
-        1.0 / k - 2.0
+        1.0 / self.k() - 2.0
     }
 
     /// The same mapping with both knobs in the range they are quoted in.
@@ -430,7 +443,7 @@ impl Modulation {
     /// largest at one end or the other: `k/(1 − k)` at 0 and `(1 − k)/k` at 1. The
     /// floor scales the whole factor by `1 − floor`, so it scales the slope too.
     pub fn max_slope(&self) -> f32 {
-        let k = (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS);
+        let k = self.k();
         let ends = (k / (1.0 - k)).max((1.0 - k) / k);
         (1.0 - clamp01(self.floor)) * ends
     }

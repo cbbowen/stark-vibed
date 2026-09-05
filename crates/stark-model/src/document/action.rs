@@ -971,9 +971,11 @@ macro_rules! roster {
         impl ActionTag {
             /// Every tag there is, in [`ActionKind`]'s declared order.
             ///
-            /// Nothing rests on the order — a tag is identified by name, and the
-            /// indices are private to whoever iterates — but a roster wants *an*
-            /// order, and the enum's is the one already written down.
+            /// Nothing rests on *which* order — a tag is identified by name — but
+            /// this list and the enum above come out of the same expansion of the
+            /// same list, and the enum declares no explicit discriminants, so
+            /// `ALL[t as usize] == t` holds by construction — which is what lets
+            /// [`index`](Self::index) be a cast rather than a search.
             pub const ALL: &'static [ActionTag] = &[$(ActionTag::$variant,)*];
 
             /// What this kind of action is, in two or three words — the caption a
@@ -1042,11 +1044,10 @@ roster! {
 impl ActionTag {
     /// Where this tag sits in [`ALL`](Self::ALL) — a stable index for a suite that
     /// wants the vocabulary as an array.
+    ///
+    /// The discriminant *is* that position, for the reason [`ALL`](Self::ALL) gives.
     pub fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|t| *t == self)
-            .expect("every tag is in ALL, which the macro builds from one list")
+        self as usize
     }
 }
 
@@ -1084,6 +1085,20 @@ pub struct Action {
 mod tests {
     use super::*;
     use crate::document::{FillOp, Parcel, SelectionMode, SelectionShape};
+
+    /// [`ActionTag::index`] is a cast, which is only the position in
+    /// [`ActionTag::ALL`] because both come out of one `roster!` expansion and the
+    /// enum declares no discriminants. An explicit discriminant on any variant
+    /// would part the two silently.
+    #[test]
+    fn a_tags_discriminant_is_its_place_in_the_roster() {
+        assert!(
+            ActionTag::ALL
+                .iter()
+                .enumerate()
+                .all(|(i, t)| t.index() == i)
+        );
+    }
 
     /// The funnel reaches every payload that carries numbers — a stroke's brush, a
     /// fill's op, a selection's op, a layer's opacity.

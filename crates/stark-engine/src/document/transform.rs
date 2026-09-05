@@ -45,7 +45,9 @@ fn classify(selection: &Selection, coord: TileCoord) -> Class {
 use stark_model::document::{
     Homography, Lattice, MAX_TRANSFORM_TILES, TransformMap, affine_usable, cell_point, rect_corners,
 };
-use stark_model::geom::{Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
+use stark_model::geom::{
+    Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tiles_of,
+};
 
 use super::selection::Selection;
 use crate::gpu::tile::TileMap;
@@ -582,10 +584,7 @@ pub(crate) fn plan_gated_mask(
         // Padded by the half-pixel coverage ramp, like `rect_standing`.
         let ramp = Vec2::splat(0.5);
         let box_ = TileRect::covering(rect.0 - ramp, rect.1 + ramp, 0)?;
-        if box_.count() > stark_model::document::MAX_SELECTION_TILES as u64 {
-            return None;
-        }
-        let mut cover: Vec<TileCoord> = box_.coords().collect();
+        let mut cover = tiles_of(box_, stark_model::document::MAX_SELECTION_TILES)?;
         // Mask tiles outside the cover but overlapping the ramp still change.
         for (c, _) in selection.tiles() {
             if !cover.contains(c) && rect_standing(*c, rect).0 {

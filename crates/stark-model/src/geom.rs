@@ -34,13 +34,14 @@ pub use glam::{Affine2, IVec2, Mat2, Vec2};
 /// The eigenvector is read off whichever column of `M − λ₂I` is longer: both span the
 /// same line, and taking the longer is what keeps it defined when the matrix is nearly
 /// isotropic (a circle, where the axes are genuinely arbitrary but must still be
-/// *some* orthogonal pair).
+/// *some* orthogonal pair). A zero or non-finite column falls back to `Vec2::X`, so
+/// there is always an axis — the callers' own degeneracy tests are on the eigenvalues.
 ///
 /// Here rather than beside either caller because a scatter of samples and a conic are
 /// the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
 /// moments of a trace, and `document::guide` reads one off the quadratic part of a
 /// conic (§20.7). One caller on each side of the crate boundary, so it is `pub`.
-pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) {
+pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Vec2) {
     let half_trace = 0.5 * (sxx + syy);
     let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
     let (major, minor) = (half_trace + disc, half_trace - disc);
@@ -51,7 +52,7 @@ pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Option<Vec2>) 
     } else {
         c1
     };
-    (major, minor, v.try_normalize().or(Some(Vec2::X)))
+    (major, minor, v.try_normalize().unwrap_or(Vec2::X))
 }
 
 /// An axis-aligned-in-its-own-frame ellipse: where it is, how big, and how it is

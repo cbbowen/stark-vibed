@@ -170,7 +170,7 @@ fn ellipse_of(c: Mat3) -> Option<Ellipse> {
     let (major, minor, dir) = principal_axis(axx, axy, ayy);
     // `dir` belongs to the *larger* eigenvalue, which is the *shorter* semi-axis:
     // the quadratic form is steepest across the ellipse's waist.
-    let along = dir?.perp();
+    let along = dir.perp();
     let radii = Vec2::new((s / minor).sqrt(), (s / major).sqrt());
     radii
         .is_finite()

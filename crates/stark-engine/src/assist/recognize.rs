@@ -306,7 +306,7 @@ fn fit_line(trace: &[Vec2]) -> Option<LineFit> {
         syy += d.y * d.y;
     }
     let (_, _, dir) = principal_axis(sxx, sxy, syy);
-    Some(line_along(trace, anchor, dir?))
+    Some(line_along(trace, anchor, dir))
 }
 
 /// The trace read as a line from `anchor` along `dir` (unit): where it ends, and how
@@ -509,7 +509,6 @@ fn moments(weighted: &[(Vec2, f32)]) -> Option<Ellipse> {
         syy += w * d.y * d.y;
     }
     let (major, minor, dir) = principal_axis(sxx * inv, sxy * inv, syy * inv);
-    let dir = dir?;
     let radii = Vec2::new((2.0 * major).max(0.0).sqrt(), (2.0 * minor).max(0.0).sqrt());
     if !(radii.is_finite() && radii.min_element() > 0.0) {
         return None;
