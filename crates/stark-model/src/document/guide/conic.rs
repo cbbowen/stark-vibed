@@ -181,3 +181,125 @@ fn ellipse_of(c: Mat3) -> Option<Ellipse> {
 fn congruent(conic: Mat3, m: Mat3) -> Mat3 {
     m.transpose() * conic * m
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::guide::{PerspectiveGuide, fixtures::guide};
+
+    /// A point of plane `k`, projected the long way round: straight from the axis
+    /// directions and the lens, with nothing from [`AxisPlane`] involved. What the
+    /// chart is checked *against*, so that its matrix is under test and not merely
+    /// consistent with itself.
+    fn projected(g: &PerspectiveGuide, k: usize, q: Vec2) -> Vec2 {
+        let d = g.axis_dirs();
+        let (i, j) = (k, (k + 1) % 3);
+        let x = d[i].cross(d[j]) + d[i] * q.x + d[j] * q.y;
+        g.center + Vec2::new(x.x, x.y) * (g.focal / x.z)
+    }
+
+    /// The chart is the projection: what it says a canvas point is on the plane, the
+    /// camera puts back where it came from.
+    #[test]
+    fn the_chart_is_the_projection_both_ways() {
+        let g = guide(0.5, 0.35, 0.2);
+        for k in 0..3 {
+            let plane = g.planes()[k].expect("plane shown");
+            for q in [Vec2::new(0.1, -0.08), Vec2::new(-0.3, 0.22)] {
+                let p = projected(&g, k, q);
+                let back = plane.to_plane(p).expect("on the plane");
+                assert!(back.distance(q) < 1e-4, "plane {k}: {q} -> {p} -> {back}");
+            }
+        }
+    }
+
+    /// The theorem the whole snap rests on: the image of a circle on a plane is an
+    /// ellipse, and it is the one [`AxisPlane::circle_seen`] answers with — checked by
+    /// projecting the circle's own points and finding them on it.
+    #[test]
+    fn a_circle_on_a_plane_is_seen_as_the_ellipse_it_answers_with() {
+        let g = guide(0.5, 0.35, 0.2);
+        let (at, radius) = (Vec2::new(0.06, -0.05), 0.09);
+        for k in 0..3 {
+            let plane = g.planes()[k].expect("plane shown");
+            let Ellipse {
+                center,
+                radii,
+                angle,
+            } = plane.circle_seen(at, radius).expect("a bounded image");
+            let (u, v) = (Vec2::from_angle(angle), Vec2::from_angle(angle).perp());
+            let worst = (0..48)
+                .map(|i| {
+                    let t = i as f32 / 48.0 * std::f32::consts::TAU;
+                    let d = projected(&g, k, at + Vec2::new(t.cos(), t.sin()) * radius) - center;
+                    // The ellipse's own equation: 1 exactly, on it.
+                    ((d.dot(u) / radii.x).powi(2) + (d.dot(v) / radii.y).powi(2) - 1.0).abs()
+                })
+                .fold(0.0f32, f32::max);
+            assert!(worst < 1e-3, "plane {k}: off its ellipse by {worst}");
+        }
+    }
+
+    /// A plane facing the camera square-on foreshortens nothing, so its circles are
+    /// seen as circles — the case that says the construction is not merely *some*
+    /// conic map. In 1-point that is the X/Y pair.
+    #[test]
+    fn a_plane_facing_the_camera_sees_circles_as_circles() {
+        let g = guide(0.0, 0.0, 0.0);
+        let plane = g.planes()[0].expect("plane shown");
+        let Ellipse { center, radii, .. } = plane
+            .circle_seen(Vec2::new(0.2, -0.1), 0.05)
+            .expect("an image");
+        assert!((radii.x / radii.y - 1.0).abs() < 1e-4, "radii {radii}");
+        // ...and at the projection of its centre, which is *not* true in general.
+        assert!(center.distance(projected(&g, 0, Vec2::new(0.2, -0.1))) < 1e-3);
+    }
+
+    /// The image of a circle is not centred on the image of its centre — the classical
+    /// fact, and the reason a perspective circle cannot be steered by scaling the drawn
+    /// ellipse about what one sees (§20.7).
+    #[test]
+    fn the_image_of_a_circle_is_not_centred_on_its_centre() {
+        let g = guide(0.5, 0.35, 0.2);
+        let (at, radius) = (Vec2::new(0.06, -0.05), 0.12);
+        let plane = g.planes()[2].expect("plane shown");
+        let Ellipse { center, radii, .. } = plane.circle_seen(at, radius).expect("an image");
+        let drift = center.distance(projected(&g, 2, at));
+        assert!(
+            drift > 0.02 * radii.x,
+            "the centres coincided to {drift}px on a {radii} ellipse"
+        );
+    }
+
+    /// Seen and unseen are exact inverses, which is what lets an adjustment work in the
+    /// plane and come back (§20.7).
+    #[test]
+    fn a_circle_survives_the_round_trip() {
+        let g = guide(0.5, 0.35, 0.2);
+        let plane = g.planes()[2].expect("plane shown");
+        let (at, radius) = (Vec2::new(0.06, -0.05), 0.09);
+        let seen = plane.circle_seen(at, radius).expect("an image");
+        let (back, r) = plane.circle_behind(seen).expect("a circle");
+        assert!(back.distance(at) < 1e-4 * radius, "centre {back}, was {at}");
+        assert!(
+            (r - radius).abs() < 1e-4 * radius,
+            "radius {r}, was {radius}"
+        );
+    }
+
+    /// A circle that runs past its plane's own horizon is seen as a hyperbola, not a
+    /// loop — so there is nothing for a stroke to be, and the classification says so
+    /// instead of answering with a shape.
+    #[test]
+    fn a_circle_across_the_horizon_has_no_ellipse() {
+        let g = guide(0.5, 0.35, 0.2);
+        let plane = g.planes()[2].expect("plane shown");
+        let d = g.axis_dirs();
+        // Where the plane crosses the eye's own depth: `x.z = 0`, in plane coordinates.
+        let n = d[2].cross(d[0]);
+        let gradient = Vec2::new(d[2].z, d[0].z);
+        let reach = n.z.abs() / gradient.length();
+        assert!(plane.circle_seen(Vec2::ZERO, reach * 0.5).is_some());
+        assert!(plane.circle_seen(Vec2::ZERO, reach * 1.5).is_none());
+    }
+}
