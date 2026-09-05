@@ -8,7 +8,7 @@
 use rpds::HashTrieMap;
 
 use stark_model::document::{MAX_SELECTION_TILES, SelectionMode, SelectionOp};
-use stark_model::geom::{TILE_APRON, TILE_SIZE, TileCoord, Vec2, tiles_covering};
+use stark_model::geom::{TILE_APRON, TileCoord, Vec2, tiles_covering};
 
 use crate::gpu::tile::{MaskHandle, MaskMap};
 
@@ -394,11 +394,7 @@ impl Selection {
                         TileCoord::new(hi.x.max(c.x), hi.y.max(c.y)),
                     )
                 });
-                let apron = Vec2::splat(TILE_APRON as f32);
-                Some((
-                    lo.origin() - apron,
-                    hi.origin() + Vec2::splat(TILE_SIZE as f32) + apron,
-                ))
+                Some((lo.texture_box().0, hi.texture_box().1))
             })
             .flatten();
         SelectionPlan {
@@ -435,6 +431,7 @@ pub(crate) struct SelectionPlan {
 mod tests {
     use super::*;
     use stark_model::document::SelectionShape;
+    use stark_model::geom::TILE_SIZE;
 
     /// The soft-set algebra still degrades to the booleans on hard coverages — the
     /// property that lets a feathered mask and a hard one be the same code path.

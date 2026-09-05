@@ -82,7 +82,7 @@ pub const MASK_TEX: u32 = TILE_TEX;
 /// position a tile writer computes far out on the canvas, so it is a change with a
 /// golden re-bless attached rather than a cleanup.
 pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
-    coord.origin() - Vec2::splat(TILE_APRON as f32)
+    coord.texture_box().0
 }
 
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING

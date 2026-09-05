@@ -11,7 +11,7 @@
 //! [`DocumentFile::content`](crate::io::DocumentFile) and over the wire as a blob,
 //! and `crate::content` is what says a document naming one has to have it.
 
-use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, TileRect, Vec2, tiles_of};
+use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, Vec2, tile_box, tiles_of};
 use stark_assetid::{MAX_PICTURE_DIM, Picture};
 
 /// The most tiles one placed picture can write — **derived, not chosen**.
@@ -73,10 +73,10 @@ fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
 /// A tile is written when its **texture** holds any of the picture — the interior plus
 /// the apron band, since a tile's texture starts one texel before its interior and
 /// content reaching into that band belongs to the neighbour too (§6.4). Filtered
-/// rather than merely quantized, because [`TileRect::covering`] floors both bounds: a
-/// picture ending exactly on a tile boundary would otherwise name the tile past it,
-/// and an all-zero tile pollutes `bounds` and holds pool memory for a texel of
-/// nothing.
+/// rather than merely quantized, because [`TileRect::covering`](crate::geom::TileRect::covering)
+/// floors both bounds: a picture ending exactly on a tile boundary would otherwise
+/// name the tile past it, and an all-zero tile pollutes `bounds` and holds pool
+/// memory for a texel of nothing.
 ///
 /// `None` refuses the whole action, deterministically, for a placement whose box falls
 /// off the `i32` tile grid — or, well before that, one too far from the origin for
@@ -87,14 +87,9 @@ fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
 /// than a document to refuse.
 pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
     let (lo, hi) = extent(at, picture)?;
-    let apron = Vec2::splat(TILE_APRON as f32);
-    let mut tiles = tiles_of(
-        TileRect::covering(lo - apron, hi + apron, 0)?,
-        MAX_IMAGE_TILES,
-    )?;
+    let mut tiles = tiles_of(tile_box(lo, hi, 0)?, MAX_IMAGE_TILES)?;
     tiles.retain(|c| {
-        let tex_lo = c.origin() - apron;
-        let tex_hi = c.origin() + Vec2::splat((TILE_SIZE + TILE_APRON) as f32);
+        let (tex_lo, tex_hi) = c.texture_box();
         tex_lo.x < hi.x && tex_lo.y < hi.y && tex_hi.x > lo.x && tex_hi.y > lo.y
     });
     Some(tiles)
@@ -103,6 +98,7 @@ pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::TileRect;
 
     fn picture(w: u32, h: u32) -> Picture {
         Picture {
@@ -175,6 +171,9 @@ mod tests {
             let window = TileRect::covering(lo - Vec2::splat(600.0), hi + Vec2::splat(600.0), 0)
                 .expect("an ordinary box");
             for c in window.coords() {
+                // Spelled out rather than `TileCoord::texture_box`: the point is that
+                // the predicate is derived twice, so this half may not read the other's
+                // copy of it.
                 let tex_lo = c.origin() - Vec2::splat(apron);
                 let tex_hi = c.origin() + Vec2::splat(TILE_SIZE as f32 + apron);
                 let holds =

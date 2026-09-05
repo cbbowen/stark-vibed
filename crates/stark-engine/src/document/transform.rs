@@ -46,7 +46,7 @@ use stark_model::document::{
     Homography, Lattice, MAX_TRANSFORM_TILES, TransformMap, affine_usable, cell_point, rect_corners,
 };
 use stark_model::geom::{
-    Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tiles_of,
+    Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tile_box, tiles_of,
 };
 
 use super::selection::Selection;
@@ -402,9 +402,7 @@ pub(crate) struct GatedPlan {
 /// half-pixel coverage ramp: does the cut touch it at all, and does the whole
 /// texture sit where coverage is exactly 1.
 fn rect_standing(coord: TileCoord, rect: (Vec2, Vec2)) -> (bool, bool) {
-    let apron = TILE_APRON as f32;
-    let lo = coord.origin() - Vec2::splat(apron);
-    let hi = coord.origin() + Vec2::splat(TILE_SIZE as f32 + apron);
+    let (lo, hi) = coord.texture_box();
     let overlaps = lo.x < rect.1.x + 0.5
         && hi.x > rect.0.x - 0.5
         && lo.y < rect.1.y + 0.5
@@ -713,13 +711,10 @@ fn quad_reached_tiles(quad: &[Vec2; 4], candidates: &mut usize) -> Option<Vec<Ti
     let lo = quad.iter().fold(quad[0], |a, p| a.min(*p));
     let hi = quad.iter().fold(quad[0], |a, p| a.max(*p));
 
-    // Tiles whose texture rect [origin − apron, origin + TILE_SIZE + apron]
-    // overlaps the quad's AABB. A fragment is only produced where the quad covers
-    // a texel center, but the rect test keeps the half-open bookkeeping simple —
-    // the exact test below prunes the rest.
-    let tile = TILE_SIZE as f32;
-    let apron = TILE_APRON as f32;
-    let box_ = TileRect::covering(lo - Vec2::splat(apron), hi + Vec2::splat(apron), 0)?;
+    // Tiles whose texture rect overlaps the quad's AABB. A fragment is only produced
+    // where the quad covers a texel center, but the rect test keeps the half-open
+    // bookkeeping simple — the exact test below prunes the rest.
+    let box_ = tile_box(lo, hi, 0)?;
     *candidates = candidates.checked_add(usize::try_from(box_.count()).ok()?)?;
     if *candidates > CANDIDATE_BUDGET {
         return None;
@@ -727,8 +722,7 @@ fn quad_reached_tiles(quad: &[Vec2; 4], candidates: &mut usize) -> Option<Vec<Ti
 
     let mut out = Vec::new();
     for c in box_.coords() {
-        let min = c.origin() - Vec2::splat(apron);
-        let max = c.origin() + Vec2::splat(tile + apron);
+        let (min, max) = c.texture_box();
         if quad_intersects_rect(quad, min, max) {
             out.push(c);
         }

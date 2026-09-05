@@ -128,6 +128,22 @@ impl TileCoord {
             self.y as f32 * TILE_SIZE as f32,
         )
     }
+
+    /// The canvas box this tile's *texture* covers: its interior grown by
+    /// [`TILE_APRON`] on every side, half-open at `hi` (§6.4).
+    ///
+    /// The apron reach every pass that asks "does this content touch that tile"
+    /// tests against — stated once, because a site that grew the interior by a
+    /// different amount would name a different tile set than the one whose aprons
+    /// [`tile_box`] pads for, and a footprint that disagrees with the tiles written
+    /// is the §12.6 break with no pixel to show it.
+    pub fn texture_box(self) -> (Vec2, Vec2) {
+        let origin = self.origin();
+        (
+            origin - Vec2::splat(TILE_APRON as f32),
+            origin + Vec2::splat((TILE_SIZE + TILE_APRON) as f32),
+        )
+    }
 }
 
 /// An inclusive tile-coordinate rectangle. `min > max` on either axis is the
