@@ -3,13 +3,14 @@
 //! A streaming least-squares fit — see the module note in [`super`] for where this
 //! sits between the three.
 
-use super::arclen::{ARC_SAMPLES_PER_SPAN, arc_profile, param_at};
+use super::arclen::{ARC_SAMPLES_PER_SPAN, arc_profile_into, param_at};
 use super::{frozen_spans_for, span_count};
 use crate::command::InputSample;
-use crate::spline::{CubicBSpline, Observations};
+use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use nalgebra::{Const, Dyn, OMatrix};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
+use std::cell::RefCell;
 
 /// Control points solved for at the live end of the stroke. Everything behind them
 /// is frozen; the pinned endpoint sits inside the window on top of these.
@@ -190,14 +191,11 @@ type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
 ///   The **work** per report is not quite constant, and saying so is worth more than
 ///   the tidier claim that used to stand here. Each report solves two candidate
 ///   polygons and scores both, and a candidate is a whole `m`-row matrix: growing one
-///   ([`grow_rows`]) and measuring its arc profile ([`arc_profile`]) are `O(m)`
-///   copies around an `O(1)` solve. Two of those copies per solve have since been
-///   removed — the curve is read through a borrow and the fit writes back into the
-///   candidate rather than returning a fresh one ([`spline::SplineIndex`]), worth
-///   3–21% on `benches/path.rs` — and the four that remain are the reason a long
-///   stroke's last report still costs more than its first.
-///
-///   [`spline::SplineIndex`]: crate::spline::SplineIndex
+///   ([`grow_rows`]) is an `O(m)` copy around an `O(1)` solve, and the two per
+///   candidate are the reason a long stroke's last report still costs more than its
+///   first. Everything else a report touches is bounded by the window: the arc
+///   profile walks only past the settled prefix, and the observation buffers are
+///   kept and refilled rather than allocated ([`Scratch`]).
 ///
 /// Both ends are pinned to the samples they belong to — the clamped end condition
 /// makes the first and last control points the curve's endpoints, and least squares
@@ -249,6 +247,14 @@ pub struct PathFitter {
     /// instead ([`Self::as_finished`]).
     start_param: f32,
     finished: bool,
+    /// Buffers every solve refills rather than reallocates. A `RefCell` because
+    /// [`Self::as_finished`] solves under `&self`; taken out for the length of a
+    /// solve and put back, so no borrow is held across one.
+    scratch: RefCell<Scratch>,
+    /// [`Self::as_finished`]'s last answer, keyed by the state it was solved from.
+    /// The key is what a report changes — see [`Memo`] — so there is no counter a
+    /// new mutation path could forget to bump.
+    finished_memo: RefCell<Option<Memo>>,
 }
 
 /// One accepted report: where it is, what the pen said, and how far along it sits.
@@ -258,6 +264,52 @@ struct Accepted {
     pos: Vec2,
     channels: [f32; CHANNELS],
     arc: f32,
+}
+
+/// What [`PathFitter::as_finished`] answered, and from which state.
+///
+/// Every mutation the fitter has goes through `push` or `finish`, and `finish` takes
+/// `as_finished` off this path altogether. A `push` that changes anything either
+/// appends to `pts` or — for a press the spacing gate dropped — sets `start_arc`,
+/// so the pair is the whole of what the answer can differ by.
+struct Memo {
+    key: (usize, Option<f32>),
+    path: Vec<ControlPoint>,
+    start: f32,
+}
+
+/// The reports one candidate solve minimizes over, and what the solve reads off
+/// them — a pure function of the accepted reports and the candidate's polygon, so
+/// the scoring of *both* candidates reads the as-is one rather than rebuilding it.
+///
+/// A report's worth of these is a few hundred numbers, refilled in place: at up to a
+/// thousand reports a second, allocating them afresh was most of a `push`'s heap
+/// traffic.
+#[derive(Default)]
+struct Window {
+    /// First accepted report that can still reach a row being solved for.
+    lo: usize,
+    /// The reports minimized over ([`window_indices`]).
+    idx: Vec<usize>,
+    /// Their curve parameters.
+    ts: Vec<f32>,
+    /// What each stands for ([`arc_weights`]).
+    qs: Vec<f32>,
+    /// Their positions and pen channels, contiguous for the solve.
+    pos: Vec<[f32; 2]>,
+    vals: Vec<[f32; CHANNELS]>,
+    /// Arc profile of the candidate polygon as seeded, which `ts` was read off — and
+    /// what the adopted candidate's settled prefix is cut from.
+    profile: Vec<f32>,
+}
+
+/// The buffers a report's solves share. See [`PathFitter::scratch`].
+#[derive(Default)]
+struct Scratch {
+    /// One per candidate polygon a report solves: as it stands, and one larger.
+    windows: [Window; 2],
+    /// The scoring's own arc profile ([`PathFitter::mean_error`]).
+    scored: Vec<f32>,
 }
 
 impl std::fmt::Debug for PathFitter {
@@ -312,6 +364,8 @@ impl PathFitter {
             start_arc: None,
             start_param: 0.0,
             finished: false,
+            scratch: RefCell::default(),
+            finished_memo: RefCell::new(None),
         }
     }
 
@@ -436,11 +490,16 @@ impl PathFitter {
         // the two *is* the growth rule, and adopting the larger one is what freezes
         // the control point it pushes out of the window.
         let m = self.geom.nrows();
-        let as_is = self.solve(m);
-        let grown = self.solve(m + 1);
-        let scored_from = as_is.lo;
-        let err_as_is = self.mean_error(&as_is, scored_from);
-        let err_grown = self.mean_error(&grown, scored_from);
+        let mut scratch = std::mem::take(self.scratch.get_mut());
+        let Scratch {
+            windows: [as_is_w, grown_w],
+            scored,
+        } = &mut scratch;
+        let as_is = self.solve(m, as_is_w);
+        let grown = self.solve(m + 1, grown_w);
+        // Both candidates are scored over the **as-is** window — see `mean_error`.
+        let err_as_is = self.mean_error(&as_is, as_is_w, scored);
+        let err_grown = self.mean_error(&grown, as_is_w, scored);
         // The arc-length term is not about accuracy: a dead-straight stroke is fitted
         // perfectly by a handful of control points forever, so nothing would ever
         // freeze and the renderer could never retire any of it.
@@ -453,10 +512,11 @@ impl PathFitter {
         let earns_it = err_as_is - err_grown > price || self.arc - self.grown_at > spacing;
         if earns_it {
             self.grown_at = self.arc;
-            self.adopt(grown);
+            self.adopt(grown, grown_w);
         } else {
-            self.adopt(as_is);
+            self.adopt(as_is, as_is_w);
         }
+        *self.scratch.get_mut() = scratch;
     }
 
     /// Every accepted report's position **from the stroke's own first sample
@@ -489,8 +549,11 @@ impl PathFitter {
         if self.geom.nrows() >= 2 {
             // One last solve with the window still free — those control points have
             // had no chance to settle against data that will never arrive.
-            let last = self.solve(self.geom.nrows());
-            self.adopt(last);
+            let mut scratch = std::mem::take(self.scratch.get_mut());
+            let w = &mut scratch.windows[0];
+            let last = self.solve(self.geom.nrows(), w);
+            self.adopt(last, w);
+            *self.scratch.get_mut() = scratch;
         }
     }
 
@@ -534,19 +597,34 @@ impl PathFitter {
     /// [`finish`](Self::finish) adopts this very solve, bit for bit. The marker
     /// rides the same argument: it is a function of the solve's own arc profile
     /// ([`Self::start_on`]), so preview and commit place it identically.
+    ///
+    /// Memoized ([`Memo`]): the fold and the presence frame both ask, per frame,
+    /// from the same state, and the second answer is a clone of the first.
     pub fn as_finished(&self) -> (Vec<ControlPoint>, f32) {
         if self.finished || self.geom.nrows() < 2 {
             return (self.path(), self.start_param);
         }
-        let f = self.solve(self.geom.nrows());
-        let start = self.start_on(&f.profile);
-        (control_points(&f.geom, &f.attr), start)
-    }
-
-    /// [`as_finished`](Self::as_finished)'s path alone, for callers with no use
-    /// for the marker.
-    pub fn path_as_finished(&self) -> Vec<ControlPoint> {
-        self.as_finished().0
+        let key = (self.pts.len(), self.start_arc);
+        if let Some(m) = self
+            .finished_memo
+            .borrow()
+            .as_ref()
+            .filter(|m| m.key == key)
+        {
+            return (m.path.clone(), m.start);
+        }
+        let mut scratch = self.scratch.take();
+        let w = &mut scratch.windows[0];
+        let f = self.solve(self.geom.nrows(), w);
+        let start = self.start_on(&w.profile);
+        let path = control_points(&f.geom, &f.attr);
+        *self.scratch.borrow_mut() = scratch;
+        *self.finished_memo.borrow_mut() = Some(Memo {
+            key,
+            path: path.clone(),
+            start,
+        });
+        (path, start)
     }
 
     /// How many leading spans of [`path`](Self::path) are settled — their geometry,
@@ -608,14 +686,55 @@ impl PathFitter {
         self.arc.max(MIN_STEP_PX)
     }
 
-    /// Solve for the free window at a polygon of `m` control points, and report the
-    /// squared error it achieves.
-    ///
-    /// Both ends are pinned first — as held rows, so the solve places the rest of the
-    /// window *around* them. Samples map onto the curve's domain by distance
-    /// travelled, which puts the first and last exactly on the two ends.
-    fn solve(&self, m: usize) -> Fit {
+    /// Solve for the free window at a polygon of `m` control points: the candidate
+    /// seeded and pinned, the reports that reach its free rows gathered into `w`,
+    /// and the geometry and the pen channels each fitted **into** the candidate.
+    fn solve(&self, m: usize, w: &mut Window) -> Fit {
         let m = m.max(2);
+        let mut fit = self.seed_candidate(m);
+        self.observation_window(&fit, w);
+        let frozen = frozen_at(m);
+        let index = SplineIndex::new(m).expect("at least two control points");
+        // Solved **into** the candidate polygon rather than into a fresh one: the
+        // prior and the result are the same buffer, which is sound because the solve
+        // reads every row it uses as a prior before it writes any
+        // ([`SplineIndex::fit_into`]). Returning an owned matrix instead meant a copy
+        // of the whole polygon per fit, four fits per pointer report.
+        index.fit_into(
+            Observations {
+                ts: &w.ts,
+                values: &w.pos,
+                weights: &w.qs,
+            },
+            &mut fit.geom,
+            frozen,
+            1,
+            self.smoothing,
+        );
+
+        // The pen channels ride the same knots at the same parameters, so they are
+        // the same solve with a different payload — unsmoothed, since a pressure ramp
+        // is not a shape and has no curvature to penalize. Its end is held (the `1`)
+        // for the reason set out where that row is written (`seed_candidate`).
+        index.fit_into(
+            Observations {
+                ts: &w.ts,
+                values: &w.vals,
+                weights: &w.qs,
+            },
+            &mut fit.attr,
+            frozen,
+            1,
+            0.0,
+        );
+        fit
+    }
+
+    /// The polygon a solve starts from: `m` rows, any new ones seeded along the
+    /// stroke, and both ends pinned — as held rows, so the solve places the rest of
+    /// the window *around* them. Samples map onto the curve's domain by distance
+    /// travelled, which puts the first and last exactly on the two ends.
+    fn seed_candidate(&self, m: usize) -> Fit {
         let mut geom = grow_rows(&self.geom, m, |j, d| {
             let p = self.at_fraction(j, m).pos;
             if d == 0 { p.x } else { p.y }
@@ -642,7 +761,7 @@ impl PathFitter {
         // neighbour rather than diving for a pressure the hand reported while no longer
         // painting. The neighbour is read from the prior, so it lags the solve by one
         // report and catches up on the next — including at [`Self::finish`], whose last
-        // solve is the one [`Self::path_as_finished`] mirrors, so preview and commit see
+        // solve is the one [`Self::as_finished`] mirrors, so preview and commit see
         // the same lag and agree to the bit (§1.3).
         let held: [f32; CHANNELS] = std::array::from_fn(|d| attr[(m - 2, d)]);
         set_row(&mut attr, m - 1, held);
@@ -651,20 +770,31 @@ impl PathFitter {
         // neighbour's instead would shorten every stroke's recorded duration by a span
         // and quietly skew the timelapse (§8).
         attr[(m - 1, TIME_CHANNEL)] = last.channels[TIME_CHANNEL];
+        Fit { geom, attr }
+    }
 
-        // The curve as the candidate polygon currently stands, borrowed rather than
-        // copied — it is read to measure arc length and then dropped, and the fits
-        // below write back into `geom`/`attr` themselves ([`SplineIndex`]).
-        let index = {
-            let spline: CubicBSpline<'_, 2> =
-                CubicBSpline::new(&geom).expect("at least two control points");
-            let spans = spline.num_spans() as f32;
-            let profile = arc_profile(&spline, &self.settled_profile);
-            (spline.index(), spans, profile)
-        };
-        let (index, spans, profile) = index;
+    /// The reports a solve of `candidate` minimizes over, into `w`: which reach a free
+    /// row, where each sits on the curve, and what each weighs.
+    fn observation_window(&self, candidate: &Fit, w: &mut Window) {
+        let Window {
+            lo,
+            idx,
+            ts,
+            qs,
+            pos,
+            vals,
+            profile,
+        } = w;
+        // The curve as the candidate polygon stands, borrowed rather than copied — it
+        // is read to measure arc length and then dropped, and the fits write back into
+        // the candidate themselves ([`SplineIndex`]).
+        let spline: CubicBSpline<'_, 2> =
+            CubicBSpline::new(&candidate.geom).expect("at least two control points");
+        let m = candidate.geom.nrows();
+        let spans = spline.num_spans() as f32;
+        arc_profile_into(&spline, &self.settled_profile, profile);
         let total = self.arc_total();
-        let param = |a: f32| param_at(&profile, spans, a / total);
+        let param = |a: f32| param_at(profile, spans, a / total);
 
         // A cubic B-spline's basis is local, so a sample sitting under the frozen
         // prefix cannot influence any row still being solved. `m` is already `>= 2`
@@ -674,15 +804,16 @@ impl PathFitter {
         // How far back a frozen row's support reaches, in control points: a cubic's
         // basis touches `ORDER` of them, and the row itself is one of those.
         let cutoff = frozen as f32 - (crate::spline::ORDER - 2) as f32;
-        let mut lo = self.first_live.min(self.pts.len() - 1);
-        while lo + 1 < self.pts.len() && param(self.pts[lo].arc) < cutoff {
-            lo += 1;
+        *lo = self.first_live.min(self.pts.len() - 1);
+        while *lo + 1 < self.pts.len() && param(self.pts[*lo].arc) < cutoff {
+            *lo += 1;
         }
         // …and of the reports that *do* reach a free row, at most a bounded number are
         // minimized over — see [`window_indices`], which is the whole of why this
         // costs what it costs rather than what the digitizer charges for it.
-        let idx = window_indices(&self.pts, lo);
-        let pos: Vec<[f32; 2]> = idx.iter().map(|&i| self.pts[i].pos.to_array()).collect();
+        window_indices(&self.pts, *lo, idx);
+        pos.clear();
+        pos.extend(idx.iter().map(|&i| self.pts[i].pos.to_array()));
 
         // Distance along the stroke is only a *first guess* at where a sample sits on
         // the curve, because a clamped B-spline is not parameterized by arc: the
@@ -697,83 +828,47 @@ impl PathFitter {
         // non-decreasing, so a sample can slide a little along the curve but can
         // never overtake its neighbours — the reordering that makes a searched
         // correspondence dangerous is ruled out by construction.
-        let ts: Vec<f32> = idx.iter().map(|&i| param(self.pts[i].arc)).collect();
+        ts.clear();
+        ts.extend(idx.iter().map(|&i| param(self.pts[i].arc)));
         // What each report stands for, so the solve minimizes over the *stroke* rather
         // than over the reporting clock ([`arc_weights`]).
-        let qs = arc_weights(&self.pts, &idx);
-        let vals: Vec<[f32; CHANNELS]> = idx.iter().map(|&i| self.pts[i].channels).collect();
-        // Solved **into** the candidate polygon rather than into a fresh one: the
-        // prior and the result are the same buffer, which is sound because the solve
-        // reads every row it uses as a prior before it writes any
-        // ([`SplineIndex::fit_into`]). Returning an owned matrix instead meant a copy
-        // of the whole polygon per fit, four fits per pointer report.
-        index.fit_into(
-            Observations {
-                ts: &ts,
-                values: &pos,
-                weights: &qs,
-            },
-            &mut geom,
-            frozen,
-            1,
-            self.smoothing,
-        );
-
-        // The pen channels ride the same knots at the same parameters, so they are
-        // the same solve with a different payload — unsmoothed, since a pressure ramp
-        // is not a shape and has no curvature to penalize. Its end is held (the `1`)
-        // for the reason set out where that row is written, above.
-        index.fit_into(
-            Observations {
-                ts: &ts,
-                values: &vals,
-                weights: &qs,
-            },
-            &mut attr,
-            frozen,
-            1,
-            0.0,
-        );
-        Fit {
-            geom,
-            attr,
-            lo,
-            profile,
-        }
+        arc_weights(&self.pts, idx, qs);
+        vals.clear();
+        vals.extend(idx.iter().map(|&i| self.pts[i].channels));
     }
 
-    /// Mean **arc-weighted** squared distance from the samples at and after `lo` to
-    /// `fit`'s curve.
+    /// Mean **arc-weighted** squared distance from the reports in `w` to `fit`'s
+    /// curve.
     ///
-    /// Both candidates must be scored over the **same** samples. Each solve drops
-    /// the ones its own frozen prefix has swallowed, and the larger polygon freezes
-    /// one more — so scoring each on its own slice compares a sum over fewer points
-    /// against a sum over more, which the larger one wins every time regardless of
-    /// whether it fits better. That made a dead-straight stroke take a control point
-    /// per sample. Per-sample rather than total for the same reason in miniature: a
-    /// total grows with the window, so a fixed price would mean something different
-    /// at every length.
-    fn mean_error(&self, fit: &Fit, lo: usize) -> f32 {
+    /// Both candidates must be scored over the **same** samples — the as-is
+    /// candidate's window. Each solve drops the ones its own frozen prefix has
+    /// swallowed, and the larger polygon freezes one more — so scoring each on its own
+    /// slice compares a sum over fewer points against a sum over more, which the
+    /// larger one wins every time regardless of whether it fits better. That made a
+    /// dead-straight stroke take a control point per sample. Per-sample rather than
+    /// total for the same reason in miniature: a total grows with the window, so a
+    /// fixed price would mean something different at every length.
+    ///
+    /// `w` is the solve's own window, not one rebuilt here: **the same reports the
+    /// solve minimized over**, decimated by the same rule and weighted exactly as the
+    /// solve weighted them ([`window_indices`], [`arc_weights`]). The two have to
+    /// agree about which samples matter as well as about where they sit, or the price
+    /// is charged for an error the solve was never trying to remove — and a dwell
+    /// would buy control points to trace itself.
+    fn mean_error(&self, fit: &Fit, w: &Window, profile: &mut Vec<f32>) -> f32 {
         // Borrowed, not copied: scoring a candidate reads its control points and never
         // moves them, so a copy here would be a whole polygon per candidate per report
         // to answer one number.
         let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc_total();
-        let lo = lo.min(self.pts.len() - 1);
-        // **The same reports the solve minimized over**, decimated by the same rule.
-        // This is the third thing the two have to agree about, beside where the samples
-        // sit and what they weigh: scoring the full window while the solve had a
-        // bounded one would charge the growth rule for error at reports the solve was
-        // never shown ([`window_indices`]).
-        let idx = window_indices(&self.pts, lo);
-        if idx.is_empty() {
+        if w.idx.is_empty() {
             return 0.0;
         }
         // The same *rule* as the solve's parameters, off a later curve — and the gap is
-        // real, so it is written down rather than claimed away. `solve` builds its
-        // profile from the polygon as it stands *before* `fit_into` writes back
-        // (`index`, above), where this builds one from the spline that came out. Both
+        // real, so it is written down rather than claimed away. The solve reads its
+        // parameters off the polygon as *seeded*, before `fit_into` writes back
+        // (`w.profile`), where this builds a profile from the spline that came out. Both
         // are `arc_profile` over the same settled prefix, so they agree about what a
         // parameter means and disagree only about which curve it is measured on — a
         // difference of one solve's movement, which is small precisely where the growth
@@ -784,42 +879,38 @@ impl PathFitter {
         // fit is actually poor — measured at 4-15px on recorded strokes against
         // 0.6-1.6px when they agree. Consistency matters more than accuracy in either.
         //
-        // Taking `fit.profile` instead would close the gap outright and drop two of the
+        // Taking `w.profile` instead would close the gap outright and drop two of the
         // four curve walks a report costs. It is not done here because `KNOT_COST` was
         // tuned against what this does today, so the change is a re-tune and wants a
         // sitting of its own (`ENGINE_CLEANUP.md`, F3).
-        let profile = arc_profile(&spline, &self.settled_profile);
-        // Weighted exactly as the solve weights them ([`arc_weights`]), which is the
-        // same argument as the paragraph above carried one step further: the two must
-        // agree about *which samples matter* as well as about where they sit, or the
-        // price is charged for an error the solve was never trying to remove — and a
-        // dwell would buy control points to trace itself.
-        let qs = arc_weights(&self.pts, &idx);
-        let sum: f32 = idx
+        arc_profile_into(&spline, &self.settled_profile, profile);
+        let sum: f32 = w
+            .idx
             .iter()
-            .zip(&qs)
+            .zip(&w.qs)
             .map(|(&i, q)| {
                 let s = self.pts[i];
-                let c = spline.evaluate(param_at(&profile, spans, s.arc / total));
+                let c = spline.evaluate(param_at(profile, spans, s.arc / total));
                 q * ((c[0] - s.pos.x).powi(2) + (c[1] - s.pos.y).powi(2))
             })
             .sum();
-        sum / qs.iter().sum::<f32>().max(1e-6)
+        sum / w.qs.iter().sum::<f32>().max(1e-6)
     }
 
-    fn adopt(&mut self, f: Fit) {
+    /// Take `f` — solved over `w` — as the polygon.
+    fn adopt(&mut self, f: Fit, w: &Window) {
         self.geom = f.geom;
         self.attr = f.attr;
-        self.first_live = f.lo;
+        self.first_live = w.lo;
         // The marker on the curve just adopted — before the profile is cut down
         // to its settled prefix, since the marker may still sit past it.
-        self.start_param = self.start_on(&f.profile);
+        self.start_param = self.start_on(&w.profile);
         // Keep only the part of the profile the frozen spans determine: those
         // control points are held, so that length is settled for good.
         let settled = self.frozen_spans() * ARC_SAMPLES_PER_SPAN;
-        self.settled_profile = f.profile;
+        self.settled_profile.clear();
         self.settled_profile
-            .truncate((settled + 1).min(self.settled_profile.len()));
+            .extend_from_slice(&w.profile[..(settled + 1).min(w.profile.len())]);
     }
 
     fn grow_to(&mut self, m: usize) {
@@ -923,53 +1014,54 @@ impl PathFitter {
 /// with. Input with no arc at all comes back all ones, which is the unweighted fit
 /// exactly.
 ///
-/// Returns the weights for `pts[lo..]` — the solve's window — but measures every one of
-/// them against its **true** neighbours, which is why it takes the whole run and an
-/// offset rather than a slice. Only the stroke's own first and last reports get a
-/// half-interval; the window's leading report has a predecessor and is entitled to it.
-/// Reading the slice instead put a half-interval wherever the window happened to begin,
-/// which is a fact about the solve's bookkeeping and not about the stroke — enough, on
-/// its own, to move `fit_collapses_pixel_staircase` by a control point.
-fn arc_weights(pts: &[Accepted], idx: &[usize]) -> Vec<f32> {
+/// Writes the weights for the reports `idx` names — the solve's window — into `out`,
+/// emptied first, but measures every one of them against its **true** neighbours,
+/// which is why it takes the whole run rather than a slice. Only the stroke's own first
+/// and last reports get a half-interval; the window's leading report has a predecessor
+/// and is entitled to it. Reading the slice instead put a half-interval wherever the
+/// window happened to begin, which is a fact about the solve's bookkeeping and not
+/// about the stroke — enough, on its own, to move `fit_collapses_pixel_staircase` by a
+/// control point.
+fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
     let k = idx.len();
+    out.clear();
     if pts.len() < 2 || k < 2 {
-        return vec![1.0; k];
+        out.resize(k, 1.0);
+        return;
     }
-    let mut q: Vec<f32> = (0..k)
-        .map(|j| {
-            // Measured against the neighbouring **survivors**, which is what makes the
-            // sum a trapezoid rule over the reports actually being fitted rather than
-            // over the ones that happened to arrive. Where nothing was decimated the
-            // survivors *are* the neighbours and this is the plain rule it always was.
-            let hi = if j + 1 < k {
-                pts[idx[j + 1]].arc
-            } else {
-                // The stroke's own last report has no successor, so it gets the one
-                // half-interval it is entitled to.
-                pts[idx[j]].arc
-            };
-            let low = if j > 0 {
-                pts[idx[j - 1]].arc
-            } else {
-                // The *window's* leading report is not the stroke's: it has a real
-                // predecessor in `pts` and is entitled to it. Only the stroke's own
-                // first report is halved, and `saturating_sub` is what says so.
-                pts[idx[0].saturating_sub(1)].arc
-            };
-            // Halved because an interior report spans two half-intervals. An end report
-            // has only the one, and `hi == low` on that side already halves it.
-            (hi - low) * 0.5
-        })
-        .collect();
-    let total: f32 = q.iter().sum();
+    out.extend((0..k).map(|j| {
+        // Measured against the neighbouring **survivors**, which is what makes the
+        // sum a trapezoid rule over the reports actually being fitted rather than
+        // over the ones that happened to arrive. Where nothing was decimated the
+        // survivors *are* the neighbours and this is the plain rule it always was.
+        let hi = if j + 1 < k {
+            pts[idx[j + 1]].arc
+        } else {
+            // The stroke's own last report has no successor, so it gets the one
+            // half-interval it is entitled to.
+            pts[idx[j]].arc
+        };
+        let low = if j > 0 {
+            pts[idx[j - 1]].arc
+        } else {
+            // The *window's* leading report is not the stroke's: it has a real
+            // predecessor in `pts` and is entitled to it. Only the stroke's own
+            // first report is halved, and `saturating_sub` is what says so.
+            pts[idx[0].saturating_sub(1)].arc
+        };
+        // Halved because an interior report spans two half-intervals. An end report
+        // has only the one, and `hi == low` on that side already halves it.
+        (hi - low) * 0.5
+    }));
+    let total: f32 = out.iter().sum();
     if total <= 1e-6 {
-        return vec![1.0; k];
+        out.fill(1.0);
+        return;
     }
     let scale = k as f32 / total;
-    for w in &mut q {
+    for w in out.iter_mut() {
         *w *= scale;
     }
-    q
 }
 
 /// How many reports the solve will minimize over at once, however many arrive.
@@ -1018,8 +1110,8 @@ fn arc_weights(pts: &[Accepted], idx: &[usize]) -> Vec<f32> {
 /// (`thinning_the_window_does_not_cost_the_fit_its_accuracy`).
 const MAX_WINDOW_SAMPLES: usize = 64;
 
-/// The reports `solve` minimizes over: `pts[lo..]`, thinned to at most
-/// [`MAX_WINDOW_SAMPLES`] chosen evenly along the **arc** they cover.
+/// The reports `solve` minimizes over, into `out` (emptied first): `pts[lo..]`, thinned
+/// to at most [`MAX_WINDOW_SAMPLES`] chosen evenly along the **arc** they cover.
 ///
 /// Evenly in arc rather than in index, because arc is the axis the objective is an
 /// integral over — a hand that paused would otherwise spend the whole budget on the
@@ -1030,13 +1122,15 @@ const MAX_WINDOW_SAMPLES: usize = 64;
 /// Deterministic, and a pure function of the accepted reports — so a replay, a peer
 /// and a golden all decimate identically, which is what keeps this a performance
 /// change rather than a wire-format one (§1).
-fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
+fn window_indices(pts: &[Accepted], lo: usize, out: &mut Vec<usize>) {
+    out.clear();
     let n = pts.len();
     if lo >= n {
-        return Vec::new();
+        return;
     }
     if n - lo <= MAX_WINDOW_SAMPLES {
-        return (lo..n).collect();
+        out.extend(lo..n);
+        return;
     }
     let span = pts[n - 1].arc - pts[lo].arc;
     // No arc to spread over — a run of reports at one point, which `push` mostly
@@ -1044,14 +1138,14 @@ fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
     // same rule read through the only ordering left.
     if span <= 0.0 {
         let stride = (n - lo).div_ceil(MAX_WINDOW_SAMPLES);
-        let mut out: Vec<usize> = (lo..n).step_by(stride).collect();
+        out.extend((lo..n).step_by(stride));
         if out.last() != Some(&(n - 1)) {
             out.push(n - 1);
         }
-        return out;
+        return;
     }
     let step = span / (MAX_WINDOW_SAMPLES - 1) as f32;
-    let mut out = Vec::with_capacity(MAX_WINDOW_SAMPLES + 1);
+    out.reserve(MAX_WINDOW_SAMPLES + 1);
     let mut next = pts[lo].arc;
     for (i, s) in pts.iter().enumerate().take(n - 1).skip(lo) {
         if s.arc >= next {
@@ -1060,11 +1154,10 @@ fn window_indices(pts: &[Accepted], lo: usize) -> Vec<usize> {
         }
     }
     out.push(n - 1);
-    out
 }
 
 /// The control points a `(geom, attr)` pair stands for — one mapping shared by
-/// [`PathFitter::path`] and [`PathFitter::path_as_finished`], so the two cannot
+/// [`PathFitter::path`] and [`PathFitter::as_finished`], so the two cannot
 /// disagree about anything but which solve they read.
 fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
     (0..geom.nrows())
@@ -1077,13 +1170,12 @@ fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
         .collect()
 }
 
-/// One candidate fit, before the growth rule has chosen between two of them.
+/// One candidate polygon, before the growth rule has chosen between two of them.
+/// What was read off it to solve it — and what adopting it keeps — is in the
+/// [`Window`] it was solved over.
 struct Fit {
     geom: GeomCtrl,
     attr: ChannelCtrl,
-    lo: usize,
-    /// Arc profile of this candidate, to be kept as far as it is now frozen.
-    profile: Vec<f32>,
 }
 
 /// `rows` lengthened to `m`, with new entries from `seed`.
@@ -1193,9 +1285,11 @@ mod tests {
     #[test]
     fn a_window_under_budget_keeps_every_report() {
         let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
+        let mut idx = Vec::new();
         for lo in [0, 1, 7, MAX_WINDOW_SAMPLES - 1] {
+            window_indices(&pts, lo, &mut idx);
             assert_eq!(
-                window_indices(&pts, lo),
+                idx,
                 (lo..pts.len()).collect::<Vec<_>>(),
                 "a window of {} was thinned",
                 pts.len() - lo,
@@ -1210,7 +1304,8 @@ mod tests {
     fn a_dense_window_is_capped_and_keeps_both_ends() {
         for n in [MAX_WINDOW_SAMPLES + 1, 500, 20_000] {
             let pts = accepted(n, 0.05);
-            let idx = window_indices(&pts, 0);
+            let mut idx = Vec::new();
+            window_indices(&pts, 0, &mut idx);
             assert!(
                 idx.len() <= MAX_WINDOW_SAMPLES + 1,
                 "{n} reports produced a window of {}",
@@ -1238,7 +1333,8 @@ mod tests {
             p.pos = Vec2::new(d, 0.0);
             p.arc = d;
         }
-        let idx = window_indices(&pts, 0);
+        let mut idx = Vec::new();
+        window_indices(&pts, 0, &mut idx);
         let in_dwell = idx.iter().filter(|&&i| i < 100).count();
         assert!(
             in_dwell <= 2,

@@ -490,11 +490,6 @@ impl<'a, const D: usize> CubicBSpline<'a, D> {
         })
     }
 
-    /// The structure this curve is addressed by — what a fit is solved against.
-    pub fn index(&self) -> SplineIndex {
-        self.index
-    }
-
     /// Number of polynomial spans; the spline is parameterized over `[0, num_spans()]`.
     pub fn num_spans(&self) -> usize {
         self.index.num_spans()

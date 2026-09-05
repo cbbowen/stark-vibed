@@ -31,24 +31,32 @@ pub(super) const ARC_SAMPLES_PER_SPAN: usize = 4;
 /// their length — cannot change, and re-walking them every update is the last piece
 /// of per-update work that scaled with the whole stroke rather than the window.
 pub(crate) fn arc_profile(curve: &CubicBSpline<'_, 2>, settled: &[f32]) -> Vec<f32> {
+    let mut cum = Vec::new();
+    arc_profile_into(curve, settled, &mut cum);
+    cum
+}
+
+/// [`arc_profile`] written into `out`, emptied first — the fitter's form, which
+/// builds one per candidate per report and keeps the buffer between them.
+pub(super) fn arc_profile_into(curve: &CubicBSpline<'_, 2>, settled: &[f32], out: &mut Vec<f32>) {
     let spans = curve.num_spans();
     let n = spans * ARC_SAMPLES_PER_SPAN;
     let keep = settled.len().saturating_sub(1).min(n);
-    let mut cum = Vec::with_capacity(n + 1);
+    out.clear();
+    out.reserve(n + 1);
     if keep == 0 {
-        cum.push(0.0);
+        out.push(0.0);
     } else {
-        cum.extend_from_slice(&settled[..=keep]);
+        out.extend_from_slice(&settled[..=keep]);
     }
     let step = |i: usize| i as f32 / ARC_SAMPLES_PER_SPAN as f32;
     let mut prev = curve.evaluate(step(keep));
     for i in keep + 1..=n {
         let c = curve.evaluate(step(i));
         let d = ((c[0] - prev[0]).powi(2) + (c[1] - prev[1]).powi(2)).sqrt();
-        cum.push(cum[i - 1] + d);
+        out.push(out[i - 1] + d);
         prev = c;
     }
-    cum
 }
 
 /// The parameter at which `profile`'s curve is `f` of the way along its own length.
