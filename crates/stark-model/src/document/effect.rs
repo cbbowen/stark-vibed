@@ -117,12 +117,30 @@ pub fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usiz
 /// as-is (solo logs are already ordered; shared saves are written in total
 /// order, but files are external input).
 pub fn effective_actions(log: &[Action]) -> Vec<Action> {
-    let mut sorted: Vec<Action> = log.to_vec();
-    sorted.sort_by_key(|a| a.id);
-    let undone = undone_ids(&sorted);
-    effective_indices(&sorted, &undone)
+    effective_actions_owned(log.to_vec())
+}
+
+/// [`effective_actions`] for a caller that owns the log: the survivors are *moved*
+/// out of it rather than copied.
+///
+/// Worth the second entry point because an action is not a small value — a
+/// `CommitStroke` owns its control points, so a long document's log is tens of
+/// megabytes, and the borrowing form copies all of it twice on a target where a
+/// `usize` is 32 bits.
+pub fn effective_actions_owned(mut log: Vec<Action>) -> Vec<Action> {
+    log.sort_by_key(|a| a.id);
+    let undone = undone_ids(&log);
+    let order = effective_indices(&log, &undone);
+    // Moving out is sound because `effective_indices` names each index **at most
+    // once** — it maps a filtered `enumerate`, so no slot can be claimed twice.
+    let mut slots: Vec<Option<Action>> = log.into_iter().map(Some).collect();
+    order
         .into_iter()
-        .map(|i| sorted[i].clone())
+        .map(|i| {
+            slots[i]
+                .take()
+                .expect("effective_indices names each index at most once")
+        })
         .collect()
 }
 
@@ -304,6 +322,28 @@ mod tests {
         assert_eq!(resolve(&log, 1), Targets::default());
         // …while its author may reverse it, which is what makes redo theirs.
         assert_eq!(resolve(&log, 2).redo, Some(id(2, 2)));
+    }
+
+    /// The owned form moves its survivors out instead of cloning them, which is
+    /// sound only because `effective_indices` names each index at most once. An
+    /// unsorted log with an undo *and* a redo in it, so the two forms are compared
+    /// on a sequence whose slots were genuinely rearranged.
+    #[test]
+    fn the_owned_form_answers_exactly_as_the_borrowing_one_does() {
+        let log = [
+            edit(5, 2),
+            edit(1, 1),
+            undo_of(4, 1, id(3, 1)),
+            edit(3, 1),
+            undo_of(6, 1, id(4, 1)),
+            edit(2, 2),
+        ];
+        let ids = |log: Vec<Action>| log.iter().map(|a| a.id).collect::<Vec<_>>();
+        let owned = ids(effective_actions_owned(log.to_vec()));
+        assert_eq!(owned, ids(effective_actions(&log)));
+        // Spelled out, so agreement cannot be agreement on nothing: the undo is
+        // itself undone, so its target is back — at the redo's slot.
+        assert_eq!(owned, vec![id(1, 1), id(2, 2), id(5, 2), id(3, 1)]);
     }
 
     /// `insert`'s fast path skips deriving the effective sequence, on the claim

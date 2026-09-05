@@ -51,7 +51,8 @@ pub use filter::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 // The undo algebra (§12.3): which actions in a log are effective. The helpers behind
 // these — the revival keys, the two target searches — stay inside the module.
 pub use effect::{
-    Targets, effective_actions, effective_indices, targets, undo_target_of, undone_ids,
+    Targets, effective_actions, effective_actions_owned, effective_indices, targets,
+    undo_target_of, undone_ids,
 };
 pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
