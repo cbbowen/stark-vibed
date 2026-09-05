@@ -666,4 +666,36 @@ mod tests {
             assert_eq!(mode.drago_k(), DRAGO_K, "the uniform still needs a number");
         }
     }
+
+    /// The same for [`MatteRegion`], where reading the wrong variant is the whole
+    /// picture: a frame read as [`Everything`](MatteRegion::Everything) floods the
+    /// canvas with the mat board's paint, and an [`Everything`](MatteRegion::Everything)
+    /// read as a frame stands a backing where none was placed (§15.5).
+    ///
+    /// The rect variant is written from the far end of the declaration and must
+    /// still arrive as itself, both corners and all.
+    #[test]
+    fn a_matte_region_is_read_by_variant_name_not_position() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "MatteRegion")]
+        enum Old {
+            Everything,
+            OutsideRect { min: Vec2, max: Vec2 },
+        }
+
+        let read = |old: &Old| {
+            carbonite::from_slice_static::<MatteRegion>(
+                &carbonite::to_vec_static(old).expect("encodes"),
+            )
+            .expect("a declaration order this build does not use still reads")
+        };
+
+        assert_eq!(read(&Old::Everything), MatteRegion::Everything);
+        let (min, max) = (Vec2::new(-12.5, 8.0), Vec2::new(640.0, 480.0));
+        assert_eq!(
+            read(&Old::OutsideRect { min, max }),
+            MatteRegion::OutsideRect { min, max },
+            "the frame travels with the name, not with an index",
+        );
+    }
 }

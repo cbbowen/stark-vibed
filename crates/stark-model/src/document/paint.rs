@@ -150,3 +150,107 @@ impl GradientAxis {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gradient::GradientStop;
+
+    const ANCHOR: [f32; 3] = [0.2, 0.4, 0.6];
+
+    /// A two-stop ramp whose first stop is [`ANCHOR`] — the color the axis is
+    /// anchored on, and so the one an unusable axis has to leave behind.
+    fn ramp() -> Gradient {
+        Gradient::new(vec![
+            GradientStop {
+                t: 0.0,
+                color: Srgb::new(ANCHOR),
+            },
+            GradientStop {
+                t: 1.0,
+                color: Srgb::new([0.9, 0.1, 0.05]),
+            },
+        ])
+        .expect("a two-stop ramp")
+    }
+
+    /// **An unusable axis degrades the parcel to the ramp's anchor** (§22.4) — to
+    /// exactly `Solid(gradient.sample(0.0))`, which is the first stop bit for bit,
+    /// and not merely to *some* solid.
+    ///
+    /// The specific color is the claim, because it is what a matte layer standing in
+    /// this parcel then shows. The two alternatives are both worse and both were
+    /// available: clamping the axis invents a transition nobody drew, and refusing
+    /// the fill loses the action a peer has already accepted.
+    #[test]
+    fn a_gradient_nobody_can_place_degrades_to_the_ramps_anchor() {
+        let anchor = Parcel::Solid(Srgb::new(ANCHOR));
+        for axis in [
+            GradientAxis::Linear {
+                from: Vec2::new(f32::NAN, 0.0),
+                to: Vec2::splat(64.0),
+            },
+            GradientAxis::Linear {
+                from: Vec2::ZERO,
+                to: Vec2::new(0.0, f32::INFINITY),
+            },
+            GradientAxis::Radial {
+                center: Vec2::new(0.0, f32::NEG_INFINITY),
+                radius: 32.0,
+            },
+            GradientAxis::Radial {
+                center: Vec2::ZERO,
+                radius: f32::NAN,
+            },
+        ] {
+            let parcel = Parcel::Gradient(GradientParcel {
+                gradient: ramp(),
+                axis,
+            });
+            assert!(!axis.usable(), "{axis:?} should be unplaceable");
+            assert_eq!(
+                parcel.clone().sanitized(),
+                anchor,
+                "{axis:?} should leave the ramp's anchor",
+            );
+            // The same reading `swatch` gives it, which is what makes the degraded
+            // parcel indistinguishable from the summary the picker was showing.
+            assert_eq!(parcel.swatch(), Srgb::new(ANCHOR));
+            // Idempotent by construction, since what is left is a solid.
+            assert_eq!(anchor.clone().sanitized(), anchor);
+        }
+    }
+
+    /// A parcel the ramp pass can evaluate comes through **untouched** — including
+    /// the degenerate-but-defined cases `ramp_common::ramp_position` floors for
+    /// itself (a zero-length line, a zero radius), which are the ones a repair here
+    /// would most plausibly reach past its remit for.
+    #[test]
+    fn a_placeable_parcel_is_left_alone() {
+        for axis in [
+            GradientAxis::Linear {
+                from: Vec2::new(-10.0, 4.0),
+                to: Vec2::new(200.0, 4.0),
+            },
+            GradientAxis::Linear {
+                from: Vec2::ZERO,
+                to: Vec2::ZERO,
+            },
+            GradientAxis::Radial {
+                center: Vec2::splat(12.0),
+                radius: 0.0,
+            },
+        ] {
+            let parcel = Parcel::Gradient(GradientParcel {
+                gradient: ramp(),
+                axis,
+            });
+            assert_eq!(parcel.clone().sanitized(), parcel, "{axis:?} was repaired");
+        }
+        // A solid has no axis to be unusable, so there is nothing here for the
+        // funnel to do to one.
+        let solid = Parcel::Solid(Srgb::new([0.25, 0.5, 0.75]));
+        assert_eq!(solid.clone().sanitized(), solid);
+        assert_eq!(solid.swatch(), Srgb::new([0.25, 0.5, 0.75]));
+    }
+}

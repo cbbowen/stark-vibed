@@ -2108,8 +2108,18 @@ mod tests {
             b.effect = BrushEffect::Wet(WetEffect::default());
             b.wet_mut().expect("just made wet")
         }
+        /// A pen mapping with `f` in one of its two knobs — what a poke at a
+        /// [`Modulation`] reaches through. The other knob is left at a value the
+        /// funnel would not move, so a failure names the knob it is about.
+        fn response(floor: f32, curve: f32) -> Option<Modulation> {
+            Some(Modulation {
+                source: ModSource::Pressure,
+                floor,
+                curve,
+            })
+        }
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 23] = [
+        let pokes: [Poke; 26] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("erase.opacity", |b, f| {
@@ -2133,6 +2143,7 @@ mod tests {
             ("paint.opacity", |b, f| paint(b).opacity = f),
             ("paint.flow", |b, f| paint(b).flow = f),
             ("wet.flow", |b, f| wet(b).flow = f),
+            ("wet.opacity", |b, f| wet(b).opacity = f),
             ("wet.add", |b, f| wet(b).dynamics.add = f),
             ("wet.lift", |b, f| wet(b).dynamics.lift = f),
             ("wet.deposit", |b, f| wet(b).dynamics.deposit = f),
@@ -2152,6 +2163,12 @@ mod tests {
             }),
             ("hardness", |b, f| {
                 b.shape = BrushShape::Round { hardness: f }
+            }),
+            // Both halves of the mapping tree, since they are sanitized through
+            // two different owners: the tip's own targets and the effect's.
+            ("mod.floor", |b, f| b.modulation.size = response(f, 0.0)),
+            ("mod.curve", |b, f| {
+                paint(b).modulation.flow = response(0.0, f)
             }),
         ];
         // Every stored number, gathered per effect — the shared fields, the rate
@@ -2202,6 +2219,21 @@ mod tests {
             v.extend(b.wet().map(|w| w.color).unwrap_or_default());
             v
         };
+        // Every pen mapping the brush holds, from both owners: the tip's targets
+        // and whichever effect is in force. Its two knobs are neither of the lists
+        // above — a floor is a share and a curve is a *signed* bias — so each is
+        // checked against the range `Modulation::sanitized` quotes, which is what
+        // the panel draws its sliders in.
+        let responses = |b: &BrushParams| {
+            let mut v: Vec<Modulation> = b.modulation.all().into_iter().flatten().collect();
+            match &b.effect {
+                BrushEffect::Paint(p) => v.extend(p.modulation.all().into_iter().flatten()),
+                BrushEffect::Wet(w) => v.extend(w.modulation.all().into_iter().flatten()),
+                BrushEffect::Erase(e) => v.extend(e.modulation.all().into_iter().flatten()),
+                BrushEffect::Liquify(l) => v.extend(l.modulation.all().into_iter().flatten()),
+            }
+            v
+        };
         for (name, poke) in pokes {
             for f in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -9.0, 1e30] {
                 let mut brush = BrushParams::default();
@@ -2229,6 +2261,12 @@ mod tests {
                 // tile as an infinity.
                 for a in clean.color_dynamics().amplitude {
                     assert!((0.0..=crate::Srgb::EXTENT).contains(&a), "{name} = {f}");
+                }
+                // …and a pen mapping is stored in the range the sliders show, so a
+                // panel cannot be asked to draw a handle at an impossible position.
+                for m in responses(&clean) {
+                    assert!((0.0..=1.0).contains(&m.floor), "{name} = {f}: {m:?}");
+                    assert!((-1.0..=1.0).contains(&m.curve), "{name} = {f}: {m:?}");
                 }
                 // Idempotent, or a load would be a small edit every time.
                 assert_eq!(clean.sanitized(), clean, "{name} = {f}");
@@ -2431,5 +2469,47 @@ mod tests {
         let bytes = carbonite::to_vec_static(&b).expect("encode a liquify brush");
         let back = carbonite::from_slice_static::<BrushParams>(&bytes).expect("decode it back");
         assert_eq!(back, b);
+    }
+
+    /// [`BrushParams::taper_px`]'s own guard, [`drain_px`](BrushParams::drain_px)'s
+    /// sibling: **a negative or non-finite length reads as 0**, and so does any
+    /// length scaled by a radius that is not a radius.
+    ///
+    /// The claim is really about `f32::max`'s NaN policy — it returns the *other*
+    /// operand, which is what makes the guard land on 0 where `clamp` would carry
+    /// the NaN through. A taper is a distance, and the fields arrive from files,
+    /// presets and peers; the sanitizer is not the only door
+    /// ([`BrushParams::sanitized`] says so), so this is the guard that has to hold.
+    ///
+    /// [`tapers`](BrushParams::tapers) rides on it: an unmeasurable length must not
+    /// put the segment generator on the tapered path with no ends to taper between.
+    #[test]
+    fn a_taper_nobody_can_measure_is_no_taper() {
+        let at = |size: f32, start: f32, end: f32| BrushParams {
+            size,
+            start_taper_length: start,
+            end_taper_length: end,
+            ..BrushParams::default()
+        };
+        // An ordinary taper is the plain product, in canvas px.
+        assert_eq!(at(16.0, 2.0, 0.5).taper_px(), (32.0, 8.0));
+        assert!(at(16.0, 2.0, 0.0).tapers(), "one end is a taper");
+        assert!(at(16.0, 0.0, 0.5).tapers(), "so is the other");
+        assert!(!at(16.0, 0.0, 0.0).tapers(), "and neither is not");
+        // A length that is not a length.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -4.0] {
+            assert_eq!(at(16.0, bad, bad).taper_px(), (0.0, 0.0), "length {bad}");
+            assert!(!at(16.0, bad, bad).tapers(), "length {bad} drew a taper");
+            // One bad end does not take the good one with it: the two are
+            // separate distances, not one quantity.
+            assert_eq!(at(16.0, bad, 0.5).taper_px(), (0.0, 8.0), "length {bad}");
+            assert!(at(16.0, bad, 0.5).tapers());
+        }
+        // A radius that is not one, against a taper that is: nothing to scale by,
+        // so nothing to taper over.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -4.0, 0.0] {
+            assert_eq!(at(bad, 2.0, 0.5).taper_px(), (0.0, 0.0), "radius {bad}");
+            assert!(!at(bad, 2.0, 0.5).tapers(), "radius {bad} drew a taper");
+        }
     }
 }

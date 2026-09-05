@@ -902,4 +902,138 @@ mod tests {
             );
         }
     }
+
+    /// A [`Filter`] is read by variant **name**, not position (§8) — so the picker
+    /// may gain a kind anywhere in [`Filter::ALL`] and a saved filter layer still
+    /// means the adjustment it meant.
+    ///
+    /// `Old` is the hazard made concrete: the same four cases in a different order,
+    /// written by a build that declared them that way. Every one must read back with
+    /// its payload intact — a filter read as the wrong kind repaints every layer
+    /// beneath it.
+    #[test]
+    fn a_filter_is_read_by_variant_name_not_position() {
+        use crate::Srgb;
+        use crate::gradient::{Gradient, GradientStop};
+
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "Filter")]
+        enum Old {
+            FocalBlur(FocalBlur),
+            GradientMap(Option<Gradient>),
+            Chromatic(ChromaticAberration),
+            Color(ColorAdjust),
+        }
+
+        let read = |old: &Old| {
+            carbonite::from_slice_static::<Filter>(&carbonite::to_vec_static(old).expect("encodes"))
+                .expect("a declaration order this build does not use still reads")
+        };
+
+        let color = ColorAdjust {
+            exposure: 0.75,
+            ..ColorAdjust::NEUTRAL
+        };
+        assert_eq!(read(&Old::Color(color)), Filter::Color(color));
+        let cast = ChromaticAberration {
+            spread: 3.0,
+            angle: 0.5,
+        };
+        assert_eq!(read(&Old::Chromatic(cast)), Filter::Chromatic(cast));
+        assert_eq!(read(&Old::GradientMap(None)), Filter::GradientMap(None));
+        let ramp = Gradient::new(vec![
+            GradientStop {
+                t: 0.0,
+                color: Srgb::BLACK,
+            },
+            GradientStop {
+                t: 1.0,
+                color: Srgb::WHITE,
+            },
+        ])
+        .expect("a two-stop ramp");
+        assert_eq!(
+            read(&Old::GradientMap(Some(ramp.clone()))),
+            Filter::GradientMap(Some(ramp)),
+            "the stops travel with the name, not with an index",
+        );
+        let blur = FocalBlur {
+            radius: 12.0,
+            aperture: Aperture::Blades {
+                count: 6,
+                angle: 0.25,
+            },
+        };
+        assert_eq!(read(&Old::FocalBlur(blur)), Filter::FocalBlur(blur));
+    }
+
+    /// The same for [`Aperture`], and it is the sharpest case in the log: three
+    /// payload-bearing variants, no unit among them, reached through a
+    /// `#[serde(default)]` field — so a file written before the aperture existed and
+    /// one written after take **different paths** through the same reconciliation,
+    /// and both are checked here.
+    #[test]
+    fn an_aperture_is_read_by_variant_name_and_an_older_blur_reads_the_bare_disc() {
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "Aperture")]
+        enum Old {
+            Oval { squeeze: f32, angle: f32 },
+            Blades { count: u32, angle: f32 },
+            Disc { obstruction: f32 },
+        }
+
+        let read = |old: &Old| {
+            carbonite::from_slice_static::<Aperture>(
+                &carbonite::to_vec_static(old).expect("encodes"),
+            )
+            .expect("a declaration order this build does not use still reads")
+        };
+
+        assert_eq!(
+            read(&Old::Disc { obstruction: 0.4 }),
+            Aperture::Disc { obstruction: 0.4 },
+        );
+        assert_eq!(
+            read(&Old::Blades {
+                count: 8,
+                angle: -0.5
+            }),
+            Aperture::Blades {
+                count: 8,
+                angle: -0.5
+            },
+            "both fields travel with the name, not with an index",
+        );
+        assert_eq!(
+            read(&Old::Oval {
+                squeeze: 2.0,
+                angle: 1.25
+            }),
+            Aperture::Oval {
+                squeeze: 2.0,
+                angle: 1.25
+            },
+        );
+
+        // The other path: a blur written before the field existed says nothing about
+        // a shape, and its absence has to mean the unobstructed disc — the neutral
+        // [`FocalBlur::aperture`] promises — rather than refusing the file.
+        #[derive(Serialize, Deserialize, carbonite::Schema)]
+        #[serde(rename = "FocalBlur")]
+        struct OldBlur {
+            radius: f32,
+        }
+        let older = carbonite::from_slice_static::<FocalBlur>(
+            &carbonite::to_vec_static(&OldBlur { radius: 12.0 }).expect("encodes"),
+        )
+        .expect("a blur from before the aperture still loads");
+        assert_eq!(
+            older,
+            FocalBlur {
+                radius: 12.0,
+                aperture: Aperture::Disc { obstruction: 0.0 },
+            },
+            "an absent aperture means the lens wide open",
+        );
+    }
 }

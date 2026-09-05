@@ -368,3 +368,192 @@ fn mat3_adjugate(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         [c(0, 2), c(1, 2), c(2, 2)],
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A convex, positively oriented quad that is neither the rect nor a
+    /// parallelogram — the general-quad tier, and the only one that runs the f64
+    /// solve and the adjugate (§16.4).
+    const TRAPEZOID: [Vec2; 4] = [
+        Vec2::new(50.0, 0.0),
+        Vec2::new(150.0, 0.0),
+        Vec2::new(0.0, 200.0),
+        Vec2::new(200.0, 200.0),
+    ];
+
+    fn map(min: Vec2, max: Vec2, corners: [Vec2; 4]) -> PerspectiveMap {
+        PerspectiveMap { min, max, corners }
+    }
+
+    /// **Tier 1: untouched corners derive the literal identity matrix** (§16.4).
+    ///
+    /// `assert_eq!` rather than a tolerance, because what rides on it is the
+    /// fragment's tap arithmetic: an identity that is only identity to 1e-7
+    /// resamples every texel of a transform nobody asked for.
+    #[test]
+    fn untouched_corners_derive_the_literal_identity() {
+        for (min, max) in [
+            (Vec2::ZERO, Vec2::splat(256.0)),
+            (Vec2::new(-64.5, 32.25), Vec2::new(192.75, 288.125)),
+            (Vec2::new(-1e5, -1e5), Vec2::new(1e5, 1e5)),
+        ] {
+            let p = map(min, max, rect_corners(min, max));
+            assert!(p.usable(), "{min:?}..{max:?} should be usable");
+            let (fwd, inv) = p.resolve().expect("a rect maps to itself");
+            assert_eq!(fwd, Homography::IDENTITY);
+            assert_eq!(inv, Homography::IDENTITY);
+            // …and applying it is a no-op to the bit, which is the claim the
+            // matrix is only a proxy for.
+            for probe in [min, max, 0.5 * (min + max), Vec2::new(min.x, max.y)] {
+                assert_eq!(fwd.apply(probe).to_array(), probe.to_array());
+            }
+        }
+    }
+
+    /// **Tier 2: a parallelogram target rides the affine arithmetic** (§16.4) —
+    /// bottom row exactly `(0, 0, 1)`, so the projective divide is by exactly 1.
+    ///
+    /// A `(0, 0, ~1)` row would still draw the right picture and still lose the
+    /// affine's exactness, which is why this is an equality on the row rather
+    /// than a check that the map is nearly affine.
+    #[test]
+    fn a_parallelogram_target_keeps_a_unit_bottom_row() {
+        let (min, max) = (Vec2::ZERO, Vec2::new(100.0, 50.0));
+        // A shear and a whole-pixel shift: a parallelogram, not the rect, so the
+        // identity short-circuit cannot be what answers.
+        let shear = |c: Vec2| c + Vec2::new(0.5 * c.y + 16.0, -32.0);
+        let p = map(min, max, rect_corners(min, max).map(shear));
+        assert_ne!(p.corners, rect_corners(min, max), "not the identity tier");
+        let (fwd, inv) = p.resolve().expect("a parallelogram is usable");
+        assert_eq!(fwd.rows[2], [0.0, 0.0, 1.0]);
+        assert_eq!(inv.rows[2], [0.0, 0.0, 1.0]);
+        for (src, dst) in rect_corners(min, max).into_iter().zip(p.corners) {
+            assert_eq!(fwd.apply(src).to_array(), dst.to_array(), "{src:?}");
+        }
+    }
+
+    /// **Tier 3: the adjugate really is the inverse**, over the rect's interior.
+    ///
+    /// [`mat3_adjugate`] is right or catastrophically wrong with nothing in
+    /// between — a transposed cofactor or one flipped sign puts the paint
+    /// somewhere else entirely — and a round trip over a grid is the cheap
+    /// statement of that. Nothing else in this crate runs it.
+    #[test]
+    fn a_general_quad_inverts_across_its_whole_source_rect() {
+        let (min, max) = (Vec2::new(-40.0, 20.0), Vec2::new(160.0, 120.0));
+        let p = map(min, max, TRAPEZOID);
+        let (fwd, inv) = p.resolve().expect("a trapezoid is usable");
+        assert_ne!(fwd.rows[2], [0.0, 0.0, 1.0], "this is the projective tier");
+        // The corners land where the hand put them…
+        for (src, dst) in rect_corners(min, max).into_iter().zip(p.corners) {
+            assert!((fwd.apply(src) - dst).length() < 1e-2, "{src:?}");
+        }
+        // …and the inverse undoes the forward everywhere between them.
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let t = Vec2::new(i as f32 / 8.0, j as f32 / 8.0);
+                let src = min + t * (max - min);
+                let round = inv.apply(fwd.apply(src));
+                assert!(
+                    (round - src).length() < 1e-2,
+                    "{src:?} round-tripped to {round:?}",
+                );
+            }
+        }
+    }
+
+    /// [`convex_positive`] is the horizon condition spelled as a shape test: it
+    /// takes a strictly convex, positively oriented quad and refuses the ways one
+    /// stops being that.
+    ///
+    /// Reached directly rather than through [`PerspectiveMap::usable`] because
+    /// the mirrored quad is a *parallelogram*: the solve derives a clean matrix
+    /// for it and `near_side` says nothing about orientation, so this predicate
+    /// is the only thing in front of it.
+    #[test]
+    fn convexity_accepts_a_trapezoid_and_refuses_a_folded_quad() {
+        let base = rect_corners(Vec2::ZERO, Vec2::splat(100.0));
+        assert!(convex_positive(&TRAPEZOID));
+        assert!(convex_positive(&base));
+        // Mirrored: convex, wound the other way.
+        assert!(!convex_positive(&[base[1], base[0], base[3], base[2]]));
+        // Crossed: one pair swapped, so two edges meet in the middle.
+        assert!(!convex_positive(&[base[1], base[0], base[2], base[3]]));
+        // Collapsed onto a line: not thin, gone.
+        assert!(!convex_positive(&[base[0], base[1], base[0], base[1]]));
+    }
+
+    /// The gate half of [`PerspectiveMap::resolve`], which is not the solve half:
+    /// an empty or inverted source rect, and a corner nobody can measure, are
+    /// refused before the solve sees them.
+    ///
+    /// The empty rect is the sharp case — its corners *are* `rect_corners`', so
+    /// without the gate in front of it the identity short-circuit would answer
+    /// [`Homography::IDENTITY`] for a rect with no interior.
+    #[test]
+    fn a_map_with_no_source_rect_or_no_finite_corner_is_refused() {
+        let min = Vec2::new(10.0, 10.0);
+        for max in [
+            min,                       // empty both ways
+            Vec2::new(10.0, 90.0),     // empty in x
+            Vec2::new(90.0, 10.0),     // empty in y
+            Vec2::new(-90.0, 90.0),    // inverted in x
+            Vec2::new(90.0, -90.0),    // inverted in y
+            Vec2::new(f32::NAN, 90.0), // unmeasurable
+            Vec2::new(90.0, f32::INFINITY),
+        ] {
+            let p = map(min, max, rect_corners(min, max));
+            assert!(!p.usable(), "max {max:?} leaves no source rect");
+            assert!(p.resolve().is_none());
+            assert!(p.forward().is_none());
+        }
+        // A proper rect whose *image* has a corner nobody can place.
+        let (min, max) = (Vec2::ZERO, Vec2::splat(100.0));
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut corners = rect_corners(min, max);
+            corners[2].y = bad;
+            let p = map(min, max, corners);
+            assert!(!p.usable(), "a {bad} corner should be refused");
+            assert!(p.image_aabb().is_none(), "…and it has no measurable box");
+        }
+    }
+
+    /// [`Homography::from_f64`] normalizes by the largest element, so the nine
+    /// numbers stay in a healthy float range whatever scale the derivation worked
+    /// at — and refuses a matrix with no scale to normalize by.
+    ///
+    /// Reached directly because it is private and the solve never hands it the
+    /// degenerate cases: through a caller they are one `None` among several.
+    #[test]
+    fn a_matrix_is_normalized_by_its_largest_element_or_refused() {
+        let scaled = Homography::from_f64(&[[2.0, 0.0, 0.0], [0.0, -4.0, 0.0], [0.0, 0.0, 8.0]])
+            .expect("a finite matrix with a scale");
+        assert_eq!(
+            scaled.rows,
+            [[0.25, 0.0, 0.0], [0.0, -0.5, 0.0], [0.0, 0.0, 1.0]],
+        );
+        // The same matrix a billion times larger is the same projective map, and
+        // arrives as the same nine numbers.
+        let huge = Homography::from_f64(&[[2e9, 0.0, 0.0], [0.0, -4e9, 0.0], [0.0, 0.0, 8e9]])
+            .expect("scale is normalized away");
+        assert_eq!(huge.rows, scaled.rows);
+        // Nothing to normalize by.
+        assert!(Homography::from_f64(&[[0.0; 3]; 3]).is_none());
+        assert!(Homography::from_f64(&[[f64::NAN; 3]; 3]).is_none());
+        // A scale that is not a number, and one element that is not.
+        assert!(Homography::from_f64(&[[f64::INFINITY, 0.0, 0.0], [0.0; 3], [0.0; 3]]).is_none());
+        let mut one_bad = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        one_bad[1][2] = f64::NAN;
+        assert!(Homography::from_f64(&one_bad).is_none());
+        // And the property every derived map inherits from it.
+        let (fwd, inv) = map(Vec2::new(-40.0, 20.0), Vec2::new(160.0, 120.0), TRAPEZOID)
+            .resolve()
+            .expect("a trapezoid is usable");
+        for m in [fwd, inv] {
+            let largest = m.rows.iter().flatten().fold(0.0f32, |a, v| a.max(v.abs()));
+            assert_eq!(largest, 1.0, "{m:?} was not normalized");
+        }
+    }
+}
