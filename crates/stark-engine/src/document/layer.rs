@@ -211,6 +211,22 @@ pub enum LayerContent {
     Filter(Filter),
 }
 
+/// The canvas extent of everything a layer **carries** (§14.12), derived with
+/// [`Layer::carries`] and kept beside it — the second level of the argument
+/// [`PaintTiles`] makes. A layer's own box is a function of its tiles; its
+/// subtree's box is a function of its children's boxes; so the document's is a
+/// union over the root stack rather than a walk of the tree
+/// (`DocState::with_layers`), and a walk was paid on every property write.
+///
+/// Only [`Layer::with_carries`] mints one. The field it lives in is `pub(crate)`
+/// rather than private because struct update refuses a private field, and
+/// `apply.rs` builds two layers as `Layer { .., ..base }` — so a literal that
+/// names `carries` elsewhere in the crate compiles, copying `base`'s box. What
+/// the type rules out is a literal that names *both*: nothing outside this
+/// module can spell a fresh one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CarriedBounds(CanvasBounds);
+
 /// A single layer: its content, what it carries, and its presentation
 /// properties.
 ///
@@ -282,6 +298,8 @@ pub struct Layer {
     /// tree is cloned per document version, so every level of it has to be
     /// persistent (§5.1).
     pub carries: Vector<Layer>,
+    /// The canvas extent of `carries`, derived with it — see [`CarriedBounds`].
+    pub(crate) carried: CarriedBounds,
     /// Where this layer's frame sits on the canvas, in whole pixels (§14.12): its
     /// tiles are keyed in the layer's own frame, and the compositor, the pick and
     /// the bounds add this on the way out. A matte's geometry — its rect and its
@@ -341,7 +359,25 @@ impl Layer {
             name: None,
             content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new())),
             carries: Vector::new(),
+            carried: CarriedBounds(CanvasBounds::default()),
             translation: IVec2::ZERO,
+        }
+    }
+
+    /// A paint layer whose own extent is `bounds`, with no tiles behind it.
+    ///
+    /// The tree-level bounds tests need layers with extents and have no device to
+    /// lay a tile with. The map/box pairing this skips is [`PaintTiles::new`]'s,
+    /// and the GPU suite pins it (`tests/layers.rs`).
+    #[cfg(test)]
+    pub(crate) fn spanning(id: LayerId, bounds: CanvasBounds) -> Self {
+        let tiles = PaintTiles {
+            bounds,
+            ..PaintTiles::new(HashTrieMap::new())
+        };
+        Self {
+            content: LayerContent::Paint(tiles),
+            ..Self::new(id)
         }
     }
 
@@ -477,10 +513,29 @@ impl Layer {
         !self.carries.is_empty()
     }
 
-    /// The same layer carrying `carries` instead.
+    /// The extent of this layer **and everything it carries**, placed on the
+    /// canvas (§14.12) — what `DocState::bounds` unions over the root stack.
+    ///
+    /// O(1): the own box came with the tiles ([`PaintTiles`]), the carried box
+    /// with the children ([`CarriedBounds`]). The own half is placed here rather
+    /// than cached, since `translation` and `content` are written by literals
+    /// and a box that depended on them could be left behind.
+    pub fn subtree_bounds(&self) -> CanvasBounds {
+        let mut out = self.bounds().shifted(self.translation);
+        out.union(self.carried.0);
+        out
+    }
+
+    /// The same layer carrying `carries` instead — and knowing their extent,
+    /// which is O(children) here because each child already knows its own.
     pub fn with_carries(&self, carries: Vector<Layer>) -> Self {
+        let mut carried = CanvasBounds::default();
+        for l in carries.iter() {
+            carried.union(l.subtree_bounds());
+        }
         Self {
             carries,
+            carried: CarriedBounds(carried),
             ..self.clone()
         }
     }

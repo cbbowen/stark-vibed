@@ -5,6 +5,7 @@
 //! The heavy GPU memory lives behind `TileHandle`s shared across versions, and
 //! is reclaimed when the last version referencing a tile drops (§5.2).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
@@ -17,7 +18,7 @@ use stark_model::document::Filter;
 use stark_model::document::{
     BlendMode, GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place,
 };
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::{IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
@@ -75,7 +76,7 @@ impl CanvasBounds {
     /// tile of slack costs a slightly looser "frame to content" and nothing else.
     /// Saturating, so a frame parked at the integer horizon clamps rather than
     /// wraps the box to the other side of the canvas.
-    pub(crate) fn shifted(self, by: stark_model::geom::IVec2) -> Self {
+    pub(crate) fn shifted(self, by: IVec2) -> Self {
         use stark_model::geom::TILE_SIZE;
         let t = TILE_SIZE as i32;
         let floor = |d: i32| d.div_euclid(t);
@@ -729,12 +730,14 @@ impl DocState {
         // this one arrived in a payload, off a file or a wire, and two layers under
         // one id is exactly what §17.9 is about. Declined deterministically, so peers
         // agree about the refusal, which is the bargain every other decline here makes.
-        let copies: Vec<LayerId> = ids.iter().map(|(_, copy)| *copy).collect();
-        let fresh = copies
-            .iter()
-            .enumerate()
-            .all(|(i, c)| !self.contains_layer(*c) && !copies[..i].contains(c));
-        if !fresh {
+        //
+        // One set answers both questions: seeded with every id the document holds,
+        // it refuses a copy that is already there and a copy named twice alike.
+        let mut taken = BTreeSet::new();
+        self.visit(&mut |l, _| {
+            taken.insert(l.id);
+        });
+        if !ids.iter().all(|(_, copy)| taken.insert(*copy)) {
             return self.clone();
         }
         // The record to copy and the stack to copy it into, from one search.
@@ -1009,21 +1012,18 @@ impl DocState {
     /// carries them with it. Refused here, in the fold
     /// ([`Layer::is_translatable`]), so a log that contains one reads the same
     /// on every peer.
-    pub(crate) fn translate_layers(&self, moves: &[(LayerId, stark_model::geom::IVec2)]) -> Self {
-        let mut state = self.clone();
-        for (id, to) in moves {
-            state = state.map_layer(*id, |l| {
-                if l.is_translatable() {
-                    Layer {
-                        translation: *to,
-                        ..l.clone()
-                    }
-                } else {
-                    l.clone()
-                }
-            });
+    ///
+    /// One pass over the tree for the whole list. A drag folds this on every
+    /// pointer sample (`apply::preview_of`) and a group's move names every
+    /// member, so a pass per move was the tree walked `moves × layers` times
+    /// per event. A later entry for the same id wins, as it did when they were
+    /// applied in turn.
+    pub(crate) fn translate_layers(&self, moves: &[(LayerId, IVec2)]) -> Self {
+        let moves: BTreeMap<LayerId, IVec2> = moves.iter().copied().collect();
+        match translate_in(&self.layers, &moves) {
+            Some(layers) => self.with_layers(layers),
+            None => self.clone(),
         }
-        state
     }
 
     /// Set a layer's visibility (no-op if absent).
@@ -1116,14 +1116,14 @@ impl DocState {
     /// orthogonal to the layer stack (a mask applies to whatever is painted
     /// through it, §6.8).
     ///
-    /// A union of boxes each layer already knows ([`PaintTiles`]), not a walk of
-    /// every populated tile in the document. That is what keeps this off the
-    /// per-action cost curve: this runs on *every* layer mutation, including the
-    /// property setters and structural moves that cannot change a tile set at
-    /// all, and re-deriving the whole extent from tiles made a rename cost what a
-    /// stroke costs — and a replay of `n` actions cost `n ×` the document.
-    /// Walking the tree is unavoidable (a layer can be anywhere in it), but that
-    /// is `O(layers)`, which is dozens, where the tiles are thousands.
+    /// A union of boxes each layer already knows, not a walk of every populated
+    /// tile in the document — nor of the tree. This runs on *every* layer
+    /// mutation, including the property setters and structural moves that cannot
+    /// change a tile set at all, so re-deriving the extent from tiles made a
+    /// rename cost what a stroke costs, and re-walking the tree made it cost a
+    /// document of dozens of layers. Each layer's own box came with its tiles
+    /// ([`PaintTiles`]) and each subtree's with its children
+    /// ([`Layer::subtree_bounds`]), so this is `O(root width)`.
     ///
     /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
     /// it would make `bounds` unbounded and break both "frame to content" and
@@ -1136,16 +1136,9 @@ impl DocState {
     /// [`PaintTiles`]: super::layer::PaintTiles
     pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
         let mut bounds = CanvasBounds::default();
-        fn walk(layers: &Vector<Layer>, bounds: &mut CanvasBounds) {
-            for l in layers.iter() {
-                // Where the tiles sit on the *canvas*: the layer's own extent,
-                // placed by its frame (§14.12). Each layer's own, flat — see
-                // `Layer::translation` for why nothing accumulates down the tree.
-                bounds.union(l.bounds().shifted(l.translation));
-                walk(&l.carries, bounds);
-            }
+        for l in layers.iter() {
+            bounds.union(l.subtree_bounds());
         }
-        walk(&layers, &mut bounds);
         Self {
             layers,
             bounds,
@@ -1198,6 +1191,31 @@ fn map_in(
     None
 }
 
+/// `layers` with every layer `moves` names placed at its new frame, at any
+/// depth — or `None` when it names none of them, so the caller can keep the
+/// stack it has. A layer with nothing to move ([`Layer::is_translatable`]) is
+/// passed over as if unnamed.
+fn translate_in(layers: &Vector<Layer>, moves: &BTreeMap<LayerId, IVec2>) -> Option<Vector<Layer>> {
+    let mut out: Option<Vector<Layer>> = None;
+    for (i, l) in layers.iter().enumerate() {
+        let carries = translate_in(&l.carries, moves);
+        let to = moves.get(&l.id).filter(|_| l.is_translatable());
+        if carries.is_none() && to.is_none() {
+            continue;
+        }
+        let mut placed = match carries {
+            Some(carries) => l.with_carries(carries),
+            None => l.clone(),
+        };
+        if let Some(to) = to {
+            placed.translation = *to;
+        }
+        let stack = out.get_or_insert_with(|| layers.clone());
+        *stack = stack.set(i, placed).expect(IN_RANGE);
+    }
+    out
+}
+
 /// `layer` and everything it carries, re-identified through `ids` — or `None`
 /// if the map does not name every layer in the subtree, which is the one way a
 /// duplicate declines.
@@ -1215,8 +1233,7 @@ fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
     }
     Some(Layer {
         id,
-        carries,
-        ..layer.clone()
+        ..layer.with_carries(carries)
     })
 }
 
@@ -1496,5 +1513,95 @@ mod tests {
             Some(BlendMode::Drago { k: DRAGO_K_RANGE.1 }),
             "set_layer_blend installed a bend past the end of its range",
         );
+    }
+    /// The box every layer carries for its subtree, recomputed from nothing.
+    fn recomputed(l: &Layer) -> CanvasBounds {
+        let mut out = l.bounds().shifted(l.translation);
+        for c in l.carries.iter() {
+            out.union(recomputed(c));
+        }
+        out
+    }
+
+    fn each(layers: &Vector<Layer>, f: &mut impl FnMut(&Layer)) {
+        for l in layers.iter() {
+            f(l);
+            each(&l.carries, f);
+        }
+    }
+
+    /// Three leaves under two groups, one nested; ids 1..=5.
+    fn tree() -> Vector<Layer> {
+        let leaf = |n: u64, x: i32, y: i32| Layer::spanning(LayerId::solo(n), span(&[at(x, y)]));
+        let inner =
+            Layer::new(LayerId::solo(4)).with_carries(Vector::new().push_back(leaf(3, 7, 7)));
+        let outer = Layer::new(LayerId::solo(5))
+            .with_carries(Vector::new().push_back(leaf(2, -3, 1)).push_back(inner));
+        Vector::new().push_back(leaf(1, 0, 0)).push_back(outer)
+    }
+
+    /// `Layer::subtree_bounds` is a cache, derived where children or tiles change,
+    /// and this holds it to the from-scratch answer through every constructor that
+    /// can move it — so no writer can leave it stale.
+    #[test]
+    fn a_subtree_box_is_what_recomputing_it_would_give() {
+        let layers = tree();
+        each(&layers, &mut |l| {
+            assert_eq!(l.subtree_bounds(), recomputed(l), "{:?}", l.id)
+        });
+
+        let moves: BTreeMap<LayerId, IVec2> = [
+            (LayerId::solo(3), IVec2::new(300, -10)),
+            (LayerId::solo(5), IVec2::new(-1000, 0)),
+        ]
+        .into_iter()
+        .collect();
+        let moved = translate_in(&layers, &moves).expect("two layers moved");
+        each(&moved, &mut |l| {
+            assert_eq!(l.subtree_bounds(), recomputed(l), "{:?}", l.id)
+        });
+
+        let emptied = moved
+            .get(0)
+            .expect("the first leaf")
+            .with_tiles(HashTrieMap::new());
+        assert_eq!(
+            emptied.subtree_bounds(),
+            recomputed(&emptied),
+            "tiles replaced"
+        );
+    }
+
+    /// One pass over the tree for every move gives the tree that one pass per move
+    /// would — per layer, the same offset and the same box.
+    #[test]
+    fn a_batch_of_moves_lands_where_the_moves_would_one_at_a_time() {
+        let layers = tree();
+        let moves = [
+            (LayerId::solo(1), IVec2::new(12, 34)),
+            (LayerId::solo(3), IVec2::new(-500, 9)),
+            (LayerId::solo(4), IVec2::new(0, 255)),
+            (LayerId::solo(5), IVec2::new(-1, -1)),
+        ];
+        let batched = translate_in(&layers, &moves.iter().copied().collect()).expect("moved");
+        let one_at_a_time = moves.iter().fold(layers, |acc, m| {
+            translate_in(&acc, &BTreeMap::from([*m])).unwrap_or(acc)
+        });
+
+        let mut seen = BTreeMap::new();
+        each(&one_at_a_time, &mut |l| {
+            seen.insert(l.id, (l.translation, l.subtree_bounds()));
+        });
+        let mut n = 0;
+        each(&batched, &mut |l| {
+            n += 1;
+            assert_eq!(
+                seen.get(&l.id),
+                Some(&(l.translation, l.subtree_bounds())),
+                "{:?}",
+                l.id
+            );
+        });
+        assert_eq!(n, seen.len(), "the two trees name the same layers");
     }
 }
