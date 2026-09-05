@@ -193,6 +193,9 @@ pub struct DocumentFile {
 ///
 /// So they are read and folded into `content`, and written empty. When no three-bag
 /// files are left to open, the three go together — as `LAST_VERSIONED_SCHEMA` will.
+/// They go as `#[carbonite(removed("assets", "substrates", "surfaces", "pictures"))]`
+/// rather than by deletion, since a later field taking one of those names — the
+/// alias included — would read the dead column.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "DocumentFile")]
 struct RawDocumentFile {
@@ -442,6 +445,56 @@ mod tests {
             DocumentFile::from_bytes(b"not a stark file"),
             Err(DocError::BadMagic)
         ));
+    }
+
+    /// **A damaged container is an `Err`, never a panic** — the claim
+    /// [`DocumentFile::from_untrusted_bytes`] exists to support, and the one every
+    /// other test here leaves unmade by feeding the decoder well-formed bytes.
+    ///
+    /// Deterministic and dependency-free: every prefix of a real document, then
+    /// single-byte flips at offsets a seeded LCG walks. Raw deflate carries no
+    /// checksum, so a flipped stream usually still inflates — which is what puts
+    /// garbage in front of the carbonite frame rather than stopping at the container.
+    /// The two halves are budgeted separately because a truncation almost always
+    /// fails at inflate, and the flips are what reach past it.
+    ///
+    /// Both doors, since only one of them is bounded, and an `Ok` is made to answer
+    /// for itself: the needs are read off the log *and* the bundle, so a document
+    /// that decoded into a shell falls over there rather than counting as a pass.
+    #[test]
+    fn a_damaged_container_is_refused_rather_than_a_panic() {
+        fn open_both(bytes: &[u8]) {
+            for doc in [
+                DocumentFile::from_bytes(bytes),
+                DocumentFile::from_untrusted_bytes(bytes),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(doc.unbundled_content().len() <= doc.required_content().len());
+            }
+        }
+
+        const FLIPS: usize = 1000;
+        let bytes = sample_doc().to_bytes().expect("encode");
+
+        for len in 0..=bytes.len() {
+            open_both(&bytes[..len]);
+        }
+
+        let mut seed = 0x2026_0904_5354_524bu64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..FLIPS {
+            let mut damaged = bytes.clone();
+            let at = next() % damaged.len();
+            damaged[at] ^= 1 << (next() % 8);
+            open_both(&damaged);
+        }
     }
 
     /// A container from before the format change is **named**, not reported as a
