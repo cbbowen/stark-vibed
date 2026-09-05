@@ -55,14 +55,13 @@ use crate::gpu::{
 use crate::gpu::{MediaParams, Output};
 use crate::peer::Peers;
 use crate::session::ShapeResult;
-use crate::view::ViewTransform;
+use crate::view::{Extent2, ViewTransform};
 use stark_model::AssetId;
 use stark_model::ColorSpaceId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, GuideId, LayerId, PerspectiveGuide, Scaffold,
     ShapeAction, StrokeRecord,
 };
-use stark_model::geom::Extent2;
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// The starting layer present in every new document.

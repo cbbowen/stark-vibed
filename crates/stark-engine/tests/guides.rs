@@ -26,9 +26,10 @@ mod common;
 
 use common::{engine_or_skip, engine_or_skip_sized};
 use stark_engine::Engine;
+use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_model::document::{ActorId, GuideId, Lens, PerspectiveGuide};
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 use glam::Quat;
 

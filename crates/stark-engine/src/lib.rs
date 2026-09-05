@@ -142,4 +142,4 @@ pub use image::RgbaImage;
 pub use peer::{GestureView, Identity, LiveGesture, Peer, Peers};
 pub use session::Session;
 pub use tow::TowString;
-pub use view::ViewTransform;
+pub use view::{Extent2, ViewTransform};

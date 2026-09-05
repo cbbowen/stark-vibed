@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::platform::Canvas;
+use stark_engine::Extent2;
 use stark_engine::ViewTransform;
 use stark_engine::command::ViewCommand;
 use stark_engine::command::{InputCommand, InputSample};
@@ -19,7 +20,6 @@ use stark_engine::{Engine, EnvironmentId, GpuContext, ObservableState};
 use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::SubstrateId;
-use stark_model::geom::Extent2;
 
 pub const CANVAS_ID: &str = "stark-canvas";
 
@@ -138,7 +138,7 @@ pub struct PeerInfo {
     pub name: String,
     pub color: [f32; 3],
     pub active_layer: stark_model::document::LayerId,
-    pub cursor: Option<stark_model::Vec2>,
+    pub cursor: Option<stark_model::geom::Vec2>,
 }
 
 impl PeerInfo {
@@ -544,7 +544,7 @@ impl Renderer {
     /// renderer it still holds borrowed.
     pub fn pick_color(
         &mut self,
-        at: stark_model::Vec2,
+        at: stark_model::geom::Vec2,
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
         self.engine.pick_color(at, options)
@@ -554,7 +554,7 @@ impl Renderer {
     /// The same borrow bargain as [`Renderer::pick_color`].
     pub fn pick_gradient(
         &mut self,
-        path: &[stark_model::Vec2],
+        path: &[stark_model::geom::Vec2],
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<stark_model::Gradient>> + use<> {
         self.engine.pick_gradient(path, options)
@@ -566,7 +566,7 @@ impl Renderer {
     /// gesture goes on driving the renderer while the readback is in flight.
     pub fn pick_layer(
         &mut self,
-        at: stark_model::Vec2,
+        at: stark_model::geom::Vec2,
     ) -> impl std::future::Future<Output = Option<stark_model::document::LayerId>> + use<> {
         self.engine.pick_layer(at)
     }

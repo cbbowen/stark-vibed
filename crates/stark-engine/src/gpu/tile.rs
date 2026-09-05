@@ -545,7 +545,7 @@ impl TilePairHandle {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
         use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
-        let block = stark_model::geom::Extent2::new(TILE_TEX, TILE_TEX);
+        let block = crate::view::Extent2::new(TILE_TEX, TILE_TEX);
         let read = |tex: &wgpu::Texture, lanes: u32| {
             // The formats named, not their byte sizes: the decode is `f16` pairs, and
             // a size check would take `Rg32Float` for four halves. Asserted on the

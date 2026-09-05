@@ -439,7 +439,7 @@ impl BlendMode {
     pub fn sanitized(self) -> Self {
         match self {
             Self::Drago { k } => Self::Drago {
-                k: crate::finite_in(k, DRAGO_K, DRAGO_K_RANGE),
+                k: crate::sanitize::finite_in(k, DRAGO_K, DRAGO_K_RANGE),
             },
             Self::Normal | Self::Reinhard | Self::Multiply => self,
         }

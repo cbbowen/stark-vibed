@@ -23,7 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{at_least_zero, clamp01, finite_in, finite_or};
+use crate::sanitize::{at_least_zero, clamp01, finite_in, finite_or};
 
 /// The brush tip shape (§6.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]

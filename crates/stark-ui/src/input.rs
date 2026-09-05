@@ -66,7 +66,7 @@ pub const PEN_RESOLUTION: f32 = 0.5;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::geom::Extent2;
+    use stark_engine::Extent2;
 
     fn view(zoom: f32) -> ViewTransform {
         let mut v = ViewTransform::identity(Extent2::new(800, 600));

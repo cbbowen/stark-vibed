@@ -14,8 +14,8 @@ use super::layer::{BlendMode, LayerId, MatteRegion, Place};
 use super::paint::Parcel;
 use super::selection::SelectionOp;
 use crate::Srgb;
-use crate::clamp01;
 use crate::geom::Vec2;
+use crate::sanitize::clamp01;
 use crate::{SubstrateId, SubstrateScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -793,7 +793,7 @@ impl ActionKind {
             // lands on 0 — an opacity that says nothing should leave the layer
             // *visible*, which is the neutral setting rather than the near end.
             ActionKind::SetLayerOpacity(id, a) => {
-                ActionKind::SetLayerOpacity(id, crate::finite_in(a, 1.0, (0.0, 1.0)))
+                ActionKind::SetLayerOpacity(id, crate::sanitize::finite_in(a, 1.0, (0.0, 1.0)))
             }
             // A guide's every number reaches the guide pass's uniform, and now
             // the saved log as well — `PerspectiveGuide::sanitized` is where what

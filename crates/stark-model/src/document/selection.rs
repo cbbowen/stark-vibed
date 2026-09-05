@@ -29,7 +29,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geom::Vec2;
-use crate::{at_least_zero, clamp01};
+use crate::sanitize::{at_least_zero, clamp01};
 
 /// Largest number of mask tiles one op may rasterize (~64 MB of R8 coverage). An op
 /// that would exceed it is rejected rather than truncated — a silently clipped
@@ -158,7 +158,7 @@ impl SelectionShape {
         match self {
             Self::Lasso(points) if points.len() > MAX_LASSO_POINTS => Self::Lasso(
                 (0..MAX_LASSO_POINTS)
-                    .map(|i| points[crate::pick_index(i, points.len(), MAX_LASSO_POINTS)])
+                    .map(|i| points[crate::geom::pick_index(i, points.len(), MAX_LASSO_POINTS)])
                     .collect(),
             ),
             Self::Ellipse { center, radii } => Self::Ellipse {

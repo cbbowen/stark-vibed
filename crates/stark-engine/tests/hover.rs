@@ -300,11 +300,11 @@ fn an_unpaintable_layer_refuses_the_mark() {
 /// it needs no GPU, so this runs even where the render suites skip.
 #[test]
 fn a_pixel_staircase_holds_its_heading() {
+    use stark_engine::Extent2;
     use stark_engine::GestureView;
     use stark_engine::Session;
     use stark_engine::{LiveGesture, ViewTransform};
     use stark_model::document::{ActorId, LayerId};
-    use stark_model::geom::Extent2;
 
     let mut session = Session::new(
         ViewTransform::identity(Extent2::new(512, 512)),
@@ -387,11 +387,11 @@ fn a_pixel_staircase_holds_its_heading() {
 /// Session-level and CPU-only, like the staircase test and for its reason.
 #[test]
 fn the_run_up_conditions_the_strokes_entry() {
+    use stark_engine::Extent2;
     use stark_engine::Session;
     use stark_engine::ViewTransform;
     use stark_engine::path::{point_at, span_count, span_end};
     use stark_model::document::LayerId;
-    use stark_model::geom::Extent2;
 
     let session = || {
         Session::new(

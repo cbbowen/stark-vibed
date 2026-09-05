@@ -1110,7 +1110,7 @@ impl<'a> DynamicsRun<'a> {
                 &view,
                 self.scene.selection,
                 halo,
-                (region_origin, stark_model::geom::Extent2::new(w, h)),
+                (region_origin, crate::view::Extent2::new(w, h)),
             );
             view
         };

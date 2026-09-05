@@ -49,12 +49,13 @@ use std::time::{Duration, Instant};
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
 
 use stark_engine::Engine;
+use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
 use stark_model::document::BrushParams;
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const VIEWPORT: Extent2 = Extent2 {

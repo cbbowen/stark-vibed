@@ -11,10 +11,11 @@
 mod common;
 
 use common::{engine_or_skip, engine_or_skip_sized, images_match, paint};
+use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{ActorId, LayerId};
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.9, 0.1, 0.1];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];

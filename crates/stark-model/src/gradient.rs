@@ -237,7 +237,7 @@ fn thin(stops: &mut Vec<GradientStop>) {
     // overflow — but there is no reason for the crate's two decimations to be spelled
     // differently.
     *stops = (0..MAX_STOPS)
-        .map(|i| stops[crate::pick_index(i, len - 1, MAX_STOPS - 1)])
+        .map(|i| stops[crate::geom::pick_index(i, len - 1, MAX_STOPS - 1)])
         .collect();
 }
 

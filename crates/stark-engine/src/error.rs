@@ -94,7 +94,7 @@ pub enum ExportError {
     #[error("{} is {} × {} px; this device's limit is {limit}", what.noun(), size.width, size.height)]
     OverLimit {
         what: Produces,
-        size: stark_model::geom::Extent2,
+        size: crate::view::Extent2,
         limit: u32,
     },
 

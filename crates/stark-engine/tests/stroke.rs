@@ -656,7 +656,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// *failure* unless the skip was asked for (CLAUDE.md), and this was the one place
 /// that had quietly opted out.
 fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
-    let size = stark_model::geom::Extent2 {
+    let size = stark_engine::Extent2 {
         width: 1280,
         height: 800,
     };

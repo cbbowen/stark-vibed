@@ -18,7 +18,7 @@
 use crate::error::{EngineError, Result};
 use crate::gpu::context::GpuContext;
 use crate::gpu::half::f16_to_f32;
-use stark_model::geom::Extent2;
+use crate::view::Extent2;
 
 /// A texel of `texture`, in bytes.
 ///

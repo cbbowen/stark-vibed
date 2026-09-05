@@ -85,7 +85,7 @@ use serde::{Deserialize, Serialize};
 use glam::{Quat, Vec2, Vec3};
 
 use super::action::ActionId;
-use crate::{finite_in, finite_or};
+use crate::sanitize::{finite_in, finite_or};
 
 mod camera;
 mod conic;

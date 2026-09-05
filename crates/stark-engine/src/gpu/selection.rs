@@ -25,8 +25,9 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use crate::gpu::{MASK_TEX, mask_tex_origin};
+use crate::view::Extent2;
 use stark_model::document::{SelectionOp, SelectionShape};
-use stark_model::geom::{Extent2, TileCoord, Vec2};
+use stark_model::geom::{TileCoord, Vec2};
 
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
 /// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.

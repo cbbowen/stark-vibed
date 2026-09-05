@@ -7,9 +7,9 @@
 //! renders straight into the back buffer and the swap is a pointer swap — the same
 //! bargain the browser canvas makes, with no readback and no encode.
 
+use stark_engine::Extent2;
 use stark_engine::command::{InputCommand, ViewCommand};
 use stark_engine::{Engine, GpuContext, ObservableState, Output, Transfer, ViewTransform};
-use stark_model::geom::Extent2;
 use stark_ui::prefs::Hdr;
 use wgpui::{WgpuSurfaceHandle, Window};
 

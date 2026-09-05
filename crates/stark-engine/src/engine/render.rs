@@ -19,9 +19,9 @@ use crate::gpu::{
     Output, SelectionOutline,
 };
 use crate::image::RgbaImage;
-use crate::view::ViewTransform;
+use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
-use stark_model::geom::{Extent2, TileRect};
+use stark_model::geom::TileRect;
 use std::sync::Arc;
 
 /// What sits under the paint when rendering (§15.6).

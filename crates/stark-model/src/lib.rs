@@ -33,19 +33,24 @@ pub mod gradient;
 pub mod io;
 pub mod path;
 pub mod peer;
+pub(crate) mod sanitize;
 pub mod substrate;
 
-// The small modules below are flat, so their headline types are lifted here and the
-// module stays available for the rest.
+// A module above is `pub` because its whole vocabulary is the API, and that is the
+// path nearly every consumer spells. A name is lifted here *as well* only when it is
+// this crate's headline and its module is incidental — `Srgb`, `AssetId`,
+// `DocumentFile`.
 //
-// `document` is the exception: it has a curated re-export list of its own over
-// crate-private submodules (see its header), so a type there already has exactly one
-// public path, and lifting a subset again would give those two.
+// `document`, `geom` and `path` lift nothing, because no one name stands for them.
+// `document` re-exports a curated list of its own over crate-private submodules (see
+// its header), so a type there has exactly one public path already. `geom`'s lift was
+// dropped after a count: ~280 sites spelled `geom::` against a dozen that did not, so
+// all the short path bought was making those dozen read differently from every
+// neighbour.
 pub use color::Srgb;
 pub use colorspace::ColorSpaceId;
 pub use content::{AssetNeed, action_content, presence_content};
 pub use error::{DocError, Result};
-pub use geom::{Extent2, TILE_SIZE, TileCoord, Vec2};
 pub use gradient::{Gradient, GradientStop};
 pub use io::{BuildId, CanvasMeta, DocumentFile};
 pub use peer::{GestureFrame, PeerFrame, StrokeHead};
@@ -68,111 +73,3 @@ pub use substrate::{SubstrateId, SubstrateScale};
 /// `normalize_name` caps a *layer* name to this too. Here rather than in the engine
 /// because the model cannot depend on the engine (§2).
 pub const MAX_NAME: usize = 64;
-
-/// `x` into `[0, 1]`, with NaN landing on 0 — **the crate's NaN policy**, stated
-/// here and cited from the gates that hold to it.
-///
-/// `max`-then-`min` rather than `clamp`, which is what makes the NaN clause true:
-/// `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN. That
-/// is why clippy's suggestion here is the wrong one.
-pub(crate) const fn clamp01(x: f32) -> f32 {
-    x.max(0.0).min(1.0)
-}
-
-/// `x` if it is a number this parameter can be, else `fallback` — [`clamp01`]'s
-/// companion for a knob with **no upper bound** to clamp to.
-///
-/// Falling back to the field's own default rather than to zero: `NaN` says nothing
-/// about which end was meant, and a radius silently rounded to 0 is a brush that
-/// paints nothing, which is a worse answer than the one the slider ships at.
-pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
-    if x.is_finite() { x } else { fallback }
-}
-
-/// `x` as a non-negative length or rate: finite, and floored at zero.
-///
-/// **Finite first, then floored**, and that order is the whole of it. A bare
-/// `x.max(0.0)` turns a `NaN` into 0 but passes an infinity through — and the
-/// infinity is the half a shader notices: an infinite feather reaches
-/// `selection.wesl` as a coverage ramp of infinite width, where `0.5 - sd/w` is
-/// `0.5` at every texel that is not itself infinitely far away. A selection nobody
-/// asked for, drawn at half strength across the plane.
-pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
-    finite_or(x, fallback).max(0.0)
-}
-
-/// `x` held to `[lo, hi]`, with a non-finite `x` landing on `neutral` —
-/// [`finite_or`]'s companion for a knob that has a range at **both** ends.
-///
-/// `is_finite` **first**, then `clamp`, for [`clamp01`]'s reason: a bare `clamp`
-/// returns the `NaN` it exists to catch.
-///
-/// It takes three numbers rather than two because `NaN` says nothing about which end
-/// was meant, so the fallback is the setting that cannot make a picture worse — 0
-/// for an exposure, 1 for a contrast, [`DRAGO_K`](document::DRAGO_K) for a blend's
-/// bend. A bound would have to pick one end and be wrong half the time.
-pub(crate) fn finite_in(x: f32, neutral: f32, (lo, hi): (f32, f32)) -> f32 {
-    if x.is_finite() {
-        x.clamp(lo, hi)
-    } else {
-        neutral
-    }
-}
-
-/// `i · span / out_of` — where the `i`th of `out_of` evenly-spaced picks lands in a
-/// list of `span` — computed in `u64` so it **cannot overflow the pointer width**.
-///
-/// The width is the whole reason this is a function rather than three characters at
-/// each call site. `usize` is **32 bits on `wasm32`**, so the obvious
-/// `i * span / out_of` wraps once `span` passes `u32::MAX / out_of` — for a lasso
-/// (`out_of` = 4096) about 1.05 million vertices, which a document reaches easily
-/// and which deflate hides on the way in (§8). A release build wraps onto a
-/// perfectly valid index, so the browser decimates a *different* polygon than a
-/// native peer decodes from the same bytes — a §6.8 divergence no test host can
-/// see, since they are all 64-bit.
-///
-/// Same stance as [`TileRect::covering`](geom::TileRect::covering)'s `i64`: the
-/// arithmetic holds itself instead of resting on a bound stated in another file.
-/// Both decimations in the crate go through here — [`SelectionShape::sanitized`]
-/// and `gradient::thin`.
-///
-/// [`SelectionShape::sanitized`]: document::SelectionShape::sanitized
-pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
-    debug_assert!(out_of > 0, "an evenly-spaced pick needs somewhere to land");
-    (i as u64 * span as u64 / out_of as u64) as usize
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// [`pick_index`] is exact where the naive `usize` product is not.
-    ///
-    /// The span overflows a `u32` against a lasso's own `out_of` — the case the
-    /// browser reaches and this host does not — so what this pins is the arithmetic,
-    /// against a `u128` reference with room for either width.
-    #[test]
-    fn a_pick_is_exact_past_the_32_bit_product() {
-        let out_of = 4096usize;
-        for span in [1_100_000usize, 4_000_000, 33_000_000] {
-            for i in [0usize, 1, 1000, 3000, out_of - 1] {
-                let want = (i as u128 * span as u128 / out_of as u128) as usize;
-                assert_eq!(pick_index(i, span, out_of), want, "i={i} span={span}");
-            }
-        }
-    }
-
-    /// …and it still spreads: the picks start at the head, never step backwards,
-    /// and never step off the end.
-    #[test]
-    fn picks_are_ordered_and_in_range() {
-        let (out_of, span) = (4096usize, 1_100_000usize);
-        assert_eq!(pick_index(0, span, out_of), 0);
-        let mut prev = 0;
-        for i in 0..out_of {
-            let at = pick_index(i, span, out_of);
-            assert!(at >= prev && at < span, "i={i} landed at {at}");
-            prev = at;
-        }
-    }
-}

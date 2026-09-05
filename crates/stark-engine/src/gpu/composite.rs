@@ -64,9 +64,8 @@ use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
 use crate::gpu::tile::TilePairHandle;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
-use crate::view::ViewTransform;
+use crate::view::{Extent2, ViewTransform};
 use attachment::Attachment;
-use stark_model::geom::Extent2;
 
 pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchTargets};

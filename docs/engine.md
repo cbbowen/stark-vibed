@@ -162,8 +162,8 @@ There is no `format_version`, and there is no tile size. The first went with the
 encoding that needed it (§8.1). The second was recorded on every save and then, once
 something read it, used to *refuse* a file written against a different `TILE_SIZE` —
 on the argument that every tile boundary moves with the stride. But nothing in a log
-is expressed in tile units: `TileCoord`, `TileRect` and `Extent2` are not
-`Serialize` at all, and every action states itself in canvas px. The stride reaches
+is expressed in tile units: `TileCoord` and `TileRect` are not `Serialize` at all,
+and every action states itself in canvas px. The stride reaches
 only *derived* things — which tiles a footprint quantizes to (§12.6), where an apron
 sits (§6.4), whether an action clears a tile cap — and a document whose pixels come
 back a little differently is exactly what §19 permits. All the field bought was making

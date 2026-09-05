@@ -12,7 +12,7 @@
 //! owns", which is what that file says is left in it: four sibling passes reached
 //! *up* through `super::Attachment` to get at a general resource type.
 
-use stark_model::geom::Extent2;
+use crate::view::Extent2;
 
 use super::super::channels::{ChannelFormats, Targets};
 

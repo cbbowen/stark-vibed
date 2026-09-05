@@ -76,9 +76,10 @@ use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::ExportScale;
+use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 /// The box the miniature is fitted into, in CSS px — the largest it is ever drawn,
 /// on whichever axis the piece runs out of first.
@@ -463,7 +464,7 @@ pub fn NavigatorOverlay() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::geom::Extent2;
+    use stark_engine::Extent2;
 
     /// A 400×200 piece under a miniature, and a viewport looking at it.
     fn piece() -> Overview {

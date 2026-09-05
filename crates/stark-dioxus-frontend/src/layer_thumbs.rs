@@ -63,9 +63,9 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
+use stark_engine::Extent2;
 use stark_engine::{ExportScale, LayerInfo};
 use stark_model::document::LayerId;
-use stark_model::geom::Extent2;
 
 use crate::platform::{base64_encode, sleep_ms};
 use crate::state::{AppState, root_signal};

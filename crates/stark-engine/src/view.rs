@@ -20,7 +20,24 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use stark_model::geom::{Extent2, Mat2, TileRect, Vec2};
+use stark_model::geom::{Mat2, TileRect, Vec2};
+
+/// A pixel size (e.g. a render target's dimensions).
+///
+/// Here rather than beside the tile grid it is measured in: a viewport is how much
+/// of the canvas is being looked at, which is session state like the rest of
+/// [`ViewTransform`] (§18.1.2), and the model is the document and nothing else (§2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Extent2 {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Extent2 {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
 /// substrate (§6.4). This is session state and is never historized.

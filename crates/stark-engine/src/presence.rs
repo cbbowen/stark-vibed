@@ -503,7 +503,7 @@ mod tests {
             // An *infinite* lift falls back to the field's own default rather than to
             // the clamp's ceiling — `finite_or` runs before `clamp01`, on the argument
             // that a value which is not a number says nothing about which end was meant
-            // (`crate::clamp01`'s neighbours). The give above is clamped because −3.0 is
+            // (`stark_model`'s `sanitize` module). The give above is clamped because −3.0 is
             // a number, just not one in range — and it is poisoned at *that* end because
             // the knob's other end is its default, where a clamp would prove nothing.
             assert_eq!(
@@ -563,10 +563,10 @@ mod tests {
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{Peer, Peers};
     use crate::session::Session;
-    use crate::view::ViewTransform;
+    use crate::view::{Extent2, ViewTransform};
     use stark_model::MAX_NAME;
     use stark_model::document::{ActorId, BrushParams, LayerId};
-    use stark_model::geom::{Extent2, Vec2};
+    use stark_model::geom::Vec2;
     use stark_model::peer::PeerFrame;
 
     /// A fixed-seed generator, so a failure is a bug report rather than a coin toss.

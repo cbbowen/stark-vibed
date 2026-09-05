@@ -27,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::finite_in;
+use crate::sanitize::finite_in;
 
 /// What a filter layer does to the stack beneath it (§21.2).
 ///

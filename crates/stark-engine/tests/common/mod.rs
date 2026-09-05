@@ -15,13 +15,14 @@ use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
+use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
 use stark_model::document::LayerId;
 use stark_model::document::{BrushParams, BrushShape};
-use stark_model::geom::{Extent2, TILE_APRON, TILE_SIZE, TILE_TEX, Vec2};
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, Vec2};
 
 pub const SIZE: Extent2 = Extent2 {
     width: 256,

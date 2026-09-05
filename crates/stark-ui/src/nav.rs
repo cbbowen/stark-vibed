@@ -13,7 +13,7 @@
 //! `Held`. Touch belongs to the web alone until wgpui reports fingers.
 
 use stark_engine::command::ViewCommand;
-use stark_model::Vec2;
+use stark_model::geom::Vec2;
 
 /// How far the accelerator+space drag travels to **double** the zoom, in screen px
 /// (§18.1.9).

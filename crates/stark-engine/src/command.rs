@@ -72,13 +72,14 @@ impl Tool {
 }
 
 use crate::gpu::{EnvironmentId, MediaParams, Output};
+use crate::view::Extent2;
 use stark_model::AssetId;
 use stark_model::Srgb;
 use stark_model::document::{
     BlendMode, BrushParams, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
     PerspectiveGuide, Place, SelectionOp, ShapeAction, TransformMap,
 };
-use stark_model::geom::{Extent2, IVec2, Vec2};
+use stark_model::geom::{IVec2, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// One pen/mouse sample in canvas space.

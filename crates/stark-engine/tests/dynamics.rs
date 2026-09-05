@@ -1342,7 +1342,7 @@ fn bleed_softens_a_color_boundary() {
 /// own. The pre-ladder stencil put 15 levels through this; the bound is set between.
 #[test]
 fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
-    let Some(mut engine) = engine_or_skip_sized(stark_model::geom::Extent2 {
+    let Some(mut engine) = engine_or_skip_sized(stark_engine::Extent2 {
         width: 512,
         height: 512,
     }) else {
@@ -1817,7 +1817,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
 ///   trail may only fade; a rise is a stranded ring printing past the end).
 #[test]
 fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
-    use stark_model::geom::Extent2;
+    use stark_engine::Extent2;
     const WIDE: Extent2 = Extent2 {
         width: 1600,
         height: 256,
@@ -1964,7 +1964,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
 fn a_bleeding_strokes_preview_is_its_commit() {
-    let Some(mut engine) = engine_or_skip_sized(stark_model::geom::Extent2 {
+    let Some(mut engine) = engine_or_skip_sized(stark_engine::Extent2 {
         width: 1280,
         height: 256,
     }) else {

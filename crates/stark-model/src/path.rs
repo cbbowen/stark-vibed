@@ -79,7 +79,7 @@ impl ControlPoint {
             // `clamp01` rather than `clamp`, per the crate's NaN policy. The tilt
             // below is already safe on NaN — `len > 1.0` is false, and the vector
             // passes through to a fitter that tests it.
-            pressure: crate::clamp01(pressure),
+            pressure: crate::sanitize::clamp01(pressure),
             tilt: if len > 1.0 { tilt / len } else { tilt },
             time,
         }

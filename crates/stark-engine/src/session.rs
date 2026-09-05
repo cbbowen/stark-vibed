@@ -1438,8 +1438,7 @@ fn path_in_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::ViewTransform;
-    use stark_model::geom::Extent2;
+    use crate::view::{Extent2, ViewTransform};
 
     fn session(action: ShapeAction) -> Session {
         let mut s = Session::new(

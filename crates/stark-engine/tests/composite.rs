@@ -131,10 +131,10 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
 /// pair is transient for the same reason the targets are.
 #[test]
 fn an_off_size_render_matches_one_at_the_substrates_own_size() {
+    use stark_engine::Extent2;
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
     use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
-    use stark_model::geom::Extent2;
 
     // The piece: a frame whose rect is exactly the exported size, centred on the
     // canvas origin, so both exports render the identical view.
@@ -224,10 +224,10 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
 /// belonging to a pipeline that is gone, and a fresh one never can.
 #[test]
 fn a_kept_offscreen_renders_what_a_fresh_one_would() {
+    use stark_engine::Extent2;
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};
     use stark_model::document::{MatteRegion, Parcel, Place};
-    use stark_model::geom::Extent2;
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
         return;
@@ -353,9 +353,9 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
 /// navigator, which keep theirs for the life of the app, are exactly where it bites.
 #[test]
 fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
+    use stark_engine::Extent2;
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
     use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
-    use stark_model::geom::Extent2;
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
         return;

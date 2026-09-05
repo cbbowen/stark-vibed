@@ -388,7 +388,7 @@ impl MergeRenderer {
             "stark merge filter uniform",
             &crate::gpu::composite::filter_uniform(
                 draw,
-                ViewTransform::identity(stark_model::geom::Extent2::new(1, 1)),
+                ViewTransform::identity(crate::view::Extent2::new(1, 1)),
             ),
         )
     }

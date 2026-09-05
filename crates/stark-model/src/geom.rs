@@ -267,17 +267,26 @@ impl TileRect {
     }
 }
 
-/// A pixel size (e.g. a render target's dimensions).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Extent2 {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Extent2 {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
+/// `i · span / out_of` — where the `i`th of `out_of` evenly-spaced picks lands in a
+/// list of `span` — computed in `u64` so it **cannot overflow the pointer width**.
+///
+/// The width is the whole reason this is a function rather than three characters at
+/// each call site. `usize` is **32 bits on `wasm32`**, so the obvious
+/// `i * span / out_of` wraps once `span` passes `u32::MAX / out_of` — for a lasso
+/// (`out_of` = 4096) about 1.05 million vertices, which a document reaches easily
+/// and which deflate hides on the way in (§8). A release build wraps onto a
+/// perfectly valid index, so the browser decimates a *different* polygon than a
+/// native peer decodes from the same bytes — a §6.8 divergence no test host can
+/// see, since they are all 64-bit.
+///
+/// Same stance as [`TileRect::covering`]'s `i64`: the arithmetic holds itself instead
+/// of resting on a bound stated in another file. Both decimations in the crate go
+/// through here — [`SelectionShape::sanitized`] and `gradient::thin`.
+///
+/// [`SelectionShape::sanitized`]: crate::document::SelectionShape::sanitized
+pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
+    debug_assert!(out_of > 0, "an evenly-spaced pick needs somewhere to land");
+    (i as u64 * span as u64 / out_of as u64) as usize
 }
 
 #[cfg(test)]
@@ -400,6 +409,36 @@ mod tests {
         }
         assert!(!real.is_empty());
         assert!(real.intersects(&real));
+    }
+
+    /// [`pick_index`] is exact where the naive `usize` product is not.
+    ///
+    /// The span overflows a `u32` against a lasso's own `out_of` — the case the
+    /// browser reaches and this host does not — so what this pins is the arithmetic,
+    /// against a `u128` reference with room for either width.
+    #[test]
+    fn a_pick_is_exact_past_the_32_bit_product() {
+        let out_of = 4096usize;
+        for span in [1_100_000usize, 4_000_000, 33_000_000] {
+            for i in [0usize, 1, 1000, 3000, out_of - 1] {
+                let want = (i as u128 * span as u128 / out_of as u128) as usize;
+                assert_eq!(pick_index(i, span, out_of), want, "i={i} span={span}");
+            }
+        }
+    }
+
+    /// …and it still spreads: the picks start at the head, never step backwards,
+    /// and never step off the end.
+    #[test]
+    fn picks_are_ordered_and_in_range() {
+        let (out_of, span) = (4096usize, 1_100_000usize);
+        assert_eq!(pick_index(0, span, out_of), 0);
+        let mut prev = 0;
+        for i in 0..out_of {
+            let at = pick_index(i, span, out_of);
+            assert!(at >= prev && at < span, "i={i} landed at {at}");
+            prev = at;
+        }
     }
 }
 

@@ -372,7 +372,7 @@ mod tests {
             seq: 9,
             name: Some("someone".into()),
             active_layer: stark_model::document::LayerId::ROOT,
-            cursor: Some(stark_model::Vec2::new(1.0, 2.0)),
+            cursor: Some(stark_model::geom::Vec2::new(1.0, 2.0)),
             gesture: None,
             leaving: false,
         };

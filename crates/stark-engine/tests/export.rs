@@ -370,8 +370,8 @@ fn export_without_a_frame_falls_back() {
     let plan = engine
         .export_plan(None, ExportScale::Factor(1.0))
         .expect("plan");
-    assert!(plan.size.width >= stark_model::TILE_SIZE);
-    assert!(plan.size.height >= stark_model::TILE_SIZE);
+    assert!(plan.size.width >= stark_model::geom::TILE_SIZE);
+    assert!(plan.size.height >= stark_model::geom::TILE_SIZE);
 }
 
 /// **Showing the piece frames what an export would write** (§15.6): the same rect,
@@ -571,7 +571,7 @@ fn the_export_limit_is_the_devices_own() {
 /// showing a stale picture.
 #[test]
 fn a_piece_past_the_export_limit_still_has_an_overview() {
-    use stark_model::geom::Extent2;
+    use stark_engine::Extent2;
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
@@ -631,7 +631,7 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
 /// and a 60-px sketch shown at 60 px says less than the empty panel around it.
 #[test]
 fn fitting_a_small_piece_fills_the_box() {
-    use stark_model::geom::Extent2;
+    use stark_engine::Extent2;
     let Some(mut engine) = engine_or_skip() else {
         return;
     };

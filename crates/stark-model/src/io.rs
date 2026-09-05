@@ -119,7 +119,7 @@ impl Default for BuildId {
 /// Canvas-wide metadata needed to reproduce the document (§8).
 ///
 /// **The tile stride is deliberately not here.** Nothing in a log is expressed in
-/// tile units — `TileCoord`, `TileRect` and `Extent2` are not `Serialize` at all, and
+/// tile units — `TileCoord` and `TileRect` are not `Serialize` at all, and
 /// every action states itself in canvas px — so the stride reaches only *derived*
 /// things: which tiles a footprint quantizes to (§12.6), where an apron sits (§6.4),
 /// whether an action clears a tile cap. A document whose pixels come back slightly

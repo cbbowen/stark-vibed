@@ -51,12 +51,13 @@
 use stark_engine::command::Tool;
 use std::time::Instant;
 
+use stark_engine::Extent2;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
 use stark_engine::headless_engine;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
 use stark_model::document::BrushParams;
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 

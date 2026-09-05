@@ -32,7 +32,7 @@ use super::paint::{GradientParcel, Parcel};
 use super::selection::{SelectionMode, SelectionShape};
 use crate::Srgb;
 use crate::geom::{TILE_APRON, Vec2};
-use crate::{at_least_zero, clamp01};
+use crate::sanitize::{at_least_zero, clamp01};
 
 /// Largest number of paint tiles one fill may write. The same stance and roughly
 /// the same size as [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES):
@@ -329,7 +329,7 @@ mod tests {
 
         // An infinite feather is the other half of that: `max(0.0)` floors a NaN and
         // passes an infinity, and an infinitely wide coverage ramp is a
-        // half-selected plane (`crate::at_least_zero`).
+        // half-selected plane (`crate::sanitize::at_least_zero`).
         let wide = FillOp {
             feather: f32::INFINITY,
             ..hostile

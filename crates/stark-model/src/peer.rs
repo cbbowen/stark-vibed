@@ -14,11 +14,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::MAX_NAME;
 use crate::document::action::clamp_frame;
 use crate::document::{BrushParams, FillOp, LayerId, SelectionOp};
-use crate::geom::Vec2;
+use crate::geom::{IVec2, Vec2};
 use crate::path::ControlPoint;
-use crate::{MAX_NAME, at_least_zero};
+use crate::sanitize::at_least_zero;
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several
@@ -64,7 +65,7 @@ pub struct StrokeHead {
     /// stroke needs the same offset the commit will. Zero from an older sender,
     /// under which translation and canvas coincide.
     #[serde(default)]
-    pub translation: crate::geom::IVec2,
+    pub translation: IVec2,
 }
 
 /// One gesture update on the wire (§17.5).
@@ -112,7 +113,7 @@ pub enum GestureFrame {
         op: FillOp,
         /// The layer's translation at the press — [`StrokeHead::translation`], for a fill.
         #[serde(default)]
-        translation: crate::geom::IVec2,
+        translation: IVec2,
     },
 }
 
@@ -294,7 +295,7 @@ mod tests {
                         ..BrushParams::default()
                     },
                     seed: 0,
-                    translation: crate::geom::IVec2::splat(i32::MAX),
+                    translation: IVec2::splat(i32::MAX),
                 })),
                 from: 0,
                 points: vec![ControlPoint::at(Vec2::ZERO)],
@@ -326,7 +327,7 @@ mod tests {
         assert!(head.brush.size.is_finite(), "a radius sizes a dispatch");
         assert_eq!(
             head.translation,
-            crate::geom::IVec2::splat(FRAME_LIMIT),
+            IVec2::splat(FRAME_LIMIT),
             "a live stroke's frame is spent by the renderer a committed one is",
         );
 
@@ -335,7 +336,7 @@ mod tests {
             gesture: Some(GestureFrame::Fill {
                 id: 1,
                 op: FillOp::of_selection(crate::Srgb::new([0.0; 3])),
-                translation: crate::geom::IVec2::splat(i32::MIN),
+                translation: IVec2::splat(i32::MIN),
             }),
             ..hostile()
         }
@@ -343,7 +344,7 @@ mod tests {
         let Some(GestureFrame::Fill { translation, .. }) = f.gesture else {
             panic!("the gesture kept its shape");
         };
-        assert_eq!(translation, crate::geom::IVec2::splat(-FRAME_LIMIT));
+        assert_eq!(translation, IVec2::splat(-FRAME_LIMIT));
     }
 
     /// [`PeerFrame::sanitized`] claims to be idempotent, which is what lets the door

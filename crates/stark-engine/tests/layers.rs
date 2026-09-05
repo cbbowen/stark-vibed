@@ -4,11 +4,12 @@
 mod common;
 
 use common::*;
+use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::{Background, Engine, Offscreen, Rendered};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
-use stark_model::geom::{Extent2, Vec2};
+use stark_model::geom::Vec2;
 
 const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
