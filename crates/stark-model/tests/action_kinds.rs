@@ -661,15 +661,10 @@ fn writes_a_fresh_fixture() {
     }
 
     let substrate = AssetId([2; 32]);
-    let doc = DocumentFile {
-        app_build: stark_model::BuildId::default(),
-        canvas: CanvasMeta {
-            // Both fields off their defaults, so loading them back proves they were
-            // read rather than defaulted.
-            color_space: ColorSpaceId::Mixbox,
-            substrate: SubstrateId::Image(substrate),
-        },
-        actions: kinds(0.5)
+    // Built through `new` rather than as a literal: the tombstoned bags §8 keeps are
+    // private, so a `DocumentFile` is only ever assembled from its public fields.
+    let mut doc = DocumentFile::new(
+        kinds(0.5)
             .into_iter()
             .enumerate()
             .map(|(i, kind)| Action {
@@ -680,15 +675,21 @@ fn writes_a_fresh_fixture() {
                 kind,
             })
             .collect(),
-        // One per `AssetNeed` variant, so all three decodings are in the file. The
-        // substrate's and the picture's ids are the ones the log names, which is what
-        // makes `unbundled_content` empty on the way back in.
-        content: vec![
-            (AssetNeed::Brush(AssetId([9; 32])), b"brush".to_vec()),
-            (AssetNeed::Substrate(substrate), b"substrate".to_vec()),
-            (AssetNeed::Picture(AssetId([4; 32])), b"picture".to_vec()),
-        ],
+    );
+    doc.canvas = CanvasMeta {
+        // Both fields off their defaults, so loading them back proves they were read
+        // rather than defaulted.
+        color_space: ColorSpaceId::Mixbox,
+        substrate: SubstrateId::Image(substrate),
     };
+    // One per `AssetNeed` variant, so all three decodings are in the file. The
+    // substrate's and the picture's ids are the ones the log names, which is what
+    // makes `unbundled_content` empty on the way back in.
+    doc.content = vec![
+        (AssetNeed::Brush(AssetId([9; 32])), b"brush".to_vec()),
+        (AssetNeed::Substrate(substrate), b"substrate".to_vec()),
+        (AssetNeed::Picture(AssetId([4; 32])), b"picture".to_vec()),
+    ];
 
     let mut lines = vec![
         format!("# {FIXTURE}: one of every ActionKind, written by action_kinds.rs."),

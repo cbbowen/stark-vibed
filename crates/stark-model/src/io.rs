@@ -155,8 +155,6 @@ impl Default for CanvasMeta {
 /// The advisory raster `checkpoints` of §8 are still to come, and are now an ordinary
 /// addition: a `#[serde(default)]` field that older files simply do not carry.
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
-#[serde(from = "RawDocumentFile", into = "RawDocumentFile")]
-#[carbonite(as = "RawDocumentFile")]
 pub struct DocumentFile {
     pub app_build: BuildId,
     pub canvas: CanvasMeta,
@@ -179,85 +177,17 @@ pub struct DocumentFile {
     /// pictures, which is the bargain §23 takes deliberately: the log stays a log, and
     /// the pixels are content beside it, fetched and deduplicated like every other
     /// kind.
+    #[serde(default)]
     pub content: Vec<(AssetNeed, Vec<u8>)>,
-}
-
-/// The container's wire shape, which is [`DocumentFile`] plus **three tombstones**
-/// (§8).
-///
-/// `assets`, `substrates` and `pictures` are what the bundle was before one bag keyed
-/// by [`AssetNeed`] replaced them. They are kept, hollow, for the reason §8 keeps a
-/// retired action's variant: a field this build no longer declares is one an older
-/// file's bytes are silently *dropped* through, and a document that loads without the
-/// brush shape its strokes stamp with degrades to a round tip with nothing saying why.
-///
-/// So they are read and folded into `content`, and written empty. When no three-bag
-/// files are left to open, the three go together — as `LAST_VERSIONED_SCHEMA` will.
-/// They go as `#[carbonite(removed("assets", "substrates", "surfaces", "pictures"))]`
-/// rather than by deletion, since a later field taking one of those names — the
-/// alias included — would read the dead column.
-#[derive(Serialize, Deserialize, carbonite::Schema)]
-#[serde(rename = "DocumentFile")]
-struct RawDocumentFile {
-    app_build: BuildId,
-    canvas: CanvasMeta,
-    actions: Vec<Action>,
-    #[serde(default)]
-    content: Vec<(AssetNeed, Vec<u8>)>,
     /// Brush shapes, in the bag a pre-`content` document wrote them to.
-    #[serde(default)]
-    assets: Vec<(AssetId, Vec<u8>)>,
+    #[serde(default, rename = "assets")]
+    legacy_assets: Vec<(AssetId, Vec<u8>)>,
     /// Canvas substrates, keyed by [`SubstrateId`] as that bundle was.
-    #[serde(default, alias = "surfaces")]
-    substrates: Vec<(SubstrateId, Vec<u8>)>,
+    #[serde(default, rename = "substrates", alias = "surfaces")]
+    legacy_substrates: Vec<(SubstrateId, Vec<u8>)>,
     /// Placed pictures (§23).
-    #[serde(default)]
-    pictures: Vec<(AssetId, Vec<u8>)>,
-}
-
-impl From<RawDocumentFile> for DocumentFile {
-    /// Folds the tombstoned bags in, each under the need its own store answers —
-    /// expressible only because the old shape said which store it meant by which
-    /// field it used.
-    fn from(raw: RawDocumentFile) -> Self {
-        let mut content = raw.content;
-        content.extend(
-            raw.assets
-                .into_iter()
-                .map(|(id, b)| (AssetNeed::Brush(id), b)),
-        );
-        content.extend(
-            raw.substrates
-                .into_iter()
-                .filter_map(|(id, b)| AssetNeed::for_substrate(id).map(|n| (n, b))),
-        );
-        content.extend(
-            raw.pictures
-                .into_iter()
-                .map(|(id, b)| (AssetNeed::Picture(id), b)),
-        );
-        Self {
-            app_build: raw.app_build,
-            canvas: raw.canvas,
-            actions: raw.actions,
-            content,
-        }
-    }
-}
-
-impl From<DocumentFile> for RawDocumentFile {
-    /// The tombstones go out empty — see [`RawDocumentFile`].
-    fn from(file: DocumentFile) -> Self {
-        Self {
-            app_build: file.app_build,
-            canvas: file.canvas,
-            actions: file.actions,
-            content: file.content,
-            assets: Vec::new(),
-            substrates: Vec::new(),
-            pictures: Vec::new(),
-        }
-    }
+    #[serde(default, rename = "pictures")]
+    legacy_pictures: Vec<(AssetId, Vec<u8>)>,
 }
 
 impl DocumentFile {
@@ -267,7 +197,46 @@ impl DocumentFile {
             canvas: CanvasMeta::default(),
             actions,
             content: Vec::new(),
+            legacy_assets: Vec::new(),
+            legacy_substrates: Vec::new(),
+            legacy_pictures: Vec::new(),
         }
+    }
+
+    /// Folds the three tombstoned bags into `content`, each under the need its own
+    /// store answers — expressible only because the old shape said which store it
+    /// meant by which field it used.
+    ///
+    /// `assets`, `substrates` and `pictures` are what the bundle was before one bag
+    /// keyed by [`AssetNeed`] replaced them. They are kept, hollow, for the reason §8
+    /// keeps a retired action's variant: a field this build no longer declares is one
+    /// an older file's bytes are silently *dropped* through, and a document that loads
+    /// without the brush shape its strokes stamp with degrades to a round tip with
+    /// nothing saying why. When no three-bag files are left to open, the three go as
+    /// `#[carbonite(removed("assets", "substrates", "surfaces", "pictures"))]` rather
+    /// than by deletion — as `LAST_VERSIONED_SCHEMA` will — since a later field taking
+    /// one of those names, the alias included, would read the dead column.
+    ///
+    /// **The three are private, which is what makes this unskippable**: nothing outside
+    /// this module can leave one non-empty, and [`decode`](Self::decode) is the only
+    /// path in the workspace that deserializes a `DocumentFile`. They therefore go out
+    /// empty without anything having to write them so.
+    fn fold_legacy_bags(&mut self) {
+        self.content.extend(
+            std::mem::take(&mut self.legacy_assets)
+                .into_iter()
+                .map(|(id, b)| (AssetNeed::Brush(id), b)),
+        );
+        self.content.extend(
+            std::mem::take(&mut self.legacy_substrates)
+                .into_iter()
+                .filter_map(|(id, b)| AssetNeed::for_substrate(id).map(|n| (n, b))),
+        );
+        self.content.extend(
+            std::mem::take(&mut self.legacy_pictures)
+                .into_iter()
+                .map(|(id, b)| (AssetNeed::Picture(id), b)),
+        );
     }
 
     /// Encode to the on-disk container: `MAGIC | deflate(carbonite(self))`.
@@ -342,7 +311,9 @@ impl DocumentFile {
             return Err(DocError::TooLarge { limit });
         }
 
-        carbonite::from_slice_static(&frame).map_err(DocError::Deserialize)
+        let mut file: Self = carbonite::from_slice_static(&frame).map_err(DocError::Deserialize)?;
+        file.fold_legacy_bags();
+        Ok(file)
     }
 }
 
