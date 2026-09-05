@@ -19,8 +19,9 @@ pub struct MatteDraw {
     /// *hole* — the fill covers everything outside it. Zeros, never read, when
     /// `flags` says the region is the whole plane.
     pub rect: [f32; 4],
-    /// Region kind, as the shader reads it: 0 = outside `rect`, 1 = everything
-    /// (§15.5).
+    /// Region kind, as the shader reads it (§15.5): `matte.wesl`'s
+    /// [`REGION_OUTSIDE`](stark_shaders::mirror::matte::REGION_OUTSIDE) or
+    /// [`REGION_EVERYTHING`](stark_shaders::mirror::matte::REGION_EVERYTHING).
     pub flags: f32,
     /// Fill color in the document's working color space. Zeros for a gradient
     /// matte, whose color comes from `ramp` per fragment.
@@ -448,6 +449,7 @@ impl CompositeGroup {
 mod tests {
     use super::*;
     use stark_model::document::BlendMode;
+    use stark_shaders::mirror::matte::REGION_OUTSIDE;
 
     /// A drawable with a known opacity and nothing else — a matte, because it is the
     /// one [`CompositeItem`] that is plain data. A tile would need a GPU to make one,
@@ -455,7 +457,7 @@ mod tests {
     fn item(opacity: f32) -> CompositeItem {
         CompositeItem::Matte(MatteDraw {
             rect: [0.0; 4],
-            flags: 0.0,
+            flags: REGION_OUTSIDE,
             channels: [0.0; 4],
             resid: [0.0; 4],
             opacity,

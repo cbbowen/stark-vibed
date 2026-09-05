@@ -268,14 +268,14 @@ pub(super) fn blur_kernels(
 /// The widest radius the convolution runs at full resolution, in convolution
 /// texels — past it the layer decimates instead (§21.12, [`scale`]).
 ///
-/// The number is the document knob's own ceiling ([`FocalBlur::RADIUS`]), which
-/// makes the statement exact: **at any zoom up to 1:1 the convolution is never
-/// decimated**, and past 1:1 it decimates only once the on-screen radius has
-/// outgrown the widest blur the knob can ask for. An aperture this many texels
-/// wide carries nothing near texel frequency, so halving the resolution under it
-/// is invisible where it is legal — which is the same trade the chromatic
-/// filter's tap cap makes, chosen the same way round: degrade the *sampling*,
-/// never the picture's own geometry.
+/// The document knob's own ceiling ([`FocalBlur::RADIUS`]), which makes the
+/// statement exact: **at any zoom up to 1:1 the convolution is never decimated**,
+/// and past 1:1 it decimates only once the on-screen radius has outgrown the
+/// widest blur the knob can ask for. An aperture this many texels wide carries
+/// nothing near texel frequency, so halving the resolution under it is invisible
+/// where it is legal — which is the same trade the chromatic filter's tap cap
+/// makes, chosen the same way round: degrade the *sampling*, never the picture's
+/// own geometry.
 ///
 /// "This many texels wide" is a claim about the *thinnest* part of a shape, not
 /// about its span, which is why [`Aperture::OBSTRUCTION`] has a ceiling: a ring's
@@ -284,7 +284,7 @@ pub(super) fn blur_kernels(
 ///
 /// [`Aperture::OBSTRUCTION`]: stark_model::document::Aperture::OBSTRUCTION
 /// [`FocalBlur::RADIUS`]: stark_model::document::FocalBlur::RADIUS
-const MAX_CONV_RADIUS: f32 = 128.0;
+const MAX_CONV_RADIUS: f32 = stark_model::document::FocalBlur::RADIUS.1;
 
 /// The decimation scale for an on-screen radius of `r_texels`: the smallest
 /// power of two that brings the convolution-space radius inside

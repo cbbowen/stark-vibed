@@ -33,8 +33,8 @@ struct Guide {
     org: vec4<f32>,
     // Center of view .xy (canvas px), master opacity, unused.
     cov: vec4<f32>,
-    // Lens flag (0 rectilinear, 1 fisheye), 45° ring radius, 90° ring radius
-    // (≤ 0 when the lens has none), unused.
+    // Lens (`LENS_*`), 45° ring radius, 90° ring radius (≤ 0 when the lens has
+    // none), unused.
     proj: vec4<f32>,
     // The lattice the fans measure out (§20.3): .xyz the corner where its three
     // squared planes meet, in camera space, in cells; .w = 1 when it names a
@@ -50,9 +50,9 @@ struct Guide {
     // it, its vanishing trace, its station point. Handed over already resolved,
     // as everything here is — the pass draws numbers, it does not apply rules.
     pairs: vec4<f32>,
-    // Vanishing trace of pair (k, k+1), by .w: 0 = none; 1 = line (unit normal
-    // .xy, offset .z — evaluating gives signed canvas px); 2 = circle (center
-    // .xy, radius .z).
+    // Vanishing trace of pair (k, k+1), by .w (`TRACE_*`): none; a line (unit
+    // normal .xy, offset .z — evaluating gives signed canvas px); a circle
+    // (center .xy, radius .z).
     lines: array<vec4<f32>, 3>,
     // Vanishing points: .xy canvas px, .z = valid. Slots 0–2 are the axes'
     // forward poles, 3–5 the backward — which only the fisheye separates.
@@ -117,6 +117,15 @@ const DASH: f32 = 10.0;
 const RAY_OPACITY: f32 = 0.6;
 // Opacity of the FOV ring.
 const RING_OPACITY: f32 = 0.8;
+
+// The codes `pack_guides` (`gpu/composite/guides.rs`) writes into `proj.x` and
+// into the `.w` of a `lines`/`rays` slot, read back through the mirror (§6.10),
+// so the host spells no number. Exact small integers, so `==` is exact.
+const LENS_RECTILINEAR: f32 = 0.0;
+const LENS_FISHEYE: f32 = 1.0;
+const TRACE_NONE: f32 = 0.0;
+const TRACE_LINE: f32 = 1.0;
+const TRACE_CIRCLE: f32 = 2.0;
 
 fn axis_color(i: u32) -> vec3<f32> {
     if i == 0u { return AXIS_X; }
@@ -199,11 +208,11 @@ fn fan_cov(w: f32, den: f32, dw: vec2<f32>, dden: vec2<f32>) -> f32 {
 /// which is why one `stroke_cov` draws a straight vanishing line, a bowed one
 /// and a cursor ray alike (§20.2, §20.8, §20.9).
 ///
-/// `t` is the packed slot: `.w` the kind (1 = line with unit normal `.xy` and
-/// offset `.z`, 2 = circle of center `.xy` and radius `.z`), which the caller
-/// has already found non-zero.
+/// `t` is the packed slot: `.w` the kind (`TRACE_LINE` with unit normal `.xy`
+/// and offset `.z`, `TRACE_CIRCLE` of center `.xy` and radius `.z`), which the
+/// caller has already found to be one of the two.
 fn trace_dist(t: vec4<f32>, p: vec2<f32>, zoom: f32) -> f32 {
-    if t.w > 1.5 {
+    if t.w == TRACE_CIRCLE {
         return abs(length(p - t.xy) - t.z) * zoom;
     }
     return abs(dot(t.xy, p) + t.z) * zoom;
@@ -261,7 +270,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // on a uniform value, so the derivative calls below remain in uniform
     // control flow.
     var ray: vec3<f32>;
-    if guide.proj.x > 0.5 {
+    if guide.proj.x == LENS_FISHEYE {
         // Inverse stereographic: past the 90° ring (s > 1) the z component
         // goes negative and the texel sees *behind* the camera.
         let u = (p - cov) / (2.0 * f);
@@ -333,7 +342,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // §20.8) — a line or a circle by the slot's kind, one distance either way.
     for (var k = 0u; k < 3u; k++) {
         let kind = guide.lines[k].w;
-        if kind < 0.5 { continue; }
+        if kind == TRACE_NONE { continue; }
         let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
         let d_px = trace_dist(guide.lines[k], p, zoom);
@@ -359,7 +368,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     var ray_d = array<f32, 3>(0.0, 0.0, 0.0);
     for (var i = 0u; i < 3u; i++) {
         let t = guide.rays[i];
-        if t.w < 0.5 || guide.dirs[i].w <= 0.0 { continue; }
+        if t.w == TRACE_NONE || guide.dirs[i].w <= 0.0 { continue; }
         ray_a[i] = RAY_OPACITY * cut_cov(guide.cuts[i], p, zoom) * guide.dirs[i].w * master;
         ray_d[i] = trace_dist(t, p, zoom);
     }

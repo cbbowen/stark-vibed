@@ -2,7 +2,7 @@
 //!
 //! Three kinds, each generated from the WESL declaration that decides how it is
 //! read: the **uniform structs** ([`emit`]), the **constants** both sides compute
-//! with ([`emit_const`]), and the **per-instance vertex records** a vertex entry
+//! with ([`emit_consts`]), and the **per-instance vertex records** a vertex entry
 //! point's `@location` parameters describe ([`emit_vertex`]).
 //!
 //! Every uniform on this boundary is one half of a pair the compiler cannot see

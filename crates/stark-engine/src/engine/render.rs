@@ -22,6 +22,7 @@ use crate::image::RgbaImage;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
 use stark_model::geom::TileRect;
+use stark_shaders::mirror::matte::{REGION_EVERYTHING, REGION_OUTSIDE};
 use std::sync::Arc;
 
 /// What sits under the paint when rendering (§15.6).
@@ -1116,8 +1117,8 @@ impl Engine {
                     None => [0.0; 4],
                 };
                 let flags = match region {
-                    stark_model::document::MatteRegion::OutsideRect { .. } => 0.0,
-                    stark_model::document::MatteRegion::Everything => 1.0,
+                    stark_model::document::MatteRegion::OutsideRect { .. } => REGION_OUTSIDE,
+                    stark_model::document::MatteRegion::Everything => REGION_EVERYTHING,
                 };
                 // sRGB in the log, working-space channels on the GPU — the same
                 // conversion the brush color gets, so a matte means the same
@@ -1597,7 +1598,7 @@ mod tests {
         let items = || {
             vec![CompositeItem::Matte(MatteDraw {
                 rect: [0.0; 4],
-                flags: 1.0,
+                flags: REGION_EVERYTHING,
                 channels: [0.0; 4],
                 resid: [0.0; 4],
                 opacity: 1.0,

@@ -111,7 +111,7 @@ pub(super) fn supersample(
 ///
 /// The last two are the terms a pixel count cannot express, and they dominate: a
 /// single blend group more than doubles the frame's memory footprint, and a focal
-/// blur is [`BLUR_BYTES_PER_PX`] on its own — which is the mechanism that keeps a
+/// blur is [`blur_bytes_per_px`] on its own — which is the mechanism that keeps a
 /// blurred frame from also being a heavily supersampled one.
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
@@ -122,17 +122,30 @@ pub(super) fn attachment_bytes(
     let trio = formats.bytes_per_px();
     let resolve = u64::from(target_format.block_copy_size(None).unwrap_or(0));
     let scratch: u64 = scratch.iter().map(|&iso| trio * (1 + u64::from(iso))).sum();
-    trio + resolve + scratch + if blur { BLUR_BYTES_PER_PX } else { 0 }
+    trio + resolve + scratch + if blur { blur_bytes_per_px() } else { 0 }
 }
 
 /// What one supersampled texel costs the focal blur (§21.12), as this budget
-/// counts it: the five `f32` planes — two ping-pong sets of `rgba32float` +
-/// `rg32float`, and the kernel — are 56 bytes per **padded** texel, and the
-/// power-of-two padding runs up to about double the accumulator's area before
-/// the guard band. An estimate rather than the exact figure, because the padding
-/// depends on the radius and the radius on the zoom this call is deciding — the
-/// pessimistic side of the round-up is the safe side of a memory budget.
-const BLUR_BYTES_PER_PX: u64 = 2 * (2 * (16 + 8) + 8);
+/// counts it: the five `f32` planes — two ping-pong sets of the light and aux
+/// planes, and the kernel, which `blur.rs` allocates in the aux plane's format —
+/// per **padded** texel, and the power-of-two padding runs up to about double the
+/// accumulator's area before the guard band. An estimate rather than the exact
+/// figure, because the padding depends on the radius and the radius on the zoom
+/// this call is deciding — the pessimistic side of the round-up is the safe side
+/// of a memory budget.
+///
+/// Read off the shader's own storage formats rather than summed by hand (§6.10):
+/// `block_copy_size` is not `const`, and a plane whose format moved in
+/// `blur.wesl` would otherwise leave this budget counting the old one.
+fn blur_bytes_per_px() -> u64 {
+    use stark_shaders::mirror::blur::decl as bd;
+    let of = |f: wgpu::TextureFormat| u64::from(f.block_copy_size(None).unwrap_or(0));
+    let (light, aux) = (
+        of(bd::DST_LIGHT.storage_format()),
+        of(bd::DST_AUX.storage_format()),
+    );
+    2 * (2 * (light + aux) + aux)
+}
 
 /// The resolve pass's bind group layout, shared by the pipeline compiled for each
 /// target format ([`TargetPasses`](super::TargetPasses)) so a [`Supersampled`]

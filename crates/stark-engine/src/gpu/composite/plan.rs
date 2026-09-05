@@ -420,9 +420,10 @@ mod tests {
     /// [`CompositeItem`] that is plain data. A tile would need a GPU to make one, and
     /// nothing under test here has anything to do with paint.
     fn item() -> CompositeItem {
+        use stark_shaders::mirror::matte::REGION_OUTSIDE;
         CompositeItem::Matte(MatteDraw {
             rect: [0.0; 4],
-            flags: 0.0,
+            flags: REGION_OUTSIDE,
             channels: [0.0; 4],
             resid: [0.0; 4],
             opacity: 1.0,

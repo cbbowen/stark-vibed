@@ -77,7 +77,8 @@ crates/
     filters.rs     the host's reads of the generated shader mirror (§6.10)
   stark-shaders/   WESL sources, the build step that links them, and the host
                    mirrors generated from them (§6.10)
-    shaders/lib/   binding-free leaves — a module here may NOT declare a binding
+    src/shaders/   the WESL tree; `lib/` under it holds the binding-free leaves
+                   — a module there may NOT declare a binding
     build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
@@ -266,12 +267,16 @@ uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
   `filters.rs` is where those collected.
 - **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
   Uniform lanes, constants, vertex formats, binding indices and binding *types*
-  are all generated from the shader's own declaration —`MIRRORS`, `CONSTS`,
-  `VERTEX` and `BINDINGS` in `stark-shaders/build.rs`. Every one of those lists
-  exists because a hand-written second copy drifted, and the drift was invisible
-  until it was a picture. What is genuinely the host's — a name, a step mode,
-  whether *this* pass samples *that* texture — is worth writing by hand for the
-  same reason: the shader does not say it.
+  are all generated from the shader's own declaration — and **discovered, not
+  listed**: `stark-shaders/build/mirror.rs` mirrors every typed `const`, every
+  `@binding` and every `var<uniform>` struct in the tree (`emit_consts`,
+  `emit_bindings`, `emit_uniform_structs`), so a host transcription is always
+  avoidable. `build.rs` names only what a shader cannot say about itself:
+  `SHARED` (one host type several shaders declare identically) and `VERTEX` (the
+  name of a per-instance record). A hand-written second copy drifts, and the
+  drift is invisible until it is a picture. What is genuinely the host's — a
+  name, a step mode, whether *this* pass samples *that* texture — is worth
+  writing by hand for the same reason: the shader does not say it.
 - **A new engine method that mutates state and returns nothing is a bug** — it
   should be a command (§4). Operations that must *answer* are a named request
   tier, so they stay countable when the engine moves behind a channel.

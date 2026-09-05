@@ -63,6 +63,12 @@ struct Ramp {
 // reads solid.
 const MATTE_THICKNESS: f32 = 8.0;
 
+// Region codes — the shader ABI for `MatteRegion`, which the host writes into
+// the `flags` instance lane through the mirror (§6.10). Exact small integers,
+// so `==` is exact.
+const REGION_OUTSIDE: f32 = 0.0;
+const REGION_EVERYTHING: f32 = 1.0;
+
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) canvas: vec2<f32>,
@@ -106,7 +112,7 @@ fn vs_main(
     // layouts. Sixteen bytes per matte, against a per-texel channel Oklab still does
     // not allocate.
     @location(3) resid: vec4<f32>,
-    // Region kind: 0 = outside `rect` (the frame), 1 = the whole plane
+    // Region kind (`REGION_*`): outside `rect` (the frame), or the whole plane
     // (§15.5's substrate) — `rect` then carries zeros and is never read.
     @location(4) flags: f32,
 ) -> VsOut {
@@ -152,7 +158,7 @@ fn outside_coverage(p: vec2<f32>, rect: vec4<f32>, aa: f32) -> f32 {
 fn fs_main(in: VsOut) -> FsOut {
     // The whole plane needs no signed distance: its coverage is the statement.
     var region = 1.0;
-    if in.flags < 0.5 {
+    if in.flags == REGION_OUTSIDE {
         region = outside_coverage(in.canvas, in.rect, in.aa);
     }
     let a = region * in.opacity;
