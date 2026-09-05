@@ -1,0 +1,44 @@
+# 2026-09-vocabulary: one of every ActionKind, written by action_kinds.rs.
+# Read by format_stability.rs, whose header says why neither file is ever
+# regenerated.
+canvas.color_space Mixbox
+canvas.substrate Image(AssetId(02020202…))
+content Brush(AssetId(09090909…))
+content Picture(AssetId(04040404…))
+content Substrate(AssetId(02020202…))
+add_layer LayerId { action: ActionId { lamport: 3, actor: ActorId(0) }, k: 0 }
+action 1 Stroke
+action 2 Add layer
+action 3 Remove layer
+action 4 Blend mode
+action 5 Layer opacity
+action 6 Layer visibility
+action 7 Reorder layer
+action 8 Undo
+action 9 Canvas substrate
+action 10 Substrate scale
+action 11 Select
+action 12 Invert selection
+action 13 Selection opacity
+action 14 Add matte
+action 15 Move frame
+action 16 Matte paint
+action 17 Canvas color
+action 18 Transform
+action 19 Rename layer
+action 20 Fill
+action 21 Clip layer
+action 22 Perspective
+action 23 Warp
+action 24 Duplicate layer
+action 25 Add filter
+action 26 Filter
+action 27 Merge down
+action 28 Place image
+action 29 Add guide
+action 30 Remove guide
+action 31 Perspective guide
+action 32 Rename guide
+action 33 Reorder guide
+action 34 Move layer
+action 35 Float selection

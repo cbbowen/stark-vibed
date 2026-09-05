@@ -30,7 +30,9 @@ use stark_model::document::{
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::gradient::{Gradient, GradientStop};
 use stark_model::path::ControlPoint;
-use stark_model::{AssetId, Srgb, SubstrateId, SubstrateScale};
+use stark_model::{
+    AssetId, AssetNeed, CanvasMeta, ColorSpaceId, DocumentFile, Srgb, SubstrateId, SubstrateScale,
+};
 use stark_testdata::vocabulary::{KINDS, labels, slot};
 
 // ---------------------------------------------------------------------------
@@ -628,4 +630,108 @@ fn a_footprint_stays_small_enough_for_a_nested_scan() {
             f.writes.len(),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The stored fixture
+
+/// The fixture this build would write, if asked. Bumped — never edited in place —
+/// when a new one is added.
+const FIXTURE: &str = "2026-09-vocabulary";
+
+/// Writes `tests/fixtures/<FIXTURE>.stark` and its manifest, for
+/// `tests/format_stability.rs` to open on every later build (§8).
+///
+/// `#[ignore]`d because it is a **command**, not a test: run it deliberately, having
+/// first changed [`FIXTURE`] to today's date, and commit what it wrote.
+///
+/// ```sh
+/// cargo nextest run -p stark-model -E 'test(writes_a_fresh_fixture)' --run-ignored all
+/// ```
+///
+/// It refuses to overwrite. A fixture is a file a *past* build wrote, and rewriting
+/// one destroys the only evidence it carries; the reader's header says the rest.
+///
+/// Here rather than beside the reader because [`kinds`] is what it writes, and an
+/// integration test is its own binary — the reader only reads bytes, so it needs
+/// none of this.
+#[test]
+#[ignore = "writes a fixture; run deliberately, under a new name"]
+fn writes_a_fresh_fixture() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    std::fs::create_dir_all(&dir).expect("the fixtures directory");
+    let stark = dir.join(format!("{FIXTURE}.stark"));
+    let manifest = dir.join(format!("{FIXTURE}.txt"));
+    for path in [&stark, &manifest] {
+        assert!(
+            !path.exists(),
+            "{} exists: a fixture is evidence a past build wrote, so add a dated one \
+             rather than regenerating this",
+            path.display(),
+        );
+    }
+
+    let substrate = AssetId([2; 32]);
+    let doc = DocumentFile {
+        app_build: stark_model::BuildId::default(),
+        canvas: CanvasMeta {
+            // Both fields off their defaults, so loading them back proves they were
+            // read rather than defaulted.
+            color_space: ColorSpaceId::Mixbox,
+            substrate: SubstrateId::Image(substrate),
+        },
+        actions: kinds(0.5)
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| Action {
+                id: ActionId {
+                    lamport: i as u64 + 1,
+                    actor: ActorId::SOLO,
+                },
+                kind,
+            })
+            .collect(),
+        // One per `AssetNeed` variant, so all three decodings are in the file. The
+        // substrate's and the picture's ids are the ones the log names, which is what
+        // makes `unbundled_content` empty on the way back in.
+        content: vec![
+            (AssetNeed::Brush(AssetId([9; 32])), b"brush".to_vec()),
+            (AssetNeed::Substrate(substrate), b"substrate".to_vec()),
+            (AssetNeed::Picture(AssetId([4; 32])), b"picture".to_vec()),
+        ],
+    };
+
+    let mut lines = vec![
+        format!("# {FIXTURE}: one of every ActionKind, written by action_kinds.rs."),
+        "# Read by format_stability.rs, whose header says why neither file is ever".to_string(),
+        "# regenerated.".to_string(),
+        format!("canvas.color_space {:?}", doc.canvas.color_space),
+        format!("canvas.substrate {:?}", doc.canvas.substrate),
+    ];
+    let mut needs: Vec<String> = doc
+        .content
+        .iter()
+        .map(|(need, _)| format!("content {need:?}"))
+        .collect();
+    needs.sort();
+    lines.extend(needs);
+    // One `LayerId`, spelled whole: the id's shape is the one thing this format has
+    // ever broken over (§17.9, §19).
+    let minted = doc
+        .actions
+        .iter()
+        .find_map(|a| match a.kind {
+            ActionKind::AddLayer { id, .. } => Some(id),
+            _ => None,
+        })
+        .expect("the list holds an AddLayer");
+    lines.push(format!("add_layer {minted:?}"));
+    lines.extend(
+        doc.actions
+            .iter()
+            .map(|a| format!("action {} {}", a.id.lamport, a.kind.label())),
+    );
+
+    std::fs::write(&stark, doc.to_bytes().expect("encode")).expect("write the fixture");
+    std::fs::write(&manifest, lines.join("\n") + "\n").expect("write the manifest");
 }
