@@ -558,12 +558,12 @@ impl Materialize for DocState {
 /// is `stark-model`'s now and this needs the renderers: the division the orphan rule
 /// forced is the one the split is about (§2).
 ///
-/// **What is left here is the nine kinds that need a renderer** — a stroke, a placed
-/// image, the two selection ops, the three transforms, a merge and a fill. Everything
-/// else folds without touching one and is [`apply_pure`]'s, which this match ends by
-/// handing over to. Both matches are exhaustive with no `_` arm, so a kind added
-/// later has to name itself on one side of the line rather than defaulting into
-/// either.
+/// **What is left here is the ten kinds that need a renderer** — a stroke, a placed
+/// image, the two selection ops, the three transforms, a merge, a float and a fill.
+/// Everything else folds without touching one and is [`apply_pure`]'s, which this
+/// match ends by handing over to. Both matches are exhaustive with no `_` arm, so a
+/// kind added later has to name itself on one side of the line rather than defaulting
+/// into either.
 ///
 /// **Total.** An action that cannot be honoured — a stroke on a missing layer, a
 /// transform past the tile caps — returns the state unchanged rather than an error,
@@ -799,19 +799,26 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
         | ActionKind::SetGuide(..)
         | ActionKind::SetGuideName(..)
         | ActionKind::MoveGuide { .. }
-        | ActionKind::TranslateLayers { .. }) => apply_pure(kind, state, action.id.actor)
-            .expect("the kinds named here are exactly the ones `apply_pure` folds"),
+        | ActionKind::TranslateLayers { .. }) => {
+            apply_pure(kind, state, action.id.actor).into_state()
+        }
     }
 }
 
 /// The arms of [`apply`] that are a [`DocState`] call and nothing else — two thirds
 /// of the fold, answered without a tile pool, a renderer or an adapter.
 ///
-/// `None` for the nine kinds that do need one, so [`apply`] keeps those and hands
-/// everything else here. **The partition is the compiler's**: this function has no
-/// [`ApplyCtx`] to name, so an arm that reaches for a renderer does not compile —
-/// which is the whole point of the shape, and the reason nothing is threaded in here
-/// against the day one might.
+/// [`Folded::NeedsRenderer`] for the ten kinds that do need one, so [`apply`] keeps
+/// those and hands everything else here. **The partition is the compiler's**: this
+/// function has no [`ApplyCtx`] to name, so an arm that reaches for a renderer does
+/// not compile — which is the whole point of the shape, and the reason nothing is
+/// threaded in here against the day one might.
+///
+/// Both matches are exhaustive, so a new kind must name itself on each side of the
+/// line — but naming it on the *wrong* side of both compiles, and no match can say so.
+/// **That is why every answer here carries a document**: the mistake costs an ignored
+/// action rather than a panic on every remote peer's fold and on every action of a
+/// loaded file, in release as well as debug.
 ///
 /// Split out because these arms were being *reconstructed* to be tested. `patch.rs`
 /// checks that folding an action and unapplying it puts the document back, and the
@@ -823,8 +830,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// Takes the actor rather than the [`Action`] because that is all any arm reads of
 /// it: the author's own mask is keyed by it (§17.3) and `SetSelectionOpacity` writes
 /// through it. Nothing here reads the Lamport clock.
-pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Option<DocState> {
-    Some(match kind {
+pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Folded {
+    Folded::Done(match kind {
         ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
         // The copy's tiles are the shared handles the source already holds, so
         // duplicating a layer costs no GPU memory until one of the two is
@@ -933,8 +940,28 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         | ActionKind::TransformWarp { .. }
         | ActionKind::MergeLayerDown { .. }
         | ActionKind::FloatSelection { .. }
-        | ActionKind::Fill { .. } => return None,
+        | ActionKind::Fill { .. } => return Folded::NeedsRenderer(state),
     })
+}
+
+/// What [`apply_pure`] made of the kind it was handed — the document either way.
+///
+/// Not a `Result`, because neither answer is a failure: a kind this half does not fold
+/// is one [`apply`] renders itself.
+pub(super) enum Folded {
+    /// Folded here: the document with the action in it.
+    Done(DocState),
+    /// Not folded: the state as it arrived, for the caller that has a renderer.
+    NeedsRenderer(DocState),
+}
+
+impl Folded {
+    /// The document, whichever answer this is — what [`apply`] takes, having already
+    /// decided by its own match that this kind needs no renderer.
+    fn into_state(self) -> DocState {
+        let (Folded::Done(state) | Folded::NeedsRenderer(state)) = self;
+        state
+    }
 }
 
 /// The document as committing `kind` would leave it, **without logging it** — the

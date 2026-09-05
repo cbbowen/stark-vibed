@@ -311,8 +311,11 @@ impl MergeRenderer {
     /// lopsided-merge shortcut above. The one tile that costs nothing is the one that
     /// does not exist — an empty destination merges to an empty destination.
     pub fn apply_filter(&self, pool: &TilePool, dest: &TileMap, draw: &FilterDraw) -> TileMap {
+        // The law, not one kind that breaks it: any other gather named here would
+        // pass a `kind` check and render through `fs_tile` with the blur pass's 1×1
+        // stand-ins bound — an unfiltered tile, silently.
         debug_assert!(
-            draw.kind != stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
+            !draw.resamples,
             "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines \
              it, because no apron makes a gather a function of canvas position (§6.4)",
         );

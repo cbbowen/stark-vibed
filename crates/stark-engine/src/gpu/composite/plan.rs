@@ -449,6 +449,7 @@ mod tests {
     fn filter() -> CompositeGroup {
         CompositeGroup::filter(FilterDraw {
             kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
+            resamples: false,
             strength: 1.0,
             clip: false,
             params: [0.0; 4],

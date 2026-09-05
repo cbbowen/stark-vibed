@@ -109,19 +109,71 @@ pub struct StrokeRenderer {
     /// it is handed in rather than rebuilt with the rest of this renderer.
     selection: SelectionRenderer,
 
-    /// The seed of the last stroke this renderer complained about — could not draw
-    /// ([`StrokePath::TipTooLarge`]), or could draw only with segments shortened to
-    /// fit the region (`StrokePlan::shortened`) — so it says so once per stroke
-    /// rather than once per pointer move.
-    ///
-    /// The gate is re-asked on every render, and deliberately so — it is a pure
-    /// function of the brush, which is what lets a live tail and its commit agree for
-    /// free ([`dynamics_setup`]). But its *answer* is a property of the record, so
-    /// repeating it per frame turns one undrawable brush into an unbounded stream of
-    /// `error!` and buries whatever else the log was carrying. One seed is enough to
-    /// collapse that: a gesture renders one stroke at a time, so remembering the last
-    /// is remembering the one being drawn.
-    complained: Arc<std::sync::Mutex<Option<u64>>>,
+    /// What has already been said about the stroke being drawn ([`Complaints`]) — so
+    /// a brush that cannot be honoured says so once per stroke and per kind of
+    /// complaint, rather than once per pointer move.
+    complained: Arc<Complaints>,
+}
+
+/// What a stroke render can find worth saying — the second half of the key
+/// [`Complaints`] gates on.
+///
+/// Named rather than counted, because one stroke can earn several: a large tip both
+/// shortens its segments (`budget::fit_len`) and caps its bleed firings
+/// (`dynamics::bleed`), and under a gate that remembered only the seed the second
+/// went unsaid — on that render and on every later one, the seed being already
+/// recorded. The brush that reaches both caps is the one those warnings exist for.
+#[derive(Copy, Clone)]
+enum Complaint {
+    /// The brush's stamp asset has not loaded, so the stroke is deferred.
+    AssetMissing,
+    /// Segments shortened to fit one dynamics region (`budget::fit_len`).
+    Shortened,
+    /// A tip too large for a region at all ([`StrokePath::TipTooLarge`]).
+    TipTooLarge,
+    /// A segment wanting more bleed firings than the cap allows (`dynamics::bleed`).
+    BleedCapped,
+}
+
+impl Complaint {
+    /// This complaint's bit in [`Complaints`]' mask, which is a `u32` — room for 32
+    /// kinds, against a shift that would go quietly wrong past the end of it.
+    const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
+
+/// What has already been said about the stroke being drawn: its seed, and one bit per
+/// [`Complaint`] already made about it.
+///
+/// Every gate behind this is re-asked on each render, and deliberately so — each is a
+/// pure function of the brush, which is what lets a live tail and its commit agree for
+/// free ([`dynamics_setup`]). But the *answers* are properties of the record, so
+/// repeating them per frame turns one undrawable brush into an unbounded stream of
+/// `error!` and buries whatever else the log was carrying.
+///
+/// One stroke deep rather than a set of seeds: a gesture draws one stroke at a time,
+/// so the last is the one being drawn, and a replay that alternates between two
+/// undrawable records is welcome to say so twice. What this rules out is the unbounded
+/// case, which is one stroke shouting on every pointer move.
+#[derive(Default)]
+struct Complaints(std::sync::Mutex<Option<(u64, u32)>>);
+
+impl Complaints {
+    /// Whether `what` is being said about stroke `seed` for the first time.
+    fn say(&self, seed: u64, what: Complaint) -> bool {
+        let mut said = unpoisoned(self.0.lock());
+        // A different stroke starts over; this one adds to what it has said already.
+        let bits = match *said {
+            Some((s, bits)) if s == seed => bits,
+            _ => 0,
+        };
+        if bits & what.bit() != 0 {
+            return false;
+        }
+        *said = Some((seed, bits | what.bit()));
+        true
+    }
 }
 
 /// Everything a stroke is drawn *against*, as opposed to the stroke itself.
@@ -243,7 +295,7 @@ impl StrokeRenderer {
         // eventually replaces it have to make the same choice, or releasing the pointer
         // would visibly redraw the stroke. See `dynamics_setup`.
         let Some(tip) = self.tips.resolve(scene.assets, &rec.brush) else {
-            if self.complain_once(rec.seed) {
+            if self.complained.say(rec.seed, Complaint::AssetMissing) {
                 tracing::warn!(
                     "brush stamp asset is unavailable; deferring stroke until it is loaded",
                 );
@@ -266,7 +318,7 @@ impl StrokeRenderer {
                 // per segment. Said once per stroke, like the error below and for
                 // its reason: the cap is a pure function of the brush.
                 if let Some(s) = &plan.shortened
-                    && self.complain_once(rec.seed)
+                    && self.complained.say(rec.seed, Complaint::Shortened)
                 {
                     tracing::warn!(
                         radius = rec.brush.size,
@@ -289,7 +341,7 @@ impl StrokeRenderer {
             // region floor exactly as the loop's do.
             StrokePath::Liquify => {
                 if let Some(s) = &plan.shortened
-                    && self.complain_once(rec.seed)
+                    && self.complained.say(rec.seed, Complaint::Shortened)
                 {
                     tracing::warn!(
                         radius = rec.brush.size,
@@ -327,8 +379,8 @@ impl StrokeRenderer {
                 //
                 // Said once per stroke, not once per render: the gate is a pure
                 // function of the brush and so answers the same way every pointer move
-                // ([`complained`](Self::complained)).
-                if self.complain_once(rec.seed) {
+                // ([`Complaints`]).
+                if self.complained.say(rec.seed, Complaint::TipTooLarge) {
                     tracing::error!(
                         radius = rec.brush.size,
                         max_region_dim = MAX_REGION_DIM,
@@ -340,22 +392,6 @@ impl StrokeRenderer {
                 self.render_swept(scene, rec, spans, plan.tol, resume, &tip)
             }
         }
-    }
-
-    /// Whether this is the first render of stroke `seed` to find something worth
-    /// complaining about — see [`complained`](Self::complained).
-    ///
-    /// Deliberately not a set: a gesture draws one stroke at a time, so the last seed
-    /// is the one being drawn, and a replay that alternates between two undrawable
-    /// records is welcome to say so twice. What this rules out is the unbounded case,
-    /// which is one stroke shouting on every pointer move.
-    fn complain_once(&self, seed: u64) -> bool {
-        let mut last = unpoisoned(self.complained.lock());
-        if *last == Some(seed) {
-            return false;
-        }
-        *last = Some(seed);
-        true
     }
 
     /// Acquire a persistent tile: the color space's `color` + `aux` formats, paired.
@@ -531,4 +567,36 @@ fn noise_seed(seed: u64) -> u32 {
 /// instead of compounding one texture.
 fn jitter_seed(seed: u64) -> u32 {
     (draw(seed, 3) >> 32) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Complaint, Complaints};
+
+    /// One stroke's second complaint is still made — the gate keyed on the seed alone
+    /// let the first thing said swallow every other one for the rest of that stroke.
+    ///
+    /// Checkable without an adapter because the memo is its own type: the renderer
+    /// around it needs a device, and this needs nothing.
+    #[test]
+    fn a_stroke_may_be_complained_about_once_for_each_kind() {
+        let said = Complaints::default();
+        assert!(said.say(7, Complaint::Shortened));
+        assert!(!said.say(7, Complaint::Shortened), "twice for one thing");
+        assert!(
+            said.say(7, Complaint::BleedCapped),
+            "the second cap the same brush hits has never been said",
+        );
+        assert!(!said.say(7, Complaint::BleedCapped), "twice for one thing");
+    }
+
+    /// The memo is one stroke deep: the next stroke starts over, and the one before
+    /// it is forgotten rather than kept ([`Complaints`]).
+    #[test]
+    fn a_new_stroke_may_say_what_the_last_one_said() {
+        let said = Complaints::default();
+        assert!(said.say(7, Complaint::TipTooLarge));
+        assert!(said.say(8, Complaint::TipTooLarge));
+        assert!(said.say(7, Complaint::TipTooLarge));
+    }
 }

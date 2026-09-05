@@ -93,6 +93,14 @@ impl CompositeItem {
 pub struct FilterDraw {
     /// The filter's shader code — see `filter_common.wesl`.
     pub kind: u32,
+    /// Whether this filter **gathers**: reads texels other than the one it writes
+    /// (§21.10, §21.12).
+    ///
+    /// Carried from [`Filter::resamples`] rather than re-derived from `kind`, which is
+    /// a `u32` and so has no exhaustive match to keep it honest. Read by the one pass
+    /// that must refuse a gather —
+    /// [`MergeRenderer::apply_filter`](crate::gpu::merge::MergeRenderer::apply_filter).
+    pub resamples: bool,
     /// How much of the adjustment lands: the layer's opacity (§21.4).
     pub strength: f32,
     /// Whether the filter is confined to the coverage it read: the layer's clip
@@ -138,9 +146,13 @@ impl FilterDraw {
         // Named apart from the `params` lanes below, which are the *filter's* own
         // numbers and have nothing to do with the layer's.
         let (strength, clip) = (composite.opacity, composite.clip);
+        // Read off the model's own exhaustive match, once, before the kind becomes a
+        // number the arms below cannot be matched over — see the field.
+        let resamples = filter.resamples();
         match filter {
             Filter::Color(c) => Self {
                 kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
+                resamples,
                 strength,
                 clip,
                 params: [c.exposure, c.contrast, c.saturation, c.hue],
@@ -153,6 +165,7 @@ impl FilterDraw {
             // (§21.10).
             Filter::Chromatic(c) => Self {
                 kind: stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
+                resamples,
                 strength,
                 clip,
                 params: [c.spread, c.angle, 0.0, 0.0],
@@ -168,6 +181,7 @@ impl FilterDraw {
                 let (shape, param, angle) = aperture_lanes(b.aperture);
                 Self {
                     kind: stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR,
+                    resamples,
                     strength,
                     clip,
                     params: [b.radius, shape, param, angle],
@@ -197,6 +211,7 @@ impl FilterDraw {
                 });
                 Self {
                     kind: stark_shaders::mirror::filter_common::FILTER_GRADIENT_MAP,
+                    resamples,
                     strength,
                     clip,
                     params: [
@@ -564,5 +579,24 @@ mod tests {
             vec![1.0, 1.0],
             "no member, base included, may carry the group's fade as well",
         );
+    }
+
+    /// Every filter this build offers carries the **model's** answer about gathering,
+    /// not a second reading of it.
+    ///
+    /// [`Filter::resamples`] is an exhaustive match and `kind` is a `u32`, so this is
+    /// the one hop where the two could part — and the merge that refuses a gather
+    /// (§14.11.7) reads the flag, not the code.
+    #[test]
+    fn every_filter_draw_says_what_the_model_says_about_gathering() {
+        for filter in Filter::ALL {
+            let expected = filter.resamples();
+            let draw = FilterDraw::new(filter, CompositeParams::IDENTITY);
+            assert_eq!(
+                draw.resamples, expected,
+                "the draw for filter code {} disagrees with `Filter::resamples`",
+                draw.kind,
+            );
+        }
     }
 }

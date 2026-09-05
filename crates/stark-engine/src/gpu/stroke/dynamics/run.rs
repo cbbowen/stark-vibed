@@ -21,7 +21,7 @@ use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment, generate_segments_in};
 use super::super::swept::{segment_instance, tile_xform, xform_group};
-use super::super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::super::{Complaint, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use super::bleed::bleed_fires;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dynamics_plan,
@@ -212,11 +212,11 @@ impl StrokeRenderer {
         // knob that stops meaning what it says at small modulated radii, with nothing
         // in the log; the segment-shortening cap next door has been reported since it
         // existed, on the same once-per-stroke gate and for the same reason.
-        if bleed_capped && self.complain_once(rec.seed) {
+        if bleed_capped && self.complained.say(rec.seed, Complaint::BleedCapped) {
             tracing::warn!(
                 radius = rec.brush.size,
                 cap = super::bleed::MAX_BLEED_FIRES_PER_SEGMENT,
-                "a segment wants more bleed firings than it may have: the bleed axis                  under-delivers on this stroke",
+                "a segment wants more bleed firings than it may have: the bleed axis under-delivers on this stroke",
             );
         }
         // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,

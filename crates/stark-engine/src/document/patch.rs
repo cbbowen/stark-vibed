@@ -445,14 +445,16 @@ mod tests {
     /// nobody runs. That is the hazard [`StatePatch::capture`] argues against one
     /// level up, and it was sitting here.
     ///
-    /// A GPU kind answers `None` and there is nothing here to render it with, which
-    /// is what makes "this suite drives the ctx-free half" a fact rather than a
-    /// convention.
+    /// A GPU kind hands the state straight back and there is nothing here to render
+    /// it with, which is what makes "this suite drives the ctx-free half" a fact
+    /// rather than a convention.
     fn fold(action: &Action, state: &DocState) -> DocState {
-        apply_pure(&action.kind, state.clone(), action.id.actor)
-            .expect("this suite drives the ctx-free half of the fold")
+        let Folded::Done(state) = apply_pure(&action.kind, state.clone(), action.id.actor) else {
+            panic!("this suite drives the ctx-free half of the fold")
+        };
+        state
     }
-    use super::super::apply::apply_pure;
+    use super::super::apply::{Folded, apply_pure};
     use super::super::audit::undeclared;
     use stark_model::document::Place;
     use stark_model::document::{ActionId, ActionKind, ActionTag, GuideId};
@@ -800,9 +802,9 @@ mod tests {
     /// (§8, §17.9).
     ///
     /// It holds the GPU kinds too, and deliberately. Which half of the fold a kind
-    /// belongs to is not restated here — `apply_pure` answers `None` for the ones
-    /// that need a renderer and the run below skips exactly those, so an arm moved
-    /// across that line moves here with it and no second list can disagree.
+    /// belongs to is not restated here — `apply_pure` declines the ones that need a
+    /// renderer and the runs below sort by exactly that, so an arm moved across that
+    /// line moves here with it and no second list can disagree.
     fn sample(tag: ActionTag) -> ActionKind {
         use stark_model::document::{
             BrushParams, ColorAdjust, FillOp, Parcel, PerspectiveGuide, PerspectiveMap,
@@ -994,9 +996,10 @@ mod tests {
             let kind = sample(*tag);
             assert_eq!(kind.tag(), *tag, "the sample list is keyed by its own tag");
             let what = tag.label();
-            // The renderer's half declines, and this is the only place the split is
-            // consulted — see `sample`.
-            let Some(after) = apply_pure(&kind, before.clone(), actor) else {
+            // The renderer's half declines, and this is one of the two places the
+            // split is consulted — see `sample`, and the test below for the other
+            // side of it.
+            let Folded::Done(after) = apply_pure(&kind, before.clone(), actor) else {
                 continue;
             };
             let action = act(kind);
@@ -1021,6 +1024,46 @@ mod tests {
             ["Undo"],
             "only `Undo` folds to identity; anything else here has stopped testing \
              what it says it does",
+        );
+    }
+
+    /// The other side of that partition, and **the half no `match` can hold**: a kind
+    /// named on the wrong side of both exhaustive lists compiles, and the action then
+    /// folds to nothing wherever it is applied. It shows up here as a tag this list
+    /// does not have.
+    #[test]
+    fn every_renderer_kind_declines_with_the_document_untouched() {
+        let before = furnished();
+        let actor = ActorId(1);
+        let mut declined = Vec::new();
+        for tag in ActionTag::ALL {
+            let kind = sample(*tag);
+            let Folded::NeedsRenderer(back) = apply_pure(&kind, before.clone(), actor) else {
+                continue;
+            };
+            let what = tag.label();
+            assert_eq!(
+                undeclared(&before, &back, &Footprint::default()),
+                Vec::<String>::new(),
+                "{what}: a declined kind must hand back the state it was given",
+            );
+            declined.push(*tag);
+        }
+        assert_eq!(
+            declined,
+            [
+                ActionTag::CommitStroke,
+                ActionTag::Select,
+                ActionTag::InvertSelection,
+                ActionTag::Transform,
+                ActionTag::Fill,
+                ActionTag::TransformPerspective,
+                ActionTag::TransformWarp,
+                ActionTag::MergeLayerDown,
+                ActionTag::PlaceImage,
+                ActionTag::FloatSelection,
+            ],
+            "the declined half is exactly the one `apply` renders",
         );
     }
 }

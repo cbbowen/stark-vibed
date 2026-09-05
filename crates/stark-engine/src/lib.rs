@@ -91,12 +91,12 @@ pub(crate) mod view;
 /// Every `Mutex` this crate holds guards derived state — a baked tip texture
 /// (`gpu::stroke::tips`), a pooled scratch list (`gpu::scratch`), the tile
 /// pool's free list and census (`gpu::tile`), the decoded brush masks ([`assets`])
-/// and substrate/environment builds (`gpu::registry`), the seed of the last stroke
-/// complained about, the timing histograms ([`timing`]), the device's failure slot
-/// (`gpu::context::GpuHealth`) — whose values are moved in
-/// whole after the work producing them has finished, so a panic while the lock is
-/// held cannot leave a torn value behind. All poisoning tells us is that some
-/// *other* thread panicked while it happened to be looking something up;
+/// and substrate/environment builds (`gpu::registry`), what has already been said
+/// about the stroke being drawn (`gpu::stroke::Complaints`), the timing histograms
+/// ([`timing`]), the device's failure slot (`gpu::context::GpuHealth`) — whose
+/// values are moved in whole after the work producing them has finished, so a panic
+/// while the lock is held cannot leave a torn value behind. All poisoning tells us
+/// is that some *other* thread panicked while it happened to be looking something up;
 /// propagating that as a panic of our own turns one thread's failure into a dead
 /// renderer, which is a worse answer than a cold cache.
 ///
