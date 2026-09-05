@@ -17,6 +17,7 @@ use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
 use crate::gpu::uniforms::UniformSlots;
+use crate::view::ViewTransform;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 use stark_shaders::mirror::filter_mixbox::binding as fm;
@@ -25,6 +26,7 @@ use stark_shaders::mirror::mixbox_lut::binding as ml;
 use stark_shaders::mirror::mixbox_lut::decl as mld;
 
 use super::blend::Bounce;
+use super::group::FilterDraw;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
@@ -288,4 +290,57 @@ impl FilterPass {
         }
         b.pass(encoder, "stark filter pass", &self.pipeline, bg, offset);
     }
+}
+
+/// The filter pass's uniform for `f`, under this frame's `view` (§21).
+///
+/// Here rather than on [`FilterDraw`] for the reason [`Plan::filters`] gives: one of
+/// its lanes is a fact about the view, which the draw deliberately has none of.
+pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUniform {
+    FilterUniform {
+        kind: f.kind,
+        strength: f.strength,
+        clip: u32::from(f.clip),
+        disp: view_lanes(f, view),
+        params: f.params,
+        params2: f.params2,
+        // The gradient map's ramp, zeroed for every other kind — `disp`'s convention:
+        // the true value, since no other kind has stops (§21.11).
+        stops: f.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
+        // The padding WGSL's alignment leaves around `clip`, which the generator
+        // names and nothing reads (§6.10).
+        ..Default::default()
+    }
+}
+
+/// The uniform's view-derived lanes for this frame — `disp`, whose meaning is
+/// the kind's to say (`filter_common.wesl`).
+///
+/// For the **chromatic** filter: the red-end → blue-end displacement, carried
+/// from the canvas terms the document states (`params` = spread in canvas px,
+/// angle in canvas radians) into the **accumulator texels** the pass samples in,
+/// through the view's full canvas→screen linear map — zoom, rotation and mirror
+/// alike, so the fringes stay attached to the artwork exactly as the canvas
+/// substrate does (§21.10, §6.4).
+///
+/// For the **focal blur**: `.x` is the decimation scale the convolution runs at
+/// (§21.12) — the same rule [`BlurPass::prepare`] plans the transform with
+/// (`blur::scale` of the same view-mapped radius), stated once there so the
+/// decode, the transform and the resolve cannot disagree about it.
+///
+/// Zero for every other kind, which is the true value rather than a stand-in.
+///
+/// [`BlurPass::prepare`]: super::blur::BlurPass::prepare
+/// [`Plan::filters`]: super::plan::Plan::filters
+fn view_lanes(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
+    if f.kind == stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
+        let (spread, angle) = (f.params[0], f.params[1]);
+        let d = view.linear() * stark_model::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
+        return [d.x, d.y];
+    }
+    if f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR {
+        let s = super::blur::scale(super::blur::texel_radius(f, view));
+        return [s as f32, 0.0];
+    }
+    [0.0; 2]
 }

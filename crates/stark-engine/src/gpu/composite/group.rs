@@ -127,6 +127,13 @@ pub struct FilterDraw {
 const MAX_MAP_STOPS: usize = stark_model::gradient::MAX_STOPS;
 
 impl FilterDraw {
+    /// Whether this is the focal blur (§21.12) — the one kind whose pass is preceded
+    /// by a convolution, and so the one question three sites used to spell for
+    /// themselves.
+    pub fn is_focal_blur(&self) -> bool {
+        self.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR
+    }
+
     /// The draw parameters for `filter` under the layer's own `params`.
     ///
     /// The whole [`CompositeParams`] rather than the two scalars it reads, because

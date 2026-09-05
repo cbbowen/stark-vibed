@@ -260,7 +260,7 @@ pub(super) fn blur_kernels(
     filters
         .iter()
         .enumerate()
-        .filter(|(_, f)| f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR)
+        .filter(|(_, f)| f.is_focal_blur())
         .map(|(slot, f)| (slot as u32, texel_radius(f, view), aperture(f, view)))
         .collect()
 }

@@ -73,7 +73,7 @@ use blur::{BlurFrame, BlurPass};
 pub(crate) use display::export_format;
 use display::is_eight_bit;
 pub use display::{Output, Transfer};
-pub(crate) use filter::{FilterPass, FilterUniform};
+pub(crate) use filter::{FilterPass, FilterUniform, filter_uniform};
 use guides::{GuidePass, GuideUniform};
 use media::MediaPass;
 use overlay::{OverlayInstance, OverlayLayouts, OverlayPass};
@@ -109,7 +109,7 @@ pub(crate) fn tile_bind_group_layout(
         "stark composite tile bgl",
         COMPOSITE_TILE_SLOTS,
         wgpu::ShaderStages::FRAGMENT,
-        color_space.resid_format().is_some(),
+        color_space.has_resid(),
     )
 }
 
@@ -180,7 +180,7 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
-pub(crate) use plan::{blend_uniform, filter_uniform};
+pub(crate) use plan::blend_uniform;
 pub(crate) use view::view_uniform;
 
 /// What [`Compositor::upload_streams`] hands the encoder: the per-tile bind groups, and the
@@ -301,8 +301,6 @@ pub struct CompositorPasses {
     /// there is a residual at all, which decides the third attachment on every pass A
     /// target and is the space's answer rather than a per-target choice.
     formats: ChannelFormats,
-    /// The screen's format — what `screen` was compiled for.
-    target_format: wgpu::TextureFormat,
 }
 
 /// The bind group layouts of the four passes that write a frame's target — the half
@@ -477,68 +475,99 @@ fn next_generation() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One consumer's worth of compositing state: the offscreen attachments pass A
-/// writes, the media bind group over them, the scratch the blend passes bounce
-/// through, the instance streams, and the uniforms a render fills in. Everything here
-/// is sized by the target, by how much there is to draw, or by neither and simply
-/// **written per render** — which is the same line, since a value a render writes is
-/// a value two targets would disagree about.
+/// One consumer's worth of compositing state, in two halves along the line the two
+/// allocation rules draw: [`TargetSized`], everything sized by the target and managed
+/// by [`TargetSized::ensure_targets`]; and [`Streams`], everything grown to how much
+/// there is to draw and written per render. Two fields rather than one struct so a
+/// render can hold the [`Frame`] it was handed while it still writes the streams —
+/// as one struct, that was a `&mut self` collision paid for with an `expect`.
 ///
 /// One per thing being drawn into — the substrate, and (with its own) anything that
 /// renders beside it: an export, the navigator's miniature. Sharing one across
 /// targets of different sizes means each render resizes the attachments the other
 /// just built, so the cost is paid twice per alternation rather than once ever.
 pub struct Compositor {
-    /// The size **every** offscreen attachment here is at: the target's, times
-    /// [`Self::ss`]. Not the target's own, which is only known where the target is.
-    /// Meaningless while [`Self::accum`] is `None`.
-    size: Extent2,
-    /// The canvas → NDC mapping *this* render is drawing through, and the two group-0
-    /// bind groups over it (§6.4). Per consumer, not per pipeline — see
-    /// [`ViewBindings`].
-    view: ViewBindings,
-    /// Pass A's offscreen channels at [`Self::size`], and the media bind group over
-    /// them. `None` until the first render, because only a render knows the zoom and
-    /// therefore the supersampling factor these are sized by: building them at the
-    /// caller's guess would have been an allocation of the whole viewport that
-    /// [`Self::ensure_targets`] then threw away on its first call. It is also what
-    /// leaves the sizing rule in one place instead of two that could disagree.
-    accum: Option<media::Offscreen>,
-    /// This consumer's lighting parameters as the media pass reads them, written at
-    /// the top of every render from the pipeline's [`MediaParams`]. Per consumer for
-    /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
-    /// canvases differently, and the bind group naming this was per-consumer already.
-    media_buf: wgpu::Buffer,
-    /// The [`CompositorPipeline::generation`] [`Self::accum`] was built against — the
-    /// *pipeline*, so a mismatch means the attachments' formats may be wrong and they
-    /// have to be rebuilt.
-    generation: u64,
-    /// The [`CompositorPipeline::bindings`] [`Self::accum`]'s media bind group names.
-    /// A mismatch is a swapped substrate or light, which the group is rebound for and
-    /// the attachments survive.
-    bindings: u64,
+    sized: TargetSized,
+    streams: Streams,
+}
 
-    /// Samples per axis the attachments are built for (§6.4). `1` — the
-    /// zoomed-in and 1:1 case — means passes B–D write the caller's target directly
-    /// and `ss` is `None`, so a view that never zooms out never allocates any of it.
+/// What the attachments were built for — the whole of what decides a rebuild over a
+/// rebind (§6.4). Equality **is** the decision, so a field added here cannot be left
+/// out of it. The substrate and the light are deliberately absent: a swap of either
+/// is a rebind of the one group that names them ([`CompositorPipeline::bindings`]),
+/// which the attachments survive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct TargetKey {
+    /// The size **every** offscreen attachment is at: the target's, times `ss`.
+    size: Extent2,
+    /// Samples per axis (§6.4). `1` — the zoomed-in and 1:1 case — means passes B–D
+    /// write the caller's target directly and there is no supersampled one, so a
+    /// view that never zooms out never allocates it.
     ss: u32,
-    /// The format this consumer last rendered into, which [`Self::ss_target`] has to
-    /// match (§6.4). Meaningless while [`Self::accum`] is `None`.
+    /// The target format the supersampled intermediate carries (§6.4).
     format: wgpu::TextureFormat,
+    /// The [`CompositorPipeline::generation`]: the pipeline whose channel formats
+    /// the attachments carry.
+    generation: u64,
+}
+
+/// The attachments one render sized, with the key they answer to. Absent until the
+/// first render, because only a render knows the zoom and therefore the
+/// supersampling factor: built at the caller's guess, a whole viewport was allocated
+/// and thrown away on the first `ensure_targets`.
+struct Built {
+    key: TargetKey,
+    /// The [`CompositorPipeline::bindings`] `accum`'s media bind group names. A
+    /// mismatch is a swapped substrate or light, rebound in place.
+    bindings: u64,
+    /// Pass A's offscreen channels at `key.size`, and the media bind group over them.
+    accum: media::Offscreen,
     /// Everything that exists only while this view is zoomed out — see
     /// [`Supersampled`].
     ss_target: Option<Supersampled>,
+}
 
-    // Allocated on first use and kept: only a document with a non-`Normal` layer
-    // ever pays for them.
+/// The half of a [`Compositor`] sized by the target: what [`Self::ensure_targets`]
+/// manages, and nothing a render writes per frame but the one uniform the
+/// accumulator's bind group names.
+struct TargetSized {
+    built: Option<Built>,
+    /// This consumer's lighting parameters as the media pass reads them, written at
+    /// the top of every render from the pipeline's [`MediaParams`]. On this half
+    /// because [`Built::accum`]'s bind group names it, and per consumer for
+    /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
+    /// canvases differently.
+    media_buf: wgpu::Buffer,
+    /// The blend scratch, allocated on first use and kept: only a document with a
+    /// non-`Normal` layer ever pays for it (§18.0.4).
     scratch: Option<ScratchTargets>,
-
     /// The focal blur's padded FFT planes and dispatch plan (§21.12), present
     /// exactly while the document holds a live blur — the largest scratch there
     /// is, so it is dropped the frame the last blur goes rather than kept
     /// (`BlurPass::prepare`).
     blur: Option<BlurFrame>,
+}
 
+/// What one render draws into and through, borrowed off the [`TargetSized`] that
+/// [`TargetSized::ensure_targets`] has just brought in line. Borrows of one field, so
+/// a render holding one still writes the [`Streams`] beside it.
+struct Frame<'a> {
+    accum: &'a media::Offscreen,
+    media_buf: &'a wgpu::Buffer,
+    ss_target: Option<&'a Supersampled>,
+    /// `None` when the plan bounces nowhere, whatever the cache holds.
+    scratch: Option<&'a ScratchTargets>,
+    blur: Option<&'a BlurFrame>,
+}
+
+/// The half of a [`Compositor`] sized by **what is drawn** rather than by the
+/// target: the view slots and the instance and uniform streams of passes A, C and
+/// D, each grown to the frame's count and written per render.
+struct Streams {
+    /// The canvas → NDC mapping *this* render is drawing through, and the two group-0
+    /// bind groups over it (§6.4). Per consumer, not per pipeline — see
+    /// [`ViewBindings`].
+    view: ViewBindings,
     // Pass A's instance streams, grown to the frame's tile and matte counts.
     instances: InstanceStream<Instance>,
     matte_instances: InstanceStream<MatteInstance>,
@@ -553,8 +582,7 @@ pub struct Compositor {
     // Pass C's, grown to the outlined mask-tile count.
     overlay_instances: InstanceStream<OverlayInstance>,
     /// Pass D's, one dynamic-offset slot per visible guide — the same mechanism as
-    /// the two above, which this pass spent a hand-written stride and a hand-rolled
-    /// grow loop reimplementing.
+    /// the two above.
     guide_uniforms: UniformSlots<GuideUniform>,
 }
 
@@ -635,7 +663,6 @@ impl CompositorPipeline {
             view: View::new(device),
             ctx: ctx.clone(),
             formats,
-            target_format,
         };
         Self::sharing(
             Arc::new(passes),
@@ -773,29 +800,210 @@ impl CompositorPipeline {
     }
 }
 
-impl Compositor {
-    /// The instance streams, uniforms and view bindings for one consumer, against the
-    /// shared `pipeline`. Cheap — everything expensive (the six passes' pipelines,
-    /// their layouts, the decoded pigment LUT) lives in the pipeline and is only
-    /// borrowed, and everything *sized* (the accumulator, the supersampled target,
-    /// the blend scratch) waits for the first render, which is the only thing that
-    /// knows the zoom.
-    pub fn new(pipeline: &CompositorPipeline) -> Self {
-        let device = &pipeline.ctx.device;
+impl TargetSized {
+    fn new(device: &wgpu::Device) -> Self {
         Self {
-            size: Extent2::new(0, 0),
-            view: ViewBindings::new(device, view_groups(pipeline)),
+            built: None,
             media_buf: media::uniform_buffer(device),
-            accum: None,
-            generation: pipeline.generation,
-            bindings: pipeline.bindings,
-            // 1:1 until a render says otherwise — `ensure_targets` is what decides,
-            // because only a render knows the zoom.
-            ss: 1,
-            format: pipeline.target_format,
-            ss_target: None,
             scratch: None,
             blur: None,
+        }
+    }
+
+    /// Bring the attachments in line with what is about to be drawn — a target of
+    /// `target_size` rendered at `ss` samples per axis into `format`, against the
+    /// pipeline's current substrate and light, with the scratch levels `needs` and
+    /// the blur `kernels` the frame's plan asks for — and hand back what to draw
+    /// into.
+    ///
+    /// Called at the top of every render, so a resized target, a zoom that crossed a
+    /// supersampling threshold, a swapped canvas substrate, a swapped light and a
+    /// whole rebuilt pipeline (a color-space change, which changes the channel
+    /// *formats*) all land without anyone having to be notified.
+    ///
+    /// **Two stamps, because two of those are not the same event.** A resize or a
+    /// rebuilt pipeline invalidates the attachments themselves (the [`TargetKey`]);
+    /// a swapped substrate or light invalidates only the group that names them
+    /// ([`CompositorPipeline::bindings`]), and is rebound in place. One stamp for
+    /// both charged an undo across a `SetSubstrate` a viewport of allocation to say
+    /// that a texture view had moved.
+    ///
+    /// The blend scratch and the blur planes are dropped rather than kept through a
+    /// rebuild: both are sized like the attachments and carry their formats, so
+    /// "everything that depends on the target or the pipeline is rebuilt together"
+    /// holds by construction instead of by a second condition that could disagree
+    /// with this one. It costs one reallocation on the next blended render.
+    ///
+    /// `buffers_moved` is [`Streams::upload`]'s report that a uniform buffer the
+    /// scratch's cached bind groups name was replaced; a blur frame built, resized or
+    /// dropped stales them the same way. Both are answered here because this is the
+    /// one place that holds the scratch.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every argument is a distinct piece of what one frame is sized by"
+    )]
+    fn ensure_targets(
+        &mut self,
+        p: &CompositorPipeline,
+        target_size: Extent2,
+        ss: u32,
+        format: wgpu::TextureFormat,
+        needs: &[bool],
+        kernels: &[(u32, f32, blur::Aperture)],
+        buffers_moved: bool,
+    ) -> Frame<'_> {
+        let wanted = TargetKey {
+            size: Extent2::new(target_size.width * ss, target_size.height * ss),
+            ss,
+            format,
+            generation: p.generation,
+        };
+        // Taken rather than matched through `&mut`: a guard's borrow of the hit
+        // outlives a miss under NLL, and the miss arm has to replace the slot.
+        let built = match self.built.take() {
+            Some(mut built) if built.key == wanted => {
+                // The cheap half: the attachments stand, and only the group naming the
+                // substrate and the light has to be rebuilt. Every undo across a
+                // `SetSubstrate`, every scale commit and every light switch lands here.
+                if built.bindings != p.bindings {
+                    built.bindings = p.bindings;
+                    p.rebind_media(&mut built.accum, &self.media_buf);
+                }
+                built
+            }
+            stale => {
+                // Released *before* their replacements are built, never by the
+                // assignment that would drop them after ([`Attachment`] frees on drop,
+                // so the order is the difference between one set resident and two). A
+                // resize drag is where that shows: it rebuilds every frame, and holding
+                // both sets across the build doubles the peak of the largest allocation
+                // the app makes.
+                self.scratch = None;
+                self.blur = None;
+                drop(stale);
+                let accum = p.offscreen(wanted.size, &self.media_buf);
+                // Allocated only where it is written into. A 1:1 view leaves it `None`,
+                // which is what returns the memory the moment the artist zooms back in
+                // to paint.
+                let ss_target = (ss > 1).then(|| {
+                    Supersampled::new(&p.ctx.device, wanted.size, format, &p.layouts.resolve)
+                });
+                Built {
+                    key: wanted,
+                    // The rebuild names the current pair by construction.
+                    bindings: p.bindings,
+                    accum,
+                    ss_target,
+                }
+            }
+        };
+        let built: &Built = self.built.insert(built);
+        // The filter bind groups the scratch caches name the blur's planes, so a
+        // frame that grew, resized or dropped them starts those caches over.
+        let blur_changed = p.blur.prepare(
+            &p.ctx,
+            &mut self.blur,
+            built.key.size,
+            kernels,
+            p.ctx.device.limits().max_texture_dimension_2d,
+        );
+        ensure_scratch(&mut self.scratch, p, built.key.size, needs);
+        if let Some(scratch) = self
+            .scratch
+            .as_mut()
+            .filter(|_| buffers_moved || blur_changed)
+        {
+            scratch.invalidate_bind_groups();
+        }
+        Frame {
+            accum: &built.accum,
+            media_buf: &self.media_buf,
+            ss_target: built.ss_target.as_ref(),
+            scratch: if needs.is_empty() {
+                None
+            } else {
+                self.scratch.as_ref()
+            },
+            blur: self.blur.as_ref(),
+        }
+    }
+}
+
+/// What [`ensure_scratch`] does for one frame, over plain data so it can be decided
+/// without a device.
+#[derive(Debug, PartialEq, Eq)]
+enum ScratchDecision {
+    /// The cached set serves: at least as deep as the frame needs, isolating
+    /// wherever it does.
+    Reuse,
+    /// Allocate afresh for these levels — the frame's needs, unioned with what the
+    /// cache at this size already held.
+    Rebuild(Vec<bool>),
+}
+
+/// Whether a cached scratch set — `cached` is its size and which of its levels
+/// isolate, `None` when there is none — serves a frame at `size` whose plan `needs`
+/// these levels ([`Plan::scratch`]).
+///
+/// Grown to the most the document has *reached* — depth and per-level iso alike —
+/// and never shrunk within a size: a group opened and closed again over and over
+/// would otherwise reallocate viewport-sized targets each time. The union with what
+/// the cache already holds is what makes "never shrunk" one rule for both axes. A
+/// new size starts over, since nothing at the old one can be kept.
+fn scratch_plan<I>(cached: Option<(Extent2, I)>, size: Extent2, needs: &[bool]) -> ScratchDecision
+where
+    I: ExactSizeIterator<Item = bool> + Clone,
+{
+    let Some((_, cached)) = cached.filter(|&(at, _)| at == size) else {
+        return ScratchDecision::Rebuild(needs.to_vec());
+    };
+    let sufficient = needs.len() <= cached.len()
+        && needs
+            .iter()
+            .zip(cached.clone())
+            .all(|(&need, iso)| iso || !need);
+    if sufficient {
+        return ScratchDecision::Reuse;
+    }
+    let mut union = needs.to_vec();
+    union.resize(union.len().max(cached.len()), false);
+    for (need, iso) in union.iter_mut().zip(cached) {
+        *need |= iso;
+    }
+    ScratchDecision::Rebuild(union)
+}
+
+/// Make sure `cache` holds scratch targets at `size` for every level `needs`
+/// ([`scratch_plan`] says when it already does). Nothing when the frame bounces
+/// nowhere — the common case, which never allocates.
+///
+/// The cache belongs to the *render* path, whose size changes only when this
+/// compositor's target does. [`Compositor::composite_channels`] deliberately does
+/// not use it: a pick viewport is a handful of texels, and letting the two share one
+/// cache would reallocate a target-sized pair twice a frame for the whole of an
+/// Alt-drag.
+fn ensure_scratch(
+    cache: &mut Option<ScratchTargets>,
+    p: &CompositorPipeline,
+    size: Extent2,
+    needs: &[bool],
+) {
+    if needs.is_empty() {
+        return;
+    }
+    let cached = cache
+        .as_ref()
+        .map(|s| (s.size, s.levels.iter().map(ScratchLevel::has_iso)));
+    if let ScratchDecision::Rebuild(levels) = scratch_plan(cached, size, needs) {
+        *cache = Some(ScratchTargets::new(&p.ctx.device, size, &levels, p.formats));
+    }
+}
+
+impl Streams {
+    fn new(pipeline: &CompositorPipeline) -> Self {
+        let device = &pipeline.ctx.device;
+        Self {
+            view: ViewBindings::new(device, view_groups(pipeline)),
             instances: InstanceStream::new(device, "stark composite instances"),
             matte_instances: InstanceStream::new(device, "stark matte instances"),
             matte_ramps: UniformSlots::new(device, "stark matte ramp", 1),
@@ -806,96 +1014,22 @@ impl Compositor {
         }
     }
 
-    /// Bring the attachments in line with what is about to be drawn — a target of
-    /// `target_size` rendered at `ss` samples per axis, against the pipeline's current
-    /// substrate/environment — and hand back the accumulator to draw into.
-    ///
-    /// Returning it rather than leaving the caller to unwrap [`Self::accum`] is what
-    /// makes "the accumulator exists" a consequence of having called this, in the one
-    /// place that can build it.
-    ///
-    /// Called at the top of every render, so a resized target, a zoom that crossed a
-    /// supersampling threshold, a swapped canvas substrate, a swapped light and a
-    /// whole rebuilt pipeline (a color-space change, which changes the channel
-    /// *formats*) all land without anyone having to be notified.
-    ///
-    /// **Two stamps, because two of those are not the same event.** A resize or a
-    /// rebuilt pipeline invalidates the attachments themselves
-    /// ([`CompositorPipeline::generation`]); a swapped substrate or light invalidates
-    /// only the group that names them ([`CompositorPipeline::bindings`]), and is
-    /// rebound in place. One stamp for both charged an undo across a `SetSubstrate` a
-    /// viewport of allocation to say that a texture view had moved.
-    ///
-    /// The blend scratch is dropped rather than kept through any of it: it is sized
-    /// like the attachments and carries their formats, so "everything that depends on
-    /// the target or the pipeline is rebuilt together" holds by construction instead
-    /// of by a second condition that could disagree with this one. It costs one
-    /// reallocation on the next blended render, and only a document with a
-    /// non-`Normal` layer has one at all.
-    /// Returns nothing, and that is the honest signature. It handed back the
-    /// accumulator "so that 'the accumulator exists' is a consequence of having called
-    /// this", and its only caller discarded that — the borrow collides with the
-    /// `&mut self` calls that must follow. A promise the borrow checker cannot let
-    /// anyone keep is not one worth making.
-    fn ensure_targets(
-        &mut self,
-        p: &CompositorPipeline,
-        target_size: Extent2,
-        ss: u32,
-        format: wgpu::TextureFormat,
-    ) {
-        let size = Extent2::new(target_size.width * ss, target_size.height * ss);
-        let current = self.accum.is_some()
-            && size == self.size
-            && ss == self.ss
-            && format == self.format
-            && self.generation == p.generation;
-        if current {
-            // The cheap half: the attachments stand, and only the group naming the
-            // substrate and the light has to be rebuilt (see
-            // [`CompositorPipeline::bindings`]). Every undo across a `SetSubstrate`,
-            // every scale commit and every light switch lands here.
-            if self.bindings != p.bindings {
-                self.bindings = p.bindings;
-                let accum = self
-                    .accum
-                    .as_mut()
-                    .expect("`current` is false when the accumulator is absent");
-                p.rebind_media(accum, &self.media_buf);
-            }
-        } else {
-            self.size = size;
-            self.ss = ss;
-            self.format = format;
-            self.generation = p.generation;
-            // The rebuild names the current pair by construction.
-            self.bindings = p.bindings;
-            // Released *before* their replacements are built, never by the assignment
-            // that would drop them after ([`Attachment`] frees on drop, so the order is
-            // now the difference between one set resident and two). A resize drag is
-            // where that shows: it rebuilds every frame, and holding both sets across
-            // the build doubles the peak of the largest allocation the app makes.
-            self.scratch = None;
-            self.blur = None;
-            self.accum = None;
-            self.ss_target = None;
-            self.accum = Some(p.offscreen(self.size, &self.media_buf));
-            // Allocated only where it is written into. A 1:1 view leaves it `None`
-            // above, which is what returns the memory the moment the artist zooms back
-            // in to paint.
-            self.ss_target = (ss > 1)
-                .then(|| Supersampled::new(&p.ctx.device, size, format, &p.layouts.resolve));
-        }
+    fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
+        self.view
+            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), views);
     }
 
     /// Upload everything `plan` decided, returning the per-tile bind groups pass A
     /// draws with — and, beside them, the per-matte ramp bind group (`None` when the
-    /// frame has no matte at all; §22.4).
+    /// frame has no matte at all; §22.4) — and whether a uniform buffer was
+    /// **replaced** rather than rewritten, which is the caller's to answer: the
+    /// scratch's cached bind groups name those buffers, and this is the one place
+    /// that knows one moved.
     ///
-    /// Split out of [`Self::render`] so [`Self::composite_channels`] runs the *same*
-    /// pass A rather than a second copy of it: what the eyedropper reports and what
-    /// the screen shows then cannot drift, which is the whole reason for sampling
-    /// through the compositor at all.
+    /// Shared by [`Compositor::render`] and [`Compositor::prepare_pick`] so the
+    /// eyedropper runs the *same* pass A rather than a second copy of it: what it
+    /// reports and what the screen shows then cannot drift, which is the whole reason
+    /// for sampling through the compositor at all.
     ///
     /// **The view's own slot is not among what this writes**, because the two callers
     /// lay theirs down differently: a frame writes one before its single submit, and a
@@ -908,12 +1042,12 @@ impl Compositor {
     /// No walk of its own. Everything here is a loop over what [`Plan::build`]
     /// already ordered, which is what makes "slot `n` is the `n`th merge the encoder
     /// reaches" true by construction rather than by two recursions agreeing.
-    fn upload_streams<'a>(
+    fn upload<'a>(
         &mut self,
         p: &CompositorPipeline,
         view: ViewTransform,
         plan: &Plan<'a>,
-    ) -> PreparedStreams<'a> {
+    ) -> (PreparedStreams<'a>, bool) {
         let device = &p.ctx.device;
         let queue = &p.ctx.queue;
 
@@ -971,34 +1105,30 @@ impl Compositor {
         let filters: Vec<FilterUniform> = plan
             .filters
             .iter()
-            .map(|f| plan::filter_uniform(f, view))
+            .map(|f| filter_uniform(f, view))
             .collect();
         let filter_moved = self.filter_uniforms.write(device, queue, &filters);
         // A frame with more merges (or more filters) than any before it does not
         // resize those buffers, it **replaces** them — so the bind groups the scratch
         // is holding now name a buffer too small for the offsets they are about to be
-        // given (`ScratchLevel::blend_bg`). Here rather than in the encoder because
-        // this is the one place that knows a buffer moved, and it covers both callers:
-        // the eyedropper shares these uniforms with the screen, so a pick with more
-        // merges than any render can stale the render path's cache too.
-        if let Some(scratch) = self
-            .scratch
-            .as_mut()
-            .filter(|_| blend_moved || filter_moved)
-        {
-            scratch.invalidate_bind_groups();
-        }
-        PreparedStreams {
-            tile_bgs,
-            matte_ramp_bg,
-        }
+        // given (`ScratchLevel::blend_bg`). Reported rather than acted on, because
+        // the scratch is the other half's, and it covers both callers: the eyedropper
+        // shares these uniforms with the screen, so a pick with more merges than any
+        // render can stale the render path's cache too.
+        (
+            PreparedStreams {
+                tile_bgs,
+                matte_ramp_bg,
+            },
+            blend_moved || filter_moved,
+        )
     }
 
     /// Encode pass A: every step of `plan`, in order, into `target`.
     ///
     /// `scratch` is the extra target sets the frame's bounces need, sized to match
     /// `target`. It may be `None` only when `plan.scratch` is empty — which
-    /// [`Self::ensure_scratch`] guarantees, having been given that very vector.
+    /// [`ensure_scratch`] guarantees, having been given that very vector.
     ///
     /// **No recursion, no cursors, no parity.** All three were decided in
     /// [`Plan::build`] and are read back off the steps here; what is left is a
@@ -1100,10 +1230,9 @@ impl Compositor {
                     phase,
                 } => {
                     // A focal blur's convolution runs ahead of its fullscreen
-                    // pass (§21.12); every other kind takes the pass alone. One
-                    // question, asked of the plan's own description.
-                    let convolve = (plan.filters[*slot as usize].kind
-                        == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR)
+                    // pass (§21.12); every other kind takes the pass alone.
+                    let convolve = plan.filters[*slot as usize]
+                        .is_focal_blur()
                         .then_some(&p.blur);
                     p.filter.encode(
                         &p.ctx,
@@ -1118,49 +1247,20 @@ impl Compositor {
             }
         }
     }
+}
 
-    /// Make sure the cached scratch targets match `size`, if `groups` needs any, and
-    /// say whether they are wanted. `false` when every group is `Normal` — the common
-    /// case, which never allocates.
-    ///
-    /// The cache belongs to the *render* path, whose size changes only when this
-    /// compositor's target does. [`Self::composite_channels`] deliberately does not
-    /// use it: a pick viewport is a handful of texels, and letting the two share one
-    /// cache would reallocate a target-sized pair twice a frame for the whole of an
-    /// Alt-drag.
-    /// `needs` is the frame's [`Plan::scratch`], computed by the caller because the
-    /// supersampling decision above wanted it first: how many levels there are, and
-    /// how many of them isolate, is most of what a zoomed-out frame costs in memory
-    /// (`resolve::attachment_bytes`).
-    fn ensure_scratch(
-        &mut self,
-        p: &CompositorPipeline,
-        size: Extent2,
-        mut needs: Vec<bool>,
-    ) -> bool {
-        if needs.is_empty() {
-            return false;
+impl Compositor {
+    /// The instance streams, uniforms and view bindings for one consumer, against the
+    /// shared `pipeline`. Cheap — everything expensive (the six passes' pipelines,
+    /// their layouts, the decoded pigment LUT) lives in the pipeline and is only
+    /// borrowed, and everything *sized* (the accumulator, the supersampled target,
+    /// the blend scratch) waits for the first render, which is the only thing that
+    /// knows the zoom.
+    pub fn new(pipeline: &CompositorPipeline) -> Self {
+        Self {
+            sized: TargetSized::new(&pipeline.ctx.device),
+            streams: Streams::new(pipeline),
         }
-        // Grown to the most the document has *reached* — depth and per-level iso
-        // alike — and never shrunk within a size: a group opened and closed again
-        // over and over would otherwise reallocate viewport-sized targets each
-        // time. The union with what the cache already holds is what makes "never
-        // shrunk" one rule for both axes.
-        if let Some(s) = self.scratch.as_ref().filter(|s| s.size == size) {
-            if needs.len() < s.levels.len() {
-                needs.resize(s.levels.len(), false);
-            }
-            for (need, level) in needs.iter_mut().zip(&s.levels) {
-                *need |= level.has_iso();
-            }
-            let sufficient = s.levels.len() == needs.len()
-                && s.levels.iter().zip(&needs).all(|(l, &n)| l.has_iso() || !n);
-            if sufficient {
-                return true;
-            }
-        }
-        self.scratch = Some(ScratchTargets::new(&p.ctx.device, size, &needs, p.formats));
-        true
     }
 
     /// Lay down one view slot per patch, in `views`' order — what the patches of a
@@ -1170,8 +1270,7 @@ impl Compositor {
     /// for a trace: the slots have to be written before any of the passes that read
     /// them are submitted, and there is one submit.
     pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
-        self.view
-            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), views);
+        self.streams.write_views(p, views);
     }
 
     /// Plan and upload one pick's draws — **once for a whole trace**, before any of
@@ -1198,12 +1297,18 @@ impl Compositor {
         groups: &'a [CompositeGroup],
     ) -> PreparedPick<'a> {
         let plan = Plan::build(groups);
-        let streams = self.upload_streams(p, view, &plan);
+        let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
+        // The screen's cache, not this pick's: the two share the uniform buffers,
+        // so a pick with more merges than any render has had stales the groups the
+        // screen's scratch holds (`Streams::upload`).
+        if let Some(scratch) = self.sized.scratch.as_mut().filter(|_| buffers_moved) {
+            scratch.invalidate_bind_groups();
+        }
         // Its own scratch, and the trace's rather than the patch's. A pick viewport is
         // `2r+1` square, so this is a few kilobytes; sharing the render path's cache
         // would trade that for reallocating the *window* twice a frame (see
-        // [`Self::ensure_scratch`]). Blend modes have to be honoured here or an
-        // eyedropper would report a color the screen never showed.
+        // [`ensure_scratch`]). Blend modes have to be honoured here or an eyedropper
+        // would report a color the screen never showed.
         //
         // One for every patch is sound because the patches are recorded into one
         // encoder and commands in an encoder run in order: each patch's bounces clear
@@ -1248,7 +1353,7 @@ impl Compositor {
     /// compositor's: a sample is taken through the compositor that belongs to the
     /// screen, so it must leave the screen's own attachments — a few hundred texels
     /// wide against the window's millions — exactly where they were. That is why this
-    /// does not go through [`Self::ensure_targets`].
+    /// does not go through [`TargetSized::ensure_targets`].
     ///
     /// A [`Targets`] rather than three views, which is how the residual stops being a
     /// caller's decision. A pigment document's pass A **writes three attachments**, so
@@ -1280,7 +1385,7 @@ impl Compositor {
             p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
-        self.encode_plan(
+        self.streams.encode_plan(
             p,
             encoder,
             into,
@@ -1327,9 +1432,6 @@ impl Compositor {
         } else {
             output
         };
-        // How hard this view is minifying, and therefore how many samples per output
-        // pixel it takes to stop the paint, the substrate and the impasto relief aliasing
-        // (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
         // Everything this frame's pass A does, decided once (§14.7). It comes first
         // because the sample count below is chosen from what it costs: the scratch
         // is most of a zoomed-out frame's memory — two viewport-sized trios per
@@ -1338,8 +1440,14 @@ impl Compositor {
         //
         // Deliberately free of the view, which is why it can be built here at all:
         // the one view-dependent number in pass A is a filter's dispersion, and that
-        // is filled in at `upload_streams` once `ss` has settled (§21.10).
+        // is filled in at `Streams::upload` once `ss` has settled (§21.10).
         let plan = Plan::build(groups);
+        // How hard this view is minifying, and therefore how many samples per output
+        // pixel it takes to stop the paint, the substrate and the impasto relief
+        // aliasing (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
+        // The scratch is charged at this frame's needs; a deeper set the cache kept
+        // (`ensure_scratch` never shrinks within a size) is memory already resident,
+        // not memory this decision would add.
         let ss = supersample(
             view.viewport,
             view.zoom,
@@ -1351,59 +1459,39 @@ impl Compositor {
                 blur::has_blur(&plan.filters),
             ),
         );
+        // From here down, `view` is the supersampled one and `target_size` (with
+        // `target`) is the only thing that still knows the real size — which is
+        // exactly the split the resolve at the bottom closes.
+        let target_size = view.viewport;
+        let view = view.supersampled(ss);
+        // The frame's one view, in slot 0 — the only slot anything on this path
+        // binds (`ViewBindings`).
+        self.streams.write_views(p, &[view]);
+        let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
+        // The focal blur's apertures and radii carried into accumulator texels
+        // (§21.12) — `view` is already supersampled, which is the whole reason this
+        // waits for it.
+        let kernels = blur::blur_kernels(&plan.filters, view);
         // This compositor's attachments, brought in line with what is about to be
         // drawn. Nobody else's: a render into something other than this target — an
         // export, the navigator's miniature — goes through a `Compositor` of its own,
         // so the substrate's attachments (and the frame already presented from them)
         // are never resized out from under it and rebuilt on the next frame.
-        self.ensure_targets(p, view.viewport, ss, format);
-        // From here down, `view` is the supersampled one and `target` is the only
-        // thing that still knows the real size — which is exactly the split the
-        // resolve at the bottom closes.
-        let view = view.supersampled(ss);
-        // The frame's one view, in slot 0 — the only slot anything on this path
-        // binds (`ViewBindings`).
-        self.view
-            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), &[view]);
-        let streams = self.upload_streams(p, view, &plan);
-        // The focal blur's planes and dispatch plan (§21.12), against this frame's
-        // apertures and radii carried into accumulator texels — `view` is already
-        // supersampled, which is the whole reason this waits for it. The filter
-        // bind groups the scratch caches name the blur's planes, so a frame that
-        // grew, resized or dropped them starts those caches over.
-        let kernels = blur::blur_kernels(&plan.filters, view);
-        let blur_changed = p.blur.prepare(
-            &p.ctx,
-            &mut self.blur,
-            self.size,
+        let frame = self.sized.ensure_targets(
+            p,
+            target_size,
+            ss,
+            format,
+            &plan.scratch,
             &kernels,
-            p.ctx.device.limits().max_texture_dimension_2d,
+            buffers_moved,
         );
-        if let Some(scratch) = self.scratch.as_mut().filter(|_| blur_changed) {
-            scratch.invalidate_bind_groups();
-        }
-        let want_scratch = self.ensure_scratch(p, self.size, plan.scratch.clone());
-        // Bound after everything that needs `&mut self` — and bound **per field**,
-        // which is what keeps them from being one `Frame<'_>` taken from a `&self`
-        // helper. Passes C and D below take `&mut self.overlay_instances` and
-        // `&mut self.guide_uniforms` while these are alive; three disjoint field
-        // borrows allow that and one whole-`self` borrow does not. The `expect` under
-        // it is the price of that, not an oversight.
-        let scratch = if want_scratch {
-            self.scratch.as_ref()
-        } else {
-            None
-        };
-        let accum = self
-            .accum
-            .as_ref()
-            .expect("ensure_targets builds the accumulator");
         // What the lit image, the outlines and the guides are drawn into: the
         // supersampled target when there is one, else the caller's directly. Chrome
         // goes through the same resolve as the paint, so the marching ants and the
         // perspective grid come out antialiased rather than as the stairs a
         // one-sample-per-pixel line draws at any angle but the axes.
-        let draw_target = self.ss_target.as_ref().map_or(target, Supersampled::view);
+        let draw_target = frame.ss_target.map_or(target, Supersampled::view);
 
         // One code of the target's encoding for both walks down to it — the
         // supersampled intermediate carries the target's own format (§6.4) — and 0
@@ -1424,14 +1512,14 @@ impl Compositor {
         // Pass A: every step of the plan into the offscreen channels. Its parity
         // guarantees the result lands in these very views however many bounces ran,
         // so the media bind group below never has to be rebuilt.
-        self.encode_plan(
+        self.streams.encode_plan(
             p,
             &mut encoder,
-            accum.targets(),
+            frame.accum.targets(),
             &plan,
             &streams,
-            scratch,
-            self.blur.as_ref(),
+            frame.scratch,
+            frame.blur,
             0,
         );
 
@@ -1439,8 +1527,8 @@ impl Compositor {
         tp.media.encode(
             &p.ctx,
             &mut encoder,
-            &self.media_buf,
-            &accum.bg,
+            frame.media_buf,
+            &frame.accum.bg,
             draw_target,
             media::MediaScene {
                 params: p.media_params,
@@ -1459,10 +1547,10 @@ impl Compositor {
         tp.overlay.encode(
             &p.ctx,
             &mut encoder,
-            &mut self.overlay_instances,
+            &mut self.streams.overlay_instances,
             overlay::OverlayScene {
                 outlines,
-                view_bg: &self.view.overlay,
+                view_bg: &self.streams.view.overlay,
                 view_offset: view::ViewBindings::offset(0),
                 target: draw_target,
                 visible: view.visible_tiles(),
@@ -1475,7 +1563,7 @@ impl Compositor {
         tp.guides.encode(
             &p.ctx,
             &mut encoder,
-            &mut self.guide_uniforms,
+            &mut self.streams.guide_uniforms,
             guides,
             view,
             draw_target,
@@ -1484,7 +1572,7 @@ impl Compositor {
         // Pass E: everything above, box-averaged in light down to the caller's target
         // (§6.4). Absent at 1:1, where `draw_target` *is* the caller's target and the
         // picture is already the size it was asked for.
-        if let Some(ss_target) = &self.ss_target {
+        if let Some(ss_target) = frame.ss_target {
             tp.resolve.encode(
                 &p.ctx,
                 &mut encoder,
@@ -1499,5 +1587,133 @@ impl Compositor {
         }
 
         p.ctx.queue.submit([encoder.finish()]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn size() -> Extent2 {
+        Extent2::new(64, 64)
+    }
+
+    // The rebuild-or-rebind decision is `TargetKey`'s equality (§6.4): every field is
+    // a reason to rebuild, and nothing outside it is.
+
+    fn key() -> TargetKey {
+        TargetKey {
+            size: size(),
+            ss: 1,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            generation: 7,
+        }
+    }
+
+    #[test]
+    fn the_same_key_keeps_the_attachments() {
+        assert_eq!(key(), key());
+    }
+
+    #[test]
+    fn a_resized_target_rebuilds() {
+        let resized = TargetKey {
+            size: Extent2::new(65, 64),
+            ..key()
+        };
+        assert_ne!(key(), resized);
+    }
+
+    #[test]
+    fn a_crossed_supersampling_threshold_rebuilds() {
+        assert_ne!(key(), TargetKey { ss: 2, ..key() });
+    }
+
+    #[test]
+    fn a_different_target_format_rebuilds() {
+        let deep = TargetKey {
+            format: wgpu::TextureFormat::Rgba16Float,
+            ..key()
+        };
+        assert_ne!(key(), deep);
+    }
+
+    #[test]
+    fn a_rebuilt_pipeline_rebuilds() {
+        let rebuilt = TargetKey {
+            generation: 8,
+            ..key()
+        };
+        assert_ne!(key(), rebuilt);
+    }
+
+    // `scratch_plan` over slices: the cache's iso flags at `at`, the frame's needs at
+    // `size()`.
+
+    fn plan(cached: Option<(Extent2, &[bool])>, needs: &[bool]) -> ScratchDecision {
+        scratch_plan(
+            cached.map(|(at, iso)| (at, iso.iter().copied())),
+            size(),
+            needs,
+        )
+    }
+
+    fn cached(iso: &[bool]) -> Option<(Extent2, &[bool])> {
+        Some((size(), iso))
+    }
+
+    #[test]
+    fn no_cache_allocates_exactly_what_the_frame_needs() {
+        assert_eq!(
+            plan(None, &[true, false]),
+            ScratchDecision::Rebuild(vec![true, false])
+        );
+    }
+
+    #[test]
+    fn an_equal_cache_is_reused() {
+        assert_eq!(
+            plan(cached(&[true, false]), &[true, false]),
+            ScratchDecision::Reuse
+        );
+    }
+
+    #[test]
+    fn a_deeper_cache_than_the_frame_is_reused() {
+        assert_eq!(
+            plan(cached(&[true, true, false]), &[true]),
+            ScratchDecision::Reuse
+        );
+    }
+
+    #[test]
+    fn a_shallower_cache_is_rebuilt_to_the_union() {
+        assert_eq!(
+            plan(cached(&[true]), &[false, true]),
+            ScratchDecision::Rebuild(vec![true, true])
+        );
+    }
+
+    #[test]
+    fn iso_needed_where_the_cache_has_none_rebuilds_keeping_the_rest() {
+        assert_eq!(
+            plan(cached(&[false, true]), &[true, false]),
+            ScratchDecision::Rebuild(vec![true, true])
+        );
+    }
+
+    #[test]
+    fn iso_cached_where_the_frame_needs_none_is_reused() {
+        assert_eq!(plan(cached(&[true]), &[false]), ScratchDecision::Reuse);
+    }
+
+    #[test]
+    fn a_resized_target_starts_the_scratch_over() {
+        // Not the union: nothing at the old size can be kept, so the new set is the
+        // frame's own needs and no deeper.
+        assert_eq!(
+            plan(Some((Extent2::new(65, 64), &[true, true])), &[false]),
+            ScratchDecision::Rebuild(vec![false])
+        );
     }
 }
