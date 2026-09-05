@@ -652,7 +652,7 @@ impl Engine {
             None => out.extend(self.session.hover_view(
                 self.actor(),
                 self.authoring.clock,
-                self.frame_of(self.session.active_layer),
+                self.frame_of(self.session.active_layer()),
             )),
         }
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));

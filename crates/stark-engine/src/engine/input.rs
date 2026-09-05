@@ -174,12 +174,12 @@ impl Engine {
                     // read at the press, so the gesture's meaning is fixed before it
                     // has drawn anything.
                     let has_selection = self.document().has_selection(self.actor());
-                    let frame = self.frame_of(self.session.active_layer);
+                    let frame = self.frame_of(self.session.active_layer());
                     self.session
                         .start_selection(tool, sample.pos, has_selection, frame);
                 } else {
                     let seed = self.authoring.clock;
-                    let frame = self.frame_of(self.session.active_layer);
+                    let frame = self.frame_of(self.session.active_layer());
                     self.session
                         .start_stroke(tool, sample, seed, tolerance, rope, frame);
                     self.note_debug_sample(Capture::Restart, sample);
@@ -272,8 +272,7 @@ impl Engine {
             // at a matte then simply draws nothing, refused identically by `apply`
             // and by the preview path.
             PeerCommand::SetActiveLayer(id) => {
-                if self.document().contains_layer(id) {
-                    self.session.active_layer = id;
+                if self.session.set_active_layer(id, self.timeline.current()) {
                     // The hover mark follows the brush's target (§18.1.10): it
                     // is built against the active layer at fold time, so moving
                     // the selection has to re-lay it there. Free when nothing is
@@ -554,7 +553,7 @@ impl Engine {
                     // Read **before** the commit, which is what makes it answerable:
                     // the commit repoints the brush off the layer it is about to fold
                     // away (§17.9), so afterwards there is nothing left to compare.
-                    let follow = self.session.active_layer == id;
+                    let follow = self.session.active_layer() == id;
                     self.commit(ActionKind::MergeLayerDown {
                         source: plan.source,
                         dest: plan.dest,
@@ -637,8 +636,7 @@ impl Engine {
             ViewCommand::SetTool(tool) => {
                 // Switching away mid-gesture abandons it rather than committing a
                 // half-dragged marquee.
-                self.session.cancel_stroke();
-                self.session.tool = tool;
+                self.session.set_tool(tool);
                 self.mark_live_stale();
             }
             ViewCommand::SetBrush { brush, color } => {
@@ -647,8 +645,8 @@ impl Engine {
                 // and a live one is drawn by the same renderer without ever
                 // becoming an action, so nothing else would. `preview ==
                 // committed` needs both doors (§6.2).
-                self.session.brush = brush.sanitized();
-                self.session.color = color;
+                self.session.set_brush(brush);
+                self.session.set_color(color);
                 self.mark_live_stale();
             }
             // Grab-and-drag: content follows the cursor, so the view center moves
@@ -808,7 +806,7 @@ impl Engine {
         let first = it.next()?;
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device tolerance to declare.
-        let frame = self.frame_of(self.session.active_layer);
+        let frame = self.frame_of(self.session.active_layer());
         self.session.start_stroke(
             tool,
             *first,

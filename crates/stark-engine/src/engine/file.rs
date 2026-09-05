@@ -667,7 +667,8 @@ impl Engine {
         // Not `cancel_stroke`: a guide's open eye is keyed on an id this reset makes
         // mintable again, so it has to go with the document too (§20.5).
         self.session.forget_document();
-        self.session.active_layer = ROOT_LAYER;
+        self.session
+            .set_active_layer(ROOT_LAYER, self.timeline.current());
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).

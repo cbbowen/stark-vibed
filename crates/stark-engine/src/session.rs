@@ -108,8 +108,8 @@ impl Assist {
 
 pub struct Session {
     pub view: ViewTransform,
-    pub tool: Tool,
-    pub brush: BrushParams,
+    tool: Tool,
+    brush: BrushParams,
     /// The **hand's** color — straight sRGB, the Color panel's number. Its own
     /// field rather than a reading of the brush because the brush does not
     /// always have one: an erasing brush carries no pigment, and a fill drawn
@@ -117,11 +117,11 @@ pub struct Session {
     /// ([`start_selection`](Self::start_selection)). While the brush paints, the
     /// frontend keeps this equal to the paint effect's own color
     /// (`ViewCommand::SetBrush` carries both together).
-    pub color: [f32; 3],
+    color: [f32; 3],
     /// Published to peers (§17.4) beside the `presence` half, and read on this
     /// side as well, so it is the session's own rather than the publisher's: the
     /// wire is *told* it at publish time.
-    pub active_layer: LayerId,
+    active_layer: LayerId,
     /// What the next shape gesture does with the region it encloses (§6.8,
     /// §18.0.4) — one of the four ways to combine it into the
     /// selection, or fill it.
@@ -241,6 +241,22 @@ impl Session {
     /// than committing a half-dragged marquee — the gate `ViewCommand::SetTool`'s
     /// dispatch arm applies, carried onto the thing it is about, for the reason
     /// [`set_selection_feather`](Self::set_selection_feather) gives.
+    pub fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    pub fn brush(&self) -> BrushParams {
+        self.brush
+    }
+
+    pub fn color(&self) -> [f32; 3] {
+        self.color
+    }
+
+    pub fn active_layer(&self) -> LayerId {
+        self.active_layer
+    }
+
     pub fn set_tool(&mut self, tool: Tool) {
         self.cancel_stroke();
         self.tool = tool;

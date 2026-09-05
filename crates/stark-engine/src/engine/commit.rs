@@ -324,7 +324,7 @@ impl Engine {
     /// carried layers with it, and the replacement may itself be carried by
     /// something (§14.2).
     fn repoint_active_layer(&mut self) {
-        if self.document().contains_layer(self.session.active_layer) {
+        if self.document().contains_layer(self.session.active_layer()) {
             return;
         }
         let (mut paintable, mut any) = (None, None);
@@ -335,7 +335,7 @@ impl Engine {
             }
         });
         if let Some(id) = paintable.or(any) {
-            self.session.active_layer = id;
+            self.session.set_active_layer(id, self.timeline.current());
         }
     }
 
@@ -360,7 +360,7 @@ impl Engine {
     /// that exists, rather than moving somewhere that cannot be painted on.
     pub(super) fn arm_active(&mut self, id: LayerId) {
         if self.document().layer(id).is_some_and(|l| l.is_paintable()) {
-            self.session.active_layer = id;
+            self.session.set_active_layer(id, self.timeline.current());
         }
     }
 
