@@ -217,39 +217,48 @@ pub(crate) struct StrokeCarry {
     /// color-dynamics noise read it, so restarting it at zero would make the middle
     /// of a stroke look like the start of one.
     pub dist: f32,
-    /// The brush state to resume with, for a stroke that runs the stamp loop. `None`
-    /// means *nothing changed*: the swept path carries no state at all, a range that
-    /// reaches the end of the stroke has nothing following it to hand off to, and a
-    /// range with no geometry leaves the brush as it found it — so a caller holding
-    /// earlier state should keep it rather than treat this as a reset.
-    pub tool: Option<ToolState>,
-    /// The tiles this range rewrote: every coordinate the returned map holds a fresh
-    /// handle at.
-    ///
-    /// A **superset** of the tiles whose pixels changed, deliberately. What the
-    /// renderer enumerates is where the stroke's geometry *reaches*
-    /// (`region::cover`), and a tile at the very edge of that reach can
-    /// receive a fresh copy-on-write tile whose every fragment differenced its prefix-τ
-    /// taps to zero — bit-identical to the base, and still listed here. Narrowing it
-    /// would mean comparing pixels, which is the whole cost this field exists to avoid.
-    ///
-    /// Reporting them is what lets several in-flight strokes be composited over one
-    /// committed document without diffing whole tile maps (§17.6), and a superset costs
-    /// that a redundant composite rather than a wrong picture.
-    pub dirty: Vec<TileCoord>,
+    pub progress: Progress,
+}
+
+/// Whether a range render happened at all. One value with what a finished range
+/// hands on, so a range that drew nothing *yet* cannot also report a tool or dirty
+/// tiles for a caller to freeze.
+pub(crate) enum Progress {
+    /// The range is finished — drawn, or empty of geometry, which is the ordinary
+    /// empty return — and this is what it hands on.
+    Finished {
+        /// The brush state to resume with, for a stroke that runs the stamp loop.
+        /// `None` means *nothing changed*: the swept path carries no state at all, a
+        /// range that reaches the end of the stroke has nothing following it to hand
+        /// off to, and a range with no geometry leaves the brush as it found it — so
+        /// a caller holding earlier state should keep it rather than treat this as
+        /// a reset.
+        tool: Option<ToolState>,
+        /// The tiles this range rewrote: every coordinate the returned map holds a
+        /// fresh handle at.
+        ///
+        /// A **superset** of the tiles whose pixels changed, deliberately. What the
+        /// renderer enumerates is where the stroke's geometry *reaches*
+        /// (`region::cover`), and a tile at the very edge of that reach can receive
+        /// a fresh copy-on-write tile whose every fragment differenced its prefix-τ
+        /// taps to zero — bit-identical to the base, and still listed here.
+        /// Narrowing it would mean comparing pixels, which is the whole cost this
+        /// field exists to avoid.
+        ///
+        /// Reporting them is what lets several in-flight strokes be composited over
+        /// one committed document without diffing whole tile maps (§17.6), and a
+        /// superset costs that a redundant composite rather than a wrong picture.
+        dirty: Vec<TileCoord>,
+    },
     /// **This range drew nothing, and will have to be drawn again** — the brush's
-    /// stamp asset has not arrived yet (`StrokeRenderer::render_range`).
-    ///
-    /// Distinct from a range that drew nothing because it *contained* nothing, which
-    /// is the ordinary empty return and is genuinely finished. A caller that freezes
-    /// ranges must not freeze this one: `dist` did not advance either, so a head that
-    /// took it would carry a span index past geometry the preview never drew, and
-    /// measure every later `drain` falloff and colour-dynamics tap from an arc length
-    /// short by the whole deferred prefix. The commit, which renders the stroke once
-    /// with the asset present, computes both correctly — so the two pictures differ,
-    /// which is the §1.3 invariant, and nothing bumps the preview's epoch to repair
-    /// it because no *document* changed when the asset landed.
-    pub deferred: bool,
+    /// stamp asset has not arrived yet (`StrokeRenderer::render_range`), and `dist`
+    /// stands where the range began. A caller that freezes ranges must not freeze
+    /// this one: the commit renders the stroke once with the asset present, so a
+    /// head that took it would measure every later `drain` falloff and
+    /// colour-dynamics tap from an arc length the commit does not (§1.3) — and
+    /// nothing bumps the preview's epoch to repair it, because no *document*
+    /// changed when the asset landed.
+    Deferred,
 }
 
 impl StrokeCarry {
@@ -258,18 +267,19 @@ impl StrokeCarry {
     pub(crate) fn unchanged(dist: f32) -> Self {
         Self {
             dist,
-            tool: None,
-            dirty: Vec::new(),
-            deferred: false,
+            progress: Progress::Finished {
+                tool: None,
+                dirty: Vec::new(),
+            },
         }
     }
 
-    /// Nothing drawn *yet* — see [`deferred`](Self::deferred). `dist` is where the
-    /// range began, because that is still where the stroke has got to.
+    /// Nothing drawn *yet* — [`Progress::Deferred`]. `dist` is where the range
+    /// began, because that is still where the stroke has got to.
     pub(crate) fn deferred(dist: f32) -> Self {
         Self {
-            deferred: true,
-            ..Self::unchanged(dist)
+            dist,
+            progress: Progress::Deferred,
         }
     }
 }
@@ -372,5 +382,25 @@ impl StrokeSpans {
 
     pub(crate) fn dist(&self) -> f32 {
         self.dist
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two ways a carry says "nothing drawn" are two different answers: a
+    /// finished range hands on nothing, a deferred one hands on no answer at all.
+    #[test]
+    fn unchanged_is_finished_and_deferred_is_not() {
+        let finished = StrokeCarry::unchanged(3.0);
+        assert_eq!(finished.dist, 3.0);
+        assert!(matches!(
+            finished.progress,
+            Progress::Finished { tool: None, ref dirty } if dirty.is_empty()
+        ));
+        let deferred = StrokeCarry::deferred(3.0);
+        assert_eq!(deferred.dist, 3.0, "the arc clock did not move");
+        assert!(matches!(deferred.progress, Progress::Deferred));
     }
 }

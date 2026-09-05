@@ -20,7 +20,7 @@
 use stark_model::document::StrokeRecord;
 use stark_model::geom::Vec2;
 
-use super::super::budget::{extent_cell, lambda};
+use super::super::budget::extent_cell;
 use super::super::region::{coverage_bounds, segment_end};
 use super::super::segments::{BleedFire, Segment, Stretch};
 use super::bleed::bleed_stencil;
@@ -814,14 +814,11 @@ pub(super) fn dynamics_plan(
                         // bleed cadence, the exchange step — stays on the reference
                         // tip, which is what that radius is.
                         radius_ramp: sw.radius_ramp,
-                        // Scaled by the segment's flow (§6.2): λ rides the
-                        // exponent, so this is exposure scaling — a pass at flow f
-                        // trades exactly what f passes at flow 1 would, and the
-                        // exchange still composes exactly across overlapping
-                        // segments. `add` and `bleed`, linear in exposure, took
-                        // the factor at the segment generator instead.
-                        lambda_lift: paint.flow * lambda(paint.lift),
-                        lambda_deposit: paint.flow * lambda(paint.deposit),
+                        // The exchange rates as the segment resolved them, the
+                        // flow already on the exponent (`generate_segments_in`,
+                        // §6.2) — nothing here scales, as nothing here scales `add`.
+                        lambda_lift: paint.lambda_lift,
+                        lambda_deposit: paint.lambda_deposit,
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
@@ -951,8 +948,8 @@ pub(super) fn dynamics_plan(
                         // default 0.) The λs carry that segment's flow with them,
                         // as the painting slots' do.
                         radius: sw.radius,
-                        lambda_lift: paint.flow * lambda(paint.lift),
-                        lambda_deposit: paint.flow * lambda(paint.deposit),
+                        lambda_lift: paint.lambda_lift,
+                        lambda_deposit: paint.lambda_deposit,
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,

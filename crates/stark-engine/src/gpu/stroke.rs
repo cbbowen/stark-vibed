@@ -57,7 +57,7 @@ use tips::TipCache;
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
 pub use budget::{max_stretch, max_tip_reach};
-pub(crate) use incremental::{StrokeCarry, StrokeSpans, ToolState};
+pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState};
 // Not part of the module's public surface: the engine calls it, nothing outside the
 // crate does, and keeping it crate-visible is what lets its doc comment point at the
 // `segments` internals the rule is actually about.
@@ -302,8 +302,8 @@ impl StrokeRenderer {
             }
             // **Deferred, not finished.** `spans.dist()` is where the range *began*,
             // which is still where the stroke has got to — nothing was drawn, so the
-            // arc clock did not move. The flag is what stops a caller freezing the
-            // range on the strength of that: see `StrokeCarry::deferred`.
+            // arc clock did not move. The variant is what stops a caller freezing the
+            // range on the strength of that: see `Progress::Deferred`.
             return (scene.base.clone(), StrokeCarry::deferred(spans.dist()));
         };
         let plan = dynamics_setup(&rec.brush);

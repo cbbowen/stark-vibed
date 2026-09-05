@@ -38,13 +38,13 @@ use crate::gpu::desc::Slot;
 use crate::gpu::tile::TileMap;
 
 use super::accum::{
-    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
+    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
 use super::incremental::{Carried, Resume};
 use super::segments::generate_segments_in;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::tips::ResolvedTip;
-use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::{Progress, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
@@ -71,9 +71,9 @@ const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The accumulator is the parcel's first lane: this pass rasterizes one number per
 /// texel, where the deposit rasterizes the channel trio. Under a pen-driven
 /// opacity the ceiling lane rides beside it (§6.2) — the coverage the stroke has
-/// claimed, each segment's share at its own ceiling. Named beside the keys they
-/// are taken with, so the attach order and the bind order are one list
-/// ([`Parcel`](super::accum::Parcel)).
+/// claimed, each segment's share at its own ceiling. [`parcel_keys`] fills the
+/// lanes by these names, which is what keeps the attach order and the bind order
+/// one list ([`Parcel`](super::accum::Parcel)).
 const MASS: usize = 0;
 const CEILING: usize = 1;
 /// The moment of the whole mass over the pen's factor — the lane's companion,
@@ -96,6 +96,17 @@ fn ceiling_key() -> Key {
 /// The moment lane's pool key: one channel, the accumulator's own format.
 fn moment_key() -> Key {
     lane_key(ACCUM_FORMAT, "stark erase moment")
+}
+
+/// The lanes' pool keys at the lanes' own indices: the mass always, and under a
+/// pen-driven ceiling the two beside it (§6.2) — the same sweep the deposit takes,
+/// at the shader's own locations.
+fn parcel_keys(ceiling_lane: bool) -> LaneKeys {
+    let mut keys = LaneKeys::default();
+    keys[MASS] = Some(accum_key());
+    keys[CEILING] = ceiling_lane.then(ceiling_key);
+    keys[MOMENT] = ceiling_lane.then(moment_key);
+    keys
 }
 
 /// The erase pass's GPU objects, built once beside the two paths' kits.
@@ -255,14 +266,7 @@ impl StrokeRenderer {
         });
         scope.write_lease(&opacity_buf, bytemuck::bytes_of(&opacity));
 
-        // The parcel: the transparency mass, and under a pen-driven ceiling the
-        // lane beside it (§6.2) — the same two-lane sweep the deposit takes, at the
-        // shader's own locations.
-        let mut keys: Vec<Option<Key>> = vec![Some(accum_key())];
-        if k.ceiling_lane {
-            keys.push(Some(ceiling_key()));
-            keys.push(Some(moment_key()));
-        }
+        let keys = parcel_keys(k.ceiling_lane);
 
         // The shared procedure (§6.12, `accum`): resume everything the pieces
         // before this one accumulated, extend it over this piece's tiles, and turn
@@ -274,7 +278,7 @@ impl StrokeRenderer {
             self,
             scene,
             scope,
-            &keys,
+            keys,
             BareCanvas::Skip,
             resume.prior.map(ToolState::erased),
         )
@@ -330,10 +334,23 @@ impl StrokeRenderer {
             map,
             StrokeCarry {
                 dist: end_dist,
-                tool: resume.capture.then(|| ToolState(Carried::Erase(carry))),
-                dirty,
-                deferred: false,
+                progress: Progress::Finished {
+                    tool: resume.capture.then(|| ToolState(Carried::Erase(carry))),
+                    dirty,
+                },
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parcel_keys_fill_exactly_the_lanes_the_stroke_carries() {
+        let present = |keys: LaneKeys| keys.map(|key| key.is_some());
+        assert_eq!(present(parcel_keys(false)), [true, false, false, false]);
+        assert_eq!(present(parcel_keys(true)), [true, true, true, false]);
     }
 }

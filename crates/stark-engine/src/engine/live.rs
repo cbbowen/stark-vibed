@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::Engine;
 use crate::document::{ApplyCtx, DocState, PreparedStroke};
 use crate::gpu::StrokeSpans;
+use crate::gpu::stroke::Progress;
 use crate::peer::{GestureView, LiveGesture, Peer};
 use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::{TileCoord, TileRect};
@@ -415,7 +416,9 @@ impl Preview {
         // though, are part of what the fold has to overlay, so they join the head's.
         let (state, carry) =
             render_span_range(ctx, author, &head.state, tail_rec, tail, head.tool.as_ref());
-        head.dirty.extend(carry.dirty);
+        if let Progress::Finished { dirty, .. } = carry.progress {
+            head.dirty.extend(dirty);
+        }
         (head, state)
     }
 }
@@ -712,25 +715,20 @@ fn advance_head(
         // reached — which `drain` and the color-dynamics noise would both show.
         let (state, carry) =
             render_span_range(ctx, author, &head.state, rec, spans, head.tool.as_ref());
-        // The range drew nothing and will have to be drawn again — the brush's stamp
-        // asset has not loaded. Freezing it would advance `spans` past geometry the
-        // preview never drew and leave `dist` where it was, and a head only ever
-        // grows: from then on every tail measures `drain` and the colour-dynamics
-        // noise from an arc length short by the whole deferred prefix, while the
-        // commit measures it correctly. Nothing bumps the epoch when the asset lands,
-        // because no document changed, so the head would never be rebuilt. Leave it
-        // exactly as it was and let the next move try again.
-        if carry.deferred {
+        // A deferred range (`Progress::Deferred`) leaves the head exactly as it was,
+        // for the next move to try again: a head only ever grows, so freezing one
+        // would carry its short arc length into every later tail.
+        let Progress::Finished { tool, dirty: fresh } = carry.progress else {
             return head;
-        }
+        };
         let mut dirty = head.dirty;
-        dirty.extend(carry.dirty);
+        dirty.extend(fresh);
         FrozenHead {
             spans: frozen,
             dist: carry.dist,
             // `None` from a range means "unchanged", not "reset" — a range with no
             // geometry runs nothing and leaves the brush as it found it.
-            tool: carry.tool.or(head.tool),
+            tool: tool.or(head.tool),
             state,
             gesture: head.gesture,
             epoch: head.epoch,

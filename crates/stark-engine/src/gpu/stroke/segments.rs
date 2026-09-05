@@ -13,6 +13,7 @@ use stark_model::document::{BrushParams, OrientationSource, PenState, StrokeReco
 use stark_model::geom::Vec2;
 
 use super::StrokeSpans;
+use super::budget::lambda;
 
 /// The fixtures every suite in [`stroke`](super) builds its sweeps with — here because
 /// this is the module that owns the type they build (see the module's own docs).
@@ -176,17 +177,16 @@ impl Sweep {
 /// whole stroke, and there is no per-segment version of it to carry.
 #[derive(Copy, Clone)]
 pub(super) struct Paint {
-    /// The wet effect's overall rate as the pen asked for it here
-    /// (`WetEffect::flow`, §6.2) — what the plan scales the exchange λs by,
-    /// so a pass at flow ½ trades exactly what half a pass at flow 1 would.
-    /// Already folded into `add` and `bleed`, which are linear in exposure; the
-    /// vertical fractions cannot be scaled before their `ln`, which is why the
-    /// factor rides beside them. 1 — the neutral pass — on every other effect,
-    /// whose own rate rides `add` or `drag` outright.
-    pub(super) flow: f32,
     pub(super) add: f32,
-    pub(super) lift: f32,
-    pub(super) deposit: f32,
+    /// The exchange rates as the shader runs them — `flow · λ(axis)` (§6.2), each
+    /// vertical axis as the pen asked for it here through
+    /// [`lambda`](super::budget::lambda), then the wet effect's modulated flow on
+    /// the exponent. Folded here, where `add` and `bleed` already take the flow,
+    /// so that nothing downstream holds a factor it could apply twice: the axes
+    /// and the flow do not survive past this struct. Zero — no transfer — on
+    /// every effect but wet.
+    pub(super) lambda_lift: f32,
+    pub(super) lambda_deposit: f32,
     pub(super) bleed: f32,
     /// The liquify effect's follow fraction as the pen asked for it here
     /// (§6.13) — [`LiquifyEffect::strength`](stark_model::document::LiquifyEffect)
@@ -256,10 +256,9 @@ pub(super) struct Paint {
 }
 
 impl Default for Paint {
-    /// Every rate at zero — a tool doing nothing — the flow and the ceiling
-    /// factor at their **neutral 1** (scales, so a zero would not be "none" but
-    /// a λ multiplier that silences the exchange and a ceiling that admits
-    /// nothing), and the tooth at **full give**, which is the same statement
+    /// Every rate at zero — a tool doing nothing — the ceiling factor at its
+    /// **neutral 1** (a scale, so a zero would not be "none" but a ceiling that
+    /// admits nothing), and the tooth at **full give**, which is the same statement
     /// about the substrate: a tip that follows every fall deposits exactly what
     /// it would with no substrate under it at all.
     ///
@@ -268,10 +267,9 @@ impl Default for Paint {
     /// there is — a default that gates paint away rather than one that does nothing.
     fn default() -> Self {
         Self {
-            flow: 1.0,
             add: 0.0,
-            lift: 0.0,
-            deposit: 0.0,
+            lambda_lift: 0.0,
+            lambda_deposit: 0.0,
             bleed: 0.0,
             drag: 0.0,
             tooth_give: stark_model::document::ToothParams::DEFAULT_GIVE,
@@ -804,41 +802,35 @@ pub(super) fn generate_segments_in(
         // about the *brush*, so every segment of every stroke answers it the same
         // way (`dynamics_setup`'s purity argument).
         //
-        // A wet brush's flow scales everything the tool does (§6.2). What is
-        // linear in exposure is scaled here — the `add` mint, and the `bleed`
-        // diffusivity (which `bleed_stencil` still clamps at its own calibrated
-        // top, so a hot flow saturates the blur rather than out-reaching the
-        // stencil). The vertical fractions are not: a fraction cannot be scaled
-        // before its `ln`, so the factor rides the segment and the plan scales
-        // their λs — one pass at flow f trades exactly what f passes at flow 1
-        // would.
-        let rates = |pen: PenState| -> (f32, f32, f32, f32, f32, f32) {
+        // A wet brush's flow scales everything the tool does (§6.2), and all of
+        // it is scaled here. What is linear in exposure takes the factor outright
+        // — the `add` mint, and the `bleed` diffusivity (which `bleed_stencil`
+        // still clamps at its own calibrated top, so a hot flow saturates the blur
+        // rather than out-reaching the stencil). The vertical fractions cannot be
+        // scaled before their `ln`, so they become λs first and the factor lands
+        // on the exponent — one pass at flow f trades exactly what f passes at
+        // flow 1 would. `(add, λ_lift, λ_deposit, bleed, drag)`.
+        let rates = |pen: PenState| -> (f32, f32, f32, f32, f32) {
             match &b.effect {
                 stark_model::document::BrushEffect::Paint(p) => {
-                    (1.0, p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+                    (p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
                 }
                 stark_model::document::BrushEffect::Wet(w) => {
                     let flow = w.flow * w.modulation.flow(pen);
                     (
-                        flow,
                         w.dynamics.add * w.modulation.add(pen) * flow,
-                        w.dynamics.lift * w.modulation.lift(pen),
-                        w.dynamics.deposit * w.modulation.deposit(pen),
+                        flow * lambda(w.dynamics.lift * w.modulation.lift(pen)),
+                        flow * lambda(w.dynamics.deposit * w.modulation.deposit(pen)),
                         w.dynamics.bleed * w.modulation.bleed(pen) * flow,
                         0.0,
                     )
                 }
                 stark_model::document::BrushEffect::Erase(e) => {
-                    (1.0, e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
+                    (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
                 }
-                stark_model::document::BrushEffect::Liquify(l) => (
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    l.strength * l.modulation.strength(pen),
-                ),
+                stark_model::document::BrushEffect::Liquify(l) => {
+                    (0.0, 0.0, 0.0, 0.0, l.strength * l.modulation.strength(pen))
+                }
             }
         };
         // **Which of them ride the ends, and which the midpoint.** A rate the
@@ -850,23 +842,22 @@ pub(super) fn generate_segments_in(
         // whose tool half has no canvas position to vary along (`dynamics.wesl`).
         // What holds their step down is the flattener, which already buys segments
         // against [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
-        let (flow, _, lift, deposit, bleed, _) = rates(pen);
-        let (_, add0, _, _, _, drag0) = rates(ends.pen.0);
-        let (_, add1, _, _, _, drag1) = rates(ends.pen.1);
+        let (_, lambda_lift, lambda_deposit, bleed, _) = rates(pen);
+        let (add0, _, _, _, drag0) = rates(ends.pen.0);
+        let (add1, _, _, _, drag1) = rates(ends.pen.1);
         let give0 = b.tooth.give * m.tooth_give(ends.pen.0);
         let give1 = b.tooth.give * m.tooth_give(ends.pen.1);
         Segment {
             sweep,
             paint: Paint {
-                flow,
                 // The mean of the two ends, like the radius and the ceiling: it is
                 // what makes the ramp exact at both, so two adjacent segments —
                 // which read the pen at the knot they share from the same sample —
                 // agree there to the bit.
                 add: (add0 + add1) * 0.5,
                 add_ramp: add1 - add0,
-                lift,
-                deposit,
+                lambda_lift,
+                lambda_deposit,
                 bleed,
                 drag: (drag0 + drag1) * 0.5,
                 drag_ramp: drag1 - drag0,
@@ -2074,25 +2065,27 @@ mod tests {
         };
         let one = wet(1.0);
         assert_eq!(
-            (one.flow, one.add, one.lift, one.deposit, one.bleed),
-            (1.0, 0.5, 0.6, 0.4, 0.2),
-            "at the neutral flow the axes are the effective rates, exactly",
+            (one.add, one.lambda_lift, one.lambda_deposit, one.bleed),
+            (0.5, lambda(0.6), lambda(0.4), 0.2),
+            "at the neutral flow the rates are the axes' own, exactly",
         );
         let two = wet(2.0);
-        assert_eq!(two.flow, 2.0, "the factor rides the segment for the λs");
         assert_eq!(two.add, 1.0, "the mint is linear in exposure");
         assert_eq!(two.bleed, 0.4, "…and so is the diffusivity");
         assert_eq!(
-            (two.lift, two.deposit),
-            (one.lift, one.deposit),
-            "a fraction cannot be scaled before its ln — the plan owns that",
+            (two.lambda_lift, two.lambda_deposit),
+            (2.0 * lambda(0.6), 2.0 * lambda(0.4)),
+            "the flow lands on the λ after its ln, never on the axis before it",
         );
-        // Flow 0 is a brush that does nothing at all: no mint, no bleed, and the
-        // λ factor takes the exchange with it.
+        // Flow 0 is a brush that does nothing at all: no mint, no bleed, and no
+        // exchange.
         let zero = wet(0.0);
-        assert_eq!((zero.flow, zero.add, zero.bleed), (0.0, 0.0, 0.0));
-        // A plain paint brush resolves the neutral factor — its flow *is* its
-        // `add`, and there are no λs for a factor to reach.
+        assert_eq!(
+            (zero.add, zero.lambda_lift, zero.lambda_deposit, zero.bleed),
+            (0.0, 0.0, 0.0, 0.0),
+        );
+        // A plain paint brush's flow *is* its `add`, and it has no exchange for a
+        // factor to reach.
         let plain = record(
             BrushParams {
                 size: 20.0,
@@ -2101,7 +2094,7 @@ mod tests {
             &[Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)],
         );
         let p = whole_segments(&plain)[0].paint;
-        assert_eq!((p.flow, p.add), (1.0, 0.6));
+        assert_eq!((p.add, p.lambda_lift, p.lambda_deposit), (0.6, 0.0, 0.0));
     }
 
     /// Segment count is the loop's unit of cost. Every dispatch in the dynamics path

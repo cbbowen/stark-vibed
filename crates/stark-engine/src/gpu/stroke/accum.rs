@@ -68,6 +68,21 @@ use crate::gpu::scratch::{Kept, Key, SubmitScope};
 /// than shifting the lane after it.
 const MAX_LANES: usize = 4;
 
+/// An effect's parcel lanes by index — the sweep shader's `@location`s — with
+/// `None` at a lane this stroke does not carry. Fixed-size so that a hole is a
+/// `None` at a *named* index rather than a push order the lane constants have to
+/// agree with; how many of them the pass attaches is [`lane_count`], read off the
+/// same array.
+pub(super) type LaneKeys = [Option<Key>; MAX_LANES];
+
+/// One past the last lane that exists: how many of a parcel's attachments the
+/// sweep pass takes. A `None` inside that count is a hole the pipeline's own
+/// target list also has; one past it is no target at all — and the pass and the
+/// pipeline have to agree about which, so the count is read here and nowhere else.
+fn lane_count<T>(lanes: &[Option<T>; MAX_LANES]) -> usize {
+    lanes.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
+}
+
 /// One parcel lane's pool key: a full tile texture (interior + apron), renderable
 /// (the sweep accumulates into it), bindable (the landing pass reads it), and
 /// copyable both ways (a resuming piece copies the carried total into its working
@@ -98,23 +113,15 @@ pub(super) fn lane_key(format: wgpu::TextureFormat, label: &'static str) -> Key 
 /// attaches in a different order than it binds.
 pub(super) struct Parcel {
     /// `None` is a hole (see [`MAX_LANES`]): no lease, and no attachment at that
-    /// index of the sweep.
-    lanes: Vec<Option<Kept>>,
+    /// index of the sweep — inside the lane count or past it.
+    lanes: [Option<Kept>; MAX_LANES],
 }
 
 impl Parcel {
     /// Check out a working parcel of `keys`' shape, holes included.
-    fn take(r: &StrokeRenderer, keys: &[Option<Key>]) -> Self {
-        assert!(
-            keys.len() <= MAX_LANES,
-            "a parcel is at most the channel trio and the ceiling lane, got {} lanes",
-            keys.len(),
-        );
+    fn take(r: &StrokeRenderer, keys: LaneKeys) -> Self {
         Parcel {
-            lanes: keys
-                .iter()
-                .map(|k| k.map(|k| r.scratch.keep(&r.ctx.device, k)))
-                .collect(),
+            lanes: keys.map(|k| k.map(|k| r.scratch.keep(&r.ctx.device, k))),
         }
     }
 
@@ -135,7 +142,7 @@ impl Parcel {
                 panic!(
                     "lane {i} of a {}-lane parcel: an effect's lane names and its keys \
                      disagree about what its parcel holds",
-                    self.lanes.len(),
+                    self.len(),
                 )
             })
             .view()
@@ -157,9 +164,9 @@ impl Parcel {
         att
     }
 
-    /// How many of [`Self::attachments`] are real.
+    /// How many of [`Self::attachments`] the sweep pass takes ([`lane_count`]).
     fn len(&self) -> usize {
-        self.lanes.len()
+        lane_count(&self.lanes)
     }
 }
 
@@ -265,7 +272,7 @@ pub(super) struct IncrementalTileAccumulator<'a> {
     r: &'a StrokeRenderer,
     scene: StrokeScene<'a>,
     scope: SubmitScope,
-    keys: &'a [Option<Key>],
+    keys: LaneKeys,
     bare: BareCanvas,
     /// The copy-on-write map being built. Read the pristine fallback out of
     /// `scene.base` rather than out of this: they start equal, but this one is
@@ -287,7 +294,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
         scope: SubmitScope,
-        keys: &'a [Option<Key>],
+        keys: LaneKeys,
         bare: BareCanvas,
         prior: Option<&ParcelCarry>,
     ) -> Self {
@@ -354,9 +361,17 @@ impl<'a> IncrementalTileAccumulator<'a> {
             let work = Parcel::take(self.r, self.keys);
             let resumed = self.tiles.get(coord).map(|t| Arc::clone(&t.accum));
             if let Some(old) = &resumed {
-                for ((src, dst), key) in old.lanes.iter().zip(&work.lanes).zip(self.keys) {
-                    // A hole in one list is a hole in all three: the keys made both
-                    // parcels, so the `None`s line up and nothing is copied there.
+                // A hole in one list is a hole in all three: the keys made both
+                // parcels. A carry only ever resumes the stroke that captured it,
+                // and this is where that promise would show if it broke.
+                debug_assert!(
+                    old.lanes
+                        .iter()
+                        .zip(&self.keys)
+                        .all(|(lane, key)| lane.is_some() == key.is_some()),
+                    "a resumed parcel and this piece's keys disagree about where the holes are",
+                );
+                for ((src, dst), key) in old.lanes.iter().zip(&work.lanes).zip(&self.keys) {
                     if let (Some(src), Some(dst), Some(key)) = (src, dst, key) {
                         self.scope.encoder().copy_texture_to_texture(
                             src.tex().as_image_copy(),
@@ -479,5 +494,20 @@ pub(super) fn base_targets<'a>(
                 .and_then(TilePairHandle::resid_view)
                 .unwrap_or(zero)
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The count is one past the last lane, so a hole inside it is attached as a
+    /// hole and everything past it is not attached at all.
+    #[test]
+    fn the_lane_count_stops_after_the_last_lane_and_keeps_the_holes_before_it() {
+        assert_eq!(lane_count::<()>(&[None, None, None, None]), 0);
+        assert_eq!(lane_count(&[Some(()), None, None, None]), 1);
+        assert_eq!(lane_count(&[Some(()), Some(()), None, None]), 2);
+        assert_eq!(lane_count(&[Some(()), Some(()), None, Some(())]), 4);
     }
 }

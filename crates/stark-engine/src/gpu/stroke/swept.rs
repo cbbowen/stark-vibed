@@ -69,12 +69,12 @@ const INTEGRATE_SLOTS: &[Slot] = &[
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
 use super::accum::{
-    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, Sweep, lane_key,
+    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
 use super::incremental::{Carried, Resume};
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance, generate_segments_in};
-use super::{StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::{Progress, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -410,9 +410,10 @@ impl StrokeRenderer {
 
         let carry = StrokeCarry {
             dist: end_dist,
-            tool: None,
-            dirty: coords.clone(),
-            deferred: false,
+            progress: Progress::Finished {
+                tool: None,
+                dirty: coords.clone(),
+            },
         };
 
         // Extent → cleared scratch tile: within-stroke accumulation of the parcel
@@ -567,39 +568,25 @@ impl StrokeRenderer {
         let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);
         let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
 
-        // The carried parcel's lanes, in the order `stamp.wesl`'s deposit declares
-        // its targets — the same three channels at the same formats the unscaled
-        // path's ring pairs carry, differing only in outliving their piece (and in
-        // coming from the scratch pool rather than the tile pool, since nothing
-        // here ever becomes a document tile). A space with no residual builds two
-        // lanes and binds two, the `[..2 + has_resid]` count every list of these
-        // takes (§6.7) — unless the stroke carries the ceiling lane, which sits at
-        // the shader's location 3 and leaves the residual's slot a hole
-        // (`accum::MAX_LANES`). A supersampled stroke's lanes are the same set at
-        // `ss` texels per px — the one place the 4× memory is paid, and it is
+        // The carried parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`])
+        // — the same channels at the same formats the unscaled path's ring pairs
+        // carry, differing only in outliving their piece (and in coming from the
+        // scratch pool rather than the tile pool, since nothing here ever becomes a
+        // document tile). A supersampled stroke's lanes are the same set at `ss`
+        // texels per px — the one place the 4× memory is paid, and it is
         // transient: no document tile ever holds a subsample.
-        let mut keys: Vec<Option<Key>> = vec![
-            Some(parcel_key(self.color_space.color_format())),
-            Some(parcel_key(SCRATCH_AUX_FORMAT)),
-        ];
-        match self.color_space.resid_format() {
-            Some(f) => keys.push(Some(parcel_key(f))),
-            None if k.ceiling_lane => keys.push(None),
-            None => {}
-        }
-        if k.ceiling_lane {
-            keys.push(Some(parcel_key(CEILING_FORMAT)));
-        }
-        let keys: Vec<Option<Key>> = keys
-            .into_iter()
-            .map(|key| key.map(|key| key.scaled(ss)))
-            .collect();
+        let keys = parcel_keys(
+            self.color_space.color_format(),
+            self.color_space.resid_format(),
+            k.ceiling_lane,
+        )
+        .map(|key| key.map(|key| key.scaled(ss)));
 
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
             scene,
             scope,
-            &keys,
+            keys,
             BareCanvas::Mint,
             resume.prior.map(ToolState::swept),
         )
@@ -640,23 +627,41 @@ impl StrokeRenderer {
             map,
             StrokeCarry {
                 dist: end_dist,
-                tool: resume.capture.then(|| ToolState(Carried::Sweep(carry))),
-                dirty,
-                deferred: false,
+                progress: Progress::Finished {
+                    tool: resume.capture.then(|| ToolState(Carried::Sweep(carry))),
+                    dirty,
+                },
             },
         )
     }
 }
 
-/// The carried parcel's lanes (`render_swept_scaled`), named beside the keys that
-/// build them so the attach order and the bind order stay one list
-/// ([`Parcel`](super::accum::Parcel)) — and in the order `stamp.wesl` declares its
-/// own targets, which is what the sweep attaches them as. The ceiling is at 3
-/// with or without a residual at 2: the index is the shader's `@location`.
+/// The carried parcel's lanes (`render_swept_scaled`), in the order `stamp.wesl`
+/// declares its own targets, which is what the sweep attaches them as: the index
+/// is the shader's `@location`, so the ceiling is at 3 with or without a residual
+/// at 2. [`parcel_keys`] fills them by these names, which is what keeps the attach
+/// order and the bind order one list ([`Parcel`](super::accum::Parcel)).
 const COLOR: usize = 0;
 const AUX: usize = 1;
 const RESID: usize = 2;
 const CEILING: usize = 3;
+
+/// The lanes' pool keys at the lanes' own indices — `None` at one this stroke does
+/// not carry. A space with no residual under a pen-driven ceiling leaves [`RESID`]
+/// a hole between two lanes it does carry (§6.7, §6.2), and the parcel attaches
+/// exactly that.
+fn parcel_keys(
+    color: wgpu::TextureFormat,
+    resid: Option<wgpu::TextureFormat>,
+    ceiling_lane: bool,
+) -> LaneKeys {
+    let mut keys = LaneKeys::default();
+    keys[COLOR] = Some(parcel_key(color));
+    keys[AUX] = Some(parcel_key(SCRATCH_AUX_FORMAT));
+    keys[RESID] = resid.map(parcel_key);
+    keys[CEILING] = ceiling_lane.then(|| parcel_key(CEILING_FORMAT));
+    keys
+}
 
 /// One carried-parcel lane's pool key — [`lane_key`]'s usages, at the parcel's own
 /// formats. One label for the three: they are one purpose, and the formats already
@@ -1102,4 +1107,35 @@ fn integrate_bind_group(
             other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Which lanes exist, by index: the shape the sweep's targets and the landing
+    /// pass's binds both read.
+    #[test]
+    fn parcel_keys_fill_exactly_the_lanes_the_stroke_carries() {
+        let present = |keys: LaneKeys| keys.map(|key| key.is_some());
+        let color = wgpu::TextureFormat::Rgba16Float;
+        let resid = Some(wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(
+            present(parcel_keys(color, None, false)),
+            [true, true, false, false]
+        );
+        assert_eq!(
+            present(parcel_keys(color, resid, false)),
+            [true, true, true, false]
+        );
+        // The hole: a space with no residual under a pen-driven ceiling.
+        assert_eq!(
+            present(parcel_keys(color, None, true)),
+            [true, true, false, true]
+        );
+        assert_eq!(
+            present(parcel_keys(color, resid, true)),
+            [true, true, true, true]
+        );
+    }
 }
