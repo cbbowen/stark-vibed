@@ -10,15 +10,21 @@
 
 mod common;
 
-use common::palette::RED;
+use common::palette::{BLACK, BLUE_SOFT, GREEN, RED, WARM};
 use common::*;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, GestureCommand, HoverReport, InputSample, ViewCommand};
+use stark_engine::document::{CanvasBounds, CompositeParams, Guide, Layer, LayerContent};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
-use stark_model::document::{MatteRegion, Parcel, Place};
-use stark_model::geom::Vec2;
+use stark_model::document::{
+    BlendMode, ColorAdjust, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
+    PerspectiveGuide, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
+};
+use stark_model::geom::{Affine2, IVec2, Vec2};
+use stark_model::{SubstrateId, SubstrateScale};
+use std::sync::Arc;
 
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
@@ -157,6 +163,318 @@ fn the_view_never_reaches_the_document() {
     assert!(
         images_match(&upright, &turned, 0),
         "an export must show the piece, not the easel"
+    );
+}
+
+/// The document every preview is walked over — one of each thing a `Preview*` can
+/// name, each arranged so its sample moves a pixel: a stroke under the painted
+/// layer (a blend over nothing is `Normal`), a woven substrate in the light (a
+/// scale of the flat one shows nowhere), an open eye on the guide, a filter above
+/// the paint, and a first hover report, since a window of one folds a click's knot.
+struct Seed {
+    paint: LayerId,
+    filter: LayerId,
+    matte: LayerId,
+    guide: GuideId,
+}
+
+impl Seed {
+    fn plant(engine: &mut Engine) -> Self {
+        let linen = engine
+            .import_substrate(&stark_testdata::assets::linen())
+            .expect("the linen height map imports");
+        engine.process(DocCommand::SetSubstrate(linen));
+        engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
+            substrate_strength: 1.0,
+            ..Default::default()
+        }));
+        paint(
+            engine,
+            GREEN,
+            14.0,
+            &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)],
+        );
+        let layer = add_layer(engine);
+        bar(engine, -60.0, 60.0);
+        engine.process(DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::Color(ColorAdjust::NEUTRAL),
+        });
+        let filter = engine
+            .observe()
+            .layers
+            .iter()
+            .find(|l| l.filter.is_some())
+            .expect("the filter layer just added")
+            .id;
+        engine.process(DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: MatteRegion::OutsideRect {
+                min: Vec2::new(-50.0, -50.0),
+                max: Vec2::new(50.0, 50.0),
+            },
+            paint: Parcel::Solid(Srgb::new(BLACK)),
+        });
+        let matte = engine.observe().layers.last().expect("matte").id;
+        engine.process(DocCommand::AddGuide {
+            guide: PerspectiveGuide::default(),
+            after: None,
+            name: None,
+        });
+        let guide = engine.observe().guides.last().expect("guide").id;
+        engine.process(ViewCommand::SetGuideVisible(guide, true));
+        engine.process(DocCommand::Select(SelectionOp::new(
+            SelectionMode::Replace,
+            SelectionShape::rect_from_corners(Vec2::new(-80.0, -40.0), Vec2::new(20.0, 40.0)),
+            8.0,
+        )));
+        engine.process(ViewCommand::PreviewHover(Some(HoverReport {
+            sample: InputSample::at(Vec2::new(-40.0, 0.0)),
+            tolerance: DEFAULT_TOLERANCE,
+            reach: 40.0,
+        })));
+        Self {
+            paint: layer,
+            filter,
+            matte,
+            guide,
+        }
+    }
+}
+
+/// A layer's every committed property, its tiles standing in as the tile map's
+/// revision: `with_tiles` mints a fresh one, so a transform or a fill that reached
+/// the timeline shows here as surely as an opacity would.
+#[derive(Debug, PartialEq)]
+struct LayerRow {
+    id: LayerId,
+    depth: usize,
+    composite: CompositeParams,
+    visible: bool,
+    name: Option<Arc<str>>,
+    translation: IVec2,
+    tiles: Option<u64>,
+    matte: Option<(MatteRegion, Parcel)>,
+    filter: Option<Filter>,
+}
+
+/// One reading of each thing a preview could reach if it leaked: the log's length,
+/// the extent, every layer, the guide roster, the substrate and this actor's
+/// selection. `doc_revision` alone would not do — it moves on a commit, and a
+/// preview that wrote the timeline's current state without committing would leave
+/// it still.
+#[derive(Debug, PartialEq)]
+struct Committed {
+    revision: u64,
+    log: Option<(usize, usize)>,
+    bounds: CanvasBounds,
+    layers: Vec<LayerRow>,
+    guides: Vec<Guide>,
+    substrate: (SubstrateId, SubstrateScale, Srgb),
+    selection: (f32, f32, usize, Option<(Vec2, Vec2)>),
+}
+
+impl Committed {
+    fn of(engine: &Engine) -> Self {
+        let doc = engine.document();
+        let mut layers = Vec::new();
+        doc.visit(&mut |l: &Layer, depth: usize| {
+            let matte = match &l.content {
+                LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
+                LayerContent::Paint(_) | LayerContent::Filter(_) => None,
+            };
+            layers.push(LayerRow {
+                id: l.id,
+                depth,
+                composite: l.composite,
+                visible: l.visible,
+                name: l.name.clone(),
+                translation: l.translation,
+                tiles: l.content_revision(),
+                matte,
+                filter: l.filter(),
+            });
+        });
+        let selection = doc.selection_of(engine.actor());
+        Self {
+            revision: engine.observe().doc_revision,
+            log: engine.scrub_range(),
+            bounds: doc.bounds(),
+            layers,
+            guides: doc.guides().iter().cloned().collect(),
+            substrate: (doc.substrate, doc.substrate_scale, doc.substrate_color),
+            selection: (
+                selection.opacity(),
+                selection.outside(),
+                selection.tile_count(),
+                selection.hull(),
+            ),
+        }
+    }
+}
+
+/// The table: every `Preview*` variant and what its in-flight sample carries, given
+/// the seeded document.
+///
+/// A macro for `corpus.rs`'s `battery!` reason. One list expands to two things —
+/// the `match` over every `ViewCommand`, and the drops the walk iterates — so a new
+/// `Preview*` variant refuses to compile until it has a line here, and a line cannot
+/// be matched without being walked. The non-preview variants are spelled out rather
+/// than `_`, or that arm would take the new variant silently. `$seed` is hygiene:
+/// the samples name `seed`, so the function binding it takes the identifier from
+/// the same place.
+macro_rules! preview_table {
+    ($seed:ident: $($variant:ident => $carries:expr),+ $(,)?) => {
+        /// `none`'s variant carrying the table's sample, or `None` for a command
+        /// that previews nothing.
+        fn in_flight($seed: &Seed, none: &ViewCommand) -> Option<ViewCommand> {
+            match none {
+                $(ViewCommand::$variant(_) => Some(ViewCommand::$variant(Some($carries))),)+
+                ViewCommand::SetTool(_)
+                | ViewCommand::SetBrush { .. }
+                | ViewCommand::Pan { .. }
+                | ViewCommand::Zoom { .. }
+                | ViewCommand::Pinch { .. }
+                | ViewCommand::SetRotation(_)
+                | ViewCommand::MirrorH
+                | ViewCommand::CenterOn(_)
+                | ViewCommand::ShowPiece(_)
+                | ViewCommand::Resize(_)
+                | ViewCommand::SetShapeAction(_)
+                | ViewCommand::SetSelectionFeather(_)
+                | ViewCommand::SetShapeOpacity(_)
+                | ViewCommand::SetShowPeerSelections(_)
+                | ViewCommand::SetGuideVisible(..)
+                | ViewCommand::SetMediaParams(_)
+                | ViewCommand::SetEnvironment(_)
+                | ViewCommand::SetOutput(_)
+                | ViewCommand::SetHistoryBudget(_)
+                | ViewCommand::SetFastCommit(_) => None,
+            }
+        }
+
+        /// Every variant in the table carrying nothing: the drop half of each pair.
+        fn dropped() -> Vec<ViewCommand> {
+            vec![$(ViewCommand::$variant(None)),+]
+        }
+    };
+}
+
+preview_table! { seed:
+    PreviewGuide => (
+        seed.guide,
+        PerspectiveGuide {
+            center: Vec2::new(37.0, -104.0),
+            focal: 612.0,
+            ..PerspectiveGuide::default()
+        },
+    ),
+    PreviewMatteRect => (seed.matte, Vec2::new(-40.0, -30.0), Vec2::new(40.0, 30.0)),
+    PreviewParcel => (seed.matte, Parcel::Solid(Srgb::new(WARM))),
+    PreviewTransform => (
+        seed.paint,
+        TransformMap::Affine(Affine2::from_translation(Vec2::new(57.0, 23.0))),
+    ),
+    PreviewFill => (
+        seed.paint,
+        FillOp::new(
+            SelectionShape::rect_from_corners(Vec2::new(-30.0, -20.0), Vec2::new(30.0, 20.0)),
+            4.0,
+            Srgb::new(BLUE_SOFT),
+            1.0,
+        ),
+    ),
+    PreviewTranslate => (seed.paint, IVec2::new(-90, 55)),
+    PreviewSubstrateColor => Srgb::new(WARM),
+    PreviewSubstrateScale => SubstrateScale::new(200),
+    PreviewSelectionOpacity => 0.5,
+    PreviewLayerOpacity => (seed.paint, 0.25),
+    PreviewFilter => (
+        seed.filter,
+        Filter::Color(ColorAdjust {
+            saturation: 0.5,
+            ..ColorAdjust::NEUTRAL
+        }),
+    ),
+    PreviewLayerBlend => (seed.paint, BlendMode::Drago { k: 2.0 }),
+    PreviewHover => HoverReport {
+        sample: InputSample::at(Vec2::ZERO),
+        tolerance: DEFAULT_TOLERANCE,
+        reach: 40.0,
+    },
+}
+
+/// **Every `Preview*` leaves the committed document alone** (§4).
+///
+/// The Doc/View split is a convention, not a type: `process_view` holds the whole
+/// engine and could commit. The files that check one preview each say what it
+/// *shows*; this walks the table, sending each variant carrying its sample and then
+/// carrying nothing, and reads the committed document whole after both.
+///
+/// The renders are what keep the walk from being vacuous: `preview_transform` and
+/// `preview_fill` answer `None` for a layer they cannot work on, and a sample the
+/// engine declined leaves the document alone trivially — so every sample but the
+/// selection's strength has to move a pixel, and every drop has to put it back. The
+/// committed export at either end is for the one leak no reading above sees: a
+/// preview that rendered *into* the committed tiles rather than minting its own.
+#[test]
+fn every_preview_leaves_the_committed_document_alone() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let seed = Seed::plant(&mut engine);
+    let before = Committed::of(&engine);
+    let mut off = Offscreen::default();
+    let view = engine.view();
+    let mut export = |engine: &mut Engine| {
+        pollster::block_on(
+            engine
+                .export_view(
+                    &mut off,
+                    view,
+                    None,
+                    Background::Substrate,
+                    Rendered::Committed,
+                )
+                .expect("export"),
+        )
+        .expect("the readback completes")
+    };
+    let exported = export(&mut engine);
+    let resting = engine.render_to_image();
+
+    for none in dropped() {
+        let some = in_flight(&seed, &none).expect("in the table");
+        // A selection's strength moves no pixel until something paints through it.
+        let moves_a_pixel = !matches!(some, ViewCommand::PreviewSelectionOpacity(_));
+        let sent = format!("{some:?}");
+        engine.process(some);
+        let shown = engine.render_to_image();
+        assert_eq!(
+            Committed::of(&engine),
+            before,
+            "{sent} reached the committed document"
+        );
+        assert!(
+            !moves_a_pixel || !images_match(&resting, &shown, 0),
+            "{sent} showed nothing — the walk did not preview it"
+        );
+        engine.process(none);
+        assert_eq!(
+            Committed::of(&engine),
+            before,
+            "dropping {sent} reached the committed document"
+        );
+        assert!(
+            images_match(&resting, &engine.render_to_image(), 0),
+            "dropping {sent} did not restore the canvas"
+        );
+    }
+    assert!(
+        images_match(&exported, &export(&mut engine), 0),
+        "a preview rendered into the committed tiles"
     );
 }
 

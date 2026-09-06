@@ -774,19 +774,25 @@ fn render_span_range(
     // `CommitStroke`'s apply will resolve, which is what `preview == committed`
     // needs of the tooth.
     //
-    // The registry's *in-use* substrate, not a lookup by `base.substrate()`, and the two
-    // are the same thing here rather than nearly so: `apply_document_substrate`
-    // holds `current()` equal to `document().substrate()` after every commit, undo,
-    // load and merge, and a live gesture cannot straddle a `SetSubstrate` (or a
-    // `SetSubstrateScale`) because a gesture is not a logged action — any merge that
-    // moved the substrate bumped the preview's epoch and threw every frozen head away
-    // with it. Asserted rather than only argued, since it is a `&self` path that
-    // cannot build one on demand — and asserted on the *pair*, since the pair is what
-    // a `SubstrateMap` is built from.
+    // The registry's *in-use* substrate, not a lookup by `base.substrate()`: this is a
+    // `&self` path and cannot bake one on demand. `apply_document_substrate` holds
+    // `current()` on `document().substrate()` after every commit, undo, load and merge,
+    // and a live gesture cannot straddle a logged `SetSubstrate` — any merge that moved
+    // the substrate bumped the preview's epoch and threw every frozen head away with it.
+    //
+    // **The pair can still part, and only on the scale.** A preview is not a logged
+    // action: `ViewCommand::PreviewSubstrateScale` moves `base.substrate().scale` and
+    // deliberately does *not* bake, because baking a substrate per sample of a dragged
+    // slider is what that arm exists to avoid. So a mark that is live across the drag —
+    // a hover probe, which no gesture is in flight to suppress — draws on the scale the
+    // registry still holds. That is the only texture there is, and it costs a preview
+    // that lags the slider by the drag, not a divergence: the commit re-bakes and
+    // renders from the log like any other action. The **id** is what a live stroke may
+    // never be wrong about, and no command previews it.
     debug_assert_eq!(
-        base.substrate(),
-        ctx.substrates.id(),
-        "a live stroke is being drawn against a substrate the document is not on",
+        base.substrate().id,
+        ctx.substrates.id().id,
+        "a live stroke is being drawn against a substrate image the document is not on",
     );
     let substrate = ctx.substrates.current();
     let (tiles, carry) = ctx.stroke.render_range(
