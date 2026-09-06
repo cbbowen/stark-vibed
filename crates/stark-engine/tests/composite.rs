@@ -25,6 +25,7 @@
 
 mod common;
 
+use common::palette::RED_SOFT;
 use common::*;
 use stark_engine::command::DocCommand;
 #[cfg(feature = "mixbox")]
@@ -33,7 +34,7 @@ use stark_model::Srgb;
 use stark_model::document::{BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 3] = [0.85, 0.10, 0.10];
+// Not `palette::BLUE_SOFT`: a step brighter, and this file's readings were taken against it.
 const BLUE: [f32; 3] = [0.10, 0.20, 0.85];
 
 /// A very soft, wide tip — the shape whose faint fringe is the whole point.
@@ -84,7 +85,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
     let top_alone = top_alone.render_to_image();
 
     let mut under = engine_or_skip().expect("engine");
-    stroke_with(&mut under, soft(RED, 120.0), UNDER);
+    stroke_with(&mut under, soft(RED_SOFT, 120.0), UNDER);
     let under_alone = under.render_to_image();
     under.process(DocCommand::AddLayer {
         carrier: None,
@@ -145,7 +146,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
         let mut engine = engine_or_skip_sized(viewport)?;
         paint(
             &mut engine,
-            RED,
+            RED_SOFT,
             18.0,
             &[
                 Vec2::new(-90.0, -60.0),
@@ -241,7 +242,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     let framed = |engine: &mut stark_engine::Engine| {
         paint(
             engine,
-            RED,
+            RED_SOFT,
             16.0,
             &[
                 Vec2::new(-70.0, -45.0),
@@ -364,7 +365,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
 
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         24.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );

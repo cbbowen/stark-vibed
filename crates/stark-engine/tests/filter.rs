@@ -17,6 +17,7 @@
 
 mod common;
 
+use common::palette::RED_SOFT;
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
@@ -27,7 +28,6 @@ use stark_model::document::{
 use stark_model::geom::Vec2;
 use stark_model::gradient::{Gradient, GradientStop};
 
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
 const STROKE: &[Vec2] = &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
 
 /// The neutral filter — what `AddFilter` lands.
@@ -149,7 +149,7 @@ fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> 
 /// A painting with a red stroke across the middle, and nothing else.
 fn painted() -> Option<Engine> {
     let mut engine = engine_or_skip()?;
-    paint(&mut engine, RED, 22.0, STROKE);
+    paint(&mut engine, RED_SOFT, 22.0, STROKE);
     Some(engine)
 }
 
@@ -323,7 +323,7 @@ fn a_carried_filter_reaches_only_its_own_group() {
     let lower = engine.observe().active_layer;
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         22.0,
         &[Vec2::new(-90.0, 0.0), Vec2::new(-40.0, 0.0)],
     );
@@ -333,7 +333,7 @@ fn a_carried_filter_reaches_only_its_own_group() {
     });
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         22.0,
         &[Vec2::new(40.0, 0.0), Vec2::new(90.0, 0.0)],
     );
@@ -683,7 +683,7 @@ fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
     let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
-    paint(&mut engine, RED, 22.0, STROKE);
+    paint(&mut engine, RED_SOFT, 22.0, STROKE);
     let before = engine.render_to_image();
     add_filter(&mut engine, None, FRINGE);
     let after = engine.render_to_image();
@@ -1150,7 +1150,7 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
                 Vec2::new(140.0, 140.0),
             ),
             0.0,
-            Srgb::new(RED),
+            Srgb::new(RED_SOFT),
             1.0,
         ),
     });
@@ -1236,7 +1236,7 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
                 Vec2::new(20.0, 20.0),
             ),
             0.0,
-            Srgb::new(RED),
+            Srgb::new(RED_SOFT),
             1.0,
         ),
     });
@@ -1402,7 +1402,7 @@ fn a_focal_blur_works_in_a_pigment_document() {
     let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
-    paint(&mut engine, RED, 22.0, STROKE);
+    paint(&mut engine, RED_SOFT, 22.0, STROKE);
     let before = engine.render_to_image();
     add_filter(&mut engine, None, BLUR);
     let after = engine.render_to_image();
@@ -1428,7 +1428,7 @@ fn a_filter_works_in_a_pigment_document() {
     let Some(mut engine) = engine_or_skip_with(stark_model::ColorSpaceId::Mixbox) else {
         return;
     };
-    paint(&mut engine, RED, 22.0, STROKE);
+    paint(&mut engine, RED_SOFT, 22.0, STROKE);
     let before = center(&engine.render_to_image());
     assert!(red_dominant(before), "the stroke should be red: {before:?}");
 

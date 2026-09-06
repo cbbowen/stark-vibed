@@ -10,6 +10,7 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
@@ -18,8 +19,6 @@ use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaIma
 use stark_model::Srgb;
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.

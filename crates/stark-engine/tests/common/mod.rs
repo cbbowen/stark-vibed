@@ -7,7 +7,9 @@
 
 #![expect(dead_code, reason = "not every test binary uses every helper")]
 
+pub mod collab;
 pub mod corpus;
+pub mod palette;
 
 use stark_engine::command::Tool;
 use stark_model::Srgb;
@@ -47,6 +49,12 @@ pub const PAPER: wgpu::Color = wgpu::Color {
     b: 0.85,
     a: 1.0,
 };
+
+/// A horizontal and a vertical stroke crossing at the canvas origin — the pair the
+/// layer, group, blend and merge suites lay one per layer, so where they cross is
+/// where two layers meet and where they do not is where one shows alone.
+pub const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
+pub const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 
 /// Set to `1` to run the golden tests but not *compare* their output — see
 /// [`assert_golden`]. For adapters other than the one the goldens were blessed on.
@@ -167,6 +175,26 @@ pub fn on_blue(mut engine: Engine) -> Engine {
         Srgb::new([BG.r as f32, BG.g as f32, BG.b as f32]),
     ));
     engine
+}
+
+/// Add a layer at the top of the document and return its id.
+pub fn add_layer(engine: &mut Engine) -> LayerId {
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    top(engine)
+}
+
+/// The layer the most recent `AddLayer` created.
+///
+/// **Read back rather than predicted.** A `LayerId` is the id of the action that
+/// minted it (§17.9), so what it is depends on how many actions the test has already
+/// committed — exactly what a test should not be counting. A fresh layer is armed for
+/// painting (§14.8), so the active one *is* the new one; every caller asks right after
+/// the add, or of a document that has not moved the brush since.
+pub fn top(engine: &Engine) -> LayerId {
+    engine.observe().active_layer
 }
 
 /// A headless engine rendering to a chosen target format.

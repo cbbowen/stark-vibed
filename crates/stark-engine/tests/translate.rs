@@ -12,14 +12,12 @@
 
 mod common;
 
+use common::palette::{GREEN_SOFT, RED};
 use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, TransformMap};
 use stark_model::geom::{Affine2, IVec2, Vec2};
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// A compact red blob centred at `c` — two crossing strokes, so the lighting has
 /// height variation to bite on and a seam would show.
@@ -210,8 +208,8 @@ fn painting_on_a_translated_layer_lands_under_the_hand() {
     // across a seam rather than landing it whole.
     translate_active(&mut a, IVec2::new(37, -13));
     let line = [Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
-    paint(&mut a, GREEN, 12.0, &line);
-    paint(&mut b, GREEN, 12.0, &line);
+    paint(&mut a, GREEN_SOFT, 12.0, &line);
+    paint(&mut b, GREEN_SOFT, 12.0, &line);
     assert_within(
         &a.render_to_image(),
         &b.render_to_image(),
@@ -239,7 +237,7 @@ fn a_selection_gates_a_framed_stroke_where_the_hand_sees_it() {
         select_rect(e, region.0, region.1, 6.0);
         paint(
             e,
-            GREEN,
+            GREEN_SOFT,
             12.0,
             &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)],
         );

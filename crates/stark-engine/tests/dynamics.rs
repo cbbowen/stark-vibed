@@ -5,15 +5,13 @@
 
 mod common;
 
+use common::palette::{GREEN, RED};
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// A brush with the given [`BrushDynamics`].
 fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushParams {

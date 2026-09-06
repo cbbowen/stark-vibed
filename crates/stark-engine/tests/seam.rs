@@ -25,6 +25,7 @@ use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::BrushDynamics;
 use stark_model::geom::{IVec2, Vec2};
 
+// Not the palette's: the seam tolerances below were measured against this red.
 const RED: [f32; 3] = [0.85, 0.15, 0.1];
 
 /// Render a diagonal, height-bearing stroke offset by `shift` canvas px, viewed

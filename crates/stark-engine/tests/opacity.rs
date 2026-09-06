@@ -15,6 +15,7 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
@@ -23,8 +24,6 @@ use stark_model::document::{
     ToothParams,
 };
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// A swept-path wash at `opacity`: flow high enough that one pass saturates the
 /// parcel over the stroke's core, so a test sampling the core is reading the

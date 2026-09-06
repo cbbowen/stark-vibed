@@ -3,6 +3,7 @@
 
 mod common;
 
+use common::palette::{GREEN_SOFT, RED_SOFT};
 use common::*;
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -11,30 +12,17 @@ use stark_model::Srgb;
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
 use stark_model::geom::Vec2;
 
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
-
 const ROOT: LayerId = LayerId::ROOT;
 
-/// The layer the most recent `AddLayer` created — the second of [`two_layers`]'.
-///
-/// **Read back rather than predicted.** A `LayerId` is the id of the action that
-/// minted it (§17.9), so what it is depends on how many actions this test has already
-/// committed, which is exactly the sort of thing a test should not be counting. A
-/// fresh layer is armed for painting (§14.8), so the active one is the new one — the
-/// assertion in `two_layers` is what says so, and every use below is of a document
-/// that has not moved the brush since.
-fn top(engine: &Engine) -> LayerId {
-    engine.observe().active_layer
-}
-
+// Half `common`'s length: the strokes here are radius 40, and the probes were placed
+// against these.
 const H_STROKE: &[Vec2] = &[Vec2::new(-25.0, 0.0), Vec2::new(25.0, 0.0)];
 const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -25.0), Vec2::new(0.0, 25.0)];
 
 /// Paint red on the root layer, then add a layer and paint green on it. Both
 /// strokes cross the canvas origin (screen center), green on top.
 fn two_layers(engine: &mut Engine) {
-    paint(engine, RED, 40.0, H_STROKE);
+    paint(engine, RED_SOFT, 40.0, H_STROKE);
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
@@ -44,7 +32,7 @@ fn two_layers(engine: &mut Engine) {
         ROOT,
         "AddLayer makes the new layer active"
     );
-    paint(engine, GREEN, 40.0, V_STROKE);
+    paint(engine, GREEN_SOFT, 40.0, V_STROKE);
 }
 
 #[test]
@@ -180,7 +168,7 @@ fn painting_on_a_copy_leaves_its_source_alone() {
     // A red stroke over the copy's green, then hide the copy. The source must still
     // be green at the center: the stroke went to one layer's tiles, not to the pair
     // of handles they were sharing a moment ago.
-    paint(&mut engine, RED, 20.0, V_STROKE);
+    paint(&mut engine, RED_SOFT, 20.0, V_STROKE);
     assert!(red_dominant(center(&engine.render_to_image())));
 
     engine.process(DocCommand::SetLayerVisible(copy, false));
@@ -249,7 +237,7 @@ fn undoing_an_add_leaves_the_brush_somewhere_it_can_paint() {
         obs.layers.iter().map(|l| l.id).collect::<Vec<_>>(),
     );
     // And it can actually take paint, which is the property the repoint is for.
-    paint(&mut engine, RED, 40.0, H_STROKE);
+    paint(&mut engine, RED_SOFT, 40.0, H_STROKE);
     assert!(
         engine.document().bounds().tile_range().is_some(),
         "the stroke after the undo landed nowhere",
@@ -840,7 +828,7 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
 
     // Painting moves it, and moves only the painted layer's.
     let root_before = key(&engine, ROOT);
-    paint(&mut engine, GREEN, 10.0, H_STROKE);
+    paint(&mut engine, GREEN_SOFT, 10.0, H_STROKE);
     assert_ne!(
         before,
         key(&engine, top(&engine)),

@@ -10,6 +10,7 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
@@ -19,8 +20,6 @@ use stark_model::document::{
     PaintModulations, WetEffect, WetModulations,
 };
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// A test brush with no `drain`: the run-dry falloff is the one *other* thing that
 /// varies along a stroke, and these tests are about what varies across one.

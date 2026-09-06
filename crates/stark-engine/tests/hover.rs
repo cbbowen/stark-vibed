@@ -17,6 +17,7 @@
 
 mod common;
 
+use common::palette::RED_SOFT;
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, HoverReport, InputSample, PeerCommand, ViewCommand};
@@ -25,8 +26,6 @@ use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered};
 use stark_model::Srgb;
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
 
 /// The two reports of the standard hover, ending with the cursor at the canvas
 /// origin — where [`center`] reads, and where the probe's touch-down lands.
@@ -61,7 +60,7 @@ fn the_mark_appears_and_commits_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     let before = engine.render_to_image();
     let rev = engine.observe().doc_revision;
 
@@ -96,7 +95,7 @@ fn the_mark_is_the_brushs_own_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     hover_ab(&mut engine);
     assert!(
         red_dominant(center(&engine.render_to_image())),
@@ -114,7 +113,7 @@ fn the_mark_reaches_ahead_of_the_cursor_not_behind() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     hover_ab(&mut engine);
     let img = engine.render_to_image();
     assert!(
@@ -151,7 +150,7 @@ fn the_mark_is_what_committing_the_prediction_would_land() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     hover_ab(&mut engine);
     let hovered = engine.render_to_image();
 
@@ -184,7 +183,7 @@ fn a_real_gesture_takes_the_mark_down() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     let paper = center(&engine.render_to_image());
     hover_ab(&mut engine);
 
@@ -220,7 +219,7 @@ fn the_mark_never_reaches_a_live_export() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     let screen_before = engine.render_to_image();
     let export_before = export_live(&mut engine);
 
@@ -248,7 +247,7 @@ fn a_selection_tool_folds_no_mark() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     engine.process(ViewCommand::SetTool(Tool::SelectRect));
     let before = engine.render_to_image();
     hover_ab(&mut engine);
@@ -270,7 +269,7 @@ fn an_unpaintable_layer_refuses_the_mark() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     engine.process(stark_engine::command::DocCommand::AddMatte {
         carrier: None,
         at: Place::Top,
@@ -527,7 +526,7 @@ fn the_run_up_is_evidence_never_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     let bare = engine.render_to_image();
 
     // A watched approach along −x, ending under the press...
@@ -581,7 +580,7 @@ fn a_click_after_a_watched_approach_commits_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(ViewCommand::set_brush(brush(RED, 10.0)));
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
     let before = engine.render_to_image();
     let rev = engine.observe().doc_revision;
 

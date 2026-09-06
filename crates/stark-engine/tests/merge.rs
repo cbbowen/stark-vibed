@@ -23,6 +23,7 @@
 
 mod common;
 
+use common::palette::{COOL, PALE, WARM};
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
@@ -43,10 +44,6 @@ const MODES: [BlendMode; 3] = [
     BlendMode::Multiply,
 ];
 
-const WARM: [f32; 3] = [0.90, 0.35, 0.10];
-const COOL: [f32; 3] = [0.10, 0.30, 0.85];
-const PALE: [f32; 3] = [0.95, 0.90, 0.80];
-
 /// PALE at just over half opacity: the merge identity must hold over partially
 /// covered paint too, not only where a stroke saturates.
 fn paint_pale(engine: &mut Engine, radius: f32, points: &[Vec2]) {
@@ -55,18 +52,8 @@ fn paint_pale(engine: &mut Engine, radius: f32, points: &[Vec2]) {
     stroke_with(engine, b, points);
 }
 
-const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
-const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 /// Off to one side of both strokes — where a merge that leaked paint would show it.
 const AWAY: &[Vec2] = &[Vec2::new(-100.0, -90.0), Vec2::new(-60.0, -90.0)];
-
-fn add_layer(engine: &mut Engine) -> LayerId {
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    engine.observe().active_layer
-}
 
 fn info(engine: &Engine, id: LayerId) -> Option<LayerInfo> {
     engine.observe().layers.iter().find(|l| l.id == id).cloned()

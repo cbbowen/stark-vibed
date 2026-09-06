@@ -28,13 +28,12 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::SubstrateId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, ToothParams};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// The contact transition every brush here is drawn through, and every bearing here is
 /// asked at (§6.4).

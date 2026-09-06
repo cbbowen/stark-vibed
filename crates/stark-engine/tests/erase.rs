@@ -11,6 +11,11 @@
 
 mod common;
 
+// The bed every test erases from: a full-canvas red fill. A fill rather than a
+// stroke, because its coverage is *stated* (`FillOp::opacity`) — which is what
+// lets the headline test compare an erased bed against a bed simply asked for
+// at the target coverage.
+use common::palette::RED;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::Srgb;
@@ -18,12 +23,6 @@ use stark_model::document::{
     BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, ModSource, Modulation, SelectionShape,
 };
 use stark_model::geom::Vec2;
-
-/// The bed every test erases from: a full-canvas red fill. A fill rather than a
-/// stroke, because its coverage is *stated* (`FillOp::opacity`) — which is what
-/// lets the headline test compare an erased bed against a bed simply asked for
-/// at the target coverage.
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// An eraser (§6.12): `opacity` is the dial, and its flow the rate — high
 /// enough here that one pass saturates the bite to its ceiling over the stroke's

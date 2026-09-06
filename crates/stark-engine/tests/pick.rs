@@ -22,15 +22,13 @@
 
 mod common;
 
+use common::palette::{BLUE_SOFT, RED_WARM};
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, LayerId, Place};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.12, 0.1];
-const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 /// The layer every fresh document starts with.
 const ROOT: LayerId = LayerId::ROOT;
@@ -81,10 +79,10 @@ fn picks_the_color_that_was_painted() {
         let Some(mut engine) = engine_or_skip_with(space) else {
             return;
         };
-        paint(&mut engine, RED, 24.0, BAR);
+        paint(&mut engine, RED_WARM, 24.0, BAR);
         assert_near(
             pick_point(&mut engine, Vec2::ZERO),
-            RED,
+            RED_WARM,
             0.03,
             &format!("{space:?}"),
         );
@@ -106,7 +104,7 @@ fn picks_the_paint_rather_than_the_lit_pixel() {
     let Some(mut engine) = engine_or_skip_studio() else {
         return;
     };
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     let picked = pick_point(&mut engine, Vec2::ZERO).expect("paint under the point");
 
     // The same texel as the screen shows it: the view is 1:1 centred on the origin,
@@ -119,11 +117,11 @@ fn picks_the_paint_rather_than_the_lit_pixel() {
         lit[2] as f32 / 255.0,
     ];
     assert!(
-        near(picked, RED, 0.03),
+        near(picked, RED_WARM, 0.03),
         "the pick should be the paint's own color, got {picked:?}"
     );
     assert!(
-        !near(lit, RED, 0.03),
+        !near(lit, RED_WARM, 0.03),
         "this test is vacuous unless the studio lighting actually moves the color; \
          the lit pixel came back {lit:?}"
     );
@@ -139,7 +137,7 @@ fn bare_canvas_has_nothing_to_pick() {
     };
     assert_eq!(pick_point(&mut engine, Vec2::ZERO), None, "empty document");
 
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     assert!(pick_point(&mut engine, Vec2::ZERO).is_some(), "on the bar");
     assert_eq!(
         pick_point(&mut engine, Vec2::new(0.0, 120.0)),
@@ -185,7 +183,7 @@ fn thin_coverage_mixes_toward_the_canvas() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
 
     // Straddling the bar's edge: the bar reaches y ≈ 24, and a 24-px patch centred at
     // 30 has rather less than half of itself on paint.
@@ -203,7 +201,7 @@ fn thin_coverage_mixes_toward_the_canvas() {
         pick(&mut engine, at, over_substrate(24)).expect("the substrate is always there");
 
     assert!(
-        near(paint_only, RED, 0.06),
+        near(paint_only, RED_WARM, 0.06),
         "an opacity-weighted mean is not diluted by the bare part of the patch, \
          got {paint_only:?}"
     );
@@ -221,7 +219,7 @@ fn thin_coverage_mixes_toward_the_canvas() {
     // the mode would be tinting the paint rather than filling in behind it.
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
-        RED,
+        RED_WARM,
         0.08,
         "opaque paint hides the substrate",
     );
@@ -236,7 +234,7 @@ fn one_layer_ignores_the_layers_over_it() {
         return;
     };
     let under = engine.observe().active_layer;
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
 
     engine.process(DocCommand::AddLayer {
         carrier: None,
@@ -244,11 +242,11 @@ fn one_layer_ignores_the_layers_over_it() {
     });
     let over = engine.observe().active_layer;
     assert_ne!(over, under, "AddLayer should arm the new layer");
-    paint(&mut engine, BLUE, 24.0, BAR);
+    paint(&mut engine, BLUE_SOFT, 24.0, BAR);
 
     assert_near(
         pick_point(&mut engine, Vec2::ZERO),
-        BLUE,
+        BLUE_SOFT,
         0.05,
         "the composite is what the top layer shows",
     );
@@ -258,13 +256,13 @@ fn one_layer_ignores_the_layers_over_it() {
     };
     assert_near(
         pick(&mut engine, Vec2::ZERO, one_layer(PickSource::Layer(under))),
-        RED,
+        RED_WARM,
         0.05,
         "the layer underneath still holds its own paint",
     );
     assert_near(
         pick(&mut engine, Vec2::ZERO, one_layer(PickSource::Layer(over))),
-        BLUE,
+        BLUE_SOFT,
         0.05,
         "and the top layer holds its own",
     );
@@ -301,13 +299,13 @@ fn a_pick_over_a_blended_stack_still_answers() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
     });
     let over = engine.observe().active_layer;
-    paint(&mut engine, BLUE, 24.0, BAR);
+    paint(&mut engine, BLUE_SOFT, 24.0, BAR);
     engine.process(DocCommand::SetLayerBlend(over, BlendMode::Multiply));
 
     // A single point first, which is the one-patch case and would survive a lost
@@ -359,7 +357,7 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
         return;
     };
     let layer = engine.observe().active_layer;
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     let source = PickOptions {
         source: PickSource::Layer(layer),
         ..PickOptions::default()
@@ -396,7 +394,7 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
         "the composite of a layer turned all the way down is bare canvas",
     );
     assert!(
-        near(opaque, RED, 0.05),
+        near(opaque, RED_WARM, 0.05),
         "…where at full strength it is paint"
     );
 }
@@ -410,18 +408,18 @@ fn hidden_layers_are_not_sampled() {
         return;
     };
     let under = engine.observe().active_layer;
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
     });
     let over = engine.observe().active_layer;
-    paint(&mut engine, BLUE, 24.0, BAR);
+    paint(&mut engine, BLUE_SOFT, 24.0, BAR);
 
     engine.process(DocCommand::SetLayerVisible(over, false));
     assert_near(
         pick_point(&mut engine, Vec2::ZERO),
-        RED,
+        RED_WARM,
         0.05,
         "hiding the blue layer should uncover the red one",
     );
@@ -439,13 +437,13 @@ fn radius_averages_the_patch() {
     // Butted together at x = 0: red to the left, blue to the right.
     paint(
         &mut engine,
-        RED,
+        RED_WARM,
         8.0,
         &[Vec2::new(-40.0, -8.0), Vec2::new(-40.0, 8.0)],
     );
     paint(
         &mut engine,
-        BLUE,
+        BLUE_SOFT,
         8.0,
         &[Vec2::new(-24.0, -8.0), Vec2::new(-24.0, 8.0)],
     );
@@ -453,7 +451,7 @@ fn radius_averages_the_patch() {
     let at = Vec2::new(-40.0, 0.0);
     assert_near(
         pick_point(&mut engine, at),
-        RED,
+        RED_WARM,
         0.05,
         "a point sample takes the texel it is on",
     );
@@ -468,15 +466,17 @@ fn radius_averages_the_patch() {
     )
     .expect("paint in the patch");
     assert!(
-        wide[2] > RED[2] + 0.05,
+        wide[2] > RED_WARM[2] + 0.05,
         "a patch reaching the blue bar should pull blue in, got {wide:?}"
     );
     assert!(
-        wide[2] < BLUE[2] && wide[0] > BLUE[0],
+        wide[2] < BLUE_SOFT[2] && wide[0] > BLUE_SOFT[0],
         "and it is a mixture, not a jump to the other bar: {wide:?}"
     );
 }
 
+// Not `palette::GREEN_SOFT`: the picker reads these back as numbers, and its bounds were
+// set against this one.
 const GREEN: [f32; 3] = [0.1, 0.7, 0.2];
 const YELLOW: [f32; 3] = [0.85, 0.8, 0.1];
 
@@ -498,7 +498,7 @@ const BAR_200: &[Vec2] = &[Vec2::new(-40.0, 200.0), Vec2::new(40.0, 200.0)];
 /// can only have come from them.
 fn scoped_doc(engine: &mut Engine) -> (LayerId, LayerId, LayerId, LayerId) {
     let l0 = engine.observe().active_layer;
-    paint(engine, RED, 24.0, BAR);
+    paint(engine, RED_WARM, 24.0, BAR);
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
@@ -510,7 +510,7 @@ fn scoped_doc(engine: &mut Engine) -> (LayerId, LayerId, LayerId, LayerId) {
         above: None,
     });
     let m1 = engine.observe().active_layer;
-    paint(engine, BLUE, 24.0, BAR_100);
+    paint(engine, BLUE_SOFT, 24.0, BAR_100);
     engine.process(DocCommand::AddLayer {
         carrier: Some(l1),
         above: None,
@@ -566,7 +566,7 @@ fn the_group_source_samples_the_group_and_nothing_outside_it() {
     );
     assert_near(
         pick(&mut engine, Vec2::ZERO, PickOptions::default()),
-        RED,
+        RED_WARM,
         0.05,
         "…and it is the fence that hid it, not the paint being absent",
     );
@@ -579,7 +579,7 @@ fn the_group_source_samples_the_group_and_nothing_outside_it() {
                 below: true,
             }),
         ),
-        BLUE,
+        BLUE_SOFT,
         0.05,
         "`below` cuts the member above m1, uncovering m1's own paint",
     );
@@ -627,13 +627,13 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
 
     assert_near(
         pick(&mut engine, Vec2::new(0.0, 100.0), below(m1)),
-        BLUE,
+        BLUE_SOFT,
         0.05,
         "the member above m1 is switched off",
     );
     assert_near(
         pick(&mut engine, Vec2::ZERO, below(m1)),
-        RED,
+        RED_WARM,
         0.05,
         "root layers beneath m1's carrier still answer",
     );
@@ -657,7 +657,7 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
     );
     assert_near(
         pick(&mut engine, Vec2::ZERO, below(l0)),
-        RED,
+        RED_WARM,
         0.05,
         "…while the layer itself still answers",
     );
@@ -670,7 +670,7 @@ fn an_absurd_radius_is_clamped_not_obeyed() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
     assert_near(
         pick(
             &mut engine,
@@ -680,7 +680,7 @@ fn an_absurd_radius_is_clamped_not_obeyed() {
                 ..PickOptions::default()
             },
         ),
-        RED,
+        RED_WARM,
         0.2,
         "a huge radius should still answer",
     );
@@ -710,13 +710,13 @@ fn hit(engine: &mut Engine, at: Vec2) -> Option<LayerId> {
 
 /// Red across the root layer, blue up a layer above it. Returns the upper one.
 fn crossed(engine: &mut Engine) -> LayerId {
-    paint(engine, RED, 24.0, BAR);
+    paint(engine, RED_WARM, 24.0, BAR);
     engine.process(DocCommand::AddLayer {
         carrier: None,
         above: None,
     });
     let top = engine.observe().active_layer;
-    paint(engine, BLUE, 24.0, UP);
+    paint(engine, BLUE_SOFT, 24.0, UP);
     top
 }
 
@@ -810,7 +810,7 @@ fn the_pointer_has_to_be_on_the_paint_not_merely_near_it() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 24.0, BAR);
+    paint(&mut engine, RED_WARM, 24.0, BAR);
 
     assert_eq!(hit(&mut engine, Vec2::new(0.0, 0.0)), Some(ROOT));
     assert_eq!(hit(&mut engine, Vec2::new(0.0, 32.0)), None, "past the rim");

@@ -12,6 +12,7 @@
 
 mod common;
 
+use common::palette::{GREEN_SOFT, RED};
 use common::{Lead, MARGIN_FLAT, engine_or_skip, images_match, leads, paint, rgb};
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
@@ -24,9 +25,6 @@ use stark_model::document::{
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GestureFrame, PeerFrame, StrokeHead};
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// The half of the canvas actor A will select: everything left of x = 0.
 const LEFT_MIN: Vec2 = Vec2::new(-400.0, -400.0);
@@ -174,7 +172,7 @@ fn peers_hold_independent_selections_and_still_converge() {
     paint(&mut a, RED, 12.0, &CROSSING);
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(-80.0, 40.0), Vec2::new(80.0, 40.0)],
     );
@@ -624,7 +622,7 @@ fn stroking(seq: u64, points: &[Vec2]) -> PeerFrame {
             id: 0,
             head: Some(Box::new(StrokeHead {
                 layer: LayerId::ROOT,
-                brush: common::brush(GREEN, 12.0),
+                brush: common::brush(GREEN_SOFT, 12.0),
                 seed: 1,
                 translation: stark_model::geom::IVec2::ZERO,
             })),

@@ -9,6 +9,10 @@
 
 mod common;
 
+// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
+// which the Select panel's slider sets (§18.0.4). These double as brush
+// colors unchanged: a color is three channels for both (§6.2).
+use common::palette::{BLUE_SOFT, GREEN_SOFT, RED};
 use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
@@ -20,12 +24,6 @@ use stark_model::document::{
     ShapeAction,
 };
 use stark_model::geom::Vec2;
-
-/// A fill's paint is color alone — how far it covers is `FillOp::opacity`,
-/// which the Select panel's slider sets (§18.0.4). These double as brush
-/// colors unchanged: a color is three channels for both (§6.2).
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// Whether the pixel at a canvas point reads as red paint rather than bare paper.
 /// Whether two texels show the same paint. "The same" is within one code per
@@ -209,7 +207,7 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
     };
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
@@ -280,7 +278,7 @@ fn opacity_one_covers_what_is_under_it_and_a_half_does_not() {
 
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         20.0,
         &[Vec2::new(-70.0, 0.0), Vec2::new(-30.0, 0.0)],
     );
@@ -458,7 +456,7 @@ fn undo_restores_exactly_what_the_fill_covered() {
     };
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         18.0,
         &[Vec2::new(-50.0, 20.0), Vec2::new(50.0, 20.0)],
     );
@@ -569,7 +567,7 @@ fn fill_golden() {
     // at once.
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         22.0,
         &[Vec2::new(-70.0, -30.0), Vec2::new(70.0, 30.0)],
     );
@@ -594,8 +592,6 @@ use stark_engine::PickOptions;
 use stark_model::document::{GradientAxis, GradientParcel, Parcel};
 use stark_model::{Gradient, GradientStop};
 
-const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
-
 fn red_blue() -> Gradient {
     Gradient::new(vec![
         GradientStop {
@@ -604,7 +600,7 @@ fn red_blue() -> Gradient {
         },
         GradientStop {
             t: 1.0,
-            color: Srgb::new(BLUE),
+            color: Srgb::new(BLUE_SOFT),
         },
     ])
     .expect("two stops")
@@ -737,7 +733,7 @@ fn the_gradient_preview_matches_the_commit() {
     };
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         20.0,
         &[Vec2::new(-60.0, -20.0), Vec2::new(60.0, 20.0)],
     );
@@ -830,7 +826,7 @@ fn the_ramp_ends_are_the_stops_in_both_spaces() {
         );
         for (at, want, name) in [
             (Vec2::new(-40.0, 0.0), RED, "start"),
-            (Vec2::new(40.0, 0.0), BLUE, "end"),
+            (Vec2::new(40.0, 0.0), BLUE_SOFT, "end"),
         ] {
             let got = pollster::block_on(engine.pick_color(at, PickOptions::default()))
                 .unwrap_or_else(|| panic!("{space:?}: no paint at the {name}"));

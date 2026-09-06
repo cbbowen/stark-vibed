@@ -5,32 +5,12 @@
 
 mod common;
 
+use common::collab::{pair, snap, sync, sync_into};
+use common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
 use common::{engine_or_skip, images_match, paint, whole_render};
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::{Engine, RgbaImage};
 use stark_model::document::ActorId;
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.9, 0.1, 0.1];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
-const BLUE: [f32; 3] = [0.1, 0.2, 0.9];
-
-fn snap(e: &mut Engine) -> RgbaImage {
-    e.render_to_image()
-}
-
-/// Pump every pending local action from `from` into `into`.
-fn sync_into(from: &mut Engine, into: &mut Engine) {
-    for action in from.take_outbox() {
-        into.merge_remote(action);
-    }
-}
-
-/// Exchange outboxes both ways.
-fn sync(a: &mut Engine, b: &mut Engine) {
-    sync_into(a, b);
-    sync_into(b, a);
-}
 
 /// Two peers paint overlapping strokes and merge them in *different orders*
 /// (B commits its own stroke first, then receives A's earlier-ordered one, so
@@ -38,27 +18,24 @@ fn sync(a: &mut Engine, b: &mut Engine) {
 /// same pixels, and a peer joining afterwards from the shared log must too.
 #[test]
 fn concurrent_strokes_converge() {
-    let (Some(mut a), Some(mut b), Some(mut c)) =
-        (engine_or_skip(), engine_or_skip(), engine_or_skip())
-    else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
+    let Some(mut c) = engine_or_skip() else {
+        return;
+    };
 
     // Concurrent, overlapping edits: same lamport, actor id breaks the tie, so
     // A's stroke orders before B's even though B applies it second.
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );
@@ -85,24 +62,20 @@ fn concurrent_strokes_converge() {
 /// the peer's intervening one (§12.3); redo is an undo of that undo.
 #[test]
 fn shared_undo_skips_peer_actions() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
 
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
-
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
     // B's canvas before it has seen anything of A: exactly "only B's stroke".
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );
@@ -161,14 +134,14 @@ fn shared_undo_redo_chain() {
     let blank = snap(&mut a);
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
     );
     let one = snap(&mut a);
     paint(
         &mut a,
-        BLUE,
+        BLUE_VIVID,
         12.0,
         &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)],
     );
@@ -196,7 +169,7 @@ fn host_can_undo_pre_share_strokes() {
     let blank = snap(&mut a);
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
@@ -221,13 +194,13 @@ fn shared_save_solo_load_roundtrip() {
 
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
     );
     paint(
         &mut a,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(40.0, 156.0), Vec2::new(216.0, 156.0)],
     );
@@ -260,16 +233,13 @@ fn shared_save_solo_load_roundtrip() {
 /// Duplicate deliveries (redelivery by the transport) are idempotent.
 #[test]
 fn merge_is_idempotent() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
@@ -303,7 +273,7 @@ fn a_shared_timeline_reports_no_scrub_range() {
     };
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
@@ -332,23 +302,19 @@ fn a_shared_timeline_reports_no_scrub_range() {
 /// exactly the actions a save would write), and travelling it is lossless.
 #[test]
 fn leaving_a_session_hands_the_history_back() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
 
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
-
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
     paint(
         &mut a,
-        BLUE,
+        BLUE_VIVID,
         12.0,
         &[Vec2::new(40.0, 60.0), Vec2::new(216.0, 60.0)],
     );
@@ -358,7 +324,7 @@ fn leaving_a_session_hands_the_history_back() {
     sync(&mut a, &mut b);
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );
@@ -484,7 +450,7 @@ fn a_remote_merge_down_does_not_strand_the_active_layer() {
     a.start_collaboration(ActorId(1));
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
@@ -495,7 +461,7 @@ fn a_remote_merge_down_does_not_strand_the_active_layer() {
     let top = a.observe().active_layer;
     paint(
         &mut a,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(40.0, 100.0), Vec2::new(216.0, 100.0)],
     );

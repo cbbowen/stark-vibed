@@ -8,13 +8,11 @@
 
 mod common;
 
+use common::palette::{BLUE_SOFT, RED_WARM};
 use common::*;
 use stark_engine::{Engine, PickOptions};
 use stark_model::Gradient;
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.12, 0.1];
-const BLUE: [f32; 3] = [0.1, 0.2, 0.8];
 
 /// The capture the UI takes: a 5×5 patch per sample (§22.2).
 fn capture(engine: &mut Engine, path: &[Vec2]) -> Option<Gradient> {
@@ -46,13 +44,13 @@ fn a_trace_across_two_paints_ends_on_each() {
         // trace runs through solid paint on both sides.
         paint(
             &mut engine,
-            RED,
+            RED_WARM,
             30.0,
             &[Vec2::new(-30.0, -20.0), Vec2::new(-30.0, 20.0)],
         );
         paint(
             &mut engine,
-            BLUE,
+            BLUE_SOFT,
             30.0,
             &[Vec2::new(30.0, -20.0), Vec2::new(30.0, 20.0)],
         );
@@ -62,11 +60,11 @@ fn a_trace_across_two_paints_ends_on_each() {
         let start = g.sample(0.0);
         let end = g.sample(1.0);
         assert!(
-            near((start).get(), RED, 0.06),
+            near((start).get(), RED_WARM, 0.06),
             "{space:?}: the trace starts on red, got {start:?}"
         );
         assert!(
-            near((end).get(), BLUE, 0.06),
+            near((end).get(), BLUE_SOFT, 0.06),
             "{space:?}: the trace ends on blue, got {end:?}"
         );
 
@@ -101,7 +99,7 @@ fn a_trace_over_bare_canvas_has_no_gradient() {
 
     paint(
         &mut engine,
-        RED,
+        RED_WARM,
         24.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
@@ -125,13 +123,13 @@ fn a_gap_in_the_paint_does_not_join_the_ramp() {
     // Two bars with 40 px of bare canvas between them.
     paint(
         &mut engine,
-        RED,
+        RED_WARM,
         16.0,
         &[Vec2::new(-60.0, -20.0), Vec2::new(-60.0, 20.0)],
     );
     paint(
         &mut engine,
-        BLUE,
+        BLUE_SOFT,
         16.0,
         &[Vec2::new(60.0, -20.0), Vec2::new(60.0, 20.0)],
     );

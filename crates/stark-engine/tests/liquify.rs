@@ -11,6 +11,7 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::Engine;
 use stark_engine::command::DocCommand;
@@ -19,8 +20,6 @@ use stark_model::document::{
     BrushEffect, BrushParams, BrushShape, FillOp, LiquifyEffect, SelectionShape,
 };
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// A liquify brush of the given strength — no pigment (the effect carries none),
 /// no drain, no jitter, so a test's claim is about the warp alone.

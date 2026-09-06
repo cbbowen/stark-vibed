@@ -6,6 +6,7 @@
 
 mod common;
 
+use common::palette::{GREEN_SOFT, RED_SOFT};
 use common::*;
 use stark_engine::Engine;
 use stark_engine::command::Tool;
@@ -17,9 +18,6 @@ use stark_model::SubstrateId;
 use stark_model::document::BrushShape;
 use stark_model::geom::Vec2;
 
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
-
 const STROKE_A: &[Vec2] = &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, 20.0)];
 const STROKE_B: &[Vec2] = &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)];
 
@@ -29,7 +27,7 @@ fn paint_toothed(engine: &mut Engine) {
     stroke_with(
         engine,
         stark_model::document::BrushParams {
-            effect: stark_model::document::BrushEffect::painted(RED),
+            effect: stark_model::document::BrushEffect::painted(RED_SOFT),
             size: 30.0,
             tooth: stark_model::document::ToothParams {
                 give: 0.45,
@@ -43,8 +41,8 @@ fn paint_toothed(engine: &mut Engine) {
 }
 
 fn paint_two(engine: &mut Engine) {
-    paint(engine, RED, 30.0, STROKE_A);
-    paint(engine, GREEN, 30.0, STROKE_B);
+    paint(engine, RED_SOFT, 30.0, STROKE_A);
+    paint(engine, GREEN_SOFT, 30.0, STROKE_B);
 }
 
 #[test]
@@ -101,7 +99,7 @@ fn a_document_is_edited_only_once_it_moves_from_what_arrived() {
         "a document just loaded stands exactly as the file it came out of"
     );
 
-    paint(&mut loaded, RED, 30.0, STROKE_A);
+    paint(&mut loaded, RED_SOFT, 30.0, STROKE_A);
     assert!(
         loaded.observe().edited,
         "a stroke after the load is work that file does not hold"
@@ -127,7 +125,7 @@ fn undo_after_load_drops_last_stroke() {
 
     // Reference: a document that only ever had stroke A.
     let mut just_a = engine_or_skip_blue().expect("adapter");
-    paint(&mut just_a, RED, 30.0, STROKE_A);
+    paint(&mut just_a, RED_SOFT, 30.0, STROKE_A);
     let only_a = just_a.render_to_image();
 
     // Load both strokes, then undo the second.
@@ -214,7 +212,7 @@ fn brush_assets_survive_save_load() {
     let id = original
         .import_brush(&stark_testdata::assets::bristles())
         .expect("import");
-    let mut brush = brush(RED, 60.0);
+    let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
     original.process(ViewCommand::set_brush(brush));
     original.process(GestureCommand::Start {
@@ -252,7 +250,7 @@ fn saved_file_is_compact() {
     let path: Vec<Vec2> = (0..400)
         .map(|i| Vec2::new(-100.0 + i as f32 * 0.5, (i as f32 * 0.2).sin() * 30.0))
         .collect();
-    paint(&mut engine, RED, 12.0, &path);
+    paint(&mut engine, RED_SOFT, 12.0, &path);
 
     let bytes = engine.save_bytes().expect("serialize");
     let rendered_bytes = (SIZE.width * SIZE.height * 4) as usize;
@@ -288,7 +286,7 @@ fn a_substrate_switch_is_historized() {
 
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
@@ -347,14 +345,14 @@ fn a_document_bundles_every_substrate_it_names() {
     engine.process(DocCommand::SetSubstrate(linen));
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         20.0,
         &[Vec2::new(-40.0, -20.0), Vec2::new(40.0, -20.0)],
     );
     engine.process(DocCommand::SetSubstrate(rough));
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         20.0,
         &[Vec2::new(-40.0, 20.0), Vec2::new(40.0, 20.0)],
     );
@@ -548,7 +546,7 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
 
     // A second engine with a painting of its own already open, and no rough substrate.
     let mut opener = engine_or_skip_blue().expect("adapter");
-    paint(&mut opener, GREEN, 30.0, STROKE_B);
+    paint(&mut opener, GREEN_SOFT, 30.0, STROKE_B);
     let before = opener.render_to_image();
 
     let err = opener

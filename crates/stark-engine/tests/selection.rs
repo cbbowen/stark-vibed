@@ -13,6 +13,7 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
@@ -23,8 +24,6 @@ use stark_model::document::BrushDynamics;
 use stark_model::document::{BrushEffect, BrushParams, FillOp, SelectionMode, SelectionOp};
 use stark_model::document::{SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// Canvas-space box the tests select and paint across. Comfortably inside the 256²
 /// viewport, which is centred on the canvas origin.

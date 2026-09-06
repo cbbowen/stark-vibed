@@ -11,6 +11,7 @@
 
 mod common;
 
+use common::palette::{GREEN, RED};
 use common::*;
 use stark_engine::command::Tool;
 
@@ -20,9 +21,6 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::ColorSpaceId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 
 /// The **image-based** lighting path, on the one golden that runs it (§6.3).
 ///

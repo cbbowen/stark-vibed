@@ -12,14 +12,13 @@
 
 mod common;
 
+use common::palette::RED;
 use common::*;
 use stark_engine::Extent2;
 use stark_engine::ViewTransform;
 use stark_engine::command::DocCommand;
 use stark_engine::{Background, Engine, Offscreen, Rendered};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
 
 /// The suites' standard diagonal, replayed identically on both engines.
 fn diagonal(engine: &mut Engine) {

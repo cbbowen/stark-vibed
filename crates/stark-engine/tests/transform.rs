@@ -12,6 +12,7 @@
 
 mod common;
 
+use common::palette::{GREEN_SOFT, RED};
 use common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::DocCommand;
@@ -23,9 +24,6 @@ use stark_model::document::{
     SelectionShape, TransformMap, WarpMap, rect_corners,
 };
 use stark_model::geom::{Affine2, Vec2};
-
-const RED: [f32; 3] = [1.0, 0.0, 0.0];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
 
 /// A compact red blob centred at `c` — two short crossing strokes, so it has
 /// height variation for the lighting to bite on.
@@ -307,7 +305,7 @@ fn moved_paint_stacks_over_what_it_lands_on() {
     // A green substrate at the destination; a thick red blob moved on top of it.
     paint(
         &mut engine,
-        GREEN,
+        GREEN_SOFT,
         24.0,
         &[Vec2::new(30.0, 0.0), Vec2::new(70.0, 0.0)],
     );

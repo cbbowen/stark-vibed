@@ -22,6 +22,7 @@
 
 mod common;
 
+use common::palette::{COOL, PALE, WARM};
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
@@ -31,24 +32,9 @@ use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId::ROOT;
 
-const WARM: [f32; 3] = [0.90, 0.35, 0.10];
-const COOL: [f32; 3] = [0.10, 0.30, 0.85];
-const PALE: [f32; 3] = [0.95, 0.90, 0.80];
-
-const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
-const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 /// Far off to one side of both strokes: nothing is painted here on any layer, so it
 /// is where "did this layer leak outside its clip?" is asked.
 const AWAY: &[Vec2] = &[Vec2::new(-100.0, -100.0), Vec2::new(-70.0, -100.0)];
-
-/// Add a layer at the top of the document and return its id.
-fn add_layer(engine: &mut Engine) -> LayerId {
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    engine.observe().active_layer
-}
 
 /// Every layer, flattened in composite order (the projection's own order).
 fn layers(engine: &Engine) -> Vec<LayerInfo> {

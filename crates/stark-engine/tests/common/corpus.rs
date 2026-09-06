@@ -29,6 +29,7 @@ use stark_model::geom::Vec2;
 
 use super::{SIZE, brush, engine_or_skip_sized, replay_with};
 
+// Not the palette's: every corpus golden was blessed on this red (§9).
 const RED: [f32; 3] = [0.86, 0.16, 0.12];
 
 /// How far a case is allowed to move under each check. Per case rather than global

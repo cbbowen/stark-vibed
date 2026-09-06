@@ -15,15 +15,13 @@
 
 mod common;
 
+use common::palette::{BLACK, RED_SOFT};
 use common::*;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{LayerId, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
-const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A frame around the middle of the 256² viewport. The canvas origin is at the
 /// viewport centre, so this is a centred 100×100 hole.
@@ -63,7 +61,7 @@ fn frame_covers_outside_and_spares_inside() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let before = engine.render_to_image();
     assert!(red_dominant(center(&before)), "stroke should cross centre");
     assert!(
@@ -101,7 +99,7 @@ fn opaque_matte_erases_relief_beneath() {
         return;
     };
     // A fat, heavy stroke right through the region the matte will cover.
-    paint(&mut engine, RED, 45.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 45.0, WIDE_STROKE);
     add_frame(&mut engine);
     let over_paint = engine.render_to_image();
 
@@ -139,7 +137,7 @@ fn matte_honors_layer_opacity_and_visibility() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine
         .observe()
@@ -180,7 +178,7 @@ fn matte_below_paint_does_not_cover_it() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     // Below the root layer: `above: None` appends on top, so insert under the
     // root by moving it after the fact.
     add_frame(&mut engine);
@@ -206,7 +204,12 @@ fn matte_does_not_extend_canvas_bounds() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 20.0, &[Vec2::ZERO, Vec2::new(10.0, 0.0)]);
+    paint(
+        &mut engine,
+        RED_SOFT,
+        20.0,
+        &[Vec2::ZERO, Vec2::new(10.0, 0.0)],
+    );
     let painted = engine.observe().bounds.tile_range();
     assert!(painted.is_some(), "the stroke should populate tiles");
 
@@ -230,7 +233,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
 
@@ -262,7 +265,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     let before = engine.render_to_image();
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         30.0,
         &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
     );
@@ -276,7 +279,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     engine.process(PeerCommand::SetActiveLayer(LayerId::ROOT));
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         30.0,
         &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
     );
@@ -293,7 +296,7 @@ fn dragging_a_frame_previews_without_logging() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     let framed = engine.render_to_image();
@@ -356,7 +359,7 @@ fn dragging_the_canvas_color_previews_without_logging() {
         return;
     };
     let blank = engine.render_to_image();
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let painted = engine.render_to_image();
     let substrate = engine.observe().substrate_color;
 
@@ -415,7 +418,7 @@ fn picking_a_frame_color_previews_without_logging() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     let black = engine.render_to_image();
@@ -480,7 +483,7 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     let black = engine.render_to_image();
@@ -514,7 +517,7 @@ fn matte_undoes() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let before = engine.render_to_image();
 
     add_frame(&mut engine);
@@ -561,7 +564,7 @@ fn an_everything_matte_backs_the_whole_view_beneath_the_paint() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 16.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 16.0, WIDE_STROKE);
     engine.process(DocCommand::AddMatte {
         carrier: None,
         at: Place::Bottom,
@@ -677,7 +680,7 @@ fn an_everything_matte_defines_no_export_frame() {
     };
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         16.0,
         &[Vec2::new(-30.0, 0.0), Vec2::new(30.0, 0.0)],
     );
@@ -728,7 +731,7 @@ fn a_translated_matte_is_the_frame_made_at_the_shifted_rect() {
         return;
     };
     for e in [&mut a, &mut b] {
-        paint(e, RED, 30.0, WIDE_STROKE);
+        paint(e, RED_SOFT, 30.0, WIDE_STROKE);
     }
     add_frame(&mut a);
     let moved = a.observe().layers.last().expect("matte").id;
@@ -855,7 +858,7 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     let framed = engine.render_to_image();
@@ -918,7 +921,7 @@ fn a_matte_carried_by_a_moved_group_rides_along() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE_STROKE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let base = engine.observe().active_layer;
     engine.process(DocCommand::AddMatte {
         carrier: Some(base),

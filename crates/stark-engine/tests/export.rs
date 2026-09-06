@@ -8,6 +8,7 @@
 
 mod common;
 
+use common::palette::{BLACK, RED_SOFT};
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
@@ -17,9 +18,6 @@ use stark_model::Srgb;
 use stark_model::document::LayerId;
 use stark_model::document::{MatteRegion, Parcel, Place, SelectionOp};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
-const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// A 120×80 frame centred on the canvas origin.
 const FRAME: MatteRegion = MatteRegion::OutsideRect {
@@ -64,7 +62,7 @@ fn exports_the_frame_rect_without_its_own_matte() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
     let img = pollster::block_on(
@@ -100,7 +98,7 @@ fn scale_changes_resolution_not_framing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    paint(&mut engine, RED, 30.0, WIDE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
     let one = pollster::block_on(
@@ -171,7 +169,7 @@ fn transparent_export_cuts_out_the_paint() {
     // A short stroke through the middle, leaving the frame's edges bare.
     paint(
         &mut engine,
-        RED,
+        RED_SOFT,
         24.0,
         &[Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)],
     );
@@ -366,7 +364,12 @@ fn export_without_a_frame_falls_back() {
 
     // Painted: the populated tiles' bounds, which are tile-aligned and so at least
     // one tile across.
-    paint(&mut engine, RED, 20.0, &[Vec2::ZERO, Vec2::new(10.0, 0.0)]);
+    paint(
+        &mut engine,
+        RED_SOFT,
+        20.0,
+        &[Vec2::ZERO, Vec2::new(10.0, 0.0)],
+    );
     let plan = engine
         .export_plan(None, ExportScale::Factor(1.0))
         .expect("plan");
@@ -452,7 +455,7 @@ fn showing_the_piece_frames_what_an_export_would_write() {
     );
 
     // Painted and unframed, the piece is the painted bounds...
-    paint(&mut engine, RED, 30.0, WIDE);
+    paint(&mut engine, RED_SOFT, 30.0, WIDE);
     frames_like_an_export(&mut engine, None);
     // ...and once there is a frame, it is the frame — a stroke running well past it
     // on both sides, so a fit that took the paint instead would come out wider.

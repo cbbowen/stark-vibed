@@ -10,16 +10,14 @@
 
 mod common;
 
+use common::collab::{pair, pair_sized, snap, sync, sync_into};
+use common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
 use common::{engine_or_skip, engine_or_skip_sized, images_match, paint};
 use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{ActorId, LayerId};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.9, 0.1, 0.1];
-const GREEN: [f32; 3] = [0.1, 0.8, 0.2];
-const BLUE: [f32; 3] = [0.1, 0.2, 0.9];
 
 /// A viewport wide enough to hold two tile columns (`TILE_SIZE` is 254 canvas
 /// px): same-layer strokes only commute when their padded extents share no
@@ -34,21 +32,6 @@ const WIDE: Extent2 = Extent2 {
 /// after footprint padding.
 const LEFT: (f32, f32) = (20.0, 90.0);
 const RIGHT: (f32, f32) = (300.0, 500.0);
-
-fn snap(e: &mut Engine) -> RgbaImage {
-    e.render_to_image()
-}
-
-fn sync_into(from: &mut Engine, into: &mut Engine) {
-    for action in from.take_outbox() {
-        into.merge_remote(action);
-    }
-}
-
-fn sync(a: &mut Engine, b: &mut Engine) {
-    sync_into(a, b);
-    sync_into(b, a);
-}
 
 /// The canonical materialization of `engine`'s log: a fresh peer joining from
 /// the full shared document, which rewinds nothing and splices nothing. The
@@ -82,21 +65,17 @@ fn bar(e: &mut Engine, color: [f32; 3], (x0, x1): (f32, f32), y: f32) {
 /// the same way.
 #[test]
 fn undo_and_redo_splice_past_disjoint_peer_strokes() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip_sized(WIDE), engine_or_skip_sized(WIDE))
-    else {
+    let Some((mut a, mut b)) = pair_sized(WIDE) else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // A paints in the left tile column; B concurrently paints two bars in the
     // right one (same layer, disjoint tiles). Absorbing A's earlier-ordered
     // stroke costs B one shallow rewind (mid-sequence arrivals have no fast
     // path, §12.6); the undo and redo below must add nothing on either peer.
-    bar(&mut a, RED, LEFT, 80.0);
-    bar(&mut b, GREEN, RIGHT, 100.0);
-    bar(&mut b, BLUE, RIGHT, 220.0);
+    bar(&mut a, RED_VIVID, LEFT, 80.0);
+    bar(&mut b, GREEN_SOFT, RIGHT, 100.0);
+    bar(&mut b, BLUE_VIVID, RIGHT, 220.0);
     sync(&mut a, &mut b);
     let both = snap(&mut a);
     let before_a = a.timeline_stats();
@@ -159,23 +138,19 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
 /// near the top of the stack by construction, so only the tail replays.
 #[test]
 fn late_arrival_replays_only_the_tail() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip_sized(WIDE), engine_or_skip_sized(WIDE))
-    else {
+    let Some((mut a, mut b)) = pair_sized(WIDE) else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
-    bar(&mut a, RED, LEFT, 80.0);
+    bar(&mut a, RED_VIVID, LEFT, 80.0);
     sync(&mut a, &mut b);
 
     // B commits one bar at Lamport 2 but holds it back while A keeps painting
     // (Lamport 2, 3): when it finally lands on A it belongs mid-log, under
     // exactly one newer local stroke.
-    bar(&mut b, GREEN, RIGHT, 150.0);
-    bar(&mut a, BLUE, LEFT, 150.0);
-    bar(&mut a, RED, LEFT, 220.0);
+    bar(&mut b, GREEN_SOFT, RIGHT, 150.0);
+    bar(&mut a, BLUE_VIVID, LEFT, 150.0);
+    bar(&mut a, RED_VIVID, LEFT, 220.0);
     sync_into(&mut b, &mut a);
 
     let stats = a.timeline_stats();
@@ -202,16 +177,13 @@ fn late_arrival_replays_only_the_tail() {
 /// peer's own layer, even on a canvas small enough to be a single tile.
 #[test]
 fn undo_splices_past_another_layers_stroke() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
@@ -224,7 +196,7 @@ fn undo_splices_past_another_layers_stroke() {
     });
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );
@@ -253,14 +225,11 @@ fn undo_splices_past_another_layers_stroke() {
 /// must survive the splice untouched.
 #[test]
 fn undo_splices_past_a_rename() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
-    bar(&mut a, RED, (20.0, 230.0), 128.0);
+    bar(&mut a, RED_VIVID, (20.0, 230.0), 128.0);
     sync(&mut a, &mut b);
     b.process(DocCommand::SetLayerName(
         LayerId::ROOT,
@@ -335,7 +304,7 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
     b.join_collaboration(&a.document_file(), ActorId(2))
         .expect("join a session this build can render");
 
-    let mut biting = common::brush(RED, 8.0);
+    let mut biting = common::brush(RED_VIVID, 8.0);
     biting.tooth.give = 0.2;
     for y in [60.0f32, 100.0, 140.0, 180.0, 220.0] {
         common::stroke_with(&mut b, biting, &[Vec2::new(20.0, y), Vec2::new(230.0, y)]);
@@ -368,23 +337,20 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
 /// fall back to the rewind — and the peers must still converge exactly.
 #[test]
 fn overlapping_strokes_fall_back_to_replay() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // Crossing strokes through the canvas centre.
     paint(
         &mut a,
-        RED,
+        RED_VIVID,
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
     paint(
         &mut b,
-        GREEN,
+        GREEN_SOFT,
         12.0,
         &[Vec2::new(128.0, 40.0), Vec2::new(128.0, 216.0)],
     );

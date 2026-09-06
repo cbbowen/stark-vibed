@@ -8,6 +8,7 @@
 
 mod common;
 
+use common::palette::RED_SOFT;
 use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
@@ -15,8 +16,6 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::MAX_SHAPE_DIM;
 use stark_model::document::{BrushShape, OrientationSource};
 use stark_model::geom::Vec2;
-
-const RED: [f32; 3] = [0.85, 0.1, 0.1];
 
 /// Encode a grayscale PNG of the given size with a soft radial blob — a stand-in
 /// for a user's scanned/painted brush-shape image.
@@ -84,7 +83,7 @@ fn a_capped_shape_paints_and_survives_save_load() {
     let id = original
         .import_brush(&blob_png(2600, 1300))
         .expect("import");
-    let mut brush = brush(RED, 60.0);
+    let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
     original.process(ViewCommand::set_brush(brush));
     original.process(GestureCommand::Start {
@@ -143,7 +142,7 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
     let id = engine.import_brush(&blob_png(160, 160)).expect("import");
 
     let draw = |engine: &mut stark_engine::Engine, orientation| {
-        let mut b = brush(RED, 60.0);
+        let mut b = brush(RED_SOFT, 60.0);
         b.shape = BrushShape::Stamp(id);
         b.orientation = orientation;
         // Lift and deposit, so the **dynamics loop** draws this rather than the swept

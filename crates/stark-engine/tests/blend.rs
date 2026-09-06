@@ -19,6 +19,7 @@
 
 mod common;
 
+use common::palette::{COOL, WARM};
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
@@ -33,25 +34,6 @@ use stark_model::document::{
 use stark_model::geom::Vec2;
 
 const ROOT: LayerId = LayerId::ROOT;
-
-/// The layer the most recent `AddLayer` created.
-///
-/// **Read back rather than predicted.** A `LayerId` is the id of the action that
-/// minted it (§17.9), so what it is depends on how many actions this test has already
-/// committed — which is exactly the sort of thing a test should not be counting. A
-/// fresh layer is armed for painting (§14.8), so the active one *is* the new one, and
-/// every use below is immediately after the add that made it.
-fn top(engine: &Engine) -> LayerId {
-    engine.observe().active_layer
-}
-
-/// Two saturated lights that overlap in the middle of the canvas. Warm and cool so
-/// the overlap is unmistakably a *combination* rather than either one of them.
-const WARM: [f32; 3] = [0.90, 0.35, 0.10];
-const COOL: [f32; 3] = [0.10, 0.30, 0.85];
-
-const H_STROKE: &[Vec2] = &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
-const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 
 /// Perceived brightness, for "did combining light make it brighter?" — the one
 /// question every mode here has to answer yes to.
