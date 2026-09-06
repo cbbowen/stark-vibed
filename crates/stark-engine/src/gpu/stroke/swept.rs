@@ -71,10 +71,10 @@ use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
-use super::incremental::{Carried, Resume};
+use super::incremental::Carried;
 use super::region::tiles_with_segments;
-use super::segments::{Segment, SegmentInstance, generate_segments_in};
-use super::{Progress, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::segments::{Segment, SegmentInstance};
+use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -323,23 +323,18 @@ pub(super) fn build_swept_kit(
 impl StrokeRenderer {
     /// [`Self::render_range`] through the plain swept fast path: no carried brush
     /// state at all, so a range needs nothing from its predecessor but the arc length.
-    /// `tol` comes from [`dynamics_setup`](super::dynamics::dynamics_setup), which has
-    /// already decided — from the brush — that this stroke takes the fast path, or
-    /// that the loop cannot draw it. Handed over rather than recomputed, so one place
-    /// answers what a stroke's segments are.
+    /// The segments and constants arrive resolved ([`ResolvedRange`]): `render_range`
+    /// has already decided — from the brush — that this stroke takes the fast path,
+    /// or that the loop cannot draw it, and flattened at that decision's budget.
     pub(super) fn render_swept(
         &self,
         scene: StrokeScene<'_>,
-        rec: &StrokeRecord,
-        spans: StrokeSpans,
-        tol: crate::path::FlattenTolerance,
-        resume: Resume<'_>,
-        tip: &ResolvedTip,
+        range: ResolvedRange<'_>,
     ) -> (TileMap, StrokeCarry) {
         // The control every dynamics row is read against: the same geometry, the
         // same tiles, one instanced draw instead of a dispatch chain per segment.
-        // A change that moves this row has moved something shared — segment
-        // generation, tile acquisition, the scope — rather than the loop.
+        // A change that moves this row has moved something shared — tile
+        // acquisition, the scope — rather than the loop.
         crate::timing::span!("stroke.swept");
         let StrokeScene {
             pool,
@@ -348,12 +343,14 @@ impl StrokeRenderer {
             substrate,
             ..
         } = scene;
-        // Everything both paths share, resolved once (see [`StrokeConstants`]).
-        let k = self.stroke_constants(rec, substrate, selection);
-        let (segments, end_dist) = generate_segments_in(rec, tol, spans);
-        if segments.is_empty() {
-            return (base.clone(), StrokeCarry::unchanged(end_dist));
-        }
+        let ResolvedRange {
+            rec,
+            tip,
+            consts: k,
+            segments,
+            end_dist,
+            ..
+        } = range;
 
         // Below full opacity the parcel's finished coverage is scaled, which is
         // neither of §6.2's two piece-composable forms — so the path stops being
@@ -382,7 +379,7 @@ impl StrokeRenderer {
         // pointer's cadence, and it is why the ring below never supersamples.
         let ss = super::budget::supersample_scale(&rec.brush);
         if k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1 {
-            return self.render_swept_scaled(scene, rec, &k, &segments, end_dist, resume, tip, ss);
+            return self.render_swept_scaled(scene, range, ss);
         }
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
@@ -391,11 +388,11 @@ impl StrokeRenderer {
         // not a pair of `drop`s placed after the submit and defended by a comment.
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
 
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         // The per-tile draw list, instance buffer and transform slots — shared with
         // the erase pass ([`sweep_draws`]). Always at 1×: a supersampled stroke
         // never reaches this loop (the branch above).
-        let draws = sweep_draws(self, &mut scope, rec, &k, &segments, 1);
+        let draws = sweep_draws(self, &mut scope, rec, k, segments, 1);
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was. No ceiling lane either — a
@@ -545,24 +542,24 @@ impl StrokeRenderer {
     /// (`TileXform::params.w`), and the integrate box-resolves each destination
     /// texel from the finished 2×2 block (`integrate.wesl`). 1 is this path
     /// exactly as it was, to the bit.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every argument is a distinct type or a plain scalar resolved once, so the transposition the lint guards cannot be written; the five beyond `scene` are what `render_swept` already flattened and resolved, and re-deriving any of them here is what this path exists to avoid"
-    )]
     fn render_swept_scaled(
         &self,
         scene: StrokeScene<'_>,
-        rec: &StrokeRecord,
-        k: &super::StrokeConstants,
-        segments: &[Segment],
-        end_dist: f32,
-        resume: Resume<'_>,
-        tip: &ResolvedTip,
+        range: ResolvedRange<'_>,
         ss: u32,
     ) -> (TileMap, StrokeCarry) {
         // The pool and the selection are the accumulator's, as in `erase.rs`; the
         // base it reads pristine paint out of is too.
         let StrokeScene { substrate, .. } = scene;
+        let ResolvedRange {
+            rec,
+            tip,
+            consts: k,
+            segments,
+            end_dist,
+            resume,
+            ..
+        } = range;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
         let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);

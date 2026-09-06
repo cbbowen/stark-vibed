@@ -17,12 +17,12 @@ use stark_model::geom::{TileCoord, Vec2};
 /// The paint effect the loop is drawing — its own by construction:
 use stark_shaders::mirror::composite::binding as cb;
 
-use super::super::incremental::{Carried, LoopCarry, Reservoir, Resume};
+use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
-use super::super::segments::{BleedFire, Segment, generate_segments_in};
+use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{segment_instance, tile_xform, xform_group};
 use super::super::{
-    Complaint, Progress, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState,
+    Complaint, Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState,
 };
 use super::bleed::bleed_fires;
 use super::plan::{
@@ -51,39 +51,24 @@ use stark_shaders::mirror::dynamics::binding as b;
 // from (§6.10): a slot names its own format, so the host asks rather than repeats.
 use stark_shaders::mirror::dynamics::decl as d;
 
-// The region composite runs `composite.wesl`, so it draws that shader's own
-// per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
-// here under a different name.
-use crate::gpu::stroke::tips::ResolvedTip;
-
-/// The brush as [`StrokeRenderer::render_range`](crate::gpu::stroke::StrokeRenderer)'s
-/// gate resolved it, for the paths that need both halves.
-///
-/// The tip every path binds, and the tool that chose *this* path. Both were
-/// re-derived inside the run behind an `expect` naming the gate that had already
-/// produced them — one re-resolving the tip through the LRU under its lock, the other
-/// unwrapping the effect the plan had matched on to get here. Carried together
-/// because they arrive together and are exactly what "the gate said the loop runs"
-/// means.
-#[derive(Clone, Copy)]
-pub(in crate::gpu::stroke) struct LoopBrush<'a> {
-    pub(in crate::gpu::stroke) tip: &'a ResolvedTip,
-    pub(in crate::gpu::stroke) tool: LoopTool,
-}
-
 /// Which tool the region loop is running — the wet exchange with the axes that
 /// chose it (§6.2), or the liquify warp (§6.13), which shares the region, the
 /// piece chunking and the write-back and dispatches a plan of warp slots instead.
-/// A tag on [`LoopBrush`] rather than a second entry point, because everything
+/// A tag beside the range rather than a second entry point, because everything
 /// that differs between the two is a per-slot question the plan already answers
 /// ([`SlotKind`]); what is decided here is only which plan gets built and whether
-/// there is a tool to seed, settle and carry at all.
+/// there is a tool to seed, settle and carry at all. Handed in by the gate that
+/// chose the path, rather than re-derived here from the effect behind an `expect`
+/// naming that gate.
 #[derive(Clone, Copy)]
 pub(in crate::gpu::stroke) enum LoopTool {
     Wet(stark_model::document::BrushDynamics),
     Liquify,
 }
 use crate::gpu::uniforms::UniformSlots;
+// The region composite runs `composite.wesl`, so it draws that shader's own
+// per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
+// here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
 /// The mint-budget tile's pool key (`LoopCarry::fresh`): copies both ways, nothing
@@ -117,6 +102,92 @@ const fn levels_key() -> Key {
     )
 }
 
+/// One lane of the region, carried per tile across pieces and ranges (§6.2): the
+/// mint budget's raw totals ([`fresh_key`]) or the ceiling lane's sums
+/// ([`levels_key`]), under the one contract [`LoopCarry::fresh`] states — a piece
+/// never writes a tile it resumed from. It [`seed`](Self::seed)s its region by
+/// copying each carried block in and [`extract`](Self::extract)s a fresh lease back
+/// out, so the tiles it does not touch ride forward as clones of the same lease.
+struct CarriedLanes {
+    tiles: BTreeMap<TileCoord, Arc<Kept>>,
+    /// The pool key every tile here is cut with; its extent is every copy's.
+    key: Key,
+}
+
+impl CarriedLanes {
+    fn new(key: Key, tiles: BTreeMap<TileCoord, Arc<Kept>>) -> Self {
+        Self { tiles, key }
+    }
+
+    /// Copy each carried tile among `coords` over its block of `region`, whose
+    /// interior origin is `lo`.
+    fn seed(
+        &self,
+        scope: &mut SubmitScope,
+        coords: &BTreeSet<TileCoord>,
+        lo: Vec2,
+        region: &wgpu::Texture,
+    ) {
+        for coord in coords {
+            let Some(kept) = self.tiles.get(coord) else {
+                continue;
+            };
+            scope.encoder().copy_texture_to_texture(
+                kept.tex().as_image_copy(),
+                block(region, coord.origin() - lo),
+                self.key.extent(),
+            );
+        }
+    }
+
+    /// Cut a fresh lease out of `region` for every tile in `coords`, and carry it in
+    /// place of whatever was carried there.
+    fn extract(
+        &mut self,
+        r: &StrokeRenderer,
+        scope: &mut SubmitScope,
+        coords: &BTreeSet<TileCoord>,
+        lo: Vec2,
+        region: &wgpu::Texture,
+    ) {
+        for coord in coords {
+            let kept = r.scratch.keep(&r.ctx.device, self.key);
+            scope.encoder().copy_texture_to_texture(
+                block(region, coord.origin() - lo),
+                kept.tex().as_image_copy(),
+                self.key.extent(),
+            );
+            // Held, not dropped. The lease this displaces is the *previous*
+            // piece's, and the seed copy that read it is recorded into an encoder
+            // this call does not submit — so dropping it here returns a texture to
+            // the free list while pending commands still name it, which is
+            // `scope.hold(base.clone())`'s hazard one level down and the ordinary
+            // case for the same reason: consecutive pieces share the tiles around
+            // their cut. Reuse happens to be harmless (commands in one encoder run
+            // in recorded order, and the seed was recorded first), but `trim`'s
+            // `destroy` is not, and neither is an argument that rests on statement
+            // order.
+            if let Some(displaced) = self.tiles.insert(*coord, Arc::new(kept)) {
+                scope.hold(displaced);
+            }
+        }
+    }
+}
+
+/// The tile-sized block of `region` at `off` from its origin, as a copy addresses it.
+fn block(region: &wgpu::Texture, off: Vec2) -> wgpu::TexelCopyTextureInfo<'_> {
+    wgpu::TexelCopyTextureInfo {
+        texture: region,
+        mip_level: 0,
+        origin: wgpu::Origin3d {
+            x: off.x as u32,
+            y: off.y as u32,
+            z: 0,
+        },
+        aspect: wgpu::TextureAspect::All,
+    }
+}
+
 /// The brush as the swept sweep binds it (§6.2) — for the per-segment draw of
 /// the ceiling lane over the region, which runs the sweep's own pipeline over
 /// the sweep's own layouts.
@@ -145,7 +216,7 @@ struct LevelsPass {
 const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(TILE_WG), BRUSH_RES.div_ceil(TILE_WG));
 
 impl StrokeRenderer {
-    /// Render `spans` of a paint-manipulating stroke via the **sequential
+    /// Render a range of a paint-manipulating stroke via the **sequential
     /// swept-exchange loop** (§6.2): composite the base under it into a 1:1
     /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
     /// flattened segment through the prefix-τ integral (the same definite-integral
@@ -163,40 +234,34 @@ impl StrokeRenderer {
     ///
     /// The loop starts from `tool` rather than from a fresh tip when one is given, and
     /// hands back the state it ends in whenever a further range remains to be drawn,
-    /// so a live stroke redraws only its tail (see [`ToolState`]). `tol` comes from
-    /// [`dynamics_setup`](super::dynamics_setup), which has already decided — from the brush — that this
-    /// stroke runs the loop at all.
+    /// so a live stroke redraws only its tail (see [`ToolState`]). The segments and
+    /// constants arrive resolved ([`ResolvedRange`]): `render_range` has already
+    /// decided — from the brush — that this stroke runs the loop at all, and
+    /// flattened at that decision's budget.
     pub(in crate::gpu::stroke) fn render_dynamic(
         &self,
         scene: StrokeScene<'_>,
-        rec: &StrokeRecord,
-        spans: StrokeSpans,
-        resume: Resume<'_>,
-        tol: crate::path::FlattenTolerance,
-        brush: LoopBrush<'_>,
+        range: ResolvedRange<'_>,
+        tool: LoopTool,
     ) -> (TileMap, StrokeCarry) {
         // The sequential stamp loop end to end. Everything below it — `stroke.piece`
-        // and the four phases inside that — partitions this row, which is what makes
-        // the table a phase split rather than a pile of unrelated timings: the shares
-        // have a denominator, and a phase that is missing from the sum is a phase
-        // nobody has instrumented yet.
+        // and the four phases inside that, then `stroke.submit` — partitions this
+        // row, which is what makes the table a phase split rather than a pile of
+        // unrelated timings: the shares have a denominator, and a phase that is
+        // missing from the sum is a phase nobody has instrumented yet. The
+        // flattening is not below it: `stroke.segments` is cut once for every path
+        // now, so it sits beside this row under `stroke.range`.
         crate::timing::span!("stroke.dynamics");
+        let ResolvedRange {
+            rec,
+            segments,
+            end_dist,
+            resume,
+            ..
+        } = range;
         let capture = resume.capture;
-        // Fitting outweighs flattening by ~350:1 on the CPU side, which is a claim
-        // about *this* call against `input.fit` — and one that has to stay checkable,
-        // because the flattener is the thing that looks worth optimizing and is not.
-        let (segments, end_dist) = {
-            crate::timing::span!("stroke.segments");
-            generate_segments_in(rec, tol, spans)
-        };
-        // A range with no geometry runs no dispatches, so it leaves the brush exactly
-        // as it found it. Handing back `None` says "unchanged" — the caller keeps the
-        // state it passed in rather than paying for a copy of it.
-        if segments.is_empty() {
-            return (scene.base.clone(), StrokeCarry::unchanged(end_dist));
-        }
 
-        let mut run = DynamicsRun::new(self, scene, rec, tol, resume.prior, brush);
+        let mut run = DynamicsRun::new(self, scene, range, tool);
         let mut map = scene.base.clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece rather than re-derived inside each: the chunker must
@@ -204,8 +269,8 @@ impl StrokeRenderer {
         // quantum before the segment it fires after, which for a piece's first
         // segment is substrate no segment box covers ([`chunk_segments`]).
         // A liquify stroke has no such axis, so it fires nothing (§6.13).
-        let (fires, bleed_capped) = match brush.tool {
-            LoopTool::Wet(d) => bleed_fires(d.bleed, &segments),
+        let (fires, bleed_capped) = match tool {
+            LoopTool::Wet(d) => bleed_fires(d.bleed, segments),
             LoopTool::Liquify => (Vec::new(), false),
         };
         // The third budget, said out loud like the other two. A segment wanting more
@@ -234,8 +299,8 @@ impl StrokeRenderer {
         // Only the wet tool has a pen-up to settle: the warp applies each
         // segment's follow whole as the tip passes, so a break of contact strands
         // nothing — the bleed axis's argument, and §6.13's statement of it.
-        let settles = matches!(brush.tool, LoopTool::Wet(_));
-        let mut pieces = chunk_segments(&segments, &fires).into_iter().peekable();
+        let settles = matches!(tool, LoopTool::Wet(_));
+        let mut pieces = chunk_segments(segments, &fires).into_iter().peekable();
         while let Some(piece) = pieces.next() {
             let is_last = pieces.peek().is_none();
             // This piece's firings, re-keyed to its slice: `after` indexes `segments`,
@@ -259,7 +324,7 @@ impl StrokeRenderer {
         }
         // A liquify range hands nothing on: the canvas *is* the state (§6.13),
         // and a later range recomposites it from the tiles this one wrote back.
-        let tool_out = match brush.tool {
+        let tool_out = match tool {
             LoopTool::Wet(_) => capture.then(|| run.capture_tool()),
             LoopTool::Liquify => None,
         };
@@ -321,7 +386,7 @@ struct DynamicsRun<'a> {
     dirty: BTreeSet<TileCoord>,
     /// Everything both render paths read off the record and the scene, resolved once
     /// (see [`StrokeConstants`](super::super::StrokeConstants)).
-    consts: super::super::StrokeConstants,
+    consts: &'a super::super::StrokeConstants,
     /// Functions of the brush alone, so shared by every piece: the swept-extent
     /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
     /// fast path samples), the plain coverage mask the reservoir texels weight by,
@@ -354,10 +419,10 @@ struct DynamicsRun<'a> {
     /// with the run: resumed entries first, each piece replacing the tiles it
     /// touched with the leases it extracted. Untouched — and empty — at the
     /// identity opacity.
-    fresh: BTreeMap<TileCoord, Arc<Kept>>,
+    fresh: CarriedLanes,
     /// The ceiling lane's carried tiles ([`LoopCarry::levels`]), evolving with
     /// the run exactly as `fresh` does. Empty unless the pen drives the ceiling.
-    levels: BTreeMap<TileCoord, Arc<Kept>>,
+    levels: CarriedLanes,
     /// The brush as the **swept** sweep binds it — its prefix-τ and noise groups
     /// over the swept layouts — for the per-segment draw of the ceiling lane
     /// over the region (§6.2). `None` unless the pen drives the ceiling.
@@ -403,18 +468,24 @@ impl<'a> DynamicsRun<'a> {
     fn new(
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
-        rec: &'a StrokeRecord,
-        tol: crate::path::FlattenTolerance,
-        tool: Option<&ToolState>,
-        brush: LoopBrush<'_>,
+        range: ResolvedRange<'a>,
+        tool: LoopTool,
     ) -> Self {
+        let ResolvedRange {
+            rec,
+            tip,
+            tol,
+            consts,
+            resume,
+            ..
+        } = range;
+        let prior = resume.prior;
         let device = &r.ctx.device;
         let mut scope = r.scratch.scope(&r.ctx, "stark dynamics stroke");
-        let consts = r.stroke_constants(rec, scene.substrate, scene.selection);
 
         // The brush's swept-extent prefix-τ (shared with the fast path) and its
         // plain coverage mask (the reservoir texels' own extent weights).
-        let prefix_view = brush.tip.prefix.clone();
+        let prefix_view = tip.prefix.clone();
         let prefix_bg = desc::bind_group_for(
             device,
             "stark dynamics prefix bg",
@@ -423,7 +494,7 @@ impl<'a> DynamicsRun<'a> {
             false,
             |_| wgpu::BindingResource::TextureView(&prefix_view),
         );
-        let cov = brush.tip.coverage.clone();
+        let cov = tip.coverage.clone();
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
         let noise = r.tips.noise(&rec.brush.color_dynamics(), consts.noise_seed);
@@ -485,23 +556,18 @@ impl<'a> DynamicsRun<'a> {
         // the carried tiles, and the swept sweep's own bind groups for drawing the
         // lane over the region — the brush bound exactly as the fast path binds
         // it, so the lane's sums are the fast path's.
-        let leveled = matches!(brush.tool, LoopTool::Wet(_)) && consts.ceiling_lane;
-        let levels: BTreeMap<TileCoord, Arc<Kept>> =
-            tool.map(ToolState::looped).map_or_else(BTreeMap::new, |t| {
+        let leveled = matches!(tool, LoopTool::Wet(_)) && consts.ceiling_lane;
+        let levels: BTreeMap<TileCoord, Arc<Kept>> = prior
+            .map(ToolState::looped)
+            .map_or_else(BTreeMap::new, |t| {
                 t.levels.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
             });
         let lane = leveled.then(|| {
-            let (prefix, noise) = super::super::swept::sweep_binds(
-                r,
-                &mut scope,
-                brush.tip,
-                rec,
-                scene.substrate,
-                &consts,
-            );
+            let (prefix, noise) =
+                super::super::swept::sweep_binds(r, &mut scope, tip, rec, scene.substrate, consts);
             LaneBinds { prefix, noise }
         });
-        let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = tool.map(ToolState::looped) {
+        let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = prior.map(ToolState::looped) {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
             scope.encoder().copy_texture_to_texture(
@@ -529,7 +595,7 @@ impl<'a> DynamicsRun<'a> {
             // glob — and no reservoir reader either: its plan dispatches nothing
             // that touches the tool, so this clear only keeps the pool's
             // no-stale-reads contract the cheap way.
-            let charge = match brush.tool {
+            let charge = match tool {
                 LoopTool::Wet(d) => d.charge,
                 LoopTool::Liquify => 0.0,
             };
@@ -620,14 +686,14 @@ impl<'a> DynamicsRun<'a> {
             bake_load,
             bake_latm,
             bake_rlm,
-            fresh,
-            levels,
+            fresh: CarriedLanes::new(fresh_key(), fresh),
+            levels: CarriedLanes::new(levels_key(), levels),
             lane,
-            tool: brush.tool,
+            tool,
             // Floored where it is inverted, though `assets::peak_tau` already
             // floors what it hands out: a divisor is the one reading of the
             // number that cannot shrug off a zero.
-            inv_peak_tau: 1.0 / brush.tip.peak_tau.max(1e-6),
+            inv_peak_tau: 1.0 / tip.peak_tau.max(1e-6),
         }
     }
 
@@ -709,50 +775,13 @@ impl<'a> DynamicsRun<'a> {
         // tile the composite just re-laid. Nothing to seed at the identity
         // ceiling, where the shader never reads the lanes.
         if self.capped() {
-            for coord in coords {
-                let Some(kept) = self.fresh.get(coord) else {
-                    continue;
-                };
-                let off = coord.origin() - lo;
-                self.scope.encoder().copy_texture_to_texture(
-                    kept.tex().as_image_copy(),
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &region.aux_tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: off.x as u32,
-                            y: off.y as u32,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    fresh_key().extent(),
-                );
-            }
+            self.fresh
+                .seed(&mut self.scope, coords, lo, &region.aux_tex);
         }
         // …and the ceiling lane's carried tiles over the cleared lane (§6.2), the
         // same cut.
         if let Some(levels_tex) = &region.levels_tex {
-            for coord in coords {
-                let Some(kept) = self.levels.get(coord) else {
-                    continue;
-                };
-                let off = coord.origin() - lo;
-                self.scope.encoder().copy_texture_to_texture(
-                    kept.tex().as_image_copy(),
-                    wgpu::TexelCopyTextureInfo {
-                        texture: levels_tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: off.x as u32,
-                            y: off.y as u32,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    levels_key().extent(),
-                );
-            }
+            self.levels.seed(&mut self.scope, coords, lo, levels_tex);
         }
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
@@ -784,7 +813,7 @@ impl<'a> DynamicsRun<'a> {
                 rec: self.rec,
                 tol: self.tol,
                 region_origin,
-                consts: &self.consts,
+                consts: self.consts,
                 substrate: self.scene.substrate,
             };
             let plan = match self.tool {
@@ -826,7 +855,7 @@ impl<'a> DynamicsRun<'a> {
                 self.scope.write_lease(&buf, bytes);
                 let xform = tile_xform(
                     self.rec,
-                    &self.consts,
+                    self.consts,
                     region_origin,
                     (w as f32, h as f32),
                     1,
@@ -855,63 +884,13 @@ impl<'a> DynamicsRun<'a> {
         // carried tiles themselves are never written, which is what lets the
         // live tail resume the same frozen totals every pointer move.
         if self.capped() {
-            let r = self.r;
-            for coord in coords {
-                let kept = r.scratch.keep(&r.ctx.device, fresh_key());
-                let off = coord.origin() - lo;
-                self.scope.encoder().copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &region.aux_tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: off.x as u32,
-                            y: off.y as u32,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    kept.tex().as_image_copy(),
-                    fresh_key().extent(),
-                );
-                // Held, not dropped. The lease this displaces is the *previous*
-                // piece's, and the seed copy that read it (above) is recorded into
-                // an encoder this call does not submit — so dropping it here returns
-                // a texture to the free list while pending commands still name it,
-                // which is `scope.hold(base.clone())`'s hazard one level down and
-                // the ordinary case for the same reason: consecutive pieces share
-                // the tiles around their cut. Reuse happens to be harmless (commands
-                // in one encoder run in recorded order, and the seed was recorded
-                // first), but `trim`'s `destroy` is not, and neither is an argument
-                // that rests on statement order.
-                if let Some(displaced) = self.fresh.insert(*coord, Arc::new(kept)) {
-                    self.scope.hold(displaced);
-                }
-            }
+            self.fresh
+                .extract(self.r, &mut self.scope, coords, lo, &region.aux_tex);
         }
         // The ceiling lane's new sums, cut the same way and held the same way.
         if let Some(levels_tex) = &region.levels_tex {
-            let r = self.r;
-            for coord in coords {
-                let kept = r.scratch.keep(&r.ctx.device, levels_key());
-                let off = coord.origin() - lo;
-                self.scope.encoder().copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: levels_tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: off.x as u32,
-                            y: off.y as u32,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    kept.tex().as_image_copy(),
-                    levels_key().extent(),
-                );
-                if let Some(displaced) = self.levels.insert(*coord, Arc::new(kept)) {
-                    self.scope.hold(displaced);
-                }
-            }
+            self.levels
+                .extract(self.r, &mut self.scope, coords, lo, levels_tex);
         }
 
         // Slicing the evolved region back into fresh CoW tiles — the write half,
@@ -1813,8 +1792,8 @@ impl<'a> DynamicsRun<'a> {
             // The mint budget rides as the leases the last piece extracted —
             // already copies of the run's own state, so nothing more to copy
             // out here. Empty at the identity opacity.
-            fresh: std::mem::take(&mut self.fresh),
-            levels: std::mem::take(&mut self.levels),
+            fresh: std::mem::take(&mut self.fresh.tiles),
+            levels: std::mem::take(&mut self.levels.tiles),
         })))
     }
 
@@ -1830,8 +1809,8 @@ impl<'a> DynamicsRun<'a> {
     /// `finish` — but only by a rule about drop timing, where every other release
     /// here stands on the scope. One footing is better than two.
     fn submit(mut self) {
-        let fresh = std::mem::take(&mut self.fresh);
-        let levels = std::mem::take(&mut self.levels);
+        let fresh = std::mem::take(&mut self.fresh.tiles);
+        let levels = std::mem::take(&mut self.levels.tiles);
         let Self { mut scope, .. } = self;
         scope.hold(fresh);
         scope.hold(levels);

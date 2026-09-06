@@ -1176,7 +1176,7 @@ mod tests {
     use super::super::bleed::bleed_fires;
     use super::*;
     use crate::gpu::stroke::StrokeSpans;
-    use crate::gpu::stroke::budget::flatten_tolerance;
+    use crate::gpu::stroke::budget::flatten_budget;
     use crate::gpu::stroke::segments::Stretch;
     use crate::gpu::stroke::segments::generate_segments_in;
     use crate::gpu::stroke::segments::testing::{record, run, seg, smearing};
@@ -1444,7 +1444,7 @@ mod tests {
     fn segments_of(rec: &StrokeRecord, range: std::ops::Range<usize>) -> Vec<Segment> {
         generate_segments_in(
             rec,
-            flatten_tolerance(&rec.brush),
+            flatten_budget(&rec.brush).0,
             StrokeSpans { range, dist: 0.0 },
         )
         .0
@@ -1502,7 +1502,7 @@ mod tests {
         let rec = record(smearing(60.0), &curve);
         let all = crate::path::span_count(rec.path.len());
         let whole = segments_of(&rec, 0..all);
-        let want = settle_tangent(&rec, flatten_tolerance(&rec.brush), &whole);
+        let want = settle_tangent(&rec, flatten_budget(&rec.brush).0, &whole);
 
         let mut ever_differed = false;
         for cut in 1..all {
@@ -1510,7 +1510,7 @@ mod tests {
             if tail.is_empty() {
                 continue;
             }
-            let got = settle_tangent(&rec, flatten_tolerance(&rec.brush), &tail);
+            let got = settle_tangent(&rec, flatten_budget(&rec.brush).0, &tail);
             assert!(
                 (got - want).length() < 1e-4,
                 "cutting at span {cut} moved the settle frame from {want:?} to {got:?}",
@@ -1555,7 +1555,7 @@ mod tests {
         let all = crate::path::span_count(rec.path.len());
         let segs = segments_of(&rec, 0..all);
 
-        let tan = settle_tangent(&rec, flatten_tolerance(&rec.brush), &segs);
+        let tan = settle_tangent(&rec, flatten_budget(&rec.brush).0, &segs);
         assert!(
             (tan - Vec2::new(0.0, 1.0)).length() < 1e-2,
             "the settle frame followed the paused hand: {tan:?}"

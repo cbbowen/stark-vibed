@@ -14,9 +14,9 @@
 //! submit scope that owns their release. What is left here is the one question
 //! asked before any of them — which path a stroke takes at all.
 
-use stark_model::document::BrushParams;
+use stark_model::document::{BrushEffect, BrushParams};
 
-use super::budget::{MIN_SEGMENT_LEN, dynamics_len, fit_len, flatten_tolerance};
+use super::budget::{MIN_SEGMENT_LEN, Shortened, fit_len, flatten_budget};
 
 mod bleed;
 mod kit;
@@ -26,7 +26,7 @@ mod slots;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
-pub(in crate::gpu::stroke) use run::{LoopBrush, LoopTool};
+pub(in crate::gpu::stroke) use run::LoopTool;
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
@@ -85,13 +85,6 @@ pub(super) struct StrokePlan {
     pub(super) shortened: Option<Shortened>,
 }
 
-/// The two sides of a binding fit cap, in canvas px — what the brush budgeted per
-/// segment ([`dynamics_len`]) and what the region left of it ([`fit_len`]).
-pub(super) struct Shortened {
-    pub(super) wanted: f32,
-    pub(super) got: f32,
-}
-
 /// Which path a brush's strokes take, and the flattening budget if it is the stamp
 /// loop.
 ///
@@ -111,59 +104,38 @@ pub(super) struct Shortened {
 pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
     // The same flattened segments whichever path runs, at the same budget: a long
     // stroke costs more pieces, not coarser geometry — and the swept fallback below
-    // draws the very segments the loop would have.
-    let tol = flatten_tolerance(b);
+    // draws the very segments the loop would have. The price of the region floor
+    // comes with it (`None` on every brush the floor does not touch, which is every
+    // brush off the region paths), so nothing here re-derives the min it took.
+    let (tol, shortened) = flatten_budget(b);
     // The path is the effect's **variant**, structurally (§6.2): a wet brush runs
     // the loop, a paint brush the swept deposit, an eraser its own pass — no rate
     // predicate at all, so there is no number for a piece and its commit to read
     // differently. The predicate this replaces was sound but one NaN-shaped trap
     // away from not being (`budget.rs`' history at the old `manipulates_paint`).
     let path = match &b.effect {
-        stark_model::document::BrushEffect::Erase(_) => {
-            return StrokePlan {
-                path: StrokePath::Erase,
-                tol,
-                shortened: None,
-            };
+        BrushEffect::Erase(_) => StrokePath::Erase,
+        BrushEffect::Paint(_) => StrokePath::Swept,
+        // The two region effects price their tip alike: one whose extent alone
+        // overflows a region runs neither.
+        BrushEffect::Wet(_) | BrushEffect::Liquify(_) if fit_len(b) < MIN_SEGMENT_LEN => {
+            StrokePath::TipTooLarge
         }
-        stark_model::document::BrushEffect::Paint(_) => {
-            return StrokePlan {
-                path: StrokePath::Swept,
-                tol,
-                shortened: None,
-            };
-        }
-        stark_model::document::BrushEffect::Wet(w) => StrokePath::Loop {
+        BrushEffect::Wet(w) => StrokePath::Loop {
             dynamics: w.dynamics,
         },
-        stark_model::document::BrushEffect::Liquify(_) => StrokePath::Liquify,
-    };
-    let fit = fit_len(b);
-    if fit < MIN_SEGMENT_LEN {
-        return StrokePlan {
-            path: StrokePath::TipTooLarge,
-            tol,
-            shortened: None,
-        };
-    }
-    // `flatten_tolerance` has already taken the min; this only names the price so
-    // the renderer can quote it. Infinite for a liquify brush at strength 0
-    // ([`liquify_len`]) — no step error for a cap to bound, so nothing was
-    // shortened and nothing warns.
-    let wanted = match path {
-        StrokePath::Liquify => super::budget::liquify_len(b),
-        _ => dynamics_len(b),
+        BrushEffect::Liquify(_) => StrokePath::Liquify,
     };
     StrokePlan {
         path,
         tol,
-        shortened: (fit < wanted && wanted.is_finite()).then_some(Shortened { wanted, got: fit }),
+        shortened,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::budget::{max_stretch, max_tip_reach};
+    use super::super::budget::{dynamics_len, max_stretch, max_tip_reach};
     use super::*;
 
     fn brush(size: f32, lift: f32) -> BrushParams {
@@ -288,6 +260,51 @@ mod tests {
                 assert_eq!(plan.tol.max_len, dynamics_len(&brush(size, lift)));
             }
         }
+    }
+
+    /// The price the plan quotes is the price the budget paid: `shortened` is `Some`
+    /// exactly when the region floor bound the segment length, `wanted` is the
+    /// brush's own length, `got` is the floor, and the budget spent is whichever
+    /// bound. One function decides both (`budget::flatten_budget`), so the min and
+    /// its reason cannot drift apart the way two derivations of the same comparison
+    /// could.
+    #[test]
+    fn the_shortening_quoted_is_the_shortening_paid() {
+        let mut big = brush(500.0, 0.5);
+        big.stretch = max_stretch(&big);
+        let brushes = [brush(8.0, 0.5), brush(250.0, 0.95), brush(500.0, 0.05), big];
+        let mut saw_both = (false, false);
+        for b in &brushes {
+            let plan = dynamics_setup(b);
+            assert!(matches!(plan.path, StrokePath::Loop { .. }));
+            let (wanted, fit) = (dynamics_len(b), fit_len(b));
+            match &plan.shortened {
+                Some(s) => {
+                    assert!(
+                        fit < wanted,
+                        "size {}: shortened with no binding floor",
+                        b.size
+                    );
+                    assert_eq!((s.wanted, s.got), (wanted, fit));
+                    assert_eq!(plan.tol.max_len, fit);
+                    saw_both.0 = true;
+                }
+                None => {
+                    assert!(
+                        fit >= wanted,
+                        "size {}: a binding floor went unquoted",
+                        b.size
+                    );
+                    assert_eq!(plan.tol.max_len, wanted);
+                    saw_both.1 = true;
+                }
+            }
+        }
+        assert_eq!(
+            saw_both,
+            (true, true),
+            "the brushes have to straddle the floor, or this pins nothing",
+        );
     }
 
     /// **[`max_tip_reach`] is exactly the frontier this gate refuses at**, which is

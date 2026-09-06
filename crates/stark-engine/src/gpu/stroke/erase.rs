@@ -28,7 +28,6 @@
 //! decision that is genuinely this pass's — a tile the layer does not have is
 //! nothing to erase ([`BareCanvas::Skip`]).
 
-use stark_model::document::StrokeRecord;
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
 
@@ -40,11 +39,9 @@ use crate::gpu::tile::TileMap;
 use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
-use super::incremental::{Carried, Resume};
-use super::segments::generate_segments_in;
+use super::incremental::Carried;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
-use super::tips::ResolvedTip;
-use super::{Progress, StrokeCarry, StrokeRenderer, StrokeScene, StrokeSpans, ToolState};
+use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
 
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
@@ -209,29 +206,28 @@ pub(super) fn build_erase_kit(
 }
 
 impl StrokeRenderer {
-    /// [`Self::render_range`] through the erase pass. `tol` comes from
-    /// [`dynamics_setup`](super::dynamics::dynamics_setup), like both of its
-    /// siblings' — one place answers what a stroke's segments are.
+    /// [`Self::render_range`] through the erase pass. The segments and constants
+    /// arrive resolved ([`ResolvedRange`]), as for both of its siblings — one place
+    /// answers what a stroke's segments are.
     pub(super) fn render_erase(
         &self,
         scene: StrokeScene<'_>,
-        rec: &StrokeRecord,
-        spans: StrokeSpans,
-        resume: Resume<'_>,
-        tol: crate::path::FlattenTolerance,
-        tip: &ResolvedTip,
+        range: ResolvedRange<'_>,
     ) -> (TileMap, StrokeCarry) {
         crate::timing::span!("stroke.erase");
-        // The pool and the selection are the accumulator's — it is what acquires
-        // the copy-on-write destinations and gates each one by its mask (§6.8).
-        let StrokeScene {
-            base, substrate, ..
-        } = scene;
-        let k = self.stroke_constants(rec, substrate, scene.selection);
-        let (segments, end_dist) = generate_segments_in(rec, tol, spans);
-        if segments.is_empty() {
-            return (base.clone(), StrokeCarry::unchanged(end_dist));
-        }
+        // The pool, the base and the selection are the accumulator's — it is what
+        // acquires the copy-on-write destinations and gates each one by its mask
+        // (§6.8).
+        let StrokeScene { substrate, .. } = scene;
+        let ResolvedRange {
+            rec,
+            tip,
+            consts: k,
+            segments,
+            end_dist,
+            resume,
+            ..
+        } = range;
 
         let mut scope = self.scratch.scope(&self.ctx, "stark erase stroke");
         let device = &self.ctx.device;
@@ -239,12 +235,12 @@ impl StrokeRenderer {
         // The brush's textures, bound exactly as the swept path binds them — one
         // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
         // substrate and stroke uniform (the noise field rides along unread).
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, &k);
+        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
         // At 1× always: the supersampled resolve averages the *paint* parcel's
         // finished visible alpha (§6.2), and the erase's transparency mass runs a
         // different law through `erase.wesl` — its resolve would live there, and
         // nothing gates an eraser today (`budget::supersample_scale`).
-        let draws = sweep_draws(self, &mut scope, rec, &k, &segments, 1);
+        let draws = sweep_draws(self, &mut scope, rec, k, segments, 1);
 
         // The stroke's ceiling, once per *call* — `StrokeConstants` resolved it with
         // the color, the mask's opacity folded in, so this path cannot disagree

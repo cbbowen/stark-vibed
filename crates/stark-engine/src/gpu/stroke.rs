@@ -48,10 +48,12 @@ mod tips;
 
 use crate::gpu::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
-use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
+use dynamics::{DynamicsKit, LoopTool, StrokePath, build_dynamics_kit, dynamics_setup};
 use erase::{EraseKit, build_erase_kit};
+use incremental::Resume;
+use segments::{Segment, generate_segments_in};
 use swept::{SweptKit, build_swept_kit};
-use tips::TipCache;
+use tips::{ResolvedTip, TipCache};
 
 // The module's substrate, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
@@ -179,13 +181,16 @@ impl Complaints {
 /// Everything a stroke is drawn *against*, as opposed to the stroke itself.
 ///
 /// [`StrokeRenderer`] holds only immutable GPU objects — pipelines, layouts, the
-/// prefix-τ cache — so the mutable scene is handed in per call. These four travel
+/// prefix-τ cache — so the mutable scene is handed in per call. These travel
 /// together through every entry point ([`StrokeRenderer::render`],
-/// [`render_range`](StrokeRenderer::render_range), and both paths underneath), so
+/// [`render_range`](StrokeRenderer::render_range), and every path underneath), so
 /// they are one parameter rather than four repeated at each hop.
 #[derive(Copy, Clone)]
 pub struct StrokeScene<'a> {
     pub pool: &'a TilePool,
+    /// Read once, at the gate: the brush's shape resolves against it
+    /// ([`render_range`](StrokeRenderer::render_range)), and the paths are handed
+    /// the resolved tip ([`ResolvedRange`]).
     pub assets: &'a AssetStore,
     /// The layer's committed tiles: what the stroke composites over.
     pub base: &'a TileMap,
@@ -200,6 +205,30 @@ pub struct StrokeScene<'a> {
     /// a replayed stroke with whatever the compositor happens to be showing. That is
     /// the shape the deleted `StrokeRenderer::set_substrate` had (§6.4).
     pub substrate: &'a crate::gpu::substrate::SubstrateMap,
+}
+
+/// The range in hand, resolved once for whichever path draws it — what
+/// [`render_range`](StrokeRenderer::render_range)'s prologue hands down.
+///
+/// §6.2's claim that every path flattens through one funnel at one budget, and reads
+/// one set of constants, used to be upheld by three paths each calling the same
+/// three functions in the same order. Resolving here is what makes it structural: a
+/// path cannot flatten differently because it is not handed a `StrokeSpans` to
+/// flatten. The empty range is answered before a path is chosen, so `segments` is
+/// never empty.
+#[derive(Copy, Clone)]
+struct ResolvedRange<'a> {
+    rec: &'a StrokeRecord,
+    tip: &'a ResolvedTip,
+    /// The budget `segments` were cut at, for the loop's pen-up frame — which
+    /// re-flattens an extent's worth of the record and must cut it the same way
+    /// (`PlanCtx::tol`).
+    tol: crate::path::FlattenTolerance,
+    consts: &'a StrokeConstants,
+    segments: &'a [Segment],
+    /// Arc length at the end of the range (`generate_segments_in`).
+    end_dist: f32,
+    resume: Resume<'a>,
 }
 
 impl StrokeRenderer {
@@ -307,90 +336,88 @@ impl StrokeRenderer {
             return (scene.base.clone(), StrokeCarry::deferred(spans.dist()));
         };
         let plan = dynamics_setup(&rec.brush);
+        // What the plan cost, said before the range is flattened so an empty range
+        // says it too — and once per stroke, because every gate here is a pure
+        // function of the brush ([`Complaints`]).
+        //
+        // The fit was bought with shorter segments (`budget::fit_len`) — correct
+        // geometry, but a real cost, since the loop exchanges once per segment. The
+        // liquify warp (§6.13) shortens against the same floor, so the same warning.
+        if let Some(s) = &plan.shortened
+            && self.complained.say(rec.seed, Complaint::Shortened)
+        {
+            tracing::warn!(
+                radius = rec.brush.size,
+                wanted_px = s.wanted,
+                got_px = s.got,
+                "brush tip nearly fills a dynamics region: segments \
+                 shortened to fit, so this stroke costs ~{:.1}x the stamps \
+                 its brush budgeted",
+                s.wanted / s.got,
+            );
+        }
+        // An error, not a warning: what lands is not a rougher version of the
+        // stroke that was asked for but a different brush — the swept deposit
+        // only ever adds paint, so `lift`, `deposit` and `charge` all silently
+        // do nothing. It is the one degradation left: stroke *length* is
+        // handled by drawing the stroke in pieces (§6.2) and an oversized
+        // *segment* by shortening it (`budget::fit_len`), so only a tip whose
+        // own extent overflows the region lands here.
+        //
+        // **No brush this app can build does.** The frontier is published as
+        // [`max_tip_reach`](budget::max_tip_reach) and the frontend clamps
+        // every brush to it (`stark-dioxus-frontend`'s
+        // `state::hold_the_tip_drawable`), so reaching this arm means a record
+        // came from somewhere that did not — a peer, or a file written by
+        // another build — and is not being honoured.
+        if matches!(plan.path, StrokePath::TipTooLarge)
+            && self.complained.say(rec.seed, Complaint::TipTooLarge)
+        {
+            tracing::error!(
+                radius = rec.brush.size,
+                max_region_dim = MAX_REGION_DIM,
+                "brush tip too large for one dynamics region: falling back to \
+                 the swept deposit, so this stroke's lift/deposit/charge do \
+                 nothing",
+            );
+        }
         // Both halves of "is this range resuming, and will it be resumed" — read once
         // here, where `spans` and the record are both in hand, rather than in each of
         // the three paths that has cross-piece state (`Resume`).
-        let resume = incremental::Resume::of(rec, &spans, tool);
+        let resume = Resume::of(rec, &spans, tool);
+        // Everything every path reads, resolved once (see [`StrokeConstants`]).
+        let consts = self.stroke_constants(rec, scene.substrate, scene.selection);
+        // Fitting outweighs flattening by ~350:1 on the CPU side, which is a claim
+        // about *this* row against `input.fit` — and one that has to stay checkable,
+        // because the flattener is the thing that looks worth optimizing and is not.
+        let (segments, end_dist) = {
+            crate::timing::span!("stroke.segments");
+            generate_segments_in(rec, plan.tol, spans)
+        };
+        // A range with no geometry draws nothing on any path, so it leaves the brush
+        // exactly as it found it: "unchanged" says the caller keeps the state it
+        // passed in rather than paying for a copy of it.
+        if segments.is_empty() {
+            return (scene.base.clone(), StrokeCarry::unchanged(end_dist));
+        }
+        let range = ResolvedRange {
+            rec,
+            tip: &tip,
+            tol: plan.tol,
+            consts: &consts,
+            segments: &segments,
+            end_dist,
+            resume,
+        };
         match plan.path {
             StrokePath::Loop { dynamics } => {
-                // The fit was bought with shorter segments (`budget::fit_len`) —
-                // correct geometry, but a real cost, since the loop exchanges once
-                // per segment. Said once per stroke, like the error below and for
-                // its reason: the cap is a pure function of the brush.
-                if let Some(s) = &plan.shortened
-                    && self.complained.say(rec.seed, Complaint::Shortened)
-                {
-                    tracing::warn!(
-                        radius = rec.brush.size,
-                        wanted_px = s.wanted,
-                        got_px = s.got,
-                        "brush tip nearly fills a dynamics region: segments \
-                         shortened to fit, so this stroke costs ~{:.1}x the stamps \
-                         its brush budgeted",
-                        s.wanted / s.got,
-                    );
-                }
-                let brush = dynamics::LoopBrush {
-                    tip: &tip,
-                    tool: dynamics::LoopTool::Wet(dynamics),
-                };
-                self.render_dynamic(scene, rec, spans, resume, plan.tol, brush)
+                self.render_dynamic(scene, range, LoopTool::Wet(dynamics))
             }
-            // The liquify warp (§6.13): the same region loop with the warp
-            // plan, and the same fit warning — its segments shorten against the
-            // region floor exactly as the loop's do.
-            StrokePath::Liquify => {
-                if let Some(s) = &plan.shortened
-                    && self.complained.say(rec.seed, Complaint::Shortened)
-                {
-                    tracing::warn!(
-                        radius = rec.brush.size,
-                        wanted_px = s.wanted,
-                        got_px = s.got,
-                        "brush tip nearly fills a dynamics region: segments \
-                         shortened to fit, so this stroke costs ~{:.1}x the stamps \
-                         its brush budgeted",
-                        s.wanted / s.got,
-                    );
-                }
-                let brush = dynamics::LoopBrush {
-                    tip: &tip,
-                    tool: dynamics::LoopTool::Liquify,
-                };
-                self.render_dynamic(scene, rec, spans, resume, plan.tol, brush)
-            }
-            StrokePath::Swept => self.render_swept(scene, rec, spans, plan.tol, resume, &tip),
-            StrokePath::Erase => self.render_erase(scene, rec, spans, resume, plan.tol, &tip),
-            StrokePath::TipTooLarge => {
-                // An error, not a warning: what lands is not a rougher version of the
-                // stroke that was asked for but a different brush — the swept deposit
-                // only ever adds paint, so `lift`, `deposit` and `charge` all silently
-                // do nothing. It is the one degradation left: stroke *length* is
-                // handled by drawing the stroke in pieces (§6.2) and an oversized
-                // *segment* by shortening it (`budget::fit_len`), so only a tip whose
-                // own extent overflows the region lands here.
-                //
-                // **No brush this app can build does.** The frontier is published as
-                // [`max_tip_reach`](budget::max_tip_reach) and the frontend clamps
-                // every brush to it (`stark-dioxus-frontend`'s
-                // `state::hold_the_tip_drawable`), so reaching this arm means a record
-                // came from somewhere that did not — a peer, or a file written by
-                // another build — and is not being honoured.
-                //
-                // Said once per stroke, not once per render: the gate is a pure
-                // function of the brush and so answers the same way every pointer move
-                // ([`Complaints`]).
-                if self.complained.say(rec.seed, Complaint::TipTooLarge) {
-                    tracing::error!(
-                        radius = rec.brush.size,
-                        max_region_dim = MAX_REGION_DIM,
-                        "brush tip too large for one dynamics region: falling back to \
-                         the swept deposit, so this stroke's lift/deposit/charge do \
-                         nothing",
-                    );
-                }
-                self.render_swept(scene, rec, spans, plan.tol, resume, &tip)
-            }
+            StrokePath::Liquify => self.render_dynamic(scene, range, LoopTool::Liquify),
+            // The oversized tip draws what the swept deposit can of it, which is the
+            // brush's own `add` paint and none of the manipulation (the error above).
+            StrokePath::Swept | StrokePath::TipTooLarge => self.render_swept(scene, range),
+            StrokePath::Erase => self.render_erase(scene, range),
         }
     }
 

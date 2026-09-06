@@ -4,7 +4,7 @@
 //!
 //! These are the numbers a person actually tunes, and they are only meaningful
 //! against one another — so they live together, with the measurements and the dead
-//! ends that fixed each one recorded on the constant itself. [`flatten_tolerance`] is
+//! ends that fixed each one recorded on the constant itself. [`flatten_budget`] is
 //! where they are spent: it is the single place a brush's settings become a segment
 //! length, which is what makes a live tail and the commit that replaces it cut the
 //! same path (§1.3).
@@ -99,7 +99,7 @@ const _: () = assert!(
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool exchanges once per *segment*, is simply a cap on the
-/// flattened segment length for a dynamics brush (see [`flatten_tolerance`]).
+/// flattened segment length for a dynamics brush (see [`flatten_budget`]).
 ///
 /// **Quoted at one transfer rate.** This is the travel for `lift = deposit = 0.95`;
 /// [`exchange_travel`] scales it by how fast the brush being drawn actually trades,
@@ -161,7 +161,7 @@ const ARC_MARGIN: f32 = 1.095;
 /// `chunk_segments` can cut a stroke as fine as a single segment, but no finer: the
 /// reservoir pickup reduces over the whole tip at once, so the region can never be
 /// smaller than one extent. What the extent holds beyond the tip is the segment's
-/// travel, and that is the one knob subdivision still has — so [`flatten_tolerance`]
+/// travel, and that is the one knob subdivision still has — so [`flatten_budget`]
 /// spends it, shortening segments until one fits, and only a brush whose *minimal*
 /// segment overflows is refused. Shorter segments are never wrong, only more
 /// numerous: the exchange step they set is a first-order discretization that
@@ -317,7 +317,7 @@ pub fn max_stretch(b: &BrushParams) -> f32 {
 
 /// The travel the brush's **own** budget puts on one segment, before the region has
 /// its say: [`exchange_travel`] priced at the brush's size, floored at
-/// [`MIN_SEGMENT_LEN`]. What [`flatten_tolerance`] spends, and the number the
+/// [`MIN_SEGMENT_LEN`]. What [`flatten_budget`] spends, and the number the
 /// shortening warning quotes against what [`fit_len`] left of it.
 pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
     // The wet effect's own overall rate; 1 — the neutral pass — where there is
@@ -342,7 +342,7 @@ const WARP_TRAVEL_STEP: f32 = 0.25;
 
 /// The travel a liquify brush's own budget puts on one segment ([`WARP_TRAVEL_STEP`]
 /// at the brush's strength and size), floored at [`MIN_SEGMENT_LEN`] — what
-/// [`flatten_tolerance`] spends for §6.13's path, and the number the shortening
+/// [`flatten_budget`] spends for §6.13's path, and the number the shortening
 /// warning quotes, exactly as [`dynamics_len`] is for the loop.
 ///
 /// Priced off the brush's own strength, not the modulated one, for
@@ -378,12 +378,28 @@ pub(super) fn liquify_len(b: &BrushParams) -> f32 {
 /// dragging paint with nothing left to `add` over them.
 pub(super) const MAX_TIP_TURN: f32 = 0.1;
 
-/// The flattening budget for a brush (§6.2). The error bounds are
-/// brush-independent — sub-pixel position, a small tangent turn, a small attribute
-/// step — but a segment is swept with *constant* attributes, so any brush quantity
-/// that varies with distance travelled and is applied per segment (rather than
-/// recovered per fragment, as the color-dynamics arc is) needs a length cap too.
+/// The two sides of a binding fit cap, in canvas px — what the budget stood at per
+/// segment before the region floor ([`dynamics_len`], [`liquify_len`]) and what the
+/// floor left of it ([`fit_len`]).
+pub(super) struct Shortened {
+    pub(super) wanted: f32,
+    pub(super) got: f32,
+}
+
+/// [`flatten_budget`]'s tolerance alone, for the tests that want only that.
+#[cfg(test)]
 pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
+    flatten_budget(b).0
+}
+
+/// The flatten budget with its reason: the tolerance, and what the region floor took
+/// off it — `None` when the fit cost nothing, which is every brush whose full-length
+/// segment already fits. The two are one answer because the second is a fact about
+/// the `min` the first takes; read off the tolerance where it is taken rather than
+/// re-derived from the two lengths, so the price quoted is the price paid.
+pub(super) fn flatten_budget(
+    b: &BrushParams,
+) -> (crate::path::FlattenTolerance, Option<Shortened>) {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.size);
@@ -434,21 +450,30 @@ pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
     } else {
         None
     };
-    if let Some(own) = own_len {
-        tol.max_len = tol.max_len.min(own);
-        // The region floor's price (§6.2): a tip so wide that a full-length
-        // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments
-        // instead of losing its dynamics — the same trade `chunk_segments` makes
-        // along the stroke, made along the segment. Never taken below
-        // [`MIN_SEGMENT_LEN`]: a fit under the floor means the tip alone
-        // overflows, which is `dynamics_setup`'s refusal, and capping here would
-        // flatten dust for a loop that cannot run.
-        let fit = fit_len(b);
-        if fit >= MIN_SEGMENT_LEN {
-            tol.max_len = tol.max_len.min(fit);
-        }
+    let Some(own) = own_len else {
+        return (tol, None);
+    };
+    tol.max_len = tol.max_len.min(own);
+    // The region floor's price (§6.2): a tip so wide that a full-length
+    // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments
+    // instead of losing its dynamics — the same trade `chunk_segments` makes
+    // along the stroke, made along the segment. Never taken below
+    // [`MIN_SEGMENT_LEN`]: a fit under the floor means the tip alone
+    // overflows, which is `dynamics_setup`'s refusal, and capping here would
+    // flatten dust for a loop that cannot run.
+    let fit = fit_len(b);
+    if fit < MIN_SEGMENT_LEN {
+        return (tol, None);
     }
-    tol
+    // What the budget stood at before the floor — the brush's own length, nothing
+    // above capping `max_len` — but read here rather than recomputed, so the
+    // comparison is against whatever the min actually was. Infinite for a liquify
+    // brush at strength 0 ([`liquify_len`]): no step error for a cap to bound, so
+    // nothing was shortened and nothing warns.
+    let wanted = tol.max_len;
+    tol.max_len = wanted.min(fit);
+    let shortened = (fit < wanted && wanted.is_finite()).then_some(Shortened { wanted, got: fit });
+    (tol, shortened)
 }
 
 /// `λ = ln(1 − axis) / TAU_PER_PASS ≤ 0` — the transfer rate an axis becomes in the
