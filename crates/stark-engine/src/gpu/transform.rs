@@ -460,11 +460,6 @@ pub struct TransformRenderer {
     /// The base of a virgin destination and the parcel of a cut-only tile, so the
     /// combine is one shader whatever exists.
     zeroes: Zeroes,
-    /// The scratch this renderer opens its scope on — **the one the stroke path uses
-    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
-    /// the two paths draw from one free list. Today it is the scope alone: the working
-    /// textures still come from `TilePool` through `Channels::scratch`, so what the
-    /// pool buys here is the submit-then-release ordering (§7).
     scratch: ScratchPool,
     /// For the selection constants (0/1 coverage) bound where a mask has no tile.
     selection: SelectionRenderer,

@@ -415,8 +415,10 @@ pub struct CompositorPipeline {
     /// below, copied into each renderer's own media uniform on every render.
     media_params: MediaParams,
     /// The display the screen is presented on (§6.5) — a view setting like
-    /// `media_params`, read by a render into a deep format alone: an 8-bit render is
-    /// [`Output::SDR`] by construction ([`Compositor::render`]).
+    /// `media_params`. An 8-bit render still reads the *transfer* from here, so an
+    /// 8-bit Display-P3 screen shows P3; what [`Compositor::render`] drops for it is
+    /// the headroom. Keeping this away from a *file* is `Engine::render_view`'s, which
+    /// draws an export through [`Output::SDR`] entirely.
     output: Output,
     // The canvas substrate (bump) sampled by the media pass for relief.
     substrate: SubstrateMap,

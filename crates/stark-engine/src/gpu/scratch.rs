@@ -250,6 +250,12 @@ struct Inner {
 /// The pool itself: shared by every clone of the renderer, so the live fold and the
 /// commit that replaces it draw from one free list. `Default` is the empty pool —
 /// it needs no device; each checkout brings one.
+///
+/// **The stroke path and the whole-tile renderers beside it hold the same one**, so
+/// that when those renderers' working textures do move onto the pool the two paths
+/// draw from one free list. Today they take only the scope: their working textures
+/// still come from `TilePool` through `Channels::scratch`, so what the pool buys them
+/// is the submit-then-release ordering (§7).
 #[derive(Clone, Default)]
 pub(crate) struct ScratchPool(Arc<Mutex<Inner>>);
 

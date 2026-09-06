@@ -124,11 +124,6 @@ pub struct SelectionRenderer {
     constants: Arc<[OnceLock<wgpu::TextureView>; 256]>,
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
-    /// The scratch this renderer opens its scope on — **the one the stroke path uses
-    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
-    /// the two paths draw from one free list. Today it is the scope alone: the working
-    /// textures still come from `TilePool` through `Channels::scratch`, so what the
-    /// pool buys here is the submit-then-release ordering (§7).
     scratch: ScratchPool,
 }
 

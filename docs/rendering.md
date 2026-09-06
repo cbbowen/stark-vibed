@@ -726,11 +726,14 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
   pair, so the two cannot disagree); everything upstream is untouched, since it
   was linear light in a working space already. Three consequences, each
   structural rather than a rule to remember:
-  - **An 8-bit target is SDR, whatever the screen is showing.** `Compositor::render`
-    renders a `Rgba8Unorm`/`Bgra8Unorm` target with `Output::SDR` regardless of the
-    pipeline's setting, and an export is drawn into one (`export_format`: the
-    screen's format when that is 8-bit, `Rgba8Unorm` under a deep HDR surface, with
-    a second set of the four target passes compiled for it). So a PNG written from
+  - **An export is SDR, whatever the screen is showing.** `Engine::render_view` draws
+    anything bound for a file with `Output::SDR` — the transfer as well as the
+    headroom — from the attachments alone. The format follows
+    separately (`export_format`: the screen's format when that is 8-bit,
+    `Rgba8Unorm` under a deep HDR surface, with a second set of the four target passes
+    compiled for it). `Compositor::render` then clamps *any* 8-bit target's headroom
+    to 1 on top of that, and keeps its transfer — so an 8-bit Display-P3 screen still
+    shows P3, and only the range it cannot hold is dropped. So a PNG written from
     an HDR session is the picture an SDR viewer of it sees, every golden is
     unchanged, and the screen's headroom cannot reach a file by a frontend
     forgetting to say so. `tests/hdr.rs` pins it.

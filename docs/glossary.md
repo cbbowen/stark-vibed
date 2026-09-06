@@ -96,7 +96,17 @@ these should appear in code again.
 | **gamut** | *Which colors exist* — a set of primaries, so `Srgb` or `DisplayP3` (§6.5). The **range** question is headroom's and they are independent: an 8-bit `display-p3` canvas is wide and has no headroom, an extended-sRGB one the reverse. What a picker fits its wheel to, and what a `Transfer` implies. | [`stark-model/src/color.rs`](../crates/stark-model/src/color.rs) |
 | **extended sRGB** | The space every color in the document is stated in: the sRGB primaries and transfer continued past the cube, so a channel outside `[0, 1]` names a color outside the sRGB gamut (CSS Color 4's `srgb`). Not a second kind of color — `Srgb` is this, and always was the type. | [`stark-model/src/color.rs`](../crates/stark-model/src/color.rs) |
 | **headroom** | How many times SDR white a display can show (§6.5) — the knee the tonemap compresses into. `1` on any SDR surface and on every export. Not **exposure**, which is the light's normalization (§6.3) or a filter's stops (§21.6): exposure scales what enters the tonemap, headroom is where it bends. | [`stark-engine/src/gpu/composite/display.rs`](../crates/stark-engine/src/gpu/composite/display.rs) |
-| **`Output`** | The transfer and the headroom together: the display a render is presented on. A view setting, per engine, and one an 8-bit render never reads — it is `Output::SDR` by construction, which is what keeps a file free of the screen's headroom. | [`stark-engine/src/gpu/composite/display.rs`](../crates/stark-engine/src/gpu/composite/display.rs) |
+| **`Output`** | The transfer and the headroom together: the display a render is presented on. A view setting, per engine, and one an *export* never reads — a render bound for a file is `Output::SDR` by the attachments it is drawn through. An 8-bit *screen* still reads the transfer; only the headroom is dropped for it. | [`stark-engine/src/gpu/composite/display.rs`](../crates/stark-engine/src/gpu/composite/display.rs) |
+
+## Shaders and the host mirror
+
+### Not to be confused with
+
+| Term | What it is instead | Defined in |
+|---|---|---|
+| **binding** | Unqualified, the shader's own `@binding` — one slot in one `@group`. The generated mirror splits it two ways: `mirror::<module>::binding::*` is the bare index, and `mirror::<module>::decl::*` the whole declaration (group, index, kind, `@if(resid)` gate), which is what a host names a slot by. `BINDINGS` is that same set in declaration order, for a check that asks about the set. | [`stark-shaders/build/mirror.rs`](../crates/stark-shaders/build/mirror.rs) |
+| **`Bindings`** (engine) | Not a plural of the above: a *bind group layout* plus the slot list and residual gate it was built from, so a group built from it cannot disagree with it (§6.10). | [`stark-engine/src/gpu/desc.rs`](../crates/stark-engine/src/gpu/desc.rs) |
+| **binding** (chrome) | A chord reaching a command, or a drag reaching a gesture — the §25 registries. Always a *key* or *drag* binding in prose, never bare. | [`stark-ui/src/drags.rs`](../crates/stark-ui/src/drags.rs) |
 
 ## The document and the log
 

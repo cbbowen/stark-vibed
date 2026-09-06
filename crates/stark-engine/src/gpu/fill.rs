@@ -89,11 +89,6 @@ pub struct FillRenderer {
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
     /// runs the same shader as a fill onto paint.
     zeroes: Zeroes,
-    /// The scratch this renderer opens its scope on — **the one the stroke path uses
-    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
-    /// the two paths draw from one free list. Today it is the scope alone: the working
-    /// textures still come from `TilePool` through `Channels::scratch`, so what the
-    /// pool buys here is the submit-then-release ordering (§7).
     scratch: ScratchPool,
     /// Borrowed for the coverage rasterize and for the 0/1 constants bound where a
     /// mask has no tile.

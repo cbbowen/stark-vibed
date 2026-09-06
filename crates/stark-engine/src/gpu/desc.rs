@@ -290,9 +290,8 @@ const MAX_SLOTS: usize = 24;
 /// The list of slots is the *only* thing written on the host, and it is written once:
 /// [`bind_group_for`] builds the matching group from the same list, so a layout and its
 /// group cannot disagree about which bindings are present, in what order, or of what
-/// type — given the same `resid`, which is what [`Bindings`] holds the two calls to.
-/// Two hand-kept arrays per entry point joined by a magic element count — seven pairs
-/// of them for `dynamics.wesl` alone — is what that saves.
+/// type. Two hand-kept arrays per entry point joined by a magic element count — seven
+/// pairs of them for `dynamics.wesl` alone — is what that saves.
 ///
 /// A bind group layout describes exactly one `@group`, so a list spanning two is a
 /// mistake in the list rather than a layout with a meaning: the assertion below is what
@@ -375,10 +374,7 @@ pub(crate) fn bind_group_for<'a>(
 /// [`layout_for`] and [`bind_group_for`] each take `resid` as an argument, and nothing
 /// makes two calls agree. The disagreement is a group missing the entries its layout
 /// declares — a validation error only a pigment document reaches, which the build
-/// without Mixbox cannot render (§6.7). Four sites derived the flag from whatever was
-/// in hand (`input.resid.is_some()`, `tile.resid_view().is_some()`) rather than from
-/// the renderer's `ChannelFormats`; all agreed with their layouts, and nothing said
-/// they had to. Built once per layout where the renderer is, this answers instead.
+/// without Mixbox cannot render (§6.7).
 #[derive(Clone)]
 pub(crate) struct Bindings {
     layout: wgpu::BindGroupLayout,

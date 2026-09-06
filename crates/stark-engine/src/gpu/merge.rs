@@ -47,10 +47,10 @@ use stark_shaders::mirror::slab::decl as sd;
 ///
 /// One list, read by both sides: a [`Bindings`](desc::Bindings) builds the layout
 /// from it and every group after, so neither can disagree with the other about which
-/// slots are present or of what type. The two
-/// residual entries sit beside the colors they ride with rather than in a countable
-/// tail — the `@if(resid)` gate is on the declaration, so the `if resid { push }` this
-/// replaces had nothing left to say (§6.7).
+/// slots are present or of what type. The two residual entries sit beside the colors
+/// they ride with rather than in a countable tail — the `@if(resid)` gate is on the
+/// declaration, so the `if resid { push }` this replaces had nothing left to say
+/// (§6.7).
 const MERGE_SLOTS: &[desc::Slot] = &[
     desc::Slot::at(md::M),
     desc::Slot::at(md::LOWER_COLOR),
@@ -144,11 +144,6 @@ pub struct MergeRenderer {
     /// Bound for whichever side has no tile at a coordinate the other does — the
     /// §6.8 pattern, so a one-sided tile runs the same shader as a two-sided one.
     zeroes: Zeroes,
-    /// The scratch this renderer opens its scope on — **the one the stroke path uses
-    /// too** (`gpu::scratch`), so that when its working textures do move onto the pool
-    /// the two paths draw from one free list. Today it is the scope alone: the working
-    /// textures still come from `TilePool` through `Channels::scratch`, so what the
-    /// pool buys here is the submit-then-release ordering (§7).
     scratch: ScratchPool,
 }
 

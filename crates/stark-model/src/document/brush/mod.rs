@@ -218,9 +218,10 @@ impl ToothParams {
 /// ([`PaintEffect::color`]) above all.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
-    /// How large the mark is, in canvas pixels at full pressure: **the disc the
-    /// mark fits in**, for every shape (§6.6). Not a radius — a stamp is
-    /// normalized to this reach whatever its own aspect, which is what lets one
+    /// **How far the mark reaches from the path**, in canvas pixels at full pressure:
+    /// the radius of the disc the mark fits in, for every shape (§6.6) — so a size of
+    /// 100 puts the mark's furthest texel 100 px out. Not the *stamp's own* radius: an
+    /// asset is reach-normalized to this whatever its aspect, which is what lets one
     /// number mean the same thing across a round tip and an asset.
     pub size: f32,
     /// Brush tip shape (§6.6).
