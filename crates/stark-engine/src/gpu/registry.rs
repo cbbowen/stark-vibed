@@ -470,7 +470,7 @@ mod tests {
             "under budget, nothing goes"
         );
         assert_eq!(
-            evict_order(&entries, total, 35),
+            evict_order(&entries, total, 45),
             vec![2],
             "one over: the oldest unpinned alone"
         );

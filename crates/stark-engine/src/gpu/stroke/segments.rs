@@ -324,7 +324,7 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 //
 // The arc a flattened edge stands for is [`crate::path::fit_arc`]'s, called here with
 // the very cap the flattener called it with (`FlattenTolerance::max_arc_curvature`,
-// set by [`flatten_tolerance`](super::budget::flatten_tolerance) from
+// set by [`flatten_budget`](super::budget::flatten_budget) from
 // [`MAX_TIP_TURN`](super::MAX_TIP_TURN)). One function, one rule, so the geometry the
 // flattener priced is the geometry that gets swept — and neither can spend the
 // positional budget on a primitive the other does not use.
@@ -398,7 +398,7 @@ struct Ends {
 /// of the deposit. Evaluated per fragment it drops out of the sum entirely — the
 /// stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut — so the
 /// flattener need not buy accuracy for it with segments
-/// (see [`flatten_tolerance`](super::budget::flatten_tolerance)).
+/// (see [`flatten_budget`](super::budget::flatten_budget)).
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
@@ -1422,7 +1422,7 @@ mod tests {
     /// peers agree on geometry — so a count that differs *per machine* is a bug in that
     /// determinism, not a tolerance to loosen.
     /// The exchange budget means the same thing to every brush
-    /// (`budget::flatten_tolerance`). These are properties of the rule, not
+    /// (`budget::flatten_budget`). These are properties of the rule, not
     /// measured counts — unlike the table below, a failure here is a bug rather than a
     /// retuning.
     #[test]
