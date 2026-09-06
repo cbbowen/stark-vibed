@@ -387,7 +387,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             90.0,
             1.0,
             BrushConfig {
-                shape: BrushShape::Round { hardness: 0.35 },
+                shape: BrushShape::Round { hardness: 0.0 },
                 effect: BrushEffectType::Liquify,
                 liquify: LiquifyConfig {
                     strength_modulation: Some(Modulation::linear(ModSource::Pressure)),
