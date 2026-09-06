@@ -1111,6 +1111,7 @@ mod tests {
         let b = BrushParams {
             effect: BrushEffect::Liquify(LiquifyEffect {
                 strength: 0.65,
+                quality: 0.3,
                 modulation: LiquifyModulations {
                     strength: Some(Modulation::linear(ModSource::Pressure)),
                 },

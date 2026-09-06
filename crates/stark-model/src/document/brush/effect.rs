@@ -447,13 +447,14 @@ impl Default for EraseEffect {
 
 /// The **liquify** effect (§6.13): the stroke drags the picture itself. The
 /// paint under the tip — color, per-unit opacity and height together — follows
-/// the travel as a **homeomorphism** of the canvas: the stroke builds a smooth
-/// displacement field, and the picture is resampled through it *once*, from a
-/// pristine base, so an edge dragged is that edge, displaced and still sharp.
-/// Consecutive liquify strokes on a layer compose into the same field and
-/// resample from the same base, so working a spot over and over costs no
-/// resolution. Nothing is minted and nothing is exchanged — the brush carries no
-/// reservoir, no pigment, and no color a jitter could wander.
+/// the travel as a **homeomorphism** of the canvas: the stroke builds a
+/// displacement field from the tip's own coverage, and the picture is resampled
+/// through it *once*, from a pristine base, so an edge dragged is that edge,
+/// displaced and still sharp. Consecutive liquify strokes on a layer compose
+/// into the same field and resample from the same base, so working a spot over
+/// and over costs no resolution. Nothing is minted and nothing is exchanged —
+/// the brush carries no reservoir, no pigment, and no color a jitter could
+/// wander.
 ///
 /// A separate effect rather than a [`WetEffect`] at some rate, for the
 /// eraser's reason: warping and smearing are different tools with different
@@ -467,14 +468,17 @@ pub struct LiquifyEffect {
     /// the tip's own travel the paint under the tip's core keeps up with, per
     /// pass. At 1 the paint under the core moves with the hand; lower and it
     /// slips behind, so a light setting nudges where a full one carries. The
-    /// shoulder of the tip follows proportionally less, on a smooth profile the
-    /// brush's hardness shapes (§6.13) — smooth by design, because a warp with a
-    /// step in its follow is a tear rather than a homeomorphism.
+    /// rest of the tip follows in proportion to its **coverage** — the round
+    /// tip's disc at its hardness, or the mask a stamp names — read exactly as
+    /// every other effect reads it (§6.13), so a soft tip carries its shoulder
+    /// gently and a hard one drags its disc whole and shears the paint at its
+    /// rim.
     ///
     /// **The quoted range is load-bearing, not taste**: the renderer's segment
-    /// budget holds every step a contraction — `strength · travel` against the
-    /// profile's slope — which is what makes the stroke's map invertible, and it
-    /// prices that against a strength of at most 1 (§6.13). Both doors hold it —
+    /// budget holds every step a contraction — `strength` against how fast the
+    /// tip's coverage climbs along the travel — which is what makes the stroke's
+    /// map invertible, and it prices that against a strength of at most 1
+    /// (§6.13). Both doors hold it —
     /// [`BrushParams::sanitized`](super::BrushParams::sanitized) for what arrives,
     /// and [`BrushEffect::set_flow`] for what a slider writes.
     ///
@@ -483,16 +487,35 @@ pub struct LiquifyEffect {
     /// opacity knob at all ([`BrushEffect::opacity`]).
     #[serde(default = "LiquifyEffect::default_strength")]
     pub strength: f32,
+    /// How finely the drag is **stepped**, in [0, 1] (§6.13). At 1 every step
+    /// the renderer composes is a contraction — the paint ahead of the tip is
+    /// pushed out of the way as smoothly as the tip's own edge, which is the
+    /// homeomorphism guarantee — and the steps are as short as that takes: a
+    /// hard tip's edge climbs within a texel, so a hard tip at 1 steps by the
+    /// texel and a wide one costs hundreds of steps per stroke. Lower and each
+    /// step is `1/quality` as long: the same field, composed from fewer steps,
+    /// with the paint just ahead of a hard edge squashed a step's worth at a
+    /// time rather than carried — the look every reference liquify has, at the
+    /// speed it has it. At 0 there is no step budget at all and the flattener's
+    /// own segmentation stands.
+    ///
+    /// Not a rate the pen drives: it is a cost dial, and a stroke whose stepping
+    /// varied with pressure would render differently along its own length for
+    /// no reason a hand could see.
+    #[serde(default = "LiquifyEffect::default_quality")]
+    pub quality: f32,
     /// The pen mappings onto this effect's own rate ([`LiquifyModulations`]).
     #[serde(default)]
     pub modulation: LiquifyModulations,
 }
 
 impl Default for LiquifyEffect {
-    /// The plain full drag: the paint under the tip keeps pace with the hand.
+    /// The plain full drag: the paint under the tip keeps pace with the hand,
+    /// every step a contraction.
     fn default() -> Self {
         Self {
             strength: Self::default_strength(),
+            quality: Self::default_quality(),
             modulation: LiquifyModulations::default(),
         }
     }
@@ -518,6 +541,13 @@ impl LiquifyEffect {
     /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
     /// constant.
     fn default_strength() -> f32 {
+        1.0
+    }
+
+    /// The stepping a brush gets when it does not say
+    /// ([`quality`](Self::quality)): every step a contraction — for
+    /// `#[serde(default = "…")]`, like the strength's.
+    fn default_quality() -> f32 {
         1.0
     }
 }
@@ -712,6 +742,10 @@ impl BrushEffect {
                 // follow past 1 would read outside it (§6.13). Capped, unlike
                 // the flows, because this crate owns that bound.
                 strength: clamp01(finite_or(l.strength, 1.0)),
+                // In `[0, 1]` by its own doc: a fraction of the step budget,
+                // meaningless past 1 — and a NaN lands on the full budget, the
+                // setting that cannot make a stroke tear.
+                quality: clamp01(finite_or(l.quality, 1.0)),
                 modulation: l.modulation.sanitized(),
             }),
         }
@@ -742,6 +776,24 @@ mod tests {
                 l.strength, clean,
                 "strength {dirty} must sanitize to {clean}"
             );
+        }
+    }
+
+    /// The stepping knob is a fraction of the step budget (§6.13), so it is
+    /// held to `[0, 1]` at the same door — and a NaN lands on the full budget,
+    /// the one setting that cannot make a stroke tear.
+    #[test]
+    fn a_liquify_quality_is_held_to_the_budget_it_is_a_fraction_of() {
+        for (dirty, clean) in [(3.0, 1.0), (-0.5, 0.0), (f32::NAN, 1.0), (0.25, 0.25)] {
+            let b = BrushEffect::Liquify(LiquifyEffect {
+                quality: dirty,
+                ..LiquifyEffect::default()
+            })
+            .sanitized();
+            let BrushEffect::Liquify(l) = b else {
+                panic!("sanitize must not change the effect's identity");
+            };
+            assert_eq!(l.quality, clean, "quality {dirty} must sanitize to {clean}");
         }
     }
 }

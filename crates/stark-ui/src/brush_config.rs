@@ -254,14 +254,30 @@ impl Default for EraseConfig {
     }
 }
 
-/// The **liquify-only** half (§6.13): the drag's pen response. The strength
-/// itself is the transient flow, clamped to its quoted 1 at the projection —
-/// so the one knob the effect has left to own is how the pen drives it.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The **liquify-only** half (§6.13): the drag's pen response and its stepping.
+/// The strength itself is the transient flow, clamped to its quoted 1 at the
+/// projection — so what the effect has left to own is how the pen drives it,
+/// and how finely the renderer steps it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LiquifyConfig {
     /// The strength's pen mapping (`LiquifyModulations::strength`).
     pub strength_modulation: Option<Modulation>,
+    /// How finely the drag is stepped (`LiquifyEffect::quality`): 1 is every
+    /// step a contraction, lower is faster.
+    pub quality: f32,
+}
+
+impl Default for LiquifyConfig {
+    /// The model's own default: every step a contraction, the pen driving
+    /// nothing — so the chrome's liquify brush is the document's.
+    fn default() -> Self {
+        let d = LiquifyEffect::default();
+        Self {
+            strength_modulation: None,
+            quality: d.quality,
+        }
+    }
 }
 
 /// The **durable** half of a brush, as edited: the shared tip knobs, the
@@ -455,6 +471,7 @@ impl BrushConfig {
                     // there ([`max_flow`](Self::max_flow)), and `f32::min`
                     // hands a NaN's place to the 1 where `clamp` would keep it.
                     strength: t.flow.min(1.0),
+                    quality: self.liquify.quality,
                     modulation: LiquifyModulations {
                         strength: self.liquify.strength_modulation,
                     },

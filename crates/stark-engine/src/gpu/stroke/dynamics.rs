@@ -95,20 +95,23 @@ pub(super) struct StrokePlan {
 /// to the swept deposit would redraw the stroke the moment the pointer came up.
 /// Taking only the brush is the strongest form of that guarantee — there is nothing
 /// about the piece in hand, or the stroke's length, for it to disagree over — and
-/// it is what lets `render_range` re-ask on every pointer move for free.
+/// it is what lets `render_range` re-ask on every pointer move for free. The one
+/// thing beside the brush is `rise`, the tip's (`tips::ResolvedTip::rise`): a
+/// number of the mask the brush *names*, content-addressed and so as fixed as the
+/// brush is, which only a liquify brush's budget reads (§6.13).
 ///
 /// It can read that way because the stroke's *size* decides nothing: an oversized
 /// stroke is drawn one region-sized piece at a time (`chunk_segments`) rather than
 /// degraded, and an oversized *segment* is shortened until it fits
 /// ([`fit_len`]). All that is left is the floor no shortening gets under — the
 /// tip's own extent plus a minimal segment — and only a brush past that degrades.
-pub(super) fn dynamics_setup(b: &BrushParams) -> StrokePlan {
+pub(super) fn dynamics_setup(b: &BrushParams, rise: f32) -> StrokePlan {
     // The same flattened segments whichever path runs, at the same budget: a long
     // stroke costs more pieces, not coarser geometry — and the swept fallback below
     // draws the very segments the loop would have. The price of the region floor
     // comes with it (`None` on every brush the floor does not touch, which is every
     // brush off the region paths), so nothing here re-derives the min it took.
-    let (tol, shortened) = flatten_budget(b);
+    let (tol, shortened) = flatten_budget(b, rise);
     // The path is the effect's **variant**, structurally (§6.2): a wet brush runs
     // the loop, a paint brush the swept deposit, an eraser its own pass — no rate
     // predicate at all, so there is no number for a piece and its commit to read
@@ -160,10 +163,10 @@ mod tests {
     fn an_erase_brush_takes_the_erase_path_whatever_its_size() {
         let mut b = brush(40.0, 0.0);
         b.effect = stark_model::document::BrushEffect::Erase(Default::default());
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
+        assert!(matches!(dynamics_setup(&b, 0.0).path, StrokePath::Erase));
         // The tip that would be too large for the loop.
         b.size = super::super::budget::MAX_REGION_DIM as f32;
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::Erase));
+        assert!(matches!(dynamics_setup(&b, 0.0).path, StrokePath::Erase));
     }
 
     /// A `Liquify` brush takes the warp path (§6.13), and prices its tip against
@@ -181,27 +184,30 @@ mod tests {
                 });
             b
         };
-        let plan = dynamics_setup(&liquified(40.0, 1.0));
+        let rise = super::super::tips::round_rise_of(&liquified(40.0, 1.0));
+        let plan = dynamics_setup(&liquified(40.0, 1.0), rise);
         assert!(matches!(plan.path, StrokePath::Liquify));
         // The warp's own step cap (§6.13): the contraction budget, so a
-        // full-strength drag flattens at a fraction of its radius the profile's
-        // slope decides…
+        // full-strength drag flattens at the tip's own rise…
         assert_eq!(
             plan.tol.max_len,
-            super::super::budget::liquify_len(&liquified(40.0, 1.0)),
+            super::super::budget::liquify_len(&liquified(40.0, 1.0), rise),
             "the flattener must spend the warp's own budget",
         );
         // …and a drag that moves nothing has no step error for a cap to bound:
         // only the region floor remains, and nothing warns of a shortening that
         // never happened.
-        let idle = dynamics_setup(&liquified(40.0, 0.0));
+        let idle = dynamics_setup(&liquified(40.0, 0.0), rise);
         assert!(matches!(idle.path, StrokePath::Liquify));
         assert_eq!(idle.tol.max_len, fit_len(&liquified(40.0, 0.0)));
         assert!(idle.shortened.is_none());
         // The region floor is the loop's: a tip wider than the whole region
         // cannot warp at any segment length.
         let b = liquified(super::super::budget::MAX_REGION_DIM as f32, 1.0);
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::TipTooLarge));
+        assert!(matches!(
+            dynamics_setup(&b, rise).path,
+            StrokePath::TipTooLarge
+        ));
     }
 
     /// The floor the shortening cannot get under: the tip's own extent plus one
@@ -211,18 +217,21 @@ mod tests {
     #[test]
     fn only_a_tip_that_alone_overflows_the_region_degrades() {
         assert!(matches!(
-            dynamics_setup(&brush(1.0, 0.5)).path,
+            dynamics_setup(&brush(1.0, 0.5), 0.0).path,
             StrokePath::Loop { .. }
         ));
         // The largest brush the UI offers (`panels::brush::MAX_RADIUS`), at rates
         // gentle enough to earn the fully relaxed segment length.
         assert!(matches!(
-            dynamics_setup(&brush(500.0, 0.05)).path,
+            dynamics_setup(&brush(500.0, 0.05), 0.0).path,
             StrokePath::Loop { .. }
         ));
         // A tip wider than the whole region cannot fit at any segment length.
         let b = brush(super::super::budget::MAX_REGION_DIM as f32, 0.5);
-        assert!(matches!(dynamics_setup(&b).path, StrokePath::TipTooLarge));
+        assert!(matches!(
+            dynamics_setup(&b, 0.0).path,
+            StrokePath::TipTooLarge
+        ));
     }
 
     /// The 2026-08-23 repro: a gentle full-size stamp earned the relaxed
@@ -235,7 +244,7 @@ mod tests {
     fn a_full_size_stamp_prices_as_the_round_tip_does() {
         let mut b = brush(500.0, 0.05);
         b.shape = stark_model::document::BrushShape::Stamp(stark_model::AssetId([7u8; 32]));
-        let plan = dynamics_setup(&b);
+        let plan = dynamics_setup(&b, 0.0);
         assert!(
             matches!(plan.path, StrokePath::Loop { .. }),
             "the loop must run"
@@ -254,7 +263,7 @@ mod tests {
     fn the_fit_cap_costs_a_fitting_brush_nothing() {
         for size in [1.0, 8.0, 100.0, 250.0, 500.0] {
             for lift in [0.05, 0.5, 0.95] {
-                let plan = dynamics_setup(&brush(size, lift));
+                let plan = dynamics_setup(&brush(size, lift), 0.0);
                 assert!(
                     plan.shortened.is_none(),
                     "a round tip at {size} px (lift {lift}) fits uncapped",
@@ -277,7 +286,7 @@ mod tests {
         let brushes = [brush(8.0, 0.5), brush(250.0, 0.95), brush(500.0, 0.05), big];
         let mut saw_both = (false, false);
         for b in &brushes {
-            let plan = dynamics_setup(b);
+            let plan = dynamics_setup(b, 0.0);
             assert!(matches!(plan.path, StrokePath::Loop { .. }));
             let (wanted, fit) = (dynamics_len(b), fit_len(b));
             match &plan.shortened {
@@ -330,7 +339,7 @@ mod tests {
                     b.stretch = knob;
                     let reach = size * BrushParams::elongation(knob);
                     let fits = reach <= max_tip_reach(&b);
-                    let drawn = matches!(dynamics_setup(&b).path, StrokePath::Loop { .. });
+                    let drawn = matches!(dynamics_setup(&b, 0.0).path, StrokePath::Loop { .. });
                     assert_eq!(
                         drawn,
                         fits,
@@ -382,7 +391,7 @@ mod tests {
                 b.wet_mut().expect("a wet brush").dynamics.bleed = bleed;
                 b.stretch = max_stretch(&b);
                 assert!(
-                    matches!(dynamics_setup(&b).path, StrokePath::Loop { .. }),
+                    matches!(dynamics_setup(&b, 0.0).path, StrokePath::Loop { .. }),
                     "size {size}, bleed {bleed}: the editor's top stretch of {} \
                      degrades",
                     b.stretch,

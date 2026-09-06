@@ -58,6 +58,14 @@ struct Mask {
     /// coordinates, so one texture serves both sources (unlike the prefix-τ, whose
     /// integration axis is baked in).
     coverage_view: wgpu::TextureView,
+    /// The **coverage prefix** a liquify follow reads (§6.13): the prefix-τ's
+    /// shape with the coverage integrated linearly — one identity layer for the
+    /// follow-stroke source, a rotated stack for the pen — each built on the first
+    /// liquify stroke that asks, since nothing but that effect reads either.
+    warp_follow: Option<wgpu::TextureView>,
+    warp_pen: Option<wgpu::TextureView>,
+    /// The mask's **rise** (§6.13), radii — [`mask_rise`], measured once at import.
+    rise: f32,
 }
 
 impl Mask {
@@ -86,16 +94,52 @@ impl Mask {
                 let cov: Vec<f32> = self.coverage.iter().map(|&b| b as f32 / 255.0).collect();
                 let layers = orientation_layers(w, h);
                 let rotated = rotate_layers(&cov, w, h, layers);
-                build_prefix_tau(ctx, w, h, layers, &rotated)
+                build_prefix(ctx, w, h, layers, &rotated, Integrand::Tau)
             })
             .clone()
     }
+
+    /// The coverage prefix this orientation source's liquify follow reads (§6.13),
+    /// baked on first ask like the pen volume above — and for the pen, the same
+    /// rotation over again, so a pen-oriented liquify brush holds two volumes of
+    /// the pen budget. `asset.warp_bake` is its row.
+    fn warp_prefix(
+        &mut self,
+        ctx: &GpuContext,
+        orientation: stark_model::document::OrientationSource,
+    ) -> wgpu::TextureView {
+        let (w, h) = (self.width, self.height);
+        let cov = || -> Vec<f32> { self.coverage.iter().map(|&b| b as f32 / 255.0).collect() };
+        let slot = match orientation {
+            stark_model::document::OrientationSource::FollowStroke => &mut self.warp_follow,
+            stark_model::document::OrientationSource::Pen => &mut self.warp_pen,
+        };
+        slot.get_or_insert_with(|| {
+            crate::timing::span!("asset.warp_bake");
+            match orientation {
+                stark_model::document::OrientationSource::FollowStroke => {
+                    build_prefix(ctx, w, h, 1, &cov(), Integrand::Coverage)
+                }
+                stark_model::document::OrientationSource::Pen => {
+                    let layers = orientation_layers(w, h);
+                    let rotated = rotate_layers(&cov(), w, h, layers);
+                    build_prefix(ctx, w, h, layers, &rotated, Integrand::Coverage)
+                }
+            }
+        })
+        .clone()
+    }
 }
 
-/// The two GPU readings of one loaded brush mask, resolved under one store lock.
+/// The GPU readings of one loaded brush mask, resolved under one store lock: the
+/// two every path reads, and the liquify path's two beside them.
 pub(crate) struct MaskViews {
     pub(crate) prefix: wgpu::TextureView,
     pub(crate) coverage: wgpu::TextureView,
+    /// The coverage prefix (§6.13), when asked for.
+    pub(crate) warp: Option<wgpu::TextureView>,
+    /// The mask's rise (§6.13), radii.
+    pub(crate) rise: f32,
 }
 
 #[derive(Default)]
@@ -157,8 +201,9 @@ impl AssetStore {
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
             // The follow-stroke volume, which is the whole of the bake for the common
             // brush: one layer, the mask as it stands, integrated over its own width.
-            let follow = build_prefix_tau(&self.ctx, w, h, 1, &cov);
+            let follow = build_prefix(&self.ctx, w, h, 1, &cov, Integrand::Tau);
             let coverage_view = build_coverage_r8(&self.ctx, w, h, &coverage);
+            let rise = mask_rise(&coverage, w, h);
             slot.insert(Mask {
                 bytes,
                 coverage,
@@ -167,6 +212,9 @@ impl AssetStore {
                 follow,
                 pen: None,
                 coverage_view,
+                warp_follow: None,
+                warp_pen: None,
+                rise,
             });
         }
         Ok(id)
@@ -198,19 +246,23 @@ impl AssetStore {
     /// store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the cache
     /// grows after import.
     ///
-    /// The pen volume is built here on first ask and kept. `&self` throughout: the
-    /// store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the cache
-    /// grows after import.
+    /// The pen volume is built here on first ask and kept — and the coverage prefix
+    /// a liquify follow reads (§6.13), when `warp` asks for it, the same way.
+    /// `&self` throughout: the store is `Arc<Mutex<_>>` behind a `Clone`, and this
+    /// is the one place the cache grows after import.
     pub(crate) fn mask_views(
         &self,
         id: AssetId,
         orientation: stark_model::document::OrientationSource,
+        warp: bool,
     ) -> Option<MaskViews> {
         let mut inner = unpoisoned(self.inner.lock());
         let mask = inner.masks.get_mut(&id)?;
         Some(MaskViews {
             prefix: mask.prefix(&self.ctx, orientation),
             coverage: mask.coverage_view.clone(),
+            warp: warp.then(|| mask.warp_prefix(&self.ctx, orientation)),
+            rise: mask.rise,
         })
     }
 
@@ -311,6 +363,40 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
     out
 }
 
+/// A mask's **rise** (§6.13), in radii: the shortest travel over which its coverage
+/// can climb by [`WARP_CONTRACTION`](crate::gpu::stroke::WARP_CONTRACTION) — what
+/// the liquify step budget prices a stamp at.
+///
+/// Bounded from the steepest texel-to-texel step along either axis rather than
+/// searched for as the round tip's is (`tips::round_rise`): a stamp is any picture,
+/// its rows are not monotone, and the bound is the honest one — a coverage climbing
+/// at that rate needs at least this much travel to climb that far. A step of a
+/// whole texel — a hard mask — gives a rise of half a texel, which the budget's
+/// own floor then rounds up to the canvas texel; a mask with no steps at all has
+/// no rise, and prices as none.
+fn mask_rise(coverage: &[u8], width: u32, height: u32) -> f32 {
+    let (w, h) = (width as usize, height as usize);
+    let at = |x: usize, y: usize| coverage[y * w + x] as f32 / 255.0;
+    // Steepest climb per radius on each axis: a texel is `2/width` radii across
+    // and `2/height` tall.
+    let mut slope = 0.0f32;
+    for y in 0..h {
+        for x in 0..w {
+            if x + 1 < w {
+                slope = slope.max((at(x + 1, y) - at(x, y)).abs() * width as f32 / 2.0);
+            }
+            if y + 1 < h {
+                slope = slope.max((at(x, y + 1) - at(x, y)).abs() * height as f32 / 2.0);
+            }
+        }
+    }
+    if slope <= 0.0 {
+        f32::INFINITY
+    } else {
+        crate::gpu::stroke::WARP_CONTRACTION / slope
+    }
+}
+
 /// A coverage sample's **optical depth**, `κ = −ln(1 − coverage)` — the currency the
 /// deposit sums (§6.1), and the one conversion between the two.
 ///
@@ -324,15 +410,40 @@ pub(crate) fn tau_of(coverage: f32) -> f32 {
     -(1.0 - coverage.clamp(0.0, 0.999)).ln()
 }
 
-/// Build a brush's **prefix-τ** volume (§6.2, §6.6): for each orientation
-/// `layer` and each row, the running integral of optical depth `κ = −ln(1−coverage)`
-/// along the travel axis (x), normalized to brush-local units (x spans `[-1, 1]`, width
-/// 2). Stored as an `Rg32Float` **2D-array** texture (the array axis is orientation,
-/// sampled with wrapping) and read via `textureLoad` + manual trilinear by the sweep
-/// shader: a segment's swept depth at a point is `prefix(u) − prefix(u−d)` on its
-/// layer. (A 2D array rather than a true 3D texture so the mask keeps its full
-/// width/height — 3D textures are capped far smaller, e.g. 256px, by
-/// `maxTextureDimension3D`.)
+/// What a prefix volume integrates along the travel ([`build_prefix`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Integrand {
+    /// The **prefix-τ**: optical depth `κ = −ln(1 − coverage)` ([`tau_of`]), the
+    /// currency every deposit is denominated in (§6.1, §6.2).
+    Tau,
+    /// The **coverage prefix**: the coverage itself, so a difference across a
+    /// stretch of travel is the mask's mean over it times the travel — what the
+    /// liquify follow is a fraction of (§6.13). Linear where τ is not: a texel's
+    /// follow is then how *long* the tip covered it, and a full pass over the
+    /// tip's core is exactly the travel, where τ would have made it seven times
+    /// that and a shoulder next to nothing.
+    Coverage,
+}
+
+impl Integrand {
+    fn of(self, coverage: f32) -> f32 {
+        match self {
+            Self::Tau => tau_of(coverage),
+            Self::Coverage => coverage,
+        }
+    }
+}
+
+/// Build a brush's **prefix** volume (§6.2, §6.6): for each orientation `layer`
+/// and each row, the running integral of the [`Integrand`] — optical depth
+/// `κ = −ln(1−coverage)` for the deposits, the coverage itself for the liquify
+/// follow (§6.13) — along the travel axis (x), normalized to brush-local units (x
+/// spans `[-1, 1]`, width 2). Stored as an `Rg32Float` **2D-array** texture (the
+/// array axis is orientation, sampled with wrapping) and read via `textureLoad` +
+/// manual trilinear by the sweep shader: a segment's swept depth at a point is
+/// `prefix(u) − prefix(u−d)` on its layer. (A 2D array rather than a true 3D
+/// texture so the mask keeps its full width/height — 3D textures are capped far
+/// smaller, e.g. 256px, by `maxTextureDimension3D`.)
 ///
 /// `g` carries the **lateral prefix of `r`** — `∫₋₁^y prefix(x, ·)`, brush units on
 /// both axes — so the sweep can read the deposit's exact box average over the pixel's
@@ -351,21 +462,25 @@ pub(crate) fn tau_of(coverage: f32) -> f32 {
 ///
 /// Returns the view alone: it holds its own reference to the texture, so there is
 /// nothing for a caller to keep beside it.
-pub(crate) fn build_prefix_tau(
+pub(crate) fn build_prefix(
     ctx: &GpuContext,
     width: u32,
     height: u32,
     layers: u32,
     coverage: &[f32],
+    integrand: Integrand,
 ) -> wgpu::TextureView {
-    let data = prefix_tau_data(width, height, layers, coverage);
+    let data = prefix_data(width, height, layers, coverage, integrand);
     let extent = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: layers,
     };
     let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark brush prefix-tau"),
+        label: Some(match integrand {
+            Integrand::Tau => "stark brush prefix-tau",
+            Integrand::Coverage => "stark brush coverage prefix",
+        }),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
@@ -392,11 +507,17 @@ pub(crate) fn build_prefix_tau(
     })
 }
 
-/// The prefix-τ volume's texels ([`build_prefix_tau`]): interleaved `(r, g)` pairs,
-/// `r` the travel prefix of `κ` per row, `g` the lateral (midpoint-rule) prefix of
-/// `r` per column. Split from the upload so the arithmetic is testable without a
-/// device.
-fn prefix_tau_data(width: u32, height: u32, layers: u32, coverage: &[f32]) -> Vec<f32> {
+/// A prefix volume's texels ([`build_prefix`]): interleaved `(r, g)` pairs, `r`
+/// the travel prefix of the integrand per row, `g` the lateral (midpoint-rule)
+/// prefix of `r` per column. Split from the upload so the arithmetic is testable
+/// without a device.
+fn prefix_data(
+    width: u32,
+    height: u32,
+    layers: u32,
+    coverage: &[f32],
+    integrand: Integrand,
+) -> Vec<f32> {
     let w = width as usize;
     let h = height as usize;
     let dx = 2.0 / width as f32;
@@ -407,7 +528,7 @@ fn prefix_tau_data(width: u32, height: u32, layers: u32, coverage: &[f32]) -> Ve
         for y in 0..h {
             let mut acc = 0.0f32;
             for x in 0..w {
-                acc += tau_of(coverage[plane + y * w + x]) * dx;
+                acc += integrand.of(coverage[plane + y * w + x]) * dx;
                 data[(plane + y * w + x) * 2] = acc;
             }
         }
@@ -431,7 +552,7 @@ fn prefix_tau_data(width: u32, height: u32, layers: u32, coverage: &[f32]) -> Ve
 /// for orientation, so no pre-rotated layers are needed). Shared by the asset
 /// store (image brushes) and the stroke renderer (the round tip, per hardness).
 ///
-/// Returns the view alone, like [`build_prefix_tau`].
+/// Returns the view alone, like [`build_prefix`].
 pub(crate) fn build_coverage_r8(
     ctx: &GpuContext,
     width: u32,
@@ -531,7 +652,7 @@ mod tests {
                 (0.9 * x * (0.3 + 0.7 * y) * (1.0 - 0.4 * l as f32)).clamp(0.0, 0.95)
             })
             .collect();
-        let data = prefix_tau_data(w, h, layers, &cov);
+        let data = prefix_data(w, h, layers, &cov, Integrand::Tau);
         let dy = 2.0 / h as f32;
         let r = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2];
         let g = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2 + 1];
@@ -550,5 +671,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A stamp's rise is bounded off its steepest texel step (§6.13): a hard disc
+    /// climbs a whole texel at its edge, so its rise is half a texel — under the
+    /// budget's floor, which is the point — a linear ramp across the mask climbs
+    /// half of it in half the width, and a flat mask never climbs at all.
+    #[test]
+    fn a_stamps_rise_is_read_off_its_steepest_step() {
+        let (w, h) = (64u32, 64u32);
+        let disc: Vec<u8> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32 + 0.5 - 32.0, (i / w) as f32 + 0.5 - 32.0);
+                if x * x + y * y < 28.0 * 28.0 { 255 } else { 0 }
+            })
+            .collect();
+        let texel = 2.0 / w as f32;
+        assert!((mask_rise(&disc, w, h) - 0.5 * texel).abs() < 1e-6);
+        // One level per texel, so the u8 quantization is exactly the ramp: 255
+        // levels over 255 texels of a 256-wide mask, two radii less a texel.
+        let (rw, rh) = (256u32, 256u32);
+        let ramp: Vec<u8> = (0..rw * rh).map(|i| (i % rw) as u8).collect();
+        let rise = mask_rise(&ramp, rw, rh);
+        assert!(
+            (rise - 1.0).abs() < 0.01,
+            "a ramp over two radii rises over one: {rise}"
+        );
+        assert_eq!(
+            mask_rise(&vec![200u8; (w * h) as usize], w, h),
+            f32::INFINITY
+        );
     }
 }

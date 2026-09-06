@@ -60,6 +60,7 @@ use tips::{ResolvedTip, TipCache};
 // The module's substrate, re-exported so callers name `gpu::stroke::X` rather than the
 // file X happens to live in — the split below is about where a maintainer reads, not
 // about what the engine depends on.
+pub(crate) use budget::WARP_CONTRACTION;
 pub use budget::{max_stretch, max_tip_reach};
 pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState};
 // Not part of the module's public surface: the engine calls it, nothing outside the
@@ -363,7 +364,7 @@ impl StrokeRenderer {
                 StrokeCarry::deferred(spans.dist()),
             );
         };
-        let plan = dynamics_setup(&rec.brush);
+        let plan = dynamics_setup(&rec.brush, tip.rise);
         // What the plan cost, said before the range is flattened so an empty range
         // says it too — and once per stroke, because every gate here is a pure
         // function of the brush ([`Complaints`]).

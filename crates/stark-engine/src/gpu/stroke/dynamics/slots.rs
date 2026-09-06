@@ -166,7 +166,9 @@ pub(super) const SNAPSHOT_FIELD: &[Slot] = &[
 
 /// `warp`: one segment's step composed into the liquify field (§6.13) — the
 /// snapshot in, the field out, the selection scaling the follow. Nothing of the
-/// picture: the field is all this kernel evolves.
+/// picture: the field is all this kernel evolves. The tip it reads is at group 1,
+/// [`PREFIX_SLOTS`](super::kit::PREFIX_SLOTS) — bound to the **coverage** prefix
+/// rather than the prefix-τ every other pass reads there.
 pub(super) const WARP: &[Slot] = &[
     Slot::dynamic(d::ST),
     Slot::at(d::UNDER_FIELD),

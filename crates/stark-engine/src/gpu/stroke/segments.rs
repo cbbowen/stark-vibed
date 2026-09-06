@@ -820,6 +820,7 @@ mod tests {
             effect: stark_model::document::BrushEffect::Liquify(
                 stark_model::document::LiquifyEffect {
                     strength: 0.9,
+                    quality: 1.0,
                     modulation: stark_model::document::LiquifyModulations {
                         strength: mapped(Pressure),
                     },

@@ -800,7 +800,7 @@ fn prefix_edge(xl: f32, yl: f32, zi: i32) -> f32 {
 // The `g` channel's reading at brush-local (xl, yl): the **lateral prefix of the
 // travel prefix**, `∫₋₁^yl prefix(xl, ·)` in brush units, with `prefix_edge`'s
 // leading-edge rule. Baked at the midpoint rule, so a bilinear read at a row's
-// centre is the exact integral up to it (`assets::build_prefix_tau`); the lateral
+// centre is the exact integral up to it (`assets::build_prefix`); the lateral
 // clamp is the right boundary here rather than a hazard — a tap past either rim
 // reads the column's empty start or its total, which is what a window hanging off
 // the mask's edge means.

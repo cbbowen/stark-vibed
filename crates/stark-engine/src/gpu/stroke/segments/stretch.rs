@@ -170,7 +170,7 @@ mod tests {
     /// The prefix-τ volume's own lookup, evaluated by quadrature rather than baked:
     /// slice `w` holds the mask turned by `+w` turns and integrated along `+x`, so a
     /// read at `(x, y)` is `∫ mask(R(−wτ)·(u, y)) du` up to `x`
-    /// (`assets::rotate_layers`, `assets::build_prefix_tau`).
+    /// (`assets::rotate_layers`, `assets::build_prefix`).
     fn prefix(x: f32, y: f32, w: f32) -> f32 {
         const STEPS: usize = 4000;
         let (lo, hi) = (-1.5f32, x.min(1.5));

@@ -261,9 +261,6 @@ struct Slot {
     /// fraction of its pass the paint under the tip's core keeps up with — nonzero
     /// **only** on a warp slot.
     drag: f32,
-    /// The liquify profile's plateau (§6.13, `budget::liquify_plateau`) — read by
-    /// warp slots alone, and carried on every slot of a liquify plan.
-    warp_plateau: f32,
     /// Where the region's texel (0, 0) sits in the base composite `warp_apply`
     /// resamples from (§6.13), in texels — the reach margin the base was grown by.
     base_offset: [i32; 2],
@@ -364,7 +361,6 @@ impl Default for Slot {
             add: 0.0,
             curvature: 0.0,
             drag: 0.0,
-            warp_plateau: 0.0,
             base_offset: [0, 0],
             bleed_reach: 0.0,
             noise_freq: [0.0; 4],
@@ -449,14 +445,10 @@ impl Slot {
             tooth_give_ramp: self.tooth_give_ramp,
             drag_ramp: self.drag_ramp,
             ceiling_lane: u32::from(self.ceiling_lane),
-            warp_plateau: self.warp_plateau,
-            // The plateau ends a scalar short of the `vec2` alignment the offset
-            // wants, and the offset ends the struct short of its 16-byte round: two
-            // generated pads (§6.10), named as the zeroes they are — `TileXform`'s
-            // own tail, one uniform over.
-            _pad_39: [0; 4],
+            // The flag lands the offset on its `vec2` alignment and the offset
+            // closes the struct's 16-byte round, so no generated pad sits between
+            // them or after (§6.10) — the mirror would name one if one did.
             base_offset: self.base_offset,
-            _pad_41: [0; 8],
         }
     }
 }
@@ -1008,11 +1000,10 @@ pub(super) fn dynamics_plan(
 /// field. No bleed cadence (the effect has no such axis) and no pen-up (the field
 /// is complete as the tip passes; a break of contact strands nothing).
 ///
-/// `plateau` is the follow profile's (`budget::liquify_plateau`); `base_offset` is
-/// where the region sits in the base composite, and `region` the region's own
-/// extent, both of which only the apply slot reads. Pure CPU float math over the
-/// record and the piece's geometry, like [`dynamics_plan`], and replay-deterministic
-/// for the same reason (§12.1).
+/// `base_offset` is where the region sits in the base composite, and `region` the
+/// region's own extent, both of which only the apply slot reads. Pure CPU float
+/// math over the record and the piece's geometry, like [`dynamics_plan`], and
+/// replay-deterministic for the same reason (§12.1).
 ///
 /// The snapshot square is measured over the **warp** slots alone: the apply slot
 /// reads no snapshot, and its rect — the region — would otherwise size a scratch
@@ -1020,7 +1011,6 @@ pub(super) fn dynamics_plan(
 pub(super) fn liquify_plan(
     ctx: &PlanCtx<'_>,
     segments: &[Segment],
-    plateau: f32,
     base_offset: [i32; 2],
     region: (u32, u32),
 ) -> DynamicsPlan {
@@ -1067,7 +1057,6 @@ pub(super) fn liquify_plan(
                 // how it changes across the segment.
                 drag: paint.drag,
                 drag_ramp: paint.drag_ramp,
-                warp_plateau: plateau,
                 base_offset,
                 rect_origin: rect.origin,
                 orient: sw.orient,
@@ -1081,7 +1070,10 @@ pub(super) fn liquify_plan(
                 // zero — a warp slot lays nothing, lifts nothing, bleeds
                 // nothing — and the noise lanes stay zero with them: the effect
                 // has no color for a jitter to wander (§6.13). The tooth too: a
-                // field gated by the substrate's every step is a tear, not a warp.
+                // field gated by the substrate's every step is a tear, not a
+                // warp — the tip's own coverage is the one texture the follow
+                // reads, and it reads it through the prefix the slot's frame
+                // already indexes.
                 ..common.slot()
             }
             .pack(),
@@ -1094,7 +1086,6 @@ pub(super) fn liquify_plan(
         cell_groups: None,
         kind: SlotKind::WarpApply,
         slot: Slot {
-            warp_plateau: plateau,
             base_offset,
             ..common.slot()
         }
@@ -1249,7 +1240,6 @@ mod tests {
             tooth_give_ramp: 58.0,
             drag_ramp: 59.0,
             ceiling_lane: true,
-            warp_plateau: 60.0,
             base_offset: [61, 62],
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
@@ -1310,10 +1300,6 @@ mod tests {
         assert_eq!(packed.curvature, 18.0);
         assert_eq!(packed.add, 17.0);
         assert_eq!(packed.drag, 54.0, "the liquify follow rate (§6.13)");
-        assert_eq!(
-            packed.warp_plateau, 60.0,
-            "the liquify profile's plateau (§6.13)"
-        );
         assert_eq!(
             packed.base_offset,
             [61, 62],
@@ -1487,7 +1473,7 @@ mod tests {
     fn segments_of(rec: &StrokeRecord, range: std::ops::Range<usize>) -> Vec<Segment> {
         generate_segments_in(
             rec,
-            flatten_budget(&rec.brush).0,
+            flatten_budget(&rec.brush, 0.0).0,
             StrokeSpans { range, dist: 0.0 },
         )
         .0
@@ -1545,7 +1531,7 @@ mod tests {
         let rec = record(smearing(60.0), &curve);
         let all = crate::path::span_count(rec.path.len());
         let whole = segments_of(&rec, 0..all);
-        let want = settle_tangent(&rec, flatten_budget(&rec.brush).0, &whole);
+        let want = settle_tangent(&rec, flatten_budget(&rec.brush, 0.0).0, &whole);
 
         let mut ever_differed = false;
         for cut in 1..all {
@@ -1553,7 +1539,7 @@ mod tests {
             if tail.is_empty() {
                 continue;
             }
-            let got = settle_tangent(&rec, flatten_budget(&rec.brush).0, &tail);
+            let got = settle_tangent(&rec, flatten_budget(&rec.brush, 0.0).0, &tail);
             assert!(
                 (got - want).length() < 1e-4,
                 "cutting at span {cut} moved the settle frame from {want:?} to {got:?}",
@@ -1598,7 +1584,7 @@ mod tests {
         let all = crate::path::span_count(rec.path.len());
         let segs = segments_of(&rec, 0..all);
 
-        let tan = settle_tangent(&rec, flatten_budget(&rec.brush).0, &segs);
+        let tan = settle_tangent(&rec, flatten_budget(&rec.brush, 0.0).0, &segs);
         assert!(
             (tan - Vec2::new(0.0, 1.0)).length() < 1e-2,
             "the settle frame followed the paused hand: {tan:?}"

@@ -391,6 +391,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                 effect: BrushEffectType::Liquify,
                 liquify: LiquifyConfig {
                     strength_modulation: Some(Modulation::linear(ModSource::Pressure)),
+                    ..Default::default()
                 },
                 modulation: BrushModulations::default(),
                 ..BrushConfig::default()

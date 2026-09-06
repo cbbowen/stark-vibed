@@ -313,7 +313,7 @@ ropes with its sub-pixel position (its paint falls *between* centres — a
 height-conservation failure in §6.1's own terms), and a falloff narrower than a
 px shimmers. The fix stays inside `τ`, because `τ` is the quantity everything
 composes linearly in: the prefix-τ volume carries a **second prefix, across the
-lateral axis** (`build_prefix_tau`'s `g` channel), so a fragment can read not the
+lateral axis** (`build_prefix`'s `g` channel), so a fragment can read not the
 profile *at* its centre but its exact box average over the pixel it stands for —
 one more prefix difference, the travel axis's own trick turned sideways
 (`stamp_common::prefix_span_box`), at twice the loads. Filtering is linear, so it
@@ -1606,7 +1606,7 @@ sources ask opposite amounts of that:
 With every volume on the mask's own grid there is one frame and one column
 width, so both stopped being quantities at all: the frame *is* the tip
 (`Sweep::radius`, and the shader's `Stamp::radius` lane), and
-`build_prefix_tau` integrates its rows at `2/width`. Both were mode-dependent
+`build_prefix` integrates its rows at `2/width`. Both were mode-dependent
 while the pen stack was padded — the frame `√2` larger so the mask inside
 landed at the radius the brush asked for, the `dx` a number the padded texture
 could not supply — and each had to reach exactly one of the two sides of the
@@ -2357,23 +2357,60 @@ texel the run never moved lands on its own centre, weights `(0, 1, 0, 0)`, and
 `f16_nearest` of an f16 value is itself (`tests/liquify.rs`,
 `a_drag_through_a_uniform_fill_is_the_identity`).
 
-**Every step is a contraction, which is what makes it invertible.** The follow
-at a texel is `strength · ē · pass`, where `ē` is the mean of a smooth profile
-over the tip's pass — a plateau out to the brush's hardness (capped at
-`LIQUIFY_MAX_PLATEAU`) and a smoothstep shoulder to the rim, integrated along
-the sweep by four-point Gauss–Legendre so consecutive segments' exposures add
-without printing their cadence. The profile's largest slope is
-`1.5 / (1 − plateau)` per radius, the turn of a bent sweep adds at most
-`MAX_TIP_TURN`, the drain its falloff; the segment budget
-(`budget::liquify_len`) holds `strength · travel · slope / radius` under
-`WARP_CONTRACTION = ½`. A map `x ↦ x − v(x)` with `Lip(v) < 1` is a bijection
-of the plane — a contraction's fixed point is unique — and a composition of
-bijections is one. That is the sense in which a stroke cannot fold, tear or
-overlap paint: the profile is smooth *by construction* (the tip's coverage,
-the tooth and the jitter are deliberately not read, since a step in any of
-them is a step in the field), and the budget prices the smoothness. The
-selection scales the follow *after* that (§6.8), so a hard mask edge is a
-deliberate tear along the mask and a feathered one a homeomorphism again.
+**The follow is the tip's own coverage, swept.** The follow at a texel is
+`strength · ∫coverage` over the texel's stretch of the pass — read, as every
+deposit reads its exposure, as the difference of a prefix volume across the
+sweep frame (§6.2): the **coverage prefix**, the prefix-τ's shape with the
+mask integrated linearly instead of through `−ln(1 − c)`
+(`assets::Integrand::Coverage`), which the liquify path binds at the prefix-τ's
+own group so `dynamics.wesl::warp` reads it through the very `swept_pre` the
+deposit does. Linear because a follow is a fraction of *travel*: a texel the
+tip's core slides over for the whole pass keeps pace with the hand exactly,
+where τ would have carried it seven times the pass and a shoulder next to
+nothing. Exact for any cut of the path, so consecutive segments' follows add
+to the pass without printing their cadence. And it is the mask *as it is*: a
+round tip carries its shoulder as gently as its hardness makes it, a hard one
+drags its disc whole, and a stamp drags by its picture — the round tip's
+volume is baked beside its prefix-τ, a stamp's on the first liquify stroke
+that asks for it (`AssetStore::mask_views`). The tooth and the jitter are
+deliberately *not* read: a follow gated by the substrate's every step is a
+field of tears.
+
+**Every step is a contraction where the tip lets it be — and only the climb
+along the travel can fold it.** A map `x ↦ x − v(x)` fails to be a bijection
+where `∂ₓvₓ ≥ 1`: where the paint ahead of the tip is overtaken rather than
+compressed. With the follow the coverage's integral, that gradient is
+`strength · (coverage ahead − coverage behind)` across the step — the tip's
+leading edge climbing under the paint in front of it. The gradient *across*
+the travel, the shoulder's slope, is a **shear**, and a shear is a bijection
+at any slope: two rows sliding past each other never occupy one place. The
+first field design priced that lateral slope as if it could fold the map, and
+paid for it in hundreds of steps per hard stroke for nothing a texel could
+show. What the budget prices now is the tip's **rise** — the shortest travel
+over which its coverage climbs by `WARP_CONTRACTION = ½`, searched off the
+round tip's radial profile (`tips::round_rise`) and bounded off a stamp's
+steepest texel step (`assets::mask_rise`), floored at one canvas texel — and
+the segment length is the rise over the strength, with the turn of a bent
+sweep and the drain beside it (`budget::liquify_len`). At strength 1 a step is
+the rise, so the coverage climbs by at most half across it and the step is a
+contraction; at half strength it is twice the rise, and the climb of at most
+1 is again half. A composition of bijections is one, which is the sense in
+which a soft tip cannot fold, tear or overlap paint. A hard tip's rim, being
+a climb inside a texel, is a shear line the eye reads as a tear — and it is
+the same line at any step length, since no shortening resolves a fold
+narrower than a texel; that is what the floor says. The selection scales the
+follow *after* all of this (§6.8), so a hard mask edge is a deliberate tear
+along the mask and a feathered one a homeomorphism again.
+
+**`quality` is the fraction of that budget a stroke pays**
+(`LiquifyEffect::quality`): each step is `1/quality` as long, so the same
+field is composed from `quality` times the segments and the dispatches. Below
+1 the climb across a step can reach the coverage's whole range, and the paint
+just ahead of a hard edge is squashed to nothing in one step rather than
+pushed out of the way — the look every reference liquify has, at the speed it
+has it. Not pen-driven: a stroke whose stepping varied with pressure would
+render differently along its own length for no reason a hand could see. 0 is
+no budget at all, and the flattener's own segmentation stands.
 
 ### Runs: a sequence of strokes composes into one field
 
@@ -2455,6 +2492,17 @@ edge moved by a run is one resample softer than it was — less than the tent a
 transform pays (§16.4), and never sharper than the base held. A wider kernel
 (Lanczos) is a change to `warp_apply` alone; what no kernel changes is that
 the count stays at one.
+
+**A hard tip is a pusher, and a stamp is its picture.** The follow being the
+coverage, a tip whose coverage climbs inside a texel — a round tip at
+hardness 1, any stamp with a hard edge — moves the paint under it whole and
+leaves a shear line at its rim, and at strength 1 its leading edge compresses
+the paint ahead of it to nothing: `∂ₓvₓ` reaches exactly 1 there, the limit of
+a bijection, whatever the step. That is the tool a hard liquify brush *is* in
+every reference app, and the budget's texel floor is what keeps it from
+costing a step per mask texel to be it. What the rise buys, at a soft tip, is
+the other tool: a shoulder pushed rather than squashed, resolvable as long as
+the drag is shorter than the shoulder is wide.
 
 **Strength 0 stores nothing** (`WARP_MIN_FOLLOW`, the deposit's rewrite guard
 in this kernel's terms), so a near-inert drag cannot walk the field down the

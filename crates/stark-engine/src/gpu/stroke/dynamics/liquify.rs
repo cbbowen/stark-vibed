@@ -7,7 +7,10 @@
 //! segment's square, the composition of that segment's step into the field, and
 //! one resample of the whole piece through the composed field from the run's
 //! pristine base. What the picture pays for a stroke of any length, and for any
-//! number of strokes in a run, is one clamped Catmull-Rom generation.
+//! number of strokes in a run, is one clamped Catmull-Rom generation. The step
+//! itself reads the tip's own coverage, through the **coverage prefix** the tip
+//! resolves for a liquify brush ([`ResolvedTip::warp`](super::super::tips::ResolvedTip))
+//! bound where every other kernel binds its prefix-τ.
 //!
 //! Three things are decided on the CPU before a piece is drawn, and all three are
 //! pure functions of the record and the run the stroke found — which is what lets a
@@ -31,7 +34,6 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Ve
 
 use super::super::budget::{
     LIQUIFY_BASE_SLACK, LIQUIFY_REACH_CAP, LIQUIFY_REGION_BUDGET_DIM, MAX_REGION_DIM,
-    liquify_plateau,
 };
 use super::super::region::{RegionRect, chunk_segments_within, cover, sweep_tiles};
 use super::super::segments::Segment;
@@ -78,6 +80,7 @@ impl StrokeRenderer {
         crate::timing::span!("stroke.dynamics");
         let ResolvedRange {
             rec,
+            tip,
             segments,
             end_dist,
             tol,
@@ -103,7 +106,14 @@ impl StrokeRenderer {
             record_base(&mut run, scene.base, within);
         }
         let walk = ReachWalk::over(&run, segments, rec);
-        let mut draw = LiquifyDraw::new(self, scene, rec, tol, consts, run);
+        // The coverage prefix the follow reads (§6.13), resolved beside the tip's
+        // other textures for exactly this brush — so its absence is a resolver
+        // bug, not a brush a stroke could name.
+        let warp_prefix = tip
+            .warp
+            .as_ref()
+            .expect("a liquify brush resolves its coverage prefix (tips::resolve)");
+        let mut draw = LiquifyDraw::new(self, scene, rec, tol, consts, run, warp_prefix);
         let mut map = scene.base.clone();
         let pieces = chunk_segments_within(segments, &[], LIQUIFY_REGION_BUDGET_DIM, &walk.cuts);
         for piece in pieces {
@@ -254,7 +264,9 @@ struct LiquifyDraw<'a> {
     dirty: BTreeSet<TileCoord>,
     /// The plan's staging bytes, kept across pieces (`DynamicsRun::stamps`).
     stamps: Vec<u8>,
-    plateau: f32,
+    /// The coverage prefix at the prefix-τ's group (§6.13): what `warp` reads its
+    /// exposure from, bound once for every piece.
+    prefix_bg: wgpu::BindGroup,
 }
 
 impl<'a> LiquifyDraw<'a> {
@@ -265,7 +277,16 @@ impl<'a> LiquifyDraw<'a> {
         tol: crate::path::FlattenTolerance,
         consts: &'a super::super::StrokeConstants,
         run: LiquifyRun,
+        warp_prefix: &wgpu::TextureView,
     ) -> Self {
+        let prefix_bg = desc::bind_group_for(
+            &r.ctx.device,
+            "stark liquify coverage prefix bg",
+            &r.dynamics.prefix_bgl,
+            super::kit::PREFIX_SLOTS,
+            false,
+            |_| wgpu::BindingResource::TextureView(warp_prefix),
+        );
         Self {
             r,
             scene,
@@ -276,7 +297,7 @@ impl<'a> LiquifyDraw<'a> {
             run,
             dirty: BTreeSet::new(),
             stamps: Vec::new(),
-            plateau: liquify_plateau(&rec.brush.shape),
+            prefix_bg,
         }
     }
 
@@ -461,13 +482,7 @@ impl<'a> LiquifyDraw<'a> {
                 consts: self.consts,
                 substrate: self.scene.substrate,
             };
-            let plan = liquify_plan(
-                &ctx,
-                segments,
-                self.plateau,
-                [margin as i32, margin as i32],
-                (w, h),
-            );
+            let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
             let under_field = self
                 .scope
                 .take_piece(Key {
@@ -562,6 +577,7 @@ impl<'a> LiquifyDraw<'a> {
                         cpass.dispatch_workgroups(square, square, 1);
                         cpass.set_pipeline(&kit.warp_pipeline);
                         cpass.set_bind_group(0, &bind.warp, &[off]);
+                        cpass.set_bind_group(1, &self.prefix_bg, &[]);
                         cpass.dispatch_workgroups(dsp.groups.0, dsp.groups.1, 1);
                     }
                     SlotKind::WarpApply => {

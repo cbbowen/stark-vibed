@@ -18,7 +18,7 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX};
 use super::dynamics::BLEED_TRAVEL_QUANTUM;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
-/// ceiling `assets::build_prefix_tau` clamps to.
+/// ceiling `assets::build_prefix` clamps to.
 ///
 /// Every exchange in the stamp loop is a rate *per unit optical depth*, because
 /// that is the currency the swept integral is denominated in and the only one both
@@ -326,74 +326,80 @@ pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
     (exchange_travel(axes(b), flow) * b.size).max(MIN_SEGMENT_LEN)
 }
 
-/// The bound every liquify step is held under (§6.13): the Lipschitz constant of
-/// one segment's displacement, `strength · travel · slope / radius`, may not exceed
-/// this. Under 1 the step `x ↦ x − v(x)` is a bijection of the plane — a
-/// contraction's fixed point is unique, so every point has exactly one preimage —
-/// which is what makes the stroke's map a homeomorphism and its composition one.
-/// Half rather than a hair under 1, so the curvature of a bent sweep, the drain and
-/// the quadrature's own error all fit inside the same margin.
-const WARP_CONTRACTION: f32 = 0.5;
+/// The bound every liquify step is held under (§6.13): how far the follow may
+/// **climb along the travel** over one segment, as a fraction of the segment — the
+/// gradient `∂ₓvₓ` of the step's displacement `v`. Under 1 the step `x ↦ x − v(x)`
+/// is a bijection of the plane: the paint ahead of the tip is compressed, never
+/// overtaken. Half rather than a hair under 1, so the turn of a bent sweep and the
+/// drain fit inside the same margin.
+///
+/// Only the gradient *along* the travel is priced, because only it can fold the
+/// map. The follow's lateral gradient — across the tip's shoulder — is a **shear**,
+/// and a shear is a bijection at any slope: two rows sliding past each other never
+/// occupy one place. The budget the first field design held, on the lateral slope,
+/// bought nothing a texel could show and cost a hard tip hundreds of steps.
+///
+/// Also what defines a tip's **rise** (`tips::round_rise`, `assets::mask_rise`):
+/// the travel over which its coverage climbs by this much. The two are one number
+/// on purpose — at strength 1 the step is the rise, and the climb over it is the
+/// bound by definition — so a change here is a change to both.
+pub(crate) const WARP_CONTRACTION: f32 = 0.5;
 
-/// The plateau the liquify profile may not exceed (§6.13): the radius fraction the
-/// paint keeps full pace out to, before the shoulder falls to the rim. A brush's
-/// hardness names it, capped here so the shoulder is never narrower than a fifth
-/// of the radius — the largest slope [`liquify_profile_slope`] then prices is
-/// finite, and a tip that asked for a step profile gets the hardest warp that is
-/// still a warp rather than a tear.
-pub(super) const LIQUIFY_MAX_PLATEAU: f32 = 0.8;
-
-/// The plateau a brush's liquify profile runs at (§6.13): its round tip's
-/// hardness, capped by [`LIQUIFY_MAX_PLATEAU`]. A stamp has no hardness to read,
-/// and no coverage the follow reads either — a textured tip would put the texture's
-/// every step into the field, which is the tear the plateau cap exists to prevent —
-/// so it warps as a round tip of middling hardness.
-pub(super) fn liquify_plateau(shape: &BrushShape) -> f32 {
-    let hardness = match shape {
-        BrushShape::Round { hardness } => hardness.clamp(0.0, 1.0),
-        BrushShape::Stamp(_) => 0.5,
-    };
-    hardness.min(LIQUIFY_MAX_PLATEAU)
-}
-
-/// The largest slope of the liquify follow profile per radius (§6.13): a
-/// smoothstep shoulder over `[plateau, 1]` peaks at `1.5 / (1 − plateau)`
-/// (`dynamics.wesl::warp_profile`). What the contraction budget divides by.
-pub(super) fn liquify_profile_slope(plateau: f32) -> f32 {
-    1.5 / (1.0 - plateau.min(LIQUIFY_MAX_PLATEAU))
-}
+/// The floor under a tip's rise, canvas px (§6.13): a coverage that climbs by
+/// [`WARP_CONTRACTION`] inside one texel is a step at the field's own resolution,
+/// and the paint ahead of it is squashed by the texel whatever the segment does —
+/// no shortening resolves a fold narrower than a texel. Priced as a texel-wide
+/// rise rather than as the fraction of one the mask names, so a hard tip steps by
+/// the texel and not by the mask's resolution under it.
+pub(super) const LIQUIFY_RISE_FLOOR_PX: f32 = 1.0;
 
 /// The travel a liquify brush's own budget puts on one segment (§6.13) — the
-/// longest step that is still a contraction — floored at [`MIN_SEGMENT_LEN`]. What
-/// [`flatten_budget`] spends for the liquify path, and the number the shortening
-/// warning quotes, exactly as [`dynamics_len`] is for the loop.
+/// longest step that is still a contraction, divided by the brush's `quality` —
+/// floored at [`MIN_SEGMENT_LEN`]. What [`flatten_budget`] spends for the liquify
+/// path, and the number the shortening warning quotes, exactly as
+/// [`dynamics_len`] is for the loop.
 ///
-/// The step's displacement is `strength · exposure · travel` along the tangent, so
-/// its gradient is bounded by `strength · travel` times the profile's slope per px
-/// ([`liquify_profile_slope`] over the radius), plus what the tangent's own turn
-/// contributes on a bent sweep ([`MAX_TIP_TURN`] per radius, the flattener's cap)
-/// and what the drain's falloff does along the arc. [`WARP_CONTRACTION`] over that
-/// sum is the travel.
+/// `rise` is the tip's (`tips::ResolvedTip::rise`), in radii: the shortest travel
+/// over which its coverage climbs by [`WARP_CONTRACTION`], measured off the mask
+/// the brush names rather than assumed of it. The follow at a texel is
+/// `strength · ∫coverage` over the texel's stretch of the pass, so its gradient
+/// along the travel is `strength` times the coverage's climb across one step — at
+/// most `strength · WARP_CONTRACTION` while the step is inside the rise, and at
+/// most `strength · 1` past it, which is under the bound whenever
+/// `strength ≤ WARP_CONTRACTION`. That climb is priced as a slope of
+/// `WARP_CONTRACTION / rise` per radius, with the tangent's own turn on a bent
+/// sweep ([`MAX_TIP_TURN`] per radius, the flattener's cap) and the drain's
+/// falloff along the arc beside it; [`WARP_CONTRACTION`] over the sum is the
+/// contraction step. The rise is floored at [`LIQUIFY_RISE_FLOOR_PX`] first.
+///
+/// **`quality` stretches the step** (`LiquifyEffect::quality`): a step
+/// `1/quality` as long climbs the coverage `1/quality` as far, so at ½ the paint
+/// just ahead of a hard edge can be compressed to nothing in one step — squashed
+/// rather than pushed — and the map is no longer a bijection there. What the knob
+/// buys is `quality` times the segments, and so the dispatches. 0 is no budget at
+/// all — infinite, like strength 0, and the flattener's own segmentation governs.
 ///
 /// Priced off the brush's own strength, not the modulated one, for
 /// [`exchange_travel`]'s reason: a modulation only ever scales the axis down, so
 /// the brush's value bounds every segment's. **Infinite at strength 0** — a drag
-/// that moves nothing has no step to be a contraction, and the flattener's base
-/// budget governs; a caller comparing against it asks `is_finite` first.
-///
-/// At the floor the guarantee lapses: a tip a couple of px wide at the hardest
-/// plateau asks for a step under half a px, and gets the floor instead. That is a
-/// tip whose whole shoulder is under a texel, where the field could not have
-/// resolved a fold anyway.
-pub(super) fn liquify_len(b: &BrushParams) -> f32 {
-    let s = b.liquify().map_or(0.0, |l| l.strength.clamp(0.0, 1.0));
-    if s <= 0.0 {
+/// that moves nothing has no step to be a contraction; a caller comparing against
+/// it asks `is_finite` first.
+pub(super) fn liquify_len(b: &BrushParams, rise: f32) -> f32 {
+    let Some(l) = b.liquify() else {
+        return f32::INFINITY;
+    };
+    let s = l.strength.clamp(0.0, 1.0);
+    let q = l.quality.clamp(0.0, 1.0);
+    if s <= 0.0 || q <= 0.0 {
         return f32::INFINITY;
     }
     let radius = b.size.max(0.5);
+    // The rise in px, floored at the texel; an infinite rise — a mask whose
+    // coverage never climbs that far — prices as no slope at all.
+    let rise_px = (rise.max(0.0) * radius).max(LIQUIFY_RISE_FLOOR_PX);
     let slope_per_radius =
-        liquify_profile_slope(liquify_plateau(&b.shape)) + MAX_TIP_TURN + b.drain_px() * radius;
-    (WARP_CONTRACTION * radius / (s * slope_per_radius)).max(MIN_SEGMENT_LEN)
+        WARP_CONTRACTION * radius / rise_px + MAX_TIP_TURN + b.drain_px() * radius;
+    (WARP_CONTRACTION * radius / (s * slope_per_radius) / q).max(MIN_SEGMENT_LEN)
 }
 
 /// How far a liquify run may let its displacement accumulate before it re-bases
@@ -462,10 +468,12 @@ pub(super) struct Shortened {
     pub(super) got: f32,
 }
 
-/// [`flatten_budget`]'s tolerance alone, for the tests that want only that.
+/// [`flatten_budget`]'s tolerance alone, for the tests that want only that — at
+/// the rise the brush's own round tip has, since a test's brush names no mask a
+/// store could measure.
 #[cfg(test)]
 pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenTolerance {
-    flatten_budget(b).0
+    flatten_budget(b, super::tips::round_rise_of(b)).0
 }
 
 /// The flatten budget with its reason: the tolerance, and what the region floor took
@@ -473,8 +481,13 @@ pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 /// segment already fits. The two are one answer because the second is a fact about
 /// the `min` the first takes; read off the tolerance where it is taken rather than
 /// re-derived from the two lengths, so the price quoted is the price paid.
+///
+/// `rise` is the tip's ([`liquify_len`]), read only for a liquify brush — the one
+/// number here that is the *mask's* rather than the brush's, and a pure function
+/// of the mask the record names, so a live tail and its commit still cut alike.
 pub(super) fn flatten_budget(
     b: &BrushParams,
+    rise: f32,
 ) -> (crate::path::FlattenTolerance, Option<Shortened>) {
     let mut tol = crate::path::FLATTEN_TOLERANCE;
     // Use a more relaxed tolerance for larger brushes.
@@ -522,7 +535,7 @@ pub(super) fn flatten_budget(
     let own_len = if b.wet().is_some() {
         Some(dynamics_len(b))
     } else if b.liquify().is_some() {
-        Some(liquify_len(b))
+        Some(liquify_len(b, rise))
     } else {
         None
     };
@@ -850,6 +863,108 @@ mod tests {
                  {shoulder} px shoulder",
             );
         }
+    }
+
+    // --- the liquify step ------------------------------------------------
+
+    /// A liquify brush of the given tip, at full strength and the given quality —
+    /// no drain, so the step is the rise's alone (plus the turn's small term).
+    fn liquified(size: f32, hardness: f32, strength: f32, quality: f32) -> BrushParams {
+        BrushParams {
+            size,
+            drain: 0.0,
+            shape: BrushShape::Round { hardness },
+            effect: stark_model::document::BrushEffect::Liquify(
+                stark_model::document::LiquifyEffect {
+                    strength,
+                    quality,
+                    ..Default::default()
+                },
+            ),
+            ..BrushParams::default()
+        }
+    }
+
+    /// What the step budget prices (§6.13): the tip's **rise** — so a harder tip
+    /// steps shorter until the texel floor binds, at strength 1 the step *is* the
+    /// rise, and a lighter drag steps proportionally longer. Read off the brush's
+    /// own round tip, as the renderer reads it.
+    #[test]
+    fn the_liquify_step_is_the_tips_rise_over_its_strength() {
+        let rise = |b: &BrushParams| super::super::tips::round_rise_of(b);
+        let mut last = f32::INFINITY;
+        for hardness in [0.0f32, 0.5, 0.8, 0.95, 1.0] {
+            let b = liquified(100.0, hardness, 1.0, 1.0);
+            let len = liquify_len(&b, rise(&b));
+            assert!(
+                len <= last,
+                "hardness {hardness}: {len} px must not step longer than {last}"
+            );
+            // The step is the rise in px, less the turn term's share — which is
+            // `MAX_TIP_TURN` against the rise's slope `WARP_CONTRACTION / rise`,
+            // so at most a few percent on the softest tip and nothing on a hard one.
+            let want = (rise(&b) * 100.0).max(LIQUIFY_RISE_FLOOR_PX);
+            let floor = want / (1.0 + MAX_TIP_TURN * want / (WARP_CONTRACTION * 100.0));
+            assert!(
+                len <= want + 1e-3 && len >= floor - 1e-3,
+                "hardness {hardness}: a full-strength step should be the rise ({want} px)                  less the turn's share ({floor} px), not {len}",
+            );
+            last = len;
+        }
+        // Half the strength, twice the step: the climb per step doubles and the
+        // follow halves, which is the same bound.
+        let b = liquified(100.0, 0.8, 1.0, 1.0);
+        let half = liquified(100.0, 0.8, 0.5, 1.0);
+        assert!((liquify_len(&half, rise(&half)) - 2.0 * liquify_len(&b, rise(&b))).abs() < 1e-3);
+        // No strength, no step to bound.
+        let idle = liquified(100.0, 0.8, 0.0, 1.0);
+        assert_eq!(liquify_len(&idle, rise(&idle)), f32::INFINITY);
+    }
+
+    /// `quality` is a fraction of the step budget (`LiquifyEffect::quality`): a
+    /// quarter of it is four times the step, and none of it is no budget at all —
+    /// so the knob is the segment count, and nothing else in the field moves.
+    #[test]
+    fn quality_stretches_the_liquify_step_and_zero_removes_it() {
+        let rise = |b: &BrushParams| super::super::tips::round_rise_of(b);
+        let full = liquified(100.0, 0.8, 1.0, 1.0);
+        let quarter = liquified(100.0, 0.8, 1.0, 0.25);
+        assert!(
+            (liquify_len(&quarter, rise(&quarter)) - 4.0 * liquify_len(&full, rise(&full))).abs()
+                < 1e-3,
+        );
+        let none = liquified(100.0, 0.8, 1.0, 0.0);
+        assert_eq!(liquify_len(&none, rise(&none)), f32::INFINITY);
+        // Quality never coarsens past the flattener: an infinite budget is the
+        // flattener's own tolerance, warning of no shortening.
+        let (tol, shortened) = flatten_budget(&none, rise(&none));
+        assert_eq!(tol.max_len, fit_len(&none));
+        assert!(shortened.is_none());
+    }
+
+    /// The resolution floor (§6.13): a tip whose coverage climbs inside a texel —
+    /// a hard stamp, whose rise is a fraction of a mask texel — steps by the canvas
+    /// texel, not by the mask's finer grid; and a mask that never climbs that far
+    /// has no rise to price, so only the turn bounds it.
+    #[test]
+    fn a_rise_under_a_texel_prices_as_a_texel_and_no_rise_prices_as_none() {
+        let b = liquified(300.0, 1.0, 1.0, 1.0);
+        let hard = liquify_len(&b, 0.0);
+        assert!(
+            (hard - LIQUIFY_RISE_FLOOR_PX).abs() < 0.01,
+            "a step-profile tip must step by the texel, not {hard} px",
+        );
+        assert_eq!(
+            liquify_len(&b, 1e-6),
+            hard,
+            "a sub-texel rise is the floor's"
+        );
+        let faint = liquify_len(&b, f32::INFINITY);
+        let want = WARP_CONTRACTION * 300.0 / MAX_TIP_TURN;
+        assert!(
+            (faint - want).abs() < 1e-2,
+            "no rise: the turn alone, {want} px, not {faint}"
+        );
     }
 
     // --- the hardness floor ---------------------------------------------

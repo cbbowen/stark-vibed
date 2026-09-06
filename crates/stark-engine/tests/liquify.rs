@@ -321,3 +321,120 @@ fn a_paint_inside_the_reach_resets_the_run_and_one_beyond_it_does_not() {
         );
     }
 }
+
+/// A grayscale PNG of a hard disc — coverage 1 inside nine tenths of the square's
+/// inscribed circle, 0 outside — the plainest stamp there is, and the hardest.
+fn disc_png(size: u32) -> Vec<u8> {
+    let c = size as f32 / 2.0;
+    let r = 0.9 * c;
+    let pixels: Vec<u8> = (0..size * size)
+        .map(|i| {
+            let (x, y) = ((i % size) as f32 + 0.5 - c, (i / size) as f32 + 0.5 - c);
+            if x * x + y * y < r * r { 255 } else { 0 }
+        })
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, size, size);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(&pixels).expect("png data");
+    }
+    out
+}
+
+/// A hard-shouldered red band along `y = 0` from `x = −150` to about `x = −20`,
+/// the fixture the edge-carrying tests drag: the probe just past its end starts
+/// as bare paper, and the band reaches well upstream of any tip.
+fn band_to_twenty(engine: &mut Engine) {
+    let mut lay = brush(RED, 40.0);
+    lay.drain = 0.0;
+    lay.jitter = 0.0;
+    lay.shape = BrushShape::Round { hardness: 0.9 };
+    replay_with(
+        engine,
+        lay,
+        &[Vec2::new(-150.0, 0.0), Vec2::new(-20.0, 0.0)],
+    );
+}
+
+/// Where the band along `y = 0` ends, in canvas x: the last painted texel scanning
+/// in from the far right.
+fn band_end(img: &RgbaImage) -> i32 {
+    (-200..200)
+        .rev()
+        .find(|x| painted(img, Vec2::new(*x as f32 + 0.5, 0.5)))
+        .expect("the band is somewhere")
+}
+
+/// The follow is the tip's **own coverage** (§6.13): a stamp drags by its picture,
+/// through the coverage prefix the store bakes for it on the first liquify stroke
+/// that asks. A hard disc at full strength carries the paint under it whole, so
+/// the band's end travels with the hand — the same claim
+/// `a_liquify_drag_carries_an_edge_downstream` makes of a round tip, made of a
+/// mask nothing but the asset store could have measured.
+#[test]
+fn a_stamp_tip_drags_by_its_own_mask() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let id = engine.import_brush(&disc_png(128)).expect("import a disc");
+    band_to_twenty(&mut engine);
+    let probe = Vec2::new(35.0, 0.0);
+    let upstream = Vec2::new(-60.0, 0.0);
+    let before = engine.render_to_image();
+    assert!(
+        !painted(&before, probe),
+        "the probe must start on bare paper"
+    );
+
+    let mut b = liquify_brush(30.0, 1.0);
+    b.shape = BrushShape::Stamp(id);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-10.0, 0.0), Vec2::new(100.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    assert!(
+        painted(&after, probe),
+        "the band's edge did not follow the stamp"
+    );
+    assert!(
+        painted(&after, upstream),
+        "paint upstream of the drag must stay put"
+    );
+}
+
+/// `quality` is the step budget's fraction and nothing else (`LiquifyEffect::quality`,
+/// §6.13): the paint under the tip's core keeps pace with the hand step by step
+/// whatever the step, so a drag composed from a fifth of the segments carries the
+/// band's end to the same place. What a coarser quality can change is how the
+/// paint *ahead* of a hard edge is compressed, and there is none here.
+#[test]
+fn a_coarser_quality_carries_the_core_the_same_distance() {
+    let end_at = |quality: f32| -> Option<i32> {
+        let mut engine = engine_or_skip()?;
+        band_to_twenty(&mut engine);
+        let mut b = liquify_brush(30.0, 1.0);
+        b.shape = BrushShape::Round { hardness: 0.8 };
+        b.liquify_mut().expect("a liquify brush").quality = quality;
+        stroke_with(
+            &mut engine,
+            b,
+            &[Vec2::new(-10.0, 0.0), Vec2::new(100.0, 0.0)],
+        );
+        Some(band_end(&engine.render_to_image()))
+    };
+    let (Some(fine), Some(coarse)) = (end_at(1.0), end_at(0.2)) else {
+        return;
+    };
+    // The end started near −20 and the hand travelled 110 px, so a carried end
+    // lands near 90 — and it lands there at either stepping.
+    assert!(fine > 60, "the fine drag left the band's end at {fine}");
+    assert!(
+        (fine - coarse).abs() <= 2,
+        "the band's end lands at {fine} stepped finely and {coarse} stepped coarsely",
+    );
+}

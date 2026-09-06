@@ -310,14 +310,20 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "settle",
         &[Some(&settle_bgl), Some(&prefix_bgl)],
     );
-    // The liquify field's kernels (§6.13). None reads the prefix-τ: the follow is
-    // the profile's own quadrature over the sweep frame.
+    // The liquify field's kernels (§6.13). The composition reads its exposure
+    // from a prefix volume at group 1 like every deposit — the **coverage**
+    // prefix, which the liquify path binds there in the prefix-τ's place; the
+    // snapshot and the resample read no tip at all.
     let snapshot_field_pipeline = cpipe(
         "stark dynamics snapshot field",
         "snapshot_field",
         &[Some(&snapshot_field_bgl)],
     );
-    let warp_pipeline = cpipe("stark dynamics warp", "warp", &[Some(&warp_bgl)]);
+    let warp_pipeline = cpipe(
+        "stark dynamics warp",
+        "warp",
+        &[Some(&warp_bgl), Some(&prefix_bgl)],
+    );
     let warp_apply_pipeline = cpipe(
         "stark dynamics warp apply",
         "warp_apply",

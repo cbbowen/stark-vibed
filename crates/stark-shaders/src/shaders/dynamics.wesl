@@ -156,7 +156,7 @@ struct Stamp {
     curvature: f32,
     // The liquify effect's follow rate (§6.13): the brush's modulated `strength`,
     // the fraction of the pass a texel under the tip's core keeps up with — the
-    // whole pass at 1, and proportionally less out on the shoulder (`warp_follow`).
+    // whole pass at 1, and less wherever the tip's coverage is (`warp_follow`).
     // Nonzero ONLY on a **warp slot**; every other kind carries 0.
     drag: f32,
     // The brush's own color channels. **Undrained** — the falloff is applied per
@@ -303,12 +303,6 @@ struct Stamp {
     // constant, like `opacity` — every slot of a stroke says the same, since which
     // lane a texel's claim lives in cannot change segment to segment.
     ceiling_lane: u32,
-    // The liquify follow profile's **plateau** (§6.13): the radius fraction out to
-    // which the paint under the tip keeps full pace, before the smoothstep shoulder
-    // falls to 0 at the rim (`warp_profile`). The brush's hardness, capped by the
-    // host so the shoulder keeps a slope the contraction budget can price. Read by
-    // warp slots alone.
-    warp_plateau: f32,
     // Where this region's texel (0, 0) sits in the **base composite** the liquify
     // apply resamples from (§6.13) — the base is the region grown by the run's reach
     // on every side, so this is that margin, in texels. Read by `warp_apply` alone.
@@ -765,7 +759,7 @@ fn jitter_at(rt: vec2<i32>) -> f32 {
 // transfer in this loop is measured in, on both sides. The canvas side gets it from
 // the prefix-τ volume's differences; the tool side, which has no prefix to
 // difference, converts its own coverage the same way the volume was built
-// (`assets::build_prefix_tau`), clamp included, so the two agree.
+// (`assets::build_prefix`), clamp included, so the two agree.
 fn tau_of(cov: f32) -> f32 {
     return -log(1.0 - min(cov, 0.999));
 }
@@ -2643,16 +2637,30 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
 // — a gather of the *field*, which is smooth, and therefore nearly lossless where a
 // gather of the picture blurs an edge a little per segment until nothing sharp is
 // left. The picture is resampled through the final field exactly once per piece,
-// from the base composite (`warp_apply`), so what a hard edge pays is one bilinear
+// from the base composite (`warp_apply`), so what a hard edge pays is one
 // generation however many strokes and segments moved it.
 //
-// **Every step is a contraction, so the map is invertible.** `v = follow · t̂`, and the
-// follow is `strength · (mean profile over the pass) · travel`, on a profile whose
-// slope is bounded by construction (`warp_profile`); the host's segment budget holds
-// `strength · travel · slope / radius` under 1 (`budget::liquify_len`), which makes
-// `x ↦ x − v(x)` a bijection of the plane — and a composition of bijections is one.
-// The selection multiplies the follow *after* that (§6.8), so a hard mask edge is a
-// deliberate tear along the mask, and a feathered one a homeomorphism again.
+// **The follow is the tip's own coverage, swept.** `v = follow · t̂`, and the follow
+// is `strength · ∫coverage` over the texel's stretch of the pass — the difference
+// of the **coverage prefix** across it (`swept_pre`, on the volume the liquify
+// path binds at `prefix_tex` in the prefix-τ's place: the same mask, integrated
+// linearly). Exact for any cut of the path, as every deposit's exposure is, so
+// consecutive segments' follows add to the pass without printing their cadence;
+// and it is the mask *as it is*, so a soft tip carries its shoulder gently, a hard
+// one drags its disc whole, and a stamp drags by its picture.
+//
+// **Every step is a contraction where the tip lets it be.** What can fold the map
+// `x ↦ x − v(x)` is the follow's gradient *along* the travel, which is
+// `strength · (coverage ahead − coverage behind)` across the step — the tip's
+// leading edge climbing under the paint ahead of it. The host's segment budget
+// holds that climb under half (`budget::liquify_len`, the tip's **rise**), which
+// makes each step a bijection of the plane and the composition one. The gradient
+// *across* the travel — the shoulder's slope — is a shear, and a shear is a
+// bijection at any slope, so it is not priced: a hard rim is a shear line, not a
+// fold, and no step length widens it. The selection multiplies the follow *after*
+// (§6.8), so a hard mask edge is a deliberate tear along the mask, and a feathered
+// one a homeomorphism again. The tooth and the jitter are deliberately **not**
+// read: a follow gated by the substrate's every step is a field of tears.
 //
 // Sequenced in place through the snapshot, so a stroke composes over **its own
 // trail** when it crosses it — the order-dependence the loop's every kernel has.
@@ -2662,56 +2670,30 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
 // the deposit's rewrite guard in this kernel's terms (§6.2).
 const WARP_MIN_FOLLOW: f32 = 0.000244140625;
 
-// Four-point Gauss–Legendre on [0, 1]: the nodes (symmetric about ½) and their
-// weights, summing to 1. Exact for a degree-7 polynomial, which the profile's cubic
-// shoulder along a straight pass is well inside — so the exposure a texel accrues
-// over a segment is the profile's path integral rather than a stamp at its midpoint,
-// and consecutive segments' exposures add without printing their cadence.
-const GL4_A: f32 = 0.06943184420297371;
-const GL4_B: f32 = 0.33000947820757187;
-const GL4_WA: f32 = 0.1739274225687269;
-const GL4_WB: f32 = 0.3260725774312731;
-
-// The follow profile across the tip, at `rho` radii from its centre: full pace out
-// to the plateau, a smoothstep shoulder to 0 at the rim. C¹, with a largest slope of
-// `1.5 / (1 − plateau)` per radius — the number the host's contraction budget prices
-// against (`budget::liquify_profile_slope`), and the reason the plateau is capped
-// there: a step profile is a tear, not a warp.
-fn warp_profile(rho: f32) -> f32 {
-    return 1.0 - smoothstep(st.warp_plateau, 1.0, rho);
-}
-
-// The mean of the profile over the segment's pass at this texel: the tip's centre
-// crosses the frame's travel axis from 0 to `lr` (the pass in this point's own
-// measure, radii), and the texel sits at `local` in that frame.
-fn warp_exposure(sw: Sweep) -> f32 {
-    let y2 = sw.local.y * sw.local.y;
-    let nodes = array<f32, 4>(GL4_A, GL4_B, 1.0 - GL4_B, 1.0 - GL4_A);
-    let weights = array<f32, 4>(GL4_WA, GL4_WB, GL4_WB, GL4_WA);
-    var e = 0.0;
-    for (var i = 0u; i < 4u; i = i + 1u) {
-        let dx = sw.local.x - nodes[i] * sw.lr;
-        e = e + weights[i] * warp_profile(sqrt(dx * dx + y2));
-    }
-    return e;
-}
-
 // The step at region texel `rt`: how far its paint keeps pace with the tip across
 // this slot, in px, along the local travel tangent. Zero — without a store — where
 // the tip's pass never reaches it.
 //
-// `strength · exposure · pass`: at strength 1 a texel the tip's core slides over
-// keeps pace with the hand exactly, and the shoulder follows in proportion. The
-// drain runs the drag dry as it runs a deposit dry (§6.2), and the selection scales
-// the follow rather than blending the result (§6.8).
-fn warp_follow(sw: Sweep, rt: vec2<i32>) -> f32 {
+// `strength · ∫coverage`, in the tip's own measure: `swept_pre` reads the coverage
+// prefix's difference across the texel's stretch of travel in the lookup frame's
+// measure, `sw.warp` and `stretch_gain` bring it back to the tip's (§6.6), and the
+// radius makes it px. At strength 1 a texel the tip's core slides over keeps pace
+// with the hand exactly. Capped at the pass: the prefix cannot exceed it, so the
+// `min` is the wall for rounding — what keeps the gather inside the snapshot the
+// slot's travel sized. The drain runs the drag dry as it runs a deposit dry (§6.2),
+// and the selection scales the follow rather than blending the result (§6.8).
+fn warp_follow(sw: Sweep, lk: vec3<f32>, rt: vec2<i32>) -> f32 {
     let sel = load1(sel_mask, rt).r;
     if sel <= 0.0 {
         return 0.0;
     }
+    let e = swept_pre(lk) * sw.warp * stretch_gain(st.stretch);
+    if e <= 0.0 {
+        return 0.0;
+    }
     let arc = arc_at(sw);
     let rate = min(rate_across(st.drag, st.drag_ramp, arc), 1.0);
-    return rate * warp_exposure(sw) * sw.lr * st.radius * stroke_drain(arc) * sel;
+    return min(rate * e * st.radius, travel_px()) * stroke_drain(arc) * sel;
 }
 
 // Copy the field under a warp slot's square to the snapshot, so `warp` can gather it
@@ -2754,12 +2736,13 @@ fn warp(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let sw = segment_frame(rt);
-    // Provably outside the pass — beyond the rim laterally, or more than a tip
-    // before the start or after the end — the profile is exactly 0 at every node.
-    if abs(sw.local.y) >= 1.0 || sw.local.x <= -1.0 || sw.local.x >= sw.lr + 1.0 {
+    // Provably outside the sweep, in the frame the mask is read in (§6.6): the
+    // prefix difference is exactly 0 there, at the cost of its taps.
+    let lk = segment_look(sw);
+    if outside_look(lk) {
         return;
     }
-    let follow = warp_follow(sw, rt);
+    let follow = warp_follow(sw, lk, rt);
     if follow < WARP_MIN_FOLLOW {
         return;
     }

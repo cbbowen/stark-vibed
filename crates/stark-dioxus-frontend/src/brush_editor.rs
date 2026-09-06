@@ -697,6 +697,15 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                     // builds toward its ceiling (§6.12). Not a wet axis: what the
                     // tool *does* per unit of this is the Wet section's business.
                     {mod_slider(state, preview, mod_open, ModRow::Flow, brush, tune)}
+                    // How finely a liquify drag is stepped (§6.13): at 1 every
+                    // step is a contraction and a hard tip steps by the texel;
+                    // lower is the same field from fewer steps, faster, with the
+                    // paint ahead of a hard edge squashed rather than carried. A
+                    // cost dial, not a rate, so no pen chip.
+                    if liquifies {
+                        Slider { label: "Quality", min: 0.0, max: 1.0, value: brush.liquify.quality,
+                            oninput: move |v| edit(state, preview, move |b, _| b.liquify.quality = v) }
+                    }
                     // How far the tip settles into the canvas's own tooth (§6.4):
                     // at 1 it follows every fall, the substrate is irrelevant and the
                     // mark is solid; turned *down* the paint catches on the

@@ -135,14 +135,19 @@ use iroh::EndpointId;
 /// the layer and a footprint that reads its reach (§6.13). The record's shape is
 /// untouched, so a file reads either way; what a log *means* under a liquify
 /// stroke changed, and the commutation it declares with it, which is exactly the
-/// disagreement a live session may not hold.
-pub(crate) const ALPN: &[u8] = b"stark/collab/26";
+/// disagreement a live session may not hold;
+/// 27: `LiquifyEffect` gained `quality`, and its follow reads the tip's own
+/// coverage rather than a profile of the hardness (§6.13) — a field added to a
+/// struct every stroke gossips, which a file fills from its default and the wire
+/// cannot, and the meaning rule beside it: every liquify stroke already in a log
+/// renders differently.
+pub(crate) const ALPN: &[u8] = b"stark/collab/27";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 26;
+pub(crate) const PROTO: u32 = 27;
 
 /// Upper bound on an encoded request, over any transport.
 ///
