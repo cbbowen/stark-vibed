@@ -267,7 +267,14 @@ impl Drop for GpuTex {
     /// a `Drop` during an unwind is an abort, not a caught failure.
     fn drop(&mut self) {
         let Some(pool) = self.pool.upgrade() else {
-            return; // the pool is gone; the texture goes with it
+            // The pool is gone — rebuilt for another color space (`rebuild_gpu_for`)
+            // while a history version still held this tile. There is no free list to
+            // return to, so the texture goes back to the driver the way a trimmed one
+            // does: `destroy()`ed, not left to the collector ([`PoolInner::tick`]).
+            if let Some(tex) = self.tex.take() {
+                tex.destroy();
+            }
+            return;
         };
         // Recovered from rather than propagated, because the alternative is a leak.
         // A poisoned lock means some other thread panicked holding it; the state it
@@ -621,7 +628,15 @@ impl TilePairHandle {
 /// `Arc` bump, so a `Selection` snapshot is as cheap as a `DocState` one — and the
 /// texture returns to the pool when the last history version referencing it drops.
 #[derive(Clone)]
-pub struct MaskHandle(TexHandle, Arc<OnceLock<wgpu::BindGroup>>);
+pub struct MaskHandle(TexHandle, Arc<MaskGroups>);
+
+/// The bind groups a mask tile is bound through at frame rate, one slot per layout
+/// ([`MaskHandle::overlay_bg`], [`MaskHandle::region_bg`]).
+#[derive(Default)]
+struct MaskGroups {
+    overlay: OnceLock<wgpu::BindGroup>,
+    region: OnceLock<wgpu::BindGroup>,
+}
 
 impl MaskHandle {
     pub fn view(&self) -> &wgpu::TextureView {
@@ -633,13 +648,22 @@ impl MaskHandle {
     /// for the same reason: a mask tile is rasterized afresh rather than rewritten,
     /// so identity doubles as "unchanged" ([`Self::same`]).
     ///
-    /// **Named for its one consumer**, unlike the paint tile's, because a mask is
-    /// bound through three different layouts — the overlay's here, the transform's
-    /// `mask_src_bgl`, the stamp loop's `region_tile_bgl` — and one cache slot can
-    /// only answer for one of them. The other two are per *action* rather than per
-    /// frame, so they have nothing to gain and no slot here to take by mistake.
+    /// **Named for its consumer**, unlike the paint tile's, because a mask is bound
+    /// through three different layouts and one cache slot can only answer for one of
+    /// them: the overlay's here, the stamp loop's `region_tile_bgl`
+    /// ([`Self::region_bg`]), and the transform's `mask_src_bgl` — which is per
+    /// *action* rather than per frame or per pointer move, so it has nothing to gain
+    /// and no slot here to take by mistake.
     pub(crate) fn overlay_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
-        self.1.get_or_init(make)
+        self.1.overlay.get_or_init(make)
+    }
+
+    /// The region gather's bind group over this mask tile (`SelectionRenderer::
+    /// region_mask`, §6.8), cached on [`Self::overlay_bg`]'s argument. A live stroke
+    /// under any non-universal selection re-gathers its halo per piece per pointer
+    /// move, which was a bind group per selection tile in the halo each time.
+    pub(crate) fn region_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
+        self.1.region.get_or_init(make)
     }
 
     /// Whether two handles are the same allocation — [`TilePairHandle::same`]
@@ -707,6 +731,18 @@ impl Default for PoolInner {
             sources: Census::default(),
             stamp: 0,
             epoch_start: 0,
+        }
+    }
+}
+
+impl Drop for PoolInner {
+    /// The idle textures go back to the driver, not to the collector — [`Self::tick`]'s
+    /// argument for a trimmed texture, with more force: this runs when a color-space
+    /// rebuild replaces the pool (`rebuild_gpu_for`), which is every idle texture at
+    /// once. Checked-out textures are their handles' to destroy (`Drop for GpuTex`).
+    fn drop(&mut self) {
+        for slot in self.free.drain(..) {
+            slot.tex.destroy();
         }
     }
 }
@@ -932,7 +968,7 @@ impl TilePool {
     pub fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
         MaskHandle(
             self.acquire_tex(MASK_FORMAT, source),
-            Arc::new(OnceLock::new()),
+            Arc::new(MaskGroups::default()),
         )
     }
 

@@ -535,9 +535,12 @@ impl SubmitScope {
 
     /// Register a per-piece buffer; returns it unchanged, destroyed at the submit.
     ///
-    /// For the buffers that cannot be pooled because they are written at creation.
+    /// For a buffer that cannot be pooled because it is written at creation.
     /// Everything else takes [`take_piece_buffer`](Self::take_piece_buffer), where the
-    /// rate is not merely bounded but gone.
+    /// rate is not merely bounded but gone — and since the transform's per-draw
+    /// uniforms moved onto leased slots, everything does. Kept as the door for the
+    /// next such buffer, with `ScopedResources` (`gpu::submit`) still owning the
+    /// destroy behind it; the `expect` reports the first caller.
     ///
     /// Opens the piece where the checkouts do not, and **conservatively rather than
     /// necessarily**: a map-at-creation buffer stages nothing on the queue, so an
@@ -546,6 +549,11 @@ impl SubmitScope {
     /// an empty command buffer in a case no caller has — where getting it wrong is a
     /// resource freed ahead of the work naming it. [`write_lease`](Self::write_lease)
     /// is where the distinction is load-bearing and is drawn exactly.
+    #[expect(
+        dead_code,
+        reason = "no unpooled per-piece buffer is left since the transform's went onto slots; \
+                  the door stays, and this reports the next caller"
+    )]
     pub(crate) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
         self.piece_open = true;
         self.piece_scoped.buffer(buf)
@@ -666,6 +674,23 @@ impl SubmitScope {
     pub(crate) fn write_lease(&mut self, buf: &wgpu::Buffer, bytes: &[u8]) {
         self.piece_open = true;
         self.ctx.queue.write_buffer(buf, 0, bytes);
+    }
+
+    /// [`write_lease`](Self::write_lease) for a leased **texture**: stage `bytes` as
+    /// `layout` into `extent` at its origin, opening the piece for the same reason.
+    /// `extent` may be narrower than the lease — a texture pooled at a bucketed size
+    /// is written to the width its reader was told (the lasso's edge list, §6.8).
+    pub(crate) fn write_texture_lease(
+        &mut self,
+        tex: &wgpu::Texture,
+        bytes: &[u8],
+        layout: wgpu::TexelCopyBufferLayout,
+        extent: wgpu::Extent3d,
+    ) {
+        self.piece_open = true;
+        self.ctx
+            .queue
+            .write_texture(tex.as_image_copy(), bytes, layout, extent);
     }
 
     /// Keep `thing` alive past the submit, dropping it just after — for resources

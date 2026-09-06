@@ -78,7 +78,22 @@ pub(crate) struct UniformSlots<T> {
     /// `None` for the consumers that keep no group: a bind group answers to a layout,
     /// and several of these are bound as part of a larger group somebody else builds.
     group: Option<wgpu::BindGroup>,
+    /// The frame's slots laid out at [`Self::STRIDE`], kept so [`Self::write`] is
+    /// one `write_buffer` and no allocation after the first.
+    staging: Vec<u8>,
     _uniform: std::marker::PhantomData<T>,
+}
+
+/// Lay `uniforms` out one per [`UniformSlots::STRIDE`] into `into` — the bytes a
+/// single `write_buffer` uploads for a whole pass, where one call per slot was that
+/// many queue crossings of 16–48 bytes apiece. Padding is zeroed; nothing reads it.
+pub(crate) fn stage_slots<T: bytemuck::Pod>(uniforms: &[T], into: &mut Vec<u8>) {
+    let stride = UniformSlots::<T>::STRIDE as usize;
+    into.clear();
+    into.resize(uniforms.len() * stride, 0);
+    for (slot, uniform) in into.chunks_exact_mut(stride).zip(uniforms) {
+        slot[..std::mem::size_of::<T>()].copy_from_slice(bytemuck::bytes_of(uniform));
+    }
 }
 
 impl<T: bytemuck::Pod> UniformSlots<T> {
@@ -92,6 +107,7 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
             slots: count.max(1),
             label,
             group: None,
+            staging: Vec::new(),
             _uniform: std::marker::PhantomData,
         }
     }
@@ -153,13 +169,8 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
             // left to a caller to notice, which is what makes keeping one safe.
             self.group = None;
         }
-        for (i, uniform) in uniforms.iter().enumerate() {
-            queue.write_buffer(
-                &self.buf,
-                i as u64 * Self::STRIDE,
-                bytemuck::bytes_of(uniform),
-            );
-        }
+        stage_slots(uniforms, &mut self.staging);
+        queue.write_buffer(&self.buf, 0, &self.staging);
         moved
     }
 
@@ -247,5 +258,44 @@ impl<T: bytemuck::Pod> InstanceStream<T> {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`stage_slots`] is the slot law as bytes: uniform `i` starts at `i · STRIDE`,
+    /// the staging spans exactly `len · STRIDE`, and the padding is zero. Adapter-free,
+    /// so the one layout every dynamic-offset draw in the crate reads through can be
+    /// checked where no device exists.
+    #[test]
+    fn slots_are_staged_at_stride_apart() {
+        type U = [f32; 4];
+        const STRIDE: usize = UniformSlots::<U>::STRIDE as usize;
+        let uniforms: [U; 3] = [[1.0, 2.0, 3.0, 4.0], [5.0; 4], [-1.0, 0.0, 0.5, 9.0]];
+        let mut staged = vec![0xAAu8; 7];
+        stage_slots(&uniforms, &mut staged);
+        assert_eq!(
+            staged.len(),
+            3 * STRIDE,
+            "one stride per slot, nothing else"
+        );
+        for (i, u) in uniforms.iter().enumerate() {
+            let at = i * STRIDE;
+            assert_eq!(
+                &staged[at..at + std::mem::size_of::<U>()],
+                bytemuck::bytes_of(u),
+                "slot {i}"
+            );
+            assert!(
+                staged[at + std::mem::size_of::<U>()..at + STRIDE]
+                    .iter()
+                    .all(|b| *b == 0),
+                "slot {i}'s padding is not zeroed"
+            );
+        }
+        stage_slots::<U>(&[], &mut staged);
+        assert!(staged.is_empty(), "nothing staged for nothing");
     }
 }

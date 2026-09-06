@@ -277,6 +277,13 @@ fn slot_entry(
     })
 }
 
+/// The most slots one list may name — what [`bind_group_for`] fills its entries into
+/// on the stack, since it runs once per tile per pass and a `Vec` there was an
+/// allocation at exactly the rate `Targets::attachments` beside it avoids. Checked at
+/// [`layout_for`] too, so a longer list fails where its renderer is built rather
+/// than at its first draw. The longest list today is the dynamics' deposit at 17.
+const MAX_SLOTS: usize = 24;
+
 /// A bind group layout for the `slots` one entry point reads, typed from the shader's
 /// own declarations (§6.10).
 ///
@@ -297,6 +304,11 @@ pub(crate) fn layout_for(
     vis: wgpu::ShaderStages,
     resid: bool,
 ) -> wgpu::BindGroupLayout {
+    assert!(
+        slots.len() <= MAX_SLOTS,
+        "`{label}` lists {} slots; `bind_group_for` holds at most {MAX_SLOTS}",
+        slots.len()
+    );
     if let Some(first) = slots.first() {
         for s in slots {
             assert_eq!(
@@ -331,18 +343,29 @@ pub(crate) fn bind_group_for<'a>(
     resid: bool,
     mut resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
 ) -> wgpu::BindGroup {
-    let entries: Vec<_> = slots
-        .iter()
-        .filter(|s| s.present(resid))
-        .map(|s| wgpu::BindGroupEntry {
-            binding: s.binding(),
-            resource: resource(s.binding()),
-        })
-        .collect();
+    assert!(slots.len() <= MAX_SLOTS, "`{label}` outgrew `MAX_SLOTS`");
+    // On the stack, filled in slot order; the tail past `count` names no resource and
+    // is never handed to wgpu — the descriptor takes `[..count]`.
+    let mut present = slots.iter().filter(|s| s.present(resid));
+    let mut count = 0;
+    let entries: [wgpu::BindGroupEntry<'a>; MAX_SLOTS] =
+        std::array::from_fn(|_| match present.next() {
+            Some(s) => {
+                count += 1;
+                wgpu::BindGroupEntry {
+                    binding: s.binding(),
+                    resource: resource(s.binding()),
+                }
+            }
+            None => wgpu::BindGroupEntry {
+                binding: u32::MAX,
+                resource: wgpu::BindingResource::BufferArray(&[]),
+            },
+        });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
-        entries: &entries,
+        entries: &entries[..count],
     })
 }
 

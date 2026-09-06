@@ -88,7 +88,7 @@ const RASTERIZE_SLOTS: &[Slot] = &[
 /// sits, and one mask tile drawn into it.
 const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
 const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
-use crate::gpu::scratch::{BufKey, ScratchPool, SubmitScope};
+use crate::gpu::scratch::{BufKey, Key, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -151,7 +151,9 @@ struct RasterShape<'a> {
     b: [f32; 4],
     c: [f32; 4],
     feather: f32,
-    edges: &'a wgpu::TextureView,
+    /// The lasso's edge list ([`lasso_edges`]); empty for every other shape, which
+    /// binds the 1×1 stand-in instead.
+    edges: &'a [[f32; 4]],
 }
 
 impl SelectionRenderer {
@@ -322,13 +324,6 @@ impl SelectionRenderer {
         if matches!(op.shape(), SelectionShape::Lasso(_)) && edges.is_empty() {
             return Some(prev.clone());
         }
-        let (_edge_tex, edge_view) = match edges.is_empty() {
-            true => (None, self.dummy_edges.clone()),
-            false => {
-                let (t, v) = self.edge_texture(&edges);
-                (Some(t), v)
-            }
-        };
         let (b, c) = shader_params(op, edges.len());
 
         // Union and Subtract build on the previous mask (it survives where the shape
@@ -351,7 +346,7 @@ impl SelectionRenderer {
                 b,
                 c,
                 feather: op.feather(),
-                edges: &edge_view,
+                edges: &edges,
             },
         ))
     }
@@ -365,7 +360,6 @@ impl SelectionRenderer {
     /// at" (`selection.wesl`).
     pub fn invert(&self, pool: &TilePool, prev: &Selection) -> Selection {
         let plan = prev.plan_invert();
-        let edges = self.dummy_edges.clone();
         self.rasterize(
             pool,
             prev,
@@ -379,7 +373,7 @@ impl SelectionRenderer {
                 b: [0.0; 4],
                 c: [0.0, MODE_INVERT, 0.0, plan.level],
                 feather: 0.0,
-                edges: &edges,
+                edges: &[],
             },
         )
     }
@@ -439,7 +433,7 @@ impl SelectionRenderer {
                 });
 
         let mut origins: Vec<MaskInstance> = Vec::new();
-        let mut tile_bgs: Vec<wgpu::BindGroup> = Vec::new();
+        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
         for coord in tiles {
             let Some(handle) = selection.tile(*coord) else {
                 continue;
@@ -448,11 +442,14 @@ impl SelectionRenderer {
             origins.push(MaskInstance {
                 origin: off.to_array(),
             });
-            tile_bgs.push(self.region_tile_bindings.group(
-                device,
-                "stark selection region tile bg",
-                |_| wgpu::BindingResource::TextureView(handle.view()),
-            ));
+            // Cached on the tile: this runs per piece per pointer move, and a mask
+            // tile is never rewritten, so the group built for it stays right.
+            tile_bgs.push(handle.region_bg(|| {
+                self.region_tile_bindings
+                    .group(device, "stark selection region tile bg", |_| {
+                        wgpu::BindingResource::TextureView(handle.view())
+                    })
+            }));
         }
         let instances = (!origins.is_empty()).then(|| {
             let bytes: &[u8] = bytemuck::cast_slice(&origins);
@@ -482,7 +479,7 @@ impl SelectionRenderer {
                 pass.set_vertex_buffer(0, inst.slice(..));
                 for (i, bg) in tile_bgs.iter().enumerate() {
                     let idx = i as u32;
-                    pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(1, *bg, &[]);
                     pass.draw(0..4, idx..idx + 1);
                 }
             }
@@ -518,6 +515,13 @@ impl SelectionRenderer {
         // whole rasterize and outlive every flush; only the per-tile uniform below
         // is scoped to one submit.
         let mut scope = self.scratch.scope(&self.ctx, "stark selection edit");
+        let edge_lease;
+        let edges: &wgpu::TextureView = if edges.is_empty() {
+            &self.dummy_edges
+        } else {
+            edge_lease = self.edge_texture(&mut scope, edges);
+            &edge_lease
+        };
         // One slot per tile, all written before the first submit (`UniformSlots`).
         let params: Vec<MaskUniform> = coords
             .iter()
@@ -566,35 +570,37 @@ impl SelectionRenderer {
         Selection::from_parts(tiles, outside, level, opacity, hull)
     }
 
-    /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`).
-    fn edge_texture(&self, edges: &[[f32; 4]]) -> (wgpu::Texture, wgpu::TextureView) {
-        let extent = wgpu::Extent3d {
-            width: edges.len() as u32,
-            height: 1,
-            depth_or_array_layers: 1,
-        };
-        let texture = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark selection lasso edges"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
+    /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`),
+    /// **leased for the scope** at a power-of-two width.
+    ///
+    /// `apply` runs live through a lasso drag, so this was a texture created and
+    /// abandoned — never `destroy()`ed — per pointer move, one more object for the
+    /// web's collector each time. Pooled, a drag settles into a handful of widths and
+    /// reuses them; the shader reads the live edge count from `Params::c[2]`
+    /// (`sd_lasso`), so the slack texels past `edges.len()` are never loaded.
+    fn edge_texture(&self, scope: &mut SubmitScope, edges: &[[f32; 4]]) -> wgpu::TextureView {
+        let n = edges.len() as u32;
+        let (tex, view) = scope.take_run(Key {
+            size: (n.next_power_of_two(), 1),
             format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            label: "stark selection lasso edges",
         });
-        self.ctx.queue.write_texture(
-            texture.as_image_copy(),
+        scope.write_texture_lease(
+            &tex,
             bytemuck::cast_slice(edges),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(edges.len() as u32 * 16),
+                bytes_per_row: Some(n * 16),
                 rows_per_image: Some(1),
             },
-            extent,
+            wgpu::Extent3d {
+                width: n,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
+        view
     }
 }
 

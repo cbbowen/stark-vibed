@@ -106,6 +106,10 @@ pub struct SubstrateMap {
     /// What share of the substrate a tip stands on, per tooth and direction of travel
     /// — the table that makes a toothed smear conserve paint ([`Bearing`]).
     bearing: Bearing,
+    /// What the texture holds, for the registry's budget
+    /// (`Resource::resident_bytes`): a 2048² bake is 16 MiB, and a document can name
+    /// one per scale rung it ever crosses.
+    texture_bytes: u64,
 }
 
 impl SubstrateMap {
@@ -184,6 +188,7 @@ impl SubstrateMap {
             uv_scale: substrate.uv_scale(),
             relief: 1.0,
             bearing: Bearing::tabulate(&packed),
+            texture_bytes: packed.len() as u64,
         }
     }
 }
@@ -215,6 +220,10 @@ impl crate::gpu::registry::Resource for Substrate {
 
     fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, stark_model::DocError> {
         canonical_height(bytes)
+    }
+
+    fn resident_bytes(gpu: &SubstrateMap) -> u64 {
+        gpu.texture_bytes
     }
 
     fn build(
