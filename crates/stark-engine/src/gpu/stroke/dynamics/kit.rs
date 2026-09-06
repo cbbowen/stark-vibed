@@ -88,11 +88,17 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// integral, not a per-segment window — never the cell that sits overhead.
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
-    /// The liquify effect's one kernel (§6.13): the backward-mapped gather that
-    /// drags the region along the travel (`dynamics.wesl::warp`). A warp slot's
-    /// only companion dispatch is the `snapshot`, over the whole square.
+    /// The liquify field's three kernels (§6.13): the field's snapshot under a
+    /// segment's square, the composition of one segment's step into it
+    /// (`dynamics.wesl::warp`), and the one resample of a piece through it
+    /// (`warp_apply`). Each over its own layout ([`slots`]), none over the
+    /// prefix-τ: the follow is the profile's own quadrature, not the tip's.
+    pub(in crate::gpu::stroke) snapshot_field_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) snapshot_field_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) warp_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) warp_apply_pipeline: wgpu::ComputePipeline,
+    pub(in crate::gpu::stroke) warp_apply_bgl: wgpu::BindGroupLayout,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
     /// swept fast path samples, so the exchange extent *is* the definite
     /// integral of the brush along the travel (compute-visible variant).
@@ -197,10 +203,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, nine entry points — `snapshot`,
+    // ---- The stamp loop: one module, eleven entry points — `snapshot`,
     // `bleed_weight`, `exchange`, `bake`, `deposit`, `cell_hoist`,
-    // `deposit_coarse`, `settle`, `warp` — over as many bind group layouts, each
-    // built from the slot list in [`slots`](super::slots).
+    // `deposit_coarse`, `settle`, and the liquify field's `snapshot_field`, `warp`
+    // and `warp_apply` — over as many bind group layouts, each built from the slot
+    // list in [`slots`](super::slots).
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
@@ -224,7 +231,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let bake_bgl = bgl("stark dynamics bake bgl", slots::BAKE);
     let settle_bgl = bgl("stark dynamics settle bgl", slots::SETTLE);
     let deposit_bgl = bgl("stark dynamics deposit bgl", slots::DEPOSIT);
+    let snapshot_field_bgl = bgl("stark dynamics snapshot field bgl", slots::SNAPSHOT_FIELD);
     let warp_bgl = bgl("stark dynamics warp bgl", slots::WARP);
+    let warp_apply_bgl = bgl("stark dynamics warp apply bgl", slots::WARP_APPLY);
     let hoist_bgl = bgl("stark dynamics cell hoist bgl", slots::HOIST);
     let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", slots::DEPOSIT_COARSE);
     // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
@@ -301,12 +310,18 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "settle",
         &[Some(&settle_bgl), Some(&prefix_bgl)],
     );
-    // The warp's follow is the deposit's own exposure (§6.13), so it reads the
-    // prefix-τ volume at group 1 like every pass that runs on one.
-    let warp_pipeline = cpipe(
-        "stark dynamics warp",
-        "warp",
-        &[Some(&warp_bgl), Some(&prefix_bgl)],
+    // The liquify field's kernels (§6.13). None reads the prefix-τ: the follow is
+    // the profile's own quadrature over the sweep frame.
+    let snapshot_field_pipeline = cpipe(
+        "stark dynamics snapshot field",
+        "snapshot_field",
+        &[Some(&snapshot_field_bgl)],
+    );
+    let warp_pipeline = cpipe("stark dynamics warp", "warp", &[Some(&warp_bgl)]);
+    let warp_apply_pipeline = cpipe(
+        "stark dynamics warp apply",
+        "warp_apply",
+        &[Some(&warp_apply_bgl)],
     );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics exchange sampler"),
@@ -375,8 +390,12 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         deposit_coarse_bgl,
         settle_pipeline,
         settle_bgl,
+        snapshot_field_pipeline,
+        snapshot_field_bgl,
         warp_pipeline,
         warp_bgl,
+        warp_apply_pipeline,
+        warp_apply_bgl,
         exchange_sampler,
         slice_pipeline,
         slice_bgl,

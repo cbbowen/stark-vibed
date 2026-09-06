@@ -8,6 +8,7 @@
 //! hold tiles.
 
 use stark_model::document::Filter;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
@@ -15,6 +16,7 @@ use rpds::{HashTrieMap, Vector};
 use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel};
 use stark_model::geom::IVec2;
 
+use super::liquify::LiquifyRun;
 use super::state::CanvasBounds;
 use crate::gpu::tile::TileMap;
 
@@ -107,6 +109,17 @@ pub struct PaintTiles {
     map: TileMap,
     bounds: CanvasBounds,
     revision: u64,
+    /// The liquify run the layer's picture is composed through (§6.13), if a
+    /// sequence of liquify strokes has left one — see [`LiquifyRun`]. Beside the
+    /// map because it is a fact about the same picture: what the map holds at the
+    /// run's written tiles is the run's base resampled through its field, and the
+    /// next liquify stroke composes into that rather than resampling it again.
+    ///
+    /// Only a liquify stroke writes it ([`Layer::with_painted`]); every other paint
+    /// edit carries it forward unchanged ([`Layer::with_tiles`]), which is what
+    /// keeps a paint stroke commuting with a liquify stroke beyond its reach
+    /// (§12.6, `document::liquify`).
+    liquify: Option<Rc<LiquifyRun>>,
 }
 
 /// Where [`PaintTiles::revision`] comes from. Process-wide and monotonic, so a
@@ -115,20 +128,27 @@ pub struct PaintTiles {
 static TILE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl PaintTiles {
-    /// The tiles, with their extent and their revision derived once.
-    fn new(map: TileMap) -> Self {
+    /// The tiles, with their extent and their revision derived once, and the liquify
+    /// run they are composed through — `None` for a picture no run stands behind.
+    fn new(map: TileMap, liquify: Option<Rc<LiquifyRun>>) -> Self {
         Self {
             bounds: CanvasBounds::of_tiles(map.keys()),
             // `Relaxed` is the whole requirement: this is asked for a *distinct*
             // number, never for an ordering between threads.
             revision: TILE_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             map,
+            liquify,
         }
     }
 
     /// The sparse tile map itself.
     pub fn map(&self) -> &TileMap {
         &self.map
+    }
+
+    /// The liquify run these tiles are composed through (§6.13), if any.
+    pub fn liquify(&self) -> Option<&Rc<LiquifyRun>> {
+        self.liquify.as_ref()
     }
 
     /// A number that changes exactly when these tiles do — **the cheapest sound
@@ -357,7 +377,7 @@ impl Layer {
             composite: CompositeParams::IDENTITY,
             visible: true,
             name: None,
-            content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new())),
+            content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new(), None)),
             carries: Vector::new(),
             carried: CarriedBounds(CanvasBounds::default()),
             translation: IVec2::ZERO,
@@ -373,7 +393,7 @@ impl Layer {
     pub(crate) fn spanning(id: LayerId, bounds: CanvasBounds) -> Self {
         let tiles = PaintTiles {
             bounds,
-            ..PaintTiles::new(HashTrieMap::new())
+            ..PaintTiles::new(HashTrieMap::new(), None)
         };
         Self {
             content: LayerContent::Paint(tiles),
@@ -495,14 +515,66 @@ impl Layer {
     /// exactly "these are the same tiles" and costs one pointer test. Two maps that
     /// are equal without sharing a root still mint — the safe direction, since the
     /// cost is a re-render and the alternative is a stale thumbnail.
+    ///
+    /// **The liquify run rides along untouched** (§6.13). A paint edit other than a
+    /// liquify stroke never writes the run — that is what lets it commute with a
+    /// liquify stroke beyond its reach (§12.6) — so the run it found is the run it
+    /// leaves, stale or not; the next liquify stroke is what decides that, by tile
+    /// identity ([`LiquifyRun::is_fresh`]). Only [`with_painted`](Self::with_painted)
+    /// replaces it.
     pub fn with_tiles(&self, tiles: TileMap) -> Self {
         match &self.content {
             LayerContent::Paint(current) if current.map().ptr_eq(&tiles) => self.clone(),
-            LayerContent::Paint(_) => Self {
-                content: LayerContent::Paint(PaintTiles::new(tiles)),
+            LayerContent::Paint(current) => Self {
+                content: LayerContent::Paint(PaintTiles::new(tiles, current.liquify.clone())),
                 ..self.clone()
             },
             LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
+        }
+    }
+
+    /// The same layer with its painted tiles replaced **and its liquify run set** —
+    /// what a liquify stroke's render lands (§6.13). `run` is the run the new tiles
+    /// are composed through; `None` says the render was not a liquify stroke's and
+    /// the run in place stays, which is [`with_tiles`](Self::with_tiles) exactly.
+    pub fn with_painted(&self, tiles: TileMap, run: Option<Rc<LiquifyRun>>) -> Self {
+        match run {
+            Some(run) => match &self.content {
+                LayerContent::Paint(_) => Self {
+                    content: LayerContent::Paint(PaintTiles::new(tiles, Some(run))),
+                    ..self.clone()
+                },
+                LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
+            },
+            None => self.with_tiles(tiles),
+        }
+    }
+
+    /// The same layer with its liquify run replaced and its tiles left alone — the
+    /// undo patch's restore of the run alone (§12.6, `patch::PatchOp::LiquifyRun`).
+    /// A no-op on anything without tiles, and on the run already there.
+    pub(crate) fn with_liquify_run(&self, run: Option<Rc<LiquifyRun>>) -> Self {
+        match &self.content {
+            LayerContent::Paint(current) if LiquifyRun::same(current.liquify(), run.as_ref()) => {
+                self.clone()
+            }
+            LayerContent::Paint(current) => Self {
+                content: LayerContent::Paint(PaintTiles {
+                    liquify: run,
+                    ..current.clone()
+                }),
+                ..self.clone()
+            },
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
+        }
+    }
+
+    /// The liquify run this layer's picture is composed through (§6.13), or `None`
+    /// for a layer with no tiles or no run.
+    pub fn liquify_run(&self) -> Option<&Rc<LiquifyRun>> {
+        match &self.content {
+            LayerContent::Paint(tiles) => tiles.liquify(),
+            LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
         }
     }
 

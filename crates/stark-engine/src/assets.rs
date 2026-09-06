@@ -58,12 +58,6 @@ struct Mask {
     /// coordinates, so one texture serves both sources (unlike the prefix-τ, whose
     /// integration axis is baked in).
     coverage_view: wgpu::TextureView,
-    /// The mask's **peak optical depth** — [`tau_of`] at its densest texel, the
-    /// number that normalizes the liquify effect's follow (§6.13). Computed at
-    /// import off the max coverage byte ([`tau_of`] is monotone), and a bound on
-    /// every pen-rotated layer besides: a rotation's resample is a convex
-    /// combination of texels, so no layer can exceed the identity's max.
-    peak_tau: f32,
 }
 
 impl Mask {
@@ -98,13 +92,10 @@ impl Mask {
     }
 }
 
-/// The two GPU readings of one loaded brush mask, resolved under one store lock —
-/// and the mask's peak τ beside them, which the liquify follow is quoted against
-/// (§6.13).
+/// The two GPU readings of one loaded brush mask, resolved under one store lock.
 pub(crate) struct MaskViews {
     pub(crate) prefix: wgpu::TextureView,
     pub(crate) coverage: wgpu::TextureView,
-    pub(crate) peak_tau: f32,
 }
 
 #[derive(Default)]
@@ -168,7 +159,6 @@ impl AssetStore {
             // brush: one layer, the mask as it stands, integrated over its own width.
             let follow = build_prefix_tau(&self.ctx, w, h, 1, &cov);
             let coverage_view = build_coverage_r8(&self.ctx, w, h, &coverage);
-            let peak_tau = peak_tau(&cov);
             slot.insert(Mask {
                 bytes,
                 coverage,
@@ -177,7 +167,6 @@ impl AssetStore {
                 follow,
                 pen: None,
                 coverage_view,
-                peak_tau,
             });
         }
         Ok(id)
@@ -222,7 +211,6 @@ impl AssetStore {
         Some(MaskViews {
             prefix: mask.prefix(&self.ctx, orientation),
             coverage: mask.coverage_view.clone(),
-            peak_tau: mask.peak_tau,
         })
     }
 
@@ -334,23 +322,6 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
 /// with the volume built here.
 pub(crate) fn tau_of(coverage: f32) -> f32 {
     -(1.0 - coverage.clamp(0.0, 0.999)).ln()
-}
-
-/// A mask's **peak optical depth** — [`tau_of`] at its densest texel, floored at
-/// one 8-bit coverage step so an empty mask stays a divisor rather than a blow-up.
-///
-/// This is the liquify follow's normalizer (§6.13): the shader's warp moves a
-/// texel by `strength · e / peak_tau` of the travel, so the tip's densest texel —
-/// the one whose exposure accrues at exactly this rate — keeps pace with the hand
-/// at strength 1, and the rest follow in proportion to the coverage that is
-/// genuinely over them. **The true max is load-bearing, not taste**: the gather's
-/// containment argument is `e ≤ peak_tau · travel` per row, so a normalizer under
-/// the mask's real peak would let a pull reach past the snapshot's trailing rim.
-/// Monotone in coverage, so the max texel answers for the whole mask — and for
-/// every pen-rotated layer of it, a resample being a convex combination.
-pub(crate) fn peak_tau(coverage: &[f32]) -> f32 {
-    let max = coverage.iter().copied().fold(1.0 / 255.0, f32::max);
-    tau_of(max)
 }
 
 /// Build a brush's **prefix-τ** volume (§6.2, §6.6): for each orientation

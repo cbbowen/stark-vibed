@@ -380,3 +380,77 @@ fn overlapping_strokes_fall_back_to_replay() {
         "fallback diverged from canonical materialization"
     );
 }
+
+/// A canvas wide enough to put a paint stroke beyond a liquify stroke's declared
+/// reach (`LiquifyEffect::REACH_PX` past its own padded rect).
+const REACH_WIDE: Extent2 = Extent2 {
+    width: 1800,
+    height: 300,
+};
+
+/// x-extents at either end of `REACH_WIDE`, further apart than the reach.
+const NEAR_END: (f32, f32) = (20.0, 90.0);
+const FAR_END: (f32, f32) = (1600.0, 1700.0);
+
+/// A liquify drag along `y` over `(x0, x1)`.
+fn drag(e: &mut Engine, (x0, x1): (f32, f32), y: f32) {
+    let mut b = common::brush(RED_VIVID, 10.0);
+    b.effect = stark_model::document::BrushEffect::Liquify(
+        stark_model::document::LiquifyEffect::default(),
+    );
+    common::stroke_with(e, b, &[Vec2::new(x0, y), Vec2::new(x1, y)]);
+}
+
+/// A liquify stroke commutes with a paint stroke beyond its reach and not with
+/// one inside it (§6.13, §12.6) — and either way every peer lands the canonical
+/// picture. A peer's paint buried under two drags is undone: beyond the reach it
+/// splices out past them on the fast path; inside the reach the drags read the
+/// tile it painted, so the undo has to rebuild through them.
+#[test]
+fn a_liquify_stroke_commutes_exactly_with_paint_beyond_its_reach() {
+    for (peer_at, commutes) in [(FAR_END, true), ((200.0, 260.0), false)] {
+        let Some((mut a, mut b)) = pair_sized(REACH_WIDE) else {
+            return;
+        };
+        // Something to warp.
+        bar(&mut a, RED_VIVID, NEAR_END, 150.0);
+        sync(&mut a, &mut b);
+        // The peer's paint, which the drags below then bury.
+        bar(&mut b, GREEN_SOFT, peer_at, 150.0);
+        sync(&mut a, &mut b);
+        // Warped twice, so the second drag composes into the first's run — the
+        // state the undo has to be ordered against.
+        drag(&mut a, (30.0, 70.0), 150.0);
+        drag(&mut a, (40.0, 80.0), 150.0);
+        sync(&mut a, &mut b);
+        let before = a.timeline_stats();
+        b.process(DocCommand::Undo);
+        sync(&mut a, &mut b);
+        let stats = a.timeline_stats();
+        if commutes {
+            assert_eq!(
+                stats.fast_removes,
+                before.fast_removes + 1,
+                "a paint beyond the reach should splice out",
+            );
+            assert_eq!(stats.rebuilds, before.rebuilds, "…without a rebuild");
+        } else {
+            assert!(
+                stats.rebuilds > before.rebuilds || stats.replayed > before.replayed,
+                "a paint inside the reach conflicts with the drags and must replay",
+            );
+        }
+        let img_a = snap(&mut a);
+        assert!(
+            images_match(&img_a, &snap(&mut b), 0),
+            "peers diverged (peer painted at {peer_at:?})"
+        );
+        let Some(canon) = canonical_snap(&mut a, REACH_WIDE) else {
+            return;
+        };
+        assert!(
+            images_match(&img_a, &canon, 0),
+            "the undo diverged from canonical materialization (peer painted at {peer_at:?})"
+        );
+    }
+}

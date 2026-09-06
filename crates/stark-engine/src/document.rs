@@ -17,6 +17,7 @@ pub(crate) mod apply;
 pub(crate) mod audit;
 pub(crate) mod fill;
 pub(crate) mod layer;
+pub(crate) mod liquify;
 pub(crate) mod merge;
 pub(crate) mod patch;
 pub(crate) mod selection;
@@ -31,6 +32,7 @@ pub(crate) use apply::PreparedStroke;
 #[doc(hidden)]
 pub use audit::undeclared;
 pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
+pub use liquify::LiquifyRun;
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
 /// leaves the document looking the same, which is the whole of what a merge promises.
 pub use merge::MergePlan;

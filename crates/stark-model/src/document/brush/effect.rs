@@ -447,11 +447,13 @@ impl Default for EraseEffect {
 
 /// The **liquify** effect (§6.13): the stroke drags the picture itself. The
 /// paint under the tip — color, per-unit opacity and height together — follows
-/// the travel as a resample of the field, so structure *moves* where the wet
-/// loop's smudge would mix it toward a mean: an edge dragged is that edge,
-/// displaced, and a texture rides along whole. Nothing is minted and nothing
-/// is exchanged — the brush carries no reservoir, no pigment, and no color a
-/// jitter could wander.
+/// the travel as a **homeomorphism** of the canvas: the stroke builds a smooth
+/// displacement field, and the picture is resampled through it *once*, from a
+/// pristine base, so an edge dragged is that edge, displaced and still sharp.
+/// Consecutive liquify strokes on a layer compose into the same field and
+/// resample from the same base, so working a spot over and over costs no
+/// resolution. Nothing is minted and nothing is exchanged — the brush carries no
+/// reservoir, no pigment, and no color a jitter could wander.
 ///
 /// A separate effect rather than a [`WetEffect`] at some rate, for the
 /// eraser's reason: warping and smearing are different tools with different
@@ -462,18 +464,19 @@ impl Default for EraseEffect {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct LiquifyEffect {
     /// The **follow fraction**, in [0, 1] — this effect's one rate: how much of
-    /// the tip's own travel the paint under full coverage keeps up with, per
-    /// pass. At 1 the paint under the tip's core moves with the hand; lower and
-    /// it slips behind, so a light setting nudges where a full one carries.
-    /// Texels the tip covers more thinly — the shoulder of a soft tip, the gaps
-    /// of a textured stamp — follow proportionally less, which is what makes
-    /// the falloff the *tip's* rather than a second knob here.
+    /// the tip's own travel the paint under the tip's core keeps up with, per
+    /// pass. At 1 the paint under the core moves with the hand; lower and it
+    /// slips behind, so a light setting nudges where a full one carries. The
+    /// shoulder of the tip follows proportionally less, on a smooth profile the
+    /// brush's hardness shapes (§6.13) — smooth by design, because a warp with a
+    /// step in its follow is a tear rather than a homeomorphism.
     ///
-    /// **The quoted range is load-bearing, not taste**: the renderer's per-segment
-    /// gather reads a snapshot whose margin is sized by the segment's own travel, so
-    /// "paint cannot outrun the brush" is what keeps every read inside it (§6.13). Both
-    /// doors hold it — [`BrushParams::sanitized`](super::BrushParams::sanitized) for
-    /// what arrives, and [`BrushEffect::set_flow`] for what a slider writes.
+    /// **The quoted range is load-bearing, not taste**: the renderer's segment
+    /// budget holds every step a contraction — `strength · travel` against the
+    /// profile's slope — which is what makes the stroke's map invertible, and it
+    /// prices that against a strength of at most 1 (§6.13). Both doors hold it —
+    /// [`BrushParams::sanitized`](super::BrushParams::sanitized) for what arrives,
+    /// and [`BrushEffect::set_flow`] for what a slider writes.
     ///
     /// A fraction of *travel*, so scrubbing keeps carrying — there is no
     /// ceiling a worked spot saturates at, which is why this effect has no
@@ -496,6 +499,20 @@ impl Default for LiquifyEffect {
 }
 
 impl LiquifyEffect {
+    /// How far beyond its own mark a liquify stroke may **read** the layer's paint,
+    /// in canvas px (§6.13, §12.6) — the contract between the footprint
+    /// ([`liquify_reads`](super::super::footprint::liquify_reads)) and the engine.
+    ///
+    /// A liquify stroke resamples the run's pristine base under the *composed*
+    /// displacement of every stroke in the run, so its reads reach as far as that
+    /// displacement does. The engine caps the displacement it lets a run accumulate
+    /// under this number and re-bases the run past it, and asserts the cap plus its
+    /// margins against this constant; the footprint claims exactly this. A number
+    /// in the model rather than the engine because the footprint is the model's,
+    /// and a claim that could quietly fall short of the reads it covers is the
+    /// §12.6 failure with no alarm.
+    pub const REACH_PX: f32 = 640.0;
+
     /// The follow fraction a brush gets when it does not say
     /// ([`strength`](Self::strength)): the full drag — for
     /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
@@ -706,8 +723,8 @@ mod tests {
     use super::*;
 
     /// The liquify strength's quoted `[0, 1]` is a **renderer** invariant, not
-    /// taste (§6.13): the warp's snapshot margin is sized by the segment's own
-    /// travel, so a follow past 1 would read outside it. The sanitize is the one
+    /// taste (§6.13): the segment budget prices its contraction against a strength
+    /// of at most 1, so a follow past 1 could fold the map. The sanitize is the one
     /// door a wire or file value comes through, so it is where the bound is
     /// pinned — a value past 1 is nonsense, not a stronger drag.
     #[test]

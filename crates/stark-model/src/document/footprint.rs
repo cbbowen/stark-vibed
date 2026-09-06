@@ -150,6 +150,20 @@ pub enum Resource {
     /// — a false conflict costs the commutation fast path, where a missed one
     /// silently diverges peers.
     Layer(LayerId),
+    /// A layer's **liquify run** (§6.13): the pristine base, the accumulated
+    /// displacement field and the reach a sequence of liquify strokes have built up
+    /// on it, through which the next liquify stroke composes rather than resampling
+    /// what the last one left.
+    ///
+    /// Its own resource, and one every liquify stroke both reads and writes, because
+    /// the run is layer-wide state that only liquify strokes touch: two liquify
+    /// strokes on one layer therefore always conflict, while a paint stroke —
+    /// which leaves the run alone — commutes with a liquify stroke exactly when
+    /// their tiles do (a liquify stroke's tile claim reaches [`liquify_reads`]
+    /// beyond its own mark, since the picture it resamples is the base under the
+    /// whole composed displacement). A paint landing inside that reach is what the
+    /// engine detects by tile identity to know the run has gone stale there.
+    LiquifyRun(LayerId),
     /// An actor's selection mask (§17.3).
     Selection(ActorId),
     /// The canvas substrate (§6.4): **which substrate, and the scale it is laid at.**
@@ -208,7 +222,8 @@ impl Resource {
             Resource::Paint(id, _)
             | Resource::Existence(id)
             | Resource::Prop(id, _)
-            | Resource::Layer(id) => Some(*id),
+            | Resource::Layer(id)
+            | Resource::LiquifyRun(id) => Some(*id),
             Resource::StackOrder
             | Resource::Selection(_)
             | Resource::Substrate
@@ -329,6 +344,32 @@ pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     claim(min - pad, max + pad, 0)
 }
 
+/// The tile-aligned reach of a **liquify** stroke's reads (§6.13): [`stroke_rect`]
+/// grown by [`LiquifyEffect::REACH_PX`](super::brush::LiquifyEffect::REACH_PX) on
+/// every side.
+///
+/// A liquify stroke writes only its own mark, but what it resamples is the run's
+/// pristine base under the *composed* displacement, which may point that far outside
+/// the mark. The engine holds the displacement under the constant, so this is the
+/// whole of what the stroke's render may read of the layer's paint — and a paint
+/// stroke inside it must be ordered against the liquify stroke (§12.6).
+pub fn liquify_reads(rec: &StrokeRecord) -> TileRect {
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for p in &rec.path {
+        if !p.pos.is_finite() {
+            return TileRect::ALL;
+        }
+        min = min.min(p.pos);
+        max = max.max(p.pos);
+    }
+    if min.x > max.x {
+        return TileRect::EMPTY;
+    }
+    let pad = Vec2::splat(stroke_pad(&rec.brush) + super::brush::LiquifyEffect::REACH_PX);
+    claim(min - pad, max + pad, 0)
+}
+
 /// The conservative footprint of an action, mirroring exactly what its arm of the
 /// fold touches (`stark-engine`'s `document/apply.rs`, checked on every debug fold
 /// by its `document/audit.rs`). `Undo` has an empty footprint because it is never
@@ -350,14 +391,26 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // the commuting splice past every stroke after it, leaving those tiles
         // toothed by a substrate the log no longer contained, and no pixel can say
         // which materialization ran.
-        ActionKind::CommitStroke(rec) => Footprint {
-            reads: vec![
+        //
+        // A **liquify** stroke (§6.13) reads further than it writes: the run it
+        // composes through ([`Resource::LiquifyRun`]) and the layer's paint out to
+        // [`liquify_reads`], where the base it resamples may lie; and it writes the
+        // run back beside its mark. Declared by the brush's effect, which is what
+        // decides the render path (§6.2), so the two cannot disagree.
+        ActionKind::CommitStroke(rec) => {
+            let mut reads = vec![
                 Resource::Existence(rec.layer),
                 Resource::Selection(actor),
                 Resource::Substrate,
-            ],
-            writes: vec![Resource::Paint(rec.layer, stroke_rect(rec))],
-        },
+            ];
+            let mut writes = vec![Resource::Paint(rec.layer, stroke_rect(rec))];
+            if rec.brush.liquify().is_some() {
+                reads.push(Resource::Paint(rec.layer, liquify_reads(rec)));
+                reads.push(Resource::LiquifyRun(rec.layer));
+                writes.push(Resource::LiquifyRun(rec.layer));
+            }
+            Footprint { reads, writes }
+        }
         // A placed image is an `AddLayer` that arrives with paint and a name in it
         // (§23), so it joins them here — and claims the paint as the **whole layer**,
         // not as the box the image covers.
@@ -732,6 +785,7 @@ mod tests {
             (Resource::Existence(layer), true),
             (Resource::Prop(layer, Prop::Name), true),
             (Resource::Layer(layer), true),
+            (Resource::LiquifyRun(layer), true),
             (Resource::StackOrder, false),
             (Resource::Selection(ActorId(1)), false),
             (Resource::Substrate, false),
@@ -744,6 +798,7 @@ mod tests {
                 | Resource::Existence(_)
                 | Resource::Prop(..)
                 | Resource::Layer(_)
+                | Resource::LiquifyRun(_)
                 | Resource::StackOrder
                 | Resource::Selection(_)
                 | Resource::Substrate
@@ -753,7 +808,7 @@ mod tests {
         }
         assert_eq!(
             samples.len(),
-            9,
+            10,
             "a new Resource needs a row in the overlap matrix",
         );
 
@@ -896,6 +951,75 @@ mod tests {
         );
         assert!(commutes(&a, &far));
         assert!(!commutes(&a, &near));
+    }
+
+    /// A liquify brush, for the strokes below.
+    fn liquify(actor: u64, layer: LayerId, from: Vec2, to: Vec2, radius: f32) -> Action {
+        let mut a = stroke(actor, layer, from, to, radius);
+        if let ActionKind::CommitStroke(rec) = &mut a.kind {
+            rec.brush.effect = super::super::brush::BrushEffect::Liquify(
+                super::super::brush::LiquifyEffect::default(),
+            );
+        }
+        a
+    }
+
+    /// The liquify stroke's declaration (§6.13): it reads the layer's paint out to
+    /// its reach and the run, and writes the run beside its mark — so a paint
+    /// stroke inside the reach conflicts, one beyond it commutes, and two liquify
+    /// strokes on one layer never commute, however far apart.
+    #[test]
+    fn a_liquify_stroke_claims_its_reach_and_the_run() {
+        let warp = liquify(1, LayerId::ROOT, Vec2::ZERO, Vec2::splat(60.0), 16.0);
+        let reach = super::super::brush::LiquifyEffect::REACH_PX;
+        // Well inside the reach, but outside the mark's own padded tiles.
+        let within = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(reach * 0.5),
+            Vec2::splat(reach * 0.5 + 40.0),
+            8.0,
+        );
+        let beyond = stroke(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(reach * 3.0),
+            Vec2::splat(reach * 3.0 + 40.0),
+            8.0,
+        );
+        assert!(!commutes(&warp, &within), "a paint inside the reach");
+        assert!(commutes(&warp, &beyond), "a paint beyond the reach");
+        let far_warp = liquify(
+            2,
+            LayerId::ROOT,
+            Vec2::splat(reach * 3.0),
+            Vec2::splat(reach * 3.0 + 40.0),
+            16.0,
+        );
+        assert!(
+            !commutes(&warp, &far_warp),
+            "two liquify strokes share the run"
+        );
+        let other_layer = liquify(2, LayerId::solo(1), Vec2::ZERO, Vec2::splat(60.0), 16.0);
+        assert!(commutes(&warp, &other_layer), "runs are per layer");
+        let f = compute_footprint(&warp);
+        assert!(
+            f.writes.contains(&Resource::LiquifyRun(LayerId::ROOT)),
+            "the run is written"
+        );
+        assert!(
+            f.reads.contains(&Resource::LiquifyRun(LayerId::ROOT)),
+            "the run is read"
+        );
+        // A plain stroke says nothing about the run.
+        let plain = compute_footprint(&stroke(1, LayerId::ROOT, Vec2::ZERO, Vec2::ONE, 8.0));
+        assert!(
+            !plain
+                .reads
+                .iter()
+                .chain(&plain.writes)
+                .any(|r| matches!(r, Resource::LiquifyRun(_))),
+        );
     }
 
     #[test]

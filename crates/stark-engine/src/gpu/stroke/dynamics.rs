@@ -20,13 +20,13 @@ use super::budget::{MIN_SEGMENT_LEN, Shortened, fit_len, flatten_budget};
 
 mod bleed;
 mod kit;
+mod liquify;
 mod plan;
 mod run;
 mod slots;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};
-pub(in crate::gpu::stroke) use run::LoopTool;
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
@@ -45,11 +45,12 @@ pub(super) enum StrokePath {
     Loop {
         dynamics: stark_model::document::BrushDynamics,
     },
-    /// Run the same region machinery with the **warp** kernel alone (§6.13): a
-    /// liquify stroke drags the canvas under it, so like the loop it needs the
-    /// region — and like the loop, a tip whose extent overflows one cannot run.
-    /// No payload: the follow rides the segments, modulated per segment as every
-    /// rate does, and the tip's peak τ rides the resolved tip.
+    /// Run the same region machinery with the **liquify field's** kernels (§6.13):
+    /// a liquify stroke composes a displacement field over the canvas under it and
+    /// resamples the run's base through it, so like the loop it needs the region
+    /// — and like the loop, a tip whose extent overflows one cannot run. No
+    /// payload: the follow rides the segments, modulated per segment as every rate
+    /// does, and the run rides the layer.
     Liquify,
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
@@ -182,8 +183,9 @@ mod tests {
         };
         let plan = dynamics_setup(&liquified(40.0, 1.0));
         assert!(matches!(plan.path, StrokePath::Liquify));
-        // The warp's own step cap (§6.13): held at `strength · travel` fixed, so
-        // a full-strength drag flattens at `WARP_TRAVEL_STEP` of its radius…
+        // The warp's own step cap (§6.13): the contraction budget, so a
+        // full-strength drag flattens at a fraction of its radius the profile's
+        // slope decides…
         assert_eq!(
             plan.tol.max_len,
             super::super::budget::liquify_len(&liquified(40.0, 1.0)),

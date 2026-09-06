@@ -156,22 +156,36 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
     Slot::at(d::REGION_LEVELS),
 ];
 
-/// `warp`: the liquify effect's one kernel (§6.13) — the snapshot in, the region
-/// out, the selection and the substrate gating the follow, and nothing of the
-/// tool: no reservoir, no bake, no noise, because the effect carries no paint of
-/// its own for any of them to serve.
+/// `snapshot_field`: the liquify field under a warp slot's square, copied so the
+/// composition can gather it while storage-writing it (§6.13).
+pub(super) const SNAPSHOT_FIELD: &[Slot] = &[
+    Slot::dynamic(d::ST),
+    Slot::at(d::FIELD),
+    Slot::at(d::UNDER_FIELD_W),
+];
+
+/// `warp`: one segment's step composed into the liquify field (§6.13) — the
+/// snapshot in, the field out, the selection scaling the follow. Nothing of the
+/// picture: the field is all this kernel evolves.
 pub(super) const WARP: &[Slot] = &[
     Slot::dynamic(d::ST),
-    Slot::at(d::UNDER_COLOR),
-    Slot::at(d::UNDER_AUX),
-    Slot::at(d::UNDER_RESID),
+    Slot::at(d::UNDER_FIELD),
+    Slot::at(d::FIELD_W),
+    Slot::at(d::SEL_MASK),
+];
+
+/// `warp_apply`: the one resample of a liquify piece (§6.13) — the field and the
+/// base composite in, the region's channels out, which the write-back then slices
+/// exactly as it slices the wet loop's.
+pub(super) const WARP_APPLY: &[Slot] = &[
+    Slot::dynamic(d::ST),
+    Slot::at(d::FIELD),
+    Slot::at(d::BASE_COLOR),
+    Slot::at(d::BASE_AUX),
+    Slot::at(d::BASE_RESID),
     Slot::at(d::REGION_COLOR_W),
     Slot::at(d::REGION_AUX_W),
     Slot::at(d::REGION_RESID_W),
-    Slot::at(d::SEL_MASK),
-    // The substrate (§6.4): the drag is gated by the tooth exactly as a deposit
-    // is — a dry tip's pull catches the peaks and skips the valleys.
-    Slot::at(d::SUBSTRATE_TEX),
 ];
 
 /// The pen-up: the deposit's targets and snapshot, and its *baked* reservoir reads too
@@ -252,7 +266,7 @@ mod tests {
     }
 
     /// The entry points' lists, named — every test here is about all of them.
-    const LISTS: [(&str, &[Slot]); 9] = [
+    const LISTS: [(&str, &[Slot]); 11] = [
         ("bleed_weight", BLEED_WEIGHT),
         ("snapshot", SNAPSHOT),
         ("exchange", EXCHANGE),
@@ -261,7 +275,9 @@ mod tests {
         ("hoist", HOIST),
         ("deposit_coarse", DEPOSIT_COARSE),
         ("settle", SETTLE),
+        ("snapshot_field", SNAPSHOT_FIELD),
         ("warp", WARP),
+        ("warp_apply", WARP_APPLY),
     ];
 
     /// A residual binding is listed **beside** the color binding it rides with, and a
@@ -285,6 +301,7 @@ mod tests {
             (b::BAKE_RLM_W, b::BAKE_LOAD_W),
             (b::CELL_RES, b::CELL_TOOL),
             (b::CELL_RES_W, b::CELL_TOOL_W),
+            (b::BASE_RESID, b::BASE_COLOR),
         ];
         for (what, list) in LISTS {
             let has = |i: u32| list.iter().any(|s| s.binding() == i);

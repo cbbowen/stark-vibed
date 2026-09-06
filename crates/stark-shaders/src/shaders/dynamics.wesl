@@ -154,12 +154,10 @@ struct Stamp {
     lambda_bleed: f32,
     // The segment's signed curvature, 1/region px; 0 is a straight sweep.
     curvature: f32,
-    // The liquify effect's follow rate (§6.13): the brush's `strength` divided
-    // by the tip's own **peak τ density**, so `drag · e · radius` is the px a
-    // texel's paint moves this slot — exactly the slot's travel for a texel the
-    // tip's core slides over at strength 1, and proportionally less out on the
-    // shoulder. Nonzero ONLY on a **warp slot**; every other kind carries 0,
-    // which is also what gates `snapshot` back onto its sweep test.
+    // The liquify effect's follow rate (§6.13): the brush's modulated `strength`,
+    // the fraction of the pass a texel under the tip's core keeps up with — the
+    // whole pass at 1, and proportionally less out on the shoulder (`warp_follow`).
+    // Nonzero ONLY on a **warp slot**; every other kind carries 0.
     drag: f32,
     // The brush's own color channels. **Undrained** — the falloff is applied per
     // fragment from its own arc length, not baked in per segment (see
@@ -305,6 +303,16 @@ struct Stamp {
     // constant, like `opacity` — every slot of a stroke says the same, since which
     // lane a texel's claim lives in cannot change segment to segment.
     ceiling_lane: u32,
+    // The liquify follow profile's **plateau** (§6.13): the radius fraction out to
+    // which the paint under the tip keeps full pace, before the smoothstep shoulder
+    // falls to 0 at the rim (`warp_profile`). The brush's hardness, capped by the
+    // host so the shoulder keeps a slope the contraction budget can price. Read by
+    // warp slots alone.
+    warp_plateau: f32,
+    // Where this region's texel (0, 0) sits in the **base composite** the liquify
+    // apply resamples from (§6.13) — the base is the region grown by the run's reach
+    // on every side, so this is that margin, in texels. Read by `warp_apply` alone.
+    base_offset: vec2<i32>,
 }
 
 @group(0) @binding(0) var<uniform> st: Stamp;
@@ -468,6 +476,27 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // centre — one more channel of the same color, exactly as everywhere else.
 @if(resid) @group(0) @binding(35) var cell_res_w: texture_storage_2d<rgba32float, write>;
 @if(resid) @group(0) @binding(36) var cell_res: texture_2d<f32>;
+
+// ---- The liquify field (§6.13) --------------------------------------------------
+//
+// A liquify stroke never touches `region_color` in place. What it evolves is the
+// run's **displacement field** over the region — `d(x)` in canvas px, `rg32float`,
+// where the picture at `x` is the run's pristine base at `x + d(x)` — and the
+// picture is resampled through it once per piece, by `warp_apply`, from the **base
+// composite**: the run's base tiles laid 1:1 like the region, but grown by the
+// run's reach so every `x + d(x)` lands inside it. Three groups of bindings, one
+// per kernel: the field's own snapshot (`snapshot_field` copies the field under a
+// segment's square so `warp` can gather it while storage-writing it, exactly as the
+// deposit's snapshot works), the composition (`warp`: field in through the
+// snapshot, field out), and the resample (`warp_apply`: field and base in, the
+// region's color, aux and residual out — the same targets the write-back slices).
+@group(0) @binding(40) var field: texture_2d<f32>;
+@group(0) @binding(41) var field_w: texture_storage_2d<rg32float, write>;
+@group(0) @binding(42) var under_field: texture_2d<f32>;
+@group(0) @binding(43) var under_field_w: texture_storage_2d<rg32float, write>;
+@group(0) @binding(44) var base_color: texture_2d<f32>;
+@group(0) @binding(45) var base_aux: texture_2d<f32>;
+@if(resid) @group(0) @binding(46) var base_resid: texture_2d<f32>;
 
 // ---- The bleed pair's mobility, hoisted (§6.2) -----------------------------------
 //
@@ -1001,13 +1030,7 @@ fn snapshot_at(gx: u32, gy: u32) {
     }
     let t = vec2<i32>(i32(gx), i32(gy));
     let rt = st.rect_origin + t;
-    // A **warp slot** (`st.drag > 0`, §6.13) copies the whole square: its
-    // gather pulls a covered texel's value from *upstream* — texels the sweep
-    // test would skip, behind the trailing rim — so every scratch texel a
-    // clamped tap can land on has to be real content (or the out-of-region
-    // zero below). Every other slot kind keeps the skip bit-for-bit: their
-    // readers check their own exposure first, so these texels are never read.
-    if st.drag == 0.0 && outside_sweep(segment_frame(rt)) {
+    if outside_sweep(segment_frame(rt)) {
         return; // deposit never reads these texels of the snapshot
     }
     let rdim = vec2<i32>(textureDimensions(region_color));
@@ -2607,42 +2630,111 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
 }
 
-// ---- 7. Warp: the liquify effect's one kernel (§6.13). ---------------------------
+// ---- 7. The liquify field: compose, then resample once (§6.13). ---------------
 //
-// One thread per extent texel, dispatched per **warp slot** — a segment of a
-// [`BrushEffect::Liquify`] stroke, whose snapshot covers the whole square (see
-// `snapshot_at`) and which is the slot's *only* other dispatch: no bake, no
-// exchange, no settle, because the effect carries no reservoir and strands nothing
-// at a break of contact (the bleed axis's argument).
+// A liquify stroke is a **homeomorphism** of the canvas, and it is kept as one: a
+// displacement field `d` over the region, `rg32float` canvas px, such that the
+// picture at `x` is the run's pristine base at `x + d(x)`. Each segment is a small
+// backward step `ψ(x) = x − v(x)`, with `v` the follow along the local travel
+// tangent, and the stroke's map composes as the field:
 //
-// The kernel is a **backward-mapped resample**: a covered texel pulls the region —
-// color, per-unit opacity and height together, one bilinear tap of each — from
-// upstream along the travel, by the px its paint kept pace with the tip this
-// segment. Structure therefore *moves* where the exchange would mix it toward a
-// mean; what it costs is the tap's own tent filter, a sub-texel softening per
-// resample that §6.13 accounts for.
+//     d'(x) = d(x − v(x)) − v(x)         (`warp`, one bilinear gather of the field)
 //
-// **How far** is `drag · e · radius`: the host folds the brush's strength and the
-// tip's peak τ density into one rate (`gpu::stroke::dynamics::plan`), and `e` is
-// the very exposure a deposit would run on — the prefix-τ difference, gated by the
-// tooth, the jitter and the drain — so the follow is additive in τ across cuts of
-// the path exactly as §6.2's composition rule asks, and every tip knob shapes the
-// warp the way it shapes a deposit. A full-coverage texel at strength 1 moves
-// `travel_px()` — it keeps pace with the hand — and the `min` against that travel
-// is what keeps every pull inside the sweep's own box, which is what the snapshot
-// holds (§6.13; the clamp of the taps below is the wall for the rounding that
-// remains).
+// — a gather of the *field*, which is smooth, and therefore nearly lossless where a
+// gather of the picture blurs an edge a little per segment until nothing sharp is
+// left. The picture is resampled through the final field exactly once per piece,
+// from the base composite (`warp_apply`), so what a hard edge pays is one bilinear
+// generation however many strokes and segments moved it.
 //
-// Sequenced in place: the gather reads the snapshot the slot's own dispatch just
-// wrote, so a stroke drags **its own trail** when it crosses it, exactly as the
-// exchange smears its own — order-dependence is the loop's, not this kernel's.
+// **Every step is a contraction, so the map is invertible.** `v = follow · t̂`, and the
+// follow is `strength · (mean profile over the pass) · travel`, on a profile whose
+// slope is bounded by construction (`warp_profile`); the host's segment budget holds
+// `strength · travel · slope / radius` under 1 (`budget::liquify_len`), which makes
+// `x ↦ x − v(x)` a bijection of the plane — and a composition of bijections is one.
+// The selection multiplies the follow *after* that (§6.8), so a hard mask edge is a
+// deliberate tear along the mask, and a feathered one a homeomorphism again.
+//
+// Sequenced in place through the snapshot, so a stroke composes over **its own
+// trail** when it crosses it — the order-dependence the loop's every kernel has.
 
-// A follow no texel could express — under a 2⁻¹² px nudge, the tent filter moves
-// less than an f16 ulp of anything. Returning without the store is the deposit's
-// rewrite guard in this kernel's terms: a near-inert drag must not re-round the
-// region once per segment (`lib::store`'s walk-down history, §6.2).
+// A follow no texel could express — under a 2⁻¹² px nudge. Returning without the
+// store keeps a near-inert drag from re-storing the field once per segment, which is
+// the deposit's rewrite guard in this kernel's terms (§6.2).
 const WARP_MIN_FOLLOW: f32 = 0.000244140625;
 
+// Four-point Gauss–Legendre on [0, 1]: the nodes (symmetric about ½) and their
+// weights, summing to 1. Exact for a degree-7 polynomial, which the profile's cubic
+// shoulder along a straight pass is well inside — so the exposure a texel accrues
+// over a segment is the profile's path integral rather than a stamp at its midpoint,
+// and consecutive segments' exposures add without printing their cadence.
+const GL4_A: f32 = 0.06943184420297371;
+const GL4_B: f32 = 0.33000947820757187;
+const GL4_WA: f32 = 0.1739274225687269;
+const GL4_WB: f32 = 0.3260725774312731;
+
+// The follow profile across the tip, at `rho` radii from its centre: full pace out
+// to the plateau, a smoothstep shoulder to 0 at the rim. C¹, with a largest slope of
+// `1.5 / (1 − plateau)` per radius — the number the host's contraction budget prices
+// against (`budget::liquify_profile_slope`), and the reason the plateau is capped
+// there: a step profile is a tear, not a warp.
+fn warp_profile(rho: f32) -> f32 {
+    return 1.0 - smoothstep(st.warp_plateau, 1.0, rho);
+}
+
+// The mean of the profile over the segment's pass at this texel: the tip's centre
+// crosses the frame's travel axis from 0 to `lr` (the pass in this point's own
+// measure, radii), and the texel sits at `local` in that frame.
+fn warp_exposure(sw: Sweep) -> f32 {
+    let y2 = sw.local.y * sw.local.y;
+    let nodes = array<f32, 4>(GL4_A, GL4_B, 1.0 - GL4_B, 1.0 - GL4_A);
+    let weights = array<f32, 4>(GL4_WA, GL4_WB, GL4_WB, GL4_WA);
+    var e = 0.0;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let dx = sw.local.x - nodes[i] * sw.lr;
+        e = e + weights[i] * warp_profile(sqrt(dx * dx + y2));
+    }
+    return e;
+}
+
+// The step at region texel `rt`: how far its paint keeps pace with the tip across
+// this slot, in px, along the local travel tangent. Zero — without a store — where
+// the tip's pass never reaches it.
+//
+// `strength · exposure · pass`: at strength 1 a texel the tip's core slides over
+// keeps pace with the hand exactly, and the shoulder follows in proportion. The
+// drain runs the drag dry as it runs a deposit dry (§6.2), and the selection scales
+// the follow rather than blending the result (§6.8).
+fn warp_follow(sw: Sweep, rt: vec2<i32>) -> f32 {
+    let sel = load1(sel_mask, rt).r;
+    if sel <= 0.0 {
+        return 0.0;
+    }
+    let arc = arc_at(sw);
+    let rate = min(rate_across(st.drag, st.drag_ramp, arc), 1.0);
+    return rate * warp_exposure(sw) * sw.lr * st.radius * stroke_drain(arc) * sel;
+}
+
+// Copy the field under a warp slot's square to the snapshot, so `warp` can gather it
+// while storage-writing it. The whole square: the gather pulls from *upstream* of
+// any one texel's sweep test, and a clamped tap has to land on real content — or on
+// the identity the out-of-region zero below states.
+@compute @workgroup_size(TILE_WG, TILE_WG)
+fn snapshot_field(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let udim = textureDimensions(under_field_w);
+    if gid.x >= udim.x || gid.y >= udim.y {
+        return;
+    }
+    let t = vec2<i32>(i32(gid.x), i32(gid.y));
+    let rt = st.rect_origin + t;
+    let rdim = vec2<i32>(textureDimensions(field));
+    var d = vec4<f32>(0.0);
+    if rt.x >= 0 && rt.y >= 0 && rt.x < rdim.x && rt.y < rdim.y {
+        d = textureLoad(field, rt, 0);
+    }
+    textureStore(under_field_w, t, d);
+}
+
+// Compose one segment's step into the field: `d'(x) = d(x − v) − v`.
 @compute @workgroup_size(TILE_WG, TILE_WG)
 fn warp(@builtin(global_invocation_id) gid: vec3<u32>) {
     // A slot whose modulated strength has fallen to zero moves nothing and must
@@ -2651,72 +2743,130 @@ fn warp(@builtin(global_invocation_id) gid: vec3<u32>) {
     if st.drag <= 0.0 {
         return;
     }
-    let udim = textureDimensions(under_color);
+    let udim = textureDimensions(under_field);
     if gid.x >= udim.x || gid.y >= udim.y {
         return;
     }
-    let t = vec2<i32>(gid.xy);
+    let t = vec2<i32>(i32(gid.x), i32(gid.y));
     let rt = st.rect_origin + t;
-    let rdim = vec2<i32>(textureDimensions(region_color_w));
+    let rdim = vec2<i32>(textureDimensions(field_w));
     if rt.x < 0 || rt.y < 0 || rt.x >= rdim.x || rt.y >= rdim.y {
         return;
     }
     let sw = segment_frame(rt);
-    let lk = segment_look(sw);
-    if outside_look(lk) {
+    // Provably outside the pass — beyond the rim laterally, or more than a tip
+    // before the start or after the end — the profile is exactly 0 at every node.
+    if abs(sw.local.y) >= 1.0 || sw.local.x <= -1.0 || sw.local.x >= sw.lr + 1.0 {
         return;
     }
-    let dpre = swept_pre(lk);
-    if dpre <= 0.0 {
-        return; // outside the swept extent: the region keeps its value
-    }
-    // The selection scales the *follow*, not a blend of the result (§6.8): a
-    // half-selected texel's paint goes half as far, so a mask rim tapers the warp
-    // instead of ghosting two pictures over each other. Fully deselected texels
-    // are exactly the "keeps its value" case.
-    let sel = load1(sel_mask, rt).r;
-    if sel <= 0.0 {
-        return;
-    }
-    // The exposure, gated exactly as a deposit's would be (§6.2): the tooth and
-    // the jitter per texel, the drain at the texel's own arc — so a dry brush's
-    // drag skips the substrate's valleys and a drained one lets go as it travels.
-    let arc = st.arc_at_start + sw.local.x * st.radius;
-    let e = dpre * sw.warp * stretch_gain(st.stretch)
-        * substrate_tooth(rt, sw.turn, rate_across(st.tooth_give, st.tooth_give_ramp, arc_at(sw))) * jitter_at(rt) * stroke_drain(arc);
-    let follow = min(rate_across(st.drag, st.drag_ramp, arc_at(sw)) * e * st.radius, travel_px()) * sel;
+    let follow = warp_follow(sw, rt);
     if follow < WARP_MIN_FOLLOW {
         return;
     }
-    // Pull from upstream along the **local** travel tangent — the same field the
-    // tooth reads the substrate along, so a curved sweep drags around its own arc
-    // to the chord's first order.
-    let dirn = sweep_tangent(st.dir, sw.turn);
-    // The tap, in snapshot texels: the texel's centre pulled back by the follow,
-    // then the half-texel off for the bilinear's base. Clamped into the scratch —
-    // whose every texel a warp slot's snapshot wrote — as the no-flux wall for
-    // whatever rounding the `min` above left.
-    let u = vec2<f32>(t) - dirn * follow;
+    let v = sweep_tangent(st.dir, sw.turn) * follow;
+    // Where this texel's paint stood before the step, in snapshot texels; the field
+    // there says where *that* came from. Clamped into the scratch — whose every
+    // texel the slot's snapshot wrote — as the wall for whatever rounding remains:
+    // the follow is at most the pass, which keeps the tap inside the sweep's box.
+    let u = vec2<f32>(t) - v;
     let base = floor(u);
     let f = u - base;
     let hi = vec2<i32>(udim) - vec2<i32>(1, 1);
     let i0 = clamp(vec2<i32>(base), vec2<i32>(0, 0), hi);
     let i1 = clamp(vec2<i32>(base) + vec2<i32>(1, 1), vec2<i32>(0, 0), hi);
-    // Every channel rides one map — the color premultiplied as the region holds
-    // it, the aux beside it — so what lands at `rt` is the field a little
-    // upstream, whole: the same parcel, moved (§6.13). The mint-budget lanes
-    // (`aux.yz`) ride along; a liquify stroke mints nothing, so they are the
-    // composite's zeros on both ends of the tap.
-    textureStore(region_color_w, rt, f16_nearest4(warp_tap(under_color, i0, i1, f)));
-    textureStore(region_aux_w, rt, f16_nearest4(warp_tap(under_aux, i0, i1, f)));
-    @if(resid) textureStore(region_resid_w, rt, f16_nearest4(warp_tap(under_resid, i0, i1, f)));
+    let d = warp_tap(under_field, i0, i1, f).xy;
+    textureStore(field_w, rt, vec4<f32>(d - v, 0.0, 0.0));
 }
 
-// One bilinear tap of the warp's gather: the four snapshot texels the clamp
-// admitted, mixed in the separable form. Hand-rolled on `textureLoad` for the
-// prefix lookup's reasons — fp32 weights that are a pure function of the inputs,
-// so the resample is bit-reproducible across adapters (§12.1) and needs no
-// FLOAT32_FILTERABLE anywhere.
+// Resample the region through the field, once: `out(x) = base(x + d(x))`, every
+// channel on one map — the color premultiplied as the region holds it, the aux and
+// the residual beside it — so what lands is the base a little away, whole.
+//
+// **Catmull-Rom, clamped, because this is the one resample there is.** The field
+// composes losslessly, so the only softening a liquified edge ever pays is this
+// pass's, and a cubic keeps a hard edge a texel sharper than a tent would. Its
+// negative lobes ring, and on premultiplied lanes ringing is a value no paint could
+// have — so each lane is clamped to the range of the four texels nearest the tap
+// (`warp_tap_cubic`), the anti-ringing clamp, which also keeps every lane inside
+// what its neighbourhood holds.
+//
+// **The identity is exact.** Where `d` is 0 the tap sits on a texel centre, the
+// cubic weights are exactly (0, 1, 0, 0), and `f16_nearest4` of a value already on
+// the f16 lattice is that value — so a texel the run never moved is stored
+// bit-for-bit, whichever adapter converts the store (`lib::store`). A drag through a
+// field that does not vary is the identity by the clamp alone: equal neighbours
+// bound the tap to themselves.
+@compute @workgroup_size(TILE_WG, TILE_WG)
+fn warp_apply(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let rdim = textureDimensions(region_color_w);
+    if gid.x >= rdim.x || gid.y >= rdim.y {
+        return;
+    }
+    let rt = vec2<i32>(i32(gid.x), i32(gid.y));
+    let d = textureLoad(field, rt, 0).xy;
+    // The source in base texels: this texel's own place in the base composite, then
+    // the displacement. The integer part is exact in f32 (a composite is at most a
+    // few thousand texels wide), so an unmoved texel lands on itself exactly.
+    let src = vec2<f32>(rt + st.base_offset) + d;
+    let bdim = vec2<i32>(textureDimensions(base_color));
+    let base = vec2<i32>(floor(src));
+    let f = src - floor(src);
+    // Every tap is clamped into the base composite, the no-flux wall (§6.13): the
+    // composite is grown by the run's reach, so a tap only meets the wall through
+    // rounding — or through the cubic's outer ring, which reaches a texel further.
+    let hi = bdim - vec2<i32>(1, 1);
+    textureStore(region_color_w, rt, f16_nearest4(warp_tap_cubic(base_color, base, f, hi)));
+    textureStore(region_aux_w, rt, f16_nearest4(warp_tap_cubic(base_aux, base, f, hi)));
+    @if(resid) textureStore(region_resid_w, rt, f16_nearest4(warp_tap_cubic(base_resid, base, f, hi)));
+}
+
+// Catmull-Rom weights along one axis at fraction `f` ∈ [0, 1), for the taps at
+// −1, 0, 1, 2 texels from the base. Exactly (0, 1, 0, 0) at `f = 0`, which is what
+// the identity rests on; summing to 1 up to rounding elsewhere.
+fn cubic_weights(f: f32) -> vec4<f32> {
+    let f2 = f * f;
+    let f3 = f2 * f;
+    return vec4<f32>(
+        -0.5 * f + f2 - 0.5 * f3,
+        1.0 - 2.5 * f2 + 1.5 * f3,
+        0.5 * f + 2.0 * f2 - 1.5 * f3,
+        -0.5 * f2 + 0.5 * f3,
+    );
+}
+
+// One Catmull-Rom tap of the resample: the separable 4×4 sum about `base` at
+// fraction `f`, clamped per lane to the range of the central 2×2 — the four texels
+// a bilinear tap would have mixed. The ring the cubic adds is what sharpens the
+// edge; the clamp is what keeps it from inventing a value no neighbour holds.
+// Hand-rolled on `textureLoad` for `warp_tap`'s reasons.
+fn warp_tap_cubic(tex: texture_2d<f32>, base: vec2<i32>, f: vec2<f32>, hi: vec2<i32>) -> vec4<f32> {
+    let wx = cubic_weights(f.x);
+    let wy = cubic_weights(f.y);
+    var sum = vec4<f32>(0.0);
+    var lo_v = vec4<f32>(3.4e38);
+    var hi_v = vec4<f32>(-3.4e38);
+    for (var j = 0; j < 4; j = j + 1) {
+        let y = clamp(base.y + j - 1, 0, hi.y);
+        var row = vec4<f32>(0.0);
+        for (var i = 0; i < 4; i = i + 1) {
+            let x = clamp(base.x + i - 1, 0, hi.x);
+            let v = textureLoad(tex, vec2<i32>(x, y), 0);
+            row = row + wx[i] * v;
+            if (i == 1 || i == 2) && (j == 1 || j == 2) {
+                lo_v = min(lo_v, v);
+                hi_v = max(hi_v, v);
+            }
+        }
+        sum = sum + wy[j] * row;
+    }
+    return clamp(sum, lo_v, hi_v);
+}
+
+// One bilinear tap of the field's gather: the four texels the clamp admitted, mixed
+// in the separable form. Hand-rolled on `textureLoad` for the prefix lookup's
+// reasons — fp32 weights that are a pure function of the inputs, so the gather is
+// bit-reproducible across adapters (§12.1) and needs no FLOAT32_FILTERABLE anywhere,
+// which the field's `rg32float` could not have offered.
 fn warp_tap(tex: texture_2d<f32>, i0: vec2<i32>, i1: vec2<i32>, f: vec2<f32>) -> vec4<f32> {
     return mix(
         mix(

@@ -363,10 +363,12 @@ large-kernel kind.
 
 **Liquify** shipped as a brush effect rather than a filter, which is what the
 gesture is: `BrushEffect::Liquify` drags the paint under the tip along the
-stroke (§6.13), on the dynamics path's own region loop. The filter-layer form —
-a stored displacement field over a region — remains open if a non-destructive
-variant is ever wanted; the destructive brushed one is what the reference apps'
-users reach for.
+stroke (§6.13), on the dynamics path's own region machinery — as a displacement
+field composed across the strokes of a run and applied to the picture by one
+resample, so an edge corrected ten times is as sharp as one corrected once. The
+filter-layer form — that same field over a region, kept non-destructively —
+remains open; the destructive brushed one is what the reference apps' users
+reach for.
 
 #### 18.1.7 Touch: the two-finger gesture — built
 

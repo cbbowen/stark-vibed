@@ -22,10 +22,12 @@
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
 //! handles, so it is cheap to `Clone` and can live in the `Action::Context` (§5).
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
+use crate::document::liquify::LiquifyRun;
 use crate::document::selection::Selection;
 use crate::gpu::channels::Zeroes;
 use crate::gpu::context::GpuContext;
@@ -48,7 +50,7 @@ mod tips;
 
 use crate::gpu::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
-use dynamics::{DynamicsKit, LoopTool, StrokePath, build_dynamics_kit, dynamics_setup};
+use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
 use erase::{EraseKit, build_erase_kit};
 use incremental::Resume;
 use segments::{Segment, generate_segments_in};
@@ -194,6 +196,9 @@ pub struct StrokeScene<'a> {
     pub assets: &'a AssetStore,
     /// The layer's committed tiles: what the stroke composites over.
     pub base: &'a TileMap,
+    /// The liquify run those tiles are composed through (§6.13), if the layer has
+    /// one — what a liquify stroke composes into, and what every other path ignores.
+    pub liquify: Option<&'a Rc<LiquifyRun>>,
     /// The selection in force, which gates the deposit (§6.8).
     pub selection: &'a Selection,
     /// The canvas substrate the document was on when this stroke was made (§6.4) —
@@ -205,6 +210,26 @@ pub struct StrokeScene<'a> {
     /// a replayed stroke with whatever the compositor happens to be showing. That is
     /// the shape the deleted `StrokeRenderer::set_substrate` had (§6.4).
     pub substrate: &'a crate::gpu::substrate::SubstrateMap,
+}
+
+/// What a stroke render leaves on the layer: the tiles, and — for a liquify stroke —
+/// the run they are composed through (§6.13). `None` from every other path, which the
+/// fold reads as "keep the run in place" ([`Layer::with_painted`]).
+///
+/// [`Layer::with_painted`]: crate::document::Layer::with_painted
+pub struct Painted {
+    pub tiles: TileMap,
+    pub liquify: Option<Rc<LiquifyRun>>,
+}
+
+impl Painted {
+    /// Tiles from a path that leaves the run alone.
+    pub(crate) fn plain(tiles: TileMap) -> Self {
+        Self {
+            tiles,
+            liquify: None,
+        }
+    }
 }
 
 /// The range in hand, resolved once for whichever path draws it — what
@@ -287,7 +312,7 @@ impl StrokeRenderer {
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
     /// depth, which for an opaque brush would barely fade at all (§6.8).
-    pub fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> TileMap {
+    pub fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> Painted {
         self.render_range(scene, rec, StrokeSpans::whole(rec), None)
             .0
     }
@@ -311,7 +336,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tool: Option<&ToolState>,
-    ) -> (TileMap, StrokeCarry) {
+    ) -> (Painted, StrokeCarry) {
         // Every stroke render, live tail or commit, on either path — the row the two
         // path rows below are read against. Its *count* is the one number that says
         // how much of this is the live preview: a gesture renders its tail on every
@@ -333,7 +358,10 @@ impl StrokeRenderer {
             // which is still where the stroke has got to — nothing was drawn, so the
             // arc clock did not move. The variant is what stops a caller freezing the
             // range on the strength of that: see `Progress::Deferred`.
-            return (scene.base.clone(), StrokeCarry::deferred(spans.dist()));
+            return (
+                Painted::plain(scene.base.clone()),
+                StrokeCarry::deferred(spans.dist()),
+            );
         };
         let plan = dynamics_setup(&rec.brush);
         // What the plan cost, said before the range is flattened so an empty range
@@ -398,7 +426,10 @@ impl StrokeRenderer {
         // exactly as it found it: "unchanged" says the caller keeps the state it
         // passed in rather than paying for a copy of it.
         if segments.is_empty() {
-            return (scene.base.clone(), StrokeCarry::unchanged(end_dist));
+            return (
+                Painted::plain(scene.base.clone()),
+                StrokeCarry::unchanged(end_dist),
+            );
         }
         let range = ResolvedRange {
             rec,
@@ -409,15 +440,16 @@ impl StrokeRenderer {
             end_dist,
             resume,
         };
+        // Only the liquify path lands a run; every other path's tiles ride out
+        // with `None`, which the fold reads as "the run in place stays" (§6.13).
+        let plain = |(tiles, carry): (TileMap, StrokeCarry)| (Painted::plain(tiles), carry);
         match plan.path {
-            StrokePath::Loop { dynamics } => {
-                self.render_dynamic(scene, range, LoopTool::Wet(dynamics))
-            }
-            StrokePath::Liquify => self.render_dynamic(scene, range, LoopTool::Liquify),
+            StrokePath::Loop { dynamics } => plain(self.render_dynamic(scene, range, dynamics)),
+            StrokePath::Liquify => self.render_liquify(scene, range),
             // The oversized tip draws what the swept deposit can of it, which is the
             // brush's own `add` paint and none of the manipulation (the error above).
-            StrokePath::Swept | StrokePath::TipTooLarge => self.render_swept(scene, range),
-            StrokePath::Erase => self.render_erase(scene, range),
+            StrokePath::Swept | StrokePath::TipTooLarge => plain(self.render_swept(scene, range)),
+            StrokePath::Erase => plain(self.render_erase(scene, range)),
         }
     }
 

@@ -10,6 +10,7 @@
 //! and [`DocState`] is this crate's answer to what the state is. The orphan rule
 //! forced that shape and it is the right one — see §2.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
@@ -19,6 +20,7 @@ use stark_model::document::{
 };
 
 use super::layer::Layer;
+use super::liquify::LiquifyRun;
 use super::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
@@ -160,20 +162,27 @@ pub(crate) struct PreparedStroke {
     pub(crate) rec: stark_model::document::StrokeRecord,
     /// The layer's tiles the render read as its base.
     pub(crate) base: crate::gpu::tile::TileMap,
+    /// The liquify run the render read beside them (§6.13) — part of the base a
+    /// liquify stroke composes through, so part of what the offer is checked against.
+    pub(crate) base_run: Option<Rc<LiquifyRun>>,
     /// The layer's tiles with the stroke on them: `base` with a fresh handle at
     /// every tile the stroke reached.
     pub(crate) tiles: crate::gpu::tile::TileMap,
+    /// The run the render left (§6.13): a liquify stroke's, or `None` for every
+    /// other effect, which leaves the run in place ([`Layer::with_painted`]).
+    pub(crate) liquify: Option<Rc<LiquifyRun>>,
 }
 
 impl PreparedStroke {
-    /// Whether these tiles are the render of `rec` over `base` — the fold's half of
-    /// the check described on the type.
+    /// Whether these tiles are the render of `rec` over `base` and `run` — the
+    /// fold's half of the check described on the type.
     fn is_render_of(
         &self,
         rec: &stark_model::document::StrokeRecord,
         base: &crate::gpu::tile::TileMap,
+        run: Option<&Rc<LiquifyRun>>,
     ) -> bool {
-        self.base.ptr_eq(base) && self.rec == *rec
+        self.base.ptr_eq(base) && LiquifyRun::same(self.base_run.as_ref(), run) && self.rec == *rec
     }
 }
 
@@ -211,8 +220,9 @@ impl ApplyCtx {
 /// - a renderer that declines leaves the state alone, **deterministically**, and says
 ///   so once.
 ///
-/// `edit` answers `None` to decline, or the new tiles and — for a transform, which
-/// carries the mask along with the paint (§16) — where the mask ended up.
+/// `edit` answers `None` to decline, or the new tiles — with the liquify run a liquify
+/// stroke leaves behind them (§6.13), `None` from every other edit, which keeps the
+/// run in place ([`Layer::with_painted`]).
 fn paint_edit(
     state: DocState,
     layer: LayerId,
@@ -220,16 +230,16 @@ fn paint_edit(
     refused: &'static str,
     edit: impl FnOnce(
         &DocState,
-        &crate::gpu::tile::TileMap,
+        &Layer,
         &super::selection::Selection,
-    ) -> Option<crate::gpu::tile::TileMap>,
+    ) -> Option<(crate::gpu::tile::TileMap, Option<Rc<LiquifyRun>>)>,
 ) -> DocState {
-    let Some(base) = paint_base(&state, layer) else {
+    let Some(target) = state.layer(layer).filter(|l| l.tiles().is_some()).cloned() else {
         return state;
     };
     let selection = state.selection_of(actor);
-    match edit(&state, &base, &selection) {
-        Some(tiles) => state.map_layer(layer, |l| l.with_tiles(tiles)),
+    match edit(&state, &target, &selection) {
+        Some((tiles, run)) => state.map_layer(layer, |l| l.with_painted(tiles, run)),
         None => {
             tracing::warn!("{refused}");
             state
@@ -578,13 +588,15 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             // neither declines. The gate above it — a matte, an absent layer — is
             // `paint_edit`'s own and returns before this is read.
             "stroke rendered nothing; ignored",
-            |state, base, selection| {
+            |state, target, selection| {
+                let base = target.tiles().expect("paint_edit hands over a paint layer");
+                let run = target.liquify_run();
                 // The preview's tiles, where the preview drew this very stroke over
                 // this very base — see `PreparedStroke`. Otherwise the stroke is
                 // rendered here, which is every replay, every peer's copy and every
                 // redo: the log carries the stroke, never its pixels.
-                let tiles = match ctx.prepared.take_if(|p| p.is_render_of(rec, base)) {
-                    Some(prepared) => prepared.tiles,
+                let painted = match ctx.prepared.take_if(|p| p.is_render_of(rec, base, run)) {
+                    Some(prepared) => (prepared.tiles, prepared.liquify),
                     None => {
                         // The substrate this stroke was painted on, as the log stood
                         // here — not as it stands now (§6.4). The tooth gates the
@@ -602,20 +614,22 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                             rec.translation,
                             stark_model::document::stroke_rect(rec),
                         );
-                        ctx.stroke.render(
+                        let painted = ctx.stroke.render(
                             crate::gpu::stroke::StrokeScene {
                                 pool: &ctx.pool,
                                 assets: &ctx.assets,
                                 base,
+                                liquify: run,
                                 selection: &gate,
                                 substrate: &substrate,
                             },
                             rec,
-                        )
+                        );
+                        (painted.tiles, painted.liquify)
                     }
                 };
                 // A stroke lays paint through the author's mask and never moves it.
-                Some(tiles)
+                Some(painted)
             },
         ),
         // An image from outside the document, as a layer holding it (§23). The layer
@@ -757,14 +771,18 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             // A fill lays paint through a mask and never moves it, which is now what
             // taking `paint_edit` says rather than a `None` it has to pass. The mask
             // is brought into the layer's frame first, as a stroke's is (§14.12).
-            |_, base, selection| {
+            |_, target, selection| {
+                let base = target.tiles().expect("paint_edit hands over a paint layer");
                 let gate = ctx.transform.shifted_selection_in(
                     &ctx.pool,
                     selection,
                     *frame,
                     stark_model::document::fill_rect(op),
                 );
-                ctx.fill.apply(&ctx.pool, base, &gate, op)
+                // A fill leaves the run in place (§6.13).
+                ctx.fill
+                    .apply(&ctx.pool, base, &gate, op)
+                    .map(|t| (t, None))
             },
         ),
 
@@ -1072,6 +1090,7 @@ fn never_a_noop(resource: &Resource) -> bool {
         Resource::Paint(..)
         | Resource::Existence(_)
         | Resource::Layer(_)
+        | Resource::LiquifyRun(_)
         | Resource::StackOrder => true,
         Resource::Prop(..)
         | Resource::Selection(_)
@@ -1088,7 +1107,8 @@ fn layer_named(resource: &Resource) -> Option<LayerId> {
         Resource::Paint(id, _)
         | Resource::Existence(id)
         | Resource::Prop(id, _)
-        | Resource::Layer(id) => Some(*id),
+        | Resource::Layer(id)
+        | Resource::LiquifyRun(id) => Some(*id),
         Resource::StackOrder
         | Resource::Selection(_)
         | Resource::Substrate

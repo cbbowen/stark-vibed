@@ -199,9 +199,8 @@ pub(super) struct Paint {
     pub(super) bleed: f32,
     /// The liquify effect's follow fraction as the pen asked for it here
     /// (§6.13) — [`LiquifyEffect::strength`](stark_model::document::LiquifyEffect)
-    /// modulated, and nonzero only on a liquify stroke. The plan divides the
-    /// tip's peak τ density out before it reaches the shader's lane
-    /// (`dynamics::plan`), because the tip is resolved there and not here.
+    /// modulated, and nonzero only on a liquify stroke: the fraction of its pass
+    /// the paint under the tip's core keeps up with.
     pub(super) drag: f32,
     /// How much give this segment's tip has against the canvas substrate (§6.4) — the
     /// brush's `tooth_give`, likewise modulated. Not a paint rate: it gates `add` per

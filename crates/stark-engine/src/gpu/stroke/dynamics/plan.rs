@@ -93,12 +93,16 @@ pub(super) enum SlotKind {
     /// its last slot — the transfer the tip was still in the middle of when the
     /// stroke stopped (`dynamics.wesl::settle`).
     Settle,
-    /// One segment of a liquify stroke (§6.13): `snapshot` (over the whole
-    /// square — the gather pulls from upstream of any one texel's sweep test) →
-    /// `warp`. The tool plays no part, so there is nothing to bake or exchange,
-    /// the reservoir ping-pong never advances, and a plan of these is the whole
-    /// of what [`liquify_plan`] emits.
+    /// One segment of a liquify stroke (§6.13): `snapshot_field` (over the whole
+    /// square — the gather pulls from upstream of any one texel's own reach) →
+    /// `warp`, composing the segment's step into the run's field. Nothing of the
+    /// picture and nothing of the tool.
     Warp,
+    /// The one resample of a liquify piece (§6.13): `warp_apply` over the whole
+    /// region, the base composite through the composed field into the region's
+    /// channels. Always the last slot of a [`liquify_plan`], and the only slot whose
+    /// rect is the region rather than a sweep's box.
+    WarpApply,
 }
 
 /// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once — so
@@ -253,10 +257,16 @@ struct Slot {
     add: f32,
     /// Signed curvature of the sweep (1/region px); 0 is a straight one.
     curvature: f32,
-    /// The liquify follow rate (§6.13): the segment's modulated strength over
-    /// the tip's peak τ density — nonzero **only** on a warp slot, and the lane
-    /// `snapshot` reads to know it must copy its whole square.
+    /// The liquify follow rate (§6.13): the segment's modulated strength, the
+    /// fraction of its pass the paint under the tip's core keeps up with — nonzero
+    /// **only** on a warp slot.
     drag: f32,
+    /// The liquify profile's plateau (§6.13, `budget::liquify_plateau`) — read by
+    /// warp slots alone, and carried on every slot of a liquify plan.
+    warp_plateau: f32,
+    /// Where the region's texel (0, 0) sits in the base composite `warp_apply`
+    /// resamples from (§6.13), in texels — the reach margin the base was grown by.
+    base_offset: [i32; 2],
     /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
     bleed_reach: f32,
     /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX and
@@ -354,6 +364,8 @@ impl Default for Slot {
             add: 0.0,
             curvature: 0.0,
             drag: 0.0,
+            warp_plateau: 0.0,
+            base_offset: [0, 0],
             bleed_reach: 0.0,
             noise_freq: [0.0; 4],
             noise_amp: [0.0; 3],
@@ -437,10 +449,14 @@ impl Slot {
             tooth_give_ramp: self.tooth_give_ramp,
             drag_ramp: self.drag_ramp,
             ceiling_lane: u32::from(self.ceiling_lane),
-            // The struct's own trailing padding, generated because the scalars
-            // above end 8 bytes short of the uniform's 16-byte round (§6.10) —
-            // `TileXform`'s own tail, one uniform over.
-            _pad_38: [0; 8],
+            warp_plateau: self.warp_plateau,
+            // The plateau ends a scalar short of the `vec2` alignment the offset
+            // wants, and the offset ends the struct short of its 16-byte round: two
+            // generated pads (§6.10), named as the zeroes they are — `TileXform`'s
+            // own tail, one uniform over.
+            _pad_39: [0; 4],
+            base_offset: self.base_offset,
+            _pad_41: [0; 8],
         }
     }
 }
@@ -987,21 +1003,26 @@ pub(super) fn dynamics_plan(
 }
 
 /// Build the liquify dispatch plan (§6.13): one warp slot per flattened segment,
-/// in stroke order, and nothing else — no bleed cadence (the effect has no such
-/// axis) and no pen-up (the warp strands nothing at a break of contact: each
-/// segment's follow is applied whole as the tip passes, the bleed axis's own
-/// argument).
+/// in stroke order — each composing its step into the run's field — and, last, the
+/// one `warp_apply` slot that resamples the whole region through the composed
+/// field. No bleed cadence (the effect has no such axis) and no pen-up (the field
+/// is complete as the tip passes; a break of contact strands nothing).
 ///
-/// The follow rate the slot carries is the segment's modulated strength over the
-/// tip's **peak τ density** (`assets::peak_tau`, through `inv_peak_tau`), so the
-/// shader's `drag · e · radius` is px of travel kept pace with — see
-/// `dynamics.wesl::warp`. Pure CPU float math over the record and the piece's
-/// geometry, like [`dynamics_plan`], and replay-deterministic for the same
-/// reason (§12.1).
+/// `plateau` is the follow profile's (`budget::liquify_plateau`); `base_offset` is
+/// where the region sits in the base composite, and `region` the region's own
+/// extent, both of which only the apply slot reads. Pure CPU float math over the
+/// record and the piece's geometry, like [`dynamics_plan`], and replay-deterministic
+/// for the same reason (§12.1).
+///
+/// The snapshot square is measured over the **warp** slots alone: the apply slot
+/// reads no snapshot, and its rect — the region — would otherwise size a scratch
+/// nothing dispatches over.
 pub(super) fn liquify_plan(
     ctx: &PlanCtx<'_>,
     segments: &[Segment],
-    inv_peak_tau: f32,
+    plateau: f32,
+    base_offset: [i32; 2],
+    region: (u32, u32),
 ) -> DynamicsPlan {
     let &PlanCtx {
         rec,
@@ -1026,14 +1047,14 @@ pub(super) fn liquify_plan(
     let sources: Vec<SlotSource<'_>> = segments.iter().map(SlotSource::Segment).collect();
     let rects = rects_for(&sources, region_origin);
     let dsize = snapshot_square(&rects);
-    let mut plan = Vec::with_capacity(sources.len());
+    let mut plan = Vec::with_capacity(sources.len() + 1);
     for (s, rect) in segments.iter().zip(&rects) {
         let (sw, paint) = (&s.sweep, &s.paint);
         let p = sw.start - region_origin;
         plan.push(LoopDispatch {
             groups: rect.groups(),
-            // The warp gathers the field whole; a cell would staircase exactly
-            // the structure the effect exists to carry.
+            // The field is gathered whole; a cell would staircase exactly the
+            // structure the effect exists to carry.
             cell_groups: None,
             kind: SlotKind::Warp,
             slot: Slot {
@@ -1042,12 +1063,12 @@ pub(super) fn liquify_plan(
                 radius: sw.radius,
                 travel_radii: sw.length / sw.radius,
                 radius_ramp: sw.radius_ramp,
-                // The one lane only a warp slot carries — and the lane
-                // `snapshot` reads to know its square must be copied whole.
-                drag: paint.drag * inv_peak_tau,
-                // Normalised by the same peak, so the two ends stay the pair
-                // they were (§6.13).
-                drag_ramp: paint.drag_ramp * inv_peak_tau,
+                // The one rate a warp slot carries: the modulated strength, and
+                // how it changes across the segment.
+                drag: paint.drag,
+                drag_ramp: paint.drag_ramp,
+                warp_plateau: plateau,
+                base_offset,
                 rect_origin: rect.origin,
                 orient: sw.orient,
                 stretch: sw.stretch,
@@ -1056,18 +1077,29 @@ pub(super) fn liquify_plan(
                 // texel's own arc, which needs the arc at the slot's start.
                 drain: b.drain_px(),
                 dist: sw.dist,
-                // …and catches on the substrate as a deposit would (§6.4). No
-                // `bearing`: there is no tool side to book the transfer against.
-                tooth_give: paint.tooth_give,
                 // Every rate a deposit would run on stays `Slot::default`'s
                 // zero — a warp slot lays nothing, lifts nothing, bleeds
                 // nothing — and the noise lanes stay zero with them: the effect
-                // has no color for a jitter to wander (§6.13).
+                // has no color for a jitter to wander (§6.13). The tooth too: a
+                // field gated by the substrate's every step is a tear, not a warp.
                 ..common.slot()
             }
             .pack(),
         });
     }
+    // The resample, over the region: its rect is the region itself, at the region's
+    // own origin.
+    plan.push(LoopDispatch {
+        groups: (groups_for(region.0), groups_for(region.1)),
+        cell_groups: None,
+        kind: SlotKind::WarpApply,
+        slot: Slot {
+            warp_plateau: plateau,
+            base_offset,
+            ..common.slot()
+        }
+        .pack(),
+    });
     DynamicsPlan { slots: plan, dsize }
 }
 
@@ -1217,6 +1249,8 @@ mod tests {
             tooth_give_ramp: 58.0,
             drag_ramp: 59.0,
             ceiling_lane: true,
+            warp_plateau: 60.0,
+            base_offset: [61, 62],
             rect_origin: Vec2::new(13.0, 14.0),
             orient: 15.0,
             drain: 16.0,
@@ -1276,6 +1310,15 @@ mod tests {
         assert_eq!(packed.curvature, 18.0);
         assert_eq!(packed.add, 17.0);
         assert_eq!(packed.drag, 54.0, "the liquify follow rate (§6.13)");
+        assert_eq!(
+            packed.warp_plateau, 60.0,
+            "the liquify profile's plateau (§6.13)"
+        );
+        assert_eq!(
+            packed.base_offset,
+            [61, 62],
+            "the base composite's margin (§6.13)"
+        );
         assert_eq!(packed.drain, 16.0);
         assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
         assert_eq!(packed.tooth_give, 32.0);

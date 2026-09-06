@@ -11,11 +11,13 @@
 //! with `previous`, so removal re-renders nothing.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use rpds::Vector;
 
 use super::layer::{Layer, LayerContent};
+use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
@@ -90,6 +92,10 @@ enum PatchOp {
     /// roster is a persistent vector, so capturing it whole is an `Arc` bump
     /// rather than a walk.
     Guides(Vector<Guide>),
+    /// A layer's liquify run (§6.13) — the run whole, by handle, because a run is
+    /// replaced rather than edited and only a liquify stroke writes it
+    /// (`document::liquify`). `None` is a layer no run stands behind.
+    LiquifyRun(LayerId, Option<Rc<LiquifyRun>>),
 }
 
 impl PatchOp {
@@ -133,6 +139,9 @@ impl PatchOp {
             PatchOp::Substrate(id, scale) => state.with_substrate(*id).with_substrate_scale(*scale),
             PatchOp::SubstrateColor(rgb) => state.with_substrate_color(*rgb),
             PatchOp::Guides(guides) => state.with_guides(guides.clone()),
+            PatchOp::LiquifyRun(id, run) => {
+                state.map_layer(*id, |l| l.with_liquify_run(run.clone()))
+            }
         }
     }
 }
@@ -278,8 +287,19 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         Resource::Layer(id) => {
             capture_resource(&Resource::Existence(*id), to, from, ops);
             capture_resource(&Resource::Paint(*id, TileRect::ALL), to, from, ops);
+            capture_resource(&Resource::LiquifyRun(*id), to, from, ops);
             for prop in Prop::ALL {
                 capture_resource(&Resource::Prop(*id, *prop), to, from, ops);
+            }
+        }
+        // The run whole, by handle, and only where the two states disagree about it —
+        // so a paint edit in the gap, which never writes the run, contributes nothing
+        // here and a liquify stroke's own run comes back exactly (§6.13, §12.6).
+        Resource::LiquifyRun(id) => {
+            let run_of = |state: &DocState| state.layer(*id).and_then(|l| l.liquify_run().cloned());
+            let (was, now) = (run_of(to), run_of(from));
+            if !LiquifyRun::same(was.as_ref(), now.as_ref()) {
+                ops.push(PatchOp::LiquifyRun(*id, was));
             }
         }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),

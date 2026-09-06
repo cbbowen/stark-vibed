@@ -101,6 +101,15 @@ pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16F
 /// exactly like paint.
 pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
+/// The format of a liquify run's **displacement field** tiles (§6.13): two f32 lanes,
+/// the displacement in canvas px. Full float rather than half because the field is
+/// re-gathered by every segment of every stroke in a run — a smooth field survives a
+/// bilinear gather almost exactly, and what would erode it is the store's rounding —
+/// and because a displacement of a few hundred px at f16 has a sixteenth of a texel
+/// of slack, which is visible in a resample and pointless to pay for. Pooled like
+/// paint, in the same `TILE_TEX` block with the same apron (§6.4).
+pub const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+
 /// What a texture was taken out of the pool *for*.
 ///
 /// It earns its place twice over, which is worth saying because it is otherwise the
@@ -136,6 +145,8 @@ pub enum AllocSource {
     MergeScratch,
     /// A tile of an image brought in from outside the document (§23).
     PlacedImage,
+    /// A liquify run's displacement-field tile (§6.13).
+    LiquifyField,
 }
 
 impl AllocSource {
@@ -146,7 +157,7 @@ impl AllocSource {
     /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
     /// A variant that slipped past both would go uncounted rather than out of
     /// bounds — telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Unknown,
         Self::IntegrateDestination,
         Self::DynamicsWriteback,
@@ -158,6 +169,7 @@ impl AllocSource {
         Self::MergeDestination,
         Self::MergeScratch,
         Self::PlacedImage,
+        Self::LiquifyField,
     ];
 
     const fn name(self) -> &'static str {
@@ -173,6 +185,7 @@ impl AllocSource {
             Self::MergeDestination => "merge destination",
             Self::MergeScratch => "merge scratch",
             Self::PlacedImage => "placed image",
+            Self::LiquifyField => "liquify field",
         }
     }
 }
@@ -354,6 +367,46 @@ impl TexHandle {
                 height: TILE_TEX,
                 depth_or_array_layers: 1,
             },
+        );
+    }
+
+    /// Encode a copy of a block **out of** this texture into `dst` — the liquify
+    /// field's composite (§6.13), which lays a run's field tiles into a region-sized
+    /// texture clipped to the region, so a ring tile contributes only the band the
+    /// region overlaps. [`copy_into`](Self::copy_into)'s mirror, and here for its
+    /// reason: the command is encoded in here and the texture handed to nobody, so
+    /// the pool's free list can never be left holding a view onto a destroyed one.
+    ///
+    /// `src` is the block's origin in this texture, `dst_origin` where it lands, and
+    /// `extent` the block; a block past either texture is a validation error, which
+    /// is what the caller's clipping arithmetic is for.
+    pub fn copy_block_out(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: wgpu::Origin3d,
+        dst: &wgpu::Texture,
+        dst_origin: wgpu::Origin3d,
+        extent: wgpu::Extent3d,
+    ) {
+        let tex = self
+            .0
+            .tex
+            .as_ref()
+            .expect("a live handle holds its texture");
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: tex,
+                mip_level: 0,
+                origin: src,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: dst,
+                mip_level: 0,
+                origin: dst_origin,
+                aspect: wgpu::TextureAspect::All,
+            },
+            extent,
         );
     }
 
@@ -919,10 +972,10 @@ pub struct TilePool {
 
 impl TilePool {
     /// A pool serving `formats` — the color space's `color` and `aux` (§6.7), which
-    /// are the only formats a caller knows — **plus the two the pool defines itself**.
+    /// are the only formats a caller knows — **plus the three the pool defines itself**.
     ///
-    /// [`MASK_FORMAT`] and [`SCRATCH_AUX_FORMAT`] are unioned in here rather than
-    /// asked of the caller, because they are this module's constants and a call site
+    /// [`MASK_FORMAT`], [`SCRATCH_AUX_FORMAT`] and [`FIELD_FORMAT`] are unioned in
+    /// here rather than asked of the caller, because they are this module's constants and a call site
     /// that had to remember them could forget one. That is not hypothetical: the
     /// scratch aux was omitted, and the omission was invisible only because
     /// `SCRATCH_AUX_FORMAT` happens to equal both color spaces' `color_format` —
@@ -933,7 +986,10 @@ impl TilePool {
     /// [`StrokeRenderer::acquire_tile`]: crate::gpu::StrokeRenderer
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
         let mut format_pools: Vec<(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)> = Vec::new();
-        for f in formats.into_iter().chain([MASK_FORMAT, SCRATCH_AUX_FORMAT]) {
+        for f in formats
+            .into_iter()
+            .chain([MASK_FORMAT, SCRATCH_AUX_FORMAT, FIELD_FORMAT])
+        {
             // Deduplicated here rather than by a map's keys, which is what the `Vec`
             // costs and all it costs: two formats that are equal must share one free
             // list, or the sharing the type doc promises is a promise about nothing.

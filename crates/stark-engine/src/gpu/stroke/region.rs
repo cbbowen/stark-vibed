@@ -271,10 +271,31 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 /// rectangle [`Covered::rect`] then builds, through the same [`Coverage::dims`] this
 /// checks against.
 pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<Range<usize>> {
+    chunk_segments_within(segments, fires, REGION_BUDGET_DIM, &[])
+}
+
+/// [`chunk_segments`] against a region edge of the caller's, with **forced cuts**:
+/// every index in `cuts` (ascending) starts a new piece whatever the budget says.
+///
+/// The liquify path's chunker (§6.13): its region budget is the loop's less the base
+/// composite's growth ([`LIQUIFY_REGION_BUDGET_DIM`](super::budget::LIQUIFY_REGION_BUDGET_DIM)),
+/// and a run that re-bases does so *at a segment*, decided by the reach walk before
+/// any piece is drawn — so the re-base is a fact about the stroke's segments and not
+/// about where this render happened to cut it, which is what `preview == committed`
+/// asks of it (§1.3). The re-base itself changes the base a piece composites, so the
+/// piece has to start there.
+pub(super) fn chunk_segments_within(
+    segments: &[Segment],
+    fires: &[BleedFire],
+    budget_dim: u32,
+    cuts: &[usize],
+) -> Vec<Range<usize>> {
+    debug_assert!(cuts.is_sorted(), "forced cuts arrive in segment order");
     let mut runs = Vec::new();
     let mut run = Coverage::default();
     let mut start = 0;
     let mut pending = fires.iter().peekable();
+    let mut cuts = cuts.iter().copied().peekable();
     for (i, s) in segments.iter().enumerate() {
         // This segment and whatever fires after it, as one box: they are committed to a
         // piece together or not at all.
@@ -283,10 +304,10 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
         while let Some(f) = pending.next_if(|f| f.after == i) {
             here.add(&f.window);
         }
+        let forced = cuts.next_if(|c| *c <= i).is_some_and(|c| c == i);
         let grown = run.union(here);
         let (w, h) = grown.dims();
-        if i > start && (w > REGION_BUDGET_DIM || h > REGION_BUDGET_DIM || i - start >= MAX_STAMPS)
-        {
+        if i > start && (forced || w > budget_dim || h > budget_dim || i - start >= MAX_STAMPS) {
             runs.push(start..i);
             (start, run) = (i, here);
         } else {
@@ -297,6 +318,15 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
         runs.push(start..segments.len());
     }
     runs
+}
+
+/// The tiles one sweep's coverage box reaches (apron included, as [`cover`] counts
+/// them) — the per-segment half of the walk, for the liquify reach walk that has to
+/// account tiles segment by segment (§6.13).
+pub(super) fn sweep_tiles(s: &Sweep) -> Vec<TileCoord> {
+    let mut out = Vec::new();
+    let _ = for_each_touched(std::iter::once(s), |_, c| out.push(c));
+    out
 }
 
 impl Covered {
@@ -638,6 +668,33 @@ mod tests {
             chunk_segments(&[s], &fires),
             vec![0..1],
             "one segment and its firing are one piece",
+        );
+    }
+
+    /// A forced cut starts a piece exactly there, whatever the budget says, and an
+    /// index that is already a piece start — or past the end — asks for nothing
+    /// (§6.13's re-base rides this).
+    #[test]
+    fn a_forced_cut_starts_a_piece_where_it_says() {
+        let segments: Vec<Segment> = (0..10)
+            .map(|i| {
+                let t = i as f32 * 8.0;
+                seg_between(Vec2::new(t, 0.0), Vec2::new(t + 8.0, 0.0), 4.0)
+            })
+            .collect();
+        assert_eq!(
+            chunk_segments(&segments, &[]),
+            vec![0..10],
+            "fits one piece"
+        );
+        assert_eq!(
+            chunk_segments_within(&segments, &[], REGION_BUDGET_DIM, &[3, 7]),
+            vec![0..3, 3..7, 7..10],
+        );
+        assert_eq!(
+            chunk_segments_within(&segments, &[], REGION_BUDGET_DIM, &[0, 3, 3, 20]),
+            vec![0..3, 3..10],
+            "a cut at the start, a repeat and one past the end are no cuts",
         );
     }
 

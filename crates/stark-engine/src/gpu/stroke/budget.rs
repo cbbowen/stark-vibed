@@ -326,37 +326,113 @@ pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
     (exchange_travel(axes(b), flow) * b.size).max(MIN_SEGMENT_LEN)
 }
 
-/// How far a liquify brush at **full strength** may travel per segment, as a
-/// fraction of the radius (§6.13) — [`RESERVOIR_EXCHANGE_STEP`]'s cousin, priced
-/// against a different first-order error: the warp is a flow integrated one Euler
-/// step per segment, each step gathering through the field the previous steps
-/// left, and what that error is first order in is the **follow a segment
-/// completes**, `strength · travel`. [`liquify_len`] holds that product fixed, so
-/// a gentle drag earns longer segments exactly as a gentle exchange does.
-///
-/// A quarter radius at strength 1: the follow is bounded by the travel, so this
-/// also caps how far any one gather pulls, and a step this size keeps the pull
-/// well inside the sweep's own box (the snapshot's containment argument, §6.13)
-/// while the tent-filter softening it buys stays sub-texel per step.
-const WARP_TRAVEL_STEP: f32 = 0.25;
+/// The bound every liquify step is held under (§6.13): the Lipschitz constant of
+/// one segment's displacement, `strength · travel · slope / radius`, may not exceed
+/// this. Under 1 the step `x ↦ x − v(x)` is a bijection of the plane — a
+/// contraction's fixed point is unique, so every point has exactly one preimage —
+/// which is what makes the stroke's map a homeomorphism and its composition one.
+/// Half rather than a hair under 1, so the curvature of a bent sweep, the drain and
+/// the quadrature's own error all fit inside the same margin.
+const WARP_CONTRACTION: f32 = 0.5;
 
-/// The travel a liquify brush's own budget puts on one segment ([`WARP_TRAVEL_STEP`]
-/// at the brush's strength and size), floored at [`MIN_SEGMENT_LEN`] — what
-/// [`flatten_budget`] spends for §6.13's path, and the number the shortening
+/// The plateau the liquify profile may not exceed (§6.13): the radius fraction the
+/// paint keeps full pace out to, before the shoulder falls to the rim. A brush's
+/// hardness names it, capped here so the shoulder is never narrower than a fifth
+/// of the radius — the largest slope [`liquify_profile_slope`] then prices is
+/// finite, and a tip that asked for a step profile gets the hardest warp that is
+/// still a warp rather than a tear.
+pub(super) const LIQUIFY_MAX_PLATEAU: f32 = 0.8;
+
+/// The plateau a brush's liquify profile runs at (§6.13): its round tip's
+/// hardness, capped by [`LIQUIFY_MAX_PLATEAU`]. A stamp has no hardness to read,
+/// and no coverage the follow reads either — a textured tip would put the texture's
+/// every step into the field, which is the tear the plateau cap exists to prevent —
+/// so it warps as a round tip of middling hardness.
+pub(super) fn liquify_plateau(shape: &BrushShape) -> f32 {
+    let hardness = match shape {
+        BrushShape::Round { hardness } => hardness.clamp(0.0, 1.0),
+        BrushShape::Stamp(_) => 0.5,
+    };
+    hardness.min(LIQUIFY_MAX_PLATEAU)
+}
+
+/// The largest slope of the liquify follow profile per radius (§6.13): a
+/// smoothstep shoulder over `[plateau, 1]` peaks at `1.5 / (1 − plateau)`
+/// (`dynamics.wesl::warp_profile`). What the contraction budget divides by.
+pub(super) fn liquify_profile_slope(plateau: f32) -> f32 {
+    1.5 / (1.0 - plateau.min(LIQUIFY_MAX_PLATEAU))
+}
+
+/// The travel a liquify brush's own budget puts on one segment (§6.13) — the
+/// longest step that is still a contraction — floored at [`MIN_SEGMENT_LEN`]. What
+/// [`flatten_budget`] spends for the liquify path, and the number the shortening
 /// warning quotes, exactly as [`dynamics_len`] is for the loop.
+///
+/// The step's displacement is `strength · exposure · travel` along the tangent, so
+/// its gradient is bounded by `strength · travel` times the profile's slope per px
+/// ([`liquify_profile_slope`] over the radius), plus what the tangent's own turn
+/// contributes on a bent sweep ([`MAX_TIP_TURN`] per radius, the flattener's cap)
+/// and what the drain's falloff does along the arc. [`WARP_CONTRACTION`] over that
+/// sum is the travel.
 ///
 /// Priced off the brush's own strength, not the modulated one, for
 /// [`exchange_travel`]'s reason: a modulation only ever scales the axis down, so
 /// the brush's value bounds every segment's. **Infinite at strength 0** — a drag
-/// that moves nothing has no step error for a cap to bound, and the flattener's
-/// base budget governs; a caller comparing against it asks `is_finite` first.
+/// that moves nothing has no step to be a contraction, and the flattener's base
+/// budget governs; a caller comparing against it asks `is_finite` first.
+///
+/// At the floor the guarantee lapses: a tip a couple of px wide at the hardest
+/// plateau asks for a step under half a px, and gets the floor instead. That is a
+/// tip whose whole shoulder is under a texel, where the field could not have
+/// resolved a fold anyway.
 pub(super) fn liquify_len(b: &BrushParams) -> f32 {
     let s = b.liquify().map_or(0.0, |l| l.strength.clamp(0.0, 1.0));
     if s <= 0.0 {
         return f32::INFINITY;
     }
-    (WARP_TRAVEL_STEP / s * b.size).max(MIN_SEGMENT_LEN)
+    let radius = b.size.max(0.5);
+    let slope_per_radius =
+        liquify_profile_slope(liquify_plateau(&b.shape)) + MAX_TIP_TURN + b.drain_px() * radius;
+    (WARP_CONTRACTION * radius / (s * slope_per_radius)).max(MIN_SEGMENT_LEN)
 }
+
+/// How far a liquify run may let its displacement accumulate before it re-bases
+/// (§6.13), canvas px: a bound on `|d|` over any tile of the run, and so on how far
+/// outside a piece's region its base composite has to reach. Past it a stroke
+/// materializes the picture and starts the field afresh from a segment boundary —
+/// one extra resample per this much of accumulated drag, where the first design
+/// paid one per quarter-radius.
+///
+/// **Under the model's reach contract, with room for the margins**
+/// ([`LiquifyEffect::REACH_PX`](stark_model::document::LiquifyEffect::REACH_PX)):
+/// the base a piece composites is its region grown by the reach the piece can
+/// accumulate, plus a texel for the bilinear tap, and the region itself is inside
+/// the stroke's own padded rect. The assertion below is what keeps the footprint
+/// from quietly under-claiming the reads (§12.6).
+pub(super) const LIQUIFY_REACH_CAP: f32 = 512.0;
+
+/// The margin the base composite carries past what the reach bounds, in texels:
+/// one for the bilinear tap's far texel, and one of slack for the rounding of a
+/// rect to whole texels.
+pub(super) const LIQUIFY_BASE_SLACK: u32 = 2;
+
+const _: () = assert!(
+    LIQUIFY_REACH_CAP + LIQUIFY_BASE_SLACK as f32 + 4.0
+        <= stark_model::document::LiquifyEffect::REACH_PX,
+    "a liquify stroke could read past the reach its footprint declares (§12.6)",
+);
+
+/// Region edge the chunker aims to keep a **liquify** piece inside (§6.13):
+/// [`REGION_BUDGET_DIM`] less the base composite's growth on both sides, so a
+/// piece's base — the largest texture the path allocates — lands at the loop's
+/// own budget.
+pub(super) const LIQUIFY_REGION_BUDGET_DIM: u32 =
+    REGION_BUDGET_DIM - 2 * (LIQUIFY_REACH_CAP as u32 + LIQUIFY_BASE_SLACK);
+
+const _: () = assert!(
+    LIQUIFY_REGION_BUDGET_DIM >= 2 * TILE_TEX,
+    "a liquify piece must be able to hold a tile and its ring",
+);
 
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
@@ -440,9 +516,9 @@ pub(super) fn flatten_budget(
     // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
     // fine enough. The cap also bounds the snapshot scratch, which is sized by the
     // longest segment.
-    // The two effects that run the region loop each price their own step —
-    // the exchange's mean-field freeze for wet, the warp's Euler step for
-    // liquify (§6.13) — and both then pay the region floor below.
+    // The two effects that run the region machinery each price their own step —
+    // the exchange's mean-field freeze for wet, the contraction of one field step
+    // for liquify (§6.13) — and both then pay the region floor below.
     let own_len = if b.wet().is_some() {
         Some(dynamics_len(b))
     } else if b.liquify().is_some() {

@@ -37,6 +37,7 @@ use stark_model::document::{Footprint, LayerId, Prop, Resource};
 use stark_model::geom::TileCoord;
 
 use super::layer::{Layer, LayerContent};
+use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::DocState;
 
@@ -49,6 +50,9 @@ enum Diff {
     /// test, for the reason `patch.rs` diffs by it: a committed tile is never
     /// rewritten in place, so a shared handle *is* an unchanged tile (§5.2).
     Tile(LayerId, TileCoord),
+    /// One layer's liquify run changed hands (§6.13) — by handle, for the reason a
+    /// tile is: a run is replaced, never edited.
+    Liquify(LayerId),
     /// Everything else, named directly.
     Named(Resource),
 }
@@ -57,6 +61,7 @@ impl std::fmt::Display for Diff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Diff::Tile(layer, coord) => write!(f, "tile {coord:?} of {layer:?}"),
+            Diff::Liquify(layer) => write!(f, "liquify run of {layer:?}"),
             Diff::Named(r) => write!(f, "{r:?}"),
         }
     }
@@ -119,6 +124,9 @@ fn covered(diff: &Diff, writes: &[Resource]) -> bool {
             Resource::Layer(l) => l == layer,
             _ => false,
         }),
+        Diff::Liquify(layer) => writes
+            .iter()
+            .any(|w| matches!(w, Resource::LiquifyRun(l) | Resource::Layer(l) if l == layer)),
         Diff::Named(r) => writes.iter().any(|w| w.overlaps(r)),
     }
 }
@@ -243,6 +251,9 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
         // A layer the fold did not touch still holds the *same persistent root*
         // (`Layer::with_tiles`), so the common case is one pointer test rather than
         // a scan of every tile of every layer on every fold in the workspace.
+        if !LiquifyRun::same(x.liquify_run(), y.liquify_run()) {
+            out.push(Diff::Liquify(id));
+        }
         if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles())
             && !tx.ptr_eq(ty)
         {

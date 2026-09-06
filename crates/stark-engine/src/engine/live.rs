@@ -311,8 +311,12 @@ impl Preview {
                     // `overlay_tiles` stays for the genuinely contested case, which is
                     // the only one it was written for: two peers painting one layer.
                     out = if touched.insert(rec.layer) {
-                        match tail_state.layer(rec.layer).and_then(|l| l.tiles()).cloned() {
-                            Some(tiles) => out.map_layer(rec.layer, |l| l.with_tiles(tiles)),
+                        match tail_state.layer(rec.layer).filter(|l| l.tiles().is_some()) {
+                            Some(l) => {
+                                let tiles = l.tiles().cloned().expect("filtered on tiles");
+                                let run = l.liquify_run().cloned();
+                                out.map_layer(rec.layer, |l| l.with_painted(tiles, run))
+                            }
                             None => out,
                         }
                     } else {
@@ -330,13 +334,19 @@ impl Preview {
                         && self.doc.is_none()
                         && !cfg!(feature = "debug-unfrozen");
                     if lands_at_commit
-                        && let Some(base) = base.layer(rec.layer).and_then(|l| l.tiles())
-                        && let Some(tiles) = tail_state.layer(rec.layer).and_then(|l| l.tiles())
+                        && let Some(from) = base.layer(rec.layer).filter(|l| l.tiles().is_some())
+                        && let Some(to) = tail_state.layer(rec.layer)
+                        && let Some(tiles) = to.tiles()
                     {
                         self.prepared = Some(PreparedStroke {
-                            rec,
-                            base: base.clone(),
+                            base: from.tiles().cloned().expect("filtered on tiles"),
+                            base_run: from.liquify_run().cloned(),
                             tiles: tiles.clone(),
+                            // The run the tail left, if the stroke is a liquify one;
+                            // the fold keeps the run in place otherwise, exactly as
+                            // `with_painted` does with a `None` (§6.13).
+                            liquify: rec.brush.liquify().and_then(|_| to.liquify_run().cloned()),
+                            rec,
                         });
                     }
                 }
@@ -755,9 +765,10 @@ fn render_span_range(
     // A matte has no tile map, so it previews as nothing — matching the commit,
     // which refuses the stroke outright (§15.7). Preview and
     // commit agreeing is the §1.3 invariant, so the two refusals must line up.
-    let Some(tiles_base) = base.layer(rec.layer).and_then(|l| l.tiles()) else {
+    let Some(target) = base.layer(rec.layer).filter(|l| l.tiles().is_some()) else {
         return (base.clone(), carry_only(spans.dist()));
     };
+    let tiles_base = target.tiles().expect("filtered on tiles");
     // The **author's** mask, exactly as the commit will read it — which is what
     // lets one client's live stroke be reproduced faithfully on another's screen
     // while their selections differ (§17.3). Brought into the record's frame by
@@ -793,11 +804,12 @@ fn render_span_range(
         "a live stroke is being drawn against a substrate image the document is not on",
     );
     let substrate = ctx.substrates.current();
-    let (tiles, carry) = ctx.stroke.render_range(
+    let (painted, carry) = ctx.stroke.render_range(
         crate::gpu::stroke::StrokeScene {
             pool: &ctx.pool,
             assets: &ctx.assets,
             base: tiles_base,
+            liquify: target.liquify_run(),
             selection: &selection,
             substrate: &substrate,
         },
@@ -805,7 +817,12 @@ fn render_span_range(
         spans,
         tool,
     );
-    (base.map_layer(rec.layer, |l| l.with_tiles(tiles)), carry)
+    (
+        base.map_layer(rec.layer, |l| {
+            l.with_painted(painted.tiles, painted.liquify)
+        }),
+        carry,
+    )
 }
 
 /// Copy `dirty`'s tiles from `src`'s `layer` into `out` — the overlay step of the
@@ -823,9 +840,10 @@ fn overlay_tiles(
     if dirty.is_empty() {
         return out.clone();
     }
-    let Some(src_tiles) = src.layer(layer).and_then(|l| l.tiles()) else {
+    let Some(src_layer) = src.layer(layer).filter(|l| l.tiles().is_some()) else {
         return out.clone();
     };
+    let src_tiles = src_layer.tiles().expect("filtered on tiles");
     let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()) else {
         return out.clone();
     };
@@ -836,5 +854,8 @@ fn overlay_tiles(
             None => tiles = tiles.remove(coord),
         }
     }
-    out.map_layer(layer, |l| l.with_tiles(tiles))
+    // The run travels with the tiles it composed (§6.13): a contested liquify
+    // stroke's overlay carries the run its tail left, as the uncontested swap does.
+    let run = src_layer.liquify_run().cloned();
+    out.map_layer(layer, |l| l.with_painted(tiles, run))
 }

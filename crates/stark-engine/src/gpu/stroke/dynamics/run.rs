@@ -1,5 +1,8 @@
 //! Recording one dynamics render: regions, the reservoir ping-pong, the compute pass
-//! the plan's slots are dispatched through, and the write-back (§6.2).
+//! the plan's slots are dispatched through, and the write-back (§6.2). The region
+//! composite, the selection gather, the stamp upload and the slice are free functions
+//! beside the run, because the liquify path runs the same region machinery around
+//! a different kernel (§6.13, `liquify.rs`).
 //!
 //! This is the half that owns GPU state. What it is *asked* to record comes from
 //! [`plan`](super::plan); what it records *with* comes from [`kit`](super::kit).
@@ -27,7 +30,6 @@ use super::super::{
 use super::bleed::bleed_fires;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dynamics_plan,
-    liquify_plan,
 };
 use super::slots;
 use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
@@ -51,21 +53,8 @@ use stark_shaders::mirror::dynamics::binding as b;
 // from (§6.10): a slot names its own format, so the host asks rather than repeats.
 use stark_shaders::mirror::dynamics::decl as d;
 
-/// Which tool the region loop is running — the wet exchange with the axes that
-/// chose it (§6.2), or the liquify warp (§6.13), which shares the region, the
-/// piece chunking and the write-back and dispatches a plan of warp slots instead.
-/// A tag beside the range rather than a second entry point, because everything
-/// that differs between the two is a per-slot question the plan already answers
-/// ([`SlotKind`]); what is decided here is only which plan gets built and whether
-/// there is a tool to seed, settle and carry at all. Handed in by the gate that
-/// chose the path, rather than re-derived here from the effect behind an `expect`
-/// naming that gate.
-#[derive(Clone, Copy)]
-pub(in crate::gpu::stroke) enum LoopTool {
-    Wet(stark_model::document::BrushDynamics),
-    Liquify,
-}
 use crate::gpu::uniforms::UniformSlots;
+use stark_model::document::BrushDynamics;
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
 // here under a different name.
@@ -242,7 +231,7 @@ impl StrokeRenderer {
         &self,
         scene: StrokeScene<'_>,
         range: ResolvedRange<'_>,
-        tool: LoopTool,
+        dynamics: BrushDynamics,
     ) -> (TileMap, StrokeCarry) {
         // The sequential stamp loop end to end. Everything below it — `stroke.piece`
         // and the four phases inside that, then `stroke.submit` — partitions this
@@ -261,18 +250,14 @@ impl StrokeRenderer {
         } = range;
         let capture = resume.capture;
 
-        let mut run = DynamicsRun::new(self, scene, range, tool);
+        let mut run = DynamicsRun::new(self, scene, range, dynamics);
         let mut map = scene.base.clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece rather than re-derived inside each: the chunker must
         // measure every piece **with its windows** — a window can reach back a
         // quantum before the segment it fires after, which for a piece's first
         // segment is substrate no segment box covers ([`chunk_segments`]).
-        // A liquify stroke has no such axis, so it fires nothing (§6.13).
-        let (fires, bleed_capped) = match tool {
-            LoopTool::Wet(d) => bleed_fires(d.bleed, segments),
-            LoopTool::Liquify => (Vec::new(), false),
-        };
+        let (fires, bleed_capped) = bleed_fires(dynamics.bleed, segments);
         // The third budget, said out loud like the other two. A segment wanting more
         // than `MAX_BLEED_FIRES_PER_SEGMENT` firings gets the cap, and past it the axis
         // "quietly under-delivers" — `bleed.rs`'s own words. The artist sees a bleed
@@ -296,10 +281,6 @@ impl StrokeRenderer {
         // pushes a run whenever it is given a segment, and the empty range returned
         // above — but the proof was two functions away from the subtraction relying on
         // it, and "is there another piece after this one" is the question anyway.
-        // Only the wet tool has a pen-up to settle: the warp applies each
-        // segment's follow whole as the tip passes, so a break of contact strands
-        // nothing — the bleed axis's argument, and §6.13's statement of it.
-        let settles = matches!(tool, LoopTool::Wet(_));
         let mut pieces = chunk_segments(segments, &fires).into_iter().peekable();
         while let Some(piece) = pieces.next() {
             let is_last = pieces.peek().is_none();
@@ -315,19 +296,9 @@ impl StrokeRenderer {
                     ..*f
                 })
                 .collect();
-            map = run.draw(
-                &map,
-                &segments[piece],
-                &piece_fires,
-                settles && !capture && is_last,
-            );
+            map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
         }
-        // A liquify range hands nothing on: the canvas *is* the state (§6.13),
-        // and a later range recomposites it from the tiles this one wrote back.
-        let tool_out = match tool {
-            LoopTool::Wet(_) => capture.then(|| run.capture_tool()),
-            LoopTool::Liquify => None,
-        };
+        let tool_out = capture.then(|| run.capture_tool());
         // The pieces partition the segments, so the union of what each one enumerated
         // for itself *is* what the whole range touched — accumulated as they went
         // rather than walked a second time over every (segment, tile) pair, which is
@@ -427,13 +398,6 @@ struct DynamicsRun<'a> {
     /// over the swept layouts — for the per-segment draw of the ceiling lane
     /// over the region (§6.2). `None` unless the pen drives the ceiling.
     lane: Option<LaneBinds>,
-    /// Which tool this run is drawing (§6.2, §6.13) — what picks the plan a
-    /// piece dispatches, and gates everything only the wet tool has: the mint
-    /// budget, the settle, the carry.
-    tool: LoopTool,
-    /// The liquify follow's normalizer, `1 / peak_tau` of the resolved tip
-    /// (`assets::peak_tau`) — read only by [`liquify_plan`]'s slots.
-    inv_peak_tau: f32,
     /// [`upload_plan`](Self::upload_plan)'s staging bytes, kept across the fold's
     /// pieces: a plan is `MAX_STAMPS × STAMP_STRIDE` at the top — a megabyte — so
     /// a fresh `vec!` per piece was an allocation of that size per pointer move.
@@ -448,16 +412,8 @@ impl<'a> DynamicsRun<'a> {
     /// a pixel soft, and a texel under it caps its mint exactly as a dial below
     /// 1 does (§6.8). The mask's overall opacity is already inside
     /// `consts.opacity` (`stroke_constants`); this is about its coverage.
-    ///
-    /// Never for the liquify tool: it mints nothing for a ceiling to budget —
-    /// its opacity *is* 1 (`BrushEffect::opacity`) and the mask scales its
-    /// follow directly in the warp kernel (§6.13) — so even under a selection
-    /// there are no lanes to seed or carry.
     fn capped(&self) -> bool {
-        matches!(self.tool, LoopTool::Wet(_))
-            && (self.consts.opacity < 1.0
-                || self.consts.ceiling_lane
-                || self.scene.selection.is_active())
+        self.consts.opacity < 1.0 || self.consts.ceiling_lane || self.scene.selection.is_active()
     }
 
     /// Whether the pen drives this stroke's ceiling (§6.2) — the run then draws
@@ -473,7 +429,7 @@ impl<'a> DynamicsRun<'a> {
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
         range: ResolvedRange<'a>,
-        tool: LoopTool,
+        dynamics: BrushDynamics,
     ) -> Self {
         let ResolvedRange {
             rec,
@@ -560,7 +516,7 @@ impl<'a> DynamicsRun<'a> {
         // the carried tiles, and the swept sweep's own bind groups for drawing the
         // lane over the region — the brush bound exactly as the fast path binds
         // it, so the lane's sums are the fast path's.
-        let leveled = matches!(tool, LoopTool::Wet(_)) && consts.ceiling_lane;
+        let leveled = consts.ceiling_lane;
         let levels: BTreeMap<TileCoord, Arc<Kept>> = prior
             .map(ToolState::looped)
             .map_or_else(BTreeMap::new, |t| {
@@ -595,14 +551,8 @@ impl<'a> DynamicsRun<'a> {
         } else {
             // Init: latent = the brush's own color, per-unit opacity = exactly 1
             // (minted paint is opaque per unit, §6.2); the carried amount starts
-            // at the pre-`charge` glob (0 = empty tool). A liquify brush has no
-            // glob — and no reservoir reader either: its plan dispatches nothing
-            // that touches the tool, so this clear only keeps the pool's
-            // no-stale-reads contract the cheap way.
-            let charge = match tool {
-                LoopTool::Wet(d) => d.charge,
-                LoopTool::Liquify => 0.0,
-            };
+            // at the pre-`charge` glob (0 = empty tool).
+            let charge = dynamics.charge;
             scope
                 .encoder()
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -693,11 +643,6 @@ impl<'a> DynamicsRun<'a> {
             fresh: CarriedLanes::new(fresh_key(), fresh),
             levels: CarriedLanes::new(levels_key(), levels),
             lane,
-            tool,
-            // Floored where it is inverted, though `assets::peak_tau` already
-            // floors what it hands out: a divisor is the one reading of the
-            // number that cannot shrug off a zero.
-            inv_peak_tau: 1.0 / tip.peak_tau.max(1e-6),
             stamps: Vec::new(),
         }
     }
@@ -821,10 +766,7 @@ impl<'a> DynamicsRun<'a> {
                 consts: self.consts,
                 substrate: self.scene.substrate,
             };
-            let plan = match self.tool {
-                LoopTool::Wet(_) => dynamics_plan(&ctx, segments, fires, settle),
-                LoopTool::Liquify => liquify_plan(&ctx, segments, self.inv_peak_tau),
-            };
+            let plan = dynamics_plan(&ctx, segments, fires, settle);
             let under = self.snapshot_scratch(plan.dsize);
             // The cell scratch (§6.2), only when some slot actually takes the coarse
             // path — a small or hard tip allocates nothing and binds nothing.
@@ -927,8 +869,6 @@ impl<'a> DynamicsRun<'a> {
         h: u32,
     ) -> Region {
         let r = self.r;
-        let kit = &r.dynamics;
-        let device = &r.ctx.device;
 
         // COPY_SRC because the write-back cuts the tiles straight out of these by
         // texture copy ([`Self::write_back`]); COPY_DST because the opacity
@@ -984,130 +924,24 @@ impl<'a> DynamicsRun<'a> {
             })
             .unzip();
 
-        // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
-        // own `ViewUniform` — this path binds its own buffer to the very same
-        // `composite.wesl`, so it wants that struct rather than a second declaration
-        // of it that a comment asks to be kept in step (§6.2).
-        let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
-        let view = view_uniform(
-            // Diagonal: the region is axis-aligned with the canvas whatever angle the
-            // *screen* view happens to be at.
-            [sx, 0.0, 0.0, sy],
-            Vec2::new(-region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0),
-            // Zoom reaches only the selection outline, and no chrome is drawn into a
-            // working region — this is a buffer the loop evolves, not a picture.
-            0.0,
-        );
-        let view_buf = self.scope.take_piece_buffer(BufKey {
-            size: std::mem::size_of_val(&view) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: "stark dynamics region view",
-        });
-        self.scope.write_lease(&view_buf, bytemuck::bytes_of(&view));
-        let view_bg = desc::bind_group_for(
-            device,
-            "stark dynamics region view bg",
-            &kit.composite_view_bgl,
-            crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
-            false,
-            |i| match i {
-                cb::VIEW => view_buf.as_entire_binding(),
-                cb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
-                other => unreachable!("the composite view group lists no binding {other}"),
-            },
-        );
-        let mut tile_origins: Vec<TileInstance> = Vec::with_capacity(halo.len());
-        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::with_capacity(halo.len());
-        for coord in halo {
-            if let Some(tile) = base.get(coord) {
-                tile_origins.push(TileInstance {
-                    origin: coord.origin().to_array(),
-                    opacity: 1.0,
-                });
-                // **The group the tile itself caches**, which is why this loop is
-                // handed pass A's layout rather than building one from the same slot
-                // list (`kit.rs`). A live stroke re-composites its halo on every
-                // pointer move, and the halo of a wide tip is tens of tiles per piece
-                // — so a group built here was tens of WebGPU objects a move, which is
-                // the allocation *rate* `TilePairHandle::composite_bg` was introduced
-                // to stop pass A paying and this path went on paying.
-                //
-                // A resident tile in a pigment space always has a residual, so
-                // `Zeroes` never stands in here.
-                tile_bgs.push(crate::gpu::composite::tile_bind_group(
-                    device,
-                    &kit.composite_tile_bgl,
-                    tile,
-                ));
-            }
-        }
-        let tile_inst = (!tile_origins.is_empty()).then(|| {
-            let bytes: &[u8] = bytemuck::cast_slice(&tile_origins);
-            let buf = self.scope.take_piece_buffer(BufKey {
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                label: "stark dynamics region tile instances",
-            });
-            self.scope.write_lease(&buf, bytes);
-            buf
-        });
-        {
-            let targets = Targets {
+        let rect = RegionBox {
+            origin: region_origin,
+            w,
+            h,
+        };
+        composite_tiles(
+            r,
+            &mut self.scope,
+            base,
+            halo,
+            rect,
+            Targets {
                 color: &color,
                 aux: &aux,
                 resid: resid.as_ref(),
-            };
-            let att = targets.attachments(desc::CLEAR);
-            let mut pass = self
-                .scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark dynamics region composite"),
-                    color_attachments: &att[..targets.count()],
-                    ..Default::default()
-                });
-            // An empty region (no base tiles) just stays cleared → "no paint".
-            if let Some(inst) = &tile_inst {
-                pass.set_pipeline(&kit.composite_pipeline);
-                // Offset 0: the slot list this group answers to is pass A's, whose
-                // view is dynamic for the eyedropper's sake (`composite::ViewBindings`).
-                // This loop composites one region through one view and has one slot.
-                pass.set_bind_group(0, &view_bg, &[0]);
-                pass.set_vertex_buffer(0, inst.slice(..));
-                for (i, bg) in tile_bgs.iter().enumerate() {
-                    let idx = i as u32;
-                    pass.set_bind_group(1, *bg, &[]);
-                    pass.draw(0..4, idx..idx + 1);
-                }
-            }
-        }
-
-        // The selection over this region (§6.8), gathered from the same halo tiles the
-        // paint came from, so it is 1:1 with the color/aux regions. An unrestricted
-        // selection binds the 1×1 constant instead — the loop's masked reads then
-        // return 1 everywhere and the stroke behaves exactly as before.
-        let sel_mask = if self.scene.selection.is_universal() {
-            r.selection.constant(1.0)
-        } else {
-            // Leased, not created: this is up to `MAX_REGION_DIM`² of `R8Unorm` and a
-            // live stroke re-gathers it per piece per pointer move, so creating one
-            // was megabytes of allocation and teardown a move for a texture of the
-            // very same shape each time (`scratch`).
-            let (_, view) = self.scope.take_piece(Key {
-                size: (w, h),
-                format: crate::gpu::tile::MASK_FORMAT,
-                usage: crate::gpu::SelectionRenderer::REGION_MASK_USAGE,
-                label: "stark selection region mask",
-            });
-            r.selection.region_mask(
-                &mut self.scope,
-                &view,
-                self.scene.selection,
-                halo,
-                (region_origin, crate::view::Extent2::new(w, h)),
-            );
-            view
-        };
+            },
+        );
+        let sel_mask = region_selection(r, &mut self.scope, self.scene.selection, halo, rect);
 
         Region {
             color_tex,
@@ -1210,20 +1044,7 @@ impl<'a> DynamicsRun<'a> {
     /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
     /// this one used.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
-        let data = &mut self.stamps;
-        data.clear();
-        data.resize(plan.len() * STAMP_STRIDE as usize, 0);
-        for (i, d) in plan.iter().enumerate() {
-            let at = i * STAMP_STRIDE as usize;
-            data[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
-        }
-        let buf = self.scope.take_piece_buffer(BufKey {
-            size: data.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: "stark dynamics stamps",
-        });
-        self.scope.write_lease(&buf, data);
-        buf
+        upload_stamps(&mut self.scope, &mut self.stamps, plan)
     }
 
     /// Every bind group the loop switches between while recording one piece.
@@ -1245,8 +1066,7 @@ impl<'a> DynamicsRun<'a> {
     /// varies only the offset.
     ///
     /// Only the groups `needs` names are built: a group is a WebGPU object per
-    /// piece per pointer move, and a liquify plan — all warp slots — used to pay
-    /// for the six wet-only ones it never bound.
+    /// piece per pointer move.
     fn bind_piece<'p>(
         &'p self,
         region: &'p Region,
@@ -1423,19 +1243,6 @@ impl<'a> DynamicsRun<'a> {
                 |s| common(s).expect("settle lists no other binding"),
             )
         });
-        // The warp's group (§6.13), only on the run whose plan can dispatch one —
-        // every slot it lists is in `common`, the tool having nothing of its own
-        // to bind.
-        let warp = matches!(self.tool, LoopTool::Liquify).then(|| {
-            desc::bind_group_for(
-                device,
-                "stark dynamics warp bg",
-                &kit.warp_bgl,
-                slots::WARP,
-                resid,
-                |s| common(s).expect("warp lists no other binding"),
-            )
-        });
         // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
         // The hoist reads the same baked prefixes the exact deposit's front half did;
         // the coarse deposit swaps those two bindings for the cell means and keeps
@@ -1477,7 +1284,6 @@ impl<'a> DynamicsRun<'a> {
             bleed_weight,
             coarse,
             settle,
-            warp,
         }
     }
 
@@ -1663,28 +1469,10 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 }
-                // One liquify segment (§6.13): snapshot, then the gather. The
-                // tool plays no part, so `cur` stays put — as it does for a
-                // bleed firing, and for the same reason.
-                SlotKind::Warp => {
-                    // Over the **whole snapshot square**, the mobility pass's
-                    // argument one arm up: the gather pulls from upstream of any
-                    // one texel's sweep test, and a clamped tap must land on a
-                    // texel this slot's snapshot wrote (`dynamics.wesl`'s
-                    // `snapshot_at` reads `st.drag` to copy the square whole).
-                    cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
-                    cpass.dispatch_workgroups(square_groups, square_groups, 1);
-                    cpass.set_pipeline(&kit.warp_pipeline);
-                    cpass.set_bind_group(
-                        0,
-                        bind.warp
-                            .as_ref()
-                            .expect("a warp slot comes only from a liquify plan"),
-                        &[off],
-                    );
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+                // The liquify field's slots are `liquify.rs`'s to record (§6.13):
+                // a wet plan never holds one.
+                SlotKind::Warp | SlotKind::WarpApply => {
+                    unreachable!("a liquify slot in a wet plan; the plan is the effect's (§6.2)")
                 }
             }
         }
@@ -1716,59 +1504,19 @@ impl<'a> DynamicsRun<'a> {
         lo: Vec2,
         region: &Region,
     ) -> TileMap {
-        let r = self.r;
-        let kit = &r.dynamics;
-        let device = &r.ctx.device;
-
-        // The one channel that changes representation, narrowed once over the whole
-        // region (§6.7's aux stays a single height channel on the persistent tile).
-        // Pooled; the pass's clearing load op rewrites every texel.
-        let (narrow, narrow_view) = self.scope.take_piece(Key {
-            size: (region.color_tex.width(), region.color_tex.height()),
-            format: r.color_space.aux_format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            label: "stark dynamics narrow aux",
-        });
-        let bg = desc::bind_group_for(
-            device,
-            "stark dynamics slice bg",
-            &kit.slice_bgl,
-            super::kit::SLICE_SLOTS,
-            false,
-            |_| wgpu::BindingResource::TextureView(&region.aux),
-        );
-        {
-            let mut pass = self
-                .scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark dynamics slice"),
-                    color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
-                    ..Default::default()
-                });
-            pass.set_pipeline(&kit.slice_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.draw(0..3, 0..1);
-        }
-
-        let mut new_map = base.clone();
-        for coord in coords {
-            let dst = r.acquire_tile(self.scene.pool, AllocSource::DynamicsWriteback);
-            let off = coord.origin() - lo;
-            dst.copy_from_region(
-                self.scope.encoder(),
-                &region.color_tex,
-                &narrow,
-                region.resid_tex.as_ref(),
-                wgpu::Origin3d {
-                    x: off.x as u32,
-                    y: off.y as u32,
-                    z: 0,
-                },
-            );
-            new_map = new_map.insert(*coord, dst);
-        }
-        new_map
+        slice_region(
+            self.r,
+            &mut self.scope,
+            self.scene.pool,
+            base,
+            coords,
+            lo,
+            RegionChannels {
+                color_tex: &region.color_tex,
+                aux: &region.aux,
+                resid_tex: region.resid_tex.as_ref(),
+            },
+        )
     }
 
     /// Remember the tool for the range that resumes after this one. Copied rather
@@ -1847,6 +1595,290 @@ impl<'a> DynamicsRun<'a> {
     }
 }
 
+/// Where a region sits and how large it is: its top-left in canvas px and its extent
+/// in texels — the three numbers every region helper below takes together.
+#[derive(Clone, Copy)]
+pub(super) struct RegionBox {
+    pub(super) origin: Vec2,
+    pub(super) w: u32,
+    pub(super) h: u32,
+}
+
+/// The channel textures a region's tiles are sliced out of ([`slice_region`]): the
+/// color and residual by texture, since a copy is addressed by texture, and the wide
+/// aux by view, since the narrow pass samples it.
+pub(super) struct RegionChannels<'a> {
+    pub(super) color_tex: &'a wgpu::Texture,
+    pub(super) aux: &'a wgpu::TextureView,
+    pub(super) resid_tex: Option<&'a wgpu::Texture>,
+}
+
+/// Composite `base`'s tiles among `halo` into `targets`, 1:1 with canvas px, the
+/// region's top-left at `origin` — the read half of a region piece (§6.2), shared
+/// with the liquify path (§6.13), which composites its run's base the same way over
+/// a larger rect.
+///
+/// The targets are cleared first, so an empty halo — no base tiles — leaves them at
+/// exactly zero: "no paint". The compositor's own `View` and pass-A pipeline, so a
+/// composited texel is the tile's texel bit for bit (`over` onto a cleared target
+/// at opacity 1 is the source), which is what lets every kernel downstream treat
+/// the region as the canvas.
+pub(super) fn composite_tiles(
+    r: &StrokeRenderer,
+    scope: &mut SubmitScope,
+    base: &TileMap,
+    halo: &[TileCoord],
+    rect: RegionBox,
+    targets: Targets<'_>,
+) {
+    let kit = &r.dynamics;
+    let device = &r.ctx.device;
+    let RegionBox {
+        origin: region_origin,
+        w,
+        h,
+    } = rect;
+    // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
+    // own `ViewUniform` — this path binds its own buffer to the very same
+    // `composite.wesl`, so it wants that struct rather than a second declaration
+    // of it that a comment asks to be kept in step (§6.2).
+    let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
+    let view = view_uniform(
+        // Diagonal: the region is axis-aligned with the canvas whatever angle the
+        // *screen* view happens to be at.
+        [sx, 0.0, 0.0, sy],
+        Vec2::new(-region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0),
+        // Zoom reaches only the selection outline, and no chrome is drawn into a
+        // working region — this is a buffer the loop evolves, not a picture.
+        0.0,
+    );
+    let view_buf = scope.take_piece_buffer(BufKey {
+        size: std::mem::size_of_val(&view) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        label: "stark dynamics region view",
+    });
+    scope.write_lease(&view_buf, bytemuck::bytes_of(&view));
+    let view_bg = desc::bind_group_for(
+        device,
+        "stark dynamics region view bg",
+        &kit.composite_view_bgl,
+        crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
+        false,
+        |i| match i {
+            cb::VIEW => view_buf.as_entire_binding(),
+            cb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
+            other => unreachable!("the composite view group lists no binding {other}"),
+        },
+    );
+    let mut tile_origins: Vec<TileInstance> = Vec::with_capacity(halo.len());
+    let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::with_capacity(halo.len());
+    for coord in halo {
+        if let Some(tile) = base.get(coord) {
+            tile_origins.push(TileInstance {
+                origin: coord.origin().to_array(),
+                opacity: 1.0,
+            });
+            // **The group the tile itself caches**, which is why this loop is
+            // handed pass A's layout rather than building one from the same slot
+            // list (`kit.rs`). A live stroke re-composites its halo on every
+            // pointer move, and the halo of a wide tip is tens of tiles per piece
+            // — so a group built here was tens of WebGPU objects a move, which is
+            // the allocation *rate* `TilePairHandle::composite_bg` was introduced
+            // to stop pass A paying and this path went on paying.
+            //
+            // A resident tile in a pigment space always has a residual, so
+            // `Zeroes` never stands in here.
+            tile_bgs.push(crate::gpu::composite::tile_bind_group(
+                device,
+                &kit.composite_tile_bgl,
+                tile,
+            ));
+        }
+    }
+    let tile_inst = (!tile_origins.is_empty()).then(|| {
+        let bytes: &[u8] = bytemuck::cast_slice(&tile_origins);
+        let buf = scope.take_piece_buffer(BufKey {
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            label: "stark dynamics region tile instances",
+        });
+        scope.write_lease(&buf, bytes);
+        buf
+    });
+    {
+        let att = targets.attachments(desc::CLEAR);
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics region composite"),
+                color_attachments: &att[..targets.count()],
+                ..Default::default()
+            });
+        // An empty region (no base tiles) just stays cleared → "no paint".
+        if let Some(inst) = &tile_inst {
+            pass.set_pipeline(&kit.composite_pipeline);
+            // Offset 0: the slot list this group answers to is pass A's, whose
+            // view is dynamic for the eyedropper's sake (`composite::ViewBindings`).
+            // This loop composites one region through one view and has one slot.
+            pass.set_bind_group(0, &view_bg, &[0]);
+            pass.set_vertex_buffer(0, inst.slice(..));
+            for (i, bg) in tile_bgs.iter().enumerate() {
+                let idx = i as u32;
+                pass.set_bind_group(1, *bg, &[]);
+                pass.draw(0..4, idx..idx + 1);
+            }
+        }
+    }
+}
+
+/// The selection over a region (§6.8), gathered from the same halo tiles the paint
+/// came from so it is 1:1 with the region — or the 1×1 constant that stands in for
+/// an unrestricted selection, under which every masked read returns 1.
+pub(super) fn region_selection(
+    r: &StrokeRenderer,
+    scope: &mut SubmitScope,
+    selection: &crate::document::selection::Selection,
+    halo: &[TileCoord],
+    rect: RegionBox,
+) -> wgpu::TextureView {
+    let RegionBox {
+        origin: region_origin,
+        w,
+        h,
+    } = rect;
+    // An unrestricted selection binds the 1×1 constant — the loop's masked reads then
+    // return 1 everywhere and the stroke behaves exactly as before.
+    if selection.is_universal() {
+        return r.selection.constant(1.0);
+    }
+    // Leased, not created: this is up to `MAX_REGION_DIM`² of `R8Unorm` and a live
+    // stroke re-gathers it per piece per pointer move, so creating one was megabytes
+    // of allocation and teardown a move for a texture of the very same shape each
+    // time (`scratch`).
+    let (_, view) = scope.take_piece(Key {
+        size: (w, h),
+        format: crate::gpu::tile::MASK_FORMAT,
+        usage: crate::gpu::SelectionRenderer::REGION_MASK_USAGE,
+        label: "stark selection region mask",
+    });
+    r.selection.region_mask(
+        scope,
+        &view,
+        selection,
+        halo,
+        (region_origin, crate::view::Extent2::new(w, h)),
+    );
+    view
+}
+
+/// Slice each affected tile's full `TILE_TEX` block out of a region into a fresh CoW
+/// tile → aprons stay bit-identical to neighbour interiors (§6.4), and the wide region
+/// aux narrows to the persistent one (height). The write half of every region piece,
+/// wet or liquify (§6.13).
+///
+/// One region-sized narrow pass, then plain texture copies: the color and residual
+/// tiles are the region's own formats, so a copy is exact, and the aux copies out of
+/// the narrowed texture the single pass wrote. Rounding is untouched: a copy is
+/// bit-exact, and the narrow pass render-writes a loaded f16 value back to its own
+/// lattice point (see `slice.wesl`).
+///
+/// `lo` is the region's *interior* origin — the top-left tile origin, an apron in from
+/// the region rectangle — so a tile's offset into the region is measured against it.
+/// Offsets are integral and non-negative by [`Covered::rect`](super::super::region::Covered::rect)'s
+/// construction, and the far edge of the last tile's block is exactly the region's
+/// extent, so every copy is in bounds — and a violation is a loud validation error
+/// here, where a draw would silently read out of bounds instead.
+pub(super) fn slice_region(
+    r: &StrokeRenderer,
+    scope: &mut SubmitScope,
+    pool: &crate::gpu::tile::TilePool,
+    base: &TileMap,
+    coords: &BTreeSet<TileCoord>,
+    lo: Vec2,
+    from: RegionChannels<'_>,
+) -> TileMap {
+    let RegionChannels {
+        color_tex,
+        aux,
+        resid_tex,
+    } = from;
+    let kit = &r.dynamics;
+    let device = &r.ctx.device;
+
+    // The one channel that changes representation, narrowed once over the whole
+    // region (§6.7's aux stays a single height channel on the persistent tile).
+    // Pooled; the pass's clearing load op rewrites every texel.
+    let (narrow, narrow_view) = scope.take_piece(Key {
+        size: (color_tex.width(), color_tex.height()),
+        format: r.color_space.aux_format(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        label: "stark dynamics narrow aux",
+    });
+    let bg = desc::bind_group_for(
+        device,
+        "stark dynamics slice bg",
+        &kit.slice_bgl,
+        super::kit::SLICE_SLOTS,
+        false,
+        |_| wgpu::BindingResource::TextureView(aux),
+    );
+    {
+        let mut pass = scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics slice"),
+                color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
+                ..Default::default()
+            });
+        pass.set_pipeline(&kit.slice_pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    let mut new_map = base.clone();
+    for coord in coords {
+        let dst = r.acquire_tile(pool, AllocSource::DynamicsWriteback);
+        let off = coord.origin() - lo;
+        dst.copy_from_region(
+            scope.encoder(),
+            color_tex,
+            &narrow,
+            resid_tex,
+            wgpu::Origin3d {
+                x: off.x as u32,
+                y: off.y as u32,
+                z: 0,
+            },
+        );
+        new_map = new_map.insert(*coord, dst);
+    }
+    new_map
+}
+
+/// The plan's uniform slots, one [`STAMP_STRIDE`]-aligned window each, uploaded into
+/// a piece-scoped lease — see [`DynamicsRun::upload_plan`] for why a piece rather
+/// than the run. `stamps` is the caller's staging buffer, kept across pieces so a
+/// plan's megabyte is not allocated afresh per pointer move.
+pub(super) fn upload_stamps(
+    scope: &mut SubmitScope,
+    stamps: &mut Vec<u8>,
+    plan: &[LoopDispatch],
+) -> wgpu::Buffer {
+    let data = stamps;
+    data.clear();
+    data.resize(plan.len() * STAMP_STRIDE as usize, 0);
+    for (i, d) in plan.iter().enumerate() {
+        let at = i * STAMP_STRIDE as usize;
+        data[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
+    }
+    let buf = scope.take_piece_buffer(BufKey {
+        size: data.len() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        label: "stark dynamics stamps",
+    });
+    scope.write_lease(&buf, data);
+    buf
+}
 /// One piece's canvas region: a 1:1 copy of the canvas under its segments, which the
 /// loop evolves in place before [`DynamicsRun::write_back`] slices it into tiles.
 ///
@@ -1941,7 +1973,8 @@ impl Needs {
                     n.bake = true;
                     n.settle = true;
                 }
-                SlotKind::Warp => n.snapshot = true,
+                // A liquify slot never reaches the wet loop (§6.13).
+                SlotKind::Warp | SlotKind::WarpApply => {}
             }
         }
         n
@@ -1967,16 +2000,13 @@ struct PieceBindings {
     /// scratch, i.e. when some slot's [`extent_cell`](super::plan) beat 1.
     coarse: Option<CoarseBindings>,
     settle: Option<wgpu::BindGroup>,
-    /// The warp's group (§6.13) — `Some` exactly when the run's tool is
-    /// [`LoopTool::Liquify`], whose plan is the only source of warp slots.
-    warp: Option<wgpu::BindGroup>,
 }
 
 impl PieceBindings {
     fn snapshot(&self) -> &wgpu::BindGroup {
         self.snapshot
             .as_ref()
-            .expect("a firing, a settle or a warp slot asked for a snapshot group")
+            .expect("a firing or a settle asked for a snapshot group")
     }
 
     fn exchange(&self, cur: usize) -> &wgpu::BindGroup {
@@ -2010,7 +2040,7 @@ struct CoarseBindings {
 
 /// What every texture the loop reads and writes needs to be: sampled by one
 /// dispatch, storage-written by the next.
-const LOOP_USAGE: wgpu::TextureUsages =
+pub(super) const LOOP_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
 
 /// The reservoir textures' shape — [`BRUSH_RES`]² of the tile color format, which
@@ -2032,22 +2062,6 @@ mod tests {
             cell_groups,
             kind,
         }
-    }
-
-    /// A liquify plan is all warp slots and binds nothing the wet tool does —
-    /// [`bind_piece`](DynamicsRun::bind_piece) used to build the exchange pair,
-    /// the bake pair, the deposit and the settle for it on every piece of every
-    /// pointer move.
-    #[test]
-    fn a_liquify_plan_needs_only_the_snapshot_group() {
-        let plan = [slot(SlotKind::Warp, None), slot(SlotKind::Warp, None)];
-        assert_eq!(
-            Needs::of(&plan),
-            Needs {
-                snapshot: true,
-                ..Needs::NONE
-            }
-        );
     }
 
     /// Each wet slot kind asks for exactly the groups its arm of

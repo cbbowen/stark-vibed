@@ -1078,12 +1078,14 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "liquify",
-        what: "The liquify warp (§6.13): a full-strength drag through two painted \
-               bands, whose edges bend along the travel — carried, not mixed. The \
-               only cover for the backward-mapped gather, for the whole-square \
-               snapshot a warp slot copies (a clamped tap must land on written \
-               scratch), and for the follow riding the same prefix-τ exposure \
-               every deposit runs on, so a cut of the path moves the same paint.",
+        what: "The liquify field (§6.13): a full-strength drag through two painted \
+               bands, whose edges bend along the travel — carried, not mixed, and \
+               still sharp. The only cover for the field's composition, the \
+               whole-square field snapshot a warp slot copies (a clamped tap must \
+               land on written scratch), the one resample through the composed \
+               field from the run's base, and the reach walk that sizes that base \
+               — so a cut of the path composes the same field and resamples the \
+               same base.",
         view: SIZE,
         prepare: |e, at| {
             undercoat(e, at);
@@ -1097,17 +1099,23 @@ pub const CASES: &[Case] = &[
         path: || sine_sweep(140, 124.0, 34.0, 1.3),
         tol: Tol {
             golden: 6,
-            // The loop's figure: a cut materializes the warp into tiles and the
-            // next range gathers through them, so what a cut costs is the f16
-            // store plus one extra resample where the tail re-crosses the
-            // boundary — bounded like the smear's, and for the same reason.
-            seam: 12,
-            // The warp is a flow integrated one Euler step per segment
-            // (`budget::WARP_TRAVEL_STEP`); refitting four times finer takes
-            // smaller steps of the same additive exposure, so what moves is the
-            // dragged edges' last texel, not the field.
+            // A cut costs the field nothing — it crosses a range boundary through
+            // `f32` tiles by exact copy, and the tail resamples the same base through
+            // the same composed field the whole render does. The swept figure's
+            // headroom, for the f16 store of the resample alone.
+            seam: 4,
+            // The field is a flow integrated one contraction step per segment
+            // (`budget::liquify_len`); refitting four times finer takes smaller steps
+            // of the same profile, so what moves is the dragged edges' last texel,
+            // not the field — and an edge this sharp shows a sub-texel shift as a
+            // whole step, which is what the area measures.
             refine: 1.0,
-            lift: 0.0,
+            // The release's reports pull the fitted curve's end a fraction of a px,
+            // which the field carries into the resample — and through an edge kept
+            // sharp, a fraction of a px is a full step at every texel the edge
+            // crosses. A few dozen texels of the viewport, where the first design's
+            // haze hid the same shift under its own softening.
+            lift: 0.1,
         },
     },
 ];

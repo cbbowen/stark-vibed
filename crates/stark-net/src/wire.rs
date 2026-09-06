@@ -130,14 +130,19 @@ use iroh::EndpointId;
 /// the wire cannot;
 /// 25: `Srgb` widened past the cube (§6.5). The same bytes in the same fields,
 /// which a peer on 24 clamps — the same log, a narrower picture of it, which is
-/// the disagreement the ALPN exists to keep from meeting.
-pub(crate) const ALPN: &[u8] = b"stark/collab/25";
+/// the disagreement the ALPN exists to keep from meeting;
+/// 26: the liquify stroke became a composed field resampled once, with a run on
+/// the layer and a footprint that reads its reach (§6.13). The record's shape is
+/// untouched, so a file reads either way; what a log *means* under a liquify
+/// stroke changed, and the commutation it declares with it, which is exactly the
+/// disagreement a live session may not hold.
+pub(crate) const ALPN: &[u8] = b"stark/collab/26";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 25;
+pub(crate) const PROTO: u32 = 26;
 
 /// Upper bound on an encoded request, over any transport.
 ///

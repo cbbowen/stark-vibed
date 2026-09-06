@@ -2308,12 +2308,12 @@ cleared band takes nothing more from it (`tests/erase.rs`,
 
 The fourth effect (`BrushEffect::Liquify`): the stroke **warps** the canvas
 under it. Every channel — color, per-unit opacity, height — follows the travel
-together as a resample of the field, so structure *moves* where the wet loop's
-smudge would mix it toward a mean: an edge dragged is that edge, displaced; a
-texture rides along whole. It is the brushed cousin of the selection
-transform's mesh warp (§16.9) — the same "moving paint through a map" idea,
-keyed to a gesture instead of a lattice — and the tool Photoshop, Procreate
-and Clip Studio each ship under this name.
+together, so structure *moves* where the wet loop's smudge would mix it toward
+a mean: an edge dragged is that edge, displaced; a texture rides along whole.
+It is the brushed cousin of the selection transform's mesh warp (§16.9) — the
+same "moving paint through a map" idea, keyed to a gesture instead of a
+lattice — and the tool Photoshop, Procreate and Clip Studio each ship under
+this name.
 
 Its own effect rather than a `Wet` at some rate, for the eraser's reason:
 warping and smearing are different tools with different available features. A
@@ -2323,96 +2323,153 @@ ceiling to cap — the follow is a fraction of *travel*, so scrubbing keeps
 carrying the way the bleed keeps buying distance, and there is no saturated
 stroke for a ceiling to be a fraction of.
 
-### The kernel: a backward-mapped gather on the region loop
+### The stroke is a homeomorphism, and it is kept as one
 
-Liquify runs the dynamics path's own machinery (§6.2's region composite, piece
-chunking and CoW write-back — `StrokePath::Liquify`,
-`gpu/stroke/dynamics/plan.rs::liquify_plan`) with one kernel in place of the
-whole exchange: per flattened segment, a **snapshot** of the extent scratch and
-a **warp** dispatch (`dynamics.wesl::warp`). Each covered texel pulls the
-region from upstream along the local travel tangent, one bilinear tap of every
-channel:
+The whole design follows from one decision: **a liquify stroke is a
+homeomorphism of the canvas, and the renderer never lets it become pixels
+until it has to.** A homeomorphism applied to a picture is a resample, and a
+resample blurs — bilinearly, by a fraction of a texel — every time it runs. The
+first design of this effect resampled the picture *per segment*, and an edge
+dragged by a hundred segments came out a haze; the tool that exists to correct
+a drawing was softening it. Homeomorphisms compose, so the stroke is stored as
+the map and the picture resampled through the composed map once.
+
+The map is a **displacement field** `d` over the canvas, `Rg32Float` canvas px
+in tiles with the same apron rule as paint (§6.4): the picture at `x` is the
+run's **pristine base** at `x + d(x)`. Each flattened segment is a small
+backward step `ψ(x) = x − v(x)`, with `v` the follow along the local travel
+tangent, and the stroke's map composes *as the field*:
 
 ```
-follow(x) = min(strength · e(x) / peak_τ, travel) · sel(x)      canvas px
-out(x)    = under(x − follow(x) · t̂(x))
+d'(x) = d(x − v(x)) − v(x)          dynamics.wesl::warp
+out(x) = base(x + d(x))             dynamics.wesl::warp_apply, once per piece
 ```
 
-- **`e(x)` is the deposit's own exposure**: the prefix-τ difference over the
-  segment's sweep, gated by the tooth (§6.4), the deposit jitter and the drain
-  at the texel's own arc. Riding that integral is what makes the follow
-  **additive in τ** — §6.2's composition rule — so overlapping quads of
-  consecutive segments hand a texel exactly the follow the joined segment
-  would, and every tip knob shapes the warp the way it shapes a deposit: a
-  taper's point drags less, a dry tip's pull skips the substrate's valleys, a
-  drained stroke lets go as it travels, a stamp's gaps slip.
-- **`peak_τ` normalizes to the tip's densest texel** (`assets::peak_tau`, on
-  the resolved tip): at strength 1 the paint under the tip's core keeps pace
-  with the hand exactly, and the rest follows in proportion to the coverage
-  genuinely over it — so the falloff is the *tip's*, and hardness is the
-  shape knob rather than a second strength.
-- **The selection scales the follow, not a blend of the result** (§6.8): a
-  half-selected texel's paint goes half as far, so a mask rim tapers the warp
-  instead of ghosting two pictures over each other.
+The first line is one bilinear gather — of the *field*, which is smooth and
+survives a gather almost exactly, where a picture's edge does not. The field
+is `f32` so the store rounds nothing away either. The second line is the only
+place the picture is resampled: every channel on one map, from the base
+composite, by a **Catmull-Rom** tap clamped per lane to the range of the four
+nearest texels — the cubic keeps a hard edge a texel sharper than a tent, and
+the clamp keeps its lobes from ringing a value no neighbour holds, which on
+premultiplied lanes would be paint no brush laid. The identity is exact: a
+texel the run never moved lands on its own centre, weights `(0, 1, 0, 0)`, and
+`f16_nearest` of an f16 value is itself (`tests/liquify.rs`,
+`a_drag_through_a_uniform_fill_is_the_identity`).
 
-The `min` against the travel is load-bearing: `e ≤ peak_τ · travel` per row
-makes every pull land inside the segment's own sweep box, which is what the
-snapshot holds — so a **warp slot's snapshot copies its whole square** where
-every other slot's skips texels outside the sweep (`snapshot_at` reads the
-slot's `drag` lane to know). The clamp of the taps into the scratch is the
-no-flux wall for whatever rounding remains, exactly the bleed ladder's.
+**Every step is a contraction, which is what makes it invertible.** The follow
+at a texel is `strength · ē · pass`, where `ē` is the mean of a smooth profile
+over the tip's pass — a plateau out to the brush's hardness (capped at
+`LIQUIFY_MAX_PLATEAU`) and a smoothstep shoulder to the rim, integrated along
+the sweep by four-point Gauss–Legendre so consecutive segments' exposures add
+without printing their cadence. The profile's largest slope is
+`1.5 / (1 − plateau)` per radius, the turn of a bent sweep adds at most
+`MAX_TIP_TURN`, the drain its falloff; the segment budget
+(`budget::liquify_len`) holds `strength · travel · slope / radius` under
+`WARP_CONTRACTION = ½`. A map `x ↦ x − v(x)` with `Lip(v) < 1` is a bijection
+of the plane — a contraction's fixed point is unique — and a composition of
+bijections is one. That is the sense in which a stroke cannot fold, tear or
+overlap paint: the profile is smooth *by construction* (the tip's coverage,
+the tooth and the jitter are deliberately not read, since a step in any of
+them is a step in the field), and the budget prices the smoothness. The
+selection scales the follow *after* that (§6.8), so a hard mask edge is a
+deliberate tear along the mask and a feathered one a homeomorphism again.
 
-Sequenced in place, the gather reads the region as earlier segments left it,
-so a stroke drags **its own trail** when it crosses it — order-dependence is
-the loop's, inherited whole. And because the warp's entire state *is* the
-region, the loop's incremental story carries over with nothing to carry: no
-reservoir, no settle (each segment's follow is applied whole as the tip
-passes, so a break of contact strands nothing — the bleed axis's argument),
-and `ToolState` stays `None` across ranges. A cut — a frozen head's bake, a
-region-sized piece — materializes the warp into tiles and the next stretch
-gathers through them; what a cut costs is the f16 store every loop cut costs,
-plus one extra resample where the tail re-crosses the boundary, and the
-corpus's `liquify` case bounds it in the same `seam` column as the smear's.
+### Runs: a sequence of strokes composes into one field
+
+Correcting a drawing is a sequence of nudges, and the composition has to
+outlive the stroke. The layer therefore carries a **liquify run**
+(`document::liquify::LiquifyRun`, beside its `PaintTiles`): the `base` — the
+layer's tile at every coordinate the run has read, as it stood when the run
+first reached it — the `field` tiles, the `produced` picture tiles the run
+last wrote, and a per-tile bound on `|d|`, the `reach`. All persistent maps
+of handles, so a `DocState` holding a run costs what one holding tiles costs
+(§5.1). The next liquify stroke composes into the same field and resamples
+from the same base: ten nudges of the same edge are one resample's generation,
+not ten.
+
+**Only a liquify stroke ever writes a run**, and that is the collaboration
+argument (§12.6). A paint stroke leaves the run alone; the next liquify stroke
+reads the tiles inside its declared reach and compares them, by identity, to
+what the run expects (`LiquifyRun::is_fresh`), starting afresh from the picture
+if anything differs. Identity is the same change detection the undo patch and
+the fold audit use (§5.2), and it is what the commuting splice restores
+exactly — so every decision a liquify stroke makes is a function of tile
+identities and the run, and a liquify stroke and a paint stroke beyond its
+reach land the same picture in either order. The footprint says so:
+
+```
+CommitStroke(liquify)   reads  Paint(layer, stroke_rect ⊕ REACH_PX), LiquifyRun(layer)
+                        writes Paint(layer, stroke_rect),            LiquifyRun(layer)
+```
+
+`Resource::LiquifyRun` is written by every liquify stroke, so two of them on
+one layer always conflict — the same tool, usually the same hand — and a
+whole-layer claim (`Resource::Layer`) covers it as it covers the paint. The
+run's domain is a function of the record alone: a stroke records the base for
+**every** tile of its declared reach, not for the tiles its pieces happen to
+composite, so a head and its tail, a whole-stroke render and a peer build the
+same run, and a later paint inside the reach is caught by the same identities
+on all of them.
+
+### Reach, and the re-base
+
+`out(x) = base(x + d(x))` reads as far from `x` as the composed displacement
+points, so a piece composites its base over the region **grown by the reach**
+— and the reach has to be bounded, both for the composite's size and for the
+footprint's honesty. It is bounded on the CPU, per tile, by a walk over the
+segments before any piece is drawn (`liquify::ReachWalk`): a step pulls from
+at most one pass upstream, so after a segment the field under its tiles is
+bounded by the largest bound over the tiles within a pass of them plus the
+pass. Coarse, and a pure function of the record and the run's bounds, which is
+what makes it the same walk for a live tail and its commit.
+
+Where the bound would pass `LIQUIFY_REACH_CAP` (512 px) the run **re-bases**
+before that segment: the picture the pieces so far have left becomes a fresh
+run's base, and the field starts over. One extra resample per that much of
+accumulated drag, against the first design's one per quarter-radius. The
+re-base is decided at a *segment*, and the chunker is cut there
+(`chunk_segments_within`), never at a piece boundary — a piece cut is where
+this render happened to fit a region, and `preview == committed` cannot depend
+on it (§1.3). The cap plus the composite's slack sits under the model's
+`LiquifyEffect::REACH_PX` (640 px) by a `const` assertion, which is what keeps
+the footprint from quietly under-claiming the reads; the liquify piece budget
+is the loop's less that growth on both sides, so a piece's base — the largest
+texture the path allocates — lands at the loop's own budget.
 
 ### What it trades, honestly
 
 **Composition is preserved pointwise; height is not conserved.** Every value
-the stroke leaves is one the field held nearby — but a warp with falloff is
-not divergence-free, so stretching duplicates paint and pinching discards it,
-exactly as the mesh warp of §16.9 resamples a selection and as every liquify
-tool behaves. That is the tool's identity, stated against §6.1's ledger: the
-conserving movers are the wet loop's fluxes; liquify treats the canvas as a
-*picture*. (Scaling the height by the warp's Jacobian — pinches piling paint
-up like real impasto — is the recorded refinement if the physical reading is
-ever wanted; it is one finite-difference of the follow field away.)
+the stroke leaves is one the base held nearby — but a homeomorphism with a
+falloff is not volume-preserving, so stretching duplicates paint and pinching
+discards it, exactly as the mesh warp of §16.9 resamples a selection and as
+every liquify tool behaves. That is the tool's identity, stated against §6.1's
+ledger: the conserving movers are the wet loop's fluxes; liquify treats the
+canvas as a *picture*. (Scaling the height by the field's Jacobian — pinches
+piling paint up like real impasto — is the recorded refinement; it is one
+finite-difference of the field away, and the field is now something that can
+be differenced.)
 
-**Each resample softens by its tent filter** — a sub-texel blur per step,
-bounded by holding `strength · travel` fixed per segment
-(`budget::WARP_TRAVEL_STEP`, the exchange step's cousin: a gentle drag earns
-longer segments because the error is first order in the follow a segment
-completes, and halving the step halves it with no knee). A long scrub
-therefore softens what it carries — far less than a smudge averages, and the
-honest cost of warping in place. The alternative — accumulating a
-displacement field for the whole stroke and resampling the pristine base
-once — keeps edges bit-sharp *within* a piece and was weighed and set aside:
-its field cannot cross the cuts the live path is made of (a frozen head bakes
-tiles, a piece's region moves), so every cut becomes a visible double-resample
-seam between preview and replay, which is the column §6.2 already rejected a
-cheaper error over. If the warp ever wants it, the field, like the wick's
-ladder lesson, is recorded here rather than relearned.
+**One generation is still one.** The apply pass is a clamped cubic, so an
+edge moved by a run is one resample softer than it was — less than the tent a
+transform pays (§16.4), and never sharper than the base held. A wider kernel
+(Lanczos) is a change to `warp_apply` alone; what no kernel changes is that
+the count stays at one.
 
-Strength 0 — and the zero-rate slot a modulation can produce — stores nothing
-at all (`WARP_MIN_FOLLOW`, the deposit's rewrite guard in this kernel's
-terms), so a near-inert drag cannot walk texels down the f16 lattice; the
-stores that do land go through `lib::store::f16_nearest` like every store in
-the loop. A drag along a field that does not vary in its own direction is the
-identity to the byte (`tests/liquify.rs`), which is this effect's reading of
-"conserves where there is nothing to move".
+**Strength 0 stores nothing** (`WARP_MIN_FOLLOW`, the deposit's rewrite guard
+in this kernel's terms), so a near-inert drag cannot walk the field down the
+f32 lattice, and a zero-strength stroke leaves the picture byte-identical
+(`tests/liquify.rs`). A stroke over bare canvas composes a field over nothing
+and shows nothing.
 
-*Determinism* — the plan is CPU float math over the record and the piece's
-geometry, the gather's weights are a pure function of its inputs
-(`FLOAT32_FILTERABLE` is never needed), so replay and `preview == committed`
-hold exactly as they do for the loop (§12.1). *Cost* — two small dispatches
-per segment (against the wet loop's three-plus), no reservoir passes, no
-settle; the snapshot covers the square rather than the rect, which is the
-bleed-weight pass's cost class.
+*Determinism* — the walk, the plan and the chunking are CPU float math over
+the record and the run; the gather's weights are a pure function of its
+inputs (`FLOAT32_FILTERABLE` is never needed, which an `Rg32Float` field could
+not have offered); so replay and `preview == committed` hold exactly as they
+do for the loop (§12.1), and a cut of the path — a frozen head's bake, a
+region-sized piece — costs nothing at all: the field crosses it through `f32`
+tiles by exact copy, and the resample reads the same base through the same
+field either side of it (the corpus's `liquify` case, `seam` column). *Cost* —
+two small dispatches per segment (a field snapshot and the composition) and
+one region-sized resample per piece; the base composite is the region grown
+by the reach, which for a nudge is the region plus a few texels.

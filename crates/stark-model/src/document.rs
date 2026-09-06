@@ -57,7 +57,9 @@ pub use effect::{
 pub use fold::{Logged, Materialize};
 /// The commutation vocabulary (§12.6) — what an action reads and writes, and
 /// whether two of them can be reordered.
-pub use footprint::{Footprint, Prop, Resource, compute_footprint, fill_rect, stroke_rect};
+pub use footprint::{
+    Footprint, Prop, Resource, compute_footprint, fill_rect, liquify_reads, stroke_rect,
+};
 pub use guide::{
     AxisPencil, AxisPlane, CursorRay, GuideId, GuideScene, Halfplane, Lens, PerspectiveGuide,
     PlaneTrace, Scaffold,
