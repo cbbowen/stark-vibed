@@ -3,7 +3,7 @@
 //!
 //! The region machinery is the wet loop's — the same pieces, the same composite,
 //! the same slice into copy-on-write tiles ([`run`](super::run)) — around three
-//! kernels of its own (`dynamics.wesl`): a snapshot of the field under each
+//! kernels of its own (`liquify.wesl`): a snapshot of the field under each
 //! segment's square, the composition of that segment's step into the field, and
 //! one resample of the whole piece through the composed field from the run's
 //! pristine base. What the picture pays for a stroke of any length, and for any
@@ -50,8 +50,9 @@ use crate::gpu::desc;
 use crate::gpu::scratch::{Key, SubmitScope};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::gpu::uniforms::UniformSlots;
-use stark_shaders::mirror::dynamics::binding as b;
-use stark_shaders::mirror::dynamics::decl as d;
+use stark_shaders::mirror::dynamics_common::binding as sb;
+use stark_shaders::mirror::dynamics_common::decl as sd;
+use stark_shaders::mirror::liquify::binding as lb;
 
 /// The most tiles a stroke's declared reach may span for its run to be kept
 /// (§6.13). Past it the stroke re-bases every time — the picture is resampled per
@@ -362,7 +363,7 @@ impl<'a> LiquifyDraw<'a> {
             self.scope
                 .take_piece(Key {
                     size: (bw, bh),
-                    format: d::REGION_COLOR_W.storage_format(),
+                    format: sd::REGION_COLOR_W.storage_format(),
                     usage: base_usage,
                     label,
                 })
@@ -398,7 +399,7 @@ impl<'a> LiquifyDraw<'a> {
         let mut region_tex = |label: &'static str| {
             self.scope.take_piece(Key {
                 size: (w, h),
-                format: d::REGION_COLOR_W.storage_format(),
+                format: sd::REGION_COLOR_W.storage_format(),
                 usage: region_usage,
                 label,
             })
@@ -508,9 +509,9 @@ impl<'a> LiquifyDraw<'a> {
                 slots::SNAPSHOT_FIELD,
                 resid,
                 |s| match s {
-                    b::ST => params.clone(),
-                    b::FIELD => view(&field),
-                    b::UNDER_FIELD_W => view(&under_field),
+                    sb::ST => params.clone(),
+                    lb::FIELD => view(&field),
+                    lb::UNDER_FIELD_W => view(&under_field),
                     other => unreachable!("snapshot_field lists no binding {other}"),
                 },
             );
@@ -521,10 +522,10 @@ impl<'a> LiquifyDraw<'a> {
                 slots::WARP,
                 resid,
                 |s| match s {
-                    b::ST => params.clone(),
-                    b::UNDER_FIELD => view(&under_field),
-                    b::FIELD_W => view(&field),
-                    b::SEL_MASK => view(&sel_mask),
+                    sb::ST => params.clone(),
+                    lb::UNDER_FIELD => view(&under_field),
+                    lb::FIELD_W => view(&field),
+                    sb::SEL_MASK => view(&sel_mask),
                     other => unreachable!("warp lists no binding {other}"),
                 },
             );
@@ -535,14 +536,14 @@ impl<'a> LiquifyDraw<'a> {
                 slots::WARP_APPLY,
                 resid,
                 |s| match s {
-                    b::ST => params.clone(),
-                    b::FIELD => view(&field),
-                    b::BASE_COLOR => view(&base_color),
-                    b::BASE_AUX => view(&base_aux),
-                    b::BASE_RESID => view(base_resid.as_ref().expect("a residual build")),
-                    b::REGION_COLOR_W => view(&color),
-                    b::REGION_AUX_W => view(&aux),
-                    b::REGION_RESID_W => view(resid_view.as_ref().expect("a residual build")),
+                    sb::ST => params.clone(),
+                    lb::FIELD => view(&field),
+                    lb::BASE_COLOR => view(&base_color),
+                    lb::BASE_AUX => view(&base_aux),
+                    lb::BASE_RESID => view(base_resid.as_ref().expect("a residual build")),
+                    sb::REGION_COLOR_W => view(&color),
+                    sb::REGION_AUX_W => view(&aux),
+                    sb::REGION_RESID_W => view(resid_view.as_ref().expect("a residual build")),
                     other => unreachable!("warp_apply lists no binding {other}"),
                 },
             );
@@ -569,7 +570,8 @@ impl<'a> LiquifyDraw<'a> {
                     timestamp_writes: None,
                 });
             for (i, dsp) in plan.slots.iter().enumerate() {
-                let off = UniformSlots::<stark_shaders::mirror::dynamics::Stamp>::offset(i as u32);
+                let off =
+                    UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
                 match dsp.kind {
                     SlotKind::Warp => {
                         cpass.set_pipeline(&kit.snapshot_field_pipeline);

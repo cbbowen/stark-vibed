@@ -285,6 +285,17 @@ pub fn dynamics(resid: bool) -> &'static str {
     resid_variant!(resid, "dynamics", "dynamics_resid")
 }
 
+/// WGSL compute shader for the **liquify field** (§6.13): the field's snapshot, the
+/// composition of one segment's step into it, and the one resample of a piece
+/// through it — over the stamp loop's region machinery and the slot it shares
+/// (`dynamics_common.wesl`).
+///
+/// Takes `resid` because the resample writes a tile's color, residual included, so
+/// it is built in two variants (see [`RESID_ENTRY_POINTS`]).
+pub fn liquify(resid: bool) -> &'static str {
+    resid_variant!(resid, "liquify", "liquify_resid")
+}
+
 /// WGSL stroke **erase** pass: the stroke's accumulated extent turned on the
 /// layer's visible opacity, inverted through the slab law into a height — §6.12.
 ///
@@ -411,6 +422,7 @@ mod tests {
             ("filter_oklab", filter_oklab),
             ("guides", guides),
             ("integrate", || integrate(false)),
+            ("liquify", || liquify(false)),
             ("mask_region", mask_region),
             ("matte", || matte(false)),
             #[cfg(feature = "mixbox")]
@@ -475,6 +487,7 @@ mod tests {
             ("erase", erase),
             ("fill", fill),
             ("integrate", integrate),
+            ("liquify", liquify),
             ("matte", matte),
             ("merge", merge),
             ("slab", slab),

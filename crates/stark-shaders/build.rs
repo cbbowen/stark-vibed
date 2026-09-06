@@ -78,7 +78,7 @@ fn main() {
     let gen_dir = mixbox.then(generate_mixbox_poly);
 
     // Mirror the host-shared WESL structs into Rust. Read from the *unlinked*
-    // sources: the linker mangles `Stamp` to `package__1dynamics_Stamp`, emits it
+    // sources: the linker mangles `Stamp` to `package__1dynamics_common_Stamp`, emits it
     // once per artifact that reaches it, and has already stripped whatever no entry
     // point uses — none of which the declaration in the tree has done.
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));

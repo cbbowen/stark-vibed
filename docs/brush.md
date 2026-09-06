@@ -2341,8 +2341,8 @@ backward step `ψ(x) = x − v(x)`, with `v` the follow along the local travel
 tangent, and the stroke's map composes *as the field*:
 
 ```
-d'(x) = d(x − v(x)) − v(x)          dynamics.wesl::warp
-out(x) = base(x + d(x))             dynamics.wesl::warp_apply, once per piece
+d'(x) = d(x − v(x)) − v(x)          liquify.wesl::warp
+out(x) = base(x + d(x))             liquify.wesl::warp_apply, once per piece
 ```
 
 The first line is one bilinear gather — of the *field*, which is smooth and
@@ -2363,7 +2363,7 @@ deposit reads its exposure, as the difference of a prefix volume across the
 sweep frame (§6.2): the **coverage prefix**, the prefix-τ's shape with the
 mask integrated linearly instead of through `−ln(1 − c)`
 (`assets::Integrand::Coverage`), which the liquify path binds at the prefix-τ's
-own group so `dynamics.wesl::warp` reads it through the very `swept_pre` the
+own group so `liquify.wesl::warp` reads it through the very `swept_pre` the
 deposit does. Linear because a follow is a fraction of *travel*: a texel the
 tip's core slides over for the whole pass keeps pace with the hand exactly,
 where τ would have carried it seven times the pass and a shoulder next to

@@ -1084,7 +1084,7 @@ assertions, so an error in that last part is a build failure at the struct it go
 wrong rather than a lane misread at run time.
 
 It reads the **unlinked** sources, never the artifacts. The linker mangles `Stamp`
-to `package__1dynamics_Stamp`, emits it once per artifact that reaches it, strips
+to `package__1dynamics_common_Stamp`, emits it once per artifact that reaches it, strips
 whatever no entry point uses, and drops the comments that are half of what is being
 generated. Parsing the linked WGSL with `naga` would buy the offsets and cost all
 four.

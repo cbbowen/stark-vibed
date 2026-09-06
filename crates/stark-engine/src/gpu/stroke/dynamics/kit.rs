@@ -9,6 +9,7 @@ use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use stark_shaders::mirror::dynamics::decl as d;
+use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
 
 /// The prefix-τ volume at group 1 — **the fast path's own list** (`stroke::swept`),
@@ -88,11 +89,11 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// integral, not a per-segment window — never the cell that sits overhead.
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
-    /// The liquify field's three kernels (§6.13): the field's snapshot under a
-    /// segment's square, the composition of one segment's step into it
-    /// (`dynamics.wesl::warp`), and the one resample of a piece through it
-    /// (`warp_apply`). Each over its own layout ([`slots`]), none over the
-    /// prefix-τ: the follow is the profile's own quadrature, not the tip's.
+    /// The liquify field's three kernels (§6.13, `liquify.wesl`): the field's
+    /// snapshot under a segment's square, the composition of one segment's step
+    /// into it (`warp`), and the one resample of a piece through it
+    /// (`warp_apply`). Each over its own layout ([`slots`]); the composition alone
+    /// takes group 1, bound to the tip's coverage prefix.
     pub(in crate::gpu::stroke) snapshot_field_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) snapshot_field_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
@@ -132,7 +133,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // ever catch the color space drifting, never the pair drifting apart.
     debug_assert_eq!(
         color_space.color_format(),
-        d::REGION_COLOR_W.storage_format(),
+        sd::REGION_COLOR_W.storage_format(),
         "the loop stores tile color through `region_color_w`; this space's tiles are not that format",
     );
     let frag = wgpu::ShaderStages::FRAGMENT;
@@ -203,14 +204,20 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, eleven entry points — `snapshot`,
+    // ---- The stamp loop: one module, eight entry points — `snapshot`,
     // `bleed_weight`, `exchange`, `bake`, `deposit`, `cell_hoist`,
-    // `deposit_coarse`, `settle`, and the liquify field's `snapshot_field`, `warp`
-    // and `warp_apply` — over as many bind group layouts, each built from the slot
-    // list in [`slots`](super::slots).
+    // `deposit_coarse`, `settle` — and the liquify field's module beside it with
+    // three more, `snapshot_field`, `warp` and `warp_apply` (§6.13), over as many
+    // bind group layouts, each built from the slot list in [`slots`](super::slots).
+    // Two modules off one slot declaration (`dynamics_common.wesl`), so a
+    // pipeline's layout names the same uniform whichever module it came from.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
+    });
+    let liquify_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("stark liquify field"),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::liquify(resid).into()),
     });
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
     // slot; the binding numbers partition the module's group(0), so a layout lists only
@@ -245,7 +252,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         wgpu::ShaderStages::COMPUTE,
         false,
     );
-    let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+    let pipe_in = |module: &wgpu::ShaderModule,
+                   label: &str,
+                   entry: &str,
+                   bgls: &[Option<&wgpu::BindGroupLayout>]| {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),
             bind_group_layouts: bgls,
@@ -254,11 +264,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(label),
             layout: Some(&layout),
-            module: &module,
+            module,
             entry_point: Some(entry),
             compilation_options: Default::default(),
             cache: None,
         })
+    };
+    let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+        pipe_in(&module, label, entry, bgls)
+    };
+    let lpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+        pipe_in(&liquify_module, label, entry, bgls)
     };
     let snapshot_pipeline = cpipe(
         "stark dynamics snapshot",
@@ -314,18 +330,18 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // from a prefix volume at group 1 like every deposit — the **coverage**
     // prefix, which the liquify path binds there in the prefix-τ's place; the
     // snapshot and the resample read no tip at all.
-    let snapshot_field_pipeline = cpipe(
-        "stark dynamics snapshot field",
+    let snapshot_field_pipeline = lpipe(
+        "stark liquify snapshot field",
         "snapshot_field",
         &[Some(&snapshot_field_bgl)],
     );
-    let warp_pipeline = cpipe(
-        "stark dynamics warp",
+    let warp_pipeline = lpipe(
+        "stark liquify warp",
         "warp",
         &[Some(&warp_bgl), Some(&prefix_bgl)],
     );
-    let warp_apply_pipeline = cpipe(
-        "stark dynamics warp apply",
+    let warp_apply_pipeline = lpipe(
+        "stark liquify warp apply",
         "warp_apply",
         &[Some(&warp_apply_bgl)],
     );

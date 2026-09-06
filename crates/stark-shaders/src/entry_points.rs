@@ -8,8 +8,8 @@
 //
 // Everything *not* in this list is a module reached only by import — the binding-free
 // leaves under `shaders/lib/`, and the binding-owning shared modules
-// (`blend_common`, `media_common`, `stamp_common`, `mixbox_lut`). Those have no entry
-// point of their own and would fail to link as a root.
+// (`blend_common`, `dynamics_common`, `media_common`, `stamp_common`, `mixbox_lut`).
+// Those have no entry point of their own and would fail to link as a root.
 
 /// Every WESL module compiled to its own WGSL artifact, by module name.
 ///
@@ -28,6 +28,7 @@ pub const ENTRY_POINTS: &[&str] = &[
     "filter_oklab",
     "guides",
     "integrate",
+    "liquify",
     "mask_region",
     "matte",
     "media_mixbox",
@@ -122,6 +123,7 @@ pub const RESID_ENTRY_POINTS: &[&str] = &[
     "erase",
     "fill",
     "integrate",
+    "liquify",
     "matte",
     "merge",
     "slab",

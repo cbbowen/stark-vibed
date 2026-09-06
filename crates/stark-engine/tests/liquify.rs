@@ -66,7 +66,7 @@ fn flat_fill(engine: &mut Engine, min: Vec2, max: Vec2) {
 
 /// The rewrite guard, end to end: a stroke whose strength is zero moves nothing
 /// and must store nothing — not "nearly the same picture", the same bytes. This
-/// is `dynamics.wesl::warp`'s early return doing its job (§6.13), and it is the
+/// is `liquify.wesl::warp`'s early return doing its job (§6.13), and it is the
 /// property that keeps a near-inert drag from walking texels down the f16
 /// lattice the way §6.2's wiggle-path repro did.
 #[test]

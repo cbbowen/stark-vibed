@@ -45,7 +45,7 @@ use wesl::syntax::{
 /// One module of the shader tree, read once.
 ///
 /// The *unlinked* source, always. The linker mangles `Stamp` to
-/// `package__1dynamics_Stamp`, emits it once per artifact that reaches it, and strips
+/// `package__1dynamics_common_Stamp`, emits it once per artifact that reaches it, and strips
 /// whatever no entry point uses — the reason the check this replaces could not see a
 /// constant that survived only in prose (the retired wick's `WICK_RATE` was the case
 /// that proved it). And it drops the comments that are half of what is generated here.

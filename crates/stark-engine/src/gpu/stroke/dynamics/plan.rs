@@ -24,7 +24,7 @@ use super::super::budget::extent_cell;
 use super::super::region::{coverage_bounds, segment_end};
 use super::super::segments::{BleedFire, Segment, Stretch};
 use super::bleed::bleed_stencil;
-// The `Stamp` uniform, generated from `dynamics.wesl`'s own declaration at build
+// The `Stamp` uniform, generated from `dynamics_common.wesl`'s own declaration at build
 // time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
 // what each lane holds, all on the generated fields.
 //
@@ -35,7 +35,8 @@ use super::bleed::bleed_stencil;
 //
 // Every slot is a pure function of the `StrokeRecord` and the piece's own geometry,
 // computed in plain CPU float math, so replay is deterministic (§12.1).
-use stark_shaders::mirror::dynamics::{CELL_BORDER, Stamp, TILE_WG};
+use stark_shaders::mirror::dynamics::CELL_BORDER;
+use stark_shaders::mirror::dynamics_common::{Stamp, TILE_WG};
 
 /// One slot's window into the stamp buffer, and the `min_binding_size` its layout
 /// declares — both of which have to be `Stamp`'s own size, so they are taken from it
@@ -387,7 +388,7 @@ impl Default for Slot {
 }
 
 impl Slot {
-    /// This slot as the uniform `dynamics.wesl` reads.
+    /// This slot as the uniform `dynamics_common.wesl` declares and both roots read.
     ///
     /// **A rename, not a packing.** `Stamp`'s members are named now, and the mirror
     /// generates them from the shader's own declaration (§6.10), so the field names on
@@ -526,7 +527,7 @@ impl Rect {
 
 /// Workgroups covering `texels` along one axis, at the tile kernels' declared side.
 ///
-/// `TILE_WG` is generated from `dynamics.wesl`'s own `const` — the side that decides
+/// `TILE_WG` is generated from `dynamics_common.wesl`'s own `const` — the side that decides
 /// it — rather than transcribed here (§6.10). Every host expression that turns texels
 /// into groups, or groups back into texels, goes through this constant.
 pub(super) fn groups_for(texels: u32) -> u32 {

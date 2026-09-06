@@ -44,7 +44,8 @@ const BRUSH_RES: u32 = 64;
 // (`dynamics.wesl::bake`), and the workgroup width of the scan that builds it —
 // generated from the shader, which is the side that decides it (§6.10). A mismatch
 // scanned the wrong width and rendered subtly wrong without crashing.
-use stark_shaders::mirror::dynamics::{BAKE_RES, TILE_WG};
+use stark_shaders::mirror::dynamics::BAKE_RES;
+use stark_shaders::mirror::dynamics_common::TILE_WG;
 // The `@binding` indices, generated from `dynamics.wesl`'s own declarations (§6.10):
 // the bind groups here and the layouts in [`kit`](super::kit) both name the
 // shader's numbering rather than keeping copies of it.
@@ -52,6 +53,8 @@ use stark_shaders::mirror::dynamics::binding as b;
 // The storage-texture *formats*, taken from the same declarations the indices come
 // from (§6.10): a slot names its own format, so the host asks rather than repeats.
 use stark_shaders::mirror::dynamics::decl as d;
+use stark_shaders::mirror::dynamics_common::binding as sb;
+use stark_shaders::mirror::dynamics_common::decl as sd;
 
 use crate::gpu::uniforms::UniformSlots;
 use stark_model::document::BrushDynamics;
@@ -882,7 +885,7 @@ impl<'a> DynamicsRun<'a> {
         let mut region_tex = |label: &'static str| {
             self.scope.take_piece(Key {
                 size: (w, h),
-                format: d::REGION_COLOR_W.storage_format(),
+                format: sd::REGION_COLOR_W.storage_format(),
                 usage: region_usage,
                 label,
             })
@@ -969,7 +972,7 @@ impl<'a> DynamicsRun<'a> {
             self.scope
                 .take_piece(Key {
                     size: (size, size),
-                    format: d::REGION_COLOR_W.storage_format(),
+                    format: sd::REGION_COLOR_W.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
@@ -1102,17 +1105,17 @@ impl<'a> DynamicsRun<'a> {
         // `match` states only what makes it different from its neighbours.
         let common = |s: u32| -> Option<wgpu::BindingResource<'p>> {
             Some(match s {
-                b::ST => params.clone(),
+                sb::ST => params.clone(),
                 b::BAKE_LOAD => view(&self.bake_load),
                 b::BAKE_LATM => view(&self.bake_latm),
                 b::BAKE_RLM => opt(self.bake_rlm.as_ref(), "bake"),
                 b::UNDER_COLOR => view(&under.color),
                 b::UNDER_AUX => view(&under.aux),
                 b::UNDER_RESID => opt(under.resid.as_ref(), "snapshot"),
-                b::REGION_COLOR_W => view(&region.color),
-                b::REGION_AUX_W => view(&region.aux),
-                b::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
-                b::SEL_MASK => view(&region.sel_mask),
+                sb::REGION_COLOR_W => view(&region.color),
+                sb::REGION_AUX_W => view(&region.aux),
+                sb::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
+                sb::SEL_MASK => view(&region.sel_mask),
                 b::SUBSTRATE_TEX => view(&self.scene.substrate.view),
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
                 // painting segment carries `lambda_bleed = 0` and never reads it.
@@ -1333,7 +1336,8 @@ impl<'a> DynamicsRun<'a> {
             // are one expression rather than two that agree. This was
             // `(i as u64 * STAMP_STRIDE) as u32` — the same number, arrived at
             // independently.
-            let off = UniformSlots::<stark_shaders::mirror::dynamics::Stamp>::offset(i as u32);
+            let off =
+                UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
             match d.kind {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The
@@ -1543,7 +1547,7 @@ impl<'a> DynamicsRun<'a> {
                 &r.ctx.device,
                 Key {
                     size: (BRUSH_RES, BRUSH_RES),
-                    format: d::REGION_COLOR_W.storage_format(),
+                    format: sd::REGION_COLOR_W.storage_format(),
                     usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                     label,
                 },

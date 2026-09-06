@@ -1,5 +1,5 @@
-//! Which bindings each of the stamp loop's entry points reads, in layout order
-//! (§6.2, §6.10).
+//! Which bindings each of the stamp loop's and the liquify field's entry points
+//! reads, in layout order (§6.2, §6.13, §6.10).
 //!
 //! **One list per entry point, read by both sides.** [`kit`](super::kit) builds the
 //! bind group *layout* from it and [`run`](super::run) builds the bind *group* from it,
@@ -32,11 +32,13 @@
 
 use crate::gpu::desc::Slot;
 use stark_shaders::mirror::dynamics::decl as d;
+use stark_shaders::mirror::dynamics_common::decl as sd;
+use stark_shaders::mirror::liquify::decl as ld;
 
 /// The extent copy that gives `deposit`/`settle` something to read while they
 /// storage-write the region.
 pub(super) const SNAPSHOT: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::REGION_COLOR),
     Slot::at(d::REGION_AUX),
     Slot::at(d::UNDER_COLOR_W),
@@ -51,7 +53,7 @@ pub(super) const SNAPSHOT: &[Slot] = &[
 /// from the tail of the `exchange` grid rather than from a dispatch of its own
 /// (`dynamics.wesl::exchange`), so its writes belong to this layout.
 pub(super) const EXCHANGE: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     // Bilinear, unlike `snapshot`'s load of the same two slots — the reservoir texel
     // asking sits over an arbitrary sub-pixel spot on the region.
     Slot::sampled(d::REGION_COLOR),
@@ -70,13 +72,13 @@ pub(super) const EXCHANGE: &[Slot] = &[
     Slot::at(d::BRUSH_DST_RESID_W),
     // The selection mask over the region (§6.8) — sampled bilinearly here, since a
     // reservoir texel sits over an arbitrary sub-pixel spot.
-    Slot::sampled(d::SEL_MASK),
+    Slot::sampled(sd::SEL_MASK),
 ];
 
 /// Integrates the reservoir along the segment's travel axis so the deposit can read
 /// the whole pass instead of one mid-pass sample.
 pub(super) const BAKE: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::SAMP),
     Slot::sampled(d::BRUSH_SRC_COLOR),
     Slot::sampled(d::BRUSH_SRC_AUX),
@@ -88,7 +90,7 @@ pub(super) const BAKE: &[Slot] = &[
 
 /// The canvas's half of the transfer, exact per texel.
 pub(super) const DEPOSIT: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::SAMP),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
@@ -96,15 +98,15 @@ pub(super) const DEPOSIT: &[Slot] = &[
     Slot::at(d::UNDER_COLOR),
     Slot::at(d::UNDER_AUX),
     Slot::at(d::UNDER_RESID),
-    Slot::at(d::REGION_COLOR_W),
-    Slot::at(d::REGION_AUX_W),
-    Slot::at(d::REGION_RESID_W),
+    Slot::at(sd::REGION_COLOR_W),
+    Slot::at(sd::REGION_AUX_W),
+    Slot::at(sd::REGION_RESID_W),
     // The color-dynamics noise tile and its repeat sampler (§6.2).
     Slot::sampled(d::DYN_NOISE_TEX),
     Slot::at(d::DYN_NOISE_SAMP),
     // The selection mask over the region (§6.8) — read 1:1 with the region here, so
     // `textureLoad` suffices.
-    Slot::at(d::SEL_MASK),
+    Slot::at(sd::SEL_MASK),
     // The canvas substrate's height map — the deposition tooth (§6.4). Read nearest, so
     // it needs no sampler and is not filterable.
     Slot::at(d::SUBSTRATE_TEX),
@@ -121,12 +123,12 @@ pub(super) const DEPOSIT: &[Slot] = &[
 
 /// `bleed_weight`: one thread per snapshot texel, writing the mobility the ladder reads
 /// back thirty-six times (§6.2). Its own uniform and its own target, and nothing else.
-pub(super) const BLEED_WEIGHT: &[Slot] = &[Slot::dynamic(d::ST), Slot::at(d::BLEED_W_W)];
+pub(super) const BLEED_WEIGHT: &[Slot] = &[Slot::dynamic(sd::ST), Slot::at(d::BLEED_W_W)];
 
 /// `cell_hoist`: the exact deposit's front half — the baked prefixes in, the per-cell
 /// means out — plus the prefix-τ volume at group 1 (§6.2).
 pub(super) const HOIST: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
     Slot::at(d::BAKE_RLM),
@@ -139,16 +141,16 @@ pub(super) const HOIST: &[Slot] = &[
 /// means. It takes no prefix-τ tap and no bake tap of its own, which is the whole
 /// point, so neither appears here (nor does group 1).
 pub(super) const DEPOSIT_COARSE: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::UNDER_COLOR),
     Slot::at(d::UNDER_AUX),
     Slot::at(d::UNDER_RESID),
-    Slot::at(d::REGION_COLOR_W),
-    Slot::at(d::REGION_AUX_W),
-    Slot::at(d::REGION_RESID_W),
+    Slot::at(sd::REGION_COLOR_W),
+    Slot::at(sd::REGION_AUX_W),
+    Slot::at(sd::REGION_RESID_W),
     Slot::sampled(d::DYN_NOISE_TEX),
     Slot::at(d::DYN_NOISE_SAMP),
-    Slot::at(d::SEL_MASK),
+    Slot::at(sd::SEL_MASK),
     Slot::at(d::SUBSTRATE_TEX),
     Slot::at(d::CELL_TOOL),
     Slot::at(d::CELL_LAT),
@@ -159,52 +161,52 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
 /// `snapshot_field`: the liquify field under a warp slot's square, copied so the
 /// composition can gather it while storage-writing it (§6.13).
 pub(super) const SNAPSHOT_FIELD: &[Slot] = &[
-    Slot::dynamic(d::ST),
-    Slot::at(d::FIELD),
-    Slot::at(d::UNDER_FIELD_W),
+    Slot::dynamic(sd::ST),
+    Slot::at(ld::FIELD),
+    Slot::at(ld::UNDER_FIELD_W),
 ];
 
-/// `warp`: one segment's step composed into the liquify field (§6.13) — the
-/// snapshot in, the field out, the selection scaling the follow. Nothing of the
-/// picture: the field is all this kernel evolves. The tip it reads is at group 1,
-/// [`PREFIX_SLOTS`](super::kit::PREFIX_SLOTS) — bound to the **coverage** prefix
-/// rather than the prefix-τ every other pass reads there.
+/// `warp`: one segment's step composed into the liquify field (§6.13,
+/// `liquify.wesl`) — the snapshot in, the field out, the selection scaling the
+/// follow. Nothing of the picture: the field is all this kernel evolves. The tip it
+/// reads is at group 1, [`PREFIX_SLOTS`](super::kit::PREFIX_SLOTS) — bound to the
+/// **coverage** prefix rather than the prefix-τ every other pass reads there.
 pub(super) const WARP: &[Slot] = &[
-    Slot::dynamic(d::ST),
-    Slot::at(d::UNDER_FIELD),
-    Slot::at(d::FIELD_W),
-    Slot::at(d::SEL_MASK),
+    Slot::dynamic(sd::ST),
+    Slot::at(ld::UNDER_FIELD),
+    Slot::at(ld::FIELD_W),
+    Slot::at(sd::SEL_MASK),
 ];
 
 /// `warp_apply`: the one resample of a liquify piece (§6.13) — the field and the
 /// base composite in, the region's channels out, which the write-back then slices
 /// exactly as it slices the wet loop's.
 pub(super) const WARP_APPLY: &[Slot] = &[
-    Slot::dynamic(d::ST),
-    Slot::at(d::FIELD),
-    Slot::at(d::BASE_COLOR),
-    Slot::at(d::BASE_AUX),
-    Slot::at(d::BASE_RESID),
-    Slot::at(d::REGION_COLOR_W),
-    Slot::at(d::REGION_AUX_W),
-    Slot::at(d::REGION_RESID_W),
+    Slot::dynamic(sd::ST),
+    Slot::at(ld::FIELD),
+    Slot::at(ld::BASE_COLOR),
+    Slot::at(ld::BASE_AUX),
+    Slot::at(ld::BASE_RESID),
+    Slot::at(sd::REGION_COLOR_W),
+    Slot::at(sd::REGION_AUX_W),
+    Slot::at(sd::REGION_RESID_W),
 ];
 
 /// The pen-up: the deposit's targets and snapshot, and its *baked* reservoir reads too
 /// — the settle's parcel is the delivery integral of the remaining pass, which the
 /// settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`).
 pub(super) const SETTLE: &[Slot] = &[
-    Slot::dynamic(d::ST),
+    Slot::dynamic(sd::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
     Slot::at(d::BAKE_RLM),
     Slot::at(d::UNDER_COLOR),
     Slot::at(d::UNDER_AUX),
     Slot::at(d::UNDER_RESID),
-    Slot::at(d::REGION_COLOR_W),
-    Slot::at(d::REGION_AUX_W),
-    Slot::at(d::REGION_RESID_W),
-    Slot::at(d::SEL_MASK),
+    Slot::at(sd::REGION_COLOR_W),
+    Slot::at(sd::REGION_AUX_W),
+    Slot::at(sd::REGION_RESID_W),
+    Slot::at(sd::SEL_MASK),
     // The substrate (§6.4): the settle lays paint, so it reads the tooth too.
     Slot::at(d::SUBSTRATE_TEX),
     // …and the ceiling lane, since it lays through `lay_parcel` (§6.2).
@@ -214,9 +216,9 @@ pub(super) const SETTLE: &[Slot] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The indices, for the pairs below — a residual slot and its partner are
-    // stated as the two numbers a list is checked against, not as two declarations.
-    use stark_shaders::mirror::dynamics::{BINDINGS, binding as b};
+    // The declarations, for the pairs below — a residual slot and its partner,
+    // from whichever of the three modules declares them.
+    use stark_shaders::mirror::{dynamics, dynamics_common, liquify};
 
     /// Every list names slots the shader actually declares, and names none of them
     /// twice.
@@ -289,37 +291,57 @@ mod tests {
     /// Stated as a count rather than as an ordering, because the ordering is now free:
     /// the gate is on the declaration, so a residual entry can sit wherever it reads
     /// best. What would still be a bug is a list that takes *some* of a pair.
+    ///
+    /// By **name** rather than by index: the lists span three modules whose group 0
+    /// is partitioned between them, so an index names a slot only with its module,
+    /// where a declaration's name is one thing across all three.
     #[test]
     fn the_residual_pairs_are_taken_whole() {
-        // Each residual slot and the plain slot it rides with, by name.
-        let pairs = [
-            (b::REGION_RESID, b::REGION_COLOR),
-            (b::UNDER_RESID, b::UNDER_COLOR),
-            (b::UNDER_RESID_W, b::UNDER_COLOR_W),
-            (b::REGION_RESID_W, b::REGION_COLOR_W),
-            (b::BRUSH_SRC_RESID, b::BRUSH_SRC_COLOR),
-            (b::BRUSH_DST_RESID_W, b::BRUSH_DST_COLOR_W),
-            (b::BAKE_RLM, b::BAKE_LOAD),
-            (b::BAKE_RLM_W, b::BAKE_LOAD_W),
-            (b::CELL_RES, b::CELL_TOOL),
-            (b::CELL_RES_W, b::CELL_TOOL_W),
-            (b::BASE_RESID, b::BASE_COLOR),
+        use stark_shaders::Binding;
+        // Each residual slot and the plain slot it rides with.
+        let pairs: [(Binding, Binding); 11] = [
+            (dynamics::decl::REGION_RESID, dynamics::decl::REGION_COLOR),
+            (dynamics::decl::UNDER_RESID, dynamics::decl::UNDER_COLOR),
+            (dynamics::decl::UNDER_RESID_W, dynamics::decl::UNDER_COLOR_W),
+            (
+                dynamics_common::decl::REGION_RESID_W,
+                dynamics_common::decl::REGION_COLOR_W,
+            ),
+            (
+                dynamics::decl::BRUSH_SRC_RESID,
+                dynamics::decl::BRUSH_SRC_COLOR,
+            ),
+            (
+                dynamics::decl::BRUSH_DST_RESID_W,
+                dynamics::decl::BRUSH_DST_COLOR_W,
+            ),
+            (dynamics::decl::BAKE_RLM, dynamics::decl::BAKE_LOAD),
+            (dynamics::decl::BAKE_RLM_W, dynamics::decl::BAKE_LOAD_W),
+            (dynamics::decl::CELL_RES, dynamics::decl::CELL_TOOL),
+            (dynamics::decl::CELL_RES_W, dynamics::decl::CELL_TOOL_W),
+            (liquify::decl::BASE_RESID, liquify::decl::BASE_COLOR),
         ];
         for (what, list) in LISTS {
-            let has = |i: u32| list.iter().any(|s| s.binding() == i);
-            for (resid, plain) in pairs {
+            let has = |b: &Binding| list.iter().any(|s| s.decl().name == b.name);
+            for (resid, plain) in &pairs {
                 assert_eq!(
                     has(resid),
                     has(plain),
-                    "{what} takes only one of binding {resid} and its partner {plain}",
+                    "{what} takes only one of `{}` and its partner `{}`",
+                    resid.name,
+                    plain.name,
                 );
             }
         }
-        // And every `@if(resid)` slot the shader declares is covered by the pairs
-        // above, so the check cannot go stale by the shader gaining one.
-        for decl in BINDINGS.iter().filter(|b| b.resid) {
+        // And every `@if(resid)` slot the three modules declare is covered by the
+        // pairs above, so the check cannot go stale by a shader gaining one.
+        let declared = dynamics::BINDINGS
+            .iter()
+            .chain(dynamics_common::BINDINGS)
+            .chain(liquify::BINDINGS);
+        for decl in declared.filter(|b| b.resid) {
             assert!(
-                pairs.iter().any(|(r, _)| *r == decl.index),
+                pairs.iter().any(|(r, _)| r.name == decl.name),
                 "`{}` is `@if(resid)` but is not paired here",
                 decl.name,
             );
