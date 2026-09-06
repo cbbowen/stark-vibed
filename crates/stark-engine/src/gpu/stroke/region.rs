@@ -12,7 +12,7 @@
 //! coordinates, which is what lets the whole of it be pinned without an adapter
 //! (`tests`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
@@ -184,16 +184,24 @@ pub(super) fn cover(segments: &[Segment], fires: &[BleedFire]) -> Covered {
 /// total is `Σ tiles-per-segment`: the segment count times a small constant, since a
 /// segment is at most a tip wide.
 ///
-/// The indices come out ascending, because the walk is in segment order — which
-/// matters, since the color target's blend is `over` and therefore ordered. Each tile
-/// sees the stroke's own order over the subset that reaches it.
-pub(super) fn tiles_with_segments(segments: &[Segment]) -> BTreeMap<TileCoord, Vec<u32>> {
-    let mut map: BTreeMap<TileCoord, Vec<u32>> = BTreeMap::new();
+/// One `(tile, segment)` pair per reach, sorted, so a tile's segments are a
+/// contiguous run — `chunk_by` on the tile is the grouping — and within a run the
+/// indices ascend, which matters, since the color target's blend is `over` and
+/// therefore ordered. Each tile sees the stroke's own order over the subset that
+/// reaches it. The pairs are unique, so the whole tuple is the sort key and the
+/// within-tile order is the key's rather than a sort algorithm's stability.
+///
+/// One flat `Vec` rather than a map of per-tile lists: this is rebuilt on every
+/// pointer move, and a map was a node and a heap list per touched tile that the
+/// consumer flattened straight back into one instance buffer.
+pub(super) fn tiles_with_segments(segments: &[Segment]) -> Vec<(TileCoord, u32)> {
+    let mut pairs: Vec<(TileCoord, u32)> = Vec::new();
     // The box is `cover`'s business; this caller wants only the assignment.
     let _ = for_each_touched(segments.iter().map(|s| &s.sweep), |i, c| {
-        map.entry(c).or_default().push(i as u32)
+        pairs.push((c, i as u32))
     });
-    map
+    pairs.sort_unstable();
+    pairs
 }
 
 /// Where a sweep's centreline ends — along the arc, not along the chord.
@@ -457,17 +465,24 @@ mod tests {
             })
             .collect();
 
-        let map = tiles_with_segments(&segments);
+        let pairs = tiles_with_segments(&segments);
+        let runs: Vec<&[(TileCoord, u32)]> = pairs.chunk_by(|a, b| a.0 == b.0).collect();
         assert_eq!(
-            map.keys().copied().collect::<BTreeSet<_>>(),
+            runs.iter().map(|run| run[0].0).collect::<BTreeSet<_>>(),
             cover(&segments, &[]).tiles,
             "the two walks disagree on which tiles a stroke touches",
         );
-        assert!(map.len() > 4, "not enough tiles to be an interesting case");
+        assert_eq!(
+            runs.len(),
+            cover(&segments, &[]).tiles.len(),
+            "a tile's pairs are not one contiguous run",
+        );
+        assert!(runs.len() > 4, "not enough tiles to be an interesting case");
 
-        for (coord, idx) in &map {
+        for run in &runs {
+            let coord = run[0].0;
             assert!(
-                idx.windows(2).all(|w| w[0] < w[1]),
+                run.windows(2).all(|w| w[0].1 < w[1].1),
                 "tile {coord:?}'s segments are not in stroke order",
             );
             // The list against the membership test itself, segment by segment: a tile
@@ -479,7 +494,7 @@ mod tests {
                     && (lo.y / tile).floor() <= coord.y as f32
                     && coord.y as f32 <= (hi.y / tile).floor();
                 assert_eq!(
-                    idx.contains(&(i as u32)),
+                    run.iter().any(|&(_, j)| j == i as u32),
                     inside,
                     "tile {coord:?} and segment {i} disagree about reaching one another",
                 );
@@ -488,12 +503,12 @@ mod tests {
 
         // And the whole point: the listed pairs are far fewer than the full
         // tile × segment product the swept path shades.
-        let listed: usize = map.values().map(Vec::len).sum();
+        let listed = pairs.len();
         assert!(
-            listed < map.len() * segments.len() / 4,
+            listed < runs.len() * segments.len() / 4,
             "{listed} listed pairs against a {} product — the grouping is not buying \
              anything on this case",
-            map.len() * segments.len(),
+            runs.len() * segments.len(),
         );
     }
 

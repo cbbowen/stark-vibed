@@ -434,6 +434,10 @@ struct DynamicsRun<'a> {
     /// The liquify follow's normalizer, `1 / peak_tau` of the resolved tip
     /// (`assets::peak_tau`) — read only by [`liquify_plan`]'s slots.
     inv_peak_tau: f32,
+    /// [`upload_plan`](Self::upload_plan)'s staging bytes, kept across the fold's
+    /// pieces: a plan is `MAX_STAMPS × STAMP_STRIDE` at the top — a megabyte — so
+    /// a fresh `vec!` per piece was an allocation of that size per pointer move.
+    stamps: Vec<u8>,
 }
 
 impl<'a> DynamicsRun<'a> {
@@ -694,6 +698,7 @@ impl<'a> DynamicsRun<'a> {
             // floors what it hands out: a divisor is the one reading of the
             // number that cannot shrug off a zero.
             inv_peak_tau: 1.0 / tip.peak_tau.max(1e-6),
+            stamps: Vec::new(),
         }
     }
 
@@ -836,7 +841,14 @@ impl<'a> DynamicsRun<'a> {
                 .any(|d| matches!(d.kind, SlotKind::Bleed))
                 .then(|| self.bleed_scratch(plan.dsize));
             let stamp_buf = self.upload_plan(&plan.slots);
-            let bind = self.bind_piece(&region, &under, &stamp_buf, cells.as_ref(), bleed.as_ref());
+            let bind = self.bind_piece(
+                &region,
+                &under,
+                &stamp_buf,
+                cells.as_ref(),
+                bleed.as_ref(),
+                Needs::of(&plan.slots),
+            );
             // The ceiling lane's draw state (§6.2): the segments as the sweep
             // instances them, and the region as one sweep target.
             let levels_pass = region.levels.as_ref().map(|view| {
@@ -1004,8 +1016,8 @@ impl<'a> DynamicsRun<'a> {
                 other => unreachable!("the composite view group lists no binding {other}"),
             },
         );
-        let mut tile_origins: Vec<TileInstance> = Vec::new();
-        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
+        let mut tile_origins: Vec<TileInstance> = Vec::with_capacity(halo.len());
+        let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::with_capacity(halo.len());
         for coord in halo {
             if let Some(tile) = base.get(coord) {
                 tile_origins.push(TileInstance {
@@ -1198,7 +1210,9 @@ impl<'a> DynamicsRun<'a> {
     /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
     /// this one used.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
-        let mut data = vec![0u8; plan.len() * STAMP_STRIDE as usize];
+        let data = &mut self.stamps;
+        data.clear();
+        data.resize(plan.len() * STAMP_STRIDE as usize, 0);
         for (i, d) in plan.iter().enumerate() {
             let at = i * STAMP_STRIDE as usize;
             data[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
@@ -1208,7 +1222,7 @@ impl<'a> DynamicsRun<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             label: "stark dynamics stamps",
         });
-        self.scope.write_lease(&buf, &data);
+        self.scope.write_lease(&buf, data);
         buf
     }
 
@@ -1229,6 +1243,10 @@ impl<'a> DynamicsRun<'a> {
     /// `ST` binds a single slot-sized window of `stamp_buf` whose dynamic offset
     /// selects the dispatch, so all of these are built once per piece and the loop
     /// varies only the offset.
+    ///
+    /// Only the groups `needs` names are built: a group is a WebGPU object per
+    /// piece per pointer move, and a liquify plan — all warp slots — used to pay
+    /// for the six wet-only ones it never bound.
     fn bind_piece<'p>(
         &'p self,
         region: &'p Region,
@@ -1236,6 +1254,7 @@ impl<'a> DynamicsRun<'a> {
         stamp_buf: &'p wgpu::Buffer,
         cells: Option<&'p Cells>,
         bleed: Option<&'p wgpu::TextureView>,
+        needs: Needs,
     ) -> PieceBindings {
         let r = self.r;
         let kit = &r.dynamics;
@@ -1287,31 +1306,12 @@ impl<'a> DynamicsRun<'a> {
             })
         };
 
-        let snapshot = desc::bind_group_for(
-            device,
-            "stark dynamics snapshot bg",
-            &kit.snapshot_bgl,
-            slots::SNAPSHOT,
-            resid,
-            |s| match s {
-                b::REGION_COLOR => view(&region.color),
-                b::REGION_AUX => view(&region.aux),
-                b::REGION_RESID => opt(region.resid.as_ref(), "region"),
-                b::UNDER_COLOR_W => view(&under.color),
-                b::UNDER_AUX_W => view(&under.aux),
-                b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
-                other => common(other).expect("snapshot lists no other binding"),
-            },
-        );
-        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
-        // half and writes the other. The residual ping-pongs on the same phase as the
-        // color — read `i`, write `1 - i` — or the tool's two halves would drift apart.
-        let exchange = std::array::from_fn(|i| {
+        let snapshot = needs.snapshot.then(|| {
             desc::bind_group_for(
                 device,
-                "stark dynamics exchange bg",
-                &kit.exchange_bgl,
-                slots::EXCHANGE,
+                "stark dynamics snapshot bg",
+                &kit.snapshot_bgl,
+                slots::SNAPSHOT,
                 resid,
                 |s| match s {
                     b::REGION_COLOR => view(&region.color),
@@ -1320,44 +1320,69 @@ impl<'a> DynamicsRun<'a> {
                     b::UNDER_COLOR_W => view(&under.color),
                     b::UNDER_AUX_W => view(&under.aux),
                     b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
-                    b::SAMP => samp(&kit.exchange_sampler),
-                    b::COV_TEX => view(&self.cov),
-                    b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
-                    b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
-                    b::BRUSH_SRC_RESID => {
-                        opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
-                    }
-                    b::BRUSH_DST_COLOR_W => view(&self.brush_color[1 - i]),
-                    b::BRUSH_DST_AUX_W => view(&self.brush_aux[1 - i]),
-                    b::BRUSH_DST_RESID_W => {
-                        opt(self.brush_resid.as_ref().map(|v| &v[1 - i]), "reservoir")
-                    }
-                    other => common(other).expect("exchange lists no other binding"),
+                    other => common(other).expect("snapshot lists no other binding"),
                 },
             )
         });
+        // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
+        // half and writes the other. The residual ping-pongs on the same phase as the
+        // color — read `i`, write `1 - i` — or the tool's two halves would drift apart.
+        let exchange = needs.exchange.then(|| {
+            std::array::from_fn(|i| {
+                desc::bind_group_for(
+                    device,
+                    "stark dynamics exchange bg",
+                    &kit.exchange_bgl,
+                    slots::EXCHANGE,
+                    resid,
+                    |s| match s {
+                        b::REGION_COLOR => view(&region.color),
+                        b::REGION_AUX => view(&region.aux),
+                        b::REGION_RESID => opt(region.resid.as_ref(), "region"),
+                        b::UNDER_COLOR_W => view(&under.color),
+                        b::UNDER_AUX_W => view(&under.aux),
+                        b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
+                        b::SAMP => samp(&kit.exchange_sampler),
+                        b::COV_TEX => view(&self.cov),
+                        b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
+                        b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
+                        b::BRUSH_SRC_RESID => {
+                            opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
+                        }
+                        b::BRUSH_DST_COLOR_W => view(&self.brush_color[1 - i]),
+                        b::BRUSH_DST_AUX_W => view(&self.brush_aux[1 - i]),
+                        b::BRUSH_DST_RESID_W => {
+                            opt(self.brush_resid.as_ref().map(|v| &v[1 - i]), "reservoir")
+                        }
+                        other => common(other).expect("exchange lists no other binding"),
+                    },
+                )
+            })
+        });
         // One bake bind group per reservoir phase; the deposit reads only the baked
         // result, so it never touches the ping-pong.
-        let bake = std::array::from_fn(|i| {
-            desc::bind_group_for(
-                device,
-                "stark dynamics bake bg",
-                &kit.bake_bgl,
-                slots::BAKE,
-                resid,
-                |s| match s {
-                    b::SAMP => samp(&kit.exchange_sampler),
-                    b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
-                    b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
-                    b::BRUSH_SRC_RESID => {
-                        opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
-                    }
-                    b::BAKE_LOAD_W => view(&self.bake_load),
-                    b::BAKE_LATM_W => view(&self.bake_latm),
-                    b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
-                    other => common(other).expect("bake lists no other binding"),
-                },
-            )
+        let bake = needs.bake.then(|| {
+            std::array::from_fn(|i| {
+                desc::bind_group_for(
+                    device,
+                    "stark dynamics bake bg",
+                    &kit.bake_bgl,
+                    slots::BAKE,
+                    resid,
+                    |s| match s {
+                        b::SAMP => samp(&kit.exchange_sampler),
+                        b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
+                        b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
+                        b::BRUSH_SRC_RESID => {
+                            opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
+                        }
+                        b::BAKE_LOAD_W => view(&self.bake_load),
+                        b::BAKE_LATM_W => view(&self.bake_latm),
+                        b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
+                        other => common(other).expect("bake lists no other binding"),
+                    },
+                )
+            })
         });
         // The mobility pass, on a piece that has one to run.
         let bleed_weight = bleed.map(|w| {
@@ -1373,27 +1398,31 @@ impl<'a> DynamicsRun<'a> {
                 },
             )
         });
-        let deposit = desc::bind_group_for(
-            device,
-            "stark dynamics deposit bg",
-            &kit.deposit_bgl,
-            slots::DEPOSIT,
-            resid,
-            |s| match s {
-                b::SAMP => samp(&kit.exchange_sampler),
-                other => common(other).expect("deposit lists no other binding"),
-            },
-        );
+        let deposit = needs.deposit.then(|| {
+            desc::bind_group_for(
+                device,
+                "stark dynamics deposit bg",
+                &kit.deposit_bgl,
+                slots::DEPOSIT,
+                resid,
+                |s| match s {
+                    b::SAMP => samp(&kit.exchange_sampler),
+                    other => common(other).expect("deposit lists no other binding"),
+                },
+            )
+        });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
-        let settle = desc::bind_group_for(
-            device,
-            "stark dynamics settle bg",
-            &kit.settle_bgl,
-            slots::SETTLE,
-            resid,
-            |s| common(s).expect("settle lists no other binding"),
-        );
+        let settle = needs.settle.then(|| {
+            desc::bind_group_for(
+                device,
+                "stark dynamics settle bg",
+                &kit.settle_bgl,
+                slots::SETTLE,
+                resid,
+                |s| common(s).expect("settle lists no other binding"),
+            )
+        });
         // The warp's group (§6.13), only on the run whose plan can dispatch one —
         // every slot it lists is in `common`, the tool having nothing of its own
         // to bind.
@@ -1506,7 +1535,7 @@ impl<'a> DynamicsRun<'a> {
                 // because there is no exchange dispatch to ride in.
                 SlotKind::Bleed => {
                     cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
+                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     // The pair's mobility, once per texel, for the ladder to read back
                     // (§6.2). Over the **whole snapshot square** rather than the
@@ -1523,7 +1552,7 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(square_groups, square_groups, 1);
                     cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, &bind.deposit, &[off]);
+                    cpass.set_bind_group(0, bind.deposit(), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 }
@@ -1531,7 +1560,7 @@ impl<'a> DynamicsRun<'a> {
                     // Bake this segment's swept reservoir prefix first — it folds in the
                     // tip's current orientation as well as the reservoir state.
                     cpass.set_pipeline(&kit.bake_pipeline);
-                    cpass.set_bind_group(0, &bind.bake[cur], &[off]);
+                    cpass.set_bind_group(0, bind.bake(cur), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     // One BAKE_RES-wide workgroup per row: the shader's scan width is a
                     // constant, so the two must agree.
@@ -1548,7 +1577,7 @@ impl<'a> DynamicsRun<'a> {
                     // groups after — and a y tall enough for the taller of the two
                     // (`dynamics.wesl::exchange`).
                     cpass.set_pipeline(&kit.exchange_pipeline);
-                    cpass.set_bind_group(0, &bind.exchange[cur], &[off]);
+                    cpass.set_bind_group(0, bind.exchange(cur), &[off]);
                     cpass.dispatch_workgroups(
                         RESERVOIR_GROUPS.0 + d.groups.0,
                         RESERVOIR_GROUPS.1.max(d.groups.1),
@@ -1575,7 +1604,7 @@ impl<'a> DynamicsRun<'a> {
                         }
                         None => {
                             cpass.set_pipeline(&kit.deposit_pipeline);
-                            cpass.set_bind_group(0, &bind.deposit, &[off]);
+                            cpass.set_bind_group(0, bind.deposit(), &[off]);
                             cpass.set_bind_group(1, prefix_bg, &[]);
                             cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                         }
@@ -1623,14 +1652,14 @@ impl<'a> DynamicsRun<'a> {
                 // left alone here too.
                 SlotKind::Settle => {
                     cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
+                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                     cpass.set_pipeline(&kit.bake_pipeline);
-                    cpass.set_bind_group(0, &bind.bake[cur], &[off]);
+                    cpass.set_bind_group(0, bind.bake(cur), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(1, BAKE_RES, 1);
                     cpass.set_pipeline(&kit.settle_pipeline);
-                    cpass.set_bind_group(0, &bind.settle, &[off]);
+                    cpass.set_bind_group(0, bind.settle(), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
                     cpass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
                 }
@@ -1644,7 +1673,7 @@ impl<'a> DynamicsRun<'a> {
                     // texel this slot's snapshot wrote (`dynamics.wesl`'s
                     // `snapshot_at` reads `st.drag` to copy the square whole).
                     cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, &bind.snapshot, &[off]);
+                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
                     cpass.dispatch_workgroups(square_groups, square_groups, 1);
                     cpass.set_pipeline(&kit.warp_pipeline);
                     cpass.set_bind_group(
@@ -1871,24 +1900,106 @@ struct Cells {
     res: Option<wgpu::TextureView>,
 }
 
+/// Which of a piece's bind groups its plan will bind — one flag per group
+/// [`DynamicsRun::record_loop`] reaches for, read off the slot kinds exactly as
+/// its arms consume them. `bleed_weight` and `coarse` are gated the same way by
+/// the scratch they need; these are the groups that were built on every piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Needs {
+    snapshot: bool,
+    exchange: bool,
+    bake: bool,
+    deposit: bool,
+    settle: bool,
+}
+
+impl Needs {
+    const NONE: Self = Needs {
+        snapshot: false,
+        exchange: false,
+        bake: false,
+        deposit: false,
+        settle: false,
+    };
+
+    fn of(plan: &[LoopDispatch]) -> Self {
+        let mut n = Self::NONE;
+        for d in plan {
+            match d.kind {
+                SlotKind::Segment => {
+                    n.bake = true;
+                    n.exchange = true;
+                    // A coarse segment deposits through its own cell group.
+                    n.deposit |= d.cell_groups.is_none();
+                }
+                SlotKind::Bleed => {
+                    n.snapshot = true;
+                    n.deposit = true;
+                }
+                SlotKind::Settle => {
+                    n.snapshot = true;
+                    n.bake = true;
+                    n.settle = true;
+                }
+                SlotKind::Warp => n.snapshot = true,
+            }
+        }
+        n
+    }
+}
+
 /// The bind groups one piece's dispatches switch between. Built once per piece
 /// because every dispatch varies only the stamp uniform's dynamic offset; the
 /// reservoir ping-pong is the one thing that needs a pair.
+///
+/// The five without a doc of their own are `Some` exactly when [`Needs::of`] the
+/// piece's plan said so, and the accessors state that contract: the arm that reads
+/// a group is the arm that asked for it.
 struct PieceBindings {
-    snapshot: wgpu::BindGroup,
-    exchange: [wgpu::BindGroup; 2],
-    bake: [wgpu::BindGroup; 2],
-    deposit: wgpu::BindGroup,
+    snapshot: Option<wgpu::BindGroup>,
+    exchange: Option<[wgpu::BindGroup; 2]>,
+    bake: Option<[wgpu::BindGroup; 2]>,
+    deposit: Option<wgpu::BindGroup>,
     /// The mobility pass's group — `Some` exactly when the piece allocated a bleed
     /// scratch, i.e. when some slot is a firing.
     bleed_weight: Option<wgpu::BindGroup>,
     /// The coarse pair's groups — `Some` exactly when the piece allocated a cell
     /// scratch, i.e. when some slot's [`extent_cell`](super::plan) beat 1.
     coarse: Option<CoarseBindings>,
-    settle: wgpu::BindGroup,
+    settle: Option<wgpu::BindGroup>,
     /// The warp's group (§6.13) — `Some` exactly when the run's tool is
     /// [`LoopTool::Liquify`], whose plan is the only source of warp slots.
     warp: Option<wgpu::BindGroup>,
+}
+
+impl PieceBindings {
+    fn snapshot(&self) -> &wgpu::BindGroup {
+        self.snapshot
+            .as_ref()
+            .expect("a firing, a settle or a warp slot asked for a snapshot group")
+    }
+
+    fn exchange(&self, cur: usize) -> &wgpu::BindGroup {
+        let pair = self.exchange.as_ref();
+        &pair.expect("a segment asked for the exchange pair")[cur]
+    }
+
+    fn bake(&self, cur: usize) -> &wgpu::BindGroup {
+        let pair = self.bake.as_ref();
+        &pair.expect("a segment or a settle asked for the bake pair")[cur]
+    }
+
+    fn deposit(&self) -> &wgpu::BindGroup {
+        self.deposit
+            .as_ref()
+            .expect("a firing or an exact segment asked for a deposit group")
+    }
+
+    fn settle(&self) -> &wgpu::BindGroup {
+        self.settle
+            .as_ref()
+            .expect("a settle slot asked for a settle group")
+    }
 }
 
 /// The two bind groups a coarse slot dispatches with (§6.2).
@@ -1909,3 +2020,75 @@ const RESERVOIR_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
     height: BRUSH_RES,
     depth_or_array_layers: 1,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(kind: SlotKind, cell_groups: Option<(u32, u32)>) -> LoopDispatch {
+        LoopDispatch {
+            slot: bytemuck::Zeroable::zeroed(),
+            groups: (1, 1),
+            cell_groups,
+            kind,
+        }
+    }
+
+    /// A liquify plan is all warp slots and binds nothing the wet tool does —
+    /// [`bind_piece`](DynamicsRun::bind_piece) used to build the exchange pair,
+    /// the bake pair, the deposit and the settle for it on every piece of every
+    /// pointer move.
+    #[test]
+    fn a_liquify_plan_needs_only_the_snapshot_group() {
+        let plan = [slot(SlotKind::Warp, None), slot(SlotKind::Warp, None)];
+        assert_eq!(
+            Needs::of(&plan),
+            Needs {
+                snapshot: true,
+                ..Needs::NONE
+            }
+        );
+    }
+
+    /// Each wet slot kind asks for exactly the groups its arm of
+    /// [`record_loop`](DynamicsRun::record_loop) binds — read the arms, then this.
+    #[test]
+    fn each_wet_slot_kind_asks_for_the_groups_its_arm_binds() {
+        let of = |s: LoopDispatch| Needs::of(&[s]);
+        assert_eq!(
+            of(slot(SlotKind::Segment, None)),
+            Needs {
+                exchange: true,
+                bake: true,
+                deposit: true,
+                ..Needs::NONE
+            }
+        );
+        // A coarse segment deposits through its cell group, not the exact one.
+        assert_eq!(
+            of(slot(SlotKind::Segment, Some((1, 1)))),
+            Needs {
+                exchange: true,
+                bake: true,
+                ..Needs::NONE
+            }
+        );
+        assert_eq!(
+            of(slot(SlotKind::Bleed, None)),
+            Needs {
+                snapshot: true,
+                deposit: true,
+                ..Needs::NONE
+            }
+        );
+        assert_eq!(
+            of(slot(SlotKind::Settle, None)),
+            Needs {
+                snapshot: true,
+                bake: true,
+                settle: true,
+                ..Needs::NONE
+            }
+        );
+    }
+}

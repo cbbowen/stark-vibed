@@ -380,6 +380,29 @@ struct Ends {
     pen: (PenState, PenState),
 }
 
+/// The effect's rates at one pen reading — what [`Paint`] carries, before the two
+/// ends are averaged and ramped. Named lanes, for the reason the plan's `Slot` is
+/// (`plan.rs`): a positional tuple of five `f32`s was destructured three times per
+/// segment with `_` placeholders, and nothing checked the positions agreed.
+#[derive(Clone, Copy)]
+struct Rates {
+    add: f32,
+    lambda_lift: f32,
+    lambda_deposit: f32,
+    bleed: f32,
+    drag: f32,
+}
+
+impl Rates {
+    const ZERO: Self = Rates {
+        add: 0.0,
+        lambda_lift: 0.0,
+        lambda_deposit: 0.0,
+        bleed: 0.0,
+        drag: 0.0,
+    };
+}
+
 /// Build swept segments from the fitted control points (§6.2): flatten
 /// the curve adaptively, then make each polyline edge a segment. This is where the
 /// brush's fixed numbers become the per-segment ones the shaders read: the radius
@@ -465,12 +488,61 @@ pub(super) fn generate_segments_in(
     // across a segment steps at every cut and the mark comes out in bands. The
     // shaders interpolate it across the sweep the way they interpolate the tip
     // ([`Paint::opacity_ramp`]).
-    let ceiling_at = |pen: PenState| match &b.effect {
-        stark_model::document::BrushEffect::Paint(p) => p.modulation.opacity(pen),
-        stark_model::document::BrushEffect::Wet(w) => w.modulation.opacity(pen),
-        stark_model::document::BrushEffect::Erase(e) => e.modulation.opacity(pen),
+    //
+    // The effect is a fact about the *brush*, so it is resolved to its variant once
+    // here and once for `rates` below, not per pen sample. The arms' closures are
+    // temporaries the `let` extends to the end of the function; `move`, because a
+    // borrow of the arm's binding would not be.
+    let ceiling_at: &dyn Fn(PenState) -> f32 = match &b.effect {
+        stark_model::document::BrushEffect::Paint(p) => {
+            &move |pen: PenState| p.modulation.opacity(pen)
+        }
+        stark_model::document::BrushEffect::Wet(w) => {
+            &move |pen: PenState| w.modulation.opacity(pen)
+        }
+        stark_model::document::BrushEffect::Erase(e) => {
+            &move |pen: PenState| e.modulation.opacity(pen)
+        }
         // A warp has no ceiling for the pen to drive (`BrushEffect::opacity`).
-        stark_model::document::BrushEffect::Liquify(_) => 1.0,
+        stark_model::document::BrushEffect::Liquify(_) => &|_: PenState| 1.0,
+    };
+
+    // The rates are the effect's own, at its own pen mappings. Paint and erase have
+    // one rate each — paint's `add` is its flow, an eraser's the rate its bite
+    // builds at (§6.12) — and only a wet brush carries fluxes; which is a statement
+    // about the *brush*, so every segment of every stroke answers it the same way
+    // (`dynamics_setup`'s purity argument).
+    //
+    // A wet brush's flow scales everything the tool does (§6.2), and all of it is
+    // scaled here. What is linear in exposure takes the factor outright — the `add`
+    // mint, and the `bleed` diffusivity (which `bleed_stencil` still clamps at its
+    // own calibrated top, so a hot flow saturates the blur rather than out-reaching
+    // the stencil). The vertical fractions cannot be scaled before their `ln`, so
+    // they become λs first and the factor lands on the exponent — one pass at flow
+    // f trades exactly what f passes at flow 1 would.
+    let rates: &dyn Fn(PenState) -> Rates = match &b.effect {
+        stark_model::document::BrushEffect::Paint(p) => &move |pen: PenState| Rates {
+            add: p.flow * p.modulation.flow(pen),
+            ..Rates::ZERO
+        },
+        stark_model::document::BrushEffect::Wet(w) => &move |pen: PenState| {
+            let flow = w.flow * w.modulation.flow(pen);
+            Rates {
+                add: w.dynamics.add * w.modulation.add(pen) * flow,
+                lambda_lift: flow * lambda(w.dynamics.lift * w.modulation.lift(pen)),
+                lambda_deposit: flow * lambda(w.dynamics.deposit * w.modulation.deposit(pen)),
+                bleed: w.dynamics.bleed * w.modulation.bleed(pen) * flow,
+                drag: 0.0,
+            }
+        },
+        stark_model::document::BrushEffect::Erase(e) => &move |pen: PenState| Rates {
+            add: e.flow * e.modulation.flow(pen),
+            ..Rates::ZERO
+        },
+        stark_model::document::BrushEffect::Liquify(l) => &move |pen: PenState| Rates {
+            drag: l.strength * l.modulation.strength(pen),
+            ..Rates::ZERO
+        },
     };
 
     // `ends` is what is in force at the segment's two ends — the tip, where the radius
@@ -531,45 +603,7 @@ pub(super) fn generate_segments_in(
         // must too, or the rim px of a tile another tile's apron rewrites would be
         // drawn by one and skipped by the other (§6.4).
         sweep.reach = sweep.widest_tip() * elong + stark_shaders::mirror::stamp_common::AA_RIM_PX;
-        // The rates are the effect's own, at its own pen mappings — the one place
-        // per segment the enum is asked. Paint and erase have one rate each —
-        // paint's `add` is its flow, an eraser's the rate its bite builds at
-        // (§6.12) — and only a wet brush carries fluxes; which is a statement
-        // about the *brush*, so every segment of every stroke answers it the same
-        // way (`dynamics_setup`'s purity argument).
-        //
-        // A wet brush's flow scales everything the tool does (§6.2), and all of
-        // it is scaled here. What is linear in exposure takes the factor outright
-        // — the `add` mint, and the `bleed` diffusivity (which `bleed_stencil`
-        // still clamps at its own calibrated top, so a hot flow saturates the blur
-        // rather than out-reaching the stencil). The vertical fractions cannot be
-        // scaled before their `ln`, so they become λs first and the factor lands
-        // on the exponent — one pass at flow f trades exactly what f passes at
-        // flow 1 would. `(add, λ_lift, λ_deposit, bleed, drag)`.
-        let rates = |pen: PenState| -> (f32, f32, f32, f32, f32) {
-            match &b.effect {
-                stark_model::document::BrushEffect::Paint(p) => {
-                    (p.flow * p.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-                }
-                stark_model::document::BrushEffect::Wet(w) => {
-                    let flow = w.flow * w.modulation.flow(pen);
-                    (
-                        w.dynamics.add * w.modulation.add(pen) * flow,
-                        flow * lambda(w.dynamics.lift * w.modulation.lift(pen)),
-                        flow * lambda(w.dynamics.deposit * w.modulation.deposit(pen)),
-                        w.dynamics.bleed * w.modulation.bleed(pen) * flow,
-                        0.0,
-                    )
-                }
-                stark_model::document::BrushEffect::Erase(e) => {
-                    (e.flow * e.modulation.flow(pen), 0.0, 0.0, 0.0, 0.0)
-                }
-                stark_model::document::BrushEffect::Liquify(l) => {
-                    (0.0, 0.0, 0.0, 0.0, l.strength * l.modulation.strength(pen))
-                }
-            }
-        };
-        // **Which of them ride the ends, and which the midpoint.** A rate the
+        // **Which of the rates ride the ends, and which the midpoint.** A rate the
         // shaders apply per *texel* — `add`, the liquify follow, and the tooth's
         // give below — is read at both ends and interpolated between them, for
         // [`Paint::add_ramp`]'s reason. The three the *exchange* solves with are
@@ -578,9 +612,9 @@ pub(super) fn generate_segments_in(
         // whose tool half has no canvas position to vary along (`dynamics.wesl`).
         // What holds their step down is the flattener, which already buys segments
         // against [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
-        let (_, lambda_lift, lambda_deposit, bleed, _) = rates(pen);
-        let (add0, _, _, _, drag0) = rates(ends.pen.0);
-        let (add1, _, _, _, drag1) = rates(ends.pen.1);
+        let mid = rates(pen);
+        let rate0 = rates(ends.pen.0);
+        let rate1 = rates(ends.pen.1);
         let give0 = b.tooth.give * m.tooth_give(ends.pen.0);
         let give1 = b.tooth.give * m.tooth_give(ends.pen.1);
         Segment {
@@ -590,13 +624,13 @@ pub(super) fn generate_segments_in(
                 // what makes the ramp exact at both, so two adjacent segments —
                 // which read the pen at the knot they share from the same sample —
                 // agree there to the bit.
-                add: (add0 + add1) * 0.5,
-                add_ramp: add1 - add0,
-                lambda_lift,
-                lambda_deposit,
-                bleed,
-                drag: (drag0 + drag1) * 0.5,
-                drag_ramp: drag1 - drag0,
+                add: (rate0.add + rate1.add) * 0.5,
+                add_ramp: rate1.add - rate0.add,
+                lambda_lift: mid.lambda_lift,
+                lambda_deposit: mid.lambda_deposit,
+                bleed: mid.bleed,
+                drag: (rate0.drag + rate1.drag) * 0.5,
+                drag_ramp: rate1.drag - rate0.drag,
                 tooth_give: (give0 + give1) * 0.5,
                 tooth_give_ramp: give1 - give0,
                 opacity: (o0 + o1) * 0.5,

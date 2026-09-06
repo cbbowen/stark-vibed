@@ -840,17 +840,21 @@ pub(super) fn sweep_draws(
     ss: u32,
 ) -> SweepDraws {
     let device = &r.ctx.device;
-    let touched = tiles_with_segments(segments);
-    let coords: Vec<TileCoord> = touched.keys().copied().collect();
-    // Both reserved: the instance count is the sum of the per-tile lists, which
-    // `touched` already holds. `runs` was reserved and `instances` — the larger of the
-    // two by an order of magnitude — was not.
-    let mut instances: Vec<SegmentInstance> =
-        Vec::with_capacity(touched.values().map(Vec::len).sum());
-    let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(touched.len());
-    for idx in touched.values() {
+    let pairs = tiles_with_segments(segments);
+    // A tile's pairs are one contiguous run of the sorted list, so its instances
+    // are one contiguous run of the buffer. All three reserved: the pair count is
+    // the instance count, and the run count is one pass over it.
+    let tiles = pairs.chunk_by(|a, b| a.0 == b.0).count();
+    let mut coords: Vec<TileCoord> = Vec::with_capacity(tiles);
+    let mut instances: Vec<SegmentInstance> = Vec::with_capacity(pairs.len());
+    let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(tiles);
+    for run in pairs.chunk_by(|a, b| a.0 == b.0) {
         let from = instances.len() as u32;
-        instances.extend(idx.iter().map(|&i| segment_instance(&segments[i as usize])));
+        instances.extend(
+            run.iter()
+                .map(|&(_, i)| segment_instance(&segments[i as usize])),
+        );
+        coords.push(run[0].0);
         runs.push(from..instances.len() as u32);
     }
     // Leased and written through the scope (`SubmitScope::write_lease`), never
