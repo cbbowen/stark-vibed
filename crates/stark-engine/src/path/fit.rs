@@ -882,7 +882,7 @@ impl PathFitter {
         // Taking `w.profile` instead would close the gap outright and drop two of the
         // four curve walks a report costs. It is not done here because `KNOT_COST` was
         // tuned against what this does today, so the change is a re-tune and wants a
-        // sitting of its own (`ENGINE_CLEANUP.md`, F3).
+        // sitting of its own.
         arc_profile_into(&spline, &self.settled_profile, profile);
         let sum: f32 = w
             .idx

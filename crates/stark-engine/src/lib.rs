@@ -52,12 +52,11 @@
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
 //! The list is **pruned, not accreted**: a name nothing outside `src/` spells is not
-//! offered, and one only the suite spells is offered by `testing` instead. Five names
-//! below have no call site of their own and are not oversights — `DeviceFailure`,
-//! `FailureKind`, `Produces`, `GpuHealth` and `Projected` are each reachable through
-//! something that *is* spelled (a public error's payload, a public method's return,
-//! what `Layers` is an alias of), and dropping them would leave a type this API hands
-//! out with no way to write it down.
+//! offered, and one only the suite spells is offered by [`testing`] instead. A name
+//! *is* offered when something outside spells it, or when something spelled hands it
+//! out — an error's payload, a method's return — since dropping one of those would
+//! leave a type this API produces with no way to write it down. Which names those are
+//! is not written here: a hand-kept roster of exceptions drifts on the next variant.
 //!
 //! Build status lives in §13, not here — one checklist, so there is nothing to drift.
 
@@ -137,7 +136,7 @@ pub use gpu::{
     Output, Transfer, max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
-pub use peer::{GestureView, Identity, LiveGesture, Peer, Peers};
+pub use peer::{GestureView, Identity, LiveGesture, Peer};
 pub use session::Session;
 pub use tow::TowString;
 pub use view::{Extent2, ViewTransform};

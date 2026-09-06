@@ -72,11 +72,9 @@ pub struct ApplyCtx {
     /// only by *taking* it, which is how the engine learns whether the offer was
     /// accepted: a slot still full after the push was declined.
     ///
-    /// Reached through [`offer`](Self::offer) and [`reclaim`](Self::reclaim) rather
-    /// than written, because that protocol is the whole of what the field is for.
-    /// Every other field here is a renderer handle; this one is a message to a single
-    /// fold, and it is the only field whose value at any moment is part of a
-    /// handshake rather than a resource.
+    /// Written through [`offer`](Self::offer) and [`reclaim`](Self::reclaim), and
+    /// emptied by the fold that takes it — those three, and the `None` an engine is
+    /// built with.
     pub(crate) prepared: Option<PreparedStroke>,
 }
 

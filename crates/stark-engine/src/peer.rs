@@ -399,11 +399,13 @@ impl Peers {
         self.map.values()
     }
 
-    pub fn get(&self, actor: ActorId) -> Option<&Peer> {
+    #[cfg(test)]
+    pub(crate) fn get(&self, actor: ActorId) -> Option<&Peer> {
         self.map.get(&actor)
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 }

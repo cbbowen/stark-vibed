@@ -15,12 +15,8 @@
 //! told to ignore. What the hidden module buys is honesty about the API's surface;
 //! what a feature would buy on top of that is not worth a doubled compile.
 
-/// The recycling tile pool and the tag an allocation is counted under (§6.1), for the
-/// one test that drives the pool directly (`tests/tile_pool.rs`).
-///
-/// Here rather than at the crate root because recycling is the one thing about the
-/// pool a picture cannot show: a reused texture and a fresh one draw the same tile, so
-/// the census is the only witness — and a frontend never acquires a tile itself.
+/// The recycling tile pool (§6.1), for the one test that drives it directly
+/// (`tests/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
 pub use crate::gpu::{AllocSource, TilePool};
 
 /// The environment variable that turns a missing GPU from a failure into a skip.

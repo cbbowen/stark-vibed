@@ -72,7 +72,7 @@ impl std::fmt::Display for Diff {
 /// the debug fold below.
 ///
 /// `#[doc(hidden)]`: this is a test hook on a public module, not part of what the
-/// crate offers (`ENGINE_CLEANUP.md` [T]). It is public because an integration test
+/// crate offers. It is public because an integration test
 /// can reach nothing else, and narrow enough that saying so costs one line.
 #[doc(hidden)]
 pub fn undeclared(before: &DocState, after: &DocState, footprint: &Footprint) -> Vec<String> {
