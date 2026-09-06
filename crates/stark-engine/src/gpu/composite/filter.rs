@@ -294,7 +294,7 @@ impl FilterPass {
 
 /// The filter pass's uniform for `f`, under this frame's `view` (§21).
 ///
-/// Here rather than on [`FilterDraw`] for the reason [`Plan::filters`] gives: one of
+/// Here rather than on [`FilterDraw`] for the reason [`Plan::filters`](super::plan::Plan::filters) gives: one of
 /// its lanes is a fact about the view, which the draw deliberately has none of.
 pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUniform {
     FilterUniform {

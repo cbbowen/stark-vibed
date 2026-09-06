@@ -949,7 +949,7 @@ impl PathFitter {
     /// refines while the entry is still being solved, and settles the moment
     /// the frozen prefix's arc covers it: [`param_at`] reads only profile
     /// entries up to the marker's own arc, and those are carried over verbatim
-    /// once frozen ([`arc_profile`]). Which is what lets a renderer bake spans
+    /// once frozen ([`arc_profile_into`](super::arclen::arc_profile_into)). Which is what lets a renderer bake spans
     /// behind the marker into a cached head (§6.2): whether the marker lies
     /// behind a frozen boundary is settled *by* that boundary freezing, so it
     /// can never move across one afterwards.

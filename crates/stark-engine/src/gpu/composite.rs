@@ -183,7 +183,7 @@ pub use overlay::SelectionOutline;
 pub(crate) use plan::blend_uniform;
 pub(crate) use view::view_uniform;
 
-/// What [`Compositor::upload_streams`] hands the encoder: the per-tile bind groups, and the
+/// What [`Streams::upload`] hands the encoder: the per-tile bind groups, and the
 /// per-matte ramp bind group beside them. One value because they are one
 /// preparation, gathered from one plan and indexed by its `Draw`s.
 ///
@@ -256,7 +256,7 @@ pub struct CompositeScene<'a> {
 ///
 /// **No uniform buffer is here**, and that is the whole content of "nothing here
 /// changes". The view, media and resolve uniforms live on the [`Compositor`] instead
-/// ([`ViewBindings`], [`Compositor::media_buf`], and inside [`Supersampled`]). Sharing
+/// ([`ViewBindings`], [`TargetSized::media_buf`], and inside [`Supersampled`]). Sharing
 /// them would rest on each render writing them through the queue immediately before
 /// the submit that reads them, and submits on one queue being ordered — an argument
 /// about the *sequence of calls*, not about these types. Two `Compositor`s over one of
