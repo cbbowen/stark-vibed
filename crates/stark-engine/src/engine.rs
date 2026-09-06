@@ -373,7 +373,9 @@ impl Engine {
         self.shared.gpu.health().failure()
     }
 
-    /// The current committed document state.
+    /// The current committed document state. `pub` for the suite and nothing else,
+    /// and hidden to say so (`testing`).
+    #[doc(hidden)]
     pub fn document(&self) -> &DocState {
         self.timeline.current()
     }
@@ -405,16 +407,6 @@ impl Engine {
     /// The current pan/zoom view (for mapping pointer input to canvas space).
     pub fn view(&self) -> ViewTransform {
         self.session.view
-    }
-
-    /// The current media/lighting parameters (§6.3).
-    pub fn media_params(&self) -> crate::gpu::MediaParams {
-        self.compositor_pipeline.media()
-    }
-
-    /// The display the screen is presented on (§6.5).
-    pub fn output(&self) -> Output {
-        self.compositor_pipeline.output()
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use

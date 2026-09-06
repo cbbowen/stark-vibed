@@ -410,6 +410,9 @@ impl Engine {
     /// bite right now (§6.4) — the same pair `apply` resolves. Asking for a bearing
     /// against a differently-sized substrate than the one in force would be asking about
     /// a substrate nothing is painting on.
+    ///
+    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
+    #[doc(hidden)]
     pub fn substrate_bearing(
         &self,
         id: SubstrateId,

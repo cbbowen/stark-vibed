@@ -4,7 +4,8 @@
 //!
 //! Needs a GPU adapter; skips (rather than fails) where none is available.
 
-use stark_engine::{AllocSource, GpuContext, TilePool};
+use stark_engine::GpuContext;
+use stark_engine::testing::{AllocSource, TilePool};
 
 /// The pool's color channel format — the free list most of these tests watch.
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

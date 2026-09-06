@@ -286,22 +286,19 @@ impl SelectionRenderer {
     /// all (a fill's region, rasterized through the same shader), and one that has
     /// **a ceiling of its own to fold the opacity into** — the stroke paths, whose
     /// `stroke_constants` already multiplies it into the one ceiling both renderers
-    /// read (§6.2). A reader with no such ceiling takes [`gate_for`](Self::gate_for)
-    /// instead, so the scalar cannot be left on the floor.
+    /// read (§6.2).
+    ///
+    /// **The opacity is the caller's, and it is not per tile.** It scales every read
+    /// of the whole mask, so a pass applies it once — the fill into its uniform lane
+    /// from the [`Selection`], the stroke paths into the one ceiling both renderers
+    /// read — while this is asked per tile. Anything pairing the two here would have
+    /// nowhere per-tile to put the scalar. The transform is the reader that must
+    /// *not* apply it at all: it carries coverage rather than gating by it, and the
+    /// opacity rides on the moved selection instead (§16).
     pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> MaskSource {
         match selection.tile(coord) {
             Some(handle) => MaskSource::Tile(handle.clone()),
             None => MaskSource::Constant(self.constant(selection.outside())),
-        }
-    }
-
-    /// The mask bound for `coord` **as a gate** — the coverage, and the opacity
-    /// every read of it must be scaled by (§6.8). For a pass with no ceiling of its
-    /// own to carry the opacity in; see [`mask_for`](Self::mask_for).
-    pub fn gate_for(&self, selection: &Selection, coord: TileCoord) -> Gate {
-        Gate {
-            mask: self.mask_for(selection, coord),
-            opacity: selection.opacity(),
         }
     }
 
@@ -623,34 +620,6 @@ impl MaskSource {
             MaskSource::Tile(handle) => handle.view(),
             MaskSource::Constant(view) => view,
         }
-    }
-}
-
-/// The selection as a **gating** pass reads it over one tile (§6.8): the coverage
-/// bound as a texture, and the scalar the shader multiplies every read of it by.
-///
-/// One value rather than two returns, because the two halves are one fact. A pass
-/// that took the view alone would compile, run, and quietly ignore the Opacity
-/// slider — the failure mode the whole-mask opacity invites, since the mask tiles
-/// look exactly the same at every opacity ([`Selection::opacity`]). Handing the
-/// binding and its scale back together is what makes the second half hard to leave
-/// on the floor. The stroke paths are the readers that legitimately take the view
-/// alone, and only because their ceiling took the scalar first
-/// (`SelectionRenderer::mask_for`).
-pub struct Gate {
-    mask: MaskSource,
-    opacity: f32,
-}
-
-impl Gate {
-    /// The coverage, to bind.
-    pub fn view(&self) -> &wgpu::TextureView {
-        self.mask.view()
-    }
-
-    /// The scalar to multiply every read of it by, for the pass's uniform.
-    pub fn opacity(&self) -> f32 {
-        self.opacity
     }
 }
 

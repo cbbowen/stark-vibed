@@ -295,7 +295,6 @@ impl<'a> Plan<'a> {
         for item in items {
             match item {
                 CompositeItem::Tile {
-                    coord: _,
                     origin,
                     handle,
                     opacity,

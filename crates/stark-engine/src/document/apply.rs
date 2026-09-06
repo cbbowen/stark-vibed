@@ -36,22 +36,22 @@ use stark_model::document::LayerId;
 /// being shared by everything except the one constructor that listed its
 /// siblings by hand.
 pub struct ApplyCtx {
-    pub pool: TilePool,
-    pub stroke: StrokeRenderer,
-    pub assets: crate::assets::AssetStore,
-    pub selection: SelectionRenderer,
-    pub transform: crate::gpu::transform::TransformRenderer,
-    pub fill: crate::gpu::fill::FillRenderer,
-    pub merge: crate::gpu::merge::MergeRenderer,
+    pub(crate) pool: TilePool,
+    pub(crate) stroke: StrokeRenderer,
+    pub(crate) assets: crate::assets::AssetStore,
+    pub(crate) selection: SelectionRenderer,
+    pub(crate) transform: crate::gpu::transform::TransformRenderer,
+    pub(crate) fill: crate::gpu::fill::FillRenderer,
+    pub(crate) merge: crate::gpu::merge::MergeRenderer,
     /// Builds the tiles of an image brought in from outside the document (§23).
     /// The one renderer here holding no pipeline, because that path has no pass.
-    pub place: crate::gpu::place::PlaceRenderer,
+    pub(crate) place: crate::gpu::place::PlaceRenderer,
     /// The pictures a `PlaceImage` names (§23) — the third content-addressed store,
     /// beside `assets` and `substrates` and for their reason: the log carries the id
     /// and the pixels ride here.
-    pub pictures: crate::pictures::PictureStore,
+    pub(crate) pictures: crate::pictures::PictureStore,
     /// The device, so a canvas substrate can be built here on demand.
-    pub gpu: crate::gpu::context::GpuContext,
+    pub(crate) gpu: crate::gpu::context::GpuContext,
     /// The canvas substrates and the bytes registered for them (§6.4).
     ///
     /// It lives here, rather than beside the compositor it also feeds, because the
@@ -62,7 +62,7 @@ pub struct ApplyCtx {
     /// logged action rather than a view setting — a stroke from before a mid-document
     /// switch deposits against the substrate it was actually painted on, at the size it
     /// was laid at, on replay and on a peer alike.
-    pub substrates: crate::gpu::registry::Registry<Substrate>,
+    pub(crate) substrates: crate::gpu::registry::Registry<Substrate>,
     /// A stroke the live preview has already drawn, for the `CommitStroke` fold to
     /// take rather than render again — see [`PreparedStroke`].
     ///
@@ -72,15 +72,11 @@ pub struct ApplyCtx {
     /// only by *taking* it, which is how the engine learns whether the offer was
     /// accepted: a slot still full after the push was declined.
     ///
-    /// Off the public API, with [`offer`](Self::offer) and [`reclaim`](Self::reclaim)
-    /// as the doors, because that protocol is the whole of what the field is for and
-    /// it was upheld by one call site writing a `pub` field on a `Clone` struct a
-    /// sibling engine also holds. Every other field here is a renderer handle; this
-    /// one is a message to a single fold, and it is the only field whose value at any
-    /// moment is part of a handshake rather than a resource.
-    ///
-    /// `pub(crate)` rather than private only because `build_gpu`'s struct literal
-    /// names it — as `None`, which is the empty slot the protocol starts from.
+    /// Reached through [`offer`](Self::offer) and [`reclaim`](Self::reclaim) rather
+    /// than written, because that protocol is the whole of what the field is for.
+    /// Every other field here is a renderer handle; this one is a message to a single
+    /// fold, and it is the only field whose value at any moment is part of a
+    /// handshake rather than a resource.
     pub(crate) prepared: Option<PreparedStroke>,
 }
 
@@ -158,17 +154,17 @@ impl Clone for ApplyCtx {
 /// committed document's and hold every fresh tile the stroke wrote, so a slot that
 /// outlived its commit would pin a stroke's worth of GPU memory for nothing.
 #[derive(Clone)]
-pub struct PreparedStroke {
+pub(crate) struct PreparedStroke {
     /// The record the tiles are a render of — compared whole, because the commit
     /// re-derives its record from the fitter at pen-up and sanitizes it on the way
     /// in, and either step disagreeing with what was previewed means the preview was
     /// of a different stroke.
-    pub rec: stark_model::document::StrokeRecord,
+    pub(crate) rec: stark_model::document::StrokeRecord,
     /// The layer's tiles the render read as its base.
-    pub base: crate::gpu::tile::TileMap,
+    pub(crate) base: crate::gpu::tile::TileMap,
     /// The layer's tiles with the stroke on them: `base` with a fresh handle at
     /// every tile the stroke reached.
-    pub tiles: crate::gpu::tile::TileMap,
+    pub(crate) tiles: crate::gpu::tile::TileMap,
 }
 
 impl PreparedStroke {
@@ -191,7 +187,7 @@ impl ApplyCtx {
     /// the caller then borrows other fields of `self` to build the scene around it.
     ///
     /// [`Registry::get`]: crate::gpu::registry::Registry::get
-    pub fn substrate(&self, substrate: Substrate) -> crate::gpu::substrate::SubstrateMap {
+    pub(crate) fn substrate(&self, substrate: Substrate) -> crate::gpu::substrate::SubstrateMap {
         self.substrates.get(&self.gpu, substrate)
     }
 }

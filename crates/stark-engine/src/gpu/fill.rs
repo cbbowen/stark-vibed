@@ -241,7 +241,7 @@ impl FillRenderer {
             let region_mask = self.selection.mask_for(&region, *coord);
             // As a gate: the coverage and the opacity it is read at, which the
             // uniform above already carries (`SelectionRenderer::gate_for`).
-            let gate_mask = self.selection.gate_for(gate, *coord);
+            let gate_mask = self.selection.mask_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
             let bg = self.bindings.group(device, "stark fill bg", |b| match b {
                 f::F => ubuf.as_entire_binding(),

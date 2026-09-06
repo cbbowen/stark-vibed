@@ -45,7 +45,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use crate::gpu::scratch::{BufKey, ScratchPool, SubmitScope};
-use crate::gpu::selection::{Gate, SelectionRenderer, outside_clear};
+use crate::gpu::selection::{MaskSource, SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool, mask_tex_origin};
 use crate::gpu::uniforms::{UniformSlots, stage_slots};
 use stark_model::document::{Homography, TransformMap};
@@ -1136,7 +1136,7 @@ impl TransformRenderer {
                 .or_insert_with(|| {
                     // A gating read — the opacity reaches `fs_parcel_gated`
                     // through the piece's uniform (`gated_uniform`).
-                    let mask = self.selection.gate_for(from.selection, unit.src);
+                    let mask = self.selection.mask_for(from.selection, unit.src);
                     self.src_bg(tile, &mask)
                 })
                 .clone();
@@ -1209,7 +1209,7 @@ impl TransformRenderer {
     /// The group-1 bind for one source tile: its channels and the mask over it, all
     /// sampled under the map ([`SRC_SLOTS`]). Shared across every destination the
     /// tile's image reaches (`Source::src_bgs`).
-    fn src_bg(&self, tile: &TilePairHandle, mask: &Gate) -> wgpu::BindGroup {
+    fn src_bg(&self, tile: &TilePairHandle, mask: &MaskSource) -> wgpu::BindGroup {
         self.src_bindings
             .group(&self.ctx.device, "stark transform src bg", |i| {
                 wgpu::BindingResource::TextureView(match i {
@@ -1266,7 +1266,7 @@ impl TransformRenderer {
                 .or_insert_with(|| {
                     // A gating read — the opacity reaches `fs_parcel` through
                     // the quad's uniform (`quad_uniform`).
-                    let mask = self.selection.gate_for(from.selection, *src);
+                    let mask = self.selection.mask_for(from.selection, *src);
                     self.src_bg(tile, &mask)
                 })
                 .clone();
@@ -1316,7 +1316,7 @@ impl TransformRenderer {
         let carried = self.zeroes.or(parcel.map(Channels::targets));
         // A gating read: the base is cut by `coverage · opacity`, the identical
         // factor the parcel side took at the source (`combine_uniform` above).
-        let base_mask = self.selection.gate_for(from.selection, dest);
+        let base_mask = self.selection.mask_for(from.selection, dest);
         let bg = self
             .combine_bindings
             .group(device, "stark transform combine bg", |i| match i {

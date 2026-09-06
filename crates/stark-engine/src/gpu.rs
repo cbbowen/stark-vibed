@@ -33,10 +33,10 @@ pub(crate) mod transform;
 pub(crate) mod uniforms;
 
 // `gpu` is `pub(crate)` (see `lib.rs`), so this list is what the *crate* reaches
-// across module boundaries, not a public surface. Four names left it when that
-// changed — `GroupContent`, `MergeSide`, `Resource` and `MaskHandle` were re-exported
-// for a public path nobody outside took and nothing inside used, which only became
-// visible once the compiler could see they had no reader at all.
+// across module boundaries, not a public surface. Five names have left it for one
+// reason — `GroupContent`, `MergeSide`, `Resource`, `MaskHandle` and `f32_to_f16`
+// were re-exported for a public path nobody outside took, while the crate itself
+// reached them through their own module, so the line had no reader at either end.
 pub(crate) use composite::{BlendPass, FilterPass, export_format};
 pub use composite::{
     CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
@@ -45,9 +45,6 @@ pub use composite::{
 pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use environment::{Environment, EnvironmentId};
 pub use fill::FillRenderer;
-/// For a frontend writing half floats into a texture of its own — the native picker's
-/// wide-gamut wheel (§6.5) — rather than a second spelling of the conversion there.
-pub use half::f32_to_f16;
 pub use merge::MergeRenderer;
 pub use place::PlaceRenderer;
 pub use registry::Registry;
@@ -65,7 +62,6 @@ pub use substrate::{Substrate, SubstrateMap};
 #[cfg(not(target_arch = "wasm32"))]
 pub use tile::TileChannels;
 pub use tile::{
-    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TilePairHandle, TilePool,
-    mask_tex_origin,
+    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TilePool, mask_tex_origin,
 };
 pub use transform::TransformRenderer;

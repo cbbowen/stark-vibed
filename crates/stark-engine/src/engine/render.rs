@@ -426,8 +426,8 @@ impl Engine {
     /// layer that is not paint at all. Reads the *committed* document, so a caller
     /// mid-gesture is asking about the state before the live tail.
     ///
-    /// **`pub` for the suite and nothing else**, on [`render_to_image`](Self::render_to_image)'s
-    /// terms. Every conservation, opacity and erase claim in the suite was a proxy
+    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
+    /// Every conservation, opacity and erase claim in the suite was a proxy
     /// through tonemapping before this: the assertions read image darkness and said so
     /// in a comment, because there was no way to ask a tile what it held. A proxy
     /// through the media pass, the blend and the tonemap cannot separate "height was
@@ -456,9 +456,7 @@ impl Engine {
     /// shape cannot work on the web (see `gpu::readback`). The frontend uses
     /// [`export`](Self::export), which awaits the map.
     ///
-    /// **`pub` for the suite and nothing else** — an integration test is a separate
-    /// crate, so a diagnostic it reads has to be public (`testing`). Hidden from the
-    /// docs to say so.
+    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn render_to_image(&mut self) -> RgbaImage {
@@ -480,7 +478,7 @@ impl Engine {
     /// texture and read it back as `f32` — four per texel, rows top-down, in the
     /// transfer the engine's [`Output`](crate::Output) names (§6.5). Only for an
     /// engine built on an `Rgba16Float` target. `pub` for the suite and nothing else,
-    /// on [`render_to_image`](Self::render_to_image)'s terms.
+    /// and hidden to say so (`testing`).
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn render_to_floats(&mut self) -> Vec<f32> {
@@ -1097,7 +1095,6 @@ impl Engine {
                 let offset = stark_model::geom::Vec2::new(d.x as f32, d.y as f32);
                 culled(tiles.map(), visible_in_frame(visible, d))
                     .map(|(coord, handle)| CompositeItem::Tile {
-                        coord,
                         origin: coord.origin() + offset,
                         handle: handle.clone(),
                         opacity: 1.0,

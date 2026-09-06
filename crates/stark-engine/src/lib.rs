@@ -51,14 +51,13 @@
 //!
 //! The practical reading: `stark_engine::RgbaImage`, not `stark_engine::image::RgbaImage`.
 //!
-//! **A module that is both is what the rule forbids** — `stark_engine::InputSample`
-//! and `stark_engine::command::InputSample` both live, in the same file of
-//! `stark-dioxus-frontend`. The split is settled the way the traffic decided:
-//! `command` and `document` are navigated (132 and 4 module-path uses outside the
-//! crate), so they keep the module and lose their root re-exports;
-//! `assets`, `colorspace`, `engine`, `gpu`, `peer`, `pictures`, `session` and `view`
-//! are not, so they lose the module and the root list absorbs the handful of names
-//! that were only reachable through it.
+//! The list is **pruned, not accreted**: a name nothing outside `src/` spells is not
+//! offered, and one only the suite spells is offered by `testing` instead. Five names
+//! below have no call site of their own and are not oversights — `DeviceFailure`,
+//! `FailureKind`, `Produces`, `GpuHealth` and `Projected` are each reachable through
+//! something that *is* spelled (a public error's payload, a public method's return,
+//! what `Layers` is an alias of), and dropping them would leave a type this API hands
+//! out with no way to write it down.
 //!
 //! Build status lives in §13, not here — one checklist, so there is nothing to drift.
 
@@ -123,11 +122,10 @@ pub(crate) fn unpoisoned<'a, T>(
 #[doc(hidden)]
 pub mod testing;
 
-pub use assets::AssetStore;
 pub use assist::Assisted;
 // `available`/`all_available` were reachable only as `colorspace::…`; a frontend asks
 // them to decide which spaces to offer.
-pub use colorspace::{ColorSpace, all_available, available};
+pub use colorspace::{all_available, available};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
@@ -135,9 +133,8 @@ pub use engine::{
 };
 pub use error::{EngineError, ExportError, Produces, Result};
 pub use gpu::{
-    AllocSource, Compositor, CompositorPipeline, DeviceFailure, EnvironmentId, FailureKind,
-    GpuContext, GpuHealth, MediaParams, Offscreen, Output, StrokeRenderer, TilePairHandle,
-    TilePool, Transfer, f32_to_f16, max_stretch, max_tip_reach,
+    DeviceFailure, EnvironmentId, FailureKind, GpuContext, GpuHealth, MediaParams, Offscreen,
+    Output, Transfer, max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
 pub use peer::{GestureView, Identity, LiveGesture, Peer, Peers};

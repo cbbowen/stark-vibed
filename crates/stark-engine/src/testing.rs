@@ -4,15 +4,24 @@
 //! **`#[doc(hidden)]`, and the module is the point.** An integration test is a
 //! separate crate, so anything it reaches has to be `pub` — and the diagnostic methods
 //! on [`Engine`](crate::Engine) that only tests call are `pub` for exactly that reason
-//! and no other. Marking them says so, and gathering the harness's own shared piece
-//! here stops the alternative: one decision written out in three files that cannot see
-//! each other.
+//! and no other. Marking them says so — each carries one line pointing back here
+//! rather than its own copy of this paragraph — and gathering the harness's own shared
+//! piece here stops the alternative: one decision written out in three files that
+//! cannot see each other.
 //!
 //! Not behind a cargo feature, deliberately. A feature would have to be enabled by
 //! every command in CLAUDE.md's list and by a self-referential dev-dependency, which
 //! is a second build of the crate to hide a handful of methods a reader is already
 //! told to ignore. What the hidden module buys is honesty about the API's surface;
 //! what a feature would buy on top of that is not worth a doubled compile.
+
+/// The recycling tile pool and the tag an allocation is counted under (§6.1), for the
+/// one test that drives the pool directly (`tests/tile_pool.rs`).
+///
+/// Here rather than at the crate root because recycling is the one thing about the
+/// pool a picture cannot show: a reused texture and a fresh one draw the same tile, so
+/// the census is the only witness — and a frontend never acquires a tile itself.
+pub use crate::gpu::{AllocSource, TilePool};
 
 /// The environment variable that turns a missing GPU from a failure into a skip.
 ///

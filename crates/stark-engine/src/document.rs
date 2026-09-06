@@ -24,7 +24,10 @@ pub(crate) mod state;
 pub(crate) mod timeline;
 pub(crate) mod transform;
 
-pub use apply::{ApplyCtx, PreparedStroke};
+pub use apply::ApplyCtx;
+// Not on the API: `PreparedStroke` is a message between the engine and one fold, and
+// this line exists for `engine::live`'s import alone.
+pub(crate) use apply::PreparedStroke;
 #[doc(hidden)]
 pub use audit::undeclared;
 pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};

@@ -47,8 +47,6 @@ pub enum EnvironmentId {
 pub struct Environment {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
-    /// Mip levels, so the media shader can pick the diffuse (very blurred) LOD.
-    pub mip_count: u32,
     /// Which mip the media pass reads for diffuse irradiance. Computed here, beside
     /// [`Self::flat_irradiance`], because the two must agree: the normalization is
     /// only exact if the CPU samples the level the shader will.
@@ -149,7 +147,6 @@ impl Environment {
         Self {
             view,
             sampler,
-            mip_count,
             diffuse_lod,
             flat_irradiance,
         }
