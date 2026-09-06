@@ -1,14 +1,12 @@
 //! The document: the actions that produce it, and the vocabulary they are written in
 //! (§4, §5).
 //!
-//! The submodules are **crate-private**, and the re-exports below are the API — the
-//! same rule `stark-engine`'s `document` keeps: publishing both would give every type
-//! two paths, with nothing choosing between them.
+//! The submodules are **crate-private** and the re-exports below are the API, so every
+//! type here has exactly one public path.
 //!
-//! What is *not* here is the state these actions fold into. `DocState`, `Layer`'s
-//! tiles, the `Selection`'s mask and the `Timeline` that materializes them are all
-//! `stark-engine`'s, because they hold pixels (§2). Four modules are split down the
-//! middle by that line and keep the same file name on both sides:
+//! The state these actions fold into is `stark-engine`'s, because it holds pixels
+//! (§2). Four modules are split across that line and keep their file name on both
+//! sides:
 //!
 //! | module | here | there |
 //! |---|---|---|
@@ -17,11 +15,9 @@
 //! | `fill` | `FillOp`, `fill_bounds` | `plan`, which needs the mask |
 //! | `transform` | the maps, and the homography solve | the tile plans |
 //!
-//! `guide` is the one that is *not* split (§20.5). A drawing guide is document
-//! state — logged, saved, replicated, undoable — and everything derived from one
-//! is a pure function of the camera, so the derivations sit here beside the fact
-//! for the reason `fill_bounds` and the homography solve do. What the engine
-//! keeps is the roster's per-client half: whose eye is shut, and the packing of a
+//! `guide` is not split (§20.5): everything derived from a drawing guide is a pure
+//! function of its camera, so the derivations sit here beside the fact. The engine
+//! keeps only the roster's per-client half — whose eye is shut, and the packing of a
 //! `GuideScene` into the guide pass's uniform.
 
 pub(crate) mod action;
@@ -77,8 +73,6 @@ pub use warp::{Lattice, MAX_WARP_GRID, Prepared, WarpMap, cell_point};
 
 /// The tiles a fill would write, as a canvas box — `None` when it would be unbounded.
 ///
-/// `pub` where its neighbours are `pub(crate)` because the planner that consumes it
-/// is in the other crate (§2), and so is the pass that must write exactly the tiles
-/// this names: a fill's written tiles and its footprint have to be *the same* tiles
-/// (§12.6), so there is one derivation and both sides call it.
+/// `pub` because the engine's planner and the fill pass both call it: a fill's written
+/// tiles and its footprint must be *the same* tiles (§12.6), from one derivation.
 pub use fill::fill_bounds;

@@ -1,7 +1,7 @@
 //! The poses the guide tests are stated at (§20).
 //!
 //! Shared because the same camera has to answer to `camera`'s derivations and to
-//! `conic`'s charts — a theorem checked through one and a chart checked through the
+//! `conic`'s charts: a theorem checked through one and a chart checked through the
 //! other are claims about one guide, not two.
 
 use glam::{Quat, Vec2};

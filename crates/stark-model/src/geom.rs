@@ -1,46 +1,24 @@
 //! Canvas geometry: the tile grid the document is addressed in.
 //!
-//! **The tile grid only.** How the canvas is being *looked at* — pan, zoom,
-//! rotation, the mirror — is session state that is never logged and never sent,
-//! so it is `stark-engine`'s `view` (§18.1.2); this crate is the document and
-//! nothing else (§2). What stays is what a saved log is addressed in: a footprint
-//! quantizes against `TILE_SIZE` (§12.6) and an apron sits one texel inside it
-//! (§6.4).
+//! Canvas space is in pixels with x to the right and y downward. Tile `(i, j)` owns
+//! the half-open square `[i*TILE_SIZE, (i+1)*TILE_SIZE) × [j*TILE_SIZE, ...)`; the
+//! infinite canvas (§6) is tiles being sparse and addressed by signed integers.
 //!
-//! # Why the tile constants are on this side of the line
-//!
-//! A tile's *texture* geometry is the engine's — the interior UV scale and bias, a
-//! mask tile's edge length, the edge-texel layout a lasso is uploaded in — on the
-//! argument [`io`](crate::io) makes about not recording the stride in a save file:
-//! *an implementation detail is not a fact about a painting.*
-//!
-//! [`TILE_SIZE`], [`TILE_APRON`] and [`TILE_TEX`] stay because the model's own
-//! quantization is written against them — `fill_bounds`' reach, `image_tiles`,
-//! [`tile_box`] — a box having to be padded by what a pass reads past it before
-//! anyone can ask which tiles it touches. `TILE_SIZE` is derived from `TILE_TEX`, so
-//! the three are one fact. Nothing in a log is expressed in tile units, so the stride
-//! reaches only *derived* answers, which is what §19 permits.
-//!
-//! Canvas space is in pixels with x to the right and y downward. Tile `(i, j)`
-//! covers the square `[i*TILE_SIZE, (i+1)*TILE_SIZE) × [j*TILE_SIZE, ...)`.
-//! The infinite canvas (§6) is realized by tiles being sparse and
-//! addressed by signed integer coordinates.
+//! The grid only. How the canvas is being *looked at* — pan, zoom, rotation, the
+//! mirror — is session state, so it is `stark-engine`'s `view` (§18.1.2).
+//! [`TILE_SIZE`], [`TILE_APRON`] and [`TILE_TEX`] are here because the model's own
+//! quantization is written against them ([`tile_box`], `fill_bounds`, `image_tiles`).
+//! Nothing in a log is expressed in tile units, so the stride reaches only *derived*
+//! answers, which is what §19 permits.
 
 pub use glam::{Affine2, IVec2, Mat2, Vec2};
 
 /// Eigenvalues of the symmetric 2×2 `[[sxx, sxy], [sxy, syy]]`, larger first, with the
-/// unit eigenvector of the larger — in closed form, since a 2×2 needs no iteration.
+/// unit eigenvector of the larger.
 ///
-/// The eigenvector is read off whichever column of `M − λ₂I` is longer: both span the
-/// same line, and taking the longer is what keeps it defined when the matrix is nearly
-/// isotropic (a circle, where the axes are genuinely arbitrary but must still be
-/// *some* orthogonal pair). A zero or non-finite column falls back to `Vec2::X`, so
-/// there is always an axis — the callers' own degeneracy tests are on the eigenvalues.
-///
-/// Here rather than beside either caller because a scatter of samples and a conic are
-/// the same 2×2 question: `stark-engine`'s `assist` reads an ellipse off the second
-/// moments of a trace, and `document::guide` reads one off the quadratic part of a
-/// conic (§20.7). One caller on each side of the crate boundary, so it is `pub`.
+/// An axis always comes back — a nearly isotropic matrix still yields *some*
+/// orthogonal pair, and a degenerate one falls back to `Vec2::X` — so a caller's own
+/// degeneracy test belongs on the eigenvalues.
 pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Vec2) {
     let half_trace = 0.5 * (sxx + syy);
     let disc = (0.25 * (sxx - syy).powi(2) + sxy * sxy).max(0.0).sqrt();
@@ -56,15 +34,9 @@ pub fn principal_axis(sxx: f32, sxy: f32, syy: f32) -> (f32, f32, Vec2) {
 }
 
 /// An axis-aligned-in-its-own-frame ellipse: where it is, how big, and how it is
-/// turned.
+/// turned, in canvas space.
 ///
-/// Here beside [`principal_axis`] and for the same reason: two modules arrive at an
-/// ellipse from opposite directions, `stark-engine`'s `assist` off the second moments
-/// of a hand-drawn loop and `document::guide` off the quadratic part of a conic
-/// (§20.7).
-///
-/// `radii` is **major first**, which a bare `(Vec2, Vec2, f32)` could not state and
-/// every producer had to promise in prose.
+/// `radii` is **major first**.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Ellipse {
     pub center: Vec2,
@@ -90,13 +62,13 @@ impl Ellipse {
     }
 }
 
-/// Apron (halo) width in pixels carried around each tile's interior, replicated
-/// from the neighboring canvas content (§6.4). The compositor samples a
-/// tile's interior with bilinear filtering; without an apron the filter clamps at
-/// the tile edge instead of reaching into the neighbor, leaving a visible seam at
-/// every boundary under sub-pixel pan or non-1:1 zoom (the seam is then amplified
-/// by the media pass's height→normal gradient). One pixel is all bilinear needs;
-/// widen this if a future media effect needs more neighbor context.
+/// Apron (halo) width in pixels carried around each tile's interior, replicated from
+/// the neighboring canvas content (§6.4).
+///
+/// The compositor samples a tile's interior with bilinear filtering; without an apron
+/// the filter clamps at the tile edge instead of reaching into the neighbor, leaving a
+/// seam at every boundary under sub-pixel pan or non-1:1 zoom. One pixel is all
+/// bilinear needs; widen it if a media effect needs more neighbor context.
 pub const TILE_APRON: u32 = 1;
 
 /// Physical edge length of a tile's channel textures: interior plus an apron on
@@ -132,10 +104,9 @@ impl TileCoord {
     /// The canvas box this tile's *texture* covers: its interior grown by
     /// [`TILE_APRON`] on every side, half-open at `hi` (§6.4).
     ///
-    /// The apron reach every pass that asks "does this content touch that tile"
-    /// tests against — stated once, because a site that grew the interior by a
-    /// different amount would name a different tile set than the one whose aprons
-    /// [`tile_box`] pads for, and a footprint that disagrees with the tiles written
+    /// The apron reach every "does this content touch that tile" test must use: a
+    /// site growing the interior by some other amount would name a different tile set
+    /// than [`tile_box`] pads for, and a footprint disagreeing with the tiles written
     /// is the §12.6 break with no pixel to show it.
     pub fn texture_box(self) -> (Vec2, Vec2) {
         let origin = self.origin();
@@ -171,12 +142,10 @@ impl TileRect {
     /// Whether this rect reaches nothing — inverted (`min > max`) on **either**
     /// axis.
     ///
-    /// One definition, asked by everything here that has to treat an empty rect as
-    /// empty — spelled inline and per axis, [`intersects`](Self::intersects) and
-    /// [`union`](Self::union) can disagree about a rect empty on one axis only. The
-    /// fields are public, so that disagreement is reachable from outside, and this is
-    /// a footprint predicate: §12.6 survives a rect claiming too much and cannot
-    /// survive one claiming too little.
+    /// The fields are public, so a rect empty on one axis only is constructible from
+    /// outside; [`intersects`](Self::intersects) and [`union`](Self::union) both defer
+    /// here so they cannot disagree about one. This is a footprint predicate: §12.6
+    /// survives a rect claiming too much and not one claiming too little.
     pub const fn is_empty(self) -> bool {
         self.min.0 > self.max.0 || self.min.1 > self.max.1
     }
@@ -195,13 +164,11 @@ impl TileRect {
     }
 
     /// The smallest rect holding both — what a batch of draws culls against when it
-    /// wants one draw list rather than one per member (the eyedropper's trace,
-    /// §18.0.2).
+    /// wants one draw list rather than one per member (§18.0.2).
     ///
     /// Widening is the safe direction: a cull may name tiles a pass then draws
-    /// nothing for, and may never omit one it needed. [`EMPTY`](Self::EMPTY) is
-    /// inverted (`min > max`) so that it is the identity here rather than a corner
-    /// the union has to stretch to reach.
+    /// nothing for, and may never omit one it needed. [`EMPTY`](Self::EMPTY) is the
+    /// identity here rather than a corner the union stretches to reach.
     pub fn union(self, other: TileRect) -> TileRect {
         if self.is_empty() {
             return other;
@@ -218,18 +185,11 @@ impl TileRect {
     /// The tiles the canvas box `[lo, hi]` reaches, grown by `ring` tiles on
     /// every side.
     ///
-    /// **The one quantizer**, and the reason it is one: the obvious spellings fail
-    /// silently in the unsafe direction. `NaN as i32` is 0, so a `clamp`-then-cast
-    /// answers "one tile at the origin" for a box it could not measure, and a bare
-    /// `as i32` on an out-of-range index wraps to a tile somewhere else entirely.
-    /// Both matter here — a footprint that under-claims diverges peers (§12.6), and
-    /// a tile cover that under-counts is enumerated rather than refused.
-    ///
-    /// So the arithmetic is `i64` and saturating throughout, and the answer is
-    /// `None` for a box that is not finite or falls outside the grid an `i32`
-    /// tile index can address (past ~5×10¹¹ canvas px). What to *do* about that
-    /// differs by caller — claim everything, or refuse — which is why this
-    /// returns the question rather than picking one.
+    /// **The one quantizer.** `None` — never a clamp, and never a wrapped index — for
+    /// a box that is not finite or that falls outside the grid an `i32` tile index can
+    /// address (past ~5×10¹¹ canvas px). What to *do* about that differs by caller —
+    /// claim everything, or refuse — so this returns the question rather than picking
+    /// one; a footprint that under-claims diverges peers (§12.6).
     ///
     /// Callers pad `lo`/`hi` themselves for whatever their pass reads past its
     /// own geometry: a tip's radius, the apron band, a coverage ramp. `ring` is
@@ -251,10 +211,9 @@ impl TileRect {
     /// How many tiles this covers — saturating, so [`ALL`](Self::ALL) reports
     /// more than any budget will allow rather than wrapping to a small number.
     ///
-    /// Exists to be asked **before** [`coords`](Self::coords) is walked: the box
-    /// is quadratic in whatever produced it, so a drag at far zoom-out can name
-    /// more tiles than there is memory to list, and finding that out by listing
-    /// them is not an option.
+    /// Ask it **before** walking [`coords`](Self::coords): the box is quadratic in
+    /// whatever produced it, so a drag at far zoom-out can name more tiles than there
+    /// is memory to list.
     pub fn count(self) -> u64 {
         let span = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0) as u64;
         span(self.min.0, self.max.0).saturating_mul(span(self.min.1, self.max.1))
@@ -270,18 +229,14 @@ impl TileRect {
 /// `i · span / out_of` — where the `i`th of `out_of` evenly-spaced picks lands in a
 /// list of `span` — computed in `u64` so it **cannot overflow the pointer width**.
 ///
-/// The width is the whole reason this is a function rather than three characters at
-/// each call site. `usize` is **32 bits on `wasm32`**, so the obvious
-/// `i * span / out_of` wraps once `span` passes `u32::MAX / out_of` — for a lasso
-/// (`out_of` = 4096) about 1.05 million vertices, which a document reaches easily
-/// and which deflate hides on the way in (§8). A release build wraps onto a
-/// perfectly valid index, so the browser decimates a *different* polygon than a
-/// native peer decodes from the same bytes — a §6.8 divergence no test host can
-/// see, since they are all 64-bit.
+/// `usize` is **32 bits on `wasm32`**, so the obvious `i * span / out_of` wraps once
+/// `span` passes `u32::MAX / out_of` — for a lasso (`out_of` = 4096) about 1.05 million
+/// vertices, which a document reaches easily. It wraps onto a perfectly valid index, so
+/// a browser would decimate a *different* polygon than a native peer decodes from the
+/// same bytes: a §6.8 divergence no 64-bit test host can see.
 ///
-/// Same stance as [`TileRect::covering`]'s `i64`: the arithmetic holds itself instead
-/// of resting on a bound stated in another file. Both decimations in the crate go
-/// through here — [`SelectionShape::sanitized`] and `gradient::thin`.
+/// Both decimations in the crate go through here — [`SelectionShape::sanitized`] and
+/// `gradient::thin`.
 ///
 /// [`SelectionShape::sanitized`]: crate::document::SelectionShape::sanitized
 pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
@@ -373,10 +328,8 @@ mod tests {
     }
 
     /// **Empty is empty on either axis**, and every predicate has to agree about it.
-    /// This is the predicate the commutation gate rests on: a footprint that
-    /// intersects what it does not touch costs the fast path, but a rect that *claims*
-    /// to touch nothing while testing positive is the §12.6 direction, with no pixel
-    /// able to show it.
+    /// The commutation gate rests on this: a rect that claims to touch nothing while
+    /// testing positive is the §12.6 direction, with no pixel able to show it.
     #[test]
     fn a_rect_inverted_on_either_axis_reaches_nothing() {
         let real = TileRect::covering(Vec2::ZERO, Vec2::splat(9.0), 0).unwrap();
@@ -411,11 +364,9 @@ mod tests {
         assert!(real.intersects(&real));
     }
 
-    /// [`pick_index`] is exact where the naive `usize` product is not.
-    ///
-    /// The span overflows a `u32` against a lasso's own `out_of` — the case the
-    /// browser reaches and this host does not — so what this pins is the arithmetic,
-    /// against a `u128` reference with room for either width.
+    /// [`pick_index`] is exact where the naive `usize` product is not — pinned
+    /// against a `u128` reference, since the overflow is the browser's width and not
+    /// this host's.
     #[test]
     fn a_pick_is_exact_past_the_32_bit_product() {
         let out_of = 4096usize;
@@ -444,22 +395,19 @@ mod tests {
 
 // —— tile cover: the geometry every masked pass shares ————————————————————————
 //
-// A selection, a fill and a transform all have to answer the same question — which
-// tiles does this canvas box touch, and is that more than I am willing to walk — and
-// they have to answer it *identically*, because a fill's written tiles and its
-// footprint are required to be the same tiles (§12.6). It is a fact about the tile
-// grid rather than about any one of the three, and the GPU side of all three reaches
-// for it (`gpu::fill`, `gpu::selection`), so it is `pub` and lives here.
+// A selection, a fill and a transform have to answer "which tiles does this canvas box
+// touch, and is that more than I will walk" *identically*, because a fill's written
+// tiles and its footprint are required to be the same tiles (§12.6). It is a fact about
+// the grid rather than about any of the three, so it lives here.
 
 /// The tiles whose *texture* (interior + apron) overlaps the canvas box
 /// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
-/// padding, since a tile's texture starts one apron before its interior and a box
-/// that reaches into the apron band still touches the neighbour.
+/// apron padding, since a box that reaches into the apron band still touches the
+/// neighbour.
 ///
-/// `None` — a refusal, not a clamp — for a box that is not finite or not
-/// addressable. That is the only acceptable answer here: a clamp would rasterize
-/// a *different* region, and these coordinates arrive from files and peers, where
-/// the only tolerable disagreement between two clients is none (§6.8).
+/// `None` — a refusal, not a clamp — for a box that is not finite or not addressable:
+/// a clamp would rasterize a *different* region, and these coordinates arrive from
+/// files and peers, where the only tolerable disagreement is none (§6.8).
 pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
     let apron = Vec2::splat(TILE_APRON as f32);
     TileRect::covering(lo - apron, hi + apron, ring)
@@ -469,10 +417,9 @@ pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
 /// expanded by `ring` tiles on every side — `None` when there would be more than
 /// `budget` of them.
 ///
-/// **Counted before it is walked**, which is what makes an absurd box a clean refusal
-/// instead of a hang: the box is quadratic in the drag, so a marquee at far zoom-out
-/// (or an op arriving from a file or a peer) can name more tiles than there is memory
-/// to list. Same shape as `document::transform`'s `quad_reached_tiles`.
+/// **Counted before it is walked**, so an absurd box is a clean refusal rather than a
+/// hang: the box is quadratic in the drag, so a marquee at far zoom-out — or an op
+/// arriving from a file or a peer — can name more tiles than there is memory to list.
 pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Vec<TileCoord>> {
     tiles_of(tile_box(lo, hi, ring)?, budget)
 }
@@ -482,8 +429,8 @@ pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Ve
 /// that has its own reason to hold the `TileRect`.
 ///
 /// The fill is that caller: its written tile set and its footprint have to be the
-/// same tiles (§12.6), so the rect is derived once by `document::fill_bounds`,
-/// quantized once, and only *then* walked.
+/// same tiles (§12.6), so the rect is derived and quantized once and only *then*
+/// walked.
 pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
     let count = rect.count();
     if count > budget as u64 {

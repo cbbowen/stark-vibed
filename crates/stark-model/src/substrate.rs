@@ -4,23 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use stark_assetid::AssetId;
 
-/// Which physical substrate a document is painted on. Saved in `CanvasMeta` (§8)
-/// because which canvas a piece was painted on is part of the document, so it is
-/// reproducible.
+/// Which physical substrate a document is painted on. Saved in `CanvasMeta` (§8), so
+/// a piece replays on the canvas it was painted on.
 ///
-/// **Two variants, and the split is the point.** `Flat` is procedural and needs no
-/// bytes; every other substrate *is* its bytes, named by the hash of them. There is no
-/// third case — no substrate named by a label whose image the engine would have to be
-/// told about separately — because that case is exactly the one that can go missing
-/// (§6.4). A peer, a save file or a replay that meets an
-/// [`Image`](Self::Image) id it has never seen can always ask for it by content, and
-/// verify what comes back; a substrate called "Rough" could only be looked up in a
-/// table the asker might not have, and the miss was silent — the tooth read a flat
-/// stand-in and baked it into the tiles.
-///
-/// The same bargain brush shapes already make (§6.6): the id comes *from* the image
-/// (`stark-engine`'s `Engine::import_substrate`), which makes "built-in" a property
-/// of the frontend's asset list and of nothing downstream.
+/// **Two variants, and there is deliberately no third.** `Flat` is procedural and
+/// needs no bytes; every other substrate *is* its bytes, named by the hash of them, so
+/// a peer or a replay meeting an id it has never seen can ask for it by content and
+/// verify what comes back. A substrate named by a label instead could only be looked
+/// up in a table the asker might not have, and the miss would be silent — the tooth
+/// reads a flat stand-in and bakes it into the tiles (§6.4). Brush shapes make the
+/// same bargain (§6.6), which leaves "built-in" a property of the frontend's asset
+/// list and of nothing downstream.
 #[derive(
     Copy,
     Clone,
@@ -36,44 +30,33 @@ use stark_assetid::AssetId;
     carbonite::Schema,
 )]
 pub enum SubstrateId {
-    /// Perfectly smooth: zero height everywhere, so the
-    /// constant height has zero gradient (no relief). Paint behaves exactly as if
-    /// there were no substrate — the orthogonal default.
+    /// Perfectly smooth: zero height everywhere, hence no relief. Paint behaves
+    /// exactly as if there were no substrate.
     #[default]
     Flat,
     /// A height map, named by the BLAKE3 hash of its canonical decoded form
-    /// (`stark-engine`'s `substrate::identify`). The substrates that ship with the app
-    /// and the ones a user brings are indistinguishable here, which is why neither can
-    /// go missing in a way the other would not.
+    /// (`stark-engine`'s `substrate::identify`). Shipped and user-brought substrates
+    /// are indistinguishable here.
     Image(AssetId),
 }
 
-/// How large the substrate is laid on the canvas, as a **percentage of its
-/// natural size** (§6.4).
+/// How large the substrate is laid on the canvas, as a **percentage of its natural
+/// size** — one map tile per `SUBSTRATE_TILE_PX` canvas px (§6.4).
 ///
-/// The natural size is one map tile per `SUBSTRATE_TILE_PX` canvas px, which is the
-/// engine's; this is the document's say over it. Document state, saved and
-/// replicated, because it decides what the tooth bites as surely as *which* substrate
-/// does: at 200% a tip crosses half as many threads per px, so it bridges further
-/// and rides fewer faces. A stroke replayed from before a change has to be deposited
-/// at the scale it was painted at, exactly as it has to be deposited on the substrate it
-/// was painted on — so this rides beside [`SubstrateId`] everywhere that one goes.
+/// Document state, saved and replicated, because it decides what the tooth bites as
+/// surely as *which* substrate does: at 200% a tip crosses half as many threads per
+/// px. So it rides beside [`SubstrateId`] everywhere that one goes.
 ///
 /// # Why a quantized integer and not an `f32`
 ///
-/// - **It is a key.** The engine bakes a substrate *per scale* — the rise a tip meets
-///   over its reach is measured in the map's own texels, so the reach in texels
-///   moves when the scale does — and that bake is cached under the pair. An `f32`
-///   is neither `Eq` nor `Hash`, and quantizing at the cache would be the same
-///   decision made somewhere it could drift from the log.
-/// - **It replicates exactly.** Two peers that landed on 1.37 by different
-///   arithmetic would bake two substrates and deposit two different marks; `137` is
-///   `137` on both.
-/// - **It bounds what a document can cost.** Each distinct scale a document names
-///   is a substrate texture held for as long as the log can be replayed across it.
-///   [`STEP`](Self::STEP) is what keeps a slider dragged from end to end from
-///   naming three hundred of them, and 5% is comfortably under the smallest change
-///   in a substrate anyone can see.
+/// - **It is a key.** The engine caches a substrate bake per (id, scale) pair, and an
+///   `f32` is neither `Eq` nor `Hash`.
+/// - **It replicates exactly.** Two peers that landed on 1.37 by different arithmetic
+///   would deposit two different marks; `137` is `137` on both.
+/// - **It bounds what a document can cost.** Each distinct scale is a substrate
+///   texture held for as long as the log can be replayed. [`STEP`](Self::STEP) keeps a
+///   dragged slider from naming three hundred of them, and 5% is under the smallest
+///   change anyone can see.
 #[derive(
     Copy,
     Clone,
@@ -103,11 +86,8 @@ impl SubstrateScale {
     /// The lattice every scale lands on. See the type's note for why there is one.
     pub const STEP: u16 = 5;
 
-    /// The scale nearest `percent`, held to the ladder and to the range — the one
-    /// door, and it cannot fail.
-    ///
-    /// Rounds to the nearest step rather than truncating, so a slider handed a value
-    /// between two rungs lands on the one it is closer to.
+    /// The scale nearest `percent`, held to the [`STEP`](Self::STEP) ladder and to
+    /// `[MIN, MAX]`. The one door, it cannot fail, and `Deserialize` runs it too.
     pub const fn new(percent: u16) -> Self {
         let clamped = if percent < Self::MIN {
             Self::MIN
@@ -152,8 +132,8 @@ impl From<SubstrateScale> for u16 {
 mod tests {
     use super::*;
 
-    /// The constructor is the only door, and `Deserialize` runs it too, so a scale
-    /// off the ladder or outside the range cannot arrive from a file or a peer.
+    /// A scale off the ladder or outside the range cannot arrive from a file or a
+    /// peer, since `Deserialize` runs the constructor.
     #[test]
     fn every_scale_lands_on_the_ladder_inside_the_range() {
         for percent in 0..=1000u16 {
@@ -181,9 +161,8 @@ mod tests {
         assert_eq!(SubstrateScale::NATURAL.factor(), 1.0);
     }
 
-    /// Sanitizing is idempotent — the property §8's funnel rests on: a value read back
-    /// out of a file has already been through this door, so passing it through again
-    /// must not move it.
+    /// Sanitizing is idempotent — the property §8's funnel rests on, since a value
+    /// read out of a file has already been through this door once.
     #[test]
     fn holding_a_held_scale_leaves_it_alone() {
         for percent in 0..=1000u16 {

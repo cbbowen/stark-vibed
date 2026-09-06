@@ -7,19 +7,11 @@ use serde::{Deserialize, Serialize};
 
 /// Identifies a color space; serialized in the save format (`CanvasMeta`, §8).
 ///
-/// **Every variant is unconditional, including one whose implementation a build may
-/// not carry** (`Mixbox`, behind the `mixbox` cargo feature). A build that `cfg`'d a
-/// variant away could not read a file that names it: a variant is matched by name and
-/// an unknown one has nothing to fall back on, so the document is refused outright
-/// (§8, and see `ActionKind`'s tombstone rule for the general case). An id is
-/// therefore always nameable and always decodable, and whether it can be *honoured*
-/// is `stark-engine`'s `colorspace::make` answer — a `DocError::UnsupportedColorSpace`
-/// rather than a corrupt file, which is what lets a frontend say "this document needs
-/// a Mixbox build".
-///
-/// Since the split (§2) that is structural rather than remembered: this crate has no
-/// `mixbox` feature to `cfg` on, so there is no build in which the variant could go
-/// missing.
+/// **Every variant is unconditional**, including `Mixbox`, whose implementation sits
+/// behind a cargo feature the engine may be built without. A `cfg`'d-away variant
+/// would make any file naming it undecodable (§8, and `ActionKind`'s tombstone rule
+/// for the general case). Whether a build can *honour* an id is `stark-engine`'s
+/// `colorspace::make` to answer, as a `DocError::UnsupportedColorSpace`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum ColorSpaceId {
     Oklab,

@@ -3,12 +3,11 @@
 //! Presence is per-client state every client reads and only its owner writes, held
 //! outside the timeline because replay does not need it. What travels is here; what
 //! a receiver *builds* from it — the roster, the gesture latch, the interpolated
-//! view of a peer's live stroke — is `stark-engine`'s `peer`, because it is state
-//! rather than a message.
+//! view of a peer's live stroke — is `stark-engine`'s `peer`.
 //!
-//! The one piece of per-client state that *is* needed by replay — the selection —
-//! is not presence at all: it lives in the document keyed by
-//! [`ActorId`](crate::document::ActorId) instead (§17.3).
+//! The selection is the one piece of per-client state replay *does* need, and it is
+//! not presence: it lives in the document keyed by
+//! [`ActorId`](crate::document::ActorId) (§17.3).
 //!
 //! `stark-net` speaks exactly this module and no more (§2, §12.4).
 
@@ -30,12 +29,10 @@ pub const PEER_TIMEOUT: f64 = 6.0;
 pub const HEARTBEAT: f64 = 2.0;
 
 /// How long a live gesture survives without an update before it is dropped
-/// (seconds). Shorter than [`PEER_TIMEOUT`]: a peer that crashes mid-stroke should
-/// stop smearing paint well before it leaves the roster. Strictly *longer* than
-/// [`HEARTBEAT`]: the expiry clock advances at least per heartbeat but no faster than
-/// the pump bothers to tick it, so a timeout inside that window is a knife edge —
-/// equal to it, every live stroke on an idle receiver dies at the first heartbeat
-/// boundary.
+/// (seconds). Must stay shorter than [`PEER_TIMEOUT`], so a peer that crashes
+/// mid-stroke stops smearing paint before it leaves the roster, and strictly *longer*
+/// than [`HEARTBEAT`]: the expiry clock advances no faster than the pump ticks it, so
+/// equal to it every live stroke on an idle receiver dies at the first heartbeat.
 pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 
 /// How often the sender re-sends a gesture's invariant head and its whole path
@@ -43,12 +40,10 @@ pub const GESTURE_TIMEOUT: f64 = HEARTBEAT + 1.0;
 /// that arrived mid-stroke (§17.5) — or `None` to send no resync frames at all.
 ///
 /// **Currently `None`, deliberately.** This is a cadence, not a switch on the
-/// feature: both halves implement the repair in full, and
-/// `presence::tests::a_resync_repairs_a_receiver_that_missed_everything` exercises it
-/// regardless of what this says. What is deferred is *how often it is worth paying
-/// for* — a resync frame carries the whole path, so on a long stroke it is the
-/// largest presence frame a session sends, and whether it earns its place depends on
-/// the loss rate and latency of a real transport. Setting it is a one-line change.
+/// feature: both halves implement the repair in full. What is deferred is how often
+/// it is worth paying for — a resync frame carries the whole path, so on a long
+/// stroke it is the largest presence frame a session sends, and whether it earns its
+/// place depends on a real transport's loss rate and latency.
 pub const GESTURE_RESYNC: Option<f64> = None;
 
 /// The invariant part of a live stroke: everything but the path. Sent on the
@@ -60,10 +55,10 @@ pub struct StrokeHead {
     pub brush: BrushParams,
     pub seed: u64,
     /// The layer's translation at the press
-    /// ([`StrokeRecord::translation`](crate::document::StrokeRecord::translation)): the path
-    /// translations carry is relative to the layer's translation, and a receiver folding the live
-    /// stroke needs the same offset the commit will. Zero from an older sender,
-    /// under which translation and canvas coincide.
+    /// ([`StrokeRecord::translation`](crate::document::StrokeRecord::translation)):
+    /// the path's coordinates are relative to it, so a receiver folding the live
+    /// stroke needs the same offset the commit will. Zero from an older sender, under
+    /// which translation and canvas coincide.
     #[serde(default)]
     pub translation: IVec2,
 }
@@ -72,18 +67,15 @@ pub struct StrokeHead {
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub enum GestureFrame {
     /// A stroke in flight. The path grows by appending, because the fitter *freezes*
-    /// a prefix of control points that is final and never revised (§6.2) —
-    /// so `points` is everything frozen since the last frame plus the provisional
-    /// knot under the cursor, and the receiver's reassembly
-    /// (`truncate(from); extend(points)`) is exact rather than an approximation.
+    /// a prefix of control points that is final and never revised (§6.2), so `points`
+    /// is everything frozen since the last frame plus the provisional knot under the
+    /// cursor and the receiver's `truncate(from); extend(points)` is exact.
     Stroke {
         /// Per-actor ordinal, so a restart is unambiguous without a clock.
         id: u64,
-        /// Present on the gesture's first frame and on every resync frame.
-        ///
-        /// Boxed for the enum's sake, not the wire's: a head carries a whole
-        /// `BrushParams`, which dwarfs every other variant, and serde sees
-        /// straight through the `Box` — the bytes are the unboxed shape's.
+        /// Present on the gesture's first frame and on every resync frame. Boxed for
+        /// the enum's sake, not the wire's — serde sees straight through, so the
+        /// bytes are the unboxed shape's.
         head: Option<Box<StrokeHead>>,
         /// Index of the first control point in `points`; 0 on a resync frame.
         from: u32,
@@ -91,12 +83,9 @@ pub enum GestureFrame {
         /// Where on the assembled curve the stroke begins
         /// ([`StrokeRecord::start`](crate::document::StrokeRecord::start)).
         ///
-        /// On every frame rather than in the head, and not by generosity: it is
-        /// a curve *parameter*, so the same number names a different place as
-        /// the path grows, and it refines while the entry spans are still free.
-        /// It stops moving exactly when the sender freezes the spans behind it
-        /// — the arc profile that places it settles with them — so by the time
-        /// a receiver's cached head could bake it in, it is final (§6.2).
+        /// On every frame rather than in the head: it is a curve *parameter*, so
+        /// the same number names a different place as the path grows. It stops
+        /// moving exactly when the sender freezes the spans behind it (§6.2).
         #[serde(default)]
         start: f32,
     },
@@ -125,14 +114,13 @@ impl GestureFrame {
         }
     }
 
-    /// [`PeerFrame::sanitized`]'s gesture half — private, and that is the point: a
-    /// gesture is gated because the frame carrying it was, so a receiver cannot end
-    /// up holding one that did not come through the door.
+    /// [`PeerFrame::sanitized`]'s gesture half — private, so a gesture is gated only
+    /// because the frame carrying it was, and a receiver cannot hold one that came
+    /// through no door.
     ///
-    /// **Exhaustive, with no `_` arm**, for
-    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s reason: a
-    /// fourth shape of gesture stops this compiling until it says whether it carries a
-    /// number, where a wildcard would answer "nothing to hold" on its behalf.
+    /// **Exhaustive, with no `_` arm**: a fourth shape of gesture stops this
+    /// compiling until it says whether it carries a number, where a wildcard would
+    /// answer "nothing to hold" on its behalf.
     fn sanitized(self) -> Self {
         match self {
             Self::Stroke {
@@ -155,17 +143,14 @@ impl GestureFrame {
                     })
                 }),
                 from,
-                // Gated already, and by the same device as the ops below: a
-                // `ControlPoint` is `#[serde(from)]` through `ControlPoint::clamped`.
-                // The one channel it leaves alone is `pos`, which `stroke_rect`
-                // answers by claiming the whole layer on a non-finite point — so a
-                // walk here would find nothing, and would cost per point at pointer
-                // rate.
+                // Gated already: a `ControlPoint` is `#[serde(from)]` through
+                // `ControlPoint::clamped`. It leaves `pos` alone, but `stroke_rect`
+                // claims the whole layer on a non-finite point — so a walk here would
+                // find nothing and would cost per point at pointer rate.
                 points,
                 // The marker's ceiling is the path's span count, which is the
-                // flattening's to know. What a frame can state on its own is what
-                // the committed twin states: a number, and not before the curve it
-                // marks a point on.
+                // flattening's to know. What a frame can state alone is that it is a
+                // number, and not before the curve it marks a point on.
                 start: at_least_zero(start, 0.0),
             },
             // Gated already, and structurally rather than by a call: the op cannot
@@ -190,9 +175,9 @@ impl GestureFrame {
 /// One published frame of a client's presence — the publishable half of a
 /// `stark-engine`'s `Session`.
 ///
-/// The author is **not** in the payload: `stark-engine`'s `Peers::merge` takes it from the
-/// transport's authenticated origin, the same discipline `Action` gets for free from
-/// its [`ActionId`](crate::document::ActionId) (§17.7).
+/// The author is **not** in the payload: `stark-engine`'s `Peers::merge` takes it from
+/// the transport's authenticated origin, as `Action` gets it from its
+/// [`ActionId`](crate::document::ActionId) (§17.7).
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
 pub struct PeerFrame {
     /// Which run of this client published the frame (`stark-engine`'s `Identity::boot`). Ordered
@@ -219,17 +204,14 @@ impl PeerFrame {
     /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized)'s twin for
     /// the half of the wire that is not the log.
     ///
-    /// A frame is never an action, so it never meets that funnel — and it carries
-    /// several things no type of its own bounds: a name, republished to everyone; a
-    /// cursor, which is `screen_to_canvas`'s output; a stroke's `start`; and the brush
-    /// on its head, whose radius sizes a dispatch and whose rates reach the dynamics
-    /// loop exactly as the author's do. One call, at the door, rather than a gate per
-    /// field to forget (§1).
+    /// A frame is never an action, so it meets that funnel nowhere else, and it
+    /// carries several things no type of its own bounds: a name republished to
+    /// everyone, a cursor, a stroke's `start`, and a brush whose radius sizes a
+    /// dispatch and whose rates reach the dynamics loop. One call, at the door, rather
+    /// than a gate per field to forget (§1).
     ///
     /// **Every field written out, no `..self`**: a field added to the frame later
-    /// stops this compiling until it says whether it is a number, where the update
-    /// syntax would answer "nothing to hold" on its behalf. Same device as
-    /// `GestureFrame::sanitized`'s missing `_` arm.
+    /// stops this compiling until it says whether it is a number.
     ///
     /// **Idempotent**, so the door may hold it without first establishing that no
     /// other gate already did.
@@ -249,11 +231,9 @@ impl PeerFrame {
                     name
                 })
                 // An empty name is *no* name, which is what `None` already means on
-                // this field. The sender filters the empty case out before it builds
-                // a frame (`Session::publish`), so this changes nothing an honest peer
-                // can send and closes what a dishonest one could: `Peer::apply`
-                // overwrites the id-derived `default_name` unconditionally, so a
-                // `Some("")` would blank that peer's row for the rest of the session.
+                // this field. `Peer::apply` overwrites the id-derived `default_name`
+                // unconditionally, so a `Some("")` would blank that peer's row for the
+                // rest of the session.
                 .filter(|name| !name.is_empty()),
             active_layer: self.active_layer,
             // The sender filters this too, and says why (`Session::set_cursor`) —
@@ -349,9 +329,6 @@ mod tests {
 
     /// [`PeerFrame::sanitized`] claims to be idempotent, which is what lets the door
     /// hold it without first establishing that nothing else already did.
-    ///
-    /// Asserted rather than argued, as `action_kinds.rs` does for
-    /// [`ActionKind::sanitized`](crate::document::ActionKind::sanitized).
     #[test]
     fn sanitizing_a_frame_twice_does_not_move_it_again() {
         let once = hostile().sanitized();

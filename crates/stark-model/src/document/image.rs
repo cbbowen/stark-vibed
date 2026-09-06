@@ -1,49 +1,38 @@
-//! Where a placed picture lands (§23).
+//! Where a placed picture lands (§23) — the geometry of a placement and the bound on
+//! how much canvas one can rewrite.
 //!
-//! The picture *itself* is [`stark_assetid::Picture`] — decode, cap, hash, the same
-//! identity contract a brush shape and a canvas substrate pass through (§19). What is
-//! left here is the half that is a fact about the **document**: the geometry of a
-//! placement, and the bound on how much of the canvas one can rewrite.
-//!
-//! The split is the crate's own rule read straight off (§2, `lib.rs`): an **id** is
-//! in the log, a **resource** is beside it. `PlaceImage` carries an
-//! [`AssetId`](crate::AssetId) exactly as a stamp brush does, the pixels ride in
-//! [`DocumentFile::content`](crate::io::DocumentFile) and over the wire as a blob,
-//! and `crate::content` is what says a document naming one has to have it.
+//! The picture *itself* is [`stark_assetid::Picture`], which owns the identity
+//! contract a brush shape and a canvas substrate also pass through (§19). Per §2,
+//! `PlaceImage` carries only an [`AssetId`](crate::AssetId); the pixels ride in
+//! [`DocumentFile::content`](crate::io::DocumentFile) or over the wire as a blob, and
+//! `crate::content` is what says a document naming one has to have it.
 
 use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, Vec2, tile_box, tiles_of};
 use stark_assetid::{MAX_PICTURE_DIM, Picture};
 
 /// The most tiles one placed picture can write — **derived, not chosen**.
 ///
-/// Every other tile cap in the document is a judgement about how much work one action
-/// may ask for ([`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES),
-/// [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES)), each carrying the
-/// risk of disagreeing with what it bounds. Here [`MAX_PICTURE_DIM`] already bounds
-/// the box, so the tile count follows from it and a plan that exceeded this could only
-/// mean the arithmetic below is wrong.
+/// Unlike [`MAX_FILL_TILES`](super::fill::MAX_FILL_TILES) and
+/// [`MAX_TRANSFORM_TILES`](super::transform::MAX_TRANSFORM_TILES), which are
+/// judgements about how much work one action may ask for, this follows from
+/// [`MAX_PICTURE_DIM`]: a plan exceeding it means the arithmetic below is wrong, not
+/// that the document is too big.
 pub const MAX_IMAGE_TILES: usize = {
-    // The picture's own span, plus the apron band `image_tiles` reaches into, can
-    // start anywhere within a tile — hence one partial tile at each end.
+    // The picture's span plus the apron band `image_tiles` reaches into can start
+    // anywhere within a tile — hence one partial tile at each end.
     let span = ((MAX_PICTURE_DIM + 2 * TILE_APRON) / TILE_SIZE + 2) as usize;
     span * span
 };
 
-/// How far from the origin a placement may sit and still be **exact**.
+/// How far from the origin a placement may sit and still be **exact**, in canvas px.
 ///
 /// `PlaceImage` promises the image's texels land on canvas pixels one for one, with
-/// nothing filtered between the file and the tiles — which is why `at` is an
-/// [`IVec2`] and why scaling is a separate
-/// [`Transform`](super::ActionKind::Transform) where resampling is already
-/// pinned (§16.4). That promise is about the *arithmetic*, and the arithmetic goes
-/// through `f32`: every integer up to `2^24` is exactly representable, and past it
-/// the cast starts rounding — silently, to as much as a whole tile at the far end of
-/// the `i32` grid.
-///
-/// So this is the point at which the placement stops being the one it says it is. The
-/// picture's own span comes off the budget because [`extent`] adds it to `at` and that
-/// sum has to be exact too. About 16.7 million canvas px from the origin — four orders
-/// of magnitude past any painting, and still a refusal rather than a rounding (§16.1).
+/// nothing filtered between the file and the tiles — hence an [`IVec2`] `at`, and
+/// scaling left to [`Transform`](super::ActionKind::Transform), where resampling is
+/// already pinned (§16.4). The arithmetic goes through `f32`, which is exact only to
+/// `2^24`; past that the cast rounds silently, by as much as a whole tile out at the
+/// end of the `i32` grid. The picture's own span comes off the budget because
+/// [`extent`] adds it to `at` and that sum must be exact too.
 const MAX_EXACT_PLACEMENT: i32 = (1 << 24) - MAX_PICTURE_DIM as i32;
 
 /// The picture's own extent in canvas px, `[lo, hi)` — `None` for a placement too
@@ -63,28 +52,22 @@ fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
 
 /// Which tiles a placed picture writes, in order.
 ///
-/// Pure geometry with no mask to consult, unlike a fill's plan — a picture lands on
-/// its own fresh layer and is bounded by nothing but itself (§23) — so it lives here
-/// beside the action rather than in the engine. It is also the *only* quantization of
-/// this box anywhere: the footprint claims the whole layer instead of re-deriving one
-/// (`footprint.rs`), so the §12.6 hazard `fill_bounds` exists to close cannot arise
-/// here at all.
+/// Pure geometry with no mask to consult, unlike a fill's plan: a picture lands on its
+/// own fresh layer and is bounded by nothing but itself (§23). It is also the only
+/// quantization of this box anywhere, since the footprint claims the whole layer
+/// rather than re-deriving one, so the §12.6 hazard `fill_bounds` closes cannot arise.
 ///
 /// A tile is written when its **texture** holds any of the picture — the interior plus
-/// the apron band, since a tile's texture starts one texel before its interior and
-/// content reaching into that band belongs to the neighbour too (§6.4). Filtered
-/// rather than merely quantized, because [`TileRect::covering`](crate::geom::TileRect::covering)
-/// floors both bounds: a picture ending exactly on a tile boundary would otherwise
-/// name the tile past it, and an all-zero tile pollutes `bounds` and holds pool
-/// memory for a texel of nothing.
+/// the apron band, since content reaching into that band belongs to the neighbour too
+/// (§6.4). The result is filtered rather than merely quantized because
+/// [`TileRect::covering`](crate::geom::TileRect::covering) floors both bounds, so a
+/// picture ending exactly on a tile boundary would otherwise name an all-zero tile
+/// past it, polluting `bounds` and holding pool memory.
 ///
-/// `None` refuses the whole action, deterministically, for a placement whose box falls
-/// off the `i32` tile grid — or, well before that, one too far from the origin for
-/// `f32` to state exactly (`MAX_EXACT_PLACEMENT`). Refused rather than rounded,
-/// because a placement is a promise about landing texels on pixels one for one.
-/// [`MAX_IMAGE_TILES`] cannot be exceeded by a picture `stark_assetid::picture`
-/// admitted, so a `None` from [`tiles_of`] would be a bug in that arithmetic rather
-/// than a document to refuse.
+/// `None` refuses the whole action, deterministically, for a placement off the `i32`
+/// tile grid or — well before that — too far from the origin for `f32` to state
+/// exactly ([`MAX_EXACT_PLACEMENT`]). Refused rather than rounded, a placement being a
+/// promise about landing texels on pixels one for one.
 pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
     let (lo, hi) = extent(at, picture)?;
     let mut tiles = tiles_of(tile_box(lo, hi, 0)?, MAX_IMAGE_TILES)?;
@@ -108,19 +91,14 @@ mod tests {
         }
     }
 
-    /// **A placement past what `f32` states exactly is refused, not rounded.**
-    ///
-    /// `PlaceImage` promises the picture's texels land on canvas pixels one for one
-    /// (§23). Past `2^24` the cast in [`extent`] starts rounding — quietly, and by up
-    /// to a whole tile out at the end of the `i32` grid — so the placement that
-    /// happens is not the placement the action names. The `i32` grid itself only runs
-    /// out four orders of magnitude later, which is why this bound has to be its own
-    /// and cannot be left to `TileRect::covering`.
+    /// **A placement past what `f32` states exactly is refused, not rounded** (§23).
+    /// The `i32` grid runs out four orders of magnitude later, so this bound cannot be
+    /// left to `TileRect::covering`.
     #[test]
     fn a_placement_too_far_out_to_state_exactly_is_refused() {
         let img = picture(64, 64);
-        // The last exact placement, and the first one past it, on each axis and in
-        // each direction.
+        // The last exact placement, and the first past it, on each axis and in each
+        // direction.
         let ok = MAX_EXACT_PLACEMENT;
         for at in [IVec2::new(ok, 0), IVec2::new(0, ok), IVec2::new(-ok, -ok)] {
             assert!(
@@ -148,14 +126,11 @@ mod tests {
     /// **Every tile the plan names holds some of the picture, and every tile that
     /// holds some of it is named.**
     ///
-    /// Swept across a whole tile stride on both axes rather than checked at one
-    /// alignment, because one alignment is exactly what hides a boundary case: the
-    /// over-claim appears only when an edge lands *on* a tile boundary, and the
-    /// under-claim only when it lands one texel inside the apron band.
-    ///
-    /// Stated against the tile's own interior rather than against the padded box the
-    /// plan quantizes, so the two derivations are independent: a tile is named exactly
-    /// when its interior, grown by the apron it must show, meets the picture.
+    /// Swept across a whole tile stride on both axes: one alignment hides the boundary
+    /// cases, the over-claim appearing only when an edge lands *on* a tile boundary and
+    /// the under-claim only when it lands one texel inside the apron band. Stated
+    /// against the tile's own interior grown by its apron, so the two derivations stay
+    /// independent.
     #[test]
     fn the_plan_names_exactly_the_tiles_the_picture_touches() {
         let img = picture(300, 120);
@@ -189,13 +164,12 @@ mod tests {
     }
 
     /// The tile cap is **derived** from the dimension cap, so the largest picture this
-    /// build accepts cannot make a plan the cap refuses. If this fails, the arithmetic
-    /// in [`MAX_IMAGE_TILES`] is wrong — not the document.
+    /// build accepts cannot make a plan the cap refuses. A failure here means the
+    /// arithmetic in [`MAX_IMAGE_TILES`] is wrong, not the document.
     #[test]
     fn the_largest_admissible_picture_fits_the_derived_cap() {
-        // The pixels are never read here, and allocating 67 MB of them to find that
-        // out would be the test's whole runtime — the plan is a function of the
-        // dimensions alone.
+        // The plan is a function of the dimensions alone; allocating 67 MB of pixels
+        // would be the test's whole runtime.
         let widest = Picture {
             width: MAX_PICTURE_DIM,
             height: MAX_PICTURE_DIM,

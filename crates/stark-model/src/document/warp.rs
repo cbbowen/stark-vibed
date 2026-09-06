@@ -2,22 +2,19 @@
 //! interpolated, moving the selected paint under the resulting map.
 //!
 //! The wire form is the **control grid** — `cols × rows` dragged points over
-//! `[min, max]` — and everything else is derived deterministically from it:
-//! a Catmull-Rom (tensor Hermite) surface through the control points, sampled
-//! onto a fine lattice of `SUBDIV × SUBDIV` bilinear sub-cells per control
-//! cell. The GPU consumes only the fine lattice, whose cells are straight-edged
-//! quads (a bilinear map sends axis-aligned lines to lines), so the parcel
-//! machinery of §16.4/§16.5 carries over: watertight quads, at most one parcel
-//! per destination texel, inverse mapping per fragment.
+//! `[min, max]` — and everything else is derived deterministically from it: a
+//! Catmull-Rom (tensor Hermite) surface through the control points, sampled onto a fine
+//! lattice of `SUBDIV × SUBDIV` bilinear sub-cells per control cell. The GPU consumes
+//! only the fine lattice, whose cells are straight-edged quads, so §16.4/§16.5's parcel
+//! machinery carries over: watertight quads, at most one parcel per destination texel,
+//! inverse mapping per fragment.
 //!
-//! **Identity is bit-exact by construction.** The surface is evaluated in
-//! *deviation form*: control points are split into `base + delta` against the
-//! undeformed grid, only the deltas go through the Hermite arithmetic (in a
-//! form whose every term is a multiple of a delta difference), and the base
-//! positions are added back untouched. An untouched mesh has all-zero deltas,
-//! so every lattice point lands exactly on its base, every sub-cell is exactly
-//! its own source rect, and the GPU takes the exact inverse-affine path —
-//! which is what lets §16.4's identity invariant extend to the warp.
+//! **Identity is bit-exact by construction.** The surface is evaluated in *deviation
+//! form* — control points split into `base + delta` against the undeformed grid, only
+//! the deltas through the Hermite arithmetic, the base added back untouched — so an
+//! untouched mesh has all-zero deltas, every lattice point lands exactly on its base,
+//! every sub-cell is exactly its own source rect, and the GPU takes the exact
+//! inverse-affine path. That is what lets §16.4's identity invariant extend to the warp.
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
@@ -36,14 +33,14 @@ pub(crate) const SUBDIV: usize = 8;
 /// whole action is rejected rather than resampling through a crease.
 const MIN_JACOBIAN: f32 = 1e-6;
 
-/// A warp of the selected paint inside `[min, max]` (§16.9): the control grid's
-/// points are the images of the rect's uniform `cols × rows` grid, and the paint
-/// under the author's mask *within the rect* follows the interpolated surface.
-/// Paint and mask outside the rect stay put — the mask coverage gates the cut,
-/// so a feathered selection's warp stays seamless at the rect edge.
+/// A warp of the selected paint inside `[min, max]` (§16.9): the control grid's points
+/// are the images of the rect's uniform `cols × rows` grid, and the paint under the
+/// author's mask *within the rect* follows the interpolated surface. Paint and mask
+/// outside the rect stay put, and the mask coverage gates the cut, so a feathered
+/// selection's warp stays seamless at the rect edge.
 ///
-/// Wire format note (§8): these field *names* are what a saved mesh is read back by,
-/// so renaming one needs a `#[serde(alias)]`. Order is free.
+/// Wire format (§8): these field *names* are what a saved mesh is read back by, so
+/// renaming one needs a `#[serde(alias)]`. Order is free.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct WarpMap {
     /// Source rect, canvas px.
@@ -58,10 +55,9 @@ pub struct WarpMap {
 }
 
 /// `a` toward `b` by `t`, with `t == 1` returning `b` **bitwise**. The branch is
-/// load-bearing: two neighbouring cells evaluate their shared edge from the two
-/// ends, and `a + (b−a)·1` is not `b` in f32 — the branch is what makes shared
-/// lattice geometry bitwise equal from both sides, which is what makes the
-/// rasterized quads watertight (§16.4).
+/// load-bearing: neighbouring cells evaluate their shared edge from the two ends, and
+/// `a + (b−a)·1` is not `b` in f32, so the branch is what makes the rasterized quads
+/// watertight (§16.4).
 pub(crate) fn lerp2(a: Vec2, b: Vec2, t: f32) -> Vec2 {
     if t == 1.0 { b } else { a + (b - a) * t }
 }
@@ -91,14 +87,11 @@ fn hermite_axis(d: &[Vec2], k: usize, f: f32) -> Vec2 {
 /// caller that would have to *build* the slice first.
 ///
 /// **It reads at most four of the `len` entries**: `k − 1`, `k`, `k + 1`, `k + 2`,
-/// clamped at the ends — which is the whole reason this shape exists.
-/// [`Prepared::eval`] evaluates a row-hermite per control row and then interpolates
-/// across them, so a slice would mean computing all `rows` of them, plus a `Vec`, for
-/// the four it reads. In the frontend's mesh drag that runs per sample of the hand.
+/// clamped at the ends — which is the whole reason this shape exists, since
+/// [`Prepared::eval`] would otherwise compute a row-hermite for every one of `rows`,
+/// plus a `Vec`, for the four it reads.
 ///
-/// Bit-identical to feeding it the full slice, which §16.4 requires: the entries it
-/// does read are computed the same way and combined in the same order, and the ones
-/// it skips were never part of the answer.
+/// Bit-identical to feeding it the full slice, which §16.4 requires.
 fn hermite_axis_by(len: usize, at: impl Fn(usize) -> Vec2, k: usize, f: f32) -> Vec2 {
     let (v1, v2) = (at(k), at(k + 1));
     let m1 = if k > 0 {
@@ -147,16 +140,13 @@ fn axis_basis(len: usize, k: usize, f: f32) -> Vec<f32> {
     c
 }
 
-/// The fine lattice a [`WarpMap`] rasterizes through: base coordinates per axis
-/// and the image of every lattice node, row-major (`ny` rows of `nx`).
+/// The fine lattice a [`WarpMap`] rasterizes through: base coordinates per axis and the
+/// image of every lattice node, row-major (`ny` rows of `nx`).
 ///
-/// **Fields are private and [`WarpMap::lattice`] is the only way to one**, which is
-/// what makes the methods below total rather than merely lucky: `positive` walks
-/// `0..ny - 1` and `aabb` reads `pts[0]`, both of which a hand-built empty lattice
-/// would panic on. The constructor guarantees at least `SUBDIV + 1` nodes an axis (a
-/// map is refused below two control points), so there is no degenerate lattice to
-/// defend against — §1's preference for ruling out a class over checking for its
-/// instances.
+/// **Fields are private and [`WarpMap::lattice`] is the only way to one**, which is what
+/// makes the methods below total rather than merely lucky: the constructor guarantees at
+/// least `SUBDIV + 1` nodes an axis, so `positive` and `aabb` have no degenerate lattice
+/// to defend against (§1).
 pub struct Lattice {
     nx: usize,
     ny: usize,
@@ -245,16 +235,14 @@ impl Lattice {
 }
 
 impl WarpMap {
-    /// The same mesh shifted whole by `d` — source rect and every control point
-    /// alike, so the deformation it describes is unchanged, merely restated in
-    /// shifted coordinates ([`TransformMap::under_translation`]'s warp arm).
+    /// The same mesh shifted whole by `d` — source rect and every control point alike,
+    /// so the deformation it describes is unchanged, merely restated in shifted
+    /// coordinates ([`TransformMap::under_translation`]'s warp arm).
     ///
-    /// Not bitwise-neutral in general: `lerp(a+d, b+d, t)` and `lerp(a, b, t)+d`
-    /// can part by an ulp in `f32`, so a shifted mesh's deviation form may carry
-    /// ulp-scale deltas an unshifted one would not. Deterministic — the shift is
-    /// a pure function of the action — which is the property replays rest on;
-    /// byte-exactness of the *identity* stays with the unshifted frame, where
-    /// every mesh lived before frames existed.
+    /// Not bitwise-neutral in general: `lerp(a+d, b+d, t)` and `lerp(a, b, t)+d` can
+    /// part by an ulp in `f32`, so a shifted mesh's deviation form may carry ulp-scale
+    /// deltas an unshifted one would not. It is deterministic, which is the property
+    /// replays rest on; byte-exact *identity* stays with the unshifted frame.
     ///
     /// [`TransformMap::under_translation`]: super::transform::TransformMap::under_translation
     pub fn translated(&self, d: Vec2) -> Self {
@@ -290,12 +278,10 @@ impl WarpMap {
     /// The undeformed position of control node `(i, j)`.
     ///
     /// **Private, and that is the gate**: [`grid_base`] divides by `cols - 1`, which
-    /// underflows on the `cols == 0` a log can carry. Every caller in this module is
-    /// downstream of [`shape_ok`](Self::shape_ok) — [`lattice`](Self::lattice) checks
-    /// it, and [`deltas`](Self::deltas) is only reached through `lattice` or
-    /// [`prepared`](Self::prepared) — so there is no unvalidated caller left to
-    /// defend against, which is the [`Lattice`] pattern (§1) rather than a check per
-    /// call site. `pub(crate)` would still admit one from elsewhere in the model.
+    /// underflows on the `cols == 0` a log can carry, and every caller in this module is
+    /// downstream of [`shape_ok`](Self::shape_ok). The [`Lattice`] pattern (§1) rather
+    /// than a check per call site; `pub(crate)` would still admit one from elsewhere in
+    /// the model.
     fn base(&self, i: u32, j: u32) -> Vec2 {
         grid_base(self.min, self.max, self.cols, self.rows, i, j)
     }
@@ -381,19 +367,16 @@ impl WarpMap {
     /// through it — the shared half of [`Prepared::eval`] and [`Prepared::basis`].
     ///
     /// `n >= 2` is the caller's, and `Prepared` is what holds it: `n - 2` underflows
-    /// below that, and in release the wrapped `k` indexes off the end of the delta
-    /// row instead.
+    /// below that, and in release the wrapped `k` indexes off the end of a delta row.
     fn locate(t: f32, n: usize) -> (usize, f32) {
         let u = (t * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
         let k = (u.floor() as usize).min(n - 2);
         (k, u - k as f32)
     }
 
-    /// The control points as **deviations** from the undeformed grid — the only
-    /// thing the Hermite arithmetic ever sees (see the module header).
-    ///
-    /// Computed once per [`prepared`](Self::prepared) rather than per evaluation, so
-    /// a caller walking the surface pays for the grid once.
+    /// The control points as **deviations** from the undeformed grid — the only thing
+    /// the Hermite arithmetic ever sees (see the module header). Computed once per
+    /// [`prepared`](Self::prepared), so a caller walking the surface pays for it once.
     fn deltas(&self) -> Vec<Vec2> {
         (0..self.rows)
             .flat_map(|j| (0..self.cols).map(move |i| (i, j)))
@@ -406,15 +389,14 @@ impl WarpMap {
     ///
     /// **The one door to [`Prepared::eval`] and [`Prepared::basis`]**, and the
     /// [`Lattice`] pattern applied to them: both index a control cell, and a grid
-    /// narrower than two points per axis — which the wire can state and
-    /// `shape_ok` refuses — underflows `locate` before either sees it. Checking once here makes them total instead of leaving
-    /// a check the reader of a logged mesh could forget (§1).
+    /// narrower than two points per axis — which the wire can state and `shape_ok`
+    /// refuses — underflows `locate` before either sees it. Checking once here makes
+    /// them total instead of leaving a check the reader of a logged mesh could forget
+    /// (§1).
     ///
-    /// **The frontend is the caller that wants the hoist, in a loop.** Finding the
-    /// grabbed point is a search over the surface and drawing the mesh is one `eval`
-    /// per point of every curve, so a drag was rebuilding the whole delta grid — a
-    /// `Vec` allocation and `cols · rows` subtractions — per sample, tens to hundreds
-    /// of times a frame. Nothing about the answer changes between them.
+    /// Hoisting the delta grid is what makes a frontend's mesh drag affordable: finding
+    /// the grabbed point is a search over the surface and drawing the mesh is one `eval`
+    /// per point of every curve, tens to hundreds of times a frame.
     pub fn prepared(&self) -> Option<Prepared<'_>> {
         self.shape_ok().then(|| Prepared {
             map: self,
@@ -430,13 +412,9 @@ impl WarpMap {
     }
 }
 
-/// A [`WarpMap`] known to be well-shaped, with its delta grid already computed —
-/// see [`WarpMap::prepared`], the only way to one. Borrows the map, so it cannot
-/// outlive an edit to it.
-///
-/// The validated handle, on [`Lattice`]'s argument: the methods below index control
-/// cells that a two-point-per-axis grid guarantees exist, so they are total rather
-/// than merely lucky in the frontend that happens to build a 4×4.
+/// A [`WarpMap`] known to be well-shaped, with its delta grid already computed — see
+/// [`WarpMap::prepared`], the only way to one. Borrows the map, so it cannot outlive an
+/// edit to it.
 pub struct Prepared<'a> {
     map: &'a WarpMap,
     deltas: Vec<Vec2>,
@@ -449,8 +427,8 @@ impl Prepared<'_> {
         let (cols, rows) = (self.map.cols as usize, self.map.rows as usize);
         let (kx, fx) = WarpMap::locate(t.x, cols);
         let (ky, fy) = WarpMap::locate(t.y, rows);
-        // Row deviations on demand rather than collected: the outer hermite reads
-        // four of the `rows` of them, so a `Vec` here would put back the allocation
+        // Row deviations on demand rather than collected: the outer hermite reads four
+        // of the `rows` of them, so a `Vec` here would put back the allocation
         // `prepared` exists to remove.
         let delta = hermite_axis_by(
             rows,
@@ -569,11 +547,10 @@ mod tests {
         );
     }
 
-    /// **The surface can only be evaluated through the funnel**, and the funnel
-    /// refuses every mesh the wire can state but the arithmetic cannot take: a grid
-    /// narrower than two points an axis underflows `locate`'s `n - 2` and indexes
-    /// off the end of a delta row. `WarpUi` always builds a 4x4, so nothing today
-    /// reaches it — reading a *logged* mesh back to draw it would.
+    /// **The surface can only be evaluated through the funnel**, which refuses every
+    /// mesh the wire can state but the arithmetic cannot take: a grid narrower than two
+    /// points an axis underflows `locate`'s `n - 2` and indexes off the end of a delta
+    /// row.
     #[test]
     fn only_a_well_shaped_mesh_can_be_evaluated() {
         let (min, max) = rect();
@@ -609,13 +586,10 @@ mod tests {
         }
     }
 
-    /// **Evaluating the row deviations on demand is bit-for-bit materializing
-    /// them**, which is what lets [`Prepared::eval`] read four rows instead of
-    /// building all of them (see [`hermite_axis_by`]).
-    ///
-    /// The eager version exists nowhere else, so this is the only thing standing
-    /// between a future edit and a silent difference. §16.4 is stated bitwise, so
-    /// `assert_eq` rather than a tolerance.
+    /// **Evaluating the row deviations on demand is bit-for-bit materializing them**,
+    /// which is what lets [`Prepared::eval`] read four rows instead of building all of
+    /// them (see [`hermite_axis_by`]). §16.4 is stated bitwise, so `assert_eq` rather
+    /// than a tolerance.
     ///
     /// Driven over a mesh whose deviations are all *different*: on the identity mesh
     /// every row deviation is zero, and lazy and eager cannot be told apart.

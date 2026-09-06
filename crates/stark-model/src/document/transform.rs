@@ -1,12 +1,12 @@
-//! Planning for the transforms of selected paint (§16): the whole-plane
-//! affine, and the rect-scoped perspective (§16.8) and warp (§16.9).
+//! Planning for the transforms of selected paint (§16): the whole-plane affine,
+//! and the rect-scoped perspective (§16.8) and warp (§16.9).
 //!
-//! Pure tile-level geometry — which tiles are cut, which are rewritten, which
-//! source quads land on each — mirroring `stark-engine`'s `Selection::plan`
-//! split: the CPU decides *what*, `stark-engine`'s
-//! `gpu::transform::TransformRenderer` does the GPU work. Everything here is a deterministic function of the tile-coordinate
-//! sets, the selection's shape, and the map's few floats, so peers and
-//! replays always agree — including about rejection.
+//! Pure tile-level geometry — which tiles are cut, which are rewritten, which source
+//! quads land on each — mirroring `stark-engine`'s `Selection::plan` split: the CPU
+//! decides *what*, `stark-engine`'s `gpu::transform::TransformRenderer` does the GPU
+//! work. Everything here is a deterministic function of the tile-coordinate sets, the
+//! selection's shape and the map's few floats, so peers and replays always agree —
+//! including about rejection.
 
 use serde::{Deserialize, Serialize};
 
@@ -52,13 +52,11 @@ impl TransformMap {
         }
     }
 
-    /// The same map, restated in a layer frame placed at `frame` on the canvas
+    /// The same map, restated in a layer frame placed at `translation` on the canvas
     /// (§14.12): the conjugation `T(−f) ∘ M ∘ T(f)` — what the paint side of a
-    /// transform applies while the mask side keeps the canvas map. For the
-    /// rect-scoped families every defining point simply shifts, since the map
-    /// *is* its point correspondences; the affine composes, exactly for the
-    /// whole-pixel frames and translations the exactness invariants are about
-    /// (§16.4), since integer sums in `f32` are exact to 2²⁴.
+    /// transform applies while the mask side keeps the canvas map. Exact for the
+    /// whole-pixel frames and translations the exactness invariants are about (§16.4),
+    /// since integer sums in `f32` are exact to 2²⁴.
     pub fn under_translation(&self, translation: crate::geom::IVec2) -> Self {
         if translation == crate::geom::IVec2::ZERO {
             return self.clone();
@@ -78,14 +76,14 @@ impl TransformMap {
     }
 }
 
-/// A projective transform of the selected paint inside `[min, max]` (§16.8):
-/// the homography carrying the rect's corners to `corners`, exactly — the wire
-/// form is the corners the hand placed, and every peer re-derives the same
-/// matrix from them. Straight lines stay straight, which is the whole reason
-/// this is not a warp special case (a bilinear mesh bends diagonals).
+/// A projective transform of the selected paint inside `[min, max]` (§16.8): the
+/// homography carrying the rect's corners to `corners`, exactly. The wire form is the
+/// corners the hand placed, and every peer re-derives the same matrix from them.
+/// Straight lines stay straight, which is the whole reason this is not a warp special
+/// case (a bilinear mesh bends diagonals).
 ///
-/// Wire format note (§8): these field *names* are what a saved map is read back by,
-/// so renaming one needs a `#[serde(alias)]`. Order is free.
+/// These field *names* are what a saved map is read back by, so renaming one needs a
+/// `#[serde(alias)]` (§8). Order is free.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PerspectiveMap {
     /// Source rect, canvas px.
@@ -104,13 +102,9 @@ pub fn rect_corners(min: Vec2, max: Vec2) -> [Vec2; 4] {
 }
 
 impl PerspectiveMap {
-    /// The forward and inverse maps of a **usable** perspective — the whole gate
-    /// and the solve, once. `None` for anything `apply` would refuse.
-    ///
-    /// The gate and the solve are one function because they were two: a caller
-    /// that wanted only the matrices reached past the gate and got a map `apply`
-    /// rejects, and one that wanted both paid the f64 general-quad solve twice.
-    /// Everything below is defined in terms of this.
+    /// The forward and inverse maps of a **usable** perspective — the whole gate and
+    /// the solve, once. `None` for anything `apply` would refuse, and everything below
+    /// is defined in terms of this.
     pub fn resolve(&self) -> Option<(Homography, Homography)> {
         let gated = self.min.is_finite()
             && self.max.is_finite()
@@ -121,11 +115,11 @@ impl PerspectiveMap {
         gated.then(|| self.homographies()).flatten()
     }
 
-    /// Whether this perspective may be applied: finite, a proper rect, and a
-    /// strictly convex, positively oriented target quad. Convexity is not
-    /// taste — it is exactly the condition under which the homography keeps
-    /// the whole source rect on the near side of its horizon (`w > 0`), so
-    /// nothing inside the rect can be flung through infinity.
+    /// Whether this perspective may be applied: finite, a proper rect, and a strictly
+    /// convex, positively oriented target quad. Convexity is not taste — it is exactly
+    /// the condition under which the homography keeps the whole source rect on the near
+    /// side of its horizon (`w > 0`), so nothing inside the rect can be flung through
+    /// infinity.
     pub fn usable(&self) -> bool {
         self.resolve().is_some()
     }
@@ -138,16 +132,12 @@ impl PerspectiveMap {
         self.resolve().map(|(f, _)| f)
     }
 
-    /// A conservative bound on where the map carries paint: the target quad's
-    /// own bounding box (a homography maps the rect *onto* the quad). `None` when
-    /// the quad cannot be measured.
-    ///
-    /// **An `Option` for [`WarpMap::image_aabb`](super::warp::WarpMap::image_aabb)'s
-    /// reason.** The fold below is `min`/`max`, which return the *non*-NaN operand, so
-    /// a non-finite corner would step straight over the box and leave it looking
-    /// tight. Answering `None` instead means a caller with no `apply` behind it cannot
-    /// get a tight box out of a map that has none — rather than resting on `usable`
-    /// refusing the map in another file.
+    /// A conservative bound on where the map carries paint: the target quad's own
+    /// bounding box (a homography maps the rect *onto* the quad). `None` when the quad
+    /// cannot be measured, for
+    /// [`WarpMap::image_aabb`](super::warp::WarpMap::image_aabb)'s reason — the fold
+    /// is `min`/`max`, which return the *non*-NaN operand, so a non-finite corner would
+    /// otherwise leave the box looking tight.
     pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
         self.corners.iter().all(|c| c.is_finite()).then(|| {
             let lo = self.corners.iter().fold(self.corners[0], |a, p| a.min(*p));
@@ -161,19 +151,16 @@ impl PerspectiveMap {
     /// which says nothing about orientation, so a reflected quad derives cleanly here
     /// and is refused there.
     ///
-    /// Forward and inverse homographies, derived deterministically from the
-    /// corners. Three tiers, each preserving more exactness than the last
-    /// (§16.4):
+    /// Forward and inverse homographies, derived deterministically from the corners in
+    /// three tiers, each preserving more exactness than the last (§16.4):
     ///
-    /// - **corners untouched** — both maps are the literal identity matrix, so
-    ///   the fragment's tap arithmetic is exact and identity is a no-op;
-    /// - **a parallelogram target** — the map is affine; it is built and
-    ///   inverted through [`Affine2`], the same arithmetic the affine action
-    ///   trusts, and embedded with a `(0, 0, 1)` bottom row so the projective
+    /// - **corners untouched** — both maps are the literal identity matrix, so the
+    ///   fragment's tap arithmetic is exact and identity is a no-op;
+    /// - **a parallelogram target** — the map is affine, built and inverted through
+    ///   [`Affine2`] and embedded with a `(0, 0, 1)` bottom row, so the projective
     ///   divide is by exactly 1;
-    /// - **a general quad** — derived in f64 (square-to-quad, composed with
-    ///   the rect normalization; the inverse is the adjugate) and rounded to
-    ///   f32 once. f64 on the CPU is deterministic, so peers agree.
+    /// - **a general quad** — derived in f64 and rounded to f32 once. f64 on the CPU
+    ///   is deterministic, so peers agree.
     fn homographies(&self) -> Option<(Homography, Homography)> {
         let base = rect_corners(self.min, self.max);
         if self.corners == base {
@@ -256,12 +243,12 @@ impl PerspectiveMap {
 }
 
 /// Whether a target quad is strictly convex and positively oriented (the same
-/// orientation as the rect it images — canvas axes, y down). A crossed or
-/// reflected quad would run the map through its own horizon.
+/// orientation as the rect it images — canvas axes, y down). A crossed or reflected
+/// quad would run the map through its own horizon.
 ///
-/// The threshold is **absolute, on an area in px²**, so it is a floor on how thin a
-/// quad may be at canvas scale — not the dimensionless one `near_side` applies to a
-/// projective weight. The two are the same condition only up to that assumption.
+/// The threshold is **absolute, on an area in px²** — a floor on how thin a quad may
+/// be at canvas scale, not the dimensionless one `near_side` applies to a projective
+/// weight.
 fn convex_positive(c: &[Vec2; 4]) -> bool {
     let b = [c[0], c[1], c[3], c[2]];
     (0..4).all(|i| {
@@ -389,9 +376,9 @@ mod tests {
 
     /// **Tier 1: untouched corners derive the literal identity matrix** (§16.4).
     ///
-    /// `assert_eq!` rather than a tolerance, because what rides on it is the
-    /// fragment's tap arithmetic: an identity that is only identity to 1e-7
-    /// resamples every texel of a transform nobody asked for.
+    /// `assert_eq!` rather than a tolerance, because what rides on it is the fragment's
+    /// tap arithmetic: an identity that is only identity to 1e-7 resamples every texel
+    /// of a transform nobody asked for.
     #[test]
     fn untouched_corners_derive_the_literal_identity() {
         for (min, max) in [
@@ -413,11 +400,9 @@ mod tests {
     }
 
     /// **Tier 2: a parallelogram target rides the affine arithmetic** (§16.4) —
-    /// bottom row exactly `(0, 0, 1)`, so the projective divide is by exactly 1.
-    ///
-    /// A `(0, 0, ~1)` row would still draw the right picture and still lose the
-    /// affine's exactness, which is why this is an equality on the row rather
-    /// than a check that the map is nearly affine.
+    /// bottom row exactly `(0, 0, 1)`, so the projective divide is by exactly 1. A
+    /// `(0, 0, ~1)` row would still draw the right picture and still lose the affine's
+    /// exactness, hence an equality on the row.
     #[test]
     fn a_parallelogram_target_keeps_a_unit_bottom_row() {
         let (min, max) = (Vec2::ZERO, Vec2::new(100.0, 50.0));
@@ -436,10 +421,9 @@ mod tests {
 
     /// **Tier 3: the adjugate really is the inverse**, over the rect's interior.
     ///
-    /// [`mat3_adjugate`] is right or catastrophically wrong with nothing in
-    /// between — a transposed cofactor or one flipped sign puts the paint
-    /// somewhere else entirely — and a round trip over a grid is the cheap
-    /// statement of that. Nothing else in this crate runs it.
+    /// [`mat3_adjugate`] is right or catastrophically wrong with nothing in between — a
+    /// transposed cofactor or one flipped sign puts the paint somewhere else entirely —
+    /// and a round trip over a grid is the cheap statement of that.
     #[test]
     fn a_general_quad_inverts_across_its_whole_source_rect() {
         let (min, max) = (Vec2::new(-40.0, 20.0), Vec2::new(160.0, 120.0));
@@ -464,14 +448,12 @@ mod tests {
         }
     }
 
-    /// [`convex_positive`] is the horizon condition spelled as a shape test: it
-    /// takes a strictly convex, positively oriented quad and refuses the ways one
-    /// stops being that.
+    /// [`convex_positive`] is the horizon condition spelled as a shape test.
     ///
-    /// Reached directly rather than through [`PerspectiveMap::usable`] because
-    /// the mirrored quad is a *parallelogram*: the solve derives a clean matrix
-    /// for it and `near_side` says nothing about orientation, so this predicate
-    /// is the only thing in front of it.
+    /// Reached directly rather than through [`PerspectiveMap::usable`] because the
+    /// mirrored quad is a *parallelogram*: the solve derives a clean matrix for it and
+    /// `near_side` says nothing about orientation, so this predicate is the only thing
+    /// in front of it.
     #[test]
     fn convexity_accepts_a_trapezoid_and_refuses_a_folded_quad() {
         let base = rect_corners(Vec2::ZERO, Vec2::splat(100.0));
@@ -485,13 +467,13 @@ mod tests {
         assert!(!convex_positive(&[base[0], base[1], base[0], base[1]]));
     }
 
-    /// The gate half of [`PerspectiveMap::resolve`], which is not the solve half:
-    /// an empty or inverted source rect, and a corner nobody can measure, are
-    /// refused before the solve sees them.
+    /// The gate half of [`PerspectiveMap::resolve`], which is not the solve half: an
+    /// empty or inverted source rect, and a corner nobody can measure, are refused
+    /// before the solve sees them.
     ///
-    /// The empty rect is the sharp case — its corners *are* `rect_corners`', so
-    /// without the gate in front of it the identity short-circuit would answer
-    /// [`Homography::IDENTITY`] for a rect with no interior.
+    /// The empty rect is the sharp case — its corners *are* `rect_corners`', so without
+    /// the gate the identity short-circuit would answer [`Homography::IDENTITY`] for a
+    /// rect with no interior.
     #[test]
     fn a_map_with_no_source_rect_or_no_finite_corner_is_refused() {
         let min = Vec2::new(10.0, 10.0);
@@ -520,12 +502,12 @@ mod tests {
         }
     }
 
-    /// [`Homography::from_f64`] normalizes by the largest element, so the nine
-    /// numbers stay in a healthy float range whatever scale the derivation worked
-    /// at — and refuses a matrix with no scale to normalize by.
+    /// [`Homography::from_f64`] normalizes by the largest element, so the nine numbers
+    /// stay in a healthy float range whatever scale the derivation worked at — and
+    /// refuses a matrix with no scale to normalize by.
     ///
     /// Reached directly because it is private and the solve never hands it the
-    /// degenerate cases: through a caller they are one `None` among several.
+    /// degenerate cases.
     #[test]
     fn a_matrix_is_normalized_by_its_largest_element_or_refused() {
         let scaled = Homography::from_f64(&[[2.0, 0.0, 0.0], [0.0, -4.0, 0.0], [0.0, 0.0, 8.0]])

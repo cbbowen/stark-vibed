@@ -11,27 +11,20 @@ use crate::geom::Vec2;
 
 /// A control point of the fitted stroke curve — the stored form of a path.
 ///
-/// Distinct from `stark-engine`'s `InputSample` on purpose: an input sample is one *pointer
-/// report* (raw, jittery, high frequency, discarded once fitted); a control point
-/// is one coefficient of the fitted curve (stable, saved to the file and sent to
-/// peers). It is a **cubic B-spline** control point, so the curve is pulled
-/// towards it rather than through it — only the first and last are on the curve,
-/// which the clamped end condition pins them to.
+/// Distinct from `stark-engine`'s `InputSample`: a sample is one raw pointer report,
+/// discarded once fitted; a control point is one coefficient of the fitted curve,
+/// saved to the file and sent to peers. It is a **cubic B-spline** control point, so
+/// the curve is pulled towards it rather than through it — only the first and last
+/// lie on the curve, pinned there by the clamped end condition.
 ///
-/// `time` is seconds since the stroke started rather than an absolute clock —
-/// that is what velocity and timelapse want (§8), and it halves the
-/// field.
+/// `time` is seconds since the stroke started, not an absolute clock (§8).
 ///
 /// **Deserialization funnels through [`ControlPoint::clamped`]** (§8), so a point
-/// arriving from a file or a peer holds the same bounds a fitter's does. A `9.0`
-/// pressure from a corrupt log is not a slightly-wider stroke but a stamp nine times
-/// the size the footprint padded for, which is a §12.6 divergence rather than a
-/// visible bug.
-///
-/// The fields stay `pub`, so this is a funnel and not a wall: the three fitters and
-/// the tests that stage a bad point still build one directly. `pos` needs no gate —
-/// `footprint::stroke_rect` tests every point for finiteness itself and claims the
-/// whole layer rather than trusting the box.
+/// arriving from a file or a peer holds the same bounds a fitter's does; a `9.0`
+/// pressure would be a stamp nine times the size the footprint padded for, which is a
+/// §12.6 divergence rather than a visible bug. The fields stay `pub`, so this is a
+/// funnel and not a wall. `pos` needs no gate: `footprint::stroke_rect` tests every
+/// point for finiteness itself.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 #[serde(from = "RawControlPoint", into = "RawControlPoint")]
 #[carbonite(as = "RawControlPoint")]
@@ -56,19 +49,14 @@ impl ControlPoint {
     /// A control point with its channels **held to what a pen can report** —
     /// pressure in `[0, 1]`, tilt inside the unit disc.
     ///
-    /// **Every fitted point is built this way, and so is every decoded one.** A fit
-    /// is a least-squares solve rather than an interpolation, so a control point the
-    /// data barely reaches is held only by the ridge and can overshoot the values it
-    /// was fitted from. Pressure is a radius the renderer multiplies the brush by
-    /// with no ceiling of its own, and tilt steers the footprint.
+    /// Every fitted point is built this way, and so is every decoded one. A fit is a
+    /// least-squares solve, so a control point can overshoot the values it was fitted
+    /// from — and pressure is a radius the renderer multiplies the brush by with no
+    /// ceiling of its own.
     ///
-    /// Clamping the *control* values bounds the whole curve and not just the control
+    /// Clamping the *control* values bounds the whole curve, not just the control
     /// polygon: B-spline bases are non-negative and sum to one, so every evaluated
     /// value is a convex combination of them.
-    ///
-    /// It lives here rather than beside any one fitter because there are three — the
-    /// streaming fit, its finished form, and the shape assist's realization (§6.9) —
-    /// and a fourth is whatever tool next produces a path.
     pub fn clamped(pos: Vec2, pressure: f32, tilt: Vec2, time: f32) -> Self {
         // Scaled rather than component-clamped: the pen reports a direction and a
         // lean, and clipping the components alone would turn a diagonal overshoot
@@ -86,12 +74,9 @@ impl ControlPoint {
     }
 }
 
-/// The wire shape of a [`ControlPoint`], which is the same shape — its only job is
-/// to be the type `#[serde(from)]` deserializes *before* the constructor runs.
-///
-/// Named in both directions because a schema describes reading and writing at once
-/// (§8). The fields mirror the originals **in order**, so the encoding is
-/// unchanged.
+/// The wire shape of a [`ControlPoint`] — the same shape, whose only job is to be
+/// what `#[serde(from)]` deserializes before the constructor runs. Fields mirror the
+/// originals **in order**, so the encoding is unchanged.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "ControlPoint")]
 struct RawControlPoint {
@@ -126,12 +111,9 @@ mod tests {
     use super::*;
 
     /// A control point decoded from a file or a peer holds what
-    /// [`ControlPoint::clamped`] promises.
-    ///
-    /// Three lies a corrupt or hostile log could tell: a pressure past 1 (a radius
-    /// the footprint did not pad for), a NaN pressure (the case `f32::clamp` lets
-    /// through), and a tilt outside the unit disc, which steers the stamp
-    /// footprint.
+    /// [`ControlPoint::clamped`] promises: a pressure past 1 (a radius the footprint
+    /// did not pad for), a NaN pressure (the case `f32::clamp` lets through) and a
+    /// tilt outside the unit disc are all caught.
     #[test]
     fn a_control_point_from_the_wire_is_normalized() {
         let wire = |p: &ControlPoint| carbonite::to_vec_static(p).expect("encodes");

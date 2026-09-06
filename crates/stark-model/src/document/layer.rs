@@ -1,15 +1,14 @@
-//! Layers (§5.1, §15.2, §14, §21). A layer is a sparse, persistent map of painted
-//! tiles, a **matte** — a procedural region filled with a flat color — or a
-//! **filter**, which is a function of what is composited beneath it rather than
-//! content of its own; plus its presentation properties, plus the layers it
-//! **carries**.
+//! Layers (§5.1, §15.2, §14, §21). A layer is a sparse map of painted tiles, a
+//! **matte** — a procedural region filled with a flat color — or a **filter**,
+//! which is a function of what is composited beneath it; plus its presentation
+//! properties, plus the layers it **carries**.
 //!
 //! A layer stacks with premultiplied "over" unless its [`BlendMode`] says
 //! otherwise or it is clipped ([`SetLayerClip`](super::ActionKind::SetLayerClip),
-//! [`Prop::Clip`](super::Prop::Clip)), in which case the compositor
-//! isolates it and merges it through the mode (§18.0.4). A
-//! layer that carries others is a **group** — there is no separate group type —
-//! and the same isolation, recursed, is what composites it (§14.7).
+//! [`Prop::Clip`](super::Prop::Clip)), in which case the compositor isolates it
+//! and merges it through the mode (§18.0.4). A layer that carries others is a
+//! **group** — there is no separate group type — and the same isolation, recursed,
+//! is what composites it (§14.7).
 
 use serde::{Deserialize, Serialize};
 
@@ -19,24 +18,15 @@ use crate::geom::Vec2;
 /// Stable identifier for a layer within a document: **the action that minted it,
 /// and which of that action's layers this is**.
 ///
-/// Two peers adding a layer at the same moment must not mint the same id — the log
-/// would then hold two different layers under one, which `layer_index` resolves to
-/// whichever comes first, and no pixel says which peer's it was (§17.9). That is the
-/// convergence failure this shape rules out rather than guards against: an
-/// [`ActionId`] is already the log's total-order key `(lamport, actor)`, so it is
-/// already globally unique, and an id built from one cannot collide with an id built
-/// from another. There is no counter, nothing to resync when a log is picked back up,
-/// and no re-share rule to remember.
+/// An [`ActionId`] is the log's total-order key `(lamport, actor)` and so already
+/// globally unique, which is what keeps two peers adding a layer at the same moment
+/// from minting the same id — a collision no pixel could resolve (§17.9). `k` is
+/// which of the action's layers this is, assigned by the author in the order
+/// `Layer::visit` walks and **carried** in that action's own map, so every peer
+/// reads the same `k` whatever its own tree looks like.
 ///
-/// [`GuideId`](super::GuideId) is the same answer without a `k`, since one `AddGuide`
-/// mints exactly one guide where `DuplicateLayer` mints one per layer of a subtree.
-/// `k` is which of the action's layers this is, assigned by the author in the order
-/// `Layer::visit` walks and **carried** in that action's own map. Carried rather than
-/// re-derived at each peer: every peer then reads the same `k` off the log whatever
-/// its own tree looks like, which is what `DuplicateLayer`'s doc insists on.
-///
-/// [`ROOT`](Self::ROOT) is the one id no action mints, and it has to be: every peer
-/// must agree on the root layer, which predates every action.
+/// [`ROOT`](Self::ROOT) is the one id no action mints: every peer must agree on the
+/// root layer, which predates every action.
 #[derive(
     Copy,
     Clone,
@@ -61,18 +51,11 @@ pub struct LayerId {
 impl LayerId {
     /// The root layer, which every document has before any action runs.
     ///
-    /// **A reserved `k`, not a reserved action.** The lamport clock starts at zero, so
-    /// `ActionId { lamport: 0, actor: SOLO }` is a perfectly ordinary first action of a
-    /// solo document and cannot be spent on a sentinel.
-    ///
-    /// `u32::MAX` is the `k` no mint produces. The four single-layer kinds pass `0`;
-    /// a duplicate's is a position in the subtree it copies, and a subtree of `2³² − 1`
-    /// layers is not a bound anybody imposed but a document larger than the address
-    /// space — a `Layer` is a persistent map of tile handles and several presentation
-    /// fields, so four billion of them is terabytes of them. The check that matters is
-    /// the one at the door (`Engine::commit_minting`), which asserts the ids an action
-    /// mints are distinct and its own; this sentinel only has to sit outside what a
-    /// document can reach, and it does by nine orders.
+    /// **A reserved `k`, not a reserved action.** The lamport clock starts at zero,
+    /// so `ActionId { lamport: 0, actor: SOLO }` is an ordinary solo document's first
+    /// action and cannot be spent on a sentinel. `u32::MAX` is the `k` no mint
+    /// produces: the four single-layer kinds pass `0`, and a duplicate's is a position
+    /// in the subtree it copies.
     pub const ROOT: LayerId = LayerId {
         action: ActionId {
             lamport: 0,
@@ -93,10 +76,8 @@ impl LayerId {
 
     /// The id a **solo** author's action at `lamport` mints for its first layer.
     ///
-    /// Not a test affordance: `ActorId::SOLO` is the author of every action in a
-    /// document that has never been shared (§12.3), so this is the id such a document
-    /// really does mint — which is what makes it a usable stand-in for one, and what
-    /// makes a test that names a layer this way name a layer that could exist.
+    /// Not a test affordance: `ActorId::SOLO` authors every action in a document that
+    /// has never been shared (§12.3), so this is an id such a document really mints.
     pub const fn solo(lamport: u64) -> Self {
         Self::new(
             ActionId {
@@ -110,23 +91,16 @@ impl LayerId {
     /// When this layer was minted, on the author's Lamport clock — what an unnamed
     /// layer is labelled by (§11).
     ///
-    /// A *display* number and nothing else, which is why it is not called an ordinal:
-    /// nothing resumes from it, and it is neither dense nor unique across authors. It
-    /// is monotone within one author's layers, which is the whole of what a label
-    /// needs to be.
+    /// A *display* number only: monotone within one author's layers, but neither
+    /// dense nor unique across authors.
     pub fn minted_at(self) -> u64 {
         self.action.lamport
     }
 }
 
 impl std::fmt::Display for LayerId {
-    /// `lamport.actor.k` — the id as a stable, unique string.
-    ///
-    /// For a frontend that needs one: a DOM row is keyed by its layer so the browser
-    /// can tell a reordered list from a rebuilt one (§11), and a key that two layers
-    /// could share would animate one row into another. Every field, in the order that
-    /// makes the common case short: a solo document's ids read `0.0.0`, `3.0.0`, and
-    /// only a duplicate or a peer's layer grows the tail.
+    /// `lamport.actor.k` — the id as a stable, unique string, for a frontend that
+    /// needs a list key two layers cannot share (§11).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -139,16 +113,12 @@ impl std::fmt::Display for LayerId {
 /// Where in a stack a layer lands — the anchor half of a structural move
 /// (§14.8).
 ///
-/// [`Above`](Self::Above) names a sibling, and a stack of `n` layers has `n + 1`
-/// places to land in, so naming siblings covers all of them but one: the place
+/// [`Above`](Self::Above) names a sibling, which covers every landing place but one:
 /// **under the bottom layer**, which has no sibling below it to be named after.
-/// [`Bottom`](Self::Bottom) is that place. Without it a panel could offer every
-/// drop position in a stack except its foot — and "put this behind everything"
-/// is not an exotic move, it is where a background goes.
+/// [`Bottom`](Self::Bottom) is that place.
 ///
 /// The variant order is **not** load-bearing: variants are matched by *name* (§8), so
 /// a case may be added wherever it reads best.
-/// `a_place_is_read_by_variant_name_not_position` is what keeps that honest.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Place {
     /// On top of the stack, over everything already in it.
@@ -184,66 +154,40 @@ impl From<Option<LayerId>> for Place {
 
 /// How a layer combines with the layers below it (§18.0.4).
 ///
-/// Everything past `Normal` combines the two layers' **light** rather than covering
-/// one with the other — and none of it is Screen. Screen is `a + b − ab`, which is
-/// what falls out of inverting a multiply; it describes no physical process, and it
-/// crushes the top of the range into a flat, chalky white that is the giveaway of a
-/// digital glow.
-///
-/// Ours are derived the other way round. Two lights *add* — that is the only thing
-/// light does — but the numbers in a layer are not light, they are light that has
-/// already been through a tone curve on its way to being displayable. So the honest
-/// combination is: undo the curve, add, re-apply it. Every mode here is that same
-/// sentence with a different curve `T`:
+/// Every mode past `Normal` combines the two layers' **light** rather than covering
+/// one with the other. The numbers in a layer are light that has already been through
+/// a tone curve, so the honest combination is: undo the curve, add, re-apply it. Each
+/// mode is that sentence with a different curve `T`:
 ///
 /// ```text
 ///     f(a, b) = T(T⁻¹(a) + T⁻¹(b))
 /// ```
 ///
-/// Being a conjugation of addition is not a technicality — it is the whole
-/// guarantee. Each mode is commutative and associative with a neutral element, so
-/// three glowing layers give the same result in any order and regrouping them
-/// changes nothing, exactly as three real lamps would. Screen happens to share those
-/// properties (it is addition conjugated by `1 − e^{-x}`'s cousin), which is *why*
-/// it survived; these are what you get when the curve is chosen for how light
-/// actually rolls off instead of for algebraic convenience.
+/// Being a conjugation of addition is the whole guarantee: every mode is commutative
+/// and associative with a neutral element, so three glowing layers give the same
+/// result in any order and regrouping them changes nothing.
 ///
-/// **The guarantee holds at any coverage**, which took getting right: a layer's
-/// coverage weighs it in the space where its blend function is affine, not in the
-/// working space, because applying a curve to a coverage-averaged color is not the
-/// same as averaging the curve. Weighed in the working space instead, stacking order
-/// matters by up to 20 levels wherever a stroke is less than solid. See
-/// `blend_common.wesl`'s `combined_light`, and §18.0.4 for what that costs.
+/// **The guarantee holds at any coverage**: a layer's coverage weighs it in the space
+/// where its own blend function is affine — emission for the emissive modes, light
+/// itself for [`Multiply`](Self::Multiply) — not in the working space, since applying
+/// a curve to a coverage-averaged color is not the same as averaging the curve
+/// (§18.0.4).
 ///
-/// [`Reinhard`](Self::Reinhard) and [`Drago`](Self::Drago) are the emissive half:
-/// they add light and their identity is black. [`Multiply`](Self::Multiply) is the
-/// subtractive half — the same construction with `T(x) = e^{-x}`, which makes the
-/// added quantity optical density and the identity white. That is the *whole* of
-/// what changes between the two halves; the family is one idea, not two. Each half
-/// does weigh coverage in a different space — emission for the emissive modes, light
-/// itself for `Multiply` — but that is the same rule read twice: **the space where
-/// the mode's own blend function is affine**, which is the only space a weighted
-/// average commutes with it in.
-///
-/// The combination happens in **CIE XYZ normalized to the display white**, not in
-/// the working color space and not in RGB: XYZ is linear in light, its components
-/// are non-negative for every real color (which is what makes the curves
-/// well-defined), and normalizing by the white point puts an in-gamut color's
-/// components in `[0,1]` — so "1" means the same thing on all three axes. Blending
-/// in RGB instead would make the result depend on the display's primaries; blending
-/// in Oklab or in pigment concentrations would be adding things that are not light.
+/// The combination happens in **CIE XYZ normalized to the display white**: linear in
+/// light, non-negative for every real color (which is what makes the curves
+/// well-defined), and `1` means the same thing on all three axes. In RGB the result
+/// would depend on the display's primaries; in Oklab or in pigment concentrations it
+/// would be adding things that are not light.
 ///
 /// **A mode may carry its own parameters**, and [`Drago`](Self::Drago) does. They live
-/// on the variant rather than in a settings struct beside it, because that is the one
-/// shape in which a parameter cannot be stated for a mode that has none: there is no
-/// `k` on a `Multiply` layer to be edited, saved, replicated and silently ignored. It
-/// is also what keeps the merge's "the two layers agree about how they meet the
-/// backdrop" (`document::merge`) meaning that once a mode is a family of curves — two
-/// `Drago`s with different `k` are two different functions, and `!=` says so.
+/// on the variant, which is the one shape in which a parameter cannot be stated for a
+/// mode that has none — and it keeps the merge's "the two layers agree about how they
+/// meet the backdrop" (`document::merge`) meaning something once a mode is a family of
+/// curves: two `Drago`s with different `k` are two different functions, and `!=` says
+/// so.
 ///
 /// A new mode may go wherever it reads best, and a parameterized one may gain a knob:
-/// variants and fields are matched by *name* (§8), so neither disturbs the modes in
-/// saved files. `a_mode_is_read_by_variant_name_bend_and_all` holds that.
+/// variants and fields are matched by *name* (§8).
 ///
 /// See `blend_common.wesl` for the derivations and `Compositor` for the isolation
 /// pass that makes per-layer blending possible at all.
@@ -259,11 +203,9 @@ pub enum BlendMode {
     ///     f(a, b) = (a + b − 2ab) / (1 − ab)
     /// ```
     ///
-    /// Reinhard's curve is asymptotic: no finite amount of light reaches 1. So this
-    /// mode **cannot blow out** — stack a hundred glow layers and the result
-    /// approaches white without ever clipping, and detail survives everywhere. That
-    /// makes it the one to reach for on glazes, mist, rim light and bloom, where
-    /// Screen's flat white is exactly the failure.
+    /// Reinhard's curve is asymptotic, so this mode **cannot blow out**: stack a
+    /// hundred glow layers and the result approaches white without ever clipping. The
+    /// one to reach for on glazes, mist, rim light and bloom.
     Reinhard,
     /// **Radiance** — addition conjugated by Drago's log curve
     /// `T(x) = k·log(1 + x/k)`, which collapses to
@@ -276,22 +218,14 @@ pub enum BlendMode {
     /// *does* push past display white where two strong lights coincide — and that
     /// overflow is the point. The composite targets are half-float, so the excess
     /// survives into the media pass and comes back through its highlight roll-off
-    /// (§6.3) as a genuine bloom with a filmic shoulder, rather than being
-    /// clipped at the blend. Reach for it on flame, specular hits, anything meant to
-    /// read as *brighter than the paper*.
+    /// (§6.3) as a bloom rather than being clipped at the blend. Reach for it on
+    /// flame, specular hits, anything meant to read as *brighter than the paper*.
     ///
-    /// `k` sets how quickly the curve bends, and it is **the layer's own**: large
-    /// `k` tends to plain addition, so two lights reach the roll-off sooner and a
-    /// flame reads hotter; small `k` tends to `max`, so the brighter of the two
-    /// simply wins and coincident lights barely add at all. [`DRAGO_K`] is where it
-    /// starts and [`DRAGO_K_RANGE`] is how far it goes.
-    ///
-    /// It is the first blend parameter, and it is on the variant for the reason [the
-    /// enum's docs](Self) give. That it is a *curve* being chosen rather than an
-    /// amount being dialled is what makes it worth having at all: every setting is
-    /// still a conjugation of addition, so the whole family is commutative and
-    /// associative — a `k` a painter picks cannot cost them the guarantee the mode
-    /// exists for.
+    /// `k` is **the layer's own** bend: large `k` tends to plain addition, so two
+    /// lights reach the roll-off sooner; small `k` tends to `max`, so the brighter of
+    /// the two simply wins. [`DRAGO_K`] is where it starts and [`DRAGO_K_RANGE`] is
+    /// how far it goes. Every setting is still a conjugation of addition, so no `k` a
+    /// painter picks costs the guarantee the mode exists for.
     Drago { k: f32 },
     /// **Multiply** — the same construction read the other way round, with
     /// `T(x) = e^{-x}`, which collapses to
@@ -300,79 +234,52 @@ pub enum BlendMode {
     ///     f(a, b) = a·b
     /// ```
     ///
-    /// The quantity being added is **optical density**, so this is Beer-Lambert:
-    /// what two stacked filters, two glazes, or two sheets of stained glass do to
-    /// the light passing through them. It is the mode Screen is an inversion *of* —
-    /// and of the two it is the one that describes something real, which is why this
-    /// is here and Screen is not.
-    ///
-    /// Everything the emissive modes guarantee still holds, dualised: commutative
-    /// and associative, so a stack of glazes is order-independent, but the neutral
-    /// element is **white** rather than black. Glaze over bare paper and nothing
-    /// happens; glaze over black and nothing shows. Because it runs in normalized
-    /// XYZ rather than in RGB, the darkening is a statement about light rather than
-    /// about the display's primaries — two saturated glazes cross without the dead
-    /// channel that an RGB multiply produces when one primary happens to be near
-    /// zero.
-    ///
-    /// The one mode here that *removes* light, and so the one that never reaches the
-    /// media pass's highlight roll-off: its output is in `[0,1]` by construction.
+    /// The quantity being added is **optical density**, so this is Beer-Lambert: what
+    /// two stacked glazes do to the light passing through them. Everything the
+    /// emissive modes guarantee still holds, dualised, except that the neutral element
+    /// is **white** rather than black — and the output is in `[0,1]` by construction,
+    /// so this is the one mode that never reaches the media pass's highlight roll-off.
     ///
     /// One consequence to know about. The blend sees the layer stack, not the
     /// **substrate** — the paper is composited in pass B, after all blending
     /// (`media_common.wesl`) — so a glaze laid on bare canvas leaves the paper's own
     /// color untouched instead of tinting it. On white paper that is exactly right,
-    /// white being multiply's identity, and it is why the mode reads correctly to a
-    /// painter by default. On a toned substrate it is a divergence from what a real
-    /// glaze would do, and the fix is not here: it is for the substrate to become the
-    /// bottom of the stack rather than a step of the media pass.
+    /// white being multiply's identity; on a toned substrate it is a divergence from
+    /// what a real glaze would do.
     Multiply,
 }
 
 /// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
 /// what the picker hands out and what the panel's Bend slider rests on. Large `k`
+/// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
+/// what the picker hands out and what the panel's Bend slider rests on. Large `k`
 /// tends to plain addition, small `k` tends to `max`.
 ///
-/// Chosen so the two light modes are a genuine choice rather than two settings of one.
-/// Take two half-lit layers: [`BlendMode::Reinhard`] gives 0.667, Screen gives 0.75,
-/// plain addition gives 1.0 (clipped), and this gives 0.769 — so Glow reads distinctly
-/// softer than the mode everyone already knows and Radiance distinctly hotter, across
-/// the whole range rather than only at the extremes. At the top, two whites come out
-/// at ≈1.36, well into the media pass's highlight roll-off.
-///
-/// A **default** rather than the value, since the curve is per layer — but a mode's
-/// resting setting is the one it is judged by, and this is the one the goldens and the
-/// docs' worked example are written against.
+/// A **default** rather than the value, since the curve is per layer — but it is the
+/// setting the goldens and the docs' worked example are written against.
 pub const DRAGO_K: f32 = 0.6;
 
 /// How far [`BlendMode::Drago`]'s bend may be taken — the span a frontend's slider
 /// covers and the span [`BlendMode::sanitized`] holds a log entry to.
 ///
-/// The ends are where the mode stops changing rather than round numbers. At `0.125`
-/// two half-lit layers give 0.586 against `max`'s 0.5, so the curve has arrived at
-/// "the brighter one wins" and a smaller `k` would only make `e^{y/k}` bigger for
-/// nothing. At `4.0` they give 0.944 against addition's 1.0, so it has arrived at the
-/// other end; past it the log is straight over the whole display range and Radiance
-/// is just a clip waiting to happen.
+/// The ends are where the mode stops changing rather than round numbers: at `0.125`
+/// the curve has arrived at "the brighter one wins", and at `4.0` it is straight over
+/// the whole display range, which is plain addition waiting to clip.
 ///
-/// Bounded at all for the reason [`ColorAdjust`](super::ColorAdjust)'s knobs are: a
-/// blend is a fullscreen pass with no coverage to hide behind, and `k = 0` is a
-/// division by zero in `emission` that would take every texel of the frame with it.
-/// A file or a peer reaches [`BlendMode::sanitized`] without passing through a
-/// slider, which is the case the bound is actually for.
+/// Bounded because a blend is a fullscreen pass with no coverage to hide behind, and
+/// `k = 0` is a division by zero in `emission` that would take every texel of the
+/// frame with it. A file or a peer reaches [`BlendMode::sanitized`] without passing
+/// through a slider, which is the case the bound is actually for.
 pub const DRAGO_K_RANGE: (f32, f32) = (0.125, 4.0);
 
 impl BlendMode {
     /// Every mode **at its default setting**, in the order a frontend should offer
-    /// them: `Normal` first, then increasingly emphatic light, then the one that
-    /// takes light away.
+    /// them: `Normal` first, then increasingly emphatic light, then the one that takes
+    /// light away.
     ///
     /// A list of modes, not of settings of them — which is why a picker built from it
     /// selects its current row with [`same_mode`](Self::same_mode) rather than `==`,
-    /// and why choosing `Radiance` on a layer that is already `Radiance` is not a
-    /// thing the picker can do (so a tuned `k` is never quietly reset by re-picking
-    /// the mode it belongs to). It is [`Filter::ALL`](super::Filter::ALL)'s
-    /// neutral-settings list read for a smaller enum.
+    /// so a tuned `k` is never quietly reset by re-picking the mode it belongs to.
     pub const ALL: [BlendMode; 4] = [
         Self::Normal,
         Self::Reinhard,
@@ -380,13 +287,9 @@ impl BlendMode {
         Self::Multiply,
     ];
 
-    /// What this mode is called. The painter-facing name, not the tonemap's — the
-    /// curve is how it is *built*, not what it is *for*.
-    ///
-    /// `Multiply` is the exception that proves it: there the operation's name and the
-    /// painter's name are the same word, and it has been that word in every paint
-    /// program for thirty years. Renaming it "Glaze" to match its neighbours would be
-    /// inventing a synonym for a term of art nobody needs translated.
+    /// What this mode is called: the painter-facing name, not the tonemap's.
+    /// `Multiply` is the exception — there the operation's name is already the term of
+    /// art, and renaming it to match its neighbours would invent a synonym.
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
@@ -400,10 +303,8 @@ impl BlendMode {
     /// picker's rows are selected by, since a picker offers a mode and not a setting
     /// of one.
     ///
-    /// Distinct from `==`, and both are wanted: this is the question the *frontend*
-    /// asks, while `==` is the question the compositor and the merge ask, where two
-    /// bends really are two different functions and answering "same mode" would fold
-    /// a layer into a curve that is not its own.
+    /// Distinct from `==`, which is the question the compositor and the merge ask,
+    /// where two bends really are two different functions.
     pub fn same_mode(self, other: Self) -> bool {
         std::mem::discriminant(&self) == std::mem::discriminant(&other)
     }
@@ -411,11 +312,6 @@ impl BlendMode {
     /// The curve bend the blend pass's uniform carries — this layer's for
     /// [`Drago`](Self::Drago), and [`DRAGO_K`] for every mode whose shader path never
     /// reads it (`blend_common.wesl` branches on the mode first).
-    ///
-    /// A plain `f32` rather than an `Option`, because the uniform has one field and
-    /// no way to spell "absent": an `Option` here would only be unwrapped to the same
-    /// number at both call sites, one of which is the merge and one the compositor.
-    /// A live value, so the two cannot drift.
     pub fn drago_k(self) -> f32 {
         match self {
             Self::Drago { k } => k,
@@ -424,17 +320,13 @@ impl BlendMode {
     }
 
     /// The same mode with every parameter finite and in range — the funnel a mode
-    /// passes through on its way into the document, exactly as
-    /// [`Filter::sanitized`](super::Filter::sanitized) is for a filter, and applied
-    /// in the same two places for the same two reasons: where the action is minted
+    /// passes through on its way into the document, applied where the action is minted
     /// (`Engine::process`), so the log records what was applied, and where a mode
     /// enters state (`DocState::set_layer_blend`), because a loaded file or a remote
     /// peer reaches state without passing through `process`.
     ///
-    /// A non-finite `k` falls back to [`DRAGO_K`] rather than to a bound, on
-    /// [`ColorAdjust::sanitized`](super::ColorAdjust::sanitized)'s argument: `NaN`
-    /// says nothing about which end was meant, and the default is the one answer that
-    /// cannot make a picture worse.
+    /// A non-finite `k` falls back to [`DRAGO_K`] rather than to a bound: `NaN` says
+    /// nothing about which end was meant.
     #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
@@ -448,8 +340,7 @@ impl BlendMode {
     /// Whether this mode composites under plain premultiplied "over".
     ///
     /// The compositor's fast path: a run of consecutive `Normal` layers needs no
-    /// isolation and draws straight into the accumulator, so an ordinary document
-    /// costs exactly what it did before blend modes existed (§6.3).
+    /// isolation and draws straight into the accumulator (§6.3).
     pub fn is_normal(self) -> bool {
         matches!(self, Self::Normal)
     }
@@ -458,29 +349,22 @@ impl BlendMode {
 /// The region a matte layer fills (§15.2).
 ///
 /// A region is a coverage field over the *infinite* plane, so what matters is its
-/// value at infinity — which is what makes the frame case (fill everywhere except
-/// a rect) expressible at all, and expressible without a mask.
+/// value at infinity — which is what makes the frame case (fill everywhere except a
+/// rect) expressible at all, and expressible without a mask.
 ///
-/// Its geometry is stated **in the layer's frame** (§14.12), like every fact a
-/// paint action states about geometry: the layer's `translation` places it on the
-/// canvas, added by the compositor, the export framing and the projection on the
-/// way out — which is what lets a matte answer `TranslateLayers` with the same
-/// property write a paint layer does. `SetMatteRect` writes this frame's
-/// coordinates; the canvas-space handles are the command tier's business, converted
-/// where the gesture becomes an action, exactly as a fill's shape is.
+/// Its geometry is stated **in the layer's frame** (§14.12): the layer's `translation`
+/// places it on the canvas, which is what lets a matte answer `TranslateLayers` with
+/// the same property write a paint layer does. `SetMatteRect` writes this frame's
+/// coordinates; converting a canvas-space gesture is the command tier's business.
 ///
 /// It is stored as **geometry, not a rasterized mask**: the fill is evaluated
-/// analytically from a signed distance at canvas position, exactly as
-/// `selection.wesl` does (§6.8). That costs no tiles (a 4000² frame would
-/// otherwise be ~16 MB of mask and could trip `MAX_SELECTION_TILES`), stays exact
-/// at any zoom, keeps the log to four floats, and — being a pure function of
-/// canvas position — satisfies the §6.4 seam invariant for free.
+/// analytically from a signed distance at canvas position, as `selection.wesl` does
+/// (§6.8). That costs no tiles, stays exact at any zoom, keeps the log to four floats,
+/// and — being a pure function of canvas position — satisfies the §6.4 seam invariant
+/// for free.
 ///
-/// Two variants, because two are built — the frame, and the §15.2 table's third row,
-/// the whole-plane backing ([`Everything`](Self::Everything), §15.5's "opaque
-/// underpainting"). This is still the seam where the `SelectionOp` algebra lands
-/// (§15.9, P4), bringing comic gutters, lasso mattes and frame-from-selection at once;
-/// per §1, no variant appears here before it does something.
+/// Two variants because two are built; §15.9 (P4) is where the `SelectionOp` algebra
+/// widens this to comic gutters, lasso mattes and frame-from-selection.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum MatteRegion {
     /// Everything *outside* this rect — the frame / mat board. In the layer's
@@ -494,14 +378,11 @@ pub enum MatteRegion {
 }
 
 impl MatteRegion {
-    /// The rect this region is defined against, in the layer's frame
-    /// (canvas-px units, §14.12) — for
-    /// [`OutsideRect`](Self::OutsideRect) the *hole*, the piece, which is what
-    /// export frames against (§15.6). `None` for a region that is not defined
-    /// against one: an [`Everything`](Self::Everything) matte frames nothing,
-    /// and every consumer of the rect (export, the aspect readout, the handle
-    /// box) has a real answer for that — fall back or stand down — rather than
-    /// a made-up rectangle.
+    /// The rect this region is defined against, in the layer's frame (canvas-px
+    /// units, §14.12) — for [`OutsideRect`](Self::OutsideRect) the *hole*, the piece,
+    /// which is what export frames against (§15.6). `None` for a region not defined
+    /// against one: an [`Everything`](Self::Everything) matte frames nothing, and
+    /// every consumer of the rect has a real answer for that.
     pub fn rect(&self) -> Option<(Vec2, Vec2)> {
         match self {
             Self::OutsideRect { min, max } => Some((*min, *max)),
@@ -512,16 +393,12 @@ impl MatteRegion {
     /// Whether this region may be applied at all: its rect, if it has one, is
     /// measurable. Deterministic, so peers and replays agree about rejection —
     /// exactly [`TransformMap::usable`](super::transform::TransformMap::usable)'s
-    /// contract, and here for its reason.
+    /// contract.
     ///
-    /// **Refused rather than clamped**, which is the whole of why this is a
-    /// predicate and not a `sanitized`. A frame is a rectangle the artist placed;
-    /// there is no other rectangle that is a repaired version of one nobody can
-    /// measure, and rounding it to the origin would silently reframe the piece —
-    /// the export rect, the aspect readout and the handle box all read this. The
-    /// same argument §16.1 makes for an unusable affine, which is also why the
-    /// matte's *paint* is sanitized where its *geometry* is gated: a color out of
-    /// range has an obvious nearest legal value and a rect does not.
+    /// **Refused rather than clamped**, which is why this is a predicate and not a
+    /// `sanitized`: there is no repaired version of a rectangle nobody can measure,
+    /// and rounding it to the origin would silently reframe the piece, which the
+    /// export rect, the aspect readout and the handle box all read (§16.1).
     pub fn usable(&self) -> bool {
         match self {
             Self::OutsideRect { min, max } => min.is_finite() && max.is_finite(),
@@ -542,10 +419,8 @@ impl MatteRegion {
     }
 
     /// The same region shifted whole by `by` (§14.12): what places a frame-stated
-    /// rect on the canvas, and — negated — a canvas-space gesture into the frame
-    /// at the mint, [`Parcel::translated`](super::Parcel::translated)'s pair.
-    /// [`Everything`](Self::Everything) has no position and rides through, the
-    /// reading that same pair gives a solid.
+    /// rect on the canvas, and — negated — a canvas-space gesture into the frame at
+    /// the mint. [`Everything`](Self::Everything) has no position and rides through.
     #[must_use]
     pub fn translated(&self, by: Vec2) -> Self {
         match self {
@@ -564,10 +439,8 @@ mod tests {
 
     /// A variant is identified by its **name**, not its position — so [`Place`] may
     /// gain a case anywhere, and a saved `MoveLayer` still means the move it meant
-    /// (§8).
-    ///
-    /// `Old` is the hazard made concrete: the same three cases in a different order,
-    /// written by a build that declared them that way. It must read back exactly.
+    /// (§8). `Old` is the hazard made concrete: the same three cases in a different
+    /// order, which must read back exactly.
     #[test]
     fn a_place_is_read_by_variant_name_not_position() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]
@@ -590,11 +463,8 @@ mod tests {
     }
 
     /// The same for [`BlendMode`], where the stakes are a picture: a mode read as the
-    /// wrong one recomposites every layer that used it.
-    ///
-    /// `Drago` is the sharp case: it carries a payload and sits in the middle of the
-    /// declaration order, so here it is written from the far end of the enum and must
-    /// still arrive as itself, bend and all.
+    /// wrong one recomposites every layer that used it. `Drago` is the sharp case —
+    /// it carries a payload, and must arrive as itself, bend and all.
     #[test]
     fn a_mode_is_read_by_variant_name_bend_and_all() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]
@@ -671,9 +541,6 @@ mod tests {
     /// picture: a frame read as [`Everything`](MatteRegion::Everything) floods the
     /// canvas with the mat board's paint, and an [`Everything`](MatteRegion::Everything)
     /// read as a frame stands a backing where none was placed (§15.5).
-    ///
-    /// The rect variant is written from the far end of the declaration and must
-    /// still arrive as itself, both corners and all.
     #[test]
     fn a_matte_region_is_read_by_variant_name_not_position() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]

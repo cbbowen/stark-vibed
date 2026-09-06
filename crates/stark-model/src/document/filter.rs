@@ -1,45 +1,30 @@
 //! Filter layers (§21): a layer whose content is a **function of what is
-//! composited beneath it** rather than paint of its own.
+//! composited beneath it** rather than paint of its own. Making it a layer is what
+//! buys visibility, opacity, ordering, naming, removal, undo, save, replay and
+//! collaboration for free — as with the matte (§15.3).
 //!
-//! A paint layer adds light to the stack and a matte covers it; a filter *rewrites*
-//! it. That is one more thing a layer can be, and — as with the matte (§15.3) —
-//! making it a layer is what buys visibility, opacity, ordering, naming, removal,
-//! undo, save, replay and collaboration without a single new concept.
+//! Two consequences of sitting in the stack. **A filter reaches exactly as far as its
+//! own stack**: it reads the accumulator that stack has built, so at the root it
+//! filters the whole painting and inside a group it filters that group, which makes
+//! "filter just this layer" that layer carrying the filter — the gesture §14.4 spends
+//! on clipping. The `clip` a filter layer *does* take (§21.4.1) bounds what the pass
+//! may write, never what it reads. **Layer opacity is filter strength**: the result is
+//! mixed against the untouched backdrop by it, so a zero-opacity filter is the
+//! identity (§21.4).
 //!
-//! Two properties fall out of the stack rather than being designed, and both are
-//! worth knowing before reading [`Filter`]:
-//!
-//! - **A filter reaches exactly as far as its own stack.** It reads the accumulator
-//!   its stack has built so far, so at the root it filters the whole painting and
-//!   inside a group it filters that group — which means "filter just this layer" is
-//!   that layer carrying the filter, the same single gesture §14.4 spends on
-//!   clipping. There is no clip-to-layer-below mode to invent — and the `clip` a
-//!   filter layer *does* take (§21.4.1) is not one: it bounds what the pass may
-//!   write, never what it reads, so scope is still position and nothing else.
-//! - **Layer opacity is filter strength.** The pass mixes its result against the
-//!   untouched backdrop by the layer's opacity, so a half-opacity filter is half the
-//!   adjustment and a zero-opacity one is the identity — which is what fading a
-//!   layer already means everywhere else (§21.4).
-//!
-//! What a filter is *not* is a brush. Nothing here touches a tile: the whole of a
-//! filter's effect is one fullscreen pass at composite time, so it costs no GPU
-//! memory, is free to re-tune, and is undone by dropping one action.
+//! Nothing here touches a tile — a filter's whole effect is one fullscreen pass at
+//! composite time.
 
 use serde::{Deserialize, Serialize};
 
 use crate::sanitize::finite_in;
 
-/// What a filter layer does to the stack beneath it (§21.2).
+/// What a filter layer does to the stack beneath it (§21.2), and the seam the rest of
+/// §21.7 lands on.
 ///
-/// Four variants, because four are built. The enum is the seam the rest of §21.7
-/// lands on — motion blur, outline, glow — and per this codebase's own precedent
-/// (§1) no variant appears here before it does something to a pixel. A new one may go
-/// wherever it reads best — a variant is matched by *name*, not by position, so
-/// inserting one does not disturb the filters in saved files (§8, `ActionKind`).
-///
-/// `Clone` rather than `Copy`, because a gradient map carries a stop list. A filter is
-/// still read once per render and once per projection, so the clones stay
-/// countable.
+/// A variant is matched by *name*, not by position, so a new kind may be inserted
+/// wherever it reads best without disturbing the filters in saved files (§8,
+/// `ActionKind`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Filter {
     /// Exposure, contrast, saturation and hue, applied in Oklab (§21.5).
@@ -47,11 +32,9 @@ pub enum Filter {
     /// The spectrum pulled apart across the picture — the lens's dispersion as the
     /// integral it is, not as three shifted copies (§21.10).
     Chromatic(ChromaticAberration),
-    /// The stack beneath repainted by its lightness: Oklab `L` indexes the ramp,
-    /// and the ramp's color is what the paint becomes (§21.11). `None` — no ramp
-    /// chosen yet — is the neutral, the same shape as a chromatic filter whose
-    /// spread has not left zero: a gradient map with *any* ramp is already an
-    /// edit, so the only setting a freshly added one may hold is none at all.
+    /// The stack beneath repainted by its lightness: Oklab `L` indexes the ramp, and
+    /// the ramp's color is what the paint becomes (§21.11). `None` — no ramp chosen
+    /// yet — is the neutral, since a gradient map with *any* ramp is already an edit.
     GradientMap(Option<crate::gradient::Gradient>),
     /// Everything beneath spread through a lens's circle of confusion — a true
     /// convolution of the light, not a Gaussian approximation of one (§21.12).
@@ -79,20 +62,12 @@ impl Filter {
     }
 
     /// Whether this filter reads **neighbouring** texels rather than only the one it
-    /// writes — the point/resampling split §21.3.1 draws, as a value rather than as
-    /// prose.
+    /// writes — the point/resampling split §21.3.1 draws.
     ///
-    /// It is asked by the merge (§14.11.7), and what it decides there is not a
-    /// preference but a law: every pass that writes tiles must be a pure function of
-    /// canvas position (§6.4), because that is what makes a tile's apron
-    /// bit-identical to its neighbour's interior without a copy pass. A point filter
-    /// is such a function; a gather over tiles is not, at any apron width, since its
-    /// reach is the document's to set. So a filter that resamples cannot be baked
-    /// into the paint beneath it, and this is where that is said once.
-    ///
-    /// An exhaustive match rather than a default, so a new kind has to answer the
-    /// question — a resampling kind that inherited "no" would merge to a seam at
-    /// every tile boundary, which is the one failure the apron exists to rule out.
+    /// The merge (§14.11.7) asks it, and the answer is a law rather than a preference:
+    /// every pass that writes tiles must be a pure function of canvas position (§6.4),
+    /// which a gather over tiles is not at any apron width. So a filter that resamples
+    /// cannot be baked into the paint beneath it.
     pub fn resamples(&self) -> bool {
         match self {
             Filter::Color(_) | Filter::GradientMap(_) => false,
@@ -106,18 +81,14 @@ impl Filter {
     pub fn is_neutral(&self) -> bool {
         match self {
             Filter::Color(c) => *c == ColorAdjust::NEUTRAL,
-            // The spread alone: at zero spread every wavelength lands where it
-            // started, whatever the angle points at — so an angle dialled before
-            // the spread is not an edit yet, and the draw list rightly spends
-            // nothing on it.
+            // The spread alone: at zero no wavelength moves, whatever the angle
+            // points at.
             Filter::Chromatic(c) => c.spread == 0.0,
-            // No ramp, no map. There is no "identity ramp" to compare against —
-            // even black-to-white repaints every color with its greyscale — so
-            // the absence is the one neutral this kind has.
+            // There is no identity ramp to compare against — even black-to-white
+            // repaints every color — so absence is this kind's only neutral.
             Filter::GradientMap(g) => g.is_none(),
-            // The radius alone, on the chromatic spread's argument: at zero no
-            // light moves, whatever aperture it would have moved through — so a
-            // shape picked before the radius is dialled is not an edit either.
+            // The radius alone: at zero no light moves, whatever aperture it would
+            // have moved through.
             Filter::FocalBlur(b) => b.radius == 0.0,
         }
     }
@@ -137,101 +108,66 @@ impl Filter {
     /// The same filter with every parameter finite and in range — the funnel every
     /// filter passes through on its way into the document.
     ///
-    /// Applied in two places, and both matter. Where the action is **minted**
-    /// (`Engine::process`), so the log records what was actually applied and replay
-    /// puts it back rather than re-deriving it. And where a filter **enters state**
-    /// (`DocState::set_filter` / `insert_filter`), because a loaded file or a
-    /// remote peer reaches state without ever passing through `process` —
-    /// idempotent for any log this engine wrote, and the only line of defence
-    /// against one it did not. The bounds matter more than they look: a `NaN`
-    /// saturation reaches a fullscreen pass and poisons every texel of the frame,
+    /// Applied where the action is minted (`Engine::process`) and again where a filter
+    /// enters state (`DocState::set_filter` / `insert_filter`), since a loaded file or
+    /// a remote peer reaches state without passing through `process`. Idempotent. A
+    /// `NaN` saturation reaching a fullscreen pass poisons every texel of the frame,
     /// and nothing downstream can notice.
     #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
             Filter::Color(c) => Filter::Color(c.sanitized()),
             Filter::Chromatic(c) => Filter::Chromatic(c.sanitized()),
-            // A `Gradient`'s structural invariants (two stops, ascending, finite) are
-            // held by construction — deserialization repairs into them (§22.1) —
-            // and its stops' *range* is held by `Srgb`. So this arm has nothing to do,
-            // and stays an arm rather than a catch-all: it is where a gradient map's
-            // knobs would go if it grew one, and the match is exhaustive for
-            // `sanitized`'s usual reason.
+            // A `Gradient` holds its structural invariants by construction (§22.1) and
+            // its stops' range by `Srgb`, so this arm has nothing to repair.
             Filter::GradientMap(g) => Filter::GradientMap(g),
             Filter::FocalBlur(b) => Filter::FocalBlur(b.sanitized()),
         }
     }
 }
 
-/// A color adjustment: the knobs that between them cover "make this read warmer /
-/// flatter / stronger" (§21.5).
-///
-/// All of them are applied in **Oklab**, which is the whole reason they are these
-/// and not the seven a levels dialog would offer: in a perceptual space, lightness,
-/// chroma and hue are separable, so moving one leaves the other two where they were.
-/// Saturation in sRGB shifts hue; contrast in sRGB shifts saturation. Here neither
-/// does, and that is what makes a slider mean one thing.
+/// A color adjustment, applied in **Oklab** (§21.5): in a perceptual space lightness,
+/// chroma and hue are separable, so moving one knob leaves the other two where they
+/// were.
 ///
 /// **Three of them are one gesture.** [`hue`](Self::hue),
-/// [`saturation`](Self::saturation) and [`tint`](Self::tint) are a rotation, a scale
-/// and a translation of the same `(a, b)` plane — between them the whole affine map
-/// `ab' = tint + saturation · R(hue) · ab` — which is why the panel shows them as one
-/// directed circle rather than as three tracks (§21.6). The order is fixed and it is
-/// the order they are listed in: rotate, scale, then translate. Nothing here depends
-/// on that being *presented* as a circle; the circle depends on it.
+/// [`saturation`](Self::saturation) and [`tint`](Self::tint) are one affine map of the
+/// `(a, b)` plane — `ab' = tint + saturation · R(hue) · ab` — applied in the order they
+/// are listed: rotate, scale, translate. The panel shows them as one directed circle
+/// (§21.6).
 ///
-/// [`NEUTRAL`](Self::NEUTRAL) is the identity, and it is the value a filter layer is
-/// created holding — a new filter changes nothing until it is dialled, which is what
-/// keeps "add a filter" from being a destructive act.
+/// [`NEUTRAL`](Self::NEUTRAL) is the identity, and the value a filter layer is created
+/// holding.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ColorAdjust {
-    /// Exposure, in **stops**: the light beneath is scaled by `2^exposure`, so `+1`
-    /// is twice the light and `-1` is half.
+    /// Exposure, in **stops**: the light beneath is scaled by `2^exposure`, so `+1` is
+    /// twice the light and `-1` is half.
     ///
-    /// Stops rather than a percentage because that is the unit the quantity is
-    /// linear in — a stop is the same change everywhere in the range, where "+20%
-    /// brightness" is a different change in the shadows than in the highlights. It
-    /// is applied to *light* (the same normalized XYZ the blend modes combine in,
-    /// §18.0.4) rather than to Oklab's `L`, because doubling light is what an
-    /// exposure is and cube-rooting it first would make the number mean nothing.
+    /// Applied to *light* (the normalized XYZ the blend modes combine in, §18.0.4)
+    /// rather than to Oklab's `L`, because doubling light is what an exposure is.
     pub exposure: f32,
-    /// Contrast: a gain on Oklab `L` about mid-grey. `1` is the identity, `0`
-    /// flattens the picture to mid-grey, `2` doubles the spread.
+    /// Contrast: a gain on Oklab `L` about mid-grey. `1` is the identity, `0` flattens
+    /// the picture to mid-grey, `2` doubles the spread.
     ///
-    /// About mid-grey rather than about the picture's own mean, which is the other
-    /// thing this could have meant: a pivot that depends on the image makes the
-    /// adjustment depend on what is underneath the filter, so moving a layer below
-    /// it would change what the slider does. See `stark-engine`'s `filters::CONTRAST_PIVOT`.
+    /// The pivot is fixed (`stark-engine`'s `filters::CONTRAST_PIVOT`) rather than the
+    /// picture's own mean, so what the slider does cannot depend on what is underneath.
     pub contrast: f32,
     /// Saturation: a gain on Oklab chroma — the distance of `(a, b)` from the
-    /// achromatic axis. `1` is the identity, `0` is a greyscale conversion that
-    /// keeps every lightness exactly where it was, and past `1` is a boost.
-    ///
-    /// A greyscale at `0` for free, and *correctly*: dropping chroma in Oklab is the
-    /// desaturation a luminance-weighted RGB average only approximates.
+    /// achromatic axis. `1` is the identity, `0` is a greyscale that keeps every
+    /// lightness exactly where it was, and past `1` is a boost.
     pub saturation: f32,
-    /// Hue rotation of the Oklab `(a, b)` plane, in **radians**, clockwise from
-    /// red toward yellow.
-    ///
-    /// Radians because that is the unit the engine states angles in
-    /// (`stark-engine`'s `ViewCommand::SetRotation`); the
-    /// frontend offers degrees, which is a way of *presenting* an angle.
+    /// Hue rotation of the Oklab `(a, b)` plane, in **radians**, clockwise from red
+    /// toward yellow. Radians is the unit the engine states angles in; degrees are a
+    /// frontend presentation.
     pub hue: f32,
     /// A color cast: `(a, b)` added to Oklab **after** the rotation and the chroma
     /// gain. `[0, 0]` is the identity.
     ///
-    /// Which makes it exactly **the color a grey becomes**: an achromatic texel
-    /// arrives at the origin of the `(a, b)` plane and nothing before this moves it,
-    /// so the pair is the chroma the whole picture is pushed toward. That is the one
-    /// thing the other three cannot do — a gain and a rotation both fix the
-    /// achromatic axis, so no setting of them tones a grey — and it is what makes
-    /// `saturation: 0` plus a tint a duotone rather than only a greyscale.
-    ///
-    /// Added last for the reason [the struct docs](Self) give, and stated as the
-    /// plane's own two axes rather than as a chroma and an angle, because that is
-    /// what the shader adds and what the panel drags: a polar spelling would need a
-    /// convention for the angle at zero chroma, and would be a second place for an
-    /// angle to disagree with [`hue`](Self::hue).
+    /// It is therefore exactly **the color a grey becomes** — the one thing the other
+    /// three cannot do, a gain and a rotation both fixing the achromatic axis — which
+    /// is what makes `saturation: 0` plus a tint a duotone rather than a greyscale.
+    /// Stated as the plane's own two axes rather than as a chroma and an angle, so
+    /// there is no second convention to disagree with [`hue`](Self::hue).
     pub tint: [f32; 2],
 }
 
@@ -246,33 +182,22 @@ impl ColorAdjust {
     };
 
     /// The widest each knob may be dialled — the range a frontend's slider spans and
-    /// the range [`sanitized`](Self::sanitized) holds a log entry to.
-    ///
-    /// Bounded at all because a fullscreen pass has no coverage to hide behind: a
-    /// value from a file or a peer reaches every texel of the frame, so the numbers
-    /// that reach the shader have to be numbers.
+    /// the range [`sanitized`](Self::sanitized) holds a log entry to. Bounded at all
+    /// because a fullscreen pass has no coverage to hide behind.
     pub const EXPOSURE: (f32, f32) = (-4.0, 4.0);
     pub const CONTRAST: (f32, f32) = (0.0, 2.0);
     pub const SATURATION: (f32, f32) = (0.0, 2.0);
     /// A full turn either way, so every rotation is reachable and none is reachable
     /// twice by more than a lap.
     pub const HUE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
-    /// Per component, on each axis of the `(a, b)` plane.
-    ///
-    /// `0.16` is about as far from the achromatic axis as the sRGB gamut itself
-    /// reaches at mid-grey, so it is the point at which a cast has stopped being a
-    /// cast and become a color: past it every texel in the picture is out of gamut
-    /// on the same side, and the pass returns a flat wash whatever was underneath.
-    /// A square bound rather than a disc for the reason the pair is Cartesian at all
-    /// — it is what the shader adds — and the corners it admits are reachable
-    /// settings rather than a region needing its own rule.
+    /// Per component, on each axis of the `(a, b)` plane. `0.16` is about as far from
+    /// the achromatic axis as the sRGB gamut itself reaches at mid-grey; past it every
+    /// texel is out of gamut on the same side and the pass returns a flat wash.
     pub const TINT: (f32, f32) = (-0.16, 0.16);
 
-    /// Every knob finite and in range — see [`Filter::sanitized`].
-    ///
-    /// A non-finite value falls back to the **neutral** setting for that knob rather
-    /// than to a bound: `NaN` says nothing about which end of the range was meant,
-    /// and the identity is the one answer that cannot make a picture worse.
+    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite value
+    /// falls back to that knob's **neutral** rather than to a bound: `NaN` says nothing
+    /// about which end of the range was meant.
     #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
@@ -281,7 +206,7 @@ impl ColorAdjust {
             saturation: finite_in(self.saturation, 1.0, Self::SATURATION),
             hue: finite_in(self.hue, 0.0, Self::HUE),
             // Per component, so one unusable axis of a cast does not throw away the
-            // other — the same reason each scalar knob falls back on its own.
+            // other.
             tint: [
                 finite_in(self.tint[0], 0.0, Self::TINT),
                 finite_in(self.tint[1], 0.0, Self::TINT),
@@ -297,35 +222,20 @@ impl Default for ColorAdjust {
 }
 
 /// Chromatic aberration: the lens's dispersion, as an **integral over the shifted
-/// spectrum** rather than the three shifted copies most applications draw (§21.10).
+/// spectrum** rather than three shifted copies (§21.10).
 ///
-/// Two numbers describe the whole effect because they describe the lens: how far
-/// the spectrum is pulled apart, and along which axis. Everything else — the
-/// asymmetric spread of the blue end, the rainbow ordering of the fringe, the fact
-/// that a flat field is untouched — is the physics, computed in the pass rather
-/// than parameterized.
-///
-/// Both are stated **in canvas terms** (canvas px, canvas angle): the fringes
-/// belong to the artwork, so they scale with a zoom and turn with a rotation the
-/// way the paint does. The trip into screen texels is the encoder's, per frame,
-/// through the view's own linear map.
+/// Two numbers, because they describe the lens: how far the spectrum is pulled apart,
+/// and along which axis. Both are stated **in canvas terms** (canvas px, canvas angle),
+/// so the fringes scale with a zoom and turn with a rotation the way the paint does.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ChromaticAberration {
-    /// How far the red end of the spectrum lands from the blue end, in **canvas
-    /// px** — the full width of the fringe an edge grows. `0` is the identity: no
-    /// wavelength moves, whatever the angle says.
-    ///
-    /// A distance rather than a unitless "amount" because that is what the knob
-    /// does to the picture, and because bounding it is what keeps the pass's tap
-    /// budget honest (§21.10).
+    /// How far the red end of the spectrum lands from the blue end, in **canvas px** —
+    /// the full width of the fringe an edge grows. `0` is the identity: no wavelength
+    /// moves, whatever the angle says.
     pub spread: f32,
-    /// The axis the spectrum spreads along, in **radians**, canvas space: the
-    /// direction the blue end is carried, with the red end opposite. The picture
-    /// itself stays put — the two ends part symmetrically around it.
-    ///
-    /// Radians because that is the unit the engine states angles in; the frontend
-    /// offers degrees, which is a way of *presenting* an angle (§21.5's own
-    /// argument for the hue knob).
+    /// The axis the spectrum spreads along, in **radians**, canvas space: the direction
+    /// the blue end is carried, with the red end opposite. The two ends part
+    /// symmetrically, so the picture itself stays put.
     pub angle: f32,
 }
 
@@ -336,21 +246,17 @@ impl ChromaticAberration {
         angle: 0.0,
     };
 
-    /// The widest each knob may be dialled — the range a frontend's slider spans
-    /// and the range [`sanitized`](Self::sanitized) holds a log entry to.
-    ///
-    /// The spread's ceiling is also a promise to the renderer: the pass buys taps
-    /// in proportion to the on-screen dispersion and caps them (§21.10), and this
-    /// bound is what keeps the cap out of reach at working zooms.
+    /// The widest each knob may be dialled — the range a frontend's slider spans and
+    /// the range [`sanitized`](Self::sanitized) holds a log entry to. The spread's
+    /// ceiling is also a promise to the renderer: it is what keeps the pass's capped
+    /// tap budget out of reach at working zooms (§21.10).
     pub const SPREAD: (f32, f32) = (0.0, 128.0);
     /// A full turn either way, so every axis is reachable and none is reachable
     /// twice by more than a lap.
     pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
 
-    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite
-    /// value falls back to the **neutral** setting for that knob, for
-    /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
-    /// the range was meant, and the identity cannot make a picture worse.
+    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite value
+    /// falls back to that knob's **neutral**, for [`ColorAdjust::sanitized`]'s reason.
     #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
@@ -368,76 +274,46 @@ impl Default for ChromaticAberration {
 
 /// The aperture's **shape**: what one point of light becomes (§21.12).
 ///
-/// The convolution is shape-blind by construction — everything after the kernel's
-/// one compute pass multiplies transforms, whatever they are transforms *of* — so a
-/// shape costs a signed distance in `make_kernel` and nothing else. What this enum
-/// spends its judgement on is therefore not which shapes are affordable but which
-/// ones a lens actually makes.
-///
-/// **A variant is a mechanism, not a look.** Each is the continuous family one piece
-/// of a lens sweeps out — the iris closing onto its blades, the secondary mirror
-/// growing across the middle, the anamorphic element squeezing — so the named looks
-/// (hexagonal bokeh, the mirror lens's doughnut, the cat's eye) are *settings* here
-/// rather than entries. That is what keeps three variants from being the six a list
-/// of looks would have needed, and it is why every one of them carries a knob.
+/// **A variant is a mechanism, not a look.** Each is the continuous family one piece of
+/// a lens sweeps out — the iris closing onto its blades, the secondary mirror growing
+/// across the middle, the anamorphic element squeezing — so the named looks (hexagonal
+/// bokeh, the mirror lens's doughnut, the cat's eye) are *settings* here rather than
+/// entries, and every variant carries a knob.
 ///
 /// **Every variant is contained in the disc of the blur's radius**, and that is a
-/// contract rather than an aesthetic: the FFT pads its planes by the radius on each
-/// side so the circular convolution's wrap-around lands in zeros (§21.12), and a
-/// shape reaching past it would carry one edge of the picture onto the other. So the
-/// radius is each shape's *circumradius* — a polygon's vertices and an oval's long
-/// axis both land on it — which is also what makes the shapes comparable: at one
-/// radius they are one bokeh, stopped down differently.
-///
-/// Each variant carries the parameters its geometry can hold and no others, which is
-/// the representation ruling out a class rather than a check remembering to (§1):
-/// [`Disc`](Self::Disc) is rotationally symmetric however it is obstructed, so there
-/// is no turned disc to express and no arm anywhere that has to ignore an angle.
+/// contract: the FFT pads its planes by the radius on each side so the circular
+/// convolution's wrap-around lands in zeros (§21.12), and a shape reaching past it would
+/// carry one edge of the picture onto the other. The radius is therefore each shape's
+/// *circumradius* — a polygon's vertices and an oval's long axis both land on it.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum Aperture {
     /// A circular aperture, with as much of its middle as one likes taken out of it:
     /// the lens wide open at `obstruction` 0, and a catadioptric — mirror — lens's
     /// doughnut as it grows.
-    ///
-    /// **One variant, because it is one lens.** A mirror lens's aperture is not a
-    /// different shape from a plain one; it is a plain one with the secondary
-    /// mirror's shadow across the middle, and the family between them is continuous.
-    /// Splitting it in two would put a seam in the middle of a knob and give the
-    /// enum two spellings of the setting where they meet — the same argument
-    /// [`Blades`](Self::Blades) makes for putting one n-gon behind three named
-    /// polygons.
     Disc {
         /// The central shadow's share of the radius, held to
-        /// [`OBSTRUCTION`](Aperture::OBSTRUCTION). `0` is the plain disc, and the
-        /// neutral: it is what every file written before the aperture existed meant
-        /// by saying nothing.
+        /// [`OBSTRUCTION`](Aperture::OBSTRUCTION). `0` is the plain disc and the
+        /// neutral — what a file written before the aperture existed meant by saying
+        /// nothing.
         ///
-        /// The ceiling is the renderer's as much as the eye's: past it the rim is
-        /// thin enough that decimating the convolution (§21.12) would sample it
-        /// rather than resolve it, and the bound is what keeps that trade honest for
-        /// the one setting of the one shape that has a thin part.
+        /// The ceiling is the renderer's: past it the rim is thin enough that
+        /// decimating the convolution (§21.12) would sample it rather than resolve it.
         obstruction: f32,
     },
     /// The iris stopped down onto its blades — a regular polygon of `count` sides,
-    /// turned by `angle`.
-    ///
-    /// One n-gon behind pentagon, hexagon and octagon, which is what a 5-, 6- and
-    /// 8-bladed iris each make: the unification §20 makes of 1-, 2- and 3-point
-    /// perspective, for the same reason — named cases differing in one number are
-    /// one case with the number exposed.
+    /// turned by `angle`. One n-gon behind pentagon, hexagon and octagon, as §20 puts
+    /// one camera behind 1-, 2- and 3-point perspective.
     Blades {
-        /// How many blades, held to [`BLADES`](Aperture::BLADES). Below three there
-        /// is no polygon, and much past a dozen there is no telling one from the
+        /// How many blades, held to [`BLADES`](Aperture::BLADES). Below three there is
+        /// no polygon, and much past a dozen there is no telling one from the
         /// [`Disc`](Self::Disc) that is already a variant.
         count: u32,
         /// The iris's turn, in radians and **canvas space** — the frame
-        /// [`ChromaticAberration::angle`] is stated in, for the same reason (§6.4):
-        /// the bokeh belongs to the artwork, so the polygon turns when the canvas is
-        /// turned. The renderer makes the trip per frame.
+        /// [`ChromaticAberration::angle`] is stated in, and for the same reason (§6.4).
         ///
         /// A polygon's own symmetry makes this periodic in `2π/count`, but the range
-        /// spans a full turn like every other angle here: it is the hand's range,
-        /// not the shape's.
+        /// spans a full turn like every other angle here: it is the hand's range, not
+        /// the shape's.
         angle: f32,
     },
     /// The oval an anamorphic lens makes: a cylindrical front element squeezes the
@@ -445,9 +321,9 @@ pub enum Aperture {
     /// with it.
     Oval {
         /// The long axis's length over the short one's, held to
-        /// [`SQUEEZE`](Aperture::SQUEEZE) — `2` is the anamorphic cinema means when
-        /// it says the word. The long axis is the radius, so squeezing narrows the
-        /// oval rather than growing it.
+        /// [`SQUEEZE`](Aperture::SQUEEZE) — `2` is what anamorphic cinema means by the
+        /// word. The long axis is the radius, so squeezing narrows the oval rather than
+        /// growing it.
         squeeze: f32,
         /// The long axis's direction, in radians and **canvas space** — see
         /// [`Blades`](Self::Blades)'s own turn.
@@ -461,33 +337,22 @@ impl Aperture {
     /// radius the blur can be dialled to.
     pub const BLADES: (u32, u32) = (3, 12);
 
-    /// How far a shape that has a direction may be turned — a whole turn, stated
-    /// here rather than borrowed from [`ChromaticAberration::ANGLE`]: that the two
-    /// agree is a fact about angles, not a coupling between two filters that would
-    /// then have to be kept.
+    /// How far a shape that has a direction may be turned: a whole turn.
     pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
 
     /// The central obstruction's range — see [`Aperture::Disc`].
     pub const OBSTRUCTION: (f32, f32) = (0.0, 0.9);
 
-    /// The anamorphic squeeze's range — see [`Aperture::Oval`].
-    ///
-    /// The floor is `1` — the round oval — rather than anything below it, because
-    /// a squeeze under 1 is the *same* set of ovals turned a quarter turn, and one
-    /// shape with two spellings is what an angle beside a ratio is for.
+    /// The anamorphic squeeze's range — see [`Aperture::Oval`]. The floor is `1`, the
+    /// round oval, because a squeeze under 1 is the *same* set of ovals turned a
+    /// quarter turn.
     pub const SQUEEZE: (f32, f32) = (1.0, 4.0);
 
     /// Every shape this build offers, at the setting it is *given* when picked — the
-    /// list the bar's run of buttons is built from, in the order it should offer
-    /// them: the disc first because it is the neutral and what a lens does when
-    /// nothing is stopping it down, then the two ways of departing from it.
-    ///
-    /// The numbers are defaults, not fudge constants: unobstructed is the plain
-    /// lens, six blades is the commonest iris, and 2× is the anamorphic squeeze.
-    /// The mirror lens is a *setting* of the first rather than a fourth entry here,
-    /// which is the one thing this list gives up by merging the two: the doughnut is
-    /// a knob away rather than a click away, and the knob's own words are where it
-    /// is now advertised.
+    /// list the bar's run of buttons is built from, in order: the disc first, being the
+    /// neutral, then the two ways of departing from it. The numbers are defaults, not
+    /// fudge constants — the plain lens, the commonest six-bladed iris, the 2×
+    /// anamorphic squeeze.
     pub const ALL: [Aperture; 3] = [
         Aperture::Disc { obstruction: 0.0 },
         Aperture::Blades {
@@ -500,11 +365,8 @@ impl Aperture {
         },
     ];
 
-    /// What this shape is called, in the bar and in the layer row.
-    ///
-    /// The name of the **family**, not of the setting: an obstructed disc is still
-    /// on the "Disc" chip, because a chip whose word changed under the knob beside
-    /// it would stop being the thing that says which of the three is lit.
+    /// What this shape is called, in the bar and in the layer row: the name of the
+    /// **family**, not of the setting — an obstructed disc is still "Disc".
     pub fn label(&self) -> &'static str {
         match self {
             Aperture::Disc { .. } => "Disc",
@@ -520,30 +382,24 @@ impl Aperture {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 
-    /// Every parameter finite and in range — see [`Filter::sanitized`]. A non-finite
-    /// value lands on the knob's own identity for [`ColorAdjust::sanitized`]'s
-    /// reason: `NaN` says nothing about which end was meant.
+    /// Every parameter finite and in range — see [`Filter::sanitized`]; a non-finite
+    /// value lands on the knob's own identity.
     ///
-    /// **The shape itself survives** whatever its numbers do. A variant is a choice
-    /// rather than a measurement, so there is no unusable value to read it off — a
-    /// `NaN` squeeze is a broken oval, not a request for a disc — and repairing the
-    /// one number is the whole of the repair.
+    /// **The shape itself survives** whatever its numbers do: a `NaN` squeeze is a
+    /// broken oval, not a request for a disc.
     #[must_use]
     pub fn sanitized(self) -> Self {
         match self {
             Aperture::Disc { obstruction } => Aperture::Disc {
                 obstruction: finite_in(obstruction, 0.0, Self::OBSTRUCTION),
             },
-            // A count is an integer, so it has no `NaN` to fall back from and the
-            // clamp is the whole of it: a zero-bladed iris out of a log this engine
-            // did not write becomes the triangle that is the fewest a polygon has.
+            // A count has no `NaN` to fall back from, so the clamp is the whole repair.
             Aperture::Blades { count, angle } => Aperture::Blades {
                 count: count.clamp(Self::BLADES.0, Self::BLADES.1),
                 angle: finite_in(angle, 0.0, Self::ANGLE),
             },
             Aperture::Oval { squeeze, angle } => Aperture::Oval {
-                // A `NaN` squeeze falls back to `1` — the un-squeezed oval — exactly
-                // as a `NaN` contrast falls back to the gain that changes nothing.
+                // `1` is the un-squeezed oval — this knob's own identity.
                 squeeze: finite_in(squeeze, 1.0, Self::SQUEEZE),
                 angle: finite_in(angle, 0.0, Self::ANGLE),
             },
@@ -554,34 +410,25 @@ impl Aperture {
 impl Default for Aperture {
     /// The unobstructed disc — what a file written before the aperture existed means
     /// by saying nothing (see [`FocalBlur::aperture`]).
-    ///
-    /// Written out rather than derived: `#[derive(Default)]` can only mark a *unit*
-    /// variant, and the disc stopped being one when the mirror lens joined it.
     fn default() -> Self {
         Aperture::Disc { obstruction: 0.0 }
     }
 }
 
-/// Focal blur: everything beneath spread through a lens's **circle of confusion** —
-/// a true convolution of the light with the aperture's shape, computed by FFT, not a
+/// Focal blur: everything beneath spread through a lens's **circle of confusion** — a
+/// true convolution of the light with the aperture's shape, computed by FFT, not a
 /// Gaussian standing in for one (§21.12).
 ///
-/// A size and a shape. The size is stated **in canvas px** for the chromatic
-/// spread's reason (§21.10): the bokeh belongs to the artwork, so it scales with a
-/// zoom and holds its size in an export, and the trip into accumulator texels is the
-/// renderer's, per frame, through the view's own linear map.
+/// A size and a shape. The size is stated **in canvas px** for the chromatic spread's
+/// reason (§21.10): the bokeh belongs to the artwork, so it scales with a zoom and holds
+/// its size in an export.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct FocalBlur {
-    /// The radius of the circle of confusion, in **canvas px**. `0` is the
-    /// identity: no light moves.
+    /// The radius of the circle of confusion, in **canvas px**. `0` is the identity: no
+    /// light moves.
     ///
-    /// A radius rather than a diameter because that is what a lens formula hands
-    /// over, and a distance rather than a unitless "amount" because that is what
-    /// the knob does to the picture — and because bounding it is what keeps the
-    /// pass's padded FFT scratch honest (§21.12).
-    ///
-    /// It is also every [`Aperture`]'s circumradius, which is what lets the shape
-    /// change without the padding being recomputed — see there.
+    /// It is also every [`Aperture`]'s circumradius, which is what lets the shape change
+    /// without the FFT's padding being recomputed — see there.
     pub radius: f32,
     /// The shape the light is spread through. [`Aperture::Disc`] by default, which
     /// is what a file written before this field existed meant by saying nothing.
@@ -596,18 +443,14 @@ impl FocalBlur {
         aperture: Aperture::Disc { obstruction: 0.0 },
     };
 
-    /// The widest the radius may be dialled — the range a frontend's slider spans
-    /// and the range [`sanitized`](Self::sanitized) holds a log entry to.
-    ///
-    /// The ceiling is also a promise to the renderer, as the chromatic `SPREAD`'s
-    /// is: the FFT pads its scratch by the on-screen radius (§21.12), and this
-    /// bound is what keeps that padding affordable at working zooms.
+    /// The widest the radius may be dialled — the range a frontend's slider spans and
+    /// the range [`sanitized`](Self::sanitized) holds a log entry to. The ceiling is
+    /// also a promise to the renderer: the FFT pads its scratch by the on-screen radius
+    /// (§21.12), and this bound is what keeps that padding affordable at working zooms.
     pub const RADIUS: (f32, f32) = (0.0, 128.0);
 
-    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite
-    /// value falls back to the **neutral** setting, for
-    /// [`ColorAdjust::sanitized`]'s reason: `NaN` says nothing about which end of
-    /// the range was meant, and the identity cannot make a picture worse.
+    /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite value
+    /// falls back to that knob's **neutral**, for [`ColorAdjust::sanitized`]'s reason.
     #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
@@ -627,10 +470,8 @@ impl Default for FocalBlur {
 mod tests {
     use super::*;
 
-    /// A filter arriving from a file or a peer reaches **every texel** of the frame,
-    /// so the one thing that must not survive the way in is a value that is not a
-    /// number. A `NaN` here would come back as a white or black frame with nothing
-    /// able to say why.
+    /// A filter arriving from a file or a peer reaches **every texel** of the frame, so
+    /// a value that is not a number must not survive the way in.
     #[test]
     fn sanitizing_replaces_the_unusable_with_the_identity() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -650,13 +491,9 @@ mod tests {
                 wild.sanitized(),
                 Filter::Chromatic(ChromaticAberration::NEUTRAL),
             );
-            // The blur is the one kind whose settings are not all numbers, and the
-            // shape survives what its numbers do not: a `NaN` squeeze says nothing
-            // about which aperture was chosen, so the fallback is per knob — the
-            // radius to 0, the squeeze to the 1 that is its own identity — and the
-            // variant stays. Which is also invisible either way, an oval at squeeze
-            // 1 being a disc; the reason to prefer it is that it is the smaller
-            // repair, not that it looks different.
+            // The shape survives what its numbers do not: the fallback is per knob —
+            // the radius to 0, the squeeze to the 1 that is its own identity — and the
+            // variant stays.
             let wild = Filter::FocalBlur(FocalBlur {
                 radius: bad,
                 aperture: Aperture::Oval {
@@ -784,12 +621,11 @@ mod tests {
                 },
             }),
         );
-        // **The squeeze floor is the containment contract**, not a matter of taste:
-        // the long axis is the radius the renderer padded its planes by, so a
-        // squeeze below 1 would put the *other* axis outside that padding and wrap
-        // one edge of the picture onto the other (§21.12). The shader floors it too,
-        // which is what makes the guarantee structural — this pins that a log never
-        // asks it to.
+        // **The squeeze floor is the containment contract**: the long axis is the
+        // radius the renderer padded its planes by, so a squeeze below 1 would put the
+        // *other* axis outside that padding and wrap one edge of the picture onto the
+        // other (§21.12). The shader floors it too; this pins that a log never asks it
+        // to.
         let stretched = Filter::FocalBlur(FocalBlur {
             radius: 4.0,
             aperture: Aperture::Oval {
@@ -809,10 +645,8 @@ mod tests {
         );
     }
 
-    /// Zero spread is the identity **whatever the angle says** — at spread 0 no
-    /// wavelength moves, so an angle dialled first is not yet an edit and the draw
-    /// list must be free to drop the pass (§21.3's "neutral is dropped" rule,
-    /// which anything less would quietly break for one knob ordering).
+    /// Zero spread is the identity **whatever the angle says**, so the draw list stays
+    /// free to drop the pass (§21.3's "neutral is dropped" rule).
     #[test]
     fn an_unspread_chromatic_filter_is_neutral_at_any_angle() {
         let aimed = Filter::Chromatic(ChromaticAberration {
@@ -828,13 +662,7 @@ mod tests {
     }
 
     /// A radius-0 blur is the identity **whatever aperture it is set to** — the
-    /// chromatic filter's rule above, arrived at from the other direction: at zero
-    /// radius no light moves, so the shape is not an edit yet and the draw list
-    /// must still be free to drop the pass.
-    ///
-    /// Worth its own test because the aperture is the first thing a focal blur
-    /// holds besides its radius, and "is this filter neutral?" is exactly the
-    /// question a new field is most likely to be added to by reflex.
+    /// chromatic filter's rule above, from the other direction.
     #[test]
     fn an_unradiused_blur_is_neutral_at_any_aperture() {
         for aperture in Aperture::ALL {
@@ -854,13 +682,10 @@ mod tests {
         }
     }
 
-    /// A gradient map's stops are inside the cube **before the sanitizer sees
-    /// them**, which is what the newtype bought.
-    ///
-    /// A stop's color is an [`Srgb`](crate::Srgb), and there is no way to build one
-    /// outside the cube — so what is left to check is that the *ramp* survives being
-    /// given hot values (the clamp must not turn two stops into a degenerate one) and
-    /// that the sanitizer is the identity on it.
+    /// A gradient map's stops are inside the cube **before the sanitizer sees them** —
+    /// a stop's color is an [`Srgb`](crate::Srgb), and there is no way to build one
+    /// outside it. What is left to check is that the ramp survives hot values without
+    /// degenerating, and that the sanitizer is the identity on it.
     #[test]
     fn a_gradient_maps_stops_are_bounded_before_it_is_sanitized() {
         use crate::Srgb;
@@ -903,14 +728,10 @@ mod tests {
         }
     }
 
-    /// A [`Filter`] is read by variant **name**, not position (§8) — so the picker
-    /// may gain a kind anywhere in [`Filter::ALL`] and a saved filter layer still
-    /// means the adjustment it meant.
-    ///
-    /// `Old` is the hazard made concrete: the same four cases in a different order,
-    /// written by a build that declared them that way. Every one must read back with
-    /// its payload intact — a filter read as the wrong kind repaints every layer
-    /// beneath it.
+    /// A [`Filter`] is read by variant **name**, not position (§8), so the picker may
+    /// gain a kind anywhere in [`Filter::ALL`] and a saved filter layer still means the
+    /// adjustment it meant. `Old` is the same four cases in a different order, and every
+    /// one must read back with its payload intact.
     #[test]
     fn a_filter_is_read_by_variant_name_not_position() {
         use crate::Srgb;
@@ -967,11 +788,10 @@ mod tests {
         assert_eq!(read(&Old::FocalBlur(blur)), Filter::FocalBlur(blur));
     }
 
-    /// The same for [`Aperture`], and it is the sharpest case in the log: three
-    /// payload-bearing variants, no unit among them, reached through a
-    /// `#[serde(default)]` field — so a file written before the aperture existed and
-    /// one written after take **different paths** through the same reconciliation,
-    /// and both are checked here.
+    /// The same for [`Aperture`], the sharpest case in the log: three payload-bearing
+    /// variants reached through a `#[serde(default)]` field, so a file written before
+    /// the aperture existed and one written after take **different paths** through the
+    /// same reconciliation. Both are checked here.
     #[test]
     fn an_aperture_is_read_by_variant_name_and_an_older_blur_reads_the_bare_disc() {
         #[derive(Serialize, Deserialize, carbonite::Schema)]

@@ -7,12 +7,9 @@
 //! reproducible across runs and peers — required by golden tests (§9) and
 //! convergence (§12).
 //!
-//! Oklab transform after Björn Ottosson.
-//!
-//! One further piece of the same shader library lives here for the same reason: the
-//! light space `linear_to_light`/`light_to_linear` state (§18.0.4). The dispersion
-//! spectrum that used to sit beside it is in `stark-engine`'s `dispersion`, because
-//! it reads the shader mirror (§6.10) and this crate compiles without the shaders.
+//! Oklab transform after Björn Ottosson. The light space
+//! ([`linear_to_light`]/[`light_to_linear`], §18.0.4) is part of the same shader
+//! library and is here for the same reason.
 
 use std::ops::Deref;
 
@@ -20,41 +17,24 @@ use serde::{Deserialize, Serialize};
 
 /// A straight (un-premultiplied) **extended sRGB** color: the sRGB primaries and
 /// transfer, continued past the cube — CSS Color 4's `srgb`, in which a value outside
-/// `[0, 1]` names a color outside the sRGB gamut (§6.5). The CPU boundary convention
-/// as a type rather than as a promise.
+/// `[0, 1]` names a color outside the sRGB gamut (§6.5) — **not** the cube.
 ///
 /// Every color the *document* carries is one of these: the substrate a painting sits
 /// on (§15.5), a matte's paint, a fill's parcel, a gradient stop.
 ///
-/// The only way to build one funnels ([`new`](Self::new)): every channel finite and
-/// within [`EXTENT`](Self::EXTENT) of zero. `Deserialize` runs the same funnel, so a
-/// `NaN` or an unbounded value cannot arrive from a file or a peer either — §1's
-/// preference for ruling out a class over enumerating its instances. **Not the cube:**
-/// it was, until wide-gamut paint (§6.5). A build from before reads the same bytes
-/// and clamps them — the same log, a narrower picture — which is why the widening
-/// bumped the wire (`stark-net::wire`).
+/// [`new`](Self::new) is the only way to build one and `Deserialize` runs the same
+/// funnel, so every channel is finite and within [`EXTENT`](Self::EXTENT) of zero —
+/// a `NaN` or an unbounded value cannot arrive from a file or a peer either. `Deref`
+/// exposes the array's read API; there is no `DerefMut` and the field is private, so
+/// the projection is out and never in.
 ///
-/// # Why it derefs
+/// The wire shape is `[f32; 3]` in both directions and under the same field names, so
+/// a document written before the type existed reads back into it, funnelled on the
+/// way (§8).
 ///
-/// Reading goes straight through to the array, so `c[0]`, `c.iter()` and `c.map(..)`
-/// keep working and the sites that only *read* a color did not have to change. There
-/// is no `DerefMut` and the field is private, so the projection is out and never in —
-/// the constructor stays the only door.
-///
-/// # What is deliberately not one
-///
-/// [`PaintEffect::color`](crate::document::PaintEffect::color) stays a bare
-/// `[f32; 3]`. The frontend writes it a component at a time — a channel slider
-/// assigns `color[1]` — so a wrapper there would need setters that re-clamp, which is
-/// the *other* design (a value you may mutate carefully) rather than this one (a value
-/// that cannot be built wrong). A brush has a funnel of its own in
-/// `BrushParams::sanitized`.
-///
-/// # The wire
-///
-/// `[f32; 3]`, in both directions and under the same field names, so this is not a
-/// format change — a document written before the type existed reads back into it,
-/// funnelled on the way (§8).
+/// [`PaintEffect::color`](crate::document::PaintEffect::color) is deliberately not
+/// one: the frontend assigns it a channel at a time, so it is funnelled by
+/// `BrushParams::sanitized` instead.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 #[serde(from = "[f32; 3]", into = "[f32; 3]")]
 #[carbonite(as = "[f32; 3]")]
@@ -279,16 +259,12 @@ mod tests {
     use super::*;
 
     /// **A color that is not finite and bounded cannot arrive from a file or a
-    /// peer**, which is the half of [`Srgb`]'s claim that a constructor alone does
-    /// not make.
+    /// peer** — the half of [`Srgb`]'s claim a constructor alone does not make, so it
+    /// is asked of the *bytes*.
     ///
-    /// Asked of the *bytes*, because that is the only place it can still be asked: a
-    /// hostile `Parcel::Solid` or `GradientStop` is no longer a value anyone can
-    /// build. What a document carries is `[f32; 3]`, and this is that column decoded.
-    ///
-    /// The `NaN` channel is the one that matters — it is the value `f32::clamp` would
-    /// pass through to a shader as a NaN texel. A wide-gamut value passes as it is:
-    /// the cube is no longer the bound (§6.5).
+    /// The `NaN` channel is the one that matters: it is the value `f32::clamp` would
+    /// pass through to a shader as a NaN texel. A wide-gamut value passes as it is,
+    /// since the cube is not the bound (§6.5).
     #[test]
     fn a_color_from_the_wire_is_finite_and_bounded() {
         let wire = |c: [f32; 3]| {

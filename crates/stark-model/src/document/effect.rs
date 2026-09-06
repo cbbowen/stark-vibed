@@ -1,19 +1,13 @@
 //! **Which actions in a log are effective** — the undo algebra (§12.3).
 //!
-//! The third of the three facts the model owns about a log, beside *that* it folds
-//! ([`fold`](super::fold)) and *which actions commute*
-//! ([`footprint`](super::footprint)). Not a line of it names a `DocState`, an
-//! `ApplyCtx`, a tile or a renderer — it is `Action`, `ActionId` and `ActorId` and
-//! nothing else, so which actions are effective is answerable without naming an
-//! engine type at all (§2), and the property this most wants tested (random
-//! `(actor, lamport, kind)` logs with undo, redo and late arrival, asserting that
-//! splicing agrees with rewind-and-replay) needs no GPU.
-//!
-//! # The rules
-//!
 //! An `Undo` is an ordinary logged action naming its target, so undo survives a
 //! reload and replicates like anything else. What it *means* is resolved here rather
 //! than in the fold: undo needs the whole log, not just the prior state.
+//!
+//! The third of the three facts the model owns about a log, beside *that* it folds
+//! ([`fold`](super::fold)) and *which actions commute*
+//! ([`footprint`](super::footprint)). It names `Action`, `ActionId` and `ActorId` and
+//! nothing else, so effectiveness is answerable without an engine type (§2).
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,10 +24,9 @@ pub fn undo_target_of(action: &Action) -> Option<ActionId> {
 /// The set of action ids suppressed by *effective* `Undo` actions in `log`
 /// (which must be sorted by [`ActionId`], the total order).
 ///
-/// One descending pass suffices: an `Undo` always has a larger id than its
-/// target (its author had seen the target, so its Lamport clock is larger), so
-/// by the time we reach an action we already know whether it is undone. An
-/// `Undo` that is itself undone (a redo happened) contributes nothing.
+/// An `Undo` always has a larger id than its target — its author had seen the
+/// target, so its Lamport clock is larger — and one that is itself undone (a redo
+/// happened) contributes nothing.
 pub fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
     let mut undone = HashSet::new();
     for action in log.iter().rev() {
@@ -50,12 +43,10 @@ pub fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
 /// (which must be sorted by id): the id of the latest effective redo (an
 /// `Undo` of an `Undo`) that revived it.
 ///
-/// This is what implements *redo-at-top* (§12.3): a redone action
-/// re-materializes at the redo's own slot — the top of the stack as of the
-/// redo — rather than its original position. For the redoing client that makes
-/// redo a plain append; peers converge because the key is a pure function of
-/// the shared log. The semantic trade is deliberate: a redone stroke lands
-/// *over* work that happened while it was undone, not under it.
+/// This is *redo-at-top* (§12.3): a redone action re-materializes at the redo's
+/// own slot rather than its original position, so a redone stroke lands *over*
+/// work that happened while it was undone. The key is a pure function of the
+/// shared log, so peers converge on the same order.
 fn revival_keys(log: &[Action], undone: &HashSet<ActionId>) -> HashMap<ActionId, ActionId> {
     let by_id = |id: ActionId| {
         let pos = log.partition_point(|a| a.id < id);
@@ -87,9 +78,8 @@ fn revival_keys(log: &[Action], undone: &HashSet<ActionId>) -> HashMap<ActionId,
 /// own id — or, once a redo has revived it, by the reviving redo's id
 /// ([`revival_keys`]).
 ///
-/// Takes `undone` rather than deriving it, because every caller wants it for
-/// something else too — the target resolution below, or its own filtering — and
-/// the set is a whole pass over the log.
+/// Takes `undone` rather than deriving it: the set is a whole pass over the log,
+/// and every caller wants it for something else too.
 pub fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usize> {
     let keys = revival_keys(log, undone);
     let mut indices: Vec<usize> = log
@@ -105,17 +95,13 @@ pub fn effective_indices(log: &[Action], undone: &HashSet<ActionId>) -> Vec<usiz
     indices
 }
 
-/// The **effective sequence** of a shared action log (§12.3): the
-/// actions that actually shape the document — every non-`Undo` action that no
-/// effective `Undo` suppresses — in materialization order (total order by id,
-/// except that a redone action sits at its reviving redo's slot, see
-/// [`revival_keys`]). This is what gets materialized (and what a solo load
-/// replays); the `Undo` actions themselves are resolved here and never reach
+/// The **effective sequence** of a shared action log (§12.3): every non-`Undo`
+/// action that no effective `Undo` suppresses, in materialization order
+/// ([`effective_indices`]). This is what gets materialized, and what a solo load
+/// replays; the `Undo` actions themselves are resolved here and never reach
 /// [`Materialize::fold`](super::Materialize::fold).
 ///
-/// Sorts a copy of `log` by id first, so callers may pass a file's action list
-/// as-is (solo logs are already ordered; shared saves are written in total
-/// order, but files are external input).
+/// Sorts a copy of `log` by id first, so a file's action list may be passed as-is.
 pub fn effective_actions(log: &[Action]) -> Vec<Action> {
     effective_actions_owned(log.to_vec())
 }
@@ -123,10 +109,9 @@ pub fn effective_actions(log: &[Action]) -> Vec<Action> {
 /// [`effective_actions`] for a caller that owns the log: the survivors are *moved*
 /// out of it rather than copied.
 ///
-/// Worth the second entry point because an action is not a small value — a
+/// Worth a second entry point because an action is not a small value: a
 /// `CommitStroke` owns its control points, so a long document's log is tens of
-/// megabytes, and the borrowing form copies all of it twice on a target where a
-/// `usize` is 32 bits.
+/// megabytes and the borrowing form copies all of it twice.
 pub fn effective_actions_owned(mut log: Vec<Action>) -> Vec<Action> {
     log.sort_by_key(|a| a.id);
     let undone = undone_ids(&log);
@@ -183,10 +168,9 @@ pub(crate) fn undo_target(
 /// recent than `latest_ordinary`, so a fresh edit "clears" the redo stack,
 /// matching single-user expectations.
 ///
-/// `latest_ordinary` is [`undo_target`]'s own answer, passed in rather than
-/// recomputed: the action a local undo would take is exactly the one an edit has
-/// to be newer than to count as clearing the stack, and the two spelling that
-/// predicate separately is two places for it to drift.
+/// Pass [`undo_target`]'s own answer as `latest_ordinary`: the action a local undo
+/// would take is exactly the one an edit has to be newer than to count as clearing
+/// the stack.
 pub(crate) fn redo_target(
     log: &[Action],
     actor: ActorId,

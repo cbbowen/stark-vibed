@@ -1,19 +1,15 @@
 //! What a document's pixels depend on besides its log (§6.6, §6.4).
 //!
-//! A stroke names the shape it stamps with, a `SetSubstrate` names the substrate it moves
-//! onto, and a `PlaceImage` names the picture it lands — all three by content id.
-//! None of them is in the log — the log carries the *name* — so anything that
-//! replays a log has first to answer "what does this need, and have I got it?".
+//! A stroke names the shape it stamps with, a `SetSubstrate` the substrate it moves
+//! onto, a `PlaceImage` the picture it lands — all three by content id, with the bytes
+//! outside the log. So anything replaying a log must first ask "what does this need,
+//! and have I got it?", whether it is loading a file, joining a session or receiving a
+//! peer's action. This module is the one answer for all three.
 //!
-//! That question is asked from three places — loading a file, joining a session, and
-//! receiving a peer's action — and it is the same question each time. So the answer
-//! lives here, beside the engine's two stores, rather than three times over in
-//! whichever crate asked first.
-//!
-//! The three kinds are one hash and travel one way; they part only at the far end,
-//! where a brush mask decodes as luminance × alpha, a substrate as channel 0, and a
-//! picture as all four channels kept. So a receiver has to be *told* which it is
-//! being handed, and the thing that knows is the action that referenced it.
+//! The three kinds are one hash and travel one way, parting only at decode — a brush
+//! mask as luminance × alpha, a substrate as channel 0, a picture as all four channels
+//! kept — so a receiver has to be *told* which it is being handed, and the action that
+//! referenced it is what knows.
 
 use crate::AssetId;
 use crate::SubstrateId;
@@ -40,32 +36,28 @@ pub enum AssetNeed {
     /// A brush shape a stroke stamps with.
     Brush(AssetId),
     /// The canvas substrate a `SetSubstrate` moves the document onto — named by the
-    /// [`AssetId`] inside its [`SubstrateId`], the only kind of substrate there is
-    /// bytes to move for.
+    /// [`AssetId`] inside its [`SubstrateId`], the only kind there are bytes to move
+    /// for.
     ///
-    /// Missing it is worse than missing a brush: an unresolved shape degrades to
-    /// the round tip and the stroke is still visibly a stroke, whereas an
-    /// unresolved substrate silently drops the deposition tooth (§6.4) and bakes a
-    /// smooth deposit into tiles that no later arrival un-bakes.
+    /// Missing it is worse than missing a brush: an unresolved shape degrades to the
+    /// round tip, whereas an unresolved substrate silently drops the deposition tooth
+    /// (§6.4) and bakes a smooth deposit into tiles no later arrival un-bakes.
     Substrate(AssetId),
     /// A picture a `PlaceImage` lands as paint (§23).
     ///
-    /// Missing it is the substrate's case rather than the brush's, and for a sharper
-    /// reason than either: a brush degrades to the round tip and a substrate to a wrong
-    /// deposit, but a picture has no degraded form at all — a placement without its
-    /// pixels is an empty layer, which is not a worse version of the action, it is the
-    /// absence of it. So a picture is never given up on (`stark-net`'s `content`).
+    /// A picture has no degraded form at all — a placement without its pixels is an
+    /// empty layer, not a worse version of the action — so `stark-net`'s `content`
+    /// never gives up on one.
     Picture(AssetId),
 }
 
 impl AssetNeed {
-    /// The need a document moving onto `substrate` creates — `None` for `Flat`,
-    /// which is procedural, has no bytes to move, and so is never waited on.
+    /// The need a document moving onto `substrate` creates — `None` for `Flat`, which
+    /// is procedural and so is never waited on.
     ///
-    /// This is the only place a substrate's `Flat` case is answered. Past it the need
-    /// carries an [`AssetId`], so every question about it — what it transfers
-    /// under, which store it belongs in, whether this peer holds it — has an
-    /// answer instead of an answer and a special case.
+    /// The only place that case is answered: past it a need always carries an
+    /// [`AssetId`], so every later question about it has an answer rather than an
+    /// answer and a special case.
     pub fn for_substrate(substrate: SubstrateId) -> Option<Self> {
         match substrate {
             SubstrateId::Flat => None,
@@ -90,16 +82,12 @@ impl AssetNeed {
     }
 }
 
-/// The content one action depends on, if any.
+/// The content one action depends on, if any — the single definition, so a new action
+/// kind cannot be taught to the loader and forgotten by the transport.
 ///
-/// The single definition of "what does this action need", so a new action kind
-/// that references content cannot be taught to the loader and forgotten by the
-/// transport.
-///
-/// **Exhaustive, with no `_` arm.** A wildcard would answer "nothing" for every
-/// variant that does not exist yet, so an action added later carrying an id would
-/// save a document that silently fails to bundle it. Adding a variant stops this
-/// function compiling instead.
+/// **Exhaustive, with no `_` arm**: a wildcard would answer "nothing" for an action
+/// added later carrying an id, which would then save a document that silently fails to
+/// bundle it.
 pub fn action_content(action: &Action) -> Option<AssetNeed> {
     match &action.kind {
         ActionKind::CommitStroke(rec) => match rec.brush.shape {
@@ -124,8 +112,7 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         | ActionKind::SetMatteRect(..)
         | ActionKind::SetMattePaint(..)
         | ActionKind::SetSubstrateColor(_)
-        // The *substrate* names content; the scale it is laid at is a number, and lands
-        // here beside the rest of the log's plain numbers.
+        // The *substrate* names content; the scale it is laid at is only a number.
         | ActionKind::SetSubstrateScale(_)
         | ActionKind::Select(_)
         | ActionKind::InvertSelection
@@ -137,9 +124,8 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
         // Offsets and a cut: geometry and ids, nothing that travels beside the log.
         | ActionKind::TranslateLayers { .. }
         | ActionKind::FloatSelection { .. }
-        // A guide is geometry all the way down — a camera and a lattice — so it
-        // names nothing that has to travel beside the log (§20.5). It is the one
-        // document entity with no content at all.
+        // A guide is geometry all the way down — a camera and a lattice — so it names
+        // nothing that travels beside the log (§20.5).
         | ActionKind::AddGuide { .. }
         | ActionKind::RemoveGuide(_)
         | ActionKind::SetGuide(..)
@@ -149,32 +135,25 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
     }
 }
 
-/// The content one presence frame depends on, if any — [`action_content`]'s twin
-/// for the half of the wire that is not the log (§17.5): a live stroke's head
-/// frame carries the full brush, so it names the shape the eventual commit will.
-/// Only head/resync frames name it — a delta frame extends the path of a head
-/// already seen.
+/// The content one presence frame depends on, if any — [`action_content`]'s twin for
+/// the half of the wire that is not the log (§17.5). Only head and resync frames name
+/// a shape; a delta frame extends the path of a head already seen.
 ///
-/// **Exhaustive, with no `_` arm**, for [`action_content`]'s reason: a wildcard
-/// would answer "nothing" for a gesture added later carrying an id, whose
-/// preview would then silently degrade. Adding a variant stops this function
-/// compiling instead.
+/// **Exhaustive, with no `_` arm**, for [`action_content`]'s reason.
 pub fn presence_content(frame: &PeerFrame) -> Option<AssetNeed> {
     match frame.gesture.as_ref()? {
         GestureFrame::Stroke { head, .. } => match head.as_deref()?.brush.shape {
             BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
             BrushShape::Round { .. } => None,
         },
-        // Geometry and paint carried whole — nothing that travels beside the
-        // log, matching their committed twins above.
+        // Geometry and paint carried whole, matching their committed twins above.
         GestureFrame::Selection { .. } | GestureFrame::Fill { .. } => None,
     }
 }
 
 impl DocumentFile {
     /// Everything this document's log names, including the substrate it starts on —
-    /// which is named by the container rather than by any action, and would
-    /// otherwise be the one piece of content nothing asks for.
+    /// which the container names rather than any action.
     pub fn required_content(&self) -> Vec<AssetNeed> {
         let mut needs: Vec<AssetNeed> = self
             .actions
@@ -187,18 +166,17 @@ impl DocumentFile {
         needs
     }
 
-    /// What the log names that the file does not carry — the bill for a bundle
-    /// that was deliberately left incomplete (§8, §12.4).
+    /// What the log names that the file does not carry — the bill for an incomplete
+    /// bundle (§8, §12.4).
     ///
-    /// Whoever opens the document has to make this good *before* replaying it: a
+    /// Whoever opens the document must settle this *before* replaying it: a
     /// `SetSubstrate` whose height map is not registered when its strokes replay
     /// deposits them through the flat stand-in, and those pixels are stored (§6.4).
     ///
     /// **A need is answered only by its own store.** An [`AssetId`] is a *content*
-    /// hash, so one image imported as a stamp and placed as a picture carries one id
-    /// in two stores that cannot stand in for each other. Keying the bag by
-    /// [`AssetNeed`] — the id *plus* which store it belongs in — is what makes asking
-    /// the cross-store question impossible rather than merely wrong (§1).
+    /// hash, so one image imported as a stamp and placed as a picture is one id in two
+    /// stores that cannot stand in for each other — hence the bag is keyed by
+    /// [`AssetNeed`], the id plus its store.
     pub fn unbundled_content(&self) -> Vec<AssetNeed> {
         let held: std::collections::HashSet<AssetNeed> =
             self.content.iter().map(|(need, _)| *need).collect();
@@ -240,12 +218,11 @@ mod tests {
 
     /// **One content hash, three needs, and each answered only by its own.**
     ///
-    /// An [`AssetId`] is a *content* hash, so one image imported as a stamp, laid as a
-    /// substrate and placed as a picture carries **one id** filed three ways — and the
-    /// three decode differently (luminance × alpha, channel 0, all four channels
-    /// kept). A bundle answering "present" for any of them because the id was
-    /// somewhere would be short by two, nothing would refuse the replay, and every
-    /// stroke on that substrate would deposit through the flat stand-in (§6.4).
+    /// The same image imported as a stamp, laid as a substrate and placed as a picture
+    /// is one id filed three ways, and the three decode differently. A bundle
+    /// answering "present" for any of them would be short by two, nothing would refuse
+    /// the replay, and every stroke on that substrate would deposit through the flat
+    /// stand-in (§6.4).
     #[test]
     fn one_id_filed_three_ways_is_three_separate_needs() {
         let id = AssetId([7u8; 32]);
@@ -290,9 +267,8 @@ mod tests {
         assert!(d.unbundled_content().is_empty());
     }
 
-    /// `Flat` is procedural: it has no bytes to move, so it is never a need and never
-    /// waited on ([`AssetNeed::for_substrate`], the one place that case is
-    /// answered).
+    /// `Flat` is procedural: no bytes to move, so it is never a need
+    /// ([`AssetNeed::for_substrate`]).
     #[test]
     fn a_flat_substrate_is_never_owed() {
         let doc = DocumentFile::new(vec![act(ActionKind::SetSubstrate(SubstrateId::Flat))]);

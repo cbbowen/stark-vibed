@@ -1,28 +1,15 @@
 //! How an action meets a state (§5) — the shape of the fold, not the state.
 //!
-//! # Why this module exists
-//!
-//! The history crate materializes a log by folding [`Action`]s over a state, and it
-//! asks for that through `history::Action`. Both the trait and — after the split
-//! (§2) — the state are outside this crate: the trait is `history`'s, and the state
-//! is `stark-engine`'s `DocState`, a map of GPU tile handles that by definition
-//! cannot live here. An `impl history::Action for Action` naming `DocState` is
-//! therefore an impl of a foreign trait for a foreign type in one crate and of a
-//! foreign trait for a *local* type it cannot name in the other. Neither is legal.
-//!
-//! [`Logged<S>`] is the way through, and it is not a workaround. It is local to this
-//! crate, so the generic impl below is allowed; and what it makes explicit is exactly
-//! the division the split is about. **This crate owns the fact that a log folds, and
-//! which actions commute; the other crate owns what the fold produces.** An action
-//! knows what it means without knowing what a pixel is — which is the founding
-//! sentence of the whole design, now written as a trait bound.
-//!
-//! # Using it
+//! `history` folds a log through its own `history::Action` trait, and the state is
+//! `stark-engine`'s `DocState` — both foreign to this crate, so the impl cannot be
+//! written directly. [`Logged<S>`] is the local type that carries it, and the bound it
+//! introduces is the division itself: **this crate owns that a log folds and which
+//! actions commute; the other owns what the fold produces.**
 //!
 //! `stark-engine` implements [`Materialize`] for its `DocState` and stores a
-//! `history::History<Logged<DocState>>`. Nothing else changes: [`Footprint`] is
-//! still the centralizer, so undo still splices an action out past everything it
-//! commutes with (§12.6) rather than replaying the log after it.
+//! `history::History<Logged<DocState>>`. [`Footprint`] remains the centralizer, so
+//! undo splices an action out past everything it commutes with (§12.6) rather than
+//! replaying the log after it.
 
 use std::marker::PhantomData;
 
@@ -31,11 +18,9 @@ use super::footprint::{Footprint, compute_footprint};
 
 /// A state an action log can be folded into.
 ///
-/// The implementor decides what "applying" means — for `stark-engine` that is tiles
-/// rasterized on the GPU; for a test or a future headless consumer it could be far
-/// less. What this crate insists on is only the shape: folding is total (an action
-/// that cannot be honoured leaves the state alone, §4), and cloning is cheap enough
-/// that history can keep snapshots of it (§5.1).
+/// The implementor decides what "applying" means. What this crate insists on is the
+/// shape: folding is total — an action that cannot be honoured leaves the state alone
+/// (§4) — and cloning is cheap enough that history can keep snapshots (§5.1).
 pub trait Materialize: Clone {
     /// Whatever applying needs and the state does not carry — renderers, a device,
     /// an asset store. `()` for a consumer that needs nothing.
@@ -43,88 +28,59 @@ pub trait Materialize: Clone {
 
     /// Apply `action`, producing the next state.
     ///
-    /// Returns a state rather than a `Result` on purpose: an action that cannot be
-    /// honoured — a stroke on a missing layer, a transform that exceeds the tile
-    /// caps — is **declined deterministically** by returning the state unchanged
-    /// (§4). Every peer declines it identically, which is what makes refusal a fact
-    /// about the log rather than about one client's luck.
+    /// A state rather than a `Result`: an action that cannot be honoured — a stroke on
+    /// a missing layer, a transform past the tile caps — is **declined
+    /// deterministically** by returning the state unchanged (§4), so every peer
+    /// declines it identically.
     fn fold(self, action: &Action, ctx: &mut Self::Ctx) -> Self;
 
     /// Restore what `action` changed, given the state as it stood before it.
     ///
-    /// The default clones the whole previous state, which is always correct. An
-    /// implementor that can restore only the part its footprint names makes history
-    /// surgery cheaper (§12.6) without changing what it means.
-    ///
-    /// **`footprint` is handed in rather than derived**, and it is the one the
-    /// [`Logged`] already carries: an implementor that restores by write list is
-    /// asking exactly the question that cache answers, so passing it in both saves
-    /// the rederivation and takes away the call site's chance to disagree.
+    /// The default clones the whole previous state, which is always correct; an
+    /// implementor that restores only what its footprint names makes history surgery
+    /// cheaper (§12.6) without changing what it means. `footprint` is the one the
+    /// [`Logged`] already carries, so it cannot disagree with the one the fold claimed.
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &Self) {
         let _ = (action, footprint);
         self.clone_from(previous);
     }
 
-    /// Check, in debug builds only, that folding `action` changed nothing outside
-    /// what its [`Footprint`] declared — the rule §12.6 opens with, asked of every
-    /// fold rather than of a table.
+    /// Check, in debug builds only, that folding `action` changed nothing outside what
+    /// its [`Footprint`] declared (§12.6) — the one rule here nothing structural
+    /// holds, since the compiler cannot say a footprint is the one its `apply` arm
+    /// honours.
     ///
-    /// **The rule is the one thing here that nothing structural holds.** The
-    /// exhaustive matches over `ActionKind` say every action *has* a footprint; none
-    /// of them says the footprint is the one its `apply` arm honours, and the compiler
-    /// cannot: the two are a walk of the tree and a list of resources.
-    /// `stark-engine/tests/footprint.rs` asks it of a hand-driven vocabulary, which is
-    /// a sample; this asks it of every action every test in the workspace folds.
+    /// A no-op by default, and free by default: the caller clones the previous state
+    /// only when an implementor has something to compare. Debug-only because the
+    /// comparison walks the layer tree per action, and a violation is a bug in this
+    /// crate's tables rather than a state a shipped build should survive.
     ///
-    /// A no-op by default, and by default it also costs nothing: the caller only
-    /// clones the previous state when an implementor has something to compare.
-    ///
-    /// Debug-only because the comparison is a walk of the layer tree per action, and
-    /// because a violation is a bug in *this* crate's tables rather than a state a
-    /// shipped build should try to survive.
-    ///
-    /// **The gate is on the call, not on this declaration**, so the trait has one
-    /// shape in every profile. Gated here, its members would depend on
-    /// `debug_assertions` at the definition, and a `[profile.*.package.stark-model]`
-    /// override — or any split reaching one side of the crate boundary and not the
-    /// other — would report itself as "`audit` is not a member of trait
-    /// `Materialize`" from a line nobody edited. An implementor is free to gate *its*
-    /// override; `DocState` does.
+    /// **The gate is on the call, not on this declaration**, so the trait has one shape
+    /// in every profile — a `[profile.*.package.stark-model]` override would otherwise
+    /// make `audit` vanish from the trait on one side of the crate boundary. An
+    /// implementor may gate *its* override; `DocState` does.
     fn audit(_before: &Self, _after: &Self, _action: &Action, _footprint: &Footprint) {}
 
-    /// Whether [`audit`](Self::audit) has anything to say — and so whether the fold
-    /// should keep the previous state to hand it.
-    ///
-    /// `false` by default so the clone is not paid for a no-op audit. `DocState`'s
-    /// clone is a handful of `Arc` bumps (§5.1), which is what makes turning it on
-    /// affordable there.
+    /// Whether [`audit`](Self::audit) has anything to say, and so whether the fold
+    /// keeps the previous state to hand it. `false` by default, so a no-op audit costs
+    /// no clone.
     const AUDITED: bool = false;
 }
 
 /// An [`Action`] paired with the state it is to be folded into — the local type that
-/// carries the `history::Action` impl.
-///
-/// Transparent in every way that matters: [`Deref`](std::ops::Deref) gives the action
-/// straight back. Its first job is to be *this crate's* type, so the impl below can be
-/// written at all. Its second is to be the **one door onto the history**, which is
-/// what lets the two things below happen once per action rather than once per question
-/// asked about it.
-///
-/// # What the door does
+/// carries the `history::Action` impl, and the **one door onto the history**.
+/// [`Deref`](std::ops::Deref) gives the action straight back.
 ///
 /// **It sanitizes** ([`ActionKind::sanitized`](super::ActionKind::sanitized)). Every
 /// action reaching a state comes through here — a local commit, a replay from a file,
-/// a peer's action merged into the replicated log — the "enters state" half of the
+/// a peer's action merged into the replicated log: the "enters state" half of the
 /// funnel §21.5 describes, with `Engine::commit` the "is minted" half. Peers still
-/// converge because sanitizing is a pure, idempotent function of the action.
+/// converge, sanitizing being a pure idempotent function of the action.
 ///
-/// **It computes the footprint once.** `history` builds a centralizer once per removal
-/// and then asks it about *each* later action (`History::try_remove_action_with`), so
-/// deriving the other action's footprint per comparison makes an undo across a
-/// `TransformWarp` quadratic in the log — each comparison a fresh fine-lattice solve
-/// (`WarpMap::image_aabb`, 57×57 nodes at an 8×8 grid) for an answer that cannot
-/// change. A footprint is a pure function of an action, so held here it is paid once
-/// at push.
+/// **It computes the footprint once.** `history` asks one centralizer about every
+/// later action in the log, so rederiving per comparison would make an undo across a
+/// `TransformWarp` quadratic — each comparison a fresh 57×57 lattice solve for an
+/// answer that cannot change.
 #[derive(Clone, Debug)]
 pub struct Logged<S: Materialize> {
     action: Action,
@@ -140,11 +96,10 @@ impl<S: Materialize> Logged<S> {
             id: action.id,
             kind: action.kind.sanitized(),
         };
-        // After sanitizing, deliberately: a footprint is a claim about what the
-        // fold will touch, and the fold sees the sanitized action. Built from the
-        // raw one it could claim a box the run never writes — harmless — or, where
-        // a clamp pulls a value *down*, disagree with the pass in the direction
-        // §12.6 cannot survive.
+        // After sanitizing: a footprint claims what the fold will touch, and the
+        // fold sees the sanitized action. Built from the raw one, a clamp that
+        // pulls a value down would leave the claim disagreeing with the pass in
+        // the direction §12.6 cannot survive.
         let footprint = compute_footprint(&action);
         Self {
             action,
@@ -188,8 +143,8 @@ impl<S: Materialize> history::Action for Logged<S> {
     type Error = std::convert::Infallible;
 
     fn apply(&self, state: S, ctx: &mut S::Ctx) -> Result<S, Self::Error> {
-        // Kept only where the implementor audits, so a state that does not is folded
-        // exactly as it was before this existed (see [`Materialize::audit`]).
+        // Kept only where the implementor audits, so a state that does not pays no
+        // clone (see [`Materialize::audit`]).
         #[cfg(debug_assertions)]
         let before = S::AUDITED.then(|| state.clone());
         let after = state.fold(&self.action, ctx);

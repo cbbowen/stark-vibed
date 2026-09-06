@@ -1,25 +1,19 @@
 //! Gradients: a color ramp fitted from a line traced through the painting (§22).
 //!
-//! A gradient here is a small list of positioned color stops, interpolated in
-//! **Oklab** so a ramp between two colors passes through the colors an artist
-//! would mix on the way (§1.6). Stops store straight sRGB — the same convention
-//! as every other color on a CPU boundary (`PaintEffect::color`, §6.5) — and
-//! convert to Oklab only to interpolate, so a stop round-trips through the
+//! A gradient is a small list of positioned color stops, interpolated in **Oklab** so a
+//! ramp between two colors passes through the colors an artist would mix on the way
+//! (§1.6). Stops store straight sRGB — the convention for every color on a CPU boundary
+//! (§6.5) — and convert to Oklab only to interpolate, so a stop round-trips through the
 //! picker and the library unchanged.
 //!
-//! The type exists to be *captured*, not authored point by point: the artist
-//! traces a line through paint they have already mixed, the engine samples
-//! colors along it (`stark-engine`'s `Engine::pick_gradient`,
-//! §22.2), and [`fit`] reduces those samples to the fewest stops that still
-//! reproduce the ramp within a perceptual tolerance. Placing and color-picking
-//! control points by hand remains possible in principle — a `Gradient` is just
-//! stops — but the trace is the front door.
+//! The type is made to be *captured* rather than authored point by point: the artist
+//! traces a line through paint they have already mixed, the engine samples colors along
+//! it (`stark-engine`'s `Engine::pick_gradient`, §22.2), and [`fit`] reduces those
+//! samples to the fewest stops that still reproduce the ramp within a perceptual
+//! tolerance.
 //!
-//! Nothing in here touches the document: a gradient library is something the
-//! artist paints *with*, like brush presets, so it lives with the frontend
-//! (§22.3). The type sits in core because the capture pipeline's fitting is
-//! engine work, and because a position-varying `FillOp` will embed it when the
-//! gradient fill lands at the seam §18.0.4 names.
+//! Nothing in here touches the document: a gradient library is something the artist
+//! paints *with*, like brush presets, so it lives with the frontend (§22.3).
 
 use crate::Srgb;
 use crate::color::{oklab_to_srgb, srgb_to_oklab};
@@ -40,27 +34,24 @@ pub struct GradientStop {
 
 /// A color ramp: at least two stops, positions ascending, endpoints at 0 and 1.
 ///
-/// The invariants are held by construction on both doors, which answer a list that
-/// names no ramp differently and deliberately:
+/// The invariants are held by construction on both doors, which answer a list that names
+/// no ramp differently and deliberately:
 ///
-/// - [`new`](Self::new) **refuses**. The authoring path: a caller who traced a line
-///   needs to hear that the samples describe one (§22.2).
-/// - `Deserialize`/`Schema` **repair**, through `From<Vec<GradientStop>>`. A refusal
-///   here would take the whole document with it — a ramp sits inside a `Parcel`, a
-///   `Filter::GradientMap` and a [`FillOp`](crate::document::FillOp)'s parcel, where it
-///   would be refused *before* that op's own clamp could run — and §19 admits only two
-///   refusals on the load path, neither of them a malformed ramp.
+/// - [`new`](Self::new) **refuses**. The authoring path: a caller who traced a line needs
+///   to hear that the samples describe one (§22.2).
+/// - `Deserialize`/`Schema` **repair**, through `From<Vec<GradientStop>>`. A refusal here
+///   would take the whole document with it — a ramp sits inside a `Parcel`, a
+///   `Filter::GradientMap` and a [`FillOp`](crate::document::FillOp)'s parcel — and §19
+///   admits no such refusal on the load path.
 ///
-/// So a condition added here — monotonic lightness, say — can only arrive as a repair,
-/// since refusing it would retroactively unload files that were valid when saved.
-/// [`MAX_STOPS`] is the one added so far, which is why it thins rather than refuses,
-/// on both doors alike.
+/// So a condition added here can only arrive as a repair: refusing one would
+/// retroactively unload files that were valid when saved. [`MAX_STOPS`] is the one added
+/// so far, which is why it thins rather than refuses, on both doors alike.
 ///
-/// The stop list is the wire shape in both directions: `carbonite(as)` states the
-/// schema as `Vec<GradientStop>`, so nothing drives the conversion to find out what the
-/// type looks like (§8). Being infallible, it also leaves `carbonite::compat`'s probe a
-/// verdict to give about every type a ramp sits inside — the probe writes one-element
-/// sequences, and a funnel that refused one returned no answer for `Action` either.
+/// The stop list is the wire shape in both directions (`carbonite(as)`, §8), and being
+/// infallible it leaves `carbonite::compat`'s probe a verdict to give about every type a
+/// ramp sits inside — the probe writes one-element sequences, and a funnel that refused
+/// one returned no answer for `Action` either.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, carbonite::Schema)]
 #[serde(from = "Vec<GradientStop>", into = "Vec<GradientStop>")]
 #[carbonite(as = "Vec<GradientStop>")]
@@ -69,23 +60,16 @@ pub struct Gradient {
 }
 
 impl Gradient {
-    /// Build a gradient from stops, normalizing to the invariants: sorted by
-    /// `t`, at most [`MAX_STOPS`] of them, positions rescaled so the first sits
-    /// at 0 and the last at 1. `None` if fewer than two stops arrive, if a
-    /// position is non-finite, or if every stop sits at one position (there is
-    /// no ramp to rescale).
+    /// Build a gradient from stops, normalizing to the invariants: sorted by `t`, at
+    /// most [`MAX_STOPS`] of them, positions rescaled so the first sits at 0 and the
+    /// last at 1. `None` if fewer than two stops arrive, if a position is non-finite, or
+    /// if every stop sits at one position. Only the positions are checked — an [`Srgb`]
+    /// is finite and bounded by construction.
     ///
-    /// **Only the positions are checked**, because only the positions can be wrong:
-    /// an [`Srgb`] is finite and bounded by construction.
-    ///
-    /// **The authoring door, and it refuses**: a caller that traced a line expecting a
-    /// ramp needs to hear "these samples do not describe one" (§22.2). A file carrying
-    /// the same list is repaired instead — see [`Gradient`].
-    ///
-    /// **Except for the count, which is thinned rather than refused.** Every other
-    /// condition here is about a list that names no ramp at all; a long list names one
-    /// perfectly well and simply names more of it than a uniform can hold, so refusing
-    /// would unload a file over something this can answer.
+    /// **The authoring door, and it refuses** (§22.2); a file carrying the same list is
+    /// repaired instead — see [`Gradient`]. The count is the exception, thinned rather
+    /// than refused: a long list names a ramp perfectly well, and simply names more of
+    /// it than a uniform can hold.
     pub fn new(mut stops: Vec<GradientStop>) -> Option<Self> {
         if stops.len() < 2 {
             return None;
@@ -158,11 +142,9 @@ impl Gradient {
 
     /// The same ramp run the other way: `reversed().sample(t) == sample(1 - t)`.
     ///
-    /// A captured gradient runs in whatever direction the hand traced, which is
-    /// no direction at all until a consumer gives `t` a meaning — and the
-    /// gradient map (§21.11) gives it one, dark at 0. Reversing is the one-click
-    /// answer to a trace made the other way; without it the fix is re-tracing
-    /// the same line backwards.
+    /// A captured gradient runs in whatever direction the hand traced, which is no
+    /// direction at all until a consumer gives `t` a meaning — and the gradient map
+    /// (§21.11) gives it one, dark at 0.
     pub fn reversed(&self) -> Self {
         let stops = self
             .stops
@@ -173,9 +155,8 @@ impl Gradient {
                 color: s.color,
             })
             .collect();
-        // Direct construction rather than `new`: reversing preserves every
-        // invariant (ascending order flips with the iteration, the endpoints
-        // swap), and the funnel's rescale would be a no-op it could not refuse.
+        // Direct construction rather than `new`: reversing preserves every invariant,
+        // so the funnel's rescale would be a no-op it could not refuse.
         Self { stops }
     }
 }
@@ -189,53 +170,44 @@ impl From<Gradient> for Vec<GradientStop> {
 /// The load path's door, and it repairs (§19): whatever a file, a peer or a stored
 /// library entry carries comes back as a ramp.
 ///
-/// The normalization is [`Gradient::new`]'s — same sort, same thinning, same rescale —
-/// so a ramp that arrives well-formed is the one `new` would have built, bit for bit.
-/// Only the three shapes `new` calls no ramp at all are answered here rather than
-/// refused.
+/// The normalization is [`Gradient::new`]'s, so a ramp that arrives well-formed is the
+/// one `new` would have built, bit for bit. Only the shapes `new` calls no ramp at all
+/// are answered here rather than refused.
 impl From<Vec<GradientStop>> for Gradient {
     fn from(mut stops: Vec<GradientStop>) -> Self {
         // A non-finite position names no place on the ramp, and any place chosen for it
-        // would be one the file did not write — so the stop goes, and what is left is
-        // repaired by the rules below.
+        // would be one the file did not write.
         stops.retain(|s| s.t.is_finite());
-        // The color a pile of stops at one position samples as (`sample` reads the
-        // earlier side of a hard edge), and the one thing a lone stop carries that
-        // black→white would discard.
+        // The color a pile of stops at one position samples as, and the one thing a lone
+        // stop carries that black→white would discard.
         let held = stops.first().map(|s| s.color);
         match (Gradient::new(stops), held) {
             (Some(g), _) => g,
             (None, Some(c)) => Self::ends(c, c),
-            // Nothing arrived, so there is nothing to preserve: black→white is the ramp
-            // that states no choice — the identity of the gradient map, dark at 0
-            // (§22.5).
+            // Nothing to preserve: black→white is the ramp that states no choice — the
+            // identity of the gradient map, dark at 0 (§22.5).
             (None, None) => Self::ends(Srgb::BLACK, Srgb::WHITE),
         }
     }
 }
 
-/// Reduce a sorted stop list to at most [`MAX_STOPS`], keeping both endpoints and
-/// spreading the rest evenly across the ramp — [`Gradient::new`]'s one repair.
+/// Reduce a sorted stop list to at most [`MAX_STOPS`], keeping both endpoints —
+/// [`Gradient::new`]'s one repair.
 ///
 /// **Evenly across the list, not across `t`.** A capture puts stops where the ramp
-/// *turns* ([`fit`]), so index spacing is already a rough measure of where the
-/// structure is; thinning by position instead would spend the budget on whichever
-/// stretch happened to be long. Keeping the ends is what makes this safe to run
-/// before the rescale below it: `lo` and `hi` are the same stops either way, so a
-/// thinned ramp still spans exactly the range the full one did.
+/// *turns* ([`fit`]), so index spacing already measures where the structure is, while
+/// thinning by position would spend the budget on whichever stretch happened to be long.
 ///
-/// Consecutive indices are strictly increasing whenever this runs at all
-/// (`len > MAX_STOPS` makes the step `(len - 1)/(MAX_STOPS - 1) > 1`), so no stop is
-/// picked twice and the result cannot collapse.
+/// Keeping the ends is what makes this safe to run before the rescale below it, and the
+/// picked indices are strictly increasing whenever this runs at all, so no stop is picked
+/// twice and the result cannot collapse.
 fn thin(stops: &mut Vec<GradientStop>) {
     let len = stops.len();
     if len <= MAX_STOPS {
         return;
     }
-    // Through `pick_index` for the reason the lasso's decimation is: `usize` is 32
-    // bits in the browser. Safe by size alone here — the product needs 286M stops to
-    // overflow — but there is no reason for the crate's two decimations to be spelled
-    // differently.
+    // Through `pick_index` because `usize` is 32 bits in the browser — safe by size
+    // alone here, but the crate's two decimations should not be spelled differently.
     *stops = (0..MAX_STOPS)
         .map(|i| stops[crate::geom::pick_index(i, len - 1, MAX_STOPS - 1)])
         .collect();
@@ -248,9 +220,9 @@ fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
 
 fn from_lab(lab: [f32; 3]) -> Srgb {
     let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
-    // A lerp between two stops can leave the sRGB cube (Oklab is wider), and that
-    // is **kept**: extended sRGB is what a color is (§6.5), so the excursion is a
-    // wide color rather than an error. The constructor holds only the bound.
+    // A lerp between two stops can leave the sRGB cube (Oklab is wider), and that is
+    // **kept**: extended sRGB is what a color is (§6.5), so the excursion is a wide
+    // color rather than an error.
     Srgb::new([s[0], s[1], s[2]])
 }
 
@@ -264,23 +236,19 @@ pub const SAMPLE_SPACING: f32 = 4.0;
 /// readback slot, so an unbounded trace would be an unbounded render.
 pub const MAX_SAMPLES: usize = 128;
 
-/// Largest stop count a [`Gradient`] may hold. Sixteen is far more structure than
-/// a hand places; past it [`fit`] lets the tolerance give rather than the list
-/// grow, and [`Gradient::new`] thins what arrives some other way.
+/// Largest stop count a [`Gradient`] may hold. Past it [`fit`] lets the tolerance give
+/// rather than the list grow, and [`Gradient::new`] thins what arrives some other way.
 ///
-/// **An invariant of the type, not a budget of the fitter**, and the difference is
-/// what a shader does with the number. Every consumer copies the stops into a fixed
-/// array of exactly this length — `fill.wesl`'s `stop_c`, `matte.wesl`'s `Ramp`,
-/// `filter_common.wesl`'s gradient map, each asserted equal to this constant
-/// host-side (§6.10) — so the constant, the shader and *the data* have to agree. A
-/// `const` assert can pin the first two but not the data, which is why the bound is
-/// in the constructor.
+/// **An invariant of the type, not a budget of the fitter.** Every consumer copies the
+/// stops into a fixed array of exactly this length — `fill.wesl`'s `stop_c`,
+/// `matte.wesl`'s `Ramp`, `filter_common.wesl`'s gradient map, each asserted equal to
+/// this constant host-side (§6.10) — so the constant, the shader and *the data* have to
+/// agree, and only the constructor can hold the data to it.
 pub const MAX_STOPS: usize = 16;
 
-/// The fitting tolerance: the largest Oklab distance allowed between the
-/// smoothed samples and the fitted ramp. Oklab's L spans `[0,1]`, where ~0.01
-/// is around a just-noticeable difference — so the fitted gradient is the
-/// traced one to the eye, with stops only where the ramp genuinely turns.
+/// The fitting tolerance: the largest Oklab distance allowed between the smoothed
+/// samples and the fitted ramp. Oklab's L spans `[0,1]`, where ~0.01 is around a
+/// just-noticeable difference.
 pub const FIT_TOLERANCE: f32 = 0.01;
 
 /// Resample a traced polyline evenly by arc length: `(t, position)` pairs with
@@ -319,27 +287,17 @@ pub fn resample(path: &[Vec2]) -> Vec<(f32, Vec2)> {
     out
 }
 
-/// Fit a gradient to colors sampled along a trace: `(t, straight sRGB)` pairs,
-/// `t` ascending. The mechanical half of the capture (§22.2) — the artist
-/// supplies the line, this supplies the control points.
+/// Fit a gradient to colors sampled along a trace: `(t, straight sRGB)` pairs, `t`
+/// ascending. The mechanical half of the capture (§22.2) — the artist supplies the line,
+/// this supplies the control points.
 ///
-/// Three stages, each with one job:
+/// The promise is the criterion: nowhere along the trace does the fitted ramp drift more
+/// than [`FIT_TOLERANCE`] from the paint, in at most [`MAX_STOPS`] stops. Paint grain and
+/// a lone outlier sample — the trace nicking a dark line — are smoothed away rather than
+/// given stops of their own.
 ///
-/// 1. **Median-of-3** per Oklab channel — a single outlier sample (the trace
-///    nicking a dark line or a stray bristle track) becomes a stop under any
-///    least-error criterion, and no artist means one sample of it.
-/// 2. **Box-3 smoothing** — the 5×5 patch average each sample already carries
-///    handles texel noise; this handles the sample-to-sample grain of paint
-///    itself, so the fitter chases the ramp and not the tooth.
-/// 3. **Greedy stop insertion** in Oklab: start with the endpoints, repeatedly
-///    add the sample farthest from the current piecewise-linear ramp, stop when
-///    the worst error drops under [`FIT_TOLERANCE`] or [`MAX_STOPS`] is
-///    reached. Farthest-point insertion rather than a corner detector because
-///    the criterion *is* the promise: nowhere along the trace does the fitted
-///    ramp drift a visible distance from the paint.
-///
-/// `None` when fewer than two samples arrive or the positions do not span —
-/// the same refusals as [`Gradient::new`], reached a step earlier.
+/// `None` when fewer than two samples arrive or the positions do not span — the same
+/// refusals as [`Gradient::new`], reached a step earlier.
 pub fn fit(samples: &[(f32, [f32; 3])]) -> Option<Gradient> {
     if samples.len() < 2 {
         return None;
@@ -492,11 +450,8 @@ mod tests {
     }
 
     /// What a stored ramp can smuggle past the funnel: nothing. What it can be refused
-    /// for: nothing either (§19).
-    ///
-    /// Driven through the *encoding*, since a stop list is exactly what a file carries
-    /// and that is the path the funnel exists for. The per-case repairs are asserted
-    /// below; this says the two things true of every case.
+    /// for: nothing either (§19). Driven through the *encoding*, which is the path the
+    /// funnel exists for; the per-case repairs are asserted below.
     #[test]
     fn deserialization_funnels_through_the_same_gate() {
         for stops in [
@@ -630,15 +585,12 @@ mod tests {
     }
 
     /// **A ramp can never be longer than the array every consumer reads it into.**
-    ///
     /// `fill.wesl`, `matte.wesl` and `filter_common.wesl` each hold exactly
-    /// [`MAX_STOPS`] lanes, and the hosts that fill them index by the stop's own
-    /// position — so one stop past the bound is an index off the end of a uniform,
-    /// which is a panic on two of those three paths.
+    /// [`MAX_STOPS`] lanes and the hosts index by the stop's own position, so one stop
+    /// past the bound is an index off the end of a uniform.
     ///
-    /// Thinned rather than refused, because a long list names a perfectly good ramp
-    /// (see [`Gradient`]) — so what is asserted is that the ramp *survives*, keeps its
-    /// ends, and stays a ramp.
+    /// Thinned rather than refused (see [`Gradient`]), so what is asserted is that the
+    /// ramp *survives*, keeps its ends, and stays a ramp.
     #[test]
     fn a_ramp_longer_than_the_uniform_is_thinned_rather_than_refused() {
         let long: Vec<GradientStop> = (0..=1000)

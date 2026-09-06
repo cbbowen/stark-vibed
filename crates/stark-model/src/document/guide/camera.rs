@@ -3,15 +3,9 @@
 //!
 //! Everything here is a pure function of [`PerspectiveGuide`]'s own fields — a ray
 //! through a screen point, an axis's vanishing trace, the fan of lines a pencil
-//! rules, the packed [`GuideScene`] the overlay pass reads. That is exactly §20.5's
-//! argument for keeping guides whole on this side of the crate boundary: nothing
-//! derived from a camera needs a pixel, so the derivations belong beside the fact
-//! rather than in the engine.
-//!
-//! It is a *file* of its own for the ordinary reason. The fact and its derivations
-//! are two things to read, and together they were the largest module in the crate by
-//! half again. Nothing crosses a crate boundary and nothing became public that was
-//! not; `document`'s re-export list is untouched.
+//! rules, the packed [`GuideScene`] the overlay pass reads. Nothing derived from a
+//! camera needs a pixel, which is §20.5's argument for keeping the derivations
+//! beside the fact rather than in the engine.
 
 use glam::{Mat3, Quat, Vec3};
 
@@ -35,13 +29,11 @@ impl PerspectiveGuide {
     }
 
     /// The [`lattice`](Self::lattice)'s corner in **camera space**, still in
-    /// cells (§20.3) — the guide's one world-metric datum, turned by the camera
-    /// exactly as an axis is, which is why the drag never mentions it.
+    /// cells (§20.3).
     ///
     /// `None` for a corner sitting *on* the eye (`LATTICE_EPS`): there a cell
     /// has no angular size, all three planes pass through the eye at once, and
     /// what the fans would draw is not an inaccurate grid but the whole canvas.
-    /// No grid rather than a bad one.
     pub fn corner(&self) -> Option<Vec3> {
         let d = self.axis_dirs();
         let l = self.lattice;
@@ -50,11 +42,10 @@ impl PerspectiveGuide {
     }
 
     /// The eye's ray through canvas point `p`, unit, in camera space — through
-    /// this guide's [`lens`](Self::lens). The shared first step of projection
-    /// and of every canvas gesture: what the hand touches on the picture plane
-    /// *is* a direction in the world, and because the orbit drag and the snap
-    /// are stated in directions, they work under the fisheye without a line of
-    /// code knowing it exists (§20.8).
+    /// this guide's [`lens`](Self::lens). The shared first step of projection and
+    /// of every canvas gesture: what the hand touches on the picture plane *is* a
+    /// direction in the world, which is why the orbit drag and the snap work under
+    /// the fisheye without naming it (§20.8).
     pub fn ray(&self, p: Vec2) -> Vec3 {
         let q = (p - self.center) / self.focal;
         match self.lens {
@@ -92,13 +83,10 @@ impl PerspectiveGuide {
     /// Both **poles** of the axis direction `d`: where it vanishes going forward,
     /// and where its negation does.
     ///
-    /// The second is `None` under the rectilinear lens, where it is not a second
-    /// place at all — directions there are projective, so an axis and its
-    /// negation image together (§20.1) — and only the fisheye separates them,
-    /// which is the whole reason a 1-point pose reads as 5-point under it
-    /// (§20.8). Written down once here because two derivations want it and the
-    /// rule is easy to state twice slightly differently: the scene's marker
-    /// slots, and the cut that makes a cursor ray a ray ([`axis_ray`](Self::axis_ray)).
+    /// The second is `None` under the rectilinear lens, where directions are
+    /// projective and an axis and its negation image together (§20.1); only the
+    /// fisheye separates them, which is why a 1-point pose reads as 5-point under
+    /// it (§20.8).
     pub fn poles(&self, d: Vec3) -> [Option<Vec2>; 2] {
         [
             self.project(d),
@@ -121,20 +109,16 @@ impl PerspectiveGuide {
     /// §20.8): the straight line of the rectilinear lens, or the circle the
     /// fisheye bows it into.
     ///
-    /// Every curve the overlay draws that is not a marker is one of these, and
-    /// there are two kinds of plane that produce one — a pair plane, whose image
-    /// is the vanishing trace ([`pair_trace`](Self::pair_trace)), and the plane
-    /// an axis spans with the ray under the pointer, whose image is a cursor ray
-    /// ([`axis_ray`](Self::axis_ray)). They are the same construction and so they
-    /// are one function, which is the whole of why §20.9 works under the fisheye
-    /// without knowing it exists.
+    /// Every curve the overlay draws that is not a marker is one of these: a pair
+    /// plane's vanishing trace ([`pair_trace`](Self::pair_trace)), and the cursor
+    /// ray of the plane an axis spans with the ray under the pointer
+    /// ([`axis_ray`](Self::axis_ray)). One construction, which is why §20.9 works
+    /// under the fisheye without knowing it exists.
     ///
-    /// **Unit**, and the caller owes that. Both results are *projective* in `m`
-    /// — the line is normalized by `|m.xy|`, the circle's center is a ratio — so
-    /// a scaled normal names the same curve, with the one exception that decides
-    /// everything: the fisheye radius `2f|m|/|m.z|` reads the length. The two
-    /// epsilons below are stated for a unit normal too, being cosines of the
-    /// angle the plane makes with the picture plane.
+    /// **`m` must be unit**, and the caller owes that: the results are otherwise
+    /// projective in `m`, but the fisheye radius `2f|m|/|m.z|` reads its length,
+    /// and the two epsilons are cosines of the angle the plane makes with the
+    /// picture plane.
     ///
     /// `None` when the trace is at infinity, which is the plane facing the
     /// camera square-on: there is no curve on the canvas, and so nothing to
@@ -143,10 +127,9 @@ impl PerspectiveGuide {
         let (c, f) = (self.center, self.focal);
         let planar = Vec2::new(m.x, m.y);
         match self.lens {
-            // The vanishing line of the plane with (unit) normal `m` is the
-            // trace of the parallel plane through the eye: with the eye at
-            // distance f over c, that is `m.x·x + m.y·y + (f·m.z − m·c) = 0`,
-            // normalized so its first two coefficients are a unit normal and
+            // The vanishing line of the plane with unit normal `m` is the trace
+            // of the parallel plane through the eye: with the eye at distance f
+            // over c, `m.x·x + m.y·y + (f·m.z − m·c) = 0`, normalized so that
             // evaluating it *is* signed canvas-px distance.
             Lens::Rectilinear => {
                 let len = planar.length();
@@ -156,10 +139,10 @@ impl PerspectiveGuide {
                 })
             }
             // The stereographic image of the great circle of directions in the
-            // plane: an exact circle — conformality's gift (§20.8) — with
-            // center `c + 2f·m.xy/m.z` and radius `2f/|m.z|`, from substituting
-            // the inverse projection into `m·d = 0`. A plane containing the
-            // view axis (m.z ≈ 0) images straight, through the center of view.
+            // plane: an exact circle (§20.8), center `c + 2f·m.xy/m.z` and radius
+            // `2f/|m.z|`, from substituting the inverse projection into `m·d = 0`.
+            // A plane containing the view axis (m.z ≈ 0) images straight, through
+            // the center of view.
             Lens::Fisheye if m.z.abs() > FISHEYE_LINE_EPS => Some(PlaneTrace::Circle {
                 center: c + planar * (2.0 * f / m.z),
                 radius: 2.0 * f / m.z.abs(),
@@ -172,11 +155,9 @@ impl PerspectiveGuide {
     }
 
     /// The **vanishing trace** of pair plane `k` — the plane axes `k` and
-    /// `k + 1` span — exactly as the guide pass draws it (§20.2, §20.8).
-    ///
-    /// The image of the parallel plane *through the eye*, whose normal is the
-    /// two axes' cross product — unit, the frame being orthonormal, which is
-    /// what [`plane_trace`](Self::plane_trace) asks of a caller.
+    /// `k + 1` span — exactly as the guide pass draws it (§20.2, §20.8): the
+    /// image of the parallel plane *through the eye*, whose normal is the two
+    /// axes' cross product, unit because the frame is orthonormal.
     pub fn pair_trace(&self, k: usize) -> Option<PlaneTrace> {
         let dirs = self.axis_dirs();
         self.plane_trace(dirs[k % 3].cross(dirs[(k + 1) % 3]))
@@ -187,40 +168,25 @@ impl PerspectiveGuide {
     ///
     /// The classical draughtsman's line from the vanishing point through the
     /// hand — the direction the grid would have a stroke take *here*, shown
-    /// before the stroke is made. Its curve is derived as the image of a plane
-    /// rather than by joining two points, and that buys both of the cases a join
-    /// cannot state:
+    /// before the stroke is made. Derived as the image of a plane rather than by
+    /// joining two points, so an axis lying in the picture plane needs no case of
+    /// its own (its ray is the parallel through the cursor, as §20.3's fans are),
+    /// and under the **fisheye** the curve is simply the arc through both poles
+    /// (§20.8).
     ///
-    /// - an axis lying in the picture plane has no vanishing point to join to,
-    ///   and its ray is the parallel line through the cursor — which falls out
-    ///   here with no branch, exactly as §20.3's fans do;
-    /// - under the **fisheye** the curve is the arc through *both* poles, because
-    ///   the plane's image is a circle and nothing else about the derivation
-    ///   changes (§20.8).
-    ///
-    /// The plane is the one the axis spans with the eye's ray through `at`, so
-    /// its normal is their cross product — which needs normalizing, unlike a
-    /// pair's, since an axis and a ray are not orthogonal. Both being unit, the
-    /// length of that product is the sine of the angle between them, and
-    /// [`RAY_EPS`] is stated in it: `None` where the hand has come to rest on
-    /// the axis's own vanishing point, and for the approach to it, where the
-    /// normal's *direction* is already noise.
+    /// `None` where the hand has come to rest on the axis's own vanishing point,
+    /// and for the approach to it, where the plane normal's *direction* is
+    /// already noise ([`RAY_EPS`], the sine of the angle between the axis and the
+    /// eye's ray).
     ///
     /// # Why it is a ray and not a line
     ///
     /// The trace is the whole *projective* line, and only half of it is a place
-    /// the artist can draw. A world line's points behind the eye image too —
-    /// at their opposite direction, so on the far side of the vanishing point —
-    /// and that half is a reflection of the drawing, not part of it. Cutting
-    /// there is therefore geometry rather than taste: the ray is exactly the
-    /// image of the half of the world line **in front of the eye**, and the
-    /// vanishing point is where the two halves meet because that is what the
-    /// point *is*.
-    ///
-    /// [`CursorRay::cut`] carries the half-plane that says so, oriented to keep
-    /// the cursor's side. It is `None` for a ray nothing bounds — an axis
-    /// vanishing at infinity keeps its whole line in front of the eye, and its
-    /// ray is honestly the whole parallel.
+    /// the artist can draw: a world line's points behind the eye image on the far
+    /// side of the vanishing point, a reflection of the drawing rather than part
+    /// of it. So [`CursorRay::cut`] carries the half-plane that keeps the
+    /// cursor's side — `None` for an axis vanishing at infinity, whose whole line
+    /// is in front of the eye and whose ray is honestly the whole parallel.
     pub fn axis_ray(&self, i: usize, at: Vec2) -> Option<CursorRay> {
         let axis = self.axis_dirs()[i % 3];
         let n = axis.cross(self.ray(at));
@@ -232,27 +198,19 @@ impl PerspectiveGuide {
         // The cut is the line separating the trace's two halves, and which line
         // that is depends on how the trace closes up.
         let cut = match (trace, fwd, back) {
-            // Bowed: the trace is a canvas circle, closed already, and the two
-            // poles are two points on it — so the two arcs are the two sides of
-            // the **chord** joining them. Exact for either arc, however the poles
-            // fall, which is what recommends it over the obvious alternative of
-            // comparing arc angles: a stereographic image does not preserve arc
-            // length, so the arc the hand is on can be the long way round, and
-            // the wrap that then has to be got right has no natural place to put
-            // its seam.
+            // Bowed: the trace is a canvas circle and the two poles are two points
+            // on it, so the two arcs are the two sides of their **chord**. Exact
+            // however the poles fall, unlike comparing arc angles — a stereographic
+            // image does not preserve arc length, so the arc the hand is on can be
+            // the long way round.
             (PlaneTrace::Circle { .. }, Some(v), Some(w)) => cut_at(perp(w - v), v, at),
-            // Straight: the trace closes through infinity, so its two halves meet
-            // at the pole *and* out there, and the line separating them is the
-            // **perpendicular** at the pole. Whichever pole is on the canvas — an
-            // axis is unsigned (§20.1), so which of its two directions is the
-            // forward one is not a fact about the drawing.
-            //
-            // Both, under the fisheye on a plane that contains the view axis, and
-            // then one cut is one short: the honest figure is the segment between
-            // the poles and this draws it running past the far one. That pose is
-            // the *knife edge* where a fisheye trace straightens — the cursor
-            // crosses it in well under a pixel of travel — so it is a flash on the
-            // way past rather than a picture anybody reads.
+            // Straight: the trace closes through infinity, so the line separating
+            // its halves is the **perpendicular** at the pole — whichever pole is
+            // on the canvas, an axis being unsigned (§20.1). Under the fisheye on
+            // a plane containing the view axis both poles are on it and one cut is
+            // one short, drawing the ray past the far pole; that pose is the knife
+            // edge where a fisheye trace straightens, crossed in well under a pixel
+            // of travel.
             (PlaneTrace::Line { normal, .. }, fwd, back) => {
                 fwd.or(back).and_then(|v| cut_at(perp(normal), v, at))
             }
@@ -270,26 +228,20 @@ impl PerspectiveGuide {
     /// vanishing points. Grabbing it is how a constrained turn is asked for, so
     /// this is the same list the overlay hit-tests a press against.
     ///
-    /// That indexing is the whole point of the method: `pair_trace(k)` is
-    /// stated in terms of the two axes spanning the plane, and the drag is
-    /// stated in terms of the one axis it holds fixed. The two are related by
-    /// the cross product — pair `(n+1, n+2)` has normal `n` — and it is written
-    /// down once here rather than at each call site, where "the line between
-    /// the X and Z vanishing points turns about Y" is a step it is easy to take
-    /// off by one.
+    /// That indexing is the whole point of the method: `pair_trace(k)` is stated
+    /// in the two axes spanning the plane and the drag in the one axis it holds
+    /// fixed, related by the cross product — pair `(n+1, n+2)` has normal `n` —
+    /// and written down once here rather than off by one at each call site.
     ///
     /// `None` for a horizon that is not on the screen to be grabbed: a guide
-    /// turned down to nothing, a plane switched off, or a trace at infinity —
-    /// the same rule [`pencils`](Self::pencils) is gated by, over the same
-    /// controls, because it exists for the same reason. A horizon
-    /// belongs to a plane rather than to the axis it turns about, and follows
-    /// that plane's flag: it is the plane's own infinity that is being drawn.
+    /// turned down to nothing, a plane switched off, or a trace at infinity — the
+    /// gate [`pencils`](Self::pencils) is under, over the same controls. A horizon
+    /// belongs to a plane rather than to the axis it turns about, and follows that
+    /// plane's flag: it is the plane's own infinity that is being drawn.
     ///
-    /// Unlike a pencil, a horizon is offered under **both** lenses. What the
-    /// hand grabs here is the curve itself and what it asks for is a turn about
-    /// an axis, and a turn is a statement in direction space that the lens
-    /// never enters (§20.8) — where a pencil would have had to promise a
-    /// straight line the fisheye does not draw.
+    /// Unlike a pencil, a horizon is offered under **both** lenses: what the hand
+    /// grabs is the curve itself and what it asks for is a turn, which is a
+    /// statement in direction space the lens never enters (§20.8).
     pub fn horizons(&self) -> [Option<PlaneTrace>; 3] {
         let shown = self.opacity > 0.0;
         std::array::from_fn(|n| {
@@ -306,28 +258,19 @@ impl PerspectiveGuide {
     ///
     /// Gated on what is *shown* rather than on what exists, because a snap the
     /// artist cannot see coming reads as the tool bending a considered line. An
-    /// overlay turned down to nothing and an axis with no plane left to rule
-    /// both offer nothing — the same rule stated once, over the controls the
-    /// panel puts on the bar.
-    ///
-    /// That last one is [`is_drawn`](Self::is_drawn), and it is the same rule
-    /// rather than a second one. A guide line is a line *in a pair plane*
-    /// (§20.3), so an axis draws only on the two planes it is a side of; switch
-    /// both of those off and nothing of the axis appears, so nothing of it may
-    /// bend a stroke — even though its vanishing point is as computable as ever.
+    /// overlay turned down to nothing offers nothing, and neither does an axis
+    /// with no plane left to rule ([`is_drawn`](Self::is_drawn)): a guide line is
+    /// a line *in a pair plane* (§20.3), so switching both of an axis's planes off
+    /// leaves nothing of it on the canvas, however computable its vanishing point.
     ///
     /// The guide's own **eye** is the third way to be unshown, and it is
     /// deliberately not asked here: it is per-client, so it is not a fact this
-    /// type carries (§20.5). It is applied one level up instead, by
-    /// [`Scaffold::of`](super::Scaffold::of) being handed only the guides this client draws — one
-    /// filter at one place rather than a term repeated in three derivations.
+    /// type carries (§20.5). [`Scaffold::of`](super::Scaffold::of) is handed only
+    /// the guides this client draws.
     ///
     /// A **fisheye** guide offers nothing either (§20.8): its guide lines are
-    /// circles, and the pencil this returns describes straight lines — a snap
-    /// through it would align a stroke to a line the guide does not draw,
-    /// which is exactly the bent-considered-line surprise the visibility gate
-    /// exists to prevent. Snapping strokes to the fisheye's arcs is its own
-    /// future piece of work.
+    /// circles and a pencil describes straight lines, so a snap through one would
+    /// align a stroke to a line the guide does not draw.
     pub fn pencils(&self) -> [Option<AxisPencil>; 3] {
         let shown = self.opacity > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
@@ -343,12 +286,10 @@ impl PerspectiveGuide {
     /// Whether axis `i` appears on the canvas at all: whether either of the two
     /// pair planes it is a side of is drawn (§20.3).
     ///
-    /// An axis is not a thing that is shown or hidden — a plane is. What an
-    /// axis *has* is lines, and every one of them lies in one of its two
-    /// planes, so switching both off leaves the axis with nothing on the screen
-    /// however well defined its direction still is. That is the question its
-    /// vanishing point and its stroke pencil both turn on, and it is written
-    /// down once here rather than as the same disjunction in three places.
+    /// An axis is not a thing that is shown or hidden — a plane is. Every line an
+    /// axis has lies in one of its two planes, so switching both off leaves it
+    /// nothing on the screen however well defined its direction. Its vanishing
+    /// point and its stroke pencil both turn on this question.
     pub fn is_drawn(&self, i: usize) -> bool {
         self.pairs[i % 3] || self.pairs[(i + 2) % 3]
     }
@@ -356,14 +297,10 @@ impl PerspectiveGuide {
     /// The planes a circle can be drawn on (§20.7): pair `k` spans axes
     /// `(k, k+1)`, one chart each.
     ///
-    /// Gated like [`pencils`](Self::pencils) — including the fisheye
-    /// exclusion, since the chart is a homography of the *flat* picture plane
-    /// — but on the plane's own flag, which is the whole of the question here:
-    /// a circle is drawn *on a plane*, so the plane the artist switched off is
-    /// exactly the plane no loop may be read as a circle on. The chart's third
-    /// column is `a_i × a_j`, which for a right-handed frame is the remaining
-    /// axis, so the three planes are this guide's one axis matrix with its
-    /// columns cyclically shifted.
+    /// Gated like [`pencils`](Self::pencils) — including the fisheye exclusion,
+    /// the chart being a homography of the *flat* picture plane — but on the
+    /// plane's own flag: a circle is drawn *on a plane*, so the plane the artist
+    /// switched off is exactly the plane no loop may be read as a circle on.
     pub fn planes(&self) -> [Option<AxisPlane>; 3] {
         let shown = self.opacity > 0.0 && self.focal > 0.0 && self.lens == Lens::Rectilinear;
         let dirs = self.axis_dirs();
@@ -388,11 +325,9 @@ impl PerspectiveGuide {
     /// — a rotation and a handful of products — so it is recomputed per render
     /// rather than cached beside the state it would shadow.
     ///
-    /// `cursor` is where this client's pointer is on the canvas, and it is an
-    /// **argument** rather than a field for the reason the guide's eye is not one
-    /// either (§20.5): a camera is document state and a pointer is not, so the
-    /// one thing on the overlay that follows the hand is handed in by the side
-    /// holding both — which is `Session`, exactly as for the eye. `None` — off
+    /// `cursor` is where this client's pointer is on the canvas, an **argument**
+    /// rather than a field because a camera is document state and a pointer is not
+    /// (§20.5) — `Session` holds both, as it does the guide's eye. `None` — off
     /// the canvas, or a render that is not a screen — draws no rays (§20.9).
     pub fn scene(&self, cursor: Option<Vec2>) -> GuideScene {
         let dirs = self.axis_dirs();
@@ -421,12 +356,10 @@ impl PerspectiveGuide {
             // pair plane (a ≈ 0 — exact 2-point) either side is the same
             // rotation; the canvas-down side is the drawing-board convention.
             //
-            // Rectilinear only, and never from the fisheye's straight traces:
-            // rotating the eye into the picture plane is a *flat-plane*
-            // measuring construction, and under a curved lens the distances it
-            // would transfer do not exist on the canvas to be measured. A pair
-            // with no line at all — the plane facing the camera square-on — has
-            // no station point either, and falls out of the same `let`.
+            // Rectilinear only: rotating the eye into the picture plane is a
+            // *flat-plane* measuring construction, and under a curved lens the
+            // distances it would transfer do not exist on the canvas to be
+            // measured.
             if self.lens == Lens::Rectilinear
                 && let Some(PlaneTrace::Line { normal: n, offset }) = lines[k]
             {
@@ -484,14 +417,10 @@ impl PerspectiveGuide {
     /// fixing two axes). Unlocked, the drag is the free arc, and it carries the
     /// grabbed direction to the pointer *exactly*.
     ///
-    /// There is no snap. A free drag that happens to pass near an axis turn
-    /// stays free: the constrained turn is something the hand asks for by
-    /// grabbing the axis's [`horizon`](Self::horizons) — which is a lock held
-    /// for the drag's duration and arrives here as one — rather than something
-    /// the drag falls into partway through. Deciding it from the geometry meant
-    /// the same gesture could be free at the press and constrained a moment
-    /// later, and a rotation that changes what it is mid-drag reads as the tool
-    /// grabbing the guide out of the hand.
+    /// There is no snap: a constrained turn is asked for by grabbing the axis's
+    /// [`horizon`](Self::horizons), which arrives here as a lock held for the
+    /// drag's duration. A rotation that changed what it is mid-drag would read as
+    /// the tool grabbing the guide out of the hand.
     #[must_use]
     pub fn dragged(&self, from: Vec2, to: Vec2, locked: [bool; 3]) -> Self {
         if locked.iter().filter(|l| **l).count() >= 2 {
@@ -526,12 +455,10 @@ fn axis_turn(axis: Vec3, r0: Vec3, r1: Vec3) -> Quat {
 /// One axis of one guide, as the thing a stroke can be aligned to: the
 /// **pencil** of images of every world line along that axis (§20.6).
 ///
-/// This is the whole of a perspective guide that the drawing assist sees, and
-/// it is deliberately not a direction — a pencil converges, so what it can
-/// answer is a direction *at a point*. That is also what makes the snap an
-/// alignment rather than a move: the line the assist takes is the pencil's
-/// line through the point the hand started from, so a stroke is turned onto
-/// the grid without being slid along it.
+/// Deliberately not a direction — a pencil converges, so what it can answer is a
+/// direction *at a point*. That is what makes the snap an alignment rather than a
+/// move: the line taken is the pencil's through the point the hand started from,
+/// so a stroke is turned onto the grid without being slid along it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AxisPencil {
     center: Vec2,
@@ -544,14 +471,11 @@ impl AxisPencil {
     /// unsigned, like every direction here, since an axis and its negation
     /// name the same pencil.
     ///
-    /// It is `V(a) − p` cleared of its denominator: multiplying through by the
-    /// `d.z` that the vanishing point divides by leaves
-    /// `f·(d.x, d.y) + d.z·(c − p)`, which stays finite as `d.z → 0` and
-    /// becomes the parallel direction of an axis lying in the picture plane.
-    /// So no vanishing point is ever computed on this path and there is no
-    /// case to branch on — the same reason §20.3's fans work in direction
-    /// space. `None` only *at* a vanishing point, where the pencil determines
-    /// no line.
+    /// `None` only *at* a vanishing point, where the pencil determines no line.
+    /// It is `V(a) − p` cleared of its denominator, so it stays finite as
+    /// `d.z → 0` and becomes the parallel direction of an axis lying in the
+    /// picture plane — no vanishing point is computed and there is no case to
+    /// branch on, the same reason §20.3's fans work in direction space.
     pub fn through(&self, p: Vec2) -> Option<Vec2> {
         (Vec2::new(self.dir.x, self.dir.y) * self.focal + (self.center - p) * self.dir.z)
             .try_normalize()
@@ -563,11 +487,10 @@ impl AxisPencil {
 /// curve either way, so the shader carries a kind beside four numbers rather
 /// than two pipelines.
 ///
-/// Named for the plane rather than for either of the two things the overlay
-/// draws with it — a pair plane's **vanishing trace** (§20.2) and an axis's
-/// **cursor ray** (§20.9) — because it is one construction serving both, and a
-/// name taken from the first of them would have made the second read as a reuse
-/// of somebody else's type ([`PerspectiveGuide::plane_trace`]).
+/// Named for the plane rather than for either thing the overlay draws with it —
+/// a pair plane's **vanishing trace** (§20.2) and an axis's **cursor ray**
+/// (§20.9) — since it is one construction serving both
+/// ([`PerspectiveGuide::plane_trace`]).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PlaneTrace {
     /// `normal · p + offset = 0`, with `normal` unit — evaluating is signed
@@ -755,14 +678,12 @@ mod tests {
 
     /// The two continuous **cell indices** canvas point `p` carries for axis
     /// `i` — the expression `guides.wesl` evaluates at every texel (§20.3),
-    /// restated here so the lattice's claim can be held to the lines that will
-    /// actually be drawn rather than to a description of them.
+    /// restated here so the lattice's claim is held to the lines that will
+    /// actually be drawn.
     ///
     /// A guide line is where one of the two is an integer. `.x` counts cells
-    /// across the pair plane axis `i` spans with its **successor**, `.y` the
-    /// one it spans with its predecessor; an infinity is that plane's vanishing
-    /// line, where the whole plane images onto one line and there is no cell to
-    /// be in.
+    /// across the pair plane axis `i` spans with its **successor**, `.y` the one
+    /// it spans with its predecessor; an infinity is that plane's vanishing line.
     fn cell(g: &PerspectiveGuide, i: usize, p: Vec2) -> Vec2 {
         let d = g.axis_dirs();
         let corner = g.corner().expect("a lattice");
@@ -791,10 +712,9 @@ mod tests {
     /// the same size everywhere on the plane, and the same size on all three
     /// planes because there is one cube behind them.
     ///
-    /// Checked where the two halves meet. Cell corner `(a, b)` of the plane —
-    /// counted in whole cells from the eye's own foot on it — is projected; the
-    /// *drawn* fans are asked which cell that texel falls in and have to answer
-    /// `(a, b)` exactly; and then the chart §20.7 already tests independently is
+    /// Checked where the two halves meet: cell corner `(a, b)`, counted in whole
+    /// cells from the eye's own foot on the plane, is projected; the *drawn* fans
+    /// must answer `(a, b)` exactly for that texel; then the chart of §20.7 is
     /// asked how far apart those corners lie **on the plane itself**, where a
     /// square is a statement with no perspective left in it.
     #[test]
@@ -852,12 +772,10 @@ mod tests {
     /// Where two planes meet, their grids meet: along the edge a pair shares,
     /// both planes put their cell corners on the same points, one cell apart.
     ///
-    /// Two planes crossing at a shared edge is the only thing that stops the
-    /// three grids from being three grids: it is why a count carried along an
-    /// edge means the same on either side of it, and why a box drawn in one
-    /// plane lands on the grid of the next. It holds for any lattice at all,
-    /// because both planes count the same whole cells from the same eye — the
-    /// edge is measured from the point of it nearest the viewer.
+    /// This is what stops the three grids from being three grids: why a count
+    /// carried along an edge means the same on either side, and why a box drawn in
+    /// one plane lands on the grid of the next. It holds for any lattice at all,
+    /// both planes counting the same whole cells from the same eye.
     #[test]
     fn the_planes_agree_along_the_edges_they_share() {
         let g = guide(0.5, 0.35, 0.2);
@@ -893,10 +811,9 @@ mod tests {
     /// is where the two families lying in each plane both read cell zero.
     ///
     /// Asserted with a deliberately **fractional** lattice, because that is the
-    /// case the anchoring exists to answer. With the phase at the corner this
-    /// held only when the corner's components happened to be whole — and a scale
-    /// control that halves turns `(-4, 3, 6)` into `(-1, ¾, 1½)`, which put the
-    /// crossing a quarter of a cell off on one axis and a half on the next.
+    /// case the anchoring exists to answer: a scale control that halves turns
+    /// `(-4, 3, 6)` into `(-1, ¾, 1½)`, and a phase taken at the corner instead
+    /// would put the crossing a fraction of a cell off on two of the three axes.
     #[test]
     fn the_viewer_stands_on_the_grid_of_every_plane() {
         let g = PerspectiveGuide {
@@ -920,17 +837,13 @@ mod tests {
     }
 
     /// The classical chequerboard, where the answer can be written down. Look
-    /// straight down Z with the floor `h` cells below the eye, and its transverse
-    /// guide lines fall at canvas heights `f·h/n` — the tile `n` cells out is
-    /// seen at the depth `n`, the harmonic run of a receding chequered floor and
-    /// what "squares in perspective" means when there is only one vanishing point
-    /// to say it with. An equal-angle fan would draw `f·cot(n·θ)` there, and the
+    /// straight down Z with the floor `h` cells below the eye and its transverse
+    /// guide lines fall at canvas heights `f·h/n` — the harmonic run of a receding
+    /// chequered floor. An equal-angle fan would draw `f·cot(n·θ)` there, and the
     /// two agree at exactly one line.
     ///
-    /// The depths are counted from the **eye**, not from where the walls happen
-    /// to stand, which is why `h` is the only part of the lattice in the answer:
-    /// a fractional floor height moves every line together and still lands them
-    /// on whole cells out from the viewer.
+    /// The depths are counted from the **eye**, not from where the walls stand,
+    /// which is why `h` is the only part of the lattice in the answer.
     #[test]
     fn a_one_point_floor_recedes_harmonically() {
         let h = 4.25;
@@ -956,11 +869,10 @@ mod tests {
     /// moves (§20.3). It is why the bar's scale steps in halvings and offers
     /// nothing between them.
     ///
-    /// Stated over arbitrary texels rather than over the lines themselves,
-    /// because the strong form is what makes it true of *every* line at once:
-    /// doubling the lattice doubles the cell index everywhere, so an integer
-    /// index goes to an even one and no texel's place in the grid is renamed by
-    /// anything but a factor of two.
+    /// Stated over arbitrary texels rather than over the lines themselves, since
+    /// the strong form is what makes it true of *every* line at once: doubling the
+    /// lattice doubles the cell index everywhere, so an integer index goes to an
+    /// even one.
     #[test]
     fn doubling_the_cells_keeps_every_line_it_had() {
         let coarse = guide(0.5, 0.35, 0.2);
@@ -1052,11 +964,10 @@ mod tests {
     /// What is not on the screen offers nothing to snap to (§20.6) — one rule
     /// over the guide's eye, its planes and its opacity.
     ///
-    /// An axis survives while *either* of its two planes does, because its
-    /// lines are still being ruled on that one: switching a plane off is not a
-    /// statement about the two axes bordering it. Only when both of an axis's
-    /// planes are gone does it have nothing on the canvas, and only then does
-    /// it stop offering a pencil.
+    /// An axis survives while *either* of its two planes does, its lines still
+    /// being ruled on that one: switching a plane off is not a statement about the
+    /// axes bordering it. Only when both are gone does the axis stop offering a
+    /// pencil.
     #[test]
     fn an_axis_with_no_plane_left_offers_no_pencil() {
         let mut g = guide(0.5, 0.35, 0.2);
@@ -1082,12 +993,10 @@ mod tests {
     /// the reason the control names planes and not axes (§20.3).
     ///
     /// Written out exhaustively because the claim *is* the completeness: three
-    /// axis toggles could only ever produce none, one plane, or all three (a
-    /// plane needed both its axes, so the second axis always brought a second
-    /// plane free), and "the ground and one wall" — three of these rows — was
-    /// not sayable at all. The axis column is the derived half, and it is here
-    /// so that the derivation is checked against every input rather than the
-    /// two or three anyone would think to try.
+    /// axis toggles could only ever produce none, one plane, or all three, so
+    /// "the ground and one wall" — three of these rows — would not be sayable.
+    /// The axis column is the derived half, checked here against every input
+    /// rather than the two or three anyone would think to try.
     #[test]
     fn every_combination_of_planes_is_reachable() {
         let mut g = guide(0.5, 0.35, 0.2);
@@ -1184,16 +1093,14 @@ mod tests {
         assert_eq!(g.rotation, g2.rotation);
     }
 
-    /// A free drag does **not** snap (§20.5). The case most likely to be swept into
-    /// one: a horizontal drag through the center of view implies a rotation
-    /// within a few degrees of the near-vertical Y axis, and it is still the
-    /// free arc — the grabbed direction lands exactly under the pointer, and Y
-    /// moves, because nothing asked for it to be held.
+    /// A free drag does **not** snap (§20.5). The case most likely to be swept
+    /// into one: a horizontal drag through the center of view implies a rotation
+    /// within a few degrees of the near-vertical Y axis, and it is still the free
+    /// arc.
     ///
-    /// Asserted as a pair, since "did not snap" on its own would also be
-    /// satisfied by a drag that did nothing at all: the exact carry is what
-    /// says the free arc ran, and Y's motion is what says the constrained turn
-    /// did not.
+    /// Asserted as a pair, since "did not snap" alone would also be satisfied by a
+    /// drag that did nothing: the exact carry says the free arc ran, and Y's
+    /// motion says the constrained turn did not.
     #[test]
     fn a_drag_near_an_axis_turn_stays_free() {
         let g = guide(0.6, 0.0, 0.0);
@@ -1222,12 +1129,9 @@ mod tests {
     /// the other two axes' vanishing points** (§20.5) — the claim the whole
     /// gesture is described by, checked by finding those two points on it.
     ///
-    /// A vanishing point lying on a vanishing line is not a coincidence to be
-    /// spot-checked but the definition of both: the line is the image of the
-    /// pair plane's infinity, and each of the two axes spanning that plane
-    /// vanishes there. Checking it through [`PlaneTrace::distance`] — the same
-    /// expression the overlay hit-tests with — is what ties the index the drag
-    /// uses to the curve the hand can actually reach for.
+    /// Checked through [`PlaneTrace::distance`], the same expression the overlay
+    /// hit-tests with, which is what ties the index the drag uses to the curve the
+    /// hand can actually reach for.
     #[test]
     fn the_horizon_of_an_axis_runs_between_the_other_two_vanishing_points() {
         let g = guide(0.5, 0.35, 0.2);
@@ -1252,10 +1156,9 @@ mod tests {
     /// asks for is the one the lock already gives: the axis holds still, and a
     /// 2-point setup dragged by its horizon stays exactly 2-point.
     ///
-    /// The horizon *is* the lock rather than a second path to the same place —
-    /// which is why this asserts the drag through the grabbed axis's index
-    /// agrees with the lock's own arm, and why there is no third rotation mode
-    /// to keep in step with the other two.
+    /// The horizon *is* the lock rather than a second path to the same place, so
+    /// the drag through the grabbed axis's index must agree with the lock's own
+    /// arm — there is no third rotation mode to keep in step.
     #[test]
     fn a_horizon_grab_turns_about_its_axis() {
         let g = guide(0.6, 0.0, 0.0);
@@ -1285,11 +1188,10 @@ mod tests {
         );
     }
 
-    /// A horizon is a handle only where its curve is drawn (§20.5). It belongs
-    /// to a *plane* — the plane's own infinity is what is being drawn — so
-    /// switching a plane off takes exactly the one horizon that turns about its
-    /// normal, and leaves the other two standing. The guide's eye and its
-    /// opacity govern all three at once, as they govern a pencil.
+    /// A horizon is a handle only where its curve is drawn (§20.5). It belongs to
+    /// a *plane*, so switching a plane off takes exactly the one horizon that
+    /// turns about its normal and leaves the other two standing; the guide's eye
+    /// and opacity govern all three at once.
     #[test]
     fn a_horizon_is_offered_only_where_it_is_drawn() {
         let mut g = guide(0.5, 0.35, 0.2);
@@ -1309,8 +1211,7 @@ mod tests {
     /// A pair plane facing the camera square-on images its infinity nowhere on
     /// the canvas, so there is no horizon to grab — the 1-point pose's X/Y pair,
     /// which is also the one with no station point (§20.2). Turning about the
-    /// view axis is then asked for with the lock chip, the control that does not
-    /// need a curve to exist.
+    /// view axis is then asked for with the lock chip instead.
     #[test]
     fn a_trace_at_infinity_offers_no_horizon() {
         let g = guide(0.0, 0.0, 0.0);

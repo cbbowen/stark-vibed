@@ -1,14 +1,9 @@
 //! What can go wrong with a *document* (§8, §19) — as opposed to with a renderer.
 //!
-//! The split is the crate split (§2). A file that will not decode, a version this
-//! build is too old for, a space it does not carry, content it was never given: all
-//! of those are facts about the document, answerable without a GPU, and a consumer
-//! that only ever reads and writes logs — `stark-net`, a headless tool — should not
-//! have to match on `NoAdapter` to handle them.
-//!
-//! `stark-engine`'s `EngineError` keeps the other half (a lost device, an
-//! impossible export) and folds this in with `#[from]`, so a caller holding the
-//! engine still catches everything in one place.
+//! Everything here is answerable without a GPU, so a consumer that only reads and
+//! writes logs (`stark-net`, a headless tool) never has to match on a device error.
+//! `stark-engine`'s `EngineError` holds the other half and folds this in with
+//! `#[from]`, so a caller holding the engine still catches both in one place.
 
 use thiserror::Error;
 
@@ -18,12 +13,10 @@ use crate::content::AssetNeed;
 /// Errors produced by reading, writing or resolving a document.
 #[derive(Debug, Error)]
 pub enum DocError {
-    /// The two halves of the container's codec. They carry the `carbonite::Error`
-    /// itself rather than its `to_string()`, so `source()` reaches it.
-    ///
-    /// Two variants rather than one `#[from]`, because both directions fail with the
-    /// same type and which one it was is the useful half of the message: a serialize
-    /// failure is this build's bug, a deserialize failure is the file's.
+    /// The two halves of the container's codec, kept apart because which direction
+    /// failed is the useful half: a serialize failure is this build's bug, a
+    /// deserialize failure is the file's. Both carry the `carbonite::Error` itself,
+    /// so `source()` reaches it.
     #[error("serialization failed")]
     Serialize(#[source] carbonite::Error),
 
@@ -47,13 +40,13 @@ pub enum DocError {
     /// A document written by a **pre-carbonite** build, whose container carried a
     /// schema version and whose body was postcard (§8.1).
     ///
-    /// The one error here that a newer build can never fix: postcard writes no field
-    /// names, so those bytes only mean anything to the exact schema that wrote them.
-    /// Files are alpha (§19), so they are named rather than migrated.
+    /// The one error here no newer build can fix: postcard writes no field names, so
+    /// those bytes only mean anything to the exact schema that wrote them, and files
+    /// are alpha (§19).
     ///
-    /// **A tombstone, not a version check.** Raised by recognizing the old *container
-    /// header*, never consulted to decide how to read a current file, and never
-    /// bumped — a carbonite document carries no version at all (§8).
+    /// **A tombstone, not a version check** — raised by recognizing the old container
+    /// header, never consulted to read a current file, and never bumped, since a
+    /// carbonite document carries no version at all (§8).
     #[error(
         "this document was saved by an older Stark (format version {0}), \
          which this build can no longer read"
@@ -61,44 +54,35 @@ pub enum DocError {
     Legacy(u32),
 
     /// A container that **arrived from somewhere else** expands past
-    /// `io::MAX_DECOMPRESSED` — raised by `DocumentFile::from_untrusted_bytes` and
-    /// by nothing else (§8, §12.4).
+    /// `io::MAX_DECOMPRESSED` — raised by `DocumentFile::from_untrusted_bytes` and by
+    /// nothing else (§8, §12.4), so opening the user's own file cannot produce it.
     ///
-    /// A refusal rather than a decode error, because the bytes may be perfectly
-    /// well-formed: deflate compresses a long run to almost nothing, so a small file
-    /// can name an enormous one, and a reader that expands first and asks afterwards
-    /// has already spent the memory.
-    ///
-    /// **Opening the user's own file cannot produce this.** A document is as large as
-    /// the artist made it, so the bound is about who wrote the bytes rather than
-    /// about how many there are.
+    /// A refusal rather than a decode error: the bytes may be well-formed, since
+    /// deflate lets a small file name an enormous one, and a reader that expands
+    /// first has already spent the memory.
     #[error("document expands to more than {limit} bytes")]
     TooLarge { limit: u64 },
 
     /// The document names a color space this build does not carry — today only
     /// [`ColorSpaceId::Mixbox`] in a build without the `mixbox` cargo feature.
     ///
-    /// A refusal rather than a decode error: the id is a variant every build has,
-    /// because the save format's vocabulary cannot depend on a feature (§8, §19), and
-    /// what is missing is the implementation behind it.
-    ///
-    /// Raised by whoever *opens* the document rather than by whoever decodes it: this
-    /// crate has no `mixbox` feature to consult (§2), and "can this build honour the
-    /// space" is a question about the engine, not about the file.
+    /// A refusal rather than a decode error: every build has the id, since the save
+    /// format's vocabulary cannot depend on a feature (§8, §19); what is missing is
+    /// the implementation. Raised by whoever *opens* the document, not by whoever
+    /// decodes it — this crate has no `mixbox` feature to consult (§2).
     #[error(
         "this build does not support the {0:?} color space; \
          it was compiled without the `mixbox` feature"
     )]
     UnsupportedColorSpace(ColorSpaceId),
 
-    /// Content arrived under an id its own bytes do not hash to.
+    /// Content arrived under an id its own bytes do not hash to — the one way a
+    /// content-addressed store could still hold the wrong thing (§19).
     ///
-    /// **The one way a content-addressed store could still hold the wrong thing**
-    /// (§19): `import_*` derives the id from the bytes and has nothing to disagree
-    /// with, but `accept_*` is handed both, off a save file's bundle or a peer's
-    /// transfer (§8, §12.4). Installing them anyway is never free — a substrate
-    /// deposits the wrong tooth into tiles no later arrival un-bakes (§6.4) — so the
-    /// check is the same at every door.
+    /// Only `accept_*` can raise it, being handed id and bytes separately off a save
+    /// file's bundle or a peer's transfer (§8, §12.4); `import_*` derives the id from
+    /// the bytes. Installing a mismatch is never free: a wrong substrate bakes the
+    /// wrong tooth into tiles no later arrival un-bakes (§6.4).
     #[error("{expected:?} arrived as {actual:?}; refusing to install it")]
     Misnamed {
         expected: crate::AssetNeed,
@@ -110,23 +94,21 @@ pub enum DocError {
     #[error("asset decode failed: {0}")]
     Asset(String),
 
-    /// A content id could not be derived — an image that would not decode. Its own
-    /// crate because the derivation is the format's identity contract (§19), so it
-    /// arrives as its own error and is folded in here.
+    /// A content id could not be derived — an image that would not decode. It arrives
+    /// from `stark-assetid`, which owns the format's identity contract (§19).
     #[error("{0}")]
     AssetId(#[from] stark_assetid::AssetError),
 
     /// A document was asked to replay while content its log names is neither bundled
     /// in the file nor loaded in this engine (§8).
     ///
-    /// **Refusing is the point.** Replaying anyway is not a degraded open but a wrong
-    /// one that persists: a `SetSubstrate` whose height map is missing deposits every
-    /// stroke made on it through the flat stand-in, and those pixels are stored, so no
-    /// later arrival un-bakes them (§6.4).
+    /// Replaying anyway would be wrong rather than degraded, and it persists: a
+    /// `SetSubstrate` whose height map is missing deposits every stroke through the
+    /// flat stand-in, and those pixels are stored (§6.4).
     ///
-    /// Settle it first — `stark-engine`'s `Engine::unresolved_content` is the bill and
-    /// names each need, `import_brush`/`accept_substrate` pay it. A collaboration *join*
-    /// legitimately starts short and heals, and does not come through here.
+    /// Settle it first — `stark-engine`'s `Engine::unresolved_content` names each
+    /// need, `import_brush`/`accept_substrate` pay it. A collaboration *join*
+    /// legitimately starts short and heals, and never comes through here.
     #[error("this document names content that is neither bundled nor loaded: {0:?}")]
     MissingContent(Vec<AssetNeed>),
 }

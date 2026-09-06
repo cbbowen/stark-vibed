@@ -3,8 +3,7 @@
 //!
 //! Projective geometry and nothing else — a 3x3 conic, its congruence under the
 //! plane's homography, and the ellipse read off its quadratic part. It knows what a
-//! plane is and nothing about documents, which is why it reads as its own thing even
-//! though §20.5 rightly keeps it beside the camera it is derived from.
+//! plane is and nothing about documents.
 
 use glam::{Mat3, Vec3};
 
@@ -15,20 +14,17 @@ use crate::geom::{Ellipse, Vec2, principal_axis};
 /// **chart**: the map between the canvas and the plane's own flat, metric
 /// coordinates, both ways (§20.7).
 ///
-/// A pair plane has no depth of its own to fix, because scaling the depth
-/// scales every circle on it by the same factor and leaves the *images*
-/// unchanged. So the chart is taken at unit distance along the plane's normal,
-/// and then it is one 3×3:
+/// A pair plane has no depth of its own to fix — scaling the depth scales every
+/// circle on it by the same factor and leaves the *images* unchanged — so the
+/// chart is taken at unit distance along the plane's normal, and is one 3×3:
 ///
 /// ```text
 /// canvas_from_plane = K · [ a_i | a_j | a_i × a_j ]
 /// ```
 ///
-/// with `K` the lens (`focal`, `center`). The three planes of a guide are that
-/// product with the axis frame's columns *cyclically shifted* — one matrix read
-/// three ways — and it is invertible for every pose, since `K` and a rotation
-/// both are. There is no degenerate plane to guard against, which is the whole
-/// reason the chart is the representation.
+/// with `K` the lens (`focal`, `center`). It is invertible for every pose, `K`
+/// and a rotation both being so: there is no degenerate plane to guard against,
+/// which is why the chart is the representation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AxisPlane {
     /// `pub(super)` rather than private:
@@ -48,12 +44,11 @@ impl AxisPlane {
     /// `points` in the plane's own coordinates, or `None` if they are not all on
     /// one piece of it.
     ///
-    /// The gate is that they share a **side of the pair's vanishing line**, which
-    /// is where the chart's homogeneous coordinate changes sign. No circle in
-    /// front of the eye is ever *seen* across its plane's vanishing line — the
-    /// line is the image of that plane's infinity — so a trace that crosses one
-    /// cannot be a circle on that plane, and pulling it back would answer with
-    /// the two branches of a hyperbola instead.
+    /// The gate is that they share a **side of the pair's vanishing line**, where
+    /// the chart's homogeneous coordinate changes sign. No circle in front of the
+    /// eye is ever seen across its plane's vanishing line, so a trace that crosses
+    /// one cannot be a circle on that plane — pulling it back would answer with
+    /// the two branches of a hyperbola.
     pub fn chart(&self, points: &[Vec2]) -> Option<Vec<Vec2>> {
         let mut side = 0.0f32;
         points
@@ -73,25 +68,21 @@ impl AxisPlane {
     /// seen as: centre, semi-axes major first, and the frame's rotation, all in
     /// canvas px.
     ///
-    /// The image of a conic under a homography is a conic — `Hᵀ C H` on the
-    /// matrix — so this is exact and closed-form rather than a fit of sampled
-    /// points, and it is the *same* operation in both directions. `None` when
-    /// that conic is not a bounded curve: a circle crossing its plane's
-    /// vanishing line images to a hyperbola, which is not something a stroke can
-    /// be, and falls out of the classification instead of being a case.
+    /// Exact and closed-form, the image of a conic under a homography being a
+    /// conic. `None` when that conic is not a bounded curve: a circle crossing its
+    /// plane's vanishing line images to a hyperbola, which is not something a
+    /// stroke can be.
     pub fn circle_seen(&self, center: Vec2, radius: f32) -> Option<Ellipse> {
         let circle = conic_of(Ellipse::new(center, Vec2::splat(radius), 0.0))?;
         ellipse_of(congruent(circle, self.plane_from_canvas))
     }
 
     /// The circle on this plane that is seen as the given ellipse — the exact
-    /// inverse of [`circle_seen`](Self::circle_seen), by the same congruence the
-    /// other way round.
+    /// inverse of [`circle_seen`](Self::circle_seen).
     ///
     /// The pulled-back conic *is* a circle whenever the ellipse came from one, so
-    /// the radius is read as the one of equal area; nothing here has to trust
-    /// that, since a shape which is not a perspective circle never carries a
-    /// plane in the first place (§20.7).
+    /// the radius is read as the one of equal area; a shape that is not a
+    /// perspective circle never carries a plane in the first place (§20.7).
     pub fn circle_behind(&self, seen: Ellipse) -> Option<(Vec2, f32)> {
         let seen = conic_of(seen)?;
         let back = ellipse_of(congruent(seen, self.canvas_from_plane))?;
@@ -142,8 +133,8 @@ fn conic_of(e: Ellipse) -> Option<Mat3> {
 ///
 /// A conic and its negation are the same curve, so the sign is normalized first
 /// and every test after it is a plain inequality: a positive-definite quadratic
-/// part is exactly "an ellipse rather than a hyperbola", and a positive constant
-/// at the centre is exactly "a real one rather than an imaginary one".
+/// part is "an ellipse rather than a hyperbola", and a positive constant at the
+/// centre is "a real one rather than an imaginary one".
 fn ellipse_of(c: Mat3) -> Option<Ellipse> {
     let flip = if c.x_axis.x + c.y_axis.y < 0.0 {
         -1.0

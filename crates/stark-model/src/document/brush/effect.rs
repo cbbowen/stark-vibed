@@ -1,14 +1,9 @@
 //! What a stroke **does** to the canvas (§6.2, §6.12, §6.13): the four effects, and
 //! the knobs each carries because it is the one in force.
 //!
-//! The tool's identity as a sum rather than a mode flag beside knobs it would
-//! silently veto — everything outside [`BrushEffect`] shapes the swept extent, and
-//! the effect is what that extent then does with it. The four flux axes, the color
-//! jitter and each effect's own rate are here; the tip that carries them is
-//! [`BrushParams`](super::BrushParams).
-//!
-//! Reads `modulation`, since an effect's own rates are mapped where the rates live,
-//! and nothing above it.
+//! Everything outside [`BrushEffect`] shapes the swept extent; the effect is what that
+//! extent then does with it. The flux axes, the color jitter and each effect's own
+//! rate are here; the tip that carries them is [`BrushParams`](super::BrushParams).
 
 use serde::{Deserialize, Serialize};
 
@@ -18,51 +13,41 @@ use super::modulation::{
 use crate::sanitize::{at_least_zero, clamp01, finite_in, finite_or};
 
 /// How a [`BrushEffect::Wet`] brush interacts with paint already on the canvas
-/// (§6.2). One **unified tool** within that effect: every axis is a flux on the
-/// single conserved quantity — paint **height** (the amount; §6.1) — and the axes
-/// compose freely. [`add`](Self::add) is the only *source* (the brush's own
-/// paint); the rest move paint that is already on the canvas, so with `add = 0`
-/// the tool conserves height (it only moves paint around). The everyday add-only
-/// brush is not a corner of this space — it is [`BrushEffect::Paint`], a separate
-/// effect that carries no fluxes at all.
+/// (§6.2). Every axis is a flux on the single conserved quantity — paint **height**
+/// (the amount; §6.1) — and the axes compose freely. [`add`](Self::add) is the only
+/// *source*, so with `add = 0` the tool conserves height and only moves paint around.
 ///
-/// **The axes say what the tool does; [`WetEffect::flow`] says how hard.** Every
-/// axis here is quoted at the neutral flow of 1, and the effect's flow scales the
-/// whole loop — mint, exchange and bleed together — which is what keeps "Flow"
-/// meaning the same thing on a wet brush as on every other effect (§6.2).
+/// **The axes say what the tool does; [`WetEffect::flow`] says how hard.** Every axis
+/// here is quoted at the neutral flow of 1.
 ///
-/// Two axes are **vertical** flux between the canvas and a transient
-/// per-stroke *tool* reservoir — Lagrangian, giving crisp long-range *directed*
-/// transport:
+/// Two axes are **vertical** flux between the canvas and a transient per-stroke *tool*
+/// reservoir, which is what gives crisp long-range *directed* transport:
 /// - [`lift`](Self::lift)       — lift canvas paint up onto the tool,
 /// - [`deposit`](Self::deposit) — lay tool paint back down.
 ///
 /// One is **lateral** flux within the canvas itself, never touching the tool:
 /// - [`bleed`](Self::bleed) — the paint under the tip diffuses towards its
-///   neighbours (a blur brush alone; wet-softening under `add`).
+///   neighbours.
 ///
-/// `lift`-only is a scraper — it takes paint as a knife does, by the *amount*;
-/// the tool an artist calls an eraser acts on what the eye sees instead and is
-/// [`BrushEffect::Erase`] (§6.12). `lift`+`deposit` (`add = 0`) is a
-/// conservative smudge; `bleed`-only a blur; `add`-only ordinary paint. All flow
-/// runs with fixed iteration counts, so replay stays deterministic (§6.2).
+/// `lift`-only is a scraper, taking paint by the *amount*; the tool an artist calls an
+/// eraser acts on what the eye sees and is [`BrushEffect::Erase`] (§6.12).
+/// `lift`+`deposit` (`add = 0`) is a conservative smudge and `bleed`-only a blur; the
+/// everyday add-only brush is [`BrushEffect::Paint`], which carries no fluxes at all.
+/// All flow runs with fixed iteration counts, so replay stays deterministic (§6.2).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushDynamics {
-    /// The brush's own paint laid directly: the tool's only source term, in
-    /// [0, 1]. 0 = lays none (pure manipulation of existing paint), 1 = the full
-    /// mint — a pass at the neutral flow lays a full-thickness deposit.
+    /// The brush's own paint laid directly: the tool's only source term, in [0, 1].
+    /// 0 = lays none (pure manipulation of existing paint), 1 = the full mint.
     ///
-    /// What reaches the canvas per unit of swept optical depth (§6.1) is
-    /// `add · flow` ([`WetEffect::flow`]): this axis is the *share* of the
-    /// brush's own paint in what the tool does, and the flow is how hard the
-    /// tool does all of it. At `add = 1` a wet brush lays exactly the paint
-    /// [`BrushEffect::Paint`] would at the same flow, so switching a brush
-    /// between the two laying effects does not re-interpret its Flow slider.
+    /// What reaches the canvas per unit of swept optical depth (§6.1) is `add · flow`
+    /// ([`WetEffect::flow`]): this axis is the *share*, the flow is how hard. At
+    /// `add = 1` a wet brush lays exactly the paint [`BrushEffect::Paint`] would at the
+    /// same flow, so switching between the two laying effects does not re-interpret the
+    /// Flow slider.
     ///
-    /// A *rate*, not a quantity — this source never runs out on its own. For a stroke
-    /// that runs dry as it travels see
-    /// [`BrushParams::drain`](super::BrushParams::drain); for a finite carried glob
-    /// that depletes as it is laid see [`charge`](Self::charge).
+    /// A *rate*, not a quantity — this source never runs out on its own. See
+    /// [`BrushParams::drain`](super::BrushParams::drain) for a stroke that runs dry,
+    /// and [`charge`](Self::charge) for a finite carried glob.
     #[serde(default)]
     pub add: f32,
     /// Canvas paint **lifted** onto the tool per step, as a fraction of the paint present,
@@ -74,34 +59,27 @@ pub struct BrushDynamics {
     /// immediately. Vertical flux tool → canvas.
     #[serde(default)]
     pub deposit: f32,
-    /// Initial paint **pre-loaded onto the tool** reservoir before the stroke starts, as a
-    /// height (the "load a glob on the palette knife" param). 0 = the tool starts empty (the
-    /// historical behaviour). It depletes as the tool [`deposit`](Self::deposit)s and refills
-    /// as it [`lift`](Self::lift)s — a finite carried amount, unlike the inexhaustible
-    /// [`add`](Self::add) source (§6.2). Not scaled by [`WetEffect::flow`]:
-    /// the glob is what was scooped, not how hard the hand works it.
+    /// Initial paint **pre-loaded onto the tool** reservoir before the stroke starts,
+    /// as a height — the glob on the palette knife. 0 = the tool starts empty. It
+    /// depletes as the tool [`deposit`](Self::deposit)s and refills as it
+    /// [`lift`](Self::lift)s, a finite carried amount unlike the inexhaustible
+    /// [`add`](Self::add) source (§6.2). Not scaled by [`WetEffect::flow`]: the glob is
+    /// what was scooped, not how hard the hand works it.
     #[serde(default)]
     pub charge: f32,
-    /// Canvas paint **diffusing under the tip**, in [0, 1]. The one **lateral** flux,
-    /// and it is internal to the canvas — the tool neither takes nor gives (§6.2).
+    /// Canvas paint **diffusing under the tip**, in [0, 1] — the one **lateral** flux,
+    /// internal to the canvas: the tool neither takes nor gives (§6.2).
     ///
-    /// Unlike its three neighbours the axis is **a diffusivity, not a rate**: it is
-    /// linear in `D`, quoted in radius² per pass of the tip, so scrubbing spreads paint
-    /// as `σ = sqrt(2·D·τ)` — further the longer you work at it, as a blender does,
-    /// rather than converging on a fixed blur. 1 is `D = 0.04`, about `0.28 · radius`
-    /// of σ for one pass.
-    ///
-    /// Quoting it against the **radius** rather than in pixels is what makes it
-    /// resolution- and size-independent: the same setting is the same look on any
-    /// brush, the property the tapers get from being quoted in radii. The engine
-    /// realises `D` by choosing how far the stencil reaches and how hard it relaxes
-    /// (`stroke::budget::bleed_stencil`) — a rate alone cannot, because the share that
-    /// crosses per step clips at 1 and the axis would stop meaning anything well below
-    /// full crank.
+    /// Unlike its three neighbours the axis is **a diffusivity, not a rate**: linear in
+    /// `D`, quoted in radius² per pass of the tip, so scrubbing spreads paint as
+    /// `σ = sqrt(2·D·τ)` — further the longer you work at it, rather than converging on
+    /// a fixed blur. 1 is `D = 0.04`, about `0.28 · radius` of σ for one pass. Against
+    /// the **radius** rather than in pixels, so the same setting is the same look at any
+    /// brush size or resolution.
     ///
     /// Alone it is a blur brush; alongside [`add`](Self::add) it melts the ridges of the
-    /// strokes being painted over instead of leaving their height profile embossed
-    /// through the new paint.
+    /// strokes being painted over instead of leaving them embossed through the new
+    /// paint.
     #[serde(default)]
     pub bleed: f32,
 }
@@ -125,12 +103,9 @@ impl BrushDynamics {
     /// Every axis a number, and the four fractions inside the `[0, 1]` their own docs
     /// quote them in — see [`BrushParams::sanitized`](super::BrushParams::sanitized).
     ///
-    /// `charge` is floored but not capped, because it has no documented ceiling
-    /// *here*: it is a height, and a bound this crate does not own is not a bound
-    /// it may invent — clamping to one would silently rewrite documents whose
-    /// brushes were legitimately past a *slider's* end. The rate headroom a hot
-    /// brush wants lives on [`WetEffect::flow`], which is unbounded for the same
-    /// reason the other effects' rates are.
+    /// `charge` is floored but not capped: it is a height with no ceiling this crate
+    /// owns, and a bound it does not own is not one it may invent — clamping would
+    /// rewrite documents whose brushes were legitimately past a *slider's* end.
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
@@ -165,15 +140,13 @@ pub enum NoiseKind {
     Mosaic,
 }
 
-/// Color dynamics (color jitter): lets the applied color vary **across the
-/// brush and along the stroke** (§6.2). A 3-channel tileable 2-D noise
-/// field is sampled in the stroke's **own** frame — `(lateral offset from the
-/// centreline, arc length)`, both in canvas px — so the variation belongs to the
-/// gesture rather than to the patch of canvas under it: one axis spreads the
-/// color across the extent, the other evolves it along the stroke. The three
-/// noise channels offset the three color channels *of the current color space*
-/// (Oklab `L, a, b`; Mixbox pigment concentrations). The field is baked from
-/// the per-stroke `seed`, so each stroke lays its own, deterministically.
+/// Color dynamics (color jitter): lets the applied color vary **across the brush and
+/// along the stroke** (§6.2). A 3-channel tileable noise field is sampled in the
+/// stroke's **own** frame — `(lateral offset from the centreline, arc length)`, both in
+/// canvas px — so the variation belongs to the gesture rather than to the patch of
+/// canvas under it. The three noise channels offset the three color channels *of the
+/// current color space* (Oklab `L, a, b`; Mixbox pigment concentrations), from the
+/// per-stroke seed.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ColorDynamics {
     /// Which noise field to sample.
@@ -182,18 +155,14 @@ pub struct ColorDynamics {
     /// noise tile per `stark-engine`'s `noise::NOISE_TILE_PX` px; higher = finer
     /// variation along that axis; 0 = constant along that axis.
     pub frequency: [f32; 2],
-    /// Noise amplitude per color channel, in the color space's own units
-    /// (noise is signed, so a channel wanders ±amplitude). All 0 = off — the
-    /// exact historical constant-color deposit.
+    /// Noise amplitude per color channel, in the color space's own units (the noise is
+    /// signed, so a channel wanders ±amplitude). All 0 = off, the constant-color
+    /// deposit.
     ///
     /// Floored at 0 and capped at [`Srgb::EXTENT`](crate::Srgb::EXTENT) by
     /// [`sanitized`](ColorDynamics::sanitized) — the one knob here with a ceiling,
-    /// because it is the one this crate *owns*. It is an offset in a color space
-    /// this crate defines, so the bound is the same one `Srgb` already states for a
-    /// color's distance from zero, and for the same reason: far past any display
-    /// gamut, and small enough that a half-float tile cannot overflow through any
-    /// pass. A rate's ceiling is a slider's and so may not be invented here
-    /// ([`BrushDynamics::sanitized`]); a color-space offset's is not.
+    /// because it is an offset in a color space this crate defines rather than a rate
+    /// whose ceiling is a slider's ([`BrushDynamics::sanitized`]).
     pub amplitude: [f32; 3],
 }
 
@@ -215,9 +184,7 @@ impl ColorDynamics {
 
     /// Every number a number — see
     /// [`BrushParams::sanitized`](super::BrushParams::sanitized). Both are floored at
-    /// zero (an amplitude is a distance the channel wanders either way, a frequency a
-    /// scale), and only the amplitude is capped: see its own doc for why this is the
-    /// bound the crate owns and the frequency's is not.
+    /// zero; only the amplitude is capped, for the reason its own doc gives.
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         let extent = crate::Srgb::EXTENT;
@@ -236,55 +203,44 @@ impl ColorDynamics {
     }
 }
 
-/// The **painting** effect (§6.2): the brush lays its own paint and nothing
-/// else — the everyday brush, and the whole of the swept fast path's antialiased
-/// deposit. A brush that also *works* what is already there — the smudge, the
-/// knife, the blur — is [`BrushEffect::Wet`], a different tool with different
-/// available features rather than this one at other rates.
+/// The **painting** effect (§6.2): the brush lays its own paint and nothing else. A
+/// brush that also *works* what is already there — the smudge, the knife, the blur —
+/// is [`BrushEffect::Wet`], a different tool rather than this one at other rates.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PaintEffect {
-    /// The pigment: straight **sRGB**, components in [0, 1], converted to the
-    /// Oklab working space at stamp time (§6.5). Nothing here says how much of it
-    /// arrives — the paint a brush lays is per-unit opaque, and "how much shows"
-    /// is [`opacity`](Self::opacity) below, a ceiling on the finished stroke —
-    /// and there is no fourth component for the same reason: an alpha here scaled
-    /// the *material* and so answered a question no digital artist was asking
-    /// (§6.2).
+    /// The pigment: straight **sRGB**, components in [0, 1], converted to the Oklab
+    /// working space at stamp time (§6.5). **No fourth component**: the paint a brush
+    /// lays is per-unit opaque, and how much of it shows is [`opacity`](Self::opacity),
+    /// a ceiling on the finished stroke rather than a property of the material (§6.2).
     ///
-    /// Inside the effect rather than on [`BrushParams`](super::BrushParams), because
-    /// this is the one brush parameter only painting consumes: an eraser lays nothing a
-    /// color could be a property of (§6.12), so a stored erase stroke carries no color
-    /// at all. The *hand* still has one while the eraser is in force — that is frontend
-    /// state (`stark-dioxus-frontend`'s `BrushConfig`), which remembers the whole paint
-    /// effect across the toggle and hands the color to fills besides.
+    /// Inside the effect rather than on [`BrushParams`](super::BrushParams) because
+    /// painting is the only thing that consumes it: an eraser lays nothing a color
+    /// could be a property of (§6.12), so a stored erase stroke carries no color at
+    /// all. The *hand* still has one while the eraser is in force — that is frontend
+    /// state.
     ///
-    /// A file from before this field replays its strokes in the default brush's
-    /// pigment (black) — the bare `#[serde(default)]` (§8).
+    /// A file from before this field replays in the default pigment, black (§8).
     #[serde(default)]
     pub color: [f32; 3],
     /// How much of a **full stroke** this stroke is, in [0, 1] — a ceiling on the
     /// stroke's final laid amount, [`EraseEffect::opacity`]'s law run in the laying
-    /// direction. The whole stroke's parcel is scaled as one deposit: the coverage
-    /// `w` it would have laid saturates at 1 however long the stroke works one
-    /// spot, its visible alpha becomes `opacity · w`, and the height is scaled
-    /// through the slab law (§6.1) to the amount that shows exactly that — so at
-    /// 0.5 a saturated stroke covers half, scrubbing walks its soft edge toward
-    /// the cap rather than past it, and a stroke crossing itself never outruns the
-    /// dial. The knob a digital artist calls Opacity, beside the
-    /// [`flow`](Self::flow) that is the rate.
+    /// direction. The whole stroke's parcel is scaled as one deposit: the coverage `w`
+    /// saturates at 1 however long the stroke works one spot, its visible alpha becomes
+    /// `opacity · w`, and the height is scaled through the slab law (§6.1) to the amount
+    /// that shows exactly that — so a stroke crossing itself never outruns the dial. The
+    /// knob an artist calls Opacity, beside the [`flow`](Self::flow) that is the rate.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
-    /// The paint **height** laid per unit of swept optical depth (§6.1) — this
-    /// effect's one rate, and laying is the whole of what this effect does, so it
-    /// scales the whole effect. One knob per effect: [`BrushEffect::flow`].
+    /// The paint **height** laid per unit of swept optical depth (§6.1) — this effect's
+    /// one rate, and laying is the whole of what it does, so it scales the whole effect.
+    /// One knob per effect: [`BrushEffect::flow`].
     ///
     /// A *rate*, not a quantity — it never runs out on its own; see
     /// [`BrushParams::drain`](super::BrushParams::drain) for a stroke that does.
     #[serde(default = "PaintEffect::default_flow")]
     pub flow: f32,
-    /// Color dynamics (color jitter) — how the applied color varies across the
-    /// brush and along the stroke (§6.2). Historized (it changes stored
-    /// pixels); the default (amplitude 0) is the constant color.
+    /// Color dynamics (color jitter) — how the applied color varies across the brush
+    /// and along the stroke (§6.2). The default (amplitude 0) is the constant color.
     #[serde(default)]
     pub color_dynamics: ColorDynamics,
     /// The pen mappings onto this effect's own rates. The tip's mappings live on
@@ -332,46 +288,40 @@ impl PaintEffect {
     }
 }
 
-/// The **wet** effect (§6.2): the brush lays its own paint *and works what is
-/// already there* through the sequential lift/deposit loop — the smudge, the
-/// knife, the blur, the loaded brush, and every mixture of them.
+/// The **wet** effect (§6.2): the brush lays its own paint *and works what is already
+/// there* through the sequential lift/deposit loop — the smudge, the knife, the blur,
+/// the loaded brush, and every mixture of them.
 ///
-/// A separate effect rather than a [`PaintEffect`] at other rates, because the
-/// two are different tools with different available features, not one tool on
-/// two budgets: wet strokes mix with the canvas and carry a reservoir, and in
-/// exchange their deposit is point-sampled where paint's is antialiased through
-/// the pixel-footprint filter (§6.2) — a trade a brush should make by identity,
-/// not by a rate crossing zero.
+/// A separate effect rather than a [`PaintEffect`] at other rates: wet strokes mix with
+/// the canvas and carry a reservoir, and in exchange their deposit is point-sampled
+/// where paint's is antialiased (§6.2) — a trade a brush should make by identity, not
+/// by a rate crossing zero.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct WetEffect {
     /// The pigment — [`PaintEffect::color`], and its doc holds here unchanged.
     #[serde(default)]
     pub color: [f32; 3],
-    /// The ceiling on a full stroke — [`PaintEffect::opacity`]'s law, **inexact
-    /// here by nature**: what the stroke moves it must move whole — conservation
-    /// (§6.1) — and once fresh paint is smeared into the picture there is no
-    /// longer a "this stroke's share" for a ceiling to scale. The knob scales
-    /// what the brush **mints** — the `add` paint and the
-    /// [`charge`](BrushDynamics::charge)'s glob — by the same fraction, which
-    /// agrees with the ceiling to first order in the amount laid and exactly
-    /// at 1.
+    /// The ceiling on a full stroke — [`PaintEffect::opacity`]'s law, **inexact here by
+    /// nature**: what the stroke moves it must move whole (§6.1), and once fresh paint
+    /// is smeared into the picture there is no "this stroke's share" left for a ceiling
+    /// to scale. The knob scales what the brush **mints** — the `add` paint and the
+    /// [`charge`](BrushDynamics::charge)'s glob — which agrees with the ceiling to first
+    /// order in the amount laid, and exactly at 1.
     #[serde(default = "PaintEffect::default_opacity")]
     pub opacity: f32,
     /// This effect's **overall rate** — how hard a pass of the tip works: it scales
-    /// *everything* the tool does per pass. The mint is `add · flow` of height per
-    /// unit swept optical depth; the exchange runs at `flow` times its per-pass
-    /// exponents, so a pass at flow ½ lifts and lays back exactly what half a pass
-    /// at flow 1 would; the bleed diffuses `flow` times the diffusivity. 1 is the
-    /// neutral pass; 0 is a brush that does nothing at all.
+    /// *everything* the tool does per pass. The mint is `add · flow` of height per unit
+    /// swept optical depth, the exchange runs at `flow` times its per-pass exponents,
+    /// and the bleed diffuses `flow` times the diffusivity. 1 is the neutral pass; 0 is
+    /// a brush that does nothing at all.
     ///
-    /// Beside [`dynamics`](Self::dynamics) rather than an axis inside it: the axes
-    /// are the tool's identity, the flow is the hand's intensity. One knob per
-    /// effect: [`BrushEffect::flow`].
+    /// Beside [`dynamics`](Self::dynamics) rather than an axis inside it: the axes are
+    /// the tool's identity, the flow is the hand's intensity. One knob per effect:
+    /// [`BrushEffect::flow`].
     ///
     /// A *rate*, floored but not capped
-    /// ([`BrushParams::sanitized`](super::BrushParams::sanitized)): the frontend's
-    /// `MAX_FLOW` is where a slider stops, not where the quantity stops meaning
-    /// something.
+    /// ([`BrushParams::sanitized`](super::BrushParams::sanitized)): a slider's end is
+    /// not where the quantity stops meaning something.
     #[serde(default = "PaintEffect::default_flow")]
     pub flow: f32,
     /// The source share and the four fluxes — the unified natural-media tool
@@ -403,20 +353,18 @@ impl Default for WetEffect {
     }
 }
 
-/// The **erasing** effect (§6.12): the stroke lays nothing and instead
-/// removes what the eye sees. The same swept extent a deposit would rasterize is
-/// accumulated across the whole stroke, read as the coverage `w` it would have
-/// covered the canvas by, and the paint's **visible** opacity is scaled by
-/// `1 − opacity` — inverted through the slab law (§6.1) into the height
-/// that shows exactly that much. That inversion is the point: `opacity = 0.5`
-/// under a saturated stroke leaves half the opacity that was there, where the
-/// `lift` axis — the scraper — removes half the *height*, of which thick paint
-/// shows almost nothing.
+/// The **erasing** effect (§6.12): the stroke lays nothing and instead removes what
+/// the eye sees. The swept extent is accumulated across the whole stroke, read as the
+/// coverage `w` it would have covered the canvas by, and the paint's **visible**
+/// opacity is scaled by `1 − opacity` — inverted through the slab law (§6.1) into the
+/// height that shows exactly that much. That inversion is the point: `opacity = 0.5`
+/// under a saturated stroke leaves half the opacity that was there, where the `lift`
+/// axis — the scraper — removes half the *height*, of which thick paint shows almost
+/// nothing.
 ///
-/// The brush's color is ignored — an eraser lays nothing the color could be a
-/// property of. The tip, the tooth, the jitter, the tapers and the drain all
-/// still apply: they shape *where and how fast* the extent builds, whatever the
-/// effect then does with it.
+/// The brush's color is ignored. The tip, the tooth, the jitter, the tapers and the
+/// drain all still apply: they shape *where and how fast* the extent builds, whatever
+/// the effect then does with it.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct EraseEffect {
     /// How much of the visible opacity a saturated stroke removes, in [0, 1] — a
@@ -445,63 +393,49 @@ impl Default for EraseEffect {
     }
 }
 
-/// The **liquify** effect (§6.13): the stroke drags the picture itself. The
-/// paint under the tip — color, per-unit opacity and height together — follows
-/// the travel as a **homeomorphism** of the canvas: the stroke builds a
-/// displacement field from the tip's own coverage, and the picture is resampled
-/// through it *once*, from a pristine base, so an edge dragged is that edge,
-/// displaced and still sharp. Consecutive liquify strokes on a layer compose
-/// into the same field and resample from the same base, so working a spot over
-/// and over costs no resolution. Nothing is minted and nothing is exchanged —
-/// the brush carries no reservoir, no pigment, and no color a jitter could
-/// wander.
+/// The **liquify** effect (§6.13): the stroke drags the picture itself. The paint
+/// under the tip — color, per-unit opacity and height together — follows the travel as
+/// a **homeomorphism** of the canvas: the displacement field is built from the tip's own
+/// coverage and the picture is resampled through it *once*, from a pristine base, so an
+/// edge dragged is that edge, displaced and still sharp. Consecutive liquify strokes on
+/// a layer compose into the same field and resample from the same base, so working a
+/// spot over and over costs no resolution. Nothing is minted and nothing is exchanged:
+/// no reservoir, no pigment, and no color a jitter could wander.
 ///
-/// A separate effect rather than a [`WetEffect`] at some rate, for the
-/// eraser's reason: warping and smearing are different tools with different
-/// available features, not one tool on two settings. A smudge trades paint
-/// through the tool and conserves height; a warp reparameterizes the canvas
-/// and preserves *composition* pointwise instead — every value the stroke
-/// leaves is one the field held nearby (§6.13 is where that trade is argued).
+/// A separate effect rather than a [`WetEffect`] at some rate, for the eraser's reason:
+/// a smudge trades paint through the tool and conserves height, where a warp
+/// reparameterizes the canvas and preserves *composition* pointwise instead (§6.13).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct LiquifyEffect {
-    /// The **follow fraction**, in [0, 1] — this effect's one rate: how much of
-    /// the tip's own travel the paint under the tip's core keeps up with, per
-    /// pass. At 1 the paint under the core moves with the hand; lower and it
-    /// slips behind, so a light setting nudges where a full one carries. The
-    /// rest of the tip follows in proportion to its **coverage** — the round
-    /// tip's disc at its hardness, or the mask a stamp names — read exactly as
-    /// every other effect reads it (§6.13), so a soft tip carries its shoulder
-    /// gently and a hard one drags its disc whole and shears the paint at its
-    /// rim.
+    /// The **follow fraction**, in [0, 1] — this effect's one rate: how much of the
+    /// tip's own travel the paint under the tip's core keeps up with, per pass. At 1 the
+    /// core moves with the hand; lower and it slips behind. The rest of the tip follows
+    /// in proportion to its **coverage** — the round tip's disc at its hardness, or the
+    /// mask a stamp names (§6.13) — so a soft tip carries its shoulder gently and a hard
+    /// one drags its disc whole and shears the paint at its rim.
     ///
-    /// **The quoted range is load-bearing, not taste**: the renderer's segment
-    /// budget holds every step a contraction — `strength` against how fast the
-    /// tip's coverage climbs along the travel — which is what makes the stroke's
-    /// map invertible, and it prices that against a strength of at most 1
-    /// (§6.13). Both doors hold it —
-    /// [`BrushParams::sanitized`](super::BrushParams::sanitized) for what arrives,
-    /// and [`BrushEffect::set_flow`] for what a slider writes.
+    /// **The quoted range is load-bearing, not taste**: the renderer's segment budget
+    /// holds every step a contraction, which is what makes the stroke's map invertible,
+    /// and prices that against a strength of at most 1 (§6.13). Both doors hold it —
+    /// [`BrushParams::sanitized`](super::BrushParams::sanitized) for what arrives, and
+    /// [`BrushEffect::set_flow`] for what a slider writes.
     ///
-    /// A fraction of *travel*, so scrubbing keeps carrying — there is no
-    /// ceiling a worked spot saturates at, which is why this effect has no
-    /// opacity knob at all ([`BrushEffect::opacity`]).
+    /// A fraction of *travel*, so scrubbing keeps carrying: there is no ceiling a worked
+    /// spot saturates at, which is why this effect has no opacity knob at all
+    /// ([`BrushEffect::opacity`]).
     #[serde(default = "LiquifyEffect::default_strength")]
     pub strength: f32,
-    /// How finely the drag is **stepped**, in [0, 1] (§6.13). At 1 every step
-    /// the renderer composes is a contraction — the paint ahead of the tip is
-    /// pushed out of the way as smoothly as the tip's own edge, which is the
-    /// homeomorphism guarantee — and the steps are as short as that takes: a
-    /// hard tip's edge climbs within a texel, so a hard tip at 1 steps by the
-    /// texel and a wide one costs hundreds of steps per stroke. Lower and each
-    /// step is `1/quality` as long: the same field, composed from fewer steps,
-    /// with the paint just ahead of a hard edge squashed a step's worth at a
-    /// time rather than carried — the look every reference liquify has, at the
-    /// speed it has it. At 0 there is no step budget at all and the flattener's
-    /// own segmentation stands.
+    /// How finely the drag is **stepped**, in [0, 1] (§6.13). At 1 every step the
+    /// renderer composes is a contraction — the homeomorphism guarantee — and the steps
+    /// are as short as that takes: a hard tip steps by the texel, and a wide one costs
+    /// hundreds of steps per stroke. Lower and each step is `1/quality` as long: the
+    /// same field from fewer steps, with the paint just ahead of a hard edge squashed
+    /// rather than carried. At 0 there is no step budget and the flattener's own
+    /// segmentation stands.
     ///
-    /// Not a rate the pen drives: it is a cost dial, and a stroke whose stepping
-    /// varied with pressure would render differently along its own length for
-    /// no reason a hand could see.
+    /// Not a rate the pen drives: it is a cost dial, and a stroke whose stepping varied
+    /// with pressure would render differently along its own length for no reason a hand
+    /// could see.
     #[serde(default = "LiquifyEffect::default_quality")]
     pub quality: f32,
     /// The pen mappings onto this effect's own rate ([`LiquifyModulations`]).
@@ -522,18 +456,16 @@ impl Default for LiquifyEffect {
 }
 
 impl LiquifyEffect {
-    /// How far beyond its own mark a liquify stroke may **read** the layer's paint,
-    /// in canvas px (§6.13, §12.6) — the contract between the footprint
+    /// How far beyond its own mark a liquify stroke may **read** the layer's paint, in
+    /// canvas px (§6.13, §12.6) — the contract between the footprint
     /// ([`liquify_reads`](super::super::footprint::liquify_reads)) and the engine.
     ///
-    /// A liquify stroke resamples the run's pristine base under the *composed*
-    /// displacement of every stroke in the run, so its reads reach as far as that
-    /// displacement does. The engine caps the displacement it lets a run accumulate
-    /// under this number and re-bases the run past it, and asserts the cap plus its
-    /// margins against this constant; the footprint claims exactly this. A number
-    /// in the model rather than the engine because the footprint is the model's,
-    /// and a claim that could quietly fall short of the reads it covers is the
-    /// §12.6 failure with no alarm.
+    /// A stroke resamples the run's pristine base under the *composed* displacement of
+    /// every stroke in the run, so its reads reach as far as that displacement does. The
+    /// engine caps what a run may accumulate under this number and re-bases past it; the
+    /// footprint claims exactly this. In the model because the footprint is the model's,
+    /// and a claim that fell short of the reads it covers is the §12.6 failure with no
+    /// alarm.
     pub const REACH_PX: f32 = 640.0;
 
     /// The follow fraction a brush gets when it does not say
@@ -552,12 +484,10 @@ impl LiquifyEffect {
     }
 }
 
-/// What a stroke of this brush **does** (§6.2, §6.12, §6.13) — the tool's
-/// identity, as a sum rather than a mode flag beside knobs it would silently
-/// veto. Everything outside this enum — the tip, the tooth, the jitter, the
-/// tapers, the drain — shapes the swept extent; the effect is what that extent
-/// then does to the canvas, and each variant carries exactly the knobs that
-/// exist while it is the one in force.
+/// What a stroke of this brush **does** (§6.2, §6.12, §6.13) — the tool's identity, as
+/// a sum rather than a mode flag beside knobs it would silently veto. Everything
+/// outside this enum shapes the swept extent; each variant carries exactly the knobs
+/// that exist while it is the one in force.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub enum BrushEffect {
     /// Lay paint (§6.2) — the swept, antialiased deposit.
@@ -580,16 +510,14 @@ impl Default for BrushEffect {
 }
 
 impl BrushEffect {
-    /// A wet effect of a pigment and its axes, **at the neutral flow** — the
-    /// shorthand a test reaches for when the color dynamics and the pen mappings
-    /// are the defaults. Flow 1 rather than the default brush's, so the axes a
-    /// test states *are* the effective per-pass rates it will measure.
+    /// A wet effect of a pigment and its axes, **at the neutral flow** — the shorthand
+    /// a test reaches for when the color dynamics and the pen mappings are the defaults.
+    /// Flow 1 rather than the default brush's, so the axes a test states *are* the
+    /// per-pass rates it will measure.
     ///
-    /// The color is a parameter and not a default on purpose: the pigment lives
-    /// *inside* the effect, so a constructor that let a caller build one
-    /// without saying a color would be the door through which
-    /// `effect: wet_with(..), ..brush(color, r)` silently paints black —
-    /// the spread's colored effect replaced whole, with nothing left to say so.
+    /// The color is a parameter and not a default on purpose: a constructor that let a
+    /// caller build one without saying a color is the door through which
+    /// `effect: wet_with(..), ..brush(color, r)` silently paints black.
     pub fn wet_with(color: [f32; 3], dynamics: BrushDynamics) -> Self {
         Self::Wet(WetEffect {
             color,
@@ -605,16 +533,13 @@ impl BrushEffect {
         Self::Paint(PaintEffect::colored(color))
     }
 
-    /// The effect's **overall rate** — "Flow" in the UI, whichever effect is in
-    /// force: how hard a pass of the tip works. How much a laying stroke lays
-    /// ([`PaintEffect::flow`]), how hard a wet stroke both lays and works the
-    /// canvas ([`WetEffect::flow`]), how fast an eraser's bite builds
+    /// The effect's **overall rate** — "Flow" in the UI, whichever effect is in force:
+    /// how much a laying stroke lays ([`PaintEffect::flow`]), how hard a wet stroke both
+    /// lays and works the canvas ([`WetEffect::flow`]), how fast an eraser's bite builds
     /// ([`EraseEffect::flow`]), how hard a liquify stroke drags
-    /// ([`LiquifyEffect::strength`]). One meaning with one knob per effect,
-    /// which is what lets the brush panel's Flow slider and the tuning drag
-    /// tune the tool in hand without asking which kind it is — and without the
-    /// slider changing what the tool *is* (that is the effect's own knobs:
-    /// [`BrushDynamics`]' axes above all).
+    /// ([`LiquifyEffect::strength`]). One knob per effect, so a Flow slider tunes the
+    /// tool in hand without asking which kind it is — and without changing what the tool
+    /// *is* ([`BrushDynamics`]' axes above all).
     pub fn flow(&self) -> f32 {
         match self {
             Self::Paint(p) => p.flow,
@@ -626,15 +551,12 @@ impl BrushEffect {
 
     /// Write the effect's overall rate — [`flow`](Self::flow)'s other half.
     ///
-    /// The three laying rates take the number as given: their ceilings are a
-    /// slider's, and a bound this crate does not own is not one it may invent
-    /// ([`BrushDynamics::sanitized`]). [`LiquifyEffect::strength`] is the one that
-    /// *is* owned here — `[0, 1]` is what keeps the per-segment gather inside the
-    /// snapshot its own travel sized (§6.13) — so this door holds it, as
-    /// `BrushConfig::params` and `max_flow` already do on the frontend's side.
-    ///
-    /// Spelled as `sanitized` spells it, so the two doors land a `NaN` in the same
-    /// place: full drag, the setting that cannot make a stroke do nothing.
+    /// The three laying rates take the number as given: their ceilings are a slider's,
+    /// and a bound this crate does not own is not one it may invent
+    /// ([`BrushDynamics::sanitized`]). [`LiquifyEffect::strength`] *is* owned here —
+    /// `[0, 1]` keeps the per-segment gather inside the snapshot its own travel sized
+    /// (§6.13) — so this door holds it, and lands a `NaN` where `sanitized` does: the
+    /// full drag, the setting that cannot make a stroke do nothing.
     pub fn set_flow(&mut self, flow: f32) {
         match self {
             Self::Paint(p) => p.flow = flow,
@@ -644,31 +566,24 @@ impl BrushEffect {
         }
     }
 
-    /// The effect's **opacity** — the ceiling on what a saturated stroke does,
-    /// whichever effect is in force: how much of a full stroke it lays
-    /// ([`PaintEffect::opacity`], [`WetEffect::opacity`]) or removes
-    /// ([`EraseEffect::opacity`]). [`flow`](Self::flow)'s sibling, and one
-    /// question for one slider for the same reason.
+    /// The effect's **opacity** — the ceiling on what a saturated stroke does: how much
+    /// of a full stroke it lays ([`PaintEffect::opacity`], [`WetEffect::opacity`]) or
+    /// removes ([`EraseEffect::opacity`]), and 1 on a warp, which has no such ceiling.
     pub fn opacity(&self) -> f32 {
         match self {
             Self::Paint(p) => p.opacity,
             Self::Wet(w) => w.opacity,
             Self::Erase(e) => e.opacity,
-            // A warp has no ceiling for a dial to set: the follow is a fraction
-            // of *travel*, so scrubbing keeps carrying the way the bleed keeps
-            // buying distance (§6.13), and there is no saturated stroke for an
-            // opacity to be a fraction of. 1 is the identity every consumer of
-            // this number — the integrate, the mask's fold — expects of "no
-            // ceiling".
+            // The follow is a fraction of *travel*, so there is no saturated stroke
+            // for an opacity to be a fraction of (§6.13). 1 is the identity every
+            // consumer of this number expects of "no ceiling".
             Self::Liquify(_) => 1.0,
         }
     }
 
-    /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half.
-    /// A no-op on [`Liquify`](Self::Liquify), which has no such knob — the
-    /// editor never shows the dial while it is in force, so nothing writes
-    /// here; stated as an arm rather than left to a wildcard so a fourth
-    /// effect has to answer for itself.
+    /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half. A no-op on
+    /// [`Liquify`](Self::Liquify), which has no such knob; stated as an arm rather than
+    /// left to a wildcard so a new effect has to answer for itself.
     pub fn set_opacity(&mut self, opacity: f32) {
         match self {
             Self::Paint(p) => p.opacity = opacity,
@@ -689,11 +604,10 @@ impl BrushEffect {
         }
     }
 
-    /// Whether the pen drives this effect's [`opacity`](Self::opacity) — the
-    /// one mapping the renderer has to know about *as a brush*, because a stroke
-    /// that carries it accumulates one more lane per touched tile and takes the
-    /// carried-parcel path whatever the dial says (§6.2). A pure function of the
-    /// brush, like every path decision, so a live tail and its commit agree.
+    /// Whether the pen drives this effect's [`opacity`](Self::opacity) — the one mapping
+    /// the renderer has to know about *as a brush*: a stroke that carries it accumulates
+    /// one more lane per touched tile and takes the carried-parcel path whatever the dial
+    /// says (§6.2). A pure function of the brush, so a live tail and its commit agree.
     pub fn opacity_modulated(&self) -> bool {
         match self {
             Self::Paint(p) => p.modulation.opacity.is_some(),
@@ -736,11 +650,10 @@ impl BrushEffect {
                 modulation: e.modulation.sanitized(),
             }),
             Self::Liquify(l) => Self::Liquify(LiquifyEffect {
-                // In `[0, 1]` by the field's own doc, and here the range is a
-                // *renderer* invariant rather than a semantic one: the gather's
-                // snapshot margin is sized by the segment's travel, and a
-                // follow past 1 would read outside it (§6.13). Capped, unlike
-                // the flows, because this crate owns that bound.
+                // In `[0, 1]` by the field's own doc, and here a *renderer* invariant:
+                // the gather's snapshot margin is sized by the segment's travel, so a
+                // follow past 1 would read outside it (§6.13). Capped, unlike the
+                // flows, because this crate owns that bound.
                 strength: clamp01(finite_or(l.strength, 1.0)),
                 // In `[0, 1]` by its own doc: a fraction of the step budget,
                 // meaningless past 1 — and a NaN lands on the full budget, the
@@ -756,11 +669,10 @@ impl BrushEffect {
 mod tests {
     use super::*;
 
-    /// The liquify strength's quoted `[0, 1]` is a **renderer** invariant, not
-    /// taste (§6.13): the segment budget prices its contraction against a strength
-    /// of at most 1, so a follow past 1 could fold the map. The sanitize is the one
-    /// door a wire or file value comes through, so it is where the bound is
-    /// pinned — a value past 1 is nonsense, not a stronger drag.
+    /// The liquify strength's quoted `[0, 1]` is a **renderer** invariant, not taste
+    /// (§6.13): the segment budget prices its contraction against a strength of at most
+    /// 1, so a follow past 1 could fold the map. The sanitize is the door a wire or file
+    /// value comes through, so it is where the bound is pinned.
     #[test]
     fn a_liquify_strength_is_held_to_the_range_the_gather_is_sized_by() {
         for (dirty, clean) in [(1.5, 1.0), (-0.25, 0.0), (f32::NAN, 1.0), (0.4, 0.4)] {

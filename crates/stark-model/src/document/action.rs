@@ -1,9 +1,8 @@
 //! Actions: committed, deterministic, replayable document mutations (§4).
 //!
-//! An [`Action`] is the unit the timeline stores/replays and (later) the unit
-//! serialized to disk. Every action carries a globally-unique [`ActionId`] so
-//! the same records work unchanged in a future replicated, multi-peer log
-//! (§4, §12) — we pay that tiny cost from the first commit.
+//! An [`Action`] is the unit the timeline stores and replays, and the unit
+//! serialized to disk. Every action carries a globally-unique [`ActionId`], so the
+//! same records work unchanged in a replicated, multi-peer log (§4, §12).
 
 use serde::{Deserialize, Serialize};
 
@@ -66,49 +65,41 @@ pub struct ActionId {
 ///
 /// Deliberately does **not** carry the tool. Only the brush tool can reach a stroke —
 /// the selection tools produce a [`SelectionOp`] instead — so such a field would hold
-/// one value for every stroke of every document. A tool worth recording would be
-/// recorded by whatever distinguishes it, which this enum does not.
+/// one value for every stroke of every document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct StrokeRecord {
     pub layer: LayerId,
     pub brush: BrushParams,
     /// The fitted stroke curve: the control points the raw pointer samples were
-    /// smoothed and simplified down to (§6.2), an order of magnitude
-    /// fewer points and all that is needed to reconstruct the stroke. The raw
-    /// samples are never stored — not in the file, not in the action log, not
-    /// on the wire.
+    /// smoothed and simplified down to (§6.2), and all that is needed to reconstruct
+    /// the stroke. The raw samples are never stored — not in the file, not in the
+    /// action log, not on the wire.
     pub path: Vec<crate::path::ControlPoint>,
-    /// The seed every per-stroke randomness derives from (§6.2): the
-    /// color-dynamics field baked for the stroke and the deposit jitter's gate
-    /// are each their own draw off it, so replay reproduces both exactly. A
-    /// fresh one per stroke — the document clock at the press — unless a caller
-    /// pins it to re-render one stroke under the same jitter
-    /// (`Engine::replay_stroke_seeded`).
+    /// The seed every per-stroke randomness derives from (§6.2): the color-dynamics
+    /// field and the deposit jitter's gate are each their own draw off it, so replay
+    /// reproduces both exactly. Fresh per stroke unless a caller pins it to re-render
+    /// one stroke under the same jitter (`Engine::replay_stroke_seeded`).
     pub seed: u64,
     /// Where on [`path`](Self::path)'s curve the stroke itself begins — a curve
     /// parameter in span units, `0 ≤ start ≤` the path's span count (§6.2).
     ///
-    /// The curve may extend *before* the press: the hover trail the engine was
-    /// already watching becomes the stroke's **run-up**, fitted into the same
-    /// curve so the entry's direction and curvature are measured from real
-    /// motion rather than guessed from the first tolerance-quantized steps. This
-    /// marker records where on that curve the press really happened, and the
-    /// deposit begins exactly there — everything before it is evidence, never
-    /// paint. Rendering honours it in one place (the flattening funnel,
-    /// `stark-engine`'s `generate_segments_in`), so replay, live preview and
-    /// peers cannot disagree about it.
+    /// The curve may extend *before* the press: the hover trail becomes the stroke's
+    /// **run-up**, fitted into the same curve so the entry's direction and curvature
+    /// are measured from real motion rather than guessed from the first
+    /// tolerance-quantized steps. Everything before this marker is evidence, never
+    /// paint. Honoured in one place (the flattening funnel, `stark-engine`'s
+    /// `generate_segments_in`), so replay, live preview and peers cannot disagree.
     ///
-    /// `0` — the curve's own head — for a stroke with no run-up, which is also
-    /// what a file from before this field existed means by its absence: the
-    /// whole curve is the stroke, and such files replay bit-identically.
+    /// `0` — the curve's own head — for a stroke with no run-up, which is also what a
+    /// file lacking the field means by its absence: the whole curve is the stroke.
     #[serde(default)]
     pub start: f32,
     /// Where the layer's translation sat on the canvas when this stroke was made
-    /// (§14.12): [`path`](Self::path) is in the **layer's** translation, and this is what
-    /// places the canvas-anchored inputs — the author's mask, the substrate's tooth
-    /// — into it at apply. In the action rather than read off the state, so a
-    /// stroke reads no translation and commutes with one; a file from before this
-    /// field carries zero, under which translation and canvas coincide and nothing moves.
+    /// (§14.12): [`path`](Self::path) is in the **layer's** translation, and this is
+    /// what places the canvas-anchored inputs — the author's mask, the substrate's
+    /// tooth — into it at apply. In the action rather than read off the state, so a
+    /// stroke reads no translation and commutes with one; zero in a file lacking the
+    /// field, where translation and canvas coincide.
     #[serde(default)]
     pub translation: crate::geom::IVec2,
 }
@@ -117,58 +108,44 @@ pub struct StrokeRecord {
 ///
 /// # Changing this enum
 ///
-/// This is the document's vocabulary, so it is also the thing every saved file is
-/// read against — and the rules for changing it are **not** the ones that used to
-/// hang off nearly every variant below (§8). A file carries the schema it was written
-/// with, and loading reconciles it against this enum *by name*, so:
+/// This is the document's vocabulary, so it is also what every saved file is read
+/// against (§8). A file carries the schema it was written with, and loading
+/// reconciles it against this enum *by name*, so:
 ///
-/// - A **new variant** goes wherever it reads best. Nothing has to be appended, and a
-///   file written before it existed simply never contains one.
-/// - A **new field** on an existing variant needs `#[serde(default)]`, which is what
-///   an older file's missing column is filled from. Without it, that file fails to
-///   load and says which field it wanted.
-/// - A **renamed** field or variant needs `#[serde(alias = "…")]` to keep older files
-///   readable; a renamed one without an alias is a break.
+/// - A **new variant** goes wherever it reads best; a file written before it existed
+///   simply never contains one.
+/// - A **new field** needs `#[serde(default)]` — what an older file's missing column
+///   is filled from. Without it that file fails to load, naming the field it wanted.
+/// - A **renamed** field or variant needs `#[serde(alias = "…")]`; without one it is
+///   a break.
 /// - A **removed** field is skipped by readers that no longer declare it.
 /// - A variant's **shape** may change — every shape is a product of its fields in
-///   order, so a unit may gain fields and a payload may be taken away. Moving to
-///   *named* fields needs `#[serde(alias = "0")]` on the field taking each position.
+///   order. Moving to *named* fields needs `#[serde(alias = "0")]` on the field
+///   taking each position.
 ///
 /// ## Retiring an action: tombstone it, never delete it
 ///
 /// **A variant removed from this enum makes every file that ever used it
-/// unloadable** — and not just that action: the whole log is one value, so one
-/// retired action in ten thousand refuses the document with `unknown variant`.
-/// That is the one change the encoding cannot absorb, and it is the reverse of the
-/// intuition the rules above build, which is why it is spelled out here.
-///
-/// §19's beta rung promises old files keep opening while promising nothing about what
-/// they produce, so retiring an action is spelled as **keeping the variant and taking
-/// away what it does**:
-///
-/// 1. Keep the variant, under its own name.
-/// 2. Hollow the payload out to what is still read — often `{}`, since a reader
-///    steps over columns no field claims. The types behind it can go.
-/// 3. Make it a no-op in `DocState::fold`, and give it an empty [`Footprint`], so it
-///    reads and writes nothing and commutes with everything.
+/// unloadable** — the whole log is one value, so one retired action in ten thousand
+/// refuses the document with `unknown variant`. Retire one instead by keeping the
+/// variant under its own name, hollowing its payload out to what is still read (often
+/// `{}`, since a reader steps over columns no field claims), and making it a no-op in
+/// `DocState::fold` with an empty [`Footprint`].
 ///
 /// **Keep any field that is load-bearing outside the fold**, which is the trap here
 /// rather than the payload's size. An `Add…` variant's `id` is one: every later
-/// reference to that layer — every stroke on it, every move of it, every merge into
-/// it — is resolved against it, so a tombstone that dropped its `id` would leave the
-/// rest of the log naming a layer nothing had introduced (§17.9). It is also what
-/// [`minted_layers`](Self::minted_layers) reads, and so what the mint door checks
-/// itself against.
+/// reference to that layer is resolved against it, so a tombstone that dropped it
+/// would leave the rest of the log naming a layer nothing had introduced (§17.9). It
+/// is also what [`minted_layers`](Self::minted_layers) reads.
 ///
 /// **A tombstone is a wire change, not only a file change.** Two peers where one
 /// still applies the action and the other ignores it diverge silently, and pixels
-/// cannot show which path ran (§12.6). So retiring an action bumps the ALPN, exactly
+/// cannot show which path ran (§12.6), so retiring an action bumps the ALPN exactly
 /// as reshaping anything gossip touches does (`stark-net::codec`).
 ///
-/// What has not changed is that the *meaning* of a live variant is fixed. Reusing a
-/// name for something else, or narrowing what a field may hold, is a change no
-/// encoding can absorb — replay would put back a different picture, which no file can
-/// notice on its own.
+/// The *meaning* of a live variant is fixed. Reusing a name for something else, or
+/// narrowing what a field may hold, is a change no encoding can absorb — replay would
+/// put back a different picture, which no file can notice on its own.
 ///
 /// [`Footprint`]: super::footprint::Footprint
 #[derive(Clone, Debug, Serialize, Deserialize, carbonite::Schema)]
@@ -187,24 +164,20 @@ pub enum ActionKind {
     ///
     /// **`carried` names the rest of the subtree**, for the reason
     /// [`DuplicateLayer`](Self::DuplicateLayer)'s `ids` do and
-    /// [`MergeLayerDown`](Self::MergeLayerDown)'s `dest` does: a [`Footprint`] is built
-    /// from the action alone and cannot walk the tree for what a group held (§12.6).
-    /// Without it the action writes the existence, the paint and every property of
-    /// layers it never names, so a stroke inside the group is judged to *commute* with
-    /// removing it — and the fast-path undo and a canonical replay then disagree about
-    /// the paint, with no pixel able to say which ran.
+    /// [`MergeLayerDown`](Self::MergeLayerDown)'s `dest` does: a [`Footprint`] is
+    /// built from the action alone and cannot walk the tree for what a group held
+    /// (§12.6). Without it a stroke inside the group is judged to *commute* with
+    /// removing it, and the fast-path undo and a canonical replay then disagree about
+    /// the paint with no pixel able to say which ran.
     ///
     /// Root first, then depth-first in composite order — the order
-    /// [`DocState::visit`] produces, so minting one is a walk and checking one is a
-    /// comparison.
+    /// [`DocState::visit`] produces.
     ///
     /// **Deterministically declined when the subtree is not what it names**, which is
-    /// what a concurrent add into the group looks like from here: `DuplicateLayer`
-    /// declines the same way, for the same reason, and every peer declines the same
-    /// action. A file written before this field existed carries an empty list, and a
-    /// group removal in one is therefore declined rather than silently taking layers
-    /// nothing declared — the honest reading, since the log genuinely does not say
-    /// what came out. A *leaf* removal is unaffected, which is nearly all of them.
+    /// what a concurrent add into the group looks like from here. A file older than
+    /// this field carries an empty list, so a *group* removal in one is declined
+    /// rather than silently taking layers nothing declared; a leaf removal, which is
+    /// nearly all of them, is unaffected.
     ///
     /// [`Footprint`]: super::footprint::Footprint
     /// [`DocState::visit`]: crate::document::Materialize
@@ -222,11 +195,10 @@ pub enum ActionKind {
     /// Move a layer — with everything it carries — into the stack carried by
     /// `carrier` (the document's own when `None`), at the place `at` names in it.
     ///
-    /// The **only** structural move, covering all three gestures at once
-    /// (§14.8): reorder is `carrier` unchanged, *carry* is `carrier`
-    /// set, *release* is `carrier` cleared. Declined deterministically when it
-    /// would make a layer carry its own ancestor — see
-    /// `stark-engine`'s `DocState::move_layer` for why the
+    /// The **only** structural move, covering all three gestures at once (§14.8):
+    /// reorder is `carrier` unchanged, *carry* is `carrier` set, *release* is
+    /// `carrier` cleared. Declined deterministically when it would make a layer carry
+    /// its own ancestor — see `stark-engine`'s `DocState::move_layer` for why the
     /// log's total order is all the cycle protection this needs.
     MoveLayer {
         id: LayerId,
@@ -238,58 +210,52 @@ pub enum ActionKind {
     /// Redo is an `Undo` of an `Undo`. Emitted only in shared sessions; solo
     /// undo stays pure timeline navigation and never logs one.
     ///
-    /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the
-    /// whole log, not just the prior state, so which actions are *effective* is
-    /// resolved separately ([`effective_actions`](crate::document::effective_actions))
-    /// and a timeline only ever materializes those.
+    /// Deliberately **not interpreted by [`Action`]'s `apply`** — undo needs the whole
+    /// log, not just the prior state, so which actions are *effective* is resolved
+    /// separately ([`effective_actions`](crate::document::effective_actions)) and a
+    /// timeline only ever materializes those.
     Undo(ActionId),
 
     /// Switch the canvas substrate (§6.4).
     ///
     /// Logged rather than kept as a view setting because the substrate feeds the
-    /// document: which canvas a piece was painted on is part of what it is, and
-    /// replay has to reconstruct it. A document saved before this existed contains
-    /// none, and keeps the substrate from `CanvasMeta`.
+    /// document: which canvas a piece was painted on is part of what it is, and replay
+    /// has to reconstruct it. A document containing none keeps the substrate from
+    /// `CanvasMeta`.
     #[serde(alias = "SetSurface")]
     SetSubstrate(SubstrateId),
 
     /// Lay the canvas substrate at a different scale (§6.4).
     ///
-    /// Logged for exactly the reason [`SetSubstrate`](Self::SetSubstrate) is, and it is
-    /// the same fact in two halves: the tooth reads the substrate's rise over a reach
-    /// measured in **canvas px**, so how large the substrate is laid decides what a tip
-    /// bites as surely as which substrate it is. A stroke replayed from before this
-    /// deposits at the scale it was painted at. A document saved before this existed
-    /// contains none and stands at [`SubstrateScale::NATURAL`].
+    /// Logged for [`SetSubstrate`](Self::SetSubstrate)'s reason, and the same fact in
+    /// two halves: the tooth reads the substrate's rise over a reach measured in
+    /// **canvas px**, so how large the substrate is laid decides what a tip bites as
+    /// surely as which substrate it is. A document containing none stands at
+    /// [`SubstrateScale::NATURAL`].
     #[serde(alias = "SetSurfaceScale")]
     SetSubstrateScale(SubstrateScale),
 
-    /// Edit the selection mask (§6.8). Historized because a stroke's
-    /// pixels depend on the mask in force when it was drawn — replaying the log has
-    /// to put the same mask back. Only the **op** travels (a few floats, or a
-    /// decimated polyline); every peer rasterizes it identically from the same
-    /// shader, so the log stays compact and convergence is unaffected.
+    /// Edit the selection mask (§6.8). Historized because a stroke's pixels depend on
+    /// the mask in force when it was drawn, so replaying the log has to put the same
+    /// mask back. Only the **op** travels — a few floats, or a decimated polyline —
+    /// and every peer rasterizes it identically from the same shader.
     Select(SelectionOp),
     /// Swap selected for unselected everywhere (§6.8).
     InvertSelection,
     /// Set the **whole** mask's opacity, on top of the shape arithmetic (§6.8) —
     /// the Select panel's Opacity slider.
     ///
-    /// Historized for [`Select`](Self::Select)'s reason and no other: a stroke's
-    /// pixels depend on how strongly the mask gated it, so replay has to put the
-    /// same number back. It carries no shape and rasterizes nothing — the mask
-    /// tiles are whatever the ops made them, and this is how strongly they are
-    /// *read*, which is exactly what lets it apply to a region already drawn. The
-    /// per-shape [`SelectionOp::opacity`] is the same question asked of one shape
-    /// and still stands underneath this; the two multiply.
+    /// Historized for [`Select`](Self::Select)'s reason: a stroke's pixels depend on
+    /// how strongly the mask gated it. It carries no shape and rasterizes nothing —
+    /// the mask tiles are whatever the ops made them, and this is how strongly they
+    /// are *read*, which is what lets it apply to a region already drawn. The
+    /// per-shape [`SelectionOp::opacity`] still stands underneath; the two multiply.
     SetSelectionOpacity(f32),
 
-    /// Add a **matte** layer — a region filled with a [`Parcel`]
-    /// (§15.2). A frame is one of these on top of the stack; a substrate
-    /// ([`MatteRegion::Everything`]) is one at the bottom, which is why the
-    /// anchor is the full [`Place`] where `AddLayer`'s stays the two-state
-    /// `Option` (§15.5). The same action serves comic gutters once the region
-    /// algebra lands (P4).
+    /// Add a **matte** layer — a region filled with a [`Parcel`] (§15.2). A frame is
+    /// one of these on top of the stack; a substrate ([`MatteRegion::Everything`]) is
+    /// one at the bottom, which is why the anchor is the full [`Place`] where
+    /// `AddLayer`'s stays the two-state `Option` (§15.5).
     AddMatte {
         id: LayerId,
         carrier: Option<LayerId>,
@@ -311,16 +277,13 @@ pub enum ActionKind {
     #[serde(alias = "SetBackground")]
     SetSubstrateColor(Srgb),
 
-    /// Affine transform of the selected paint on `layer` (§16):
-    /// cut what the **author's** selection holds, resample it once under
-    /// `affine`, stack it back over what remained — and carry the author's mask
-    /// along with it, so the moved region stays selected. A universal selection
-    /// moves the whole layer. Six floats in the log; every peer re-derives the
-    /// same tiles from them.
+    /// Affine transform of the selected paint on `layer` (§16): cut what the
+    /// **author's** selection holds, resample it once under `affine`, stack it back
+    /// over what remained — carrying the author's mask along, so the moved region
+    /// stays selected. A universal selection moves the whole layer.
     ///
-    /// Deterministically **rejected** (the document is left unchanged) when the
-    /// affine is unusable or the rewrite exceeds the tile caps — see
-    /// `document::transform`.
+    /// Deterministically **rejected** (the document is left unchanged) when the affine
+    /// is unusable or the rewrite exceeds the tile caps — see `document::transform`.
     Transform {
         layer: LayerId,
         affine: crate::geom::Affine2,
@@ -335,20 +298,19 @@ pub enum ActionKind {
     /// Name a layer, or with `None` take its name away again so it falls back to
     /// being described by its place in the stack.
     ///
-    /// Logged like every other layer property: a name is part of the document —
-    /// it is saved, it is replicated, and taking one back is an undo step, which
-    /// is what makes a mistyped rename recoverable the same way a mis-set opacity
-    /// is. Carries a `String` rather than the `Arc<str>` the state holds, because
-    /// this is the file and wire form, where a shared pointer means nothing.
+    /// Logged like every other layer property: a name is saved, is replicated, and
+    /// taking one back is an undo step. Carries a `String` rather than the `Arc<str>`
+    /// the state holds, because this is the file and wire form, where a shared pointer
+    /// means nothing.
     SetLayerName(LayerId, Option<String>),
 
     /// Fill a region of `layer` with paint (§18.0.4).
     ///
-    /// The fifth thing a shape gesture can do, alongside the four ways it can
-    /// combine into the selection — see [`ShapeAction`](super::fill::ShapeAction).
-    /// Gated and keyed exactly as a stroke is: the **author's** mask, taken off the
-    /// state being folded over, bounds the fill, and the actor comes from the
-    /// action's own id. A matte or absent layer refuses it, like a stroke.
+    /// The fifth thing a shape gesture can do, alongside the four ways it can combine
+    /// into the selection — see [`ShapeAction`](super::fill::ShapeAction). Gated and
+    /// keyed exactly as a stroke is: the **author's** mask, taken off the state being
+    /// folded over, bounds the fill, and the actor comes from the action's own id. A
+    /// matte or absent layer refuses it.
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the fill
     /// would be unbounded — [`SelectionShape::All`](super::selection::SelectionShape::All)
@@ -366,23 +328,20 @@ pub enum ActionKind {
 
     /// Clip a layer to the paint beneath it, or stop (§14.4).
     ///
-    /// A presentation property like the blend mode it is applied beside, and
-    /// logged like one: it changes what the document *looks* like, so replay and
-    /// peers both have to reproduce it. On the base of a group it clips the whole
-    /// group to what lies under the group (§14.4.3) — the same outward reading its
-    /// blend mode gets, which is why this needs no second action for groups.
+    /// A presentation property like the blend mode it is applied beside, and logged
+    /// like one. On the base of a group it clips the whole group to what lies under
+    /// the group (§14.4.3) — the same outward reading its blend mode gets, which is
+    /// why groups need no second action.
     SetLayerClip(LayerId, bool),
 
-    /// Perspective transform of the selected paint on `layer` within the map's
-    /// source rect (§16.8): cut what the **author's** selection holds inside the
-    /// rect, resample it once under the homography the map's corners define,
-    /// stack it back over what remained — and carry the covered part of the
-    /// author's mask along, unioned with what stayed outside the rect. Twelve
-    /// floats in the log; every peer re-derives the same matrix from them.
+    /// Perspective transform of the selected paint on `layer` within the map's source
+    /// rect (§16.8): the same cut/resample/stack as [`Transform`](Self::Transform),
+    /// under the homography the map's corners define, carrying the covered part of the
+    /// author's mask along unioned with what stayed outside the rect.
     ///
-    /// Deterministically **rejected** (the document is left unchanged) when the
-    /// map is unusable — a non-convex target quad, a degenerate rect — or the
-    /// rewrite exceeds the tile caps (§16.1).
+    /// Deterministically **rejected** (the document is left unchanged) when the map is
+    /// unusable — a non-convex target quad, a degenerate rect — or the rewrite exceeds
+    /// the tile caps (§16.1).
     TransformPerspective {
         layer: LayerId,
         map: super::transform::PerspectiveMap,
@@ -392,14 +351,14 @@ pub enum ActionKind {
         translation: crate::geom::IVec2,
     },
 
-    /// Warp of the selected paint on `layer` within the mesh's source rect
-    /// (§16.9): the same cut/stack/carry as
-    /// [`TransformPerspective`](Self::TransformPerspective), under the smooth
-    /// surface through the map's control grid. The log carries only the grid —
-    /// a few dozen floats — and every peer subdivides it identically.
+    /// Warp of the selected paint on `layer` within the mesh's source rect (§16.9):
+    /// the same cut/stack/carry as
+    /// [`TransformPerspective`](Self::TransformPerspective), under the smooth surface
+    /// through the map's control grid. The log carries only the grid, and every peer
+    /// subdivides it identically.
     ///
-    /// Deterministically **rejected** when the mesh folds (any sub-cell's
-    /// Jacobian runs non-positive), is malformed, or exceeds the tile caps.
+    /// Deterministically **rejected** when the mesh folds (any sub-cell's Jacobian
+    /// runs non-positive), is malformed, or exceeds the tile caps.
     TransformWarp {
         layer: LayerId,
         map: super::warp::WarpMap,
@@ -414,22 +373,17 @@ pub enum ActionKind {
     /// as one for the reason [`RemoveLayer`](Self::RemoveLayer)'s does: the
     /// subtree *is* the group (§14.2).
     ///
-    /// `ids` pairs every layer of that subtree, in composite order, with the id
-    /// its copy takes; the first pair's source is the layer being duplicated.
-    /// The copies' ids are minted by the author and travel in the log for the
-    /// reason [`AddLayer`](Self::AddLayer)'s does — a replay must mint what the
-    /// run that recorded it minted, and two peers duplicating at once must not
-    /// land on one id (§17.9).
-    ///
-    /// Naming the **sources** as well is what lets the footprint be honest: a
-    /// copy is a function of every tile and every property of every layer it
-    /// copies, so a duplicate does not commute with a stroke or a rename inside
-    /// the group, and an action that named only the root could not say so
-    /// (§12.6).
+    /// `ids` pairs every layer of that subtree, in composite order, with the id its
+    /// copy takes; the first pair's source is the layer being duplicated. The copies'
+    /// ids are minted by the author and travel in the log for the reason
+    /// [`AddLayer`](Self::AddLayer)'s does — a replay must mint what the recording run
+    /// minted, and two peers duplicating at once must not land on one id (§17.9).
+    /// Naming the **sources** as well is what lets the footprint say a duplicate does
+    /// not commute with a stroke or a rename inside the group (§12.6).
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the
-    /// subtree holds a layer `ids` does not name — which is what a concurrent add
-    /// into the group looks like from here.
+    /// subtree holds a layer `ids` does not name — what a concurrent add into the
+    /// group looks like from here.
     DuplicateLayer {
         ids: Vec<(LayerId, LayerId)>,
     },
@@ -438,22 +392,20 @@ pub enum ActionKind {
     /// the stack it lands in (§21.2).
     ///
     /// It arrives holding a filter at its neutral setting, so adding one changes
-    /// nothing until it is dialled; the dialling is [`SetFilter`](Self::SetFilter).
-    /// Placed by the same two anchors every other layer is (§14.8), which is the
-    /// whole of how far a filter reaches — there is no scope to set, because *where
-    /// it sits is its scope*.
+    /// nothing until it is dialled ([`SetFilter`](Self::SetFilter)). Placed by the
+    /// same two anchors every other layer is (§14.8), which is the whole of how far a
+    /// filter reaches: there is no scope to set, because *where it sits is its scope*.
     AddFilter {
         id: LayerId,
         carrier: Option<LayerId>,
         above: Option<LayerId>,
         filter: Filter,
     },
-    /// Retune a filter layer (§21.5). One action per adjustment, not per pointer
-    /// move: a slider drag previews in view state and commits on release, the
-    /// bargain the frame drag and the opacity slider already make (§15.7, §14.6).
+    /// Retune a filter layer (§21.5). One action per adjustment, not per pointer move:
+    /// a slider drag previews in view state and commits on release (§15.7, §14.6).
     ///
-    /// Carries the **whole** filter rather than one parameter, so a filter that
-    /// grows a knob — or a new kind of filter entirely — needs no new action and no
+    /// Carries the **whole** filter rather than one parameter, so a filter that grows
+    /// a knob — or a new kind of filter entirely — needs no new action and no
     /// wire-format break. A no-op on a layer that is not a filter, like
     /// [`SetMattePaint`](Self::SetMattePaint) on a paint layer.
     SetFilter(LayerId, Filter),
@@ -464,17 +416,15 @@ pub enum ActionKind {
     ///
     /// The one action in this list whose promise is about *pixels that do not change*:
     /// a merge is offered exactly where the pair composites identically to the one
-    /// layer, so the document looks the same before and afterwards. Which pairs those
-    /// are is `stark-engine`'s `document::merge::plan`, a pure function of the state — so
-    /// the log carries no reasoning, only the two ids, and every peer and every replay
-    /// re-derives the same answer from the same document.
+    /// layer. Which pairs those are is `stark-engine`'s `document::merge::plan`, a pure
+    /// function of the state, so the log carries only the two ids and every peer and
+    /// every replay re-derives the same answer.
     ///
     /// `dest` is derived rather than chosen, and travels anyway for the reason
     /// [`DuplicateLayer`](Self::DuplicateLayer)'s ids do: a [`Footprint`] is built from
-    /// the action alone and cannot search the tree for what "down" meant (§12.6).
-    /// Naming it is also what makes the rejection honest — an action whose plan now
-    /// points somewhere else is **deterministically declined**, leaving the document
-    /// unchanged, which is what a concurrent reorder looks like from here.
+    /// the action alone and cannot search the tree for what "down" meant (§12.6). An
+    /// action whose plan now points somewhere else is **deterministically declined**,
+    /// leaving the document unchanged — what a concurrent reorder looks like from here.
     ///
     /// [`Footprint`]: super::footprint::Footprint
     MergeLayerDown {
@@ -485,28 +435,23 @@ pub enum ActionKind {
     /// Bring an image in from **outside** the document — an image file, or the system
     /// clipboard — as a new layer holding it as paint (§23).
     ///
-    /// One action rather than three, and that is the whole of why it mints its own
-    /// layer instead of taking one. A paste lands on its own layer in every tool that
-    /// has one, so spelling it as `AddLayer` then a placement then a rename would put
-    /// the familiar gesture three undo steps deep, and leave two of those steps
-    /// meaning nothing on their own. `AddMatte` already carries this shape: a layer
-    /// arriving with content is one fact, not a layer and then its content.
+    /// One action rather than three, which is why it mints its own layer instead of
+    /// taking one: spelling a paste as `AddLayer` then a placement then a rename would
+    /// put one familiar gesture three undo steps deep and leave two of those steps
+    /// meaning nothing on their own. `AddMatte` carries the same shape.
     ///
     /// **The pixels are not the payload.** The picture is named by content id, like a
     /// stamp brush's shape, and travels beside the log — bundled in
-    /// `DocumentFile::content`, and over the wire on the blob ALPN (§23).
-    /// `docs/images.md` records why carrying it in the action is wrong in three places
-    /// at once; the sharpest is that an action is *cloned constantly* — a commit clones
-    /// one for the outbox, the history clones them while splicing an undo past what it
-    /// commutes with (§12.6) — and every one of those copies is thirty-two bytes.
+    /// `DocumentFile::content`, and over the wire on the blob ALPN (§23). An action is
+    /// cloned constantly — a commit clones one for the outbox, the history clones them
+    /// while splicing an undo past what it commutes with (§12.6) — and every one of
+    /// those copies is thirty-two bytes; `docs/images.md` has the rest of the argument.
     ///
     /// **`at` is in whole canvas pixels, and that is a promise about resampling**: the
-    /// image's texels land on canvas pixels one for one, so nothing is filtered and
-    /// there is no sampling loss between the file and the tiles. Scaling and turning it
-    /// afterwards is [`Transform`](Self::Transform), which is where resampling belongs
-    /// and where its exactness is already pinned (§16.4) — expressing the placement as
-    /// a float and then a scale would have spent one generation of blur on every import
-    /// to reach the same picture. An integer vector is how that is said in a way the
+    /// image's texels land on canvas pixels one for one, so there is no sampling loss
+    /// between the file and the tiles. Scaling and turning it afterwards is
+    /// [`Transform`](Self::Transform), where resampling belongs and its exactness is
+    /// already pinned (§16.4). An integer vector is how that is said in a way the
     /// payload cannot express wrongly.
     ///
     /// Deterministically **rejected** (the document is left unchanged) when the anchors
@@ -530,51 +475,42 @@ pub enum ActionKind {
     /// Add a **drawing guide** — a perspective grid to construct through
     /// (§20.5).
     ///
-    /// Logged like a layer, and for the same kind of reason `SetSubstrate` and
-    /// `SetSubstrateColor` are: a perspective set up over a drawing is part of the
-    /// drawing's construction, not a preference about how it is being looked at.
-    /// Unlogged, it would be lost on reload and invisible to collaborators, and
-    /// a scaffold the work is built on is worth exactly as much care as a layer.
+    /// Logged for the reason `SetSubstrate` and `SetSubstrateColor` are: a perspective
+    /// set up over a drawing is part of the drawing's construction, not a preference
+    /// about how it is being looked at.
     ///
     /// **It mints no id.** A guide's identity is the id of *this* action
-    /// ([`GuideId`]), so there is no counter to partition, nothing for
-    /// `minted_layers` to report, and no way for two peers adding at once to
-    /// land on one id. What makes that available here and not to `AddLayer` is
-    /// that this mints exactly one thing — see [`GuideId`].
+    /// ([`GuideId`]), so there is no counter to partition, nothing for `minted_layers`
+    /// to report, and no way for two peers adding at once to land on one id.
     ///
-    /// `after` names the guide it lands directly after in the roster, or the
-    /// **head** of it when `None`. A flat list of `n` guides has `n + 1` places
-    /// to land in and this reaches every one of them, which is why guides need
-    /// no [`Place`] where a layer stack does: `Place` exists because a stack's
-    /// two-state anchor could not say "under the bottom layer", and `None`
-    /// meaning the head is that same third state spelled without a type.
+    /// `after` names the guide it lands directly after in the roster, or the **head**
+    /// of it when `None` — which is why guides need no [`Place`] where a layer stack
+    /// does: a flat list of `n` guides has `n + 1` places to land in and this reaches
+    /// every one of them.
     ///
     /// The name arrives with the guide rather than in a following
-    /// [`SetGuideName`](Self::SetGuideName) for
-    /// [`PlaceImage`](Self::PlaceImage)'s reason: duplicating a guide copies the
-    /// artist's own word for it, and spelling that as two actions would put one
-    /// gesture two undo steps deep with a nameless guide in between.
+    /// [`SetGuideName`](Self::SetGuideName), for [`PlaceImage`](Self::PlaceImage)'s
+    /// reason: duplicating a guide copies the artist's own word for it, and two
+    /// actions would put one gesture two undo steps deep.
     AddGuide {
         /// The id this guide gets — **the id of this very action**, minted through
         /// the same door every layer id is (`Engine::commit_minting`, §17.9).
         ///
-        /// Carried rather than derived inside the fold. A derived id is not part of
+        /// Carried rather than derived inside the fold: a derived id is not part of
         /// the action, so `start_collaboration`'s rewrite of solo-authored `ActionId`s
         /// would move it while every `RemoveGuide`, `SetGuide`, `SetGuideName` and
-        /// `MoveGuide` in the same log went on naming the old one — and each of those
+        /// `MoveGuide` in the same log went on naming the old one — each of which
         /// no-ops on an id it cannot find, so sharing a document would revert every
-        /// guide edit and bring back every deleted guide. A payload the rewrite does
-        /// not touch cannot do that, which is what `LayerId` has always had.
+        /// guide edit and bring back every deleted guide.
         id: GuideId,
         guide: PerspectiveGuide,
         /// The guide this one lands directly after, or the head of the roster
         /// when `None`.
         after: Option<GuideId>,
         /// What to call it, or `None` to leave it described by its place in the
-        /// roster ("Perspective 2"). A `String` rather than the `Arc<str>` the
-        /// state holds, exactly as [`SetLayerName`](Self::SetLayerName) carries
-        /// one: this is the file and wire form, where a shared pointer means
-        /// nothing.
+        /// roster ("Perspective 2"). A `String` rather than the `Arc<str>` the state
+        /// holds, exactly as [`SetLayerName`](Self::SetLayerName) carries one: this
+        /// is the file and wire form.
         name: Option<String>,
     },
     /// Remove a drawing guide (§20.5). A no-op on a guide that is not there,
@@ -582,36 +518,27 @@ pub enum ActionKind {
     RemoveGuide(GuideId),
     /// Reshape a guide — the **whole camera** at once (§20.5).
     ///
-    /// One action for the orbit drag, the lens drag, the crosshair, the cell
-    /// slider, the opacity slider, the plane chips and the fisheye toggle,
-    /// carrying the camera entire for the reason [`SetFilter`](Self::SetFilter)
-    /// carries the whole filter: a guide that grows a knob then needs no new
-    /// action and no wire-format break, and there is nothing finer than the
-    /// camera that an artist can be said to have set.
+    /// One action for the orbit drag, the lens drag, the crosshair, the cell slider,
+    /// the opacity slider, the plane chips and the fisheye toggle, carrying the camera
+    /// entire for the reason [`SetFilter`](Self::SetFilter) carries the whole filter:
+    /// a guide that grows a knob then needs no new action and no wire-format break.
     ///
-    /// **One per settled gesture, not one per pointer move.** A drag previews in
-    /// view state and commits on release — the bargain
-    /// [`SetMatteRect`](Self::SetMatteRect) and
-    /// [`SetFilter`](Self::SetFilter) already strike (§15.7, §21.5) — so
-    /// shaping a perspective costs one undo step per adjustment rather than one
-    /// per sample of the hand.
+    /// **One per settled gesture, not one per pointer move** — a drag previews in view
+    /// state and commits on release (§15.7, §21.5).
     SetGuide(GuideId, PerspectiveGuide),
     /// Name a guide, or with `None` take its name away so it falls back to being
     /// described by its place in the roster.
     ///
-    /// Its own action rather than a field of [`SetGuide`](Self::SetGuide),
-    /// exactly as [`SetLayerName`](Self::SetLayerName) is not a field of the
-    /// camera: the name is held as an `Arc<str>` in state and a `String` here,
-    /// and a rename must commute with a drag of the same guide the way a layer's
-    /// rename commutes with its opacity.
+    /// Its own action rather than a field of [`SetGuide`](Self::SetGuide): the name is
+    /// held as an `Arc<str>` in state and a `String` here, and a rename must commute
+    /// with a drag of the same guide the way a layer's rename commutes with its
+    /// opacity.
     SetGuideName(GuideId, Option<String>),
     /// Move a guide within the roster — the panel's drag-to-reorder (§20.5).
     ///
     /// `after` is [`AddGuide`](Self::AddGuide)'s anchor, read the same way. The
-    /// roster's order changes no pixel: every guide this client draws is drawn,
-    /// whatever order they are listed in. It is logged anyway because it is the
-    /// artist's own arrangement of their scaffolding, which is the same thing a
-    /// layer's name is and is kept for the same reason.
+    /// roster's order changes no pixel; it is logged anyway because it is the artist's
+    /// own arrangement of their scaffolding, as a layer's name is.
     MoveGuide {
         id: GuideId,
         after: Option<GuideId>,
@@ -620,19 +547,18 @@ pub enum ActionKind {
     /// Put each named layer's frame at a place on the canvas (§14.12) — "move the
     /// layer", as a property write rather than a rewrite of its tiles.
     ///
-    /// A **list**, because translation does not inherit down the tree: a footprint
-    /// is built from the action alone and could not name the ancestors an inherited
+    /// A **list**, because translation does not inherit down the tree: a footprint is
+    /// built from the action alone and could not name the ancestors an inherited
     /// offset would make every stroke read (§12.6). So each layer carries its own,
-    /// flat, and the gesture that moves a group names every member —
-    /// [`RemoveLayer`](Self::RemoveLayer)'s `carried`, put to work. Absolute
+    /// flat, and the gesture that moves a group names every member. Absolute
     /// positions, like every other property write, so undo restores a value rather
     /// than replaying arithmetic.
     ///
-    /// Whole canvas pixels, for [`PlaceImage`](Self::PlaceImage)'s reason: an
-    /// integer offset moves the picture without resampling a texel, said in a type
-    /// the payload cannot hold wrongly. A matte or filter layer refuses it — a
-    /// matte's geometry already moves via [`SetMatteRect`](Self::SetMatteRect), and
-    /// a filter has nothing that sits anywhere.
+    /// Whole canvas pixels, for [`PlaceImage`](Self::PlaceImage)'s reason: an integer
+    /// offset moves the picture without resampling a texel. A matte or filter layer
+    /// refuses it — a matte's geometry already moves via
+    /// [`SetMatteRect`](Self::SetMatteRect), and a filter has nothing that sits
+    /// anywhere.
     TranslateLayers {
         moves: Vec<(LayerId, crate::geom::IVec2)>,
     },
@@ -642,23 +568,20 @@ pub enum ActionKind {
     /// the thing a drag can move for the price of a property write (§16.12).
     ///
     /// The child composites directly over the paint it was cut from, so the picture
-    /// does not change: the cut is §16.2's lift and the child's stacking is the
-    /// merge law run backwards (§14.11.1). Fully-covered tiles cross by handle.
-    /// The child arrives unnamed, at the identity composite params, standing at
-    /// `translation` — and the author's selection is **consumed**: the
-    /// float is the selection now, and an outline left behind would sit over paint
-    /// that is no longer there (§16.1's argument, answered the other way).
+    /// does not change: the cut is §16.2's lift and the child's stacking is the merge
+    /// law run backwards (§14.11.1). The child arrives unnamed, at the identity
+    /// composite params, standing at `translation` — and the author's selection is
+    /// **consumed**, since an outline left behind would sit over paint that is no
+    /// longer there.
     ///
     /// `translation` is the source layer's frame at mint,
-    /// [`StrokeRecord::translation`]'s field
-    /// for its reason: it places the canvas-anchored mask into the source's frame,
-    /// and it is what the child's translation is set to — from the action, so a
-    /// replay mints what the recording run minted.
+    /// [`StrokeRecord::translation`]'s field for its reason: it places the
+    /// canvas-anchored mask into the source's frame, and it is what the child's
+    /// translation is set to — from the action, so a replay mints what the recording
+    /// run minted.
     ///
-    /// Deterministically **rejected** (the document is left unchanged) on a layer
-    /// that is not paint, under a universal or empty selection, or past the tile
-    /// caps — so peers and replays agree, and a gesture that would float nothing
-    /// floats nothing everywhere.
+    /// Deterministically **rejected** (the document is left unchanged) on a layer that
+    /// is not paint, under a universal or empty selection, or past the tile caps.
     FloatSelection {
         layer: LayerId,
         /// The id the child takes — minted by the author through the same door
@@ -673,23 +596,18 @@ impl ActionKind {
     /// the action's own (§17.9).
     ///
     /// **The check it exists for**: a `LayerId` is the id of the action that minted it,
-    /// and `Engine::commit_minting` is where that is arranged — it draws the action id,
-    /// hands it to the closure that builds the kind, then asks this which layers the
-    /// kind claims to mint and whether they all name that id.
+    /// and `Engine::commit_minting` arranges that — it draws the action id, hands it
+    /// to the closure that builds the kind, then asks this which layers the kind
+    /// claims to mint and whether they all name that id.
     ///
-    /// Lives here, beside the variants, because it is a fact about *them*: a caller
-    /// keeping its own list of which actions mint has a list a new variant does not
-    /// appear in, and a missed one means two layers under a single id — the
-    /// convergence failure §17.9 is about.
+    /// Lives beside the variants because it is a fact about *them*, and is
+    /// **exhaustive with no `_` arm**: a caller keeping its own list would have one a
+    /// new variant does not appear in, and a missed one means two layers under a
+    /// single id — the convergence failure §17.9 is about.
     ///
-    /// **Exhaustive, with no `_` arm, and that is the whole point of it.** A variant
-    /// added to the enum stops this function compiling, three lines from the doc
-    /// comment that says why — the device [`tag`](Self::tag) uses too.
-    ///
-    /// Note it reports what the action *names as minted*, not what applying it
-    /// lands: a rejected `AddLayer` (unknown carrier) inserts nothing, and the id it
-    /// named belongs to it regardless — which is the honest answer, since the same
-    /// action accepted by a peer does insert under exactly that id.
+    /// It reports what the action *names as minted*, not what applying it lands: a
+    /// rejected `AddLayer` inserts nothing, and the id it named belongs to it
+    /// regardless, since the same action accepted by a peer does insert under it.
     pub fn minted_layers(&self) -> impl Iterator<Item = LayerId> + '_ {
         // One id, or a map of them — the two shapes minting comes in. Named as a
         // pair so the match below decides nothing else.
@@ -742,15 +660,14 @@ impl ActionKind {
     /// The same action with every payload finite and in range — **the one funnel
     /// an action passes through on its way into the document.**
     ///
-    /// The alternative is a list of per-payload gates a caller has to keep, and §1
-    /// prefers ruling out a class to enumerating its instances — so the list is here,
-    /// once, and the engine sanitizes an *action* rather than remembering which of its
-    /// payloads have knobs.
+    /// §1 prefers ruling out a class to enumerating its instances, so the list is
+    /// here, once, and the engine sanitizes an *action* rather than remembering which
+    /// of its payloads have knobs.
     ///
-    /// **Exhaustive, with no `_` arm**, which is the whole point of writing it this
-    /// way: a variant added later stops this compiling until it says whether it
-    /// carries a number, where a wildcard would answer "nothing to hold" on its
-    /// behalf. Same device as [`minted_layers`](Self::minted_layers) and
+    /// **Exhaustive, with no `_` arm**: a variant added later stops this compiling
+    /// until it says whether it carries a number, where a wildcard would answer
+    /// "nothing to hold" on its behalf. Same device as
+    /// [`minted_layers`](Self::minted_layers) and
     /// [`action_content`](crate::content::action_content).
     ///
     /// **Idempotent** on anything this engine wrote, so applying it on the way in
@@ -831,31 +748,28 @@ impl ActionKind {
                 paint: paint.sanitized(),
             },
             // Nothing to hold: ids, flags, places, and the geometry whose own
-            // `usable`/`affine_usable` gate rejects it at `apply` rather than
-            // rounding it into something else (§16.1) — a transform that cannot be
-            // clamped into a *different* transform without changing what the
-            // author asked for, and a frame rect that cannot either
-            // (`MatteRegion::usable`).
+            // `usable`/`affine_usable` gate rejects it at `apply` rather than rounding
+            // it into something else (§16.1) — a transform cannot be clamped into a
+            // *different* transform without changing what the author asked for, and a
+            // frame rect cannot either (`MatteRegion::usable`).
             //
             // **The list is what the compiler cannot check.** Every arm above says
             // "this payload holds its own invariant"; this one says "there is no
-            // invariant to hold", and nothing but the reader tells the two apart. So: a
+            // invariant to hold", and nothing but the reader tells the two apart. A
             // variant belongs here when its payload is ids, flags, places, `bool`s and
-            // `String`s — and if it carries a float, it belongs above, or beside a
-            // `usable` this comment can name.
+            // `String`s; if it carries a float, it belongs above, or beside a `usable`
+            // this comment can name.
             //
-            // A selection carries numbers and is still here, which is the shape
-            // worth noticing rather than an oversight: its fields are private and
-            // `SelectionOp::at` is the only door, deserialization included, so an
-            // op in hand already holds its bounds. (A fill's op holds itself the
-            // same way, through `FillOp::with_paint` — its arm below exists for
-            // the frame beside it, not for the op.)
+            // A selection carries numbers and is still here: its fields are private
+            // and `SelectionOp::at` is the only door, deserialization included, so an
+            // op in hand already holds its bounds. (A fill's op holds itself the same
+            // way, through `FillOp::with_paint` — its arm below exists for the frame
+            // beside it, not for the op.)
             ActionKind::Select(_)
             | ActionKind::AddLayer { .. }
             // A placement carries pixels and an integer position: no float to be
-            // non-finite, no knob to be out of range. What *could* be malformed about
-            // an image — dimensions that disagree with the buffer, a size past the cap
-            // — cannot be clamped into a different image, and is refused at
+            // non-finite, no knob to be out of range. What could be malformed about an
+            // image cannot be clamped into a different image, and is refused at
             // `ImageRef`'s constructor and at its decode instead (§23).
             | ActionKind::PlaceImage { .. }
             | ActionKind::DuplicateLayer { .. }
@@ -946,22 +860,16 @@ impl ActionKind {
 /// The document's vocabulary **as a roster**: one tag per [`ActionKind`], with no
 /// payload — what an action *is*, apart from what it says.
 ///
-/// # Why this exists
-///
 /// `ActionKind` is matched exhaustively in a handful of places, and that is working
 /// as intended: a new variant does not compile until it says what it mints (§17.9),
-/// what it clamps (§21.5), what it reads and writes (§12.6) and what content it
-/// names (§23). Those are four different questions and they deserve four answers.
-///
-/// What does *not* deserve four answers is the roster itself — a hand-kept list of
-/// the enum's members, repeated here and in `stark-testdata::vocabulary`, where only
-/// some copies are compiler-checked and a variant can be left out of the lists the
-/// checked arms index (`vocabulary`'s own header records what that cost).
+/// what it clamps (§21.5), what it reads and writes (§12.6) and what content it names
+/// (§23). What does *not* deserve four answers is the roster itself — a hand-kept
+/// list of the enum's members, of which only some copies are compiler-checked.
 ///
 /// So the roster is **one list**, below, and everything else is derived from it: the
 /// enum, [`ALL`](ActionTag::ALL) and [`label`](ActionTag::label) all come out of the
-/// same macro invocation, and [`ActionKind::tag`] is the one exhaustive match binding a
-/// variant to its tag. A new kind cannot be missing from a list, because there is no
+/// same macro invocation, and [`ActionKind::tag`] is the one exhaustive match binding
+/// a variant to its tag. A new kind cannot be missing from a list, because there is no
 /// second list to be missing from.
 macro_rules! roster {
     ($($variant:ident => $label:literal,)*) => {
@@ -981,9 +889,8 @@ macro_rules! roster {
             /// What this kind of action is, in two or three words — the caption a
             /// history scrubber puts on the step it is about to cross (§18.2.4).
             ///
-            /// A `&'static str` and nothing more: a timeline showing a hundred steps
-            /// needs them by the hundred, and the point is to tell a stroke from a
-            /// layer change at a glance, not to describe either. Anything richer —
+            /// A `&'static str` and nothing more: the point is to tell a stroke from
+            /// a layer change at a glance, not to describe either. Anything richer —
             /// which layer, what color — is what the canvas beside it is for.
             pub fn label(self) -> &'static str {
                 match self { $(ActionTag::$variant => $label,)* }
@@ -994,8 +901,7 @@ macro_rules! roster {
             /// Which kind of action this is, without its payload.
             ///
             /// **Exhaustive, with no `_` arm** — the one place a new variant has to
-            /// name itself, and the reason the roster above can be trusted to be
-            /// complete.
+            /// name itself, and the reason the roster above is complete.
             pub fn tag(&self) -> ActionTag {
                 match self { $(ActionKind::$variant { .. } => ActionTag::$variant,)* }
             }
@@ -1054,14 +960,12 @@ impl ActionTag {
 /// The farthest a layer frame — or the frame offset a paint action carries — may
 /// stand from the origin, per axis (§14.12): 2²³ canvas px.
 ///
-/// An `i32` cannot be non-finite, but past this it stops being *spent* exactly:
-/// the offset meets `f32` at every seam — quad origins, mask-shift taps, the
-/// conjugated maps — and sums of two in-range values stay exact only to 2²⁴,
-/// which is the whole of the §16.4 exactness the design leans on. Clamped rather
-/// than gated at `apply`, because an offset has a nearest legal value the way an
-/// opacity does and a degenerate affine does not — and clamping here is also
-/// what keeps every downstream `i32` subtraction of two frames off the wrapping
-/// edge.
+/// An `i32` cannot be non-finite, but past this it stops being *spent* exactly: the
+/// offset meets `f32` at every seam — quad origins, mask-shift taps, the conjugated
+/// maps — and sums of two in-range values stay exact only to 2²⁴, which is the §16.4
+/// exactness the design leans on. Clamped rather than gated at `apply`, because an
+/// offset has a nearest legal value the way an opacity does; that also keeps every
+/// downstream `i32` subtraction of two frames off the wrapping edge.
 pub const FRAME_LIMIT: i32 = 1 << 23;
 
 /// [`FRAME_LIMIT`], applied — the funnel's arm for every whole-pixel offset, the

@@ -2,24 +2,22 @@
 //! stroke *is*.
 //!
 //! Everything here is configuration a [`StrokeRecord`](super::action::StrokeRecord)
-//! carries — the tip's shape and orientation, the four flux axes that decide how
-//! it meets paint already on the canvas, the color jitter, the tapers, and the
-//! mapping from pen input to all of the above. None of it is an action; it is the
-//! payload one action kind happens to hold, which is why it lives beside
-//! `action.rs` rather than inside it.
+//! carries — the tip's shape and orientation, the flux axes that decide how it meets
+//! paint already on the canvas, the color jitter, the tapers, and the mapping from
+//! pen input to all of the above. None of it is an action.
 //!
-//! Three layers, and the dependency runs one way through them: `modulation` — what
-//! the pen may take away — knows nothing of `effect` — what the swept extent then
-//! does to the canvas — and this file, the tip that carries both, reads each.
+//! Three layers, one way: `modulation` — what the pen may take away — knows nothing
+//! of `effect` — what the swept extent then does to the canvas — and this file, the
+//! tip that carries both, reads each.
 //!
-//! Two properties hold across all three, and most of the design follows from them:
+//! Two properties hold across all three:
 //!
 //! - **A modulation can only ever scale a parameter down** — [`Modulation`] for what
 //!   that bound buys.
 //! - **Every number here decides stored pixels**, so replay, goldens and peers have
-//!   to agree on it to the last bit (§12.1). That is why the response curve is
-//!   rational rather than a `powf`, and why the values that arrive from files,
-//!   presets and peers are clamped on the way in rather than trusted.
+//!   to agree on it to the last bit (§12.1): the response curve is rational rather
+//!   than a `powf`, and values arriving from files, presets and peers are clamped on
+//!   the way in.
 
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +83,7 @@ impl BrushShape {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, carbonite::Schema)]
 pub enum OrientationSource {
     /// The shape's native axis tracks the stroke tangent — the relative angle is always
-    /// 0, so the extent always faces along the motion (the historical behaviour).
+    /// 0, so the extent always faces along the motion.
     #[default]
     FollowStroke,
     /// The shape stays pinned to the pen's orientation (the tilt azimuth) in canvas
@@ -94,67 +92,50 @@ pub enum OrientationSource {
     Pen,
 }
 
-/// The brush's two knobs against the canvas substrate's tooth (§6.4) — one
-/// pair, because they are the two halves of one contact model: how far the tip
-/// settles, and how sharply it stops. The *substrate* is document state
-/// ([`SubstrateId`](crate::SubstrateId)) — a pencil and a loaded brush on the same
-/// canvas see the same grain — which is why only these two knobs live on the brush.
+/// The brush's two knobs against the canvas substrate's tooth (§6.4), the two halves
+/// of one contact model: how far the tip settles, and how sharply it stops. The
+/// substrate itself is document state ([`SubstrateId`](crate::SubstrateId)), so every
+/// tool on one canvas sees the same grain.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct ToothParams {
     /// How much **give** this tool has, in [0, 1]: 1 = infinite give — the tip
-    /// follows every fall, the substrate does not break the mark up at all, and
-    /// this is the default; 0 = no give at all — it rides the very tops of the
-    /// grain, so the mark is what a dry brush leaves.
+    /// follows every fall and the substrate does not break the mark up at all (the
+    /// default); 0 = no give at all — it rides the very tops of the grain, so the mark
+    /// is what a dry brush leaves.
     ///
-    /// **The give, not its inverse, and that is what makes the pen mapping mean
-    /// something.** A [`Modulation`] can only ever scale a parameter *down*, so a knob
-    /// quoted as the depth of the bite would have made light pressure the solid mark
-    /// and a hard press the dry one — backwards for the one mapping this axis exists
-    /// for. Quoted as the give, pressure reads the way a hand expects:
-    /// [`BrushModulations::tooth_give`] mapped to pressure is the charcoal, barely
-    /// touching the paper it prints the peaks alone, and borne down it presses past
-    /// the falls it was bridging and the grain fills in.
+    /// **The give, not the depth of the bite**, which is what makes the pen mapping
+    /// mean something: a [`Modulation`] can only ever scale a parameter *down*, so the
+    /// inverse quoting would make a light touch the solid mark. Quoted this way,
+    /// [`BrushModulations::tooth_give`] on pressure is the charcoal — barely touching
+    /// the paper it prints the peaks alone, borne down the grain fills in. The cost is
+    /// that the interesting end of the slider is the left one.
     ///
-    /// It does cost the slider its usual direction — the *interesting* end of this one
-    /// is the left. That is the trade, and the mapping is worth more than the habit.
-    ///
-    /// What it scales is the exposure the stroke presents per unit swept optical
-    /// depth, gated per texel by whether the substrate clears the level this tool
-    /// settles to (`paint_common.wesl::tooth_gate`). Inert on a `Flat` canvas
-    /// whatever it says, because the substrate's rise is 0 there — so the axis is
-    /// orthogonal to every golden that paints on `Flat`.
+    /// It scales the exposure the stroke presents per unit swept optical depth, gated
+    /// per texel against the substrate's rise — so it is inert on a `Flat` canvas
+    /// whatever it says.
     ///
     /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`: 0 is *maximum*
-    /// tooth at this end of the knob, so a file that does not mention the field has
-    /// to be told the full give it meant rather than handed a zero (§8).
+    /// tooth, so a file that does not mention the field has to be told the full give
+    /// it meant rather than handed a zero (§8).
     #[serde(default = "ToothParams::default_give")]
     pub give: f32,
     /// The **width of the contact transition**, in the rise's own units — height per
-    /// reach of travel (§6.4). The band of rise, either side of the follow limit
+    /// reach of travel (§6.4): the band of rise, either side of the follow limit
     /// [`give`](Self::give) sets, over which a texel goes from taking none of the
     /// tip's paint to taking all of it.
     ///
-    /// A hard threshold — 0 — is a binary indicator per texel: correct in the mean,
-    /// and at canvas resolution it aliases into hard-edged speckle that reads as
-    /// dither rather than as tooth. Too wide and the faces are smeared into a flat
-    /// grey and the grain stops reading at all.
-    /// [`DEFAULT_SOFTNESS`](Self::DEFAULT_SOFTNESS) is the bundled substrates' own
-    /// interquartile rise, so the transition spans the grain's natural variation —
-    /// which is what a paint that *sits on* the substrate wants. A charcoal or a
-    /// soft graphite does not sit on the substrate: the stick crumbles into the
-    /// valleys instead of spanning them, so its contact comes on gradually over
-    /// several times that band, and a knob is the only way to say so.
+    /// 0 is a hard threshold, which at canvas resolution aliases into speckle that
+    /// reads as dither rather than as tooth; too wide and the grain stops reading at
+    /// all. [`DEFAULT_SOFTNESS`](Self::DEFAULT_SOFTNESS) is the bundled substrates'
+    /// own interquartile rise, which is what a paint that *sits on* the substrate
+    /// wants. A charcoal or a soft graphite crumbles into the valleys instead of
+    /// spanning them, so its contact comes on over several times that band.
     ///
     /// **A width, so it has no ceiling this crate owns** — the same reading as the
-    /// flow and the drain ([`BrushParams::sanitized`]). Past about twice the
-    /// encodable rise range the whole distribution is inside the band and the gate is
-    /// a flat scale factor; that is where the frontend's slider stops, not where the
-    /// quantity stops meaning something.
+    /// flow and the drain ([`BrushParams::sanitized`]).
     ///
-    /// `#[serde(default = "…")]` rather than a bare `#[serde(default)]`, because a
-    /// file saved before this field meant the constant the shader used to carry —
-    /// and 0, which is what a plain default hands back, is the hard threshold and
-    /// not that (§8).
+    /// `#[serde(default = "…")]` rather than a bare `#[serde(default)]`: 0 is the hard
+    /// threshold, which is not what an absent field meant (§8).
     #[serde(default = "ToothParams::default_softness")]
     pub softness: f32,
 }
@@ -169,12 +150,11 @@ impl Default for ToothParams {
 }
 
 impl ToothParams {
-    /// The give a brush has when it does not say ([`give`](Self::give)): all of it,
-    /// so the tip follows every fall and the substrate breaks nothing up — the mark
-    /// a brush made before the tooth existed, to the bit.
+    /// The give a brush has when it does not say ([`give`](Self::give)): all of it, so
+    /// the tip follows every fall and the substrate breaks nothing up.
     ///
-    /// Named rather than spelled `1.0` at the places that need it, because *which*
-    /// end of this knob is the inert one is the fact worth being able to look up.
+    /// Named rather than spelled `1.0` at the places that need it, because *which* end
+    /// of this knob is the inert one is the fact worth being able to look up.
     pub const DEFAULT_GIVE: f32 = 1.0;
 
     /// [`DEFAULT_GIVE`](Self::DEFAULT_GIVE) as a function, for `#[serde(default = "…")]`.
@@ -186,10 +166,8 @@ impl ToothParams {
     /// ([`softness`](Self::softness)) — the bundled substrates' own interquartile
     /// rise, so the band spans the grain's natural variation.
     ///
-    /// **The one place this number is written.** It was `paint_common.wesl`'s
-    /// `const TOOTH_SOFTNESS` until the knob existed; the shader takes it as a
-    /// uniform now and declares nothing, which is what keeps the default from being
-    /// a host transcription of a shader constant (§6.10).
+    /// **The one place this number is written**: the shader takes it as a uniform and
+    /// declares nothing, so the default is not a host transcription (§6.10).
     pub const DEFAULT_SOFTNESS: f32 = 0.5;
 
     /// [`DEFAULT_SOFTNESS`](Self::DEFAULT_SOFTNESS) as a function, for
@@ -211,18 +189,17 @@ impl ToothParams {
     }
 }
 
-/// Brush configuration: what a stroke's record carries — the shape of the
-/// tip, how the swept extent builds, and the effect it has on the canvas.
-/// Every field here is read whatever the [`effect`](Self::effect); a knob only
-/// one effect consumes lives inside that effect's own variant, the pigment
-/// ([`PaintEffect::color`]) above all.
+/// Brush configuration: what a stroke's record carries — the shape of the tip, how
+/// the swept extent builds, and the effect it has on the canvas. Every field here is
+/// read whatever the [`effect`](Self::effect); a knob only one effect consumes lives
+/// inside that effect's own variant, the pigment ([`PaintEffect::color`]) above all.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct BrushParams {
-    /// **How far the mark reaches from the path**, in canvas pixels at full pressure:
-    /// the radius of the disc the mark fits in, for every shape (§6.6) — so a size of
-    /// 100 puts the mark's furthest texel 100 px out. Not the *stamp's own* radius: an
-    /// asset is reach-normalized to this whatever its aspect, which is what lets one
-    /// number mean the same thing across a round tip and an asset.
+    /// **How far the mark reaches from the path**, in canvas px at full pressure: the
+    /// radius — not the diameter — of the disc the mark fits in, for every shape
+    /// (§6.6), so a size of 100 puts the mark's furthest texel 100 px out. A stamp
+    /// asset is reach-normalized to it whatever its aspect, so one number means the
+    /// same thing across every tip.
     pub size: f32,
     /// Brush tip shape (§6.6).
     pub shape: BrushShape,
@@ -232,80 +209,57 @@ pub struct BrushParams {
     /// extent the shape draws and 0.5 is one twice as long as it is wide.
     ///
     /// **The axis is [`orientation`](Self::orientation)'s**, not a second direction to
-    /// set. That is the whole of why this is one number: the brush already says which
-    /// way it faces, and a tip elongates along the way it faces. With
-    /// [`OrientationSource::Pen`] the axis is the pen's tilt azimuth, so a
+    /// set. With [`OrientationSource::Pen`] it is the pen's tilt azimuth, so a
     /// [`ModSource::Tilt`] mapping onto this is the pencil — lean the pen and the
-    /// contact patch draws out along the lean, exactly as a real conical tip's does,
-    /// which is also why the mapping is a reciprocal (a cone leaning at `θ` contacts
-    /// over `1/cos θ`) rather than a straight ramp. Held there it is a chisel nib, off
-    /// a round tip and with no stamp asset at all.
+    /// contact patch draws out along the lean; held there it is a chisel nib, off a
+    /// round tip and with no stamp asset at all.
     ///
-    /// The renderer never stretches the *mask*: a swept integral of a stretched
-    /// extent is the unstretched one read at another angle, over another travel,
-    /// with a factor on the result (§6.6), so the prefix-τ volume the brush already
-    /// binds is the volume this reads. What it does cost is extent area — the tip
-    /// reaches `s` times as far along its axis, so the tiles a segment touches, and
-    /// the dynamics loop's dispatch over them, grow with it. That is what
+    /// It costs extent area: the tip reaches `s` times as far along its axis, so the
+    /// tiles a segment touches grow with it. That is what
     /// [`MAX_ELONGATION`](Self::MAX_ELONGATION) bounds.
     #[serde(default)]
     pub stretch: f32,
     /// Length of the stroke's **leading taper** — the run over which the tip widens
-    /// from a point to its full [`size`](Self::size) — in *units of `size`*,
-    /// so 4.0 means four brush sizes of taper (§6.2). 0 = no taper: the
-    /// stroke starts at full width, which is the historical behaviour.
+    /// from a point to its full [`size`](Self::size) — in *units of `size`*, so 4.0
+    /// means four brush sizes of taper (§6.2). 0 = no taper: the stroke starts at full
+    /// width.
     ///
     /// In radii rather than canvas px so a brush keeps its *look* as it is resized:
-    /// scale the tip up and the whole mark scales with it, instead of a taper that
-    /// was the shape of the stroke at radius 8 becoming a blunt nub at radius 80.
-    /// This is what lets a brush mimic an inker's entry stroke.
+    /// scale the tip up and the whole mark scales with it.
     #[serde(default)]
     pub start_taper_length: f32,
-    /// Length of the stroke's **trailing taper**, in units of
-    /// [`size`](Self::size) — [`start_taper_length`](Self::start_taper_length)
-    /// measured back from the end of the stroke, for the exit of an inked line.
+    /// Length of the stroke's **trailing taper**, in units of [`size`](Self::size) —
+    /// [`start_taper_length`](Self::start_taper_length) measured back from the end of
+    /// the stroke.
     ///
-    /// Together the two are held to the stroke's own length: if they would overlap
-    /// they are scaled down in proportion, so a short flick is a small pointed mark
-    /// rather than a sliver (see `gpu::stroke::segments::Taper`).
+    /// The two are held to the stroke's own length: overlapping tapers are scaled down
+    /// in proportion, so a short flick is a small pointed mark rather than a sliver.
     #[serde(default)]
     pub end_taper_length: f32,
     /// Reservoir depletion per **radius** travelled: the stroke thins as paint runs
-    /// out (§6.2). 0 = inexhaustible — which is what a pen, a charcoal
-    /// stick, or an ordinary digital brush wants; a physical loaded brush wants a
-    /// small positive value, and 1 is a tool bone dry one radius past the press.
+    /// out (§6.2). 0 = inexhaustible, which is what a pen or an ordinary digital brush
+    /// wants; 1 is a tool bone dry one radius past the press.
     ///
-    /// In radii rather than canvas px for the reason the tapers are
-    /// ([`start_taper_length`](Self::start_taper_length)), and it is the stronger
-    /// case of the two: [`size`](Self::size) is meant to be a pure *scale* on
-    /// the mark, and a falloff quoted in canvas px is exactly what that scale does
-    /// not carry — enlarge such a brush and it runs dry a fraction of the way into
-    /// its own tip, which is not a bigger version of anything.
-    /// [`drain_px`](Self::drain_px) is where it becomes the per-px rate every render
-    /// path reads. Shared by both effects: an eraser runs dry as honestly as a
-    /// loaded brush does.
+    /// In radii rather than canvas px so that [`size`](Self::size) stays a pure *scale*
+    /// on the mark — quoted in canvas px, an enlarged brush would run dry a fraction of
+    /// the way into its own tip. [`drain_px`](Self::drain_px) is where it becomes the
+    /// per-px rate every render path reads. Shared by every effect.
     pub drain: f32,
     /// The brush's two knobs against the canvas substrate's tooth (§6.4).
     #[serde(default)]
     pub tooth: ToothParams,
-    /// The deposit jitter (§6.2) — color dynamics' sibling for the *amount*: every
-    /// texel of a stroke scales the exposure it presents by a factor uniform in
-    /// `(1 − ε, 1 + ε)`, `ε` in `[0, 1]` (past 1 the gate would go negative, which
-    /// is not a stronger setting but a meaningless one), keyed on the canvas texel
-    /// and the stroke's seed. What it buys is freedom from banding: what the
-    /// exchange loop's iterative accumulation would pile into coherent bands lands
-    /// as per-texel dither, because neighbouring texels accumulate at decorrelated
-    /// phases. 0 is the exact gate 1 — bit-identical to the unjittered deposit.
+    /// The deposit jitter (§6.2): every texel of a stroke scales the exposure it
+    /// presents by a factor uniform in `(1 − ε, 1 + ε)`, `ε` in `[0, 1]` (past 1 the
+    /// gate would go negative), keyed on the canvas texel and the stroke's seed. It
+    /// buys freedom from banding — what the exchange loop's accumulation would pile
+    /// into coherent bands lands as per-texel dither instead. 0 is the exact gate 1,
+    /// bit-identical to the unjittered deposit.
     ///
-    /// Outside the [`effect`](Self::effect) because it is not one effect's knob: it
-    /// gates the exposure *every* path presents — the swept fast path, the stamp
-    /// loop and the erase pass alike — so it sits beside [`tooth`](Self::tooth),
-    /// the other per-texel factor on what a stroke presents.
+    /// Outside the [`effect`](Self::effect) because it gates the exposure *every* path
+    /// presents, beside [`tooth`](Self::tooth), the other per-texel factor.
     #[serde(default = "BrushParams::default_jitter")]
     pub jitter: f32,
-    /// What orients the shape as it sweeps (§6.6) — the successor to the old
-    /// `follow_path`/`angle_jitter` knobs: `FollowStroke` is the former `follow_path =
-    /// true`.
+    /// What orients the shape as it sweeps (§6.6).
     #[serde(default)]
     pub orientation: OrientationSource,
     /// What a stroke of this brush **does**: paint, or erase. The tool's identity,
@@ -313,20 +267,16 @@ pub struct BrushParams {
     /// [`BrushEffect`].
     #[serde(default)]
     pub effect: BrushEffect,
-    /// The pen mappings every brush has, whatever its effect — the tip's own
-    /// (§6.2). [`BrushModulations::PRESSURE_SIZE`] by default: the pressure →
-    /// radius scaling, held here as data so a preset can drop it or aim it
-    /// elsewhere. An effect's own rates are mapped where they live
-    /// ([`PaintEffect::modulation`], [`EraseEffect::modulation`]).
+    /// The pen mappings every brush has, whatever its effect — the tip's own (§6.2).
+    /// [`BrushModulations::PRESSURE_SIZE`] by default: the pressure → radius scaling,
+    /// held as data so a preset can drop it or aim it elsewhere. An effect's own rates
+    /// are mapped where they live ([`PaintEffect::modulation`],
+    /// [`EraseEffect::modulation`]).
     ///
     /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`, for
     /// [`ToothParams::give`]'s reason (§8): [`BrushModulations`]'s own `Default` is
-    /// **no mapping at all**, and a bare attribute would hand a file that predates
-    /// this field the empty set — which is not what its absence meant. Before the
-    /// mappings were data, the pressure → radius scaling was wired into the segment
-    /// generator, so every such stroke replays at full width with its taper gone:
-    /// a silent, pixel-changing read of an older log, which is the one thing the
-    /// format's name-based reconciliation exists to prevent.
+    /// **no mapping at all**, which is not what an absent field meant — a file that
+    /// predates it would replay every stroke at full width with its taper gone.
     #[serde(default = "BrushModulations::pressure_size")]
     pub modulation: BrushModulations,
 }
@@ -385,17 +335,14 @@ impl BrushParams {
         }
     }
 
-    /// The brush turned wet in place, and its effect handed back — the editor's
-    /// own gesture when a flux slider is first raised on a plain brush, and the
-    /// shorthand a test builds a smearing brush with.
+    /// The brush turned wet in place, and its effect handed back — what the editor
+    /// does when a flux slider is first raised on a plain brush.
     ///
-    /// What both kinds hold carries over — the pigment, the opacity and the flow
-    /// (each with its mapping), the color dynamics — and the fluxes start at
-    /// zero with `add` at its full share, so wetting a brush and touching
-    /// nothing lays the paint it always laid. A brush already wet is handed back
-    /// untouched; an eraser keeps its opacity and its flow — the rate means the
-    /// same thing on every effect — and takes the default wet brush for the
-    /// rest.
+    /// What both kinds hold carries over — the pigment, the opacity and the flow, each
+    /// with its mapping, and the color dynamics — and the fluxes start at zero with
+    /// `add` at its full share, so wetting a brush and touching nothing lays the paint
+    /// it always laid. A brush already wet is handed back untouched; an eraser keeps
+    /// its opacity and its flow and takes the default wet brush for the rest.
     pub fn make_wet(&mut self) -> &mut WetEffect {
         self.effect = match self.effect {
             BrushEffect::Wet(w) => BrushEffect::Wet(w),
@@ -421,9 +368,8 @@ impl BrushParams {
                 },
                 ..WetEffect::default()
             }),
-            // A liquify brush shares nothing the wet effect could keep — no
-            // pigment, no ceiling, and its one rate means "follow", not "lay" —
-            // so it takes the default wet brush whole, as the eraser nearly does.
+            // A liquify brush shares nothing the wet effect could keep: no pigment,
+            // no ceiling, and its one rate means "follow", not "lay".
             BrushEffect::Liquify(_) => BrushEffect::Wet(WetEffect::default()),
         };
         self.wet_mut().expect("just made wet")
@@ -463,27 +409,22 @@ impl BrushParams {
         }
     }
 
-    /// The pigment a stroke of this brush lays — the laying effect's own color,
-    /// and `None` on an eraser, which lays nothing a color could be a property
-    /// of (§6.12). The one spelling of "whichever effect carries the color",
-    /// so a consumer cannot ask the paint side alone and silently read black
-    /// off a wet brush.
+    /// The pigment a stroke of this brush lays — the laying effect's own color, and
+    /// `None` where nothing is laid that a color could be a property of: the eraser
+    /// removes (§6.12), the liquify brush moves what is already colored (§6.13). The
+    /// one spelling of "whichever effect carries the color".
     pub fn pigment(&self) -> Option<[f32; 3]> {
         match &self.effect {
             BrushEffect::Paint(p) => Some(p.color),
             BrushEffect::Wet(w) => Some(w.color),
-            // Neither lays anything a color could be a property of: the eraser
-            // removes (§6.12), the liquify brush moves what is already
-            // colored (§6.13).
             BrushEffect::Erase(_) | BrushEffect::Liquify(_) => None,
         }
     }
 
-    /// The color dynamics a stroke of this brush jitters with: the laying
-    /// effect's, and the inactive default on an eraser — which has no color to
-    /// wander (§6.12). By value because [`ColorDynamics`] is small and `Copy`,
-    /// and a borrow would force every eraser call site through a `static`
-    /// default.
+    /// The color dynamics a stroke of this brush jitters with: the laying effect's,
+    /// and the inactive default where there is no color to wander. By value because
+    /// [`ColorDynamics`] is small and `Copy`, and a borrow would force those arms
+    /// through a `static`.
     pub fn color_dynamics(&self) -> ColorDynamics {
         match &self.effect {
             BrushEffect::Paint(p) => p.color_dynamics,
@@ -501,13 +442,11 @@ impl BrushParams {
     }
 
     /// The deposit jitter a brush gets when it does not say
-    /// ([`jitter`](Self::jitter)), sized between two floors. It must clear the f16
-    /// tile quantum (relative ≈ 2⁻¹¹ ≈ 0.05%) by a wide margin, so the exchange
-    /// loop's stores land at decorrelated phases of the f16 lattice instead of
-    /// ratcheting a region coherently into bands — 1% is ~20 quanta of displacement
-    /// wherever a gradient is gentle enough to band at all. And it must stay under what reads as texture: at ±1% a strong deposit
-    /// shifts by at most a couple of 8-bit levels per texel, at the threshold of
-    /// visibility.
+    /// ([`jitter`](Self::jitter)), sized between two floors: it must clear the f16 tile
+    /// quantum (relative ≈ 2⁻¹¹) by a wide margin, so the exchange loop's stores land
+    /// at decorrelated phases of the lattice instead of ratcheting a region into bands,
+    /// and stay under what reads as texture — at ±1% a strong deposit shifts by a
+    /// couple of 8-bit levels at most.
     pub const DEFAULT_JITTER: f32 = 0.01;
 
     /// [`DEFAULT_JITTER`](Self::DEFAULT_JITTER) as a function, for
@@ -530,14 +469,13 @@ impl BrushParams {
     }
 
     /// The drain falloff in **canvas px⁻¹**: the stored rate (per radius, see
-    /// [`drain`](Self::drain)) over [`size`](Self::size) — [`taper_px`](Self::taper_px)
-    /// for the reciprocal quantity, and guarding itself the same way, because the
-    /// number arrives from files, presets and peers.
+    /// [`drain`](Self::drain)) over [`size`](Self::size). Guards itself as
+    /// [`taper_px`](Self::taper_px) does, the numbers arriving from files, presets and
+    /// peers.
     ///
-    /// A radius of zero has no reciprocal, so it reads as **inexhaustible** rather
-    /// than as the infinity a shader would turn into a NaN falloff. That is the
-    /// honest answer as well as the safe one: a tip with no width lays nothing, and
-    /// what lays nothing cannot run out.
+    /// A radius of zero has no reciprocal, so it reads as **inexhaustible** rather than
+    /// as an infinity: a tip with no width lays nothing, and what lays nothing cannot
+    /// run out.
     pub fn drain_px(&self) -> f32 {
         // `f32::max` returns the non-NaN operand, so a NaN in either field lands on
         // the `is_finite` fallback below by way of a NaN quotient — as does 0/0.
@@ -555,51 +493,44 @@ impl BrushParams {
     /// [`elongation`](Self::elongation) saturates at, and so the factor by which the
     /// worst-case tip outgrows its own radius.
     ///
-    /// A bound on *area*, which is why there is one at all: every tile the stretched
-    /// tip reaches is a tile the stroke is rasterized into and the dynamics loop
-    /// dispatches over, so `s` prices the stroke roughly linearly. Eight is already a
-    /// pen laid almost flat; past it the mark stops reading as a wider stroke and
-    /// starts reading as a smear the length of the tip.
+    /// A bound on *area*: every tile the stretched tip reaches is a tile the stroke is
+    /// rasterized into and the dynamics loop dispatches over, so `s` prices the stroke
+    /// roughly linearly.
     pub const MAX_ELONGATION: f32 = 8.0;
 
     /// The stretch knob's own top: the value at which
     /// [`elongation`](Self::elongation) reaches [`MAX_ELONGATION`](Self::MAX_ELONGATION)
     /// and the knob stops meaning anything (§6.6).
     ///
-    /// Here rather than inline at the frontend's stretch slider, because a slider is
-    /// only one of the ways a value reaches this field — a file and a peer are two
-    /// more, and neither passes through a panel. `MAX_FLOW`'s own doc makes this
-    /// argument for the *drag* bindings; the wire is the third way.
+    /// Here rather than at the frontend's slider, because a file and a peer reach this
+    /// field without passing through a panel.
     pub const MAX_STRETCH: f32 = 1.0 - 1.0 / Self::MAX_ELONGATION;
 
     /// The same brush with every number a number, and every number that has a
-    /// documented range inside it — the funnel a brush passes through on its way
-    /// into the document, exactly as [`Filter::sanitized`](super::Filter::sanitized)
-    /// is for a filter (§21.5) and for the same two reasons.
+    /// documented range inside it — the funnel a brush passes through on its way into
+    /// the document, as [`Filter::sanitized`](super::Filter::sanitized) is for a
+    /// filter (§21.5).
     ///
-    /// **It clamps only where this crate already states a range.** The wet axes
-    /// (`add` included), the tooth's *give*, either effect's *opacity*, the hardness and the color are
-    /// quoted in `[0, 1]` by their own field docs, and so is the deposit
-    /// [`jitter`](Self::jitter), whose gate goes negative past 1; the stretch
-    /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH) by construction. Everything
-    /// else — the radius, the flows, the drain, the charge, the tapers, the color
-    /// dynamics, the tooth's *softness* — is required to be a finite, non-negative
-    /// number and nothing more, because the ceilings those have are a *frontend's*
-    /// slider ends rather than facts about the quantity, and clamping a document to
-    /// one this crate does not own would rewrite brushes that were never wrong.
+    /// **It clamps only where this crate already states a range**: the wet axes, the
+    /// tooth's *give*, either effect's *opacity*, the hardness, the color and the
+    /// deposit [`jitter`](Self::jitter) are quoted in `[0, 1]`, and the stretch
+    /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH). Everything else — the radius,
+    /// the flows, the drain, the charge, the tapers, the color dynamics, the tooth's
+    /// *softness* — is only required to be finite and non-negative, because the
+    /// ceilings those have are a *frontend's* slider ends rather than facts about the
+    /// quantity.
     ///
-    /// Every guard this replaces stays where it is. `taper_px`, `drain_px`,
-    /// `elongation` and `stroke_rect` defend themselves against values that never
-    /// came through here, which is what keeps an extent honest for a record built
-    /// by hand in a test or arriving down a path this funnel does not cover (§12.6).
+    /// Not the only door: `taper_px`, `drain_px`, `elongation` and `stroke_rect` still
+    /// defend themselves, for a record built by hand in a test or arriving down a path
+    /// this funnel does not cover (§12.6).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
             size: at_least_zero(self.size, d.size),
             shape: self.shape.sanitized(),
             // Bounded at the knob's own saturation point rather than at 1: past
-            // `MAX_STRETCH` the reciprocal is already pinned, so a larger value
-            // stored is a number that cannot mean what it says.
+            // `MAX_STRETCH` the reciprocal is already pinned, so a larger value stored
+            // cannot mean what it says.
             stretch: finite_or(self.stretch, d.stretch).clamp(0.0, Self::MAX_STRETCH),
             start_taper_length: at_least_zero(self.start_taper_length, d.start_taper_length),
             end_taper_length: at_least_zero(self.end_taper_length, d.end_taper_length),
@@ -614,36 +545,29 @@ impl BrushParams {
         }
     }
 
-    /// [`stretch`](Self::stretch) as the factor the extent is drawn out by along
-    /// the facing axis: `s = 1/(1 − stretch)`, clamped to
+    /// [`stretch`](Self::stretch) as the factor the extent is drawn out by along the
+    /// facing axis: `s = 1/(1 − stretch)`, clamped to
     /// [`MAX_ELONGATION`](Self::MAX_ELONGATION).
     ///
-    /// **Exactly 1 at `stretch = 0`**, which is the whole reason the knob is quoted as
-    /// the reciprocal's argument rather than as `s` itself: a brush that never heard of
-    /// stretch — and one whose modulation is sitting at a zero floor because the pen is
-    /// upright or there is no pen — takes the renderer's identity path bit for bit.
+    /// **Exactly 1 at `stretch = 0`**, which is why the knob is quoted as the
+    /// reciprocal's argument rather than as `s`: a brush that never heard of stretch —
+    /// and one whose modulation sits at a zero floor because the pen is upright — takes
+    /// the renderer's identity path bit for bit.
     ///
     /// Takes the modulated knob rather than reading [`stretch`](Self::stretch), because
     /// what a [`Modulation`] scales is the knob and not the factor: scaling `s` towards
     /// 0 would *shrink* the tip across its axis at a low tilt, where scaling the knob
     /// walks `s` back to 1 and leaves the shape alone.
-    ///
-    /// `min`-then-`max` rather than `clamp`, for `clamp01`'s reason and with more
-    /// riding on it: `clamp` returns the NaN where these return the other operand, and
-    /// the NaN would reach a lane the shaders divide by.
     #[expect(
         clippy::manual_clamp,
         reason = "min-then-max is the NaN policy; `clamp` returns the NaN these reject"
     )]
     pub fn elongation(stretch: f32) -> f32 {
-        // Bounded before the divide rather than clamped after it, so a knob past 1 —
-        // or a negative one, which is not a squash but no stretch at all — lands on a
-        // real factor instead of on an infinity or an inside-out tip.
-        //
-        // `min` first and `max` second, and that order is the NaN policy: `f32::min`
-        // and `f32::max` return the non-NaN operand (the argument at
-        // `clamp01`), so this way a NaN knob falls out as the *identity* and the
-        // other way it would fall out as the widest extent the brush can ask for.
+        // Bounded before the divide, so a knob past 1 — or a negative one, which is
+        // not a squash but no stretch at all — lands on a real factor instead of on an
+        // infinity or an inside-out tip. `min` first and `max` second is the NaN
+        // policy: both return the non-NaN operand, so a NaN knob falls out as the
+        // *identity* rather than as the widest extent the brush can ask for.
         1.0 / (1.0 - stretch).min(1.0).max(1.0 / Self::MAX_ELONGATION)
     }
 }
@@ -655,16 +579,12 @@ mod tests {
 
     /// **A brush from before the mappings were data still tapers with pressure.**
     ///
-    /// The save format reconciles a file's schema against today's types by *name*
-    /// (§8), so a field this build added arrives from its serde default — and that
-    /// default is the file's only way of saying what its absence meant. For
-    /// [`BrushParams::modulation`] the absence meant the pressure → radius scaling
-    /// the segment generator used to carry, not [`BrushModulations`]'s own
-    /// `Default`, which is no mapping at all.
-    ///
-    /// The two disagree by a whole taper: `mod_factor(None, ..)` is exactly 1, so
-    /// the empty set replays every such stroke at full width. Nothing else in the
-    /// suite can see it — the field is present on everything this build writes.
+    /// The save format reconciles a file's schema against today's types by *name* (§8),
+    /// so a field this build added arrives from its serde default — the file's only way
+    /// of saying what its absence meant. For [`BrushParams::modulation`] that is the
+    /// pressure → radius scaling, not [`BrushModulations`]'s own `Default`, which is no
+    /// mapping at all and would replay every such stroke at full width. Nothing else in
+    /// the suite can see it: the field is present on everything this build writes.
     #[test]
     fn a_brush_from_before_the_mappings_were_data_still_follows_pressure() {
         /// `BrushParams` as it stood before `modulation` — spelled with the names
@@ -779,10 +699,8 @@ mod tests {
     /// **Nothing that is not a number survives the funnel**, on any field.
     ///
     /// Driven off a poison list applied to every field in turn rather than one
-    /// assertion each, so a field added to the brush has an obvious place to be
-    /// added and no way to be quietly exempt — the device
-    /// `a_view_never_stores_a_number_it_cannot_use` uses for the view's mutators,
-    /// and for the same reason: what is being checked is a *class*.
+    /// assertion each, so a field added to the brush has an obvious place to be added
+    /// and no way to be quietly exempt: what is checked is a *class*.
     #[test]
     fn a_sanitized_brush_holds_no_number_a_shader_cannot_use() {
         /// The default brush's paint effect, writable — what a poke at a
@@ -907,11 +825,9 @@ mod tests {
             v.extend(b.wet().map(|w| w.color).unwrap_or_default());
             v
         };
-        // Every pen mapping the brush holds, from both owners: the tip's targets
-        // and whichever effect is in force. Its two knobs are neither of the lists
-        // above — a floor is a share and a curve is a *signed* bias — so each is
-        // checked against the range `Modulation::sanitized` quotes, which is what
-        // the panel draws its sliders in.
+        // Every pen mapping the brush holds, from both owners. Its two knobs are
+        // neither of the lists above — a floor is a share and a curve a *signed* bias —
+        // so each is checked against the range `Modulation::sanitized` quotes.
         let responses = |b: &BrushParams| {
             let mut v: Vec<Modulation> = b.modulation.all().into_iter().flatten().collect();
             match &b.effect {
@@ -1046,9 +962,7 @@ mod tests {
         assert_eq!((w.flow, w.opacity), (2.0, 0.5));
         // Liquify is the one effect whose rate has a ceiling this crate owns
         // (`LiquifyEffect::strength`, §6.13), so the setter holds it where the other
-        // three pass the number through — and lands a NaN where `sanitized` lands
-        // one, since two doors onto a field that disagree about NaN is the thing
-        // holding a range by hand costs you.
+        // three pass the number through — and lands a NaN where `sanitized` does.
         let mut warp = BrushParams {
             effect: BrushEffect::Liquify(LiquifyEffect::default()),
             ..BrushParams::default()
@@ -1059,14 +973,12 @@ mod tests {
         }
     }
 
-    /// **`radius` is a pure scale on the mark**, which is the whole of why `drain` is
-    /// quoted per radius (§6.2): enlarge the tip and the stroke has to run dry
-    /// proportionally further along, not at the same canvas distance.
+    /// **`size` is a pure scale on the mark**, which is why `drain` is quoted per
+    /// radius (§6.2): enlarge the tip and the stroke has to run dry proportionally
+    /// further along, not at the same canvas distance.
     ///
-    /// Stated on the *reach* — the travel at which the load reaches zero,
-    /// `1/drain_px` — because that is the length the falloff actually draws, and the
-    /// claim is that it grows with the tip instead of standing still. A per-canvas-px
-    /// `drain` fails this at every radius but the one it was tuned at.
+    /// Stated on the *reach* — `1/drain_px`, the travel at which the load reaches zero
+    /// — because that is the length the falloff actually draws.
     #[test]
     fn a_bigger_brush_runs_dry_proportionally_further() {
         let at = |radius: f32| BrushParams {
@@ -1083,8 +995,7 @@ mod tests {
         }
         // A tip with no width cannot run out, so the reciprocal that does not exist
         // reads as inexhaustible rather than as an infinity the shader would turn into
-        // a NaN falloff — the same class the poison test above rules out for the
-        // stored fields, asked of the derived one.
+        // a NaN falloff.
         for radius in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let b = BrushParams {
                 size: radius,
@@ -1124,17 +1035,12 @@ mod tests {
     }
 
     /// [`BrushParams::taper_px`]'s own guard, [`drain_px`](BrushParams::drain_px)'s
-    /// sibling: **a negative or non-finite length reads as 0**, and so does any
-    /// length scaled by a radius that is not a radius.
-    ///
-    /// The claim is really about `f32::max`'s NaN policy — it returns the *other*
-    /// operand, which is what makes the guard land on 0 where `clamp` would carry
-    /// the NaN through. A taper is a distance, and the fields arrive from files,
-    /// presets and peers; the sanitizer is not the only door
+    /// sibling: **a negative or non-finite length reads as 0**, and so does any length
+    /// scaled by a radius that is not a radius. The sanitizer is not the only door
     /// ([`BrushParams::sanitized`] says so), so this is the guard that has to hold.
     ///
-    /// [`tapers`](BrushParams::tapers) rides on it: an unmeasurable length must not
-    /// put the segment generator on the tapered path with no ends to taper between.
+    /// [`tapers`](BrushParams::tapers) rides on it: an unmeasurable length must not put
+    /// the segment generator on the tapered path with no ends to taper between.
     #[test]
     fn a_taper_nobody_can_measure_is_no_taper() {
         let at = |size: f32, start: f32, end: f32| BrushParams {

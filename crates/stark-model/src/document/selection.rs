@@ -1,30 +1,27 @@
 //! Selections: the soft, sparse mask that gates where tools may act (§6.8).
 //!
 //! A selection is *not* a shape — it is a coverage field over the canvas, in exactly
-//! the same sparse tile map the paint lives in. That is what makes it "flexible": a
-//! rectangle, an ellipse and a freehand lasso are just three ways to produce coverage,
-//! they combine with the running selection through the ordinary boolean set ops, and
-//! the result is a per-texel *fraction* — so feathered and antialiased edges are the
-//! normal case rather than a special one, and any future producer (select-by-color, a
-//! painted quick-mask, a loaded alpha channel) drops into the same representation.
+//! the same sparse tile map the paint lives in. A rectangle, an ellipse and a freehand
+//! lasso are three ways to produce coverage; they combine with the running selection
+//! through the ordinary boolean set ops, and the result is a per-texel *fraction*, so
+//! feathered and antialiased edges are the normal case rather than a special one, and
+//! any future producer drops into the same representation.
 //!
 //! Two properties fall out of storing it as tiles:
 //!
 //! - **The infinite canvas still works.** Tiles are sparse, and the coverage that
-//!   reigns where there is no tile is carried as a single number
-//!   (`stark-engine`'s `Selection::outside`). "No selection" is `outside = 1` with no tiles at all
-//!   — free — and so is its inverse, which is what lets `Invert` stay a
-//!   constant-cost operation on an unbounded canvas instead of an impossible one.
+//!   reigns where there is no tile is carried as a single number (`stark-engine`'s
+//!   `Selection::outside`). "No selection" is `outside = 1` with no tiles at all —
+//!   free — and so is its inverse, which is what keeps `Invert` constant-cost on an
+//!   unbounded canvas.
 //! - **History and collaboration are free.** The map is persistent (`rpds`), so a
-//!   `DocState` snapshot with a selection costs the same handful of `Arc` bumps it
-//!   always did, and a mask texture returns to the pool when the last version
-//!   referencing it drops (§5.2).
+//!   `DocState` snapshot with a selection costs a handful of `Arc` bumps, and a mask
+//!   texture returns to the pool when the last version referencing it drops (§5.2).
 //!
-//! What is *stored in the log* is the op, not the mask: [`SelectionOp`] is a few
-//! floats (or a decimated polyline), and every peer rasterizes it the same way from
-//! the same shader. That keeps the action log compact and replay exact, and it is why
-//! the selection lives in `stark-engine`'s `DocState` rather than in the session —
-//! a stroke's pixels depend on it, so replay must be able to reconstruct it.
+//! What is *stored in the log* is the op, not the mask: [`SelectionOp`] is a few floats
+//! (or a decimated polyline), and every peer rasterizes it the same way from the same
+//! shader. A stroke's pixels depend on it, so it lives in `stark-engine`'s `DocState`
+//! rather than in the session — replay must be able to reconstruct it.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,23 +35,20 @@ use crate::sanitize::{at_least_zero, clamp01};
 pub const MAX_SELECTION_TILES: usize = 1024;
 
 /// Most vertices one lasso may carry. A bound on what a mask pass *costs*, where
-/// [`MAX_SELECTION_TILES`] bounds how much of the canvas it covers — the two are
-/// independent, and only the first was held.
+/// [`MAX_SELECTION_TILES`] bounds how much of the canvas it covers.
 ///
 /// Two things ride on it. The edge list is uploaded as an `N×1` texture
 /// (`gpu::selection::edge_texture`), so `N` has to stay inside the smallest
 /// `maxTextureDimension1D` any WebGPU adapter guarantees (8192) or the op fails
 /// validation instead of rasterizing; and `selection.wesl` walks every edge **per
-/// texel**, so `N` prices the pass linearly across a million-texel tile set.
+/// texel**, so `N` prices the pass linearly across a million-texel tile set. The first
+/// is held where the texture is built — `gpu::selection`'s `MIN_MAX_TEXTURE_DIM_1D`
+/// asserts against this constant, which is why it is re-exported from `document` at
+/// all.
 ///
-/// The first is held where the texture is built rather than only claimed here —
-/// `gpu::selection`'s `MIN_MAX_TEXTURE_DIM_1D` asserts against this constant, which is
-/// why it is re-exported from `document` at all.
-///
-/// Four thousand is far past any loop a hand draws: the frontend decimates live input
-/// to one vertex per `LASSO_MIN_STEP` (2 px), so this is a boundary some eight
-/// kilopixels long. What it defends against is not a drawing but a document — a lasso
-/// is a `Vec` whose length a file or a peer states.
+/// Four thousand is far past any loop a hand draws, the frontend having decimated live
+/// input to one vertex per `LASSO_MIN_STEP` (2 px). What it defends against is not a
+/// drawing but a document — a lasso is a `Vec` whose length a file or a peer states.
 pub const MAX_LASSO_POINTS: usize = 4096;
 
 /// A region-producing shape, in canvas space (§6.8).
@@ -90,23 +84,21 @@ impl SelectionShape {
         }
     }
 
-    /// The shape's canvas-space bounding box, or `None` when there is no box to
-    /// give: the shape is unbounded ([`Self::All`]), degenerate (a lasso with no
-    /// vertices), or **not measurable** (any coordinate non-finite).
+    /// The shape's canvas-space bounding box, or `None` when there is no box to give:
+    /// the shape is unbounded ([`Self::All`]), degenerate (a lasso with no vertices),
+    /// or **not measurable** (any coordinate non-finite).
     ///
     /// The third case is the one worth naming. A `None` here declines a selection op
-    /// outright (`Selection::plan` returns `None`, and the caller leaves the mask
-    /// alone), fills nothing on the fill path (`document::fill::plan`'s `None` arm),
-    /// and claims the whole layer in a footprint (`fill_rect`) — a deterministic
-    /// refusal, an empty write and an over-claim, which are the safe answers in their
-    /// three directions.
+    /// outright (`Selection::plan` returns `None`), fills nothing on the fill path, and
+    /// claims the whole layer in a footprint (`fill_rect`) — a deterministic refusal,
+    /// an empty write and an over-claim, which are the safe answers in their three
+    /// directions.
     ///
     /// **Every lasso vertex is tested**, the first included, as `stroke_rect` does and
     /// for its reason (§12.6): `f32::min`/`max` return the *non*-NaN operand, so an
-    /// untested vertex leaves the box looking tight — it then quantizes cleanly, and
-    /// the NaN reaches `selection.wesl`'s coverage ramp, where `clamp` on a NaN is
-    /// unspecified. That is two clients disagreeing about a mask, which §6.8 says may
-    /// not happen.
+    /// untested vertex leaves the box looking tight, quantizes cleanly, and lands the
+    /// NaN in `selection.wesl`'s coverage ramp, where `clamp` on a NaN is unspecified.
+    /// That is two clients disagreeing about a mask, which §6.8 says may not happen.
     pub fn bounds(&self) -> Option<(Vec2, Vec2)> {
         let finite = |lo: Vec2, hi: Vec2| (lo.is_finite() && hi.is_finite()).then_some((lo, hi));
         match self {
@@ -127,28 +119,23 @@ impl SelectionShape {
         }
     }
 
-    /// The same shape with no more vertices than a mask pass can carry — the
-    /// shape's half of the funnel [`SelectionOp::at`] and
+    /// The same shape with no more vertices than a mask pass can carry — the shape's
+    /// half of the funnel [`SelectionOp::at`] and
     /// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are.
     ///
-    /// The rect carries four floats already answered by [`bounds`](Self::bounds),
-    /// which refuses what it cannot measure rather than rounding it into a different
-    /// rectangle. The ellipse's radii are the one analytic value with a *nearest
-    /// legal* reading — a radius is a distance, so a negative one describes the same
-    /// ellipse — and normalizing it here is what lets `bounds` and
+    /// The ellipse's radii are the one analytic value with a *nearest legal* reading —
+    /// a radius is a distance, so a negative one describes the same ellipse — and
+    /// normalizing it here is what lets [`bounds`](Self::bounds) and
     /// `gpu::selection::shader_params` stop each compensating for it separately.
     ///
     /// **The rect is deliberately left inverted.** `max < min` is not a mistake to
-    /// repair there: the plan, the footprint and `selection.wesl` all read it as the
-    /// empty region, so ordering the corners would change what an existing document
-    /// means.
+    /// repair: the plan, the footprint and `selection.wesl` all read it as the empty
+    /// region, so ordering the corners would change what an existing document means.
     ///
-    /// **Decimated rather than refused**, on `Gradient`'s argument (§19): a long
-    /// loop describes a perfectly good region and simply describes it with more
-    /// vertices than the pass can carry, so refusing would unload a document over
-    /// something this can answer. Evenly around the cycle, which is what keeps the
-    /// loop a loop — the first vertex is kept and the closing edge is implicit, so
-    /// there is no end to pin the way a ramp's is.
+    /// **A long lasso is decimated rather than refused**, on `Gradient`'s argument
+    /// (§19): it describes a perfectly good region and simply describes it with more
+    /// vertices than the pass can carry. Evenly around the cycle, which is what keeps
+    /// the loop a loop — the first vertex is kept and the closing edge is implicit.
     ///
     /// The index goes through `pick_index` because `usize` is 32 bits in the browser:
     /// spelled `i * points.len() / MAX_LASSO_POINTS` here, the product wraps on a loop
@@ -172,9 +159,8 @@ impl SelectionShape {
     /// The coverage this shape has arbitrarily far from its bounding box: 1 for
     /// [`Self::All`], 0 for everything else.
     ///
-    /// Only ever 0 or 1 even though coverage is now scaled by
-    /// [`SelectionOp::opacity`] — the unbounded shape is pinned to full strength by
-    /// [`SelectionOp::new`], for the reason given there.
+    /// Never a fraction, even though coverage is scaled by [`SelectionOp::opacity`]:
+    /// the unbounded shape is pinned to full strength by [`SelectionOp::new`].
     pub fn coverage_outside(&self) -> f32 {
         if matches!(self, Self::All) { 1.0 } else { 0.0 }
     }
@@ -209,10 +195,9 @@ pub enum SelectionMode {
     /// Add to it (shift-drag).
     ///
     /// `max(p, s)`, with no exception for `p = 1` — a union with the unrestricted
-    /// selection *is* the unrestricted selection, and every peer rasterizing this op
-    /// agrees. A *gesture* asking to add to nothing means something else, and is
-    /// resolved to [`Self::Replace`] before it becomes an op (§6.8), so what reaches
-    /// this enum is always what was meant.
+    /// selection *is* the unrestricted selection. A *gesture* asking to add to nothing
+    /// means something else, and is resolved to [`Self::Replace`] before it becomes an
+    /// op (§6.8), so what reaches this enum is always what was meant.
     Union,
     /// Cut out of it (alt-drag).
     Subtract,
@@ -222,12 +207,13 @@ pub enum SelectionMode {
 
 impl SelectionMode {
     /// Combine two coverages under this mode — the CPU twin of the shader's algebra,
-    /// used to carry `stark-engine`'s `Selection::outside` (where there is no tile to rasterize).
+    /// used to carry `stark-engine`'s `Selection::outside` (where there is no tile to
+    /// rasterize).
     ///
-    /// Literally the soft-set expressions above, on `f32` — not a boolean twin of
-    /// them. A boolean twin is sound only while every coverage in play is 0 or 1, and
-    /// a partial selection ([`SelectionOp::opacity`]) makes the real algebra the only
-    /// one that answers.
+    /// The soft-set expressions above on `f32`, not a boolean twin of them: a boolean
+    /// twin is sound only while every coverage in play is 0 or 1, and a partial
+    /// selection ([`SelectionOp::opacity`]) makes the real algebra the only one that
+    /// answers.
     pub fn combine(self, prev: f32, shape: f32) -> f32 {
         match self {
             Self::Replace => shape,
@@ -238,17 +224,14 @@ impl SelectionMode {
     }
 }
 
-/// One logged edit to the selection (§6.8): a shape, how it combines, and
-/// how soft its edge is. Compact enough to live in the action log and on the wire.
+/// One logged edit to the selection (§6.8): a shape, how it combines, and how soft its
+/// edge is. Compact enough to live in the action log and on the wire.
 ///
 /// **Deserialization funnels through [`SelectionOp::at`]**, so an op that arrives from
 /// a file or a peer holds the same invariants as one a gesture built: non-negative
-/// feather, opacity in `0..=1`, and full strength on the unbounded shape. Same device
-/// as [`Gradient`](crate::gradient::Gradient)'s repairing `From` — a funnel is worth
-/// nothing if there is a second door.
+/// feather, opacity in `0..=1`, and full strength on the unbounded shape.
 ///
-/// `Raw` mirrors the fields **in order**, so the encoding is unchanged (§8) —
-/// `an_op_from_the_wire_is_normalized` pins that.
+/// `Raw` mirrors the fields **in order**, so the encoding is unchanged (§8).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 #[serde(from = "RawSelectionOp", into = "RawSelectionOp")]
 #[carbonite(as = "RawSelectionOp")]
@@ -261,20 +244,16 @@ pub struct SelectionOp {
     /// The coverage the shape lands at where it fully covers, in `0..=1` — how
     /// *strongly* this region is selected, the Select panel's Opacity slider.
     ///
-    /// The mask is a coverage field and every tool already acts through it in
-    /// proportion (§6.8), so a partial selection needs nothing new anywhere
-    /// downstream: a brush deposits at that fraction, a fill lands at it, a
-    /// transform carries it. Feather says the same thing about the *edge* and this
-    /// says it about the whole region — one is a ramp, the other a level, and they
-    /// multiply.
+    /// Every tool already acts through the mask in proportion (§6.8), so a partial
+    /// selection needs nothing new downstream: a brush deposits at that fraction, a
+    /// fill lands at it, a transform carries it. Feather says the same thing about the
+    /// *edge* — one is a ramp, the other a level, and they multiply.
     ///
     /// Pinned to 1 for [`SelectionShape::All`], which cannot carry a strength: the
-    /// unbounded shape is the deselect primitive, and its coverage lands in
-    /// `stark-engine`'s `Selection::outside` where a shape has no boundary to rasterize. Rather
-    /// than grow a rewrite-every-tile path for a state the UI has no way to ask
-    /// for — "select all, at a half" is not a control anywhere — the constructor
-    /// refuses to build it. A partial `outside` is still reachable, by inverting a
-    /// partial selection, and that path is exact.
+    /// unbounded shape's coverage lands in `stark-engine`'s `Selection::outside`, where
+    /// there is no boundary to rasterize, and "select all, at a half" is not a control
+    /// anywhere — so the constructor refuses to build it. A partial `outside` is still
+    /// reachable, by inverting a partial selection, and that path is exact.
     opacity: f32,
 }
 
@@ -327,12 +306,11 @@ impl SelectionOp {
     }
 }
 
-/// The wire shape of a [`SelectionOp`], which is the same shape — its only job is
-/// to be the type `#[serde(from)]` deserializes *before* the constructor runs.
+/// The wire shape of a [`SelectionOp`], which is the same shape — its only job is to
+/// be the type `#[serde(from)]` deserializes *before* the constructor runs.
 ///
-/// Named in both directions by the type above, for `RawFillOp`'s reason (§8): a schema
-/// describes reading and writing at once, so the representation is stated once and a
-/// one-sided conversion is refused.
+/// Named in both directions by the type above (§8): a schema describes reading and
+/// writing at once, so a one-sided conversion is refused.
 #[derive(Serialize, Deserialize, carbonite::Schema)]
 #[serde(rename = "SelectionOp")]
 struct RawSelectionOp {
@@ -369,8 +347,7 @@ mod tests {
     ///
     /// Three separate lies a hostile or corrupt log could tell: a negative feather, an
     /// opacity outside `0..=1`, and a partial strength on the unbounded shape, which
-    /// has no boundary to rasterize and would need a rewrite-every-tile path that does
-    /// not exist (see [`SelectionOp::opacity`]).
+    /// has no boundary to rasterize (see [`SelectionOp::opacity`]).
     #[test]
     fn an_op_from_the_wire_is_normalized() {
         let wire = |op: &SelectionOp| carbonite::to_vec_static(op).expect("encodes");
@@ -461,14 +438,11 @@ mod tests {
         assert_eq!(back(&wire(&clean)), clean);
     }
 
-    /// **A lasso is decimated to something a mask pass can carry**, and the funnel
-    /// is where that happens — the frontend's `LASSO_MIN_STEP` decimates live input
-    /// and says nothing about what a file or a peer states the length of.
+    /// **A lasso is decimated to something a mask pass can carry**, and the funnel is
+    /// where that happens — the frontend's `LASSO_MIN_STEP` decimates live input and
+    /// says nothing about what a file or a peer states the length of.
     ///
-    /// Two things ride on the bound (see [`MAX_LASSO_POINTS`]): the edge list is
-    /// uploaded as an `N×1` texture, so an over-long one fails wgpu validation
-    /// instead of rasterizing, and `selection.wesl` walks every edge per texel, so
-    /// `N` prices the pass across a million-texel tile set.
+    /// Two things ride on the bound; see [`MAX_LASSO_POINTS`].
     #[test]
     fn a_lasso_longer_than_a_mask_pass_can_carry_is_decimated() {
         let long: Vec<Vec2> = (0..MAX_LASSO_POINTS * 3)
