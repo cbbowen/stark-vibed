@@ -27,6 +27,8 @@ use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, Window, canvas, div, prelude::*, px, rgb,
 };
 
+use crate::style::{self, StyleExt};
+
 /// The panel's width in logical px — wider than the brush's, because a row carries a
 /// name, a depth indent and four controls.
 pub const WIDTH: f32 = 268.0;
@@ -133,10 +135,14 @@ impl RenderOnce for Chip {
             // The colour is passed rather than inherited: a rasterized glyph is
             // tinted by its *own* element, not by the row around it
             // (`crate::icons`).
-            .when(self.on, |el| el.bg(rgb(0x35496b)))
+            .when(self.on, |el| el.bg(rgb(style::LIT)))
             .child(crate::icons::icon(
                 self.glyph,
-                if self.on { 0xe8eaed } else { 0x767b80 },
+                if self.on {
+                    style::INK_LIT
+                } else {
+                    style::INK_MARK
+                },
             ))
     }
 }
@@ -157,17 +163,10 @@ pub fn layers_panel(
     let blend = selected.map_or(BlendMode::Normal, |r| r.info.blend);
 
     div()
-        .flex()
-        .flex_col()
-        .w(px(WIDTH))
-        .h_full()
-        .p_3()
-        .gap_2()
-        .bg(rgb(0x1e2124))
+        .panel_column(WIDTH)
         .border_l_1()
-        .border_color(rgb(0x35393d))
-        .text_color(rgb(0xe8eaed))
-        .child(div().text_sm().text_color(rgb(0x9aa0a6)).child("Layers"))
+        .border_color(rgb(style::EDGE))
+        .child(div().heading().child("Layers"))
         // The selected layer's two continuous knobs.
         .child(
             div()
@@ -177,41 +176,25 @@ pub fn layers_panel(
                 .pt_2()
                 .child(
                     div()
-                        .relative()
+                        .chip()
                         .mt_1()
                         .px_2()
                         .py_1()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .text_xs()
-                        .text_color(rgb(0xb0b4b8))
+                        .resting()
                         .child(probe(regions, Region::Blend))
                         .child(format!("Blend: {}", blend.label())),
                 )
                 .child(
                     div()
-                        .flex()
-                        .justify_between()
-                        .text_xs()
-                        .text_color(rgb(0x9aa0a6))
+                        .readout_row()
                         .child("Opacity")
                         .child(format!("{opacity:.2}")),
                 )
                 .child(
                     div()
-                        .relative()
-                        .h(px(18.))
-                        .w_full()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
+                        .trough(18.)
                         .child(probe(regions, Region::Opacity))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(wgpui::relative(opacity.clamp(0.0, 1.0)))
-                                .rounded_sm()
-                                .bg(rgb(0x40474e)),
-                        ),
+                        .child(div().trough_fill(opacity, style::FILL)),
                 ),
         )
         // The acts on the whole stack, above the roster they act on.
@@ -254,11 +237,7 @@ pub fn layers_panel(
                             .pr_1()
                             .py_0p5()
                             .rounded_sm()
-                            .when_else(
-                                worn,
-                                |el| el.bg(rgb(0x35496b)),
-                                |el| el.text_color(rgb(0xb0b4b8)),
-                            )
+                            .lit_row(worn)
                             .child(Chip {
                                 glyph: if row.info.visible {
                                     stark_ui::icons::VISIBLE
@@ -301,7 +280,10 @@ pub fn layers_panel(
                                     .child(layer_tree::layer_label(&row.info)),
                             )
                             .when(row.info.clip, |el| {
-                                el.child(crate::icons::icon(stark_ui::icons::CLIP, 0x9aa0a6))
+                                el.child(crate::icons::icon(
+                                    stark_ui::icons::CLIP,
+                                    style::INK_LABEL,
+                                ))
                             })
                             // Carry and Release are a `Some` each rather than a rule
                             // written here — see the module note.

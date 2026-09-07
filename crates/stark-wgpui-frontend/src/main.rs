@@ -42,6 +42,7 @@ mod panel;
 mod render;
 mod select;
 mod store;
+mod style;
 mod transform;
 mod window;
 

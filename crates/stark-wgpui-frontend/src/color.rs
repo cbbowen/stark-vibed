@@ -20,6 +20,8 @@ use wgpui::{
     rgb,
 };
 
+use crate::style::{self, StyleExt};
+
 /// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
 /// window's**. The window's swapchain may be scRGB and the engine paints in any
 /// gamut it has; these pictures are RGBA8 sprites wgpui's shaders read as sRGB, so a
@@ -257,7 +259,7 @@ pub fn color_panel(
                 .size(px(WHEEL))
                 // No clip: the picture cuts itself (`inside_the_rim`), so what is
                 // round is the thing that knows where the rim is.
-                .bg(rgb(0x1e2124))
+                .bg(rgb(style::PANEL))
                 .child(probe(regions, Region::Wheel))
                 .children(
                     pictures
@@ -273,7 +275,7 @@ pub fn color_panel(
                 .h(px(TRACK))
                 .rounded_sm()
                 .overflow_hidden()
-                .bg(rgb(0x14161a))
+                .bg(rgb(style::WELL))
                 .child(probe(regions, Region::Track))
                 .children(
                     pictures
@@ -293,15 +295,10 @@ pub fn color_panel(
                         .size(px(TRACK))
                         .rounded_sm()
                         .border_1()
-                        .border_color(rgb(0x35393d))
+                        .border_color(rgb(style::EDGE))
                         .bg(rgb(swatch)),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0x9aa0a6))
-                        .child(color::notation_of(rgb_now)),
-                ),
+                .child(div().caption().child(color::notation_of(rgb_now))),
         )
 }
 

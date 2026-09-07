@@ -21,10 +21,11 @@ use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::panels::PanelId;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
-    prelude::*, px, rgb,
+    prelude::*, rgb,
 };
 
 use crate::brush::Brush;
+use crate::style::{self, StyleExt};
 
 /// The panel's own padding (`p_3`), in logical px.
 ///
@@ -139,10 +140,7 @@ impl RenderOnce for Slider {
             .py_1()
             .child(
                 div()
-                    .flex()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(rgb(0x9aa0a6))
+                    .readout_row()
                     .child(self.knob.label())
                     .child(self.readout),
             )
@@ -151,23 +149,16 @@ impl RenderOnce for Slider {
                 // the press to know which one a drag is moving.
                 div()
                     .id(SharedString::from(self.knob.label()))
-                    .relative()
-                    .h(px(18.))
-                    .w_full()
-                    .rounded_sm()
-                    .bg(rgb(0x2a2d31))
+                    .trough(18.)
                     .child(probe(&self.regions, Region::Knob(self.knob)))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(wgpui::relative(fill / 100.0))
-                            .rounded_sm()
-                            .bg(if self.active {
-                                rgb(0x5b9dd9)
-                            } else {
-                                rgb(0x40474e)
-                            }),
-                    ),
+                    .child(div().trough_fill(
+                        fill / 100.0,
+                        if self.active {
+                            style::ACCENT
+                        } else {
+                            style::FILL
+                        },
+                    )),
             )
     }
 }
@@ -192,12 +183,8 @@ impl RenderOnce for PresetRow {
             .rounded_sm()
             .text_sm()
             .cursor_pointer()
-            .when_else(
-                self.worn,
-                |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-                |el| el.text_color(rgb(0xb0b4b8)),
-            )
-            .hover(|s| s.bg(rgb(0x2f3337)))
+            .lit_row(self.worn)
+            .hover(|s| s.bg(rgb(style::HOVER)))
             .child(self.name)
     }
 }
@@ -273,19 +260,12 @@ pub fn brush_panel(
                 .children(effects.iter().enumerate().map(|(i, (kind, label))| {
                     div()
                         .id(*label)
-                        .relative()
+                        .chip()
                         .child(probe(regions, Region::Effect(i)))
                         .flex_1()
                         .py_1()
-                        .rounded_sm()
-                        .text_xs()
                         .text_center()
-                        .cursor_pointer()
-                        .when_else(
-                            *kind == effect,
-                            |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-                            |el| el.bg(rgb(0x2a2d31)).text_color(rgb(0xb0b4b8)),
-                        )
+                        .lit(*kind == effect)
                         .child(*label)
                 })),
         )
@@ -293,13 +273,7 @@ pub fn brush_panel(
         // shape *is* is the tool, and a preset is a way of arriving at one.
         .child(shapes)
         .child(substrates)
-        .child(
-            div()
-                .pt_2()
-                .text_sm()
-                .text_color(rgb(0x9aa0a6))
-                .child("Presets"),
-        )
+        .child(div().pt_2().heading().child("Presets"))
         .children(brush.library.iter().enumerate().map(|(i, e)| PresetRow {
             name: e.name.clone().into(),
             worn: brush.from.as_deref() == Some(e.name.as_str()),
@@ -309,22 +283,15 @@ pub fn brush_panel(
 
     div()
         .id("panels")
-        .flex()
-        .flex_col()
-        .w(px(WIDTH))
-        .h_full()
-        .p_3()
-        .gap_2()
+        .panel_column(WIDTH)
         // **Scrolls.** This column was a fixed run of controls when it held a brush;
         // it holds three panels now and will hold more (§11.2 N8), and a stack that
         // ran off the bottom of the window would be one whose last panel does not
         // exist. The web app floats its panels so they can overlap; this one is a
         // column, so the column is what gives.
         .overflow_y_scroll()
-        .bg(rgb(0x1e2124))
         .border_r_1()
-        .border_color(rgb(0x35393d))
-        .text_color(rgb(0xe8eaed))
+        .border_color(rgb(style::EDGE))
         .child(section(regions, folded, PanelId::Color, color))
         .child(section(regions, folded, PanelId::Brush, brush_body))
         .child(section(regions, folded, PanelId::Select, select))
@@ -366,11 +333,11 @@ fn title(regions: &Regions, folded: &HashSet<PanelId>, id: PanelId) -> impl Into
         .pt_2()
         .cursor_pointer()
         .child(probe(regions, Region::Fold(id)))
-        .child(div().text_sm().text_color(rgb(0x9aa0a6)).child(id.title()))
+        .child(div().heading().child(id.title()))
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(0x6c7378))
+                .text_color(rgb(style::INK_FOLD))
                 // Down for open, right for folded — which way the content lies, not
                 // which way pressing it would go.
                 .child(if open { "\u{25be}" } else { "\u{25b8}" }),
@@ -473,7 +440,7 @@ pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wgpui::{point, size};
+    use wgpui::{point, px, size};
 
     fn at(x: f32, y: f32) -> Point<Pixels> {
         point(px(x), px(y))

@@ -1923,6 +1923,10 @@ fn canvas_at(view: ViewTransform, position: Point<Pixels>, scale: f32) -> Vec2 {
 }
 
 /// What the window shows when there is no wgpu device to paint with.
+///
+/// Names its own two colours rather than `crate::style`'s: there is no chrome on this
+/// screen to be consistent with, and a restyle of the panels has nothing to say about
+/// the page that stands in for all of them.
 fn unavailable() -> AnyElement {
     div()
         .size_full()

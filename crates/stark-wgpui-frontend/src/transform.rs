@@ -29,6 +29,8 @@ use wgpui::{
     rgb, rgba,
 };
 
+use crate::style::{self, StyleExt};
+
 /// The three families, in the order the bar draws them, with the word each wears.
 ///
 /// The words are this frontend's rather than the registry's because a family is not a
@@ -99,18 +101,11 @@ pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl Into
         .flex()
         .gap_1()
         .p_2()
-        .bg(rgba(0x1e2124e0))
+        .bg(rgba(style::PANEL_OVER_CANVAS))
         .border_b_1()
-        .border_color(rgb(0x35393d))
-        .text_color(rgb(0xe8eaed))
-        .child(
-            div()
-                .py_1()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(0x9aa0a6))
-                .child("Transform"),
-        )
+        .border_color(rgb(style::EDGE))
+        .text_color(rgb(style::INK_LIT))
+        .child(div().py_1().px_2().caption().child("Transform"))
         .children(
             FAMILIES
                 .iter()
@@ -133,14 +128,10 @@ pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl Into
                 None => command.word().to_string(),
             };
             div()
-                .relative()
+                .chip()
                 .py_1()
                 .px_2()
-                .rounded_sm()
-                .bg(rgb(0x2a2d31))
-                .text_xs()
-                .text_color(rgb(0xb0b4b8))
-                .cursor_pointer()
+                .resting()
                 .child(probe(regions, Region::Act(i)))
                 .child(word)
         }))
@@ -148,17 +139,10 @@ pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl Into
 
 fn chip(probe: impl IntoElement, word: &str, lit: bool) -> impl IntoElement {
     div()
-        .relative()
+        .chip()
         .py_1()
         .px_2()
-        .rounded_sm()
-        .text_xs()
-        .cursor_pointer()
-        .when_else(
-            lit,
-            |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-            |el| el.bg(rgb(0x2a2d31)).text_color(rgb(0xb0b4b8)),
-        )
+        .lit(lit)
         .child(probe)
         .child(word.to_string())
 }

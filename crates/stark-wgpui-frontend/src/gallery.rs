@@ -22,6 +22,8 @@ use wgpui::{
     rgb,
 };
 
+use crate::style::{self, StyleExt};
+
 /// The width of a card, logical px. Small enough that a row of them fits the panel's
 /// column, large enough that a stamp's silhouette is legible.
 const CARD: f32 = 46.0;
@@ -162,17 +164,13 @@ pub fn gallery<K: Kind>(
                 .justify_between()
                 .items_center()
                 .pt_2()
-                .child(div().text_sm().text_color(rgb(0x9aa0a6)).child(heading))
+                .child(div().heading().child(heading))
                 .child(
                     div()
-                        .relative()
+                        .chip()
                         .py_1()
                         .px_2()
-                        .rounded_sm()
-                        .bg(rgb(0x2a2d31))
-                        .text_xs()
-                        .text_color(rgb(0xb0b4b8))
-                        .cursor_pointer()
+                        .resting()
                         .child(probe(regions, Region::Import(which)))
                         .child("Import\u{2026}"),
                 ),
@@ -235,9 +233,9 @@ fn face(
                 .rounded_sm()
                 // A card sets the ground its picture sits on, which is what makes a
                 // stamp's coverage legible: white ink over a dark square.
-                .bg(rgb(0x14161a))
+                .bg(rgb(style::WELL))
                 .border_1()
-                .border_color(if chosen { rgb(0x5b9dd9) } else { rgb(0x35393d) })
+                .border_color(rgb(if chosen { style::ACCENT } else { style::EDGE }))
                 .children(picture.map(|image| img(ImageSource::Render(image)).size(px(CARD - 2.))))
                 .children(remove.map(|mark| {
                     div()
@@ -245,8 +243,7 @@ fn face(
                         .top_0()
                         .right_0()
                         .px_1()
-                        .text_xs()
-                        .text_color(rgb(0x9aa0a6))
+                        .caption()
                         .child(mark)
                         .child("\u{00d7}")
                 })),
@@ -259,7 +256,11 @@ fn face(
                 .w_full()
                 .text_xs()
                 .text_center()
-                .text_color(if chosen { rgb(0xe8eaed) } else { rgb(0x9aa0a6) })
+                .text_color(rgb(if chosen {
+                    style::INK_LIT
+                } else {
+                    style::INK_LABEL
+                }))
                 .overflow_hidden()
                 .child(name.to_string()),
         )

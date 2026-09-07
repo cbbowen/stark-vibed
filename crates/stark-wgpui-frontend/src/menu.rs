@@ -25,6 +25,8 @@ use stark_engine::ObservableState;
 use stark_ui::commands::{Bindings, Command};
 use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb};
 
+use crate::style::{self, StyleExt};
+
 /// The bar's height, logical px.
 pub const HEIGHT: f32 = 26.0;
 
@@ -159,23 +161,16 @@ pub fn bar(
         .flex()
         .items_center()
         .px_1()
-        .bg(rgb(0x1a1c1f))
+        .bg(rgb(style::BAR))
         .border_b_1()
-        .border_color(rgb(0x35393d))
+        .border_color(rgb(style::EDGE))
         .child(probe(regions, Region::Bar))
         .children(MENUS.iter().enumerate().map(|(i, menu)| {
             div()
-                .relative()
+                .chip()
                 .px_2()
                 .py_0p5()
-                .rounded_sm()
-                .text_xs()
-                .cursor_pointer()
-                .when_else(
-                    open == Some(i),
-                    |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-                    |el| el.text_color(rgb(0xb0b4b8)),
-                )
+                .lit_row(open == Some(i))
                 .child(probe(regions, Region::Title(i)))
                 .child(menu.title)
         }))
@@ -195,9 +190,9 @@ pub fn bar(
                             .flex_col()
                             .py_1()
                             .min_w(px(200.))
-                            .bg(rgb(0x24272b))
+                            .bg(rgb(style::MENU))
                             .border_1()
-                            .border_color(rgb(0x3d4247))
+                            .border_color(rgb(style::RULE))
                             .rounded_sm()
                             .children(menu.rows.iter().enumerate().map(|(j, row)| match row {
                                 Some(command) => {
@@ -248,7 +243,11 @@ fn item(
     // The registry's own gate, so a row greys out for the same reason a panel button
     // does — "nothing to undo", "nothing selected" — rather than for a second one.
     let live = command.enabled(obs);
-    let ink = if live { 0xdfe3e6 } else { 0x5a5f64 };
+    let ink = if live {
+        style::INK_ROW
+    } else {
+        style::INK_DEAD
+    };
     div()
         .relative()
         .flex()
@@ -259,7 +258,7 @@ fn item(
         .text_xs()
         .text_color(rgb(ink))
         .when(live, |el| {
-            el.cursor_pointer().hover(|s| s.bg(rgb(0x35496b)))
+            el.cursor_pointer().hover(|s| s.bg(rgb(style::LIT)))
         })
         .child(probe(regions, Region::Row(menu, row)))
         .child(crate::icons::icon(command.icon(), ink))
@@ -268,14 +267,18 @@ fn item(
         .child(div().flex_1().child(command.name()))
         .children(command.shortcut(bindings).map(|chord| {
             div()
-                .text_color(rgb(if live { 0x8b9196 } else { 0x4c5155 }))
+                .text_color(rgb(if live {
+                    style::INK_CHORD
+                } else {
+                    style::INK_CHORD_DEAD
+                }))
                 .child(chord)
         }))
 }
 
 /// A rule between two runs of rows.
 fn rule() -> impl IntoElement {
-    div().h(px(1.)).my_1().mx_2().bg(rgb(0x3d4247))
+    div().h(px(1.)).my_1().mx_2().bg(rgb(style::RULE))
 }
 
 #[cfg(test)]

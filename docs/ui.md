@@ -678,6 +678,18 @@ Three differences from §11 above are the interesting ones:
   factor is the whole of the mapping — and the input tolerance and the smoothing
   rope, both screen-denominated (§6.2, §6.11), are quoted in device px too.
 
+**wgpui ships no stylesheet, so the chrome has one anyway.** Every control here
+dressed itself at first — sixty-odd hex literals across seven modules, and the
+same six-call chain wherever a chip could be lit — which is the web app's reason
+for having a stylesheet, one scale down. `style.rs` is the answer: a palette of
+`u32` colours named by role, and an extension trait blanket-implemented over
+`wgpui::Styled` whose default methods are the classes (`.lit(on)`, `.trough(h)`,
+`.heading()`, `.panel_column(w)`). A class can take an argument, which a CSS class
+cannot, so `.lit(on)` is the whole selected/resting fork rather than two rules and
+a predicate at every call site. It cannot live in `stark-ui` — that crate names no
+`wgpui::` type and a test says so (§11.2) — and it should not: what a colour *is*
+here is native chrome, and §11.2's parity is of acts, not of appearance.
+
 wgpui is **vendored** (`vendor/wgpui`) for five patches. The first is one line:
 upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
 `flume` only for macOS, Linux and FreeBSD, so the published crate does not

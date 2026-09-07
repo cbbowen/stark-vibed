@@ -18,7 +18,9 @@ use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
-use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, div, prelude::*, px, rgb};
+use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, div, prelude::*, rgb};
+
+use crate::style::{self, StyleExt};
 
 /// The acts a selection can be put through, in the order the row draws them.
 ///
@@ -216,15 +218,12 @@ pub fn select_panel(
                 // would buy them.
                 let live = command.enabled(o);
                 div()
-                    .relative()
+                    .chip()
                     .flex_1()
                     .py_1()
-                    .rounded_sm()
-                    .bg(rgb(0x2a2d31))
-                    .text_xs()
                     .text_center()
-                    .text_color(if live { rgb(0xb0b4b8) } else { rgb(0x5a5f64) })
-                    .cursor_pointer()
+                    .resting()
+                    .when(!live, |el| el.text_color(rgb(style::INK_DEAD)))
                     .child(probe(regions, Region::Act(i)))
                     .child(shortened(*command, bindings))
             }),
@@ -277,25 +276,18 @@ fn action_mark(action: ShapeAction) -> Icon {
 /// half to drop. The same arrangement the web panel's action row settled on.
 fn marked(probe: impl IntoElement, mark: Icon, word: &'static str, lit: bool) -> impl IntoElement {
     div()
-        .relative()
+        .chip()
         .flex_1()
         .flex()
         .flex_col()
         .items_center()
         .gap_0p5()
         .py_1()
-        .rounded_sm()
-        .text_xs()
-        .cursor_pointer()
-        .when_else(
-            lit,
-            |el| el.bg(rgb(0x35496b)).text_color(rgb(0xe8eaed)),
-            |el| el.bg(rgb(0x2a2d31)).text_color(rgb(0xb0b4b8)),
-        )
+        .lit(lit)
         .child(probe)
         .child(crate::icons::icon(
             mark,
-            if lit { 0xe8eaed } else { 0xb0b4b8 },
+            if lit { style::INK_LIT } else { style::INK },
         ))
         .child(word)
 }
@@ -310,33 +302,15 @@ fn track(regions: &Regions, dial: Dial, fraction: f32, value: f32) -> impl IntoE
         .flex_col()
         .gap_1()
         .py_1()
+        .child(div().readout_row().child(dial.label()).child(match dial {
+            Dial::Feather => format!("{value:.0}"),
+            _ => format!("{value:.2}"),
+        }))
         .child(
             div()
-                .flex()
-                .justify_between()
-                .text_xs()
-                .text_color(rgb(0x9aa0a6))
-                .child(dial.label())
-                .child(match dial {
-                    Dial::Feather => format!("{value:.0}"),
-                    _ => format!("{value:.2}"),
-                }),
-        )
-        .child(
-            div()
-                .relative()
-                .h(px(14.))
-                .w_full()
-                .rounded_sm()
-                .bg(rgb(0x2a2d31))
+                .trough(14.)
                 .child(probe(regions, Region::Dial(dial)))
-                .child(
-                    div()
-                        .h_full()
-                        .w(wgpui::relative(fill))
-                        .rounded_sm()
-                        .bg(rgb(0x40474e)),
-                ),
+                .child(div().trough_fill(fill, style::FILL)),
         )
 }
 
