@@ -19,6 +19,7 @@ use stark_model::AssetNeed;
 use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
 use stark_model::geom::Vec2;
 use stark_model::{AssetId, Srgb, SubstrateId};
+use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Bindings, Command};
@@ -32,7 +33,7 @@ use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
     AnyElement, Context, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window,
-    div, prelude::*, rgb, wgpu_surface,
+    div, point, prelude::*, px, rgb, wgpu_surface,
 };
 
 use crate::brush::Brush;
@@ -79,7 +80,12 @@ const TUNE_FLOW_PER_PX: f32 = 0.01;
 /// What a press took hold of.
 enum Held {
     /// A stroke on the canvas.
-    Stroke,
+    ///
+    /// `restore` is the effect the brush wore before a stylus arrived tail-first: the
+    /// eraser end swaps the effect for the length of one contact and puts it back
+    /// (§18.1.8), which is the pen being turned over rather than the tool being
+    /// changed — so nothing here takes the preset's name off it.
+    Stroke { restore: Option<BrushEffectType> },
     /// A shape gesture — a marquee or a lasso — which is the *same* engine seam as a
     /// stroke and differs only in the tool it opened with and in fitting no curve
     /// (§6.8). `restore` is the action a held modifier borrowed for this one gesture,
@@ -230,6 +236,15 @@ pub struct Canvas {
     /// timing layer (§7.1).
     clock: quanta::Clock,
     epoch: u64,
+    /// The stylus, if this platform has one to give (§6.2, `stark-pen`).
+    ///
+    /// Attached whatever the machine has: a tablet with no backend and a backend with
+    /// no digitizer both report nothing, and the mouse path below is unchanged by
+    /// either — which is what keeps this one field rather than a mode.
+    tablet: Tablet,
+    /// What it has reported and this frame has not yet spent. A field so the drain
+    /// costs no allocation per frame (`pump_pen`); empty between frames.
+    pen: Vec<Report>,
 }
 
 impl Canvas {
@@ -278,6 +293,10 @@ impl Canvas {
         }
         let clock = quanta::Clock::new();
         let epoch = clock.raw();
+        // Onto the window winit made, which wgpui hands over as a raw handle and
+        // nothing more — so this names no toolkit type and the crate behind it names
+        // no `wgpui` one either.
+        let tablet = Tablet::attach(&*window);
         let focus = cx.focus_handle();
         let obs = renderer.as_ref().map(Renderer::observe);
         Self {
@@ -316,6 +335,8 @@ impl Canvas {
             collapsed: std::collections::HashSet::new(),
             clock,
             epoch,
+            tablet,
+            pen: Vec::new(),
         }
     }
 
@@ -498,19 +519,43 @@ impl Canvas {
             None => {}
         }
 
+        // Neither column claimed it, so this is the canvas — and what a press on the
+        // canvas means is one function, because a stylus asks it too (`pump_pen`).
+        self.open_canvas(ev.position, mods, None, window, cx);
+    }
+
+    /// Open whatever a press on the canvas itself means: a look around, a brush tune,
+    /// or paint.
+    ///
+    /// **Two callers, and that is what it is for.** A mouse press arrives having got
+    /// past every panel in [`press`](Self::press)'s ladder; a stylus contact arrives
+    /// because the tablet was told which rectangle is the canvas and took only
+    /// presses inside it (`stark_pen::Claim`). Which of the three a press means is a
+    /// fact about the press rather than about the device that made it, so it is
+    /// answered in one place — and the alternative was a second copy of this ladder
+    /// that could disagree with the first about what a modifier does.
+    ///
+    /// `pen` is what the stylus reported, and it reaches three things: the sample's
+    /// pressure and tilt, the resolution the fit is told to expect (§6.2), and
+    /// whether the tail is the end facing the glass.
+    fn open_canvas(
+        &mut self,
+        at: Point<Pixels>,
+        mods: Mods,
+        pen: Option<&Pose>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         // Navigation before paint, and before the drag table: a press that is
         // looking around is not a press on the picture, whatever else it would have
         // meant. Which press that is is `stark_ui::nav`'s answer.
         if let Some(mode) = nav::press(
             nav::Button::Left,
-            screen_at(ev.position, window.scale_factor()),
+            screen_at(at, window.scale_factor()),
             self.space,
             mods.ctrl,
         ) {
-            self.held = Some(Held::Navigate {
-                mode,
-                last: ev.position,
-            });
+            self.held = Some(Held::Navigate { mode, last: at });
             return;
         }
 
@@ -524,7 +569,7 @@ impl Canvas {
         if self.drags.lookup(mods, DragButton::Left) == Some(DragAction::TuneBrush) {
             let _ = chord;
             self.held = Some(Held::Tune {
-                from: ev.position,
+                from: at,
                 size: self.brush.tune.size,
                 flow: self.brush.tune.flow,
             });
@@ -535,7 +580,7 @@ impl Canvas {
         // A held modifier borrows the shape action for this one gesture — whether it
         // does is `stark_ui::selection`'s answer, and a `Some` is what has to be
         // put back on release.
-        let restore = if tool.is_selection() {
+        let shape_restore = if tool.is_selection() {
             let action = self
                 .obs
                 .as_ref()
@@ -551,6 +596,28 @@ impl Canvas {
             None
         };
 
+        // The stylus's tail erases while it is the end facing the glass (§18.1.8).
+        // Sent *before* the gesture opens, because the engine takes the brush at
+        // `Start` — and remembered rather than committed, because turning a pen over
+        // is not choosing a different tool, so the preset keeps its name.
+        //
+        // Nothing is swapped without a renderer to swap it in: the gesture below bails
+        // on the same condition, and a brush put into the eraser by a press that then
+        // opened nothing is one no release would put back.
+        let restore = if self.renderer.is_some()
+            && pen.is_some_and(|p| p.inverted)
+            && self.brush.config.effect != BrushEffectType::Erase
+        {
+            let was = std::mem::replace(&mut self.brush.config.effect, BrushEffectType::Erase);
+            let command = self.brush.set();
+            if let Some(r) = self.renderer.as_mut() {
+                r.process(command);
+            }
+            Some(was)
+        } else {
+            None
+        };
+
         let (scale, now) = (window.scale_factor(), self.elapsed());
         let smoothing = self.brush.config.smoothing;
         let Some(r) = self.renderer.as_mut() else {
@@ -559,15 +626,16 @@ impl Canvas {
         let view = r.view();
         r.process(GestureCommand::Start {
             tool,
-            sample: sample_at(view, ev.position, scale, now),
+            sample: sample_at(view, at, scale, now, pen),
             // Both are canvas-space lengths the frontend alone can state, and both
             // are mapped by `stark_ui::input` rather than here — which is the
             // point of that module: this frontend had its own copy of the rope's
             // constant and its own quadratic for exactly one commit (§11.2).
             //
-            // The resolution is a *mouse's*, in this surface's device px: winit gives
-            // no pen, so there is nothing finer to report yet.
-            tolerance: chrome_input::tolerance(view, chrome_input::MOUSE_RESOLUTION),
+            // Which device made the press is the other half `stark_ui::input` cannot
+            // know, and it is a real difference: a mouse walks the screen in whole
+            // pixels while a digitizer resolves well below one.
+            tolerance: chrome_input::tolerance(view, resolution(pen)),
             // Zero for the shape tools, which fit no curve: a marquee's corner is
             // where the hand put it, and towing it would round the corner off.
             rope: if tool.is_selection() {
@@ -577,50 +645,64 @@ impl Canvas {
             },
         });
         self.held = Some(if tool.is_selection() {
-            Held::Shape { restore }
+            Held::Shape {
+                restore: shape_restore,
+            }
         } else {
-            Held::Stroke
+            Held::Stroke { restore }
         });
         self.repaint(cx);
     }
 
     fn drag(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.move_to(ev.position, None, window, cx);
+    }
+
+    /// Follow whatever the press took hold of to `at`.
+    ///
+    /// [`open_canvas`](Self::open_canvas)'s other half, and split out for its reason:
+    /// a gesture the stylus opened is one the stylus has to be able to move, and every
+    /// arm below — the pan, the tune, the stroke — is the same work whichever device
+    /// is asking.
+    fn move_to(
+        &mut self,
+        at: Point<Pixels>,
+        pen: Option<&Pose>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         match self.held {
             Some(Held::Navigate { mode, last }) => {
                 if let Some(command) = mode.moved(
                     screen_at(last, window.scale_factor()),
-                    screen_at(ev.position, window.scale_factor()),
+                    screen_at(at, window.scale_factor()),
                 ) {
                     self.send(command, cx);
                 }
                 // The anchor moves with the hand for a pan and stays put for a zoom,
                 // which is `Mode`'s own distinction — what this has to keep either way
                 // is where the pointer was last seen.
-                self.held = Some(Held::Navigate {
-                    mode,
-                    last: ev.position,
-                });
+                self.held = Some(Held::Navigate { mode, last: at });
             }
             Some(Held::Transform(ref grab)) => {
                 let grab = **grab;
                 let (Some(ui), Some(view)) = (self.mode, self.view()) else {
                     return;
                 };
-                let at = canvas_at(view, ev.position, window.scale_factor());
+                let held = canvas_at(view, at, window.scale_factor());
                 // `ui` is what the validity clamps hold at — the last shape the
                 // family could express — and the *start* is inside the grab, so a
                 // long drag stays one map (`stark_ui::transform`).
-                let next = grab.follow(ui, at, stark_ui::transform::SNAP_PX / view.zoom);
+                let next = grab.follow(ui, held, stark_ui::transform::SNAP_PX / view.zoom);
                 self.compose(next, cx);
             }
             Some(Held::Pick { region, grab }) => {
-                if let Some(at) = color::fraction_at(&self.color_regions, region, ev.position) {
-                    self.pick(region, grab, at, cx);
+                if let Some(f) = color::fraction_at(&self.color_regions, region, at) {
+                    self.pick(region, grab, f, cx);
                 }
             }
             Some(Held::Dial { dial, .. }) => {
-                if let Some(fraction) = select::fraction_at(&self.select_regions, dial, ev.position)
-                {
+                if let Some(fraction) = select::fraction_at(&self.select_regions, dial, at) {
                     self.held = Some(Held::Dial { dial, fraction });
                     self.turn_dial(dial, fraction, cx);
                 }
@@ -628,20 +710,20 @@ impl Canvas {
             Some(Held::Knob(knob)) => {
                 // Recomputed from the pointer's x alone, so a drag that has wandered
                 // off the track vertically still moves the knob it took hold of.
-                if let Some(f) = panel::fraction_at(&self.regions, knob, ev.position) {
+                if let Some(f) = panel::fraction_at(&self.regions, knob, at) {
                     self.turn(knob, f, cx);
                 }
             }
             Some(Held::Opacity) => {
-                if let Some(f) = layers::opacity_at(&self.layer_regions, ev.position) {
+                if let Some(f) = layers::opacity_at(&self.layer_regions, at) {
                     self.set_opacity(f, cx);
                 }
             }
             Some(Held::Tune { from, size, flow }) => {
                 // Both knobs from the press rather than from the last move, so a long
                 // drag is one map and rounding cannot walk over its length.
-                let dx = f32::from(ev.position.x) - f32::from(from.x);
-                let dy = f32::from(ev.position.y) - f32::from(from.y);
+                let dx = f32::from(at.x) - f32::from(from.x);
+                let dy = f32::from(at.y) - f32::from(from.y);
                 self.brush.tune.size =
                     (size * (TUNE_SIZE_PER_PX * dx).exp()).clamp(MIN_RADIUS, MAX_RADIUS);
                 // Up is more, which is the direction every slider in the app grows in
@@ -649,14 +731,14 @@ impl Canvas {
                 self.brush.tune.flow = (flow - dy * TUNE_FLOW_PER_PX).clamp(0.0, MAX_FLOW);
                 self.send_brush(cx);
             }
-            Some(Held::Stroke | Held::Shape { .. }) => {
+            Some(Held::Stroke { .. } | Held::Shape { .. }) => {
                 let (scale, now) = (window.scale_factor(), self.elapsed());
                 let Some(r) = self.renderer.as_mut() else {
                     return;
                 };
                 let view = r.view();
                 r.process(GestureCommand::To {
-                    sample: sample_at(view, ev.position, scale, now),
+                    sample: sample_at(view, at, scale, now, pen),
                 });
                 self.repaint(cx);
             }
@@ -666,8 +748,8 @@ impl Canvas {
             // shape with three meanings, and nothing else distinguishes them.
             None => {
                 if let (Some(ui), Some(view)) = (self.mode, self.view()) {
-                    let at = canvas_at(view, ev.position, window.scale_factor());
-                    let hint = grab_at(ui, at, view).hint();
+                    let over = canvas_at(view, at, window.scale_factor());
+                    let hint = grab_at(ui, over, view).hint();
                     if hint != self.hover {
                         self.hover = hint;
                         // The cursor is set during *paint*, so a changed hint owes a
@@ -683,10 +765,26 @@ impl Canvas {
     /// End whatever the press took hold of — for a stroke, the one edge that commits
     /// an action (§4).
     fn release(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.release_at(cx);
+    }
+
+    /// The same, for a lift that arrived off the tablet rather than off the mouse.
+    ///
+    /// Takes nothing but the context, which is why `release` could always have been
+    /// written this way: what a release does depends on what is held and never on
+    /// where the pointer was when it happened.
+    fn release_at(&mut self, cx: &mut Context<'_, Self>) {
         match self.held.take() {
             // A committed stroke is a document change like any other: the roster it
             // may have added to has to reach the panel.
-            Some(Held::Stroke) => self.send(GestureCommand::End, cx),
+            Some(Held::Stroke { restore }) => {
+                self.send(GestureCommand::End, cx);
+                // The tail is off the glass, so the brush is what it was (§18.1.8).
+                if let Some(effect) = restore {
+                    self.brush.config.effect = effect;
+                    self.send_brush(cx);
+                }
+            }
             Some(Held::Shape { restore }) => {
                 self.send(GestureCommand::End, cx);
                 // The borrowed action goes back *after* the gesture, which is also
@@ -1700,6 +1798,78 @@ impl Canvas {
         self.clock.delta(self.epoch, self.clock.raw()).as_secs_f64()
     }
 
+    /// Where a stylus press opens a stroke, in the physical px a tablet measures in.
+    ///
+    /// The canvas is what is left once both columns and the menu bar have taken
+    /// theirs — named from the same constants the hit tests use rather than measured a
+    /// second way, because the half of this that could be wrong is the half deciding
+    /// whether a button can still be pressed (`stark_pen::Claim`).
+    ///
+    /// **Off entirely with a menu open or a transform live.** Both put something over
+    /// the canvas that a press means instead, both are already answered by the mouse
+    /// path, and a claim would be what took the press away from it. Neither wants
+    /// anything a stylus adds: a transform handle does not care what a nib weighs.
+    fn pen_claim(&self, window: &Window) -> Claim {
+        let scale = window.scale_factor();
+        let size = window.viewport_size();
+        Claim {
+            rect: stark_pen::Rect {
+                left: panel::WIDTH * scale,
+                top: menu::HEIGHT * scale,
+                right: (f32::from(size.width) - layers::WIDTH) * scale,
+                bottom: f32::from(size.height) * scale,
+            },
+            enabled: self.mode.is_none() && self.menu_open.is_none(),
+        }
+    }
+
+    /// Spend everything the stylus reported since the last frame.
+    ///
+    /// A loop rather than a read, and that is the point: the reports are the whole of
+    /// what the digitizer made between two frames at the spacing the hand made them,
+    /// so a fast pen puts several samples through here per frame. Reading one would
+    /// cap every stroke at the display's rate whatever the hardware resolved — the
+    /// same trap `getCoalescedEvents` keeps the web frontend out of (§11.2).
+    ///
+    /// The buffer is a field so the drain costs no allocation: taken out for the
+    /// length of the loop, because the arms below need `self` mutably, and put back
+    /// empty.
+    fn pump_pen(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if !self.tablet.attached() {
+            return;
+        }
+        let mut reports = std::mem::take(&mut self.pen);
+        self.tablet.drain(&mut reports);
+        let scale = window.scale_factor();
+        // The keyboard as it stands now rather than as it stood at the report: a
+        // pointer message carries no modifier this frontend binds anything to, and the
+        // window is the one place that knows. A chord released mid-stroke therefore
+        // reads as held for that stroke, which is what the mouse path does too — the
+        // press is where a gesture is decided (§25.3).
+        let held = window.modifiers();
+        let mods = Mods {
+            ctrl: held.control || held.platform,
+            shift: held.shift,
+            alt: held.alt,
+        };
+        for report in reports.drain(..) {
+            // A tablet measures in the device's px and the chrome is laid out in
+            // logical ones. The scale factor is the whole of the difference and this
+            // is the one place it is spent, so everything below is in the units the
+            // mouse path already speaks (§11.1).
+            let at = point(
+                px(report.pose.position[0] / scale),
+                px(report.pose.position[1] / scale),
+            );
+            match report.phase {
+                Phase::Down => self.open_canvas(at, mods, Some(&report.pose), window, cx),
+                Phase::Move => self.move_to(at, Some(&report.pose), window, cx),
+                Phase::Up => self.release_at(cx),
+            }
+        }
+        self.pen = reports;
+    }
+
     /// Note that the frame has changed. `notify` schedules it; `dirty` is what that
     /// frame reads to decide whether the *engine* has to render at all.
     fn repaint(&mut self, cx: &mut Context<'_, Self>) {
@@ -1716,6 +1886,14 @@ impl Render for Canvas {
         // schedules no further frame of its own. Cheap to ask for: the tree is small,
         // and the engine renders only when something has actually changed.
         window.request_animation_frame();
+        // The stylus first, before anything reads the document: what it reported since
+        // the last frame is a press, a run of samples and a lift, and the engine has to
+        // have them before `paint` below renders the answer — which is what keeps a
+        // stroke on the frame the hand made it rather than the one after.
+        self.pump_pen(window, cx);
+        // Then say where a press *is* paint, off the same constants the hit tests
+        // measure against (`pen_claim`).
+        self.tablet.claim(self.pen_claim(window));
         // The dirty mark follows the document rather than the last file act, so the
         // title is refreshed with the frame — cheaply, since `retitle` only calls the
         // platform when the words changed.
@@ -1879,14 +2057,38 @@ impl Render for Canvas {
 ///
 /// The panel's width comes off first: the surface begins where the panel ends, and
 /// `screen_to_canvas` maps out of the *surface's* space rather than the window's.
-fn sample_at(view: ViewTransform, position: Point<Pixels>, scale: f32, time: f64) -> InputSample {
+fn sample_at(
+    view: ViewTransform,
+    position: Point<Pixels>,
+    scale: f32,
+    time: f64,
+    pen: Option<&Pose>,
+) -> InputSample {
     InputSample {
         pos: canvas_at(view, position, scale),
-        // A mouse is always pressed home (`ModSource::Pressure`), and reports no
-        // tilt at all.
-        pressure: 1.0,
-        tilt: Vec2::ZERO,
-        time,
+        // A mouse is always pressed home (`ModSource::Pressure`) and reports no tilt
+        // at all. A stylus answers both, in the units the engine measures in —
+        // `stark-pen` normalizes, for the reason it gives: the ranges are the
+        // platform's, and a frontend dividing by them would be a second copy of a fact
+        // that crate already holds.
+        pressure: pen.map_or(1.0, |p| p.pressure),
+        tilt: pen.map_or(Vec2::ZERO, |p| Vec2::new(p.tilt[0], p.tilt[1])),
+        // **The stylus's own clock where a stylus made the report**, rather than a
+        // conversion onto this window's. The fitter re-bases every channel time to the
+        // first sample of the gesture it is fitting (`path::fit`), so what has to hold
+        // is that one gesture is timed by one device — and it is, because a gesture the
+        // tablet opened is one the tablet also closes.
+        time: pen.map_or(time, |p| p.time),
+    }
+}
+
+/// What the device that made a gesture resolves position to, in this surface's device
+/// px — the half of `stark_ui::input::tolerance` only a frontend can answer.
+fn resolution(pen: Option<&Pose>) -> f32 {
+    if pen.is_some() {
+        chrome_input::PEN_RESOLUTION
+    } else {
+        chrome_input::MOUSE_RESOLUTION
     }
 }
 

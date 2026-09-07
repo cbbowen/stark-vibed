@@ -48,7 +48,7 @@ are cited from ~1000 places in the source** — keep them resolving.
 | [drawing-guides.md](docs/drawing-guides.md) | §20 | The perspective grid: one projective camera behind 1/2/3-point, the fan parametrization, the guide overlay pass, aligning strokes to an axis and to circles on a plane, the stereographic fisheye lens, the rays drawn from the vanishing points through the cursor |
 | [tutorial.md](docs/tutorial.md) | §24 | The guided tour: a lesson is owed rather than scheduled, deeds read off the `dispatch` seam, the anchored card and what it may take, the browser-local ledger |
 | [glossary.md](docs/glossary.md) | — | One name per thing, and the file that owns it: the canvas **substrate** and what it is not (backdrop, `Background`, backing, surface, ground), the input **tolerance**, the stamp **extent** vs the CRDT `Footprint`. Read it before coining a term |
-| [ui.md](docs/ui.md) | §11, §25 | The two frontends: the Dioxus web app — the one dispatch seam, the panels and the surface they float over — and the native wgpui one beside it (§11.1), which is what makes "frontend-agnostic" a tested claim, then the staged plan to bring it to parity and the `stark-ui` crate that keeps the two from growing a second copy of every rule (§11.2). Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold |
+| [ui.md](docs/ui.md) | §11, §25 | The two frontends: the Dioxus web app — the one dispatch seam, the panels and the surface they float over — and the native wgpui one beside it (§11.1), which is what makes "frontend-agnostic" a tested claim, then the staged plan to bring it to parity and the `stark-ui` crate that keeps the two from growing a second copy of every rule (§11.2). Then the chrome's registries — the command registry, the drag-binding table (and how the user rebinds it) and the browser-local store, which one a new feature joins, if any, and what a dialog and a run of buttons each owe whatever they hold. §11.3 is the stylus: which of the three Windows APIs and why, and the one rectangle that keeps a pen from arriving twice |
 
 §6 — "rendering the canvas" — is the one chapter split across files: the stroke
 path is in [brush.md](docs/brush.md), the compositing path in
@@ -82,6 +82,17 @@ crates/
     build/         the generator: WESL declarations -> Rust structs/consts/attrs
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
+  stark-pen/       the stylus (§11.3): pressure, tilt and the reports a digitizer
+                   makes between two frames, off the platform's own pen API —
+                   Windows Ink's pointer messages today, Wintab and macOS owed.
+                   Depends on nothing of ours, which is what lets it be tested:
+                   the frontend that consumes it is excluded from CI, so
+                   everything that is arithmetic rather than FFI lives in `model`
+                   and every round compiles it. **The one crate that does not take
+                   the workspace's `forbid(unsafe_code)`** — a window procedure is
+                   what a pen is on Windows — and the only one; `win32` is the only
+                   module in it that may, which the other modules' own `forbid`
+                   states
   stark-ui/    the **frontend's model** (§11.2): what a chrome is written in, below
                    any toolkit. The brush's durable/transient halves, the whole of a
                    transform gesture — the algebra, what a press takes hold of and what

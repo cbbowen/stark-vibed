@@ -9341,6 +9341,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "stark-pen"
+version = "0.0.0"
+dependencies = [
+ "raw-window-handle",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "stark-shaders"
 version = "0.0.0"
 dependencies = [
@@ -9387,6 +9395,7 @@ dependencies = [
  "stark-assetid",
  "stark-engine",
  "stark-model",
+ "stark-pen",
  "stark-ui",
  "wgpu",
  "wgpui",

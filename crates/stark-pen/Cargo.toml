@@ -1,0 +1,67 @@
+[package]
+name = "stark-pen"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Stylus input for the native frontend (§11): pressure, tilt and the full digitizer rate, off the platform's own pen API."
+
+[dependencies]
+# How the crate is handed a window without naming a toolkit. `wgpui::Window` is
+# `HasWindowHandle` and so is `winit::Window` and so is `eframe`'s — which is the
+# whole reason this is the seam: the frontend passes what it has, and nothing here
+# knows what a `wgpui` is.
+raw-window-handle = "0.6"
+
+# The Windows Ink pointer API. **Already compiled**: winit 0.30 depends on
+# `windows-sys` 0.52 for its own window procedure, so the version is pinned to
+# match it and cargo unifies the two — this crate adds features to a crate the
+# native build was building anyway, not a second copy of it.
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.52"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Performance",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+# **Not `[lints] workspace = true`, and this is the only crate in the tree that is
+# not.** The workspace table forbids `unsafe_code` outright (root `Cargo.toml`), and
+# `forbid` is deliberately not liftable at a call site — which is right for every
+# other crate here and impossible for this one: a window procedure and six `extern
+# "system"` calls are what a pen *is* on Windows.
+#
+# So the table below is the workspace's, line for line, with that one row replaced.
+# What replaces it is not silence. `unsafe_op_in_unsafe_fn` is forbidden here, so an
+# `unsafe fn` still has to mark its unsafe operations; `undocumented_unsafe_blocks`
+# below denies a block that cannot say why it is sound; and every module but `win32`
+# carries its own `#[forbid(unsafe_code)]`, so the confinement is the compiler's to
+# keep rather than a convention. The claim the workspace comment makes therefore still
+# holds everywhere it did before, and this crate states the narrower one.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+meta_variable_misuse = "warn"
+trivial_numeric_casts = "warn"
+trivial_casts = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+rc_buffer = "warn"
+mem_forget = "warn"
+float_cmp_const = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+while_float = "warn"
+useless_let_if_seq = "warn"
+needless_collect = "warn"
+missing_assert_message = "warn"
+redundant_clone = "warn"
+# The one row the workspace table does not carry, and it is here because this crate
+# is the only one that could break it: every raw pointer this crate dereferences
+# comes from a `dwRefData` word Windows hands back, and a block that cannot say why
+# that is sound should not compile.
+undocumented_unsafe_blocks = "deny"

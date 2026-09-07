@@ -34,6 +34,7 @@ default-members = [
     "crates/stark-engine",
     "crates/stark-model",
     "crates/stark-net",
+    "crates/stark-pen",
     "crates/stark-shaders",
     "crates/stark-wgpui-frontend",
 ]

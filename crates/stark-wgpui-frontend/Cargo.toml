@@ -23,6 +23,11 @@ stark-model = { workspace = true }
 stark-ui = { path = "../stark-ui" }
 # The records this frontend keeps are serde structs like every other (§25.6).
 serde = { workspace = true }
+# The stylus (§6.2, §11). Here rather than in `stark-ui` for the reason that crate's
+# own test enforces: it names no platform type, and a pen is nothing but one. What
+# comes back is already in the engine's units, so this frontend spends the scale
+# factor and nothing else.
+stark-pen = { path = "../stark-pen" }
 
 # The engine, with the same feature stance the web frontend takes: Mixbox on by
 # default (§6.7), forwarded, so a build that must carry no CC BY-NC 4.0 code can

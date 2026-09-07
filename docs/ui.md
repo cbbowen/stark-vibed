@@ -851,7 +851,8 @@ native ones:
 | image decode + normalize | the browser decodes anything it can show | the `image` crate — narrower, and the difference should be *stated* rather than discovered on an unsupported file |
 | scale factor | `devicePixelRatio` | `Window::scale_factor` |
 | monotonic clock | `performance.now()` | `quanta` (already, §11.1) |
-| coalesced pointer reports | `getCoalescedEvents` | winit delivers one per event; the list is length 1 and the fitter is unaffected |
+| pen pressure, tilt, eraser end | `PointerEvent` | not winit's at all until 0.31 at the earliest; `stark-pen` reads the platform's own stylus API beside it (§11.3) |
+| coalesced pointer reports | `getCoalescedEvents` | `GetPointerPenInfoHistory`, through the same crate — winit itself delivers one per event (§11.3) |
 | session ticket in | URL fragment | paste |
 | file-launch / drop | `launchQueue`, paste event | winit file-drop, argv |
 
@@ -1273,6 +1274,142 @@ deliberately not the engine's `Peer` and that both frontends will want; and ever
 threshold in `input/` that two gestures read and one file owns. Each is the same
 shape as the adapter — parked on the nearest wall rather than the right one, and
 invisible while there was only one wall.
+
+### 11.3 The stylus
+
+The engine has wanted a pen since it was written. `InputSample` carries
+`pressure` and `tilt`, the fitter solves them on the same least-squares ride as
+the geometry (§6.2), and every dynamics knob in the brush panel reads one of
+them. The web frontend fills them from `PointerEvent`. The native one could not:
+winit 0.30 reports a mouse and nothing else, so `canvas.rs` stated full pressure
+and no tilt on every sample and the whole of the dynamics loop was reachable
+there only through a knob.
+
+`stark-pen` is the crate that answers it, and it is deliberately not a wrapper
+over anybody else's abstraction — the two on offer were weighed and neither fit
+the shape below.
+
+#### Which of the three Windows APIs, and why
+
+Windows offers three ways to hear a stylus, and they are not interchangeable.
+
+| | Wintab | **WM_POINTER** | RealTimeStylus |
+|---|---|---|---|
+| needs a vendor driver | yes (`wintab32.dll`) | no | no |
+| delivery | polled queue | window message, in-band | COM plugin, own thread |
+| sub-frame history | queue, needs sizing | `GetPointerPenInfoHistory` | every packet |
+| pressure resolution | the driver's, often 8192 | 0–1024 | the device's |
+| works with *Use Windows Ink* **off** | **yes** | no | no |
+| Microsoft's position | third-party | current | "no reason to use it" |
+
+`WM_POINTER` is what is written, for three reasons that are all about cost. It
+arrives on the thread winit is already pumping, so there is no COM apartment, no
+second thread and nothing to poll. It needs no driver, so a Surface pen and a
+Huion in HID mode work with nothing installed. And `windows-sys` is already
+compiled — winit depends on it for its own window procedure — so the backend adds
+features to a crate the native build was building anyway rather than a second
+copy of anything.
+
+`RealTimeStylus` is what `octotablet` — the one high-level Rust crate in this
+space — uses on Windows, and it is the reason that crate is not the abstraction
+here: it would cost a duplicate `windows` and a duplicate `thiserror`, deliver
+strictly less in-band, and still leave the two problems below unsolved. It is
+the right backend on **Linux**, where its Wayland `tablet_unstable_v2` support is
+the most complete thing available and this crate has none.
+
+The last row of the table is why **Wintab is owed and not yet written**. An
+artist who has unchecked *Use Windows Ink* in a Wacom control panel — which many
+do, because it kills press-and-hold-for-right-click — gets no pressure at all
+from the Ink path, and will not be told why. That is a second backend beside
+`win32`, behind a preference, and until it exists the gap is a stated one rather
+than a discovered one. macOS is the other gap: `NSEvent` carries pressure, tilt
+and rotation on a tablet event, and nobody has written that backend either.
+
+#### The two problems, and the one rectangle that solves both
+
+**A stylus arrives twice.** Windows delivers it as pointer messages and again,
+for compatibility, as synthesized mouse messages — and an app that reads both
+paints every stroke twice, once with real pressure and once at full. The usual
+fix is a last-device-wins latch, which is a guess, and a guess that is wrong
+leaves a mouse's integer positions interleaved into a stroke.
+
+There is no guess here. Windows synthesizes the mouse messages **because
+`DefWindowProc` was reached** — so a pointer message the backend answers itself
+generates no mouse message at all. The double input is not arbitrated; it is
+never created. That is the structural form of the rule CLAUDE.md asks for: a
+representation that cannot express the wrong thing, rather than a check a call
+site could forget.
+
+**But then the pen reaches nothing else either** — not a button, not the title
+bar, because those are driven by exactly the mouse messages that were just
+suppressed. Hence `Claim`: the frontend publishes, every frame, the rectangle
+where a press is *paint*. Inside it a contact is taken and the mouse path never
+hears about the stroke; outside it nothing is touched and the pen goes on driving
+the chrome as it always did. Ownership is latched at the **press** and not asked
+again, because a stroke that starts on the canvas and wanders over a panel is
+still one stroke.
+
+The claim is off entirely while a menu stands open or a transform is live. Both
+put something over the canvas that a press means instead, both are already
+answered by the mouse path, and neither wants anything a stylus adds — a
+transform handle does not care what a nib weighs.
+
+#### What it cost the frontend, which is the interesting half
+
+Three functions, and each was a split that should arguably have been there
+already. `press`'s ladder of panel hit tests now ends by calling `open_canvas`,
+which is *what a press on the canvas means* — a look around, a brush tune, or
+paint — and a stylus contact enters at that same door rather than at a second
+copy of the ladder. `drag` became `move_to`, because a gesture the stylus opened
+is one the stylus has to be able to move. And `release` became `release_at`,
+which takes nothing but the context — which is why it could always have been
+written that way: what a release does depends on what is held and never on where
+the pointer was when it happened.
+
+Two things are decided by which device made a gesture rather than by the
+frontend, and both go through `stark_ui::input`: the fitting **tolerance**, which
+is `PEN_RESOLUTION` for a digitizer and `MOUSE_RESOLUTION` for a mouse walking
+the screen in whole pixels, and the sample's **clock**. A stylus report carries
+the platform's own high-resolution timestamp and it is used as-is, with no
+conversion onto the window's clock: the fitter re-bases every channel time to the
+first sample of the gesture it is fitting (§6.2), so all that has to hold is that
+one gesture is timed by one device — and it is, because a gesture the tablet
+opened is one the tablet also closes.
+
+#### The one lint exception in the tree
+
+`stark-pen` is the only crate that does not take the workspace's
+`forbid(unsafe_code)`, and its manifest restates the table with that one row
+replaced. A window procedure and six `extern "system"` calls are what a pen is on
+Windows; there is no version of this that does not need it, and taking
+`octotablet` instead would have moved the same `unsafe` into a dependency rather
+than removed it.
+
+What is kept is narrower and still the compiler's: every module but `win32`
+carries its own `#[forbid(unsafe_code)]`, `unsafe_op_in_unsafe_fn` is forbidden
+crate-wide, and `undocumented_unsafe_blocks` is denied — every raw pointer this
+crate dereferences comes from a reference word Windows hands back, and a block
+that cannot say why that is sound does not compile. The workspace comment's claim
+is unchanged everywhere it applied before.
+
+#### What a test can reach
+
+`stark-wgpui-frontend` is excluded from CI for want of X11 packages, and a
+backend is `cfg(windows)`, so almost none of this is compiled by a gate. That is
+what decides the crate's shape: everything that is arithmetic rather than FFI —
+the claim rectangle's half-open edges, the device-space mapping, the guard that
+gives that mapping up — lives in `model`, which every platform compiles and every
+CI round runs.
+
+That guard is worth naming. A digitizer resolves far below the screen, and
+Windows says so twice: once as a whole pixel and once as a raw reading in the
+device's own units, with the two rectangles that relate them. Reading the second
+is what makes `PEN_RESOLUTION`'s half-pixel claim true rather than aspirational.
+But it rests on reading two rectangles the way this crate believes they are
+meant, across every digitizer anybody plugs in — and the failure it would
+otherwise produce is a stroke that lands somewhere the cursor is not. So the
+mapping is checked against the rounded reading it could have trusted instead,
+once, and given up for good if the two disagree.
 
 ## 25. Commands and drag bindings
 
