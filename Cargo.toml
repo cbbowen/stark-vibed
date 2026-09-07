@@ -20,6 +20,9 @@ exclude = [
     # wgpui 0.3.4 + the one-line manifest fix that lets it build on Windows at
     # all (see its VENDORING.md); substituted via [patch] below.
     "vendor/wgpui",
+    # wintab_lite 1.0.1, less the two lines that made it uncompilable as a
+    # dependency (see its VENDORING.md); substituted via [patch] below.
+    "vendor/wintab_lite",
 ]
 # stark-dioxus-frontend is a wasm/web app (Dioxus web + WebGPU); keep it out of
 # the native default build/test so `cargo build`/`cargo test` stay host-only.
@@ -152,3 +155,9 @@ iroh = { path = "vendor/iroh" }
 # `Executor::spawn_realtime` but declares it only for macOS/Linux/FreeBSD, so the
 # published crate does not compile on Windows at all. See vendor/wgpui/VENDORING.md.
 wgpui = { path = "vendor/wgpui" }
+# Vendored wintab_lite with its `windows` dependency removed: upstream needs that
+# crate for one imported type, declares it with no features, and so does not compile
+# at all outside its own repo — where a dev-dependency happened to enable them. The
+# fix is the alias the crate's own `raw-dylib` path already uses. See
+# vendor/wintab_lite/VENDORING.md.
+wintab_lite = { path = "vendor/wintab_lite" }

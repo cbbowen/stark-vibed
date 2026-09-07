@@ -9344,8 +9344,10 @@ dependencies = [
 name = "stark-pen"
 version = "0.0.0"
 dependencies = [
+ "libloading",
  "raw-window-handle",
  "windows-sys 0.52.0",
+ "wintab_lite",
 ]
 
 [[package]]
@@ -11801,6 +11803,14 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
+
+[[package]]
+name = "wintab_lite"
+version = "1.0.1"
+dependencies = [
+ "bitflags 2.13.1",
+ "libloading",
+]
 
 [[package]]
 name = "wit-bindgen"

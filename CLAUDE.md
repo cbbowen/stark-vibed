@@ -83,8 +83,10 @@ crates/
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-pen/       the stylus (§11.3): pressure, tilt and the reports a digitizer
-                   makes between two frames, off the platform's own pen API —
-                   Windows Ink's pointer messages today, Wintab and macOS owed.
+                   makes between two frames, off the platform's own pen API. Two
+                   readers on Windows behind one seam — Wintab where a driver opens
+                   a context, Windows Ink's pointer messages everywhere else — and
+                   macOS still owed.
                    Depends on nothing of ours, which is what lets it be tested:
                    the frontend that consumes it is excluded from CI, so
                    everything that is arithmetic rather than FFI lives in `model`
@@ -217,6 +219,7 @@ the vendored code changes:
 
 ```sh
 cargo test --manifest-path vendor/iroh-webrtc-transport/Cargo.toml
+cargo test --manifest-path vendor/wintab_lite/Cargo.toml --features libloading
 ```
 
 Test-suite switches: `STARK_ALLOW_NO_GPU=1` opts into skipping when there is no

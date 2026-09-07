@@ -851,7 +851,7 @@ native ones:
 | image decode + normalize | the browser decodes anything it can show | the `image` crate — narrower, and the difference should be *stated* rather than discovered on an unsupported file |
 | scale factor | `devicePixelRatio` | `Window::scale_factor` |
 | monotonic clock | `performance.now()` | `quanta` (already, §11.1) |
-| pen pressure, tilt, eraser end | `PointerEvent` | not winit's at all until 0.31 at the earliest; `stark-pen` reads the platform's own stylus API beside it (§11.3) |
+| pen pressure, tilt, eraser end | `PointerEvent` | not winit's at all until 0.31 at the earliest; `stark-pen` reads the platform's own stylus API beside it — Wintab or Windows Ink (§11.3) |
 | coalesced pointer reports | `getCoalescedEvents` | `GetPointerPenInfoHistory`, through the same crate — winit itself delivers one per event (§11.3) |
 | session ticket in | URL fragment | paste |
 | file-launch / drop | `launchQueue`, paste event | winit file-drop, argv |
@@ -1293,7 +1293,7 @@ the shape below.
 
 Windows offers three ways to hear a stylus, and they are not interchangeable.
 
-| | Wintab | **WM_POINTER** | RealTimeStylus |
+| | **Wintab** | **WM_POINTER** | RealTimeStylus |
 |---|---|---|---|
 | needs a vendor driver | yes (`wintab32.dll`) | no | no |
 | delivery | polled queue | window message, in-band | COM plugin, own thread |
@@ -1302,28 +1302,104 @@ Windows offers three ways to hear a stylus, and they are not interchangeable.
 | works with *Use Windows Ink* **off** | **yes** | no | no |
 | Microsoft's position | third-party | current | "no reason to use it" |
 
-`WM_POINTER` is what is written, for three reasons that are all about cost. It
-arrives on the thread winit is already pumping, so there is no COM apartment, no
-second thread and nothing to poll. It needs no driver, so a Surface pen and a
-Huion in HID mode work with nothing installed. And `windows-sys` is already
-compiled — winit depends on it for its own window procedure — so the backend adds
+**Both of the first two are written, and Wintab wins when it opens.** The last
+row of the table is why it has to be there at all: an artist who has unchecked
+*Use Windows Ink* in a Wacom control panel — which many do, because it kills
+press-and-hold-for-right-click — gets no pressure from the Ink path and will not
+be told why. A Wintab context opens only where a vendor driver is installed, and
+where one is, that driver is the authority on that tablet — it knows the pressure
+curve the user set, and it answers whether or not the Ink box is ticked. Ink is
+what every other machine gets, which is every machine without a tablet driver.
+
+**There is no setting**, and that is deliberate rather than unfinished. A switch
+would mean a `Command` in the registry `stark-ui` shares with the web frontend —
+which cannot answer it — and a `Prefs` field that means nothing in a browser, for
+a choice the trying already makes correctly. The escape hatch is `STARK_PEN=ink`,
+which is a diagnostic rather than a preference: the two readers are hard to tell
+apart from the outside, and when a stylus misbehaves the first thing worth
+knowing is whether the other one misbehaves too.
+
+`WM_POINTER` is the cheap one of the three, for reasons that are all about cost.
+It arrives on the thread winit is already pumping, so there is no COM apartment,
+no second thread and nothing to poll. It needs no driver. And `windows-sys` is
+already compiled — winit depends on it for its own window procedure — so it adds
 features to a crate the native build was building anyway rather than a second
-copy of anything.
+copy of anything. Wintab is nearly as cheap, because a context opened with
+`CXO_MESSAGES` posts `WT_PACKET` to the same window procedure: a driver's API,
+read in-band, with no timer and no thread. What it costs instead is a vendored
+crate (`vendor/wintab_lite`, whose `VENDORING.md` explains why upstream does not
+compile as a dependency at all) and `libloading`, because the DLL belongs to a
+driver rather than to Windows and linking it would make a tablet driver a build
+requirement.
 
 `RealTimeStylus` is what `octotablet` — the one high-level Rust crate in this
 space — uses on Windows, and it is the reason that crate is not the abstraction
 here: it would cost a duplicate `windows` and a duplicate `thiserror`, deliver
 strictly less in-band, and still leave the two problems below unsolved. It is
 the right backend on **Linux**, where its Wayland `tablet_unstable_v2` support is
-the most complete thing available and this crate has none.
+the most complete thing available and this crate has none. macOS is the other
+gap: `NSEvent` carries pressure, tilt and rotation on a tablet event, and nobody
+has written that backend either.
 
-The last row of the table is why **Wintab is owed and not yet written**. An
-artist who has unchecked *Use Windows Ink* in a Wacom control panel — which many
-do, because it kills press-and-hold-for-right-click — gets no pressure at all
-from the Ink path, and will not be told why. That is a second backend beside
-`win32`, behind a preference, and until it exists the gap is a stated one rather
-than a discovered one. macOS is the other gap: `NSEvent` carries pressure, tilt
-and rotation on a tablet event, and nobody has written that backend either.
+#### What a second reader turned out to cost
+
+Nothing above the reading, which is the answer that says the seam was in the
+right place. Both readers want the same claim, the same queue, the same wake and
+the same arbitration, so a reader is *a source of poses* and none of the hard
+parts are written twice — `windows/mod.rs` owns the window procedure and the
+state, and `ink.rs` and `wintab.rs` own only how a report is read.
+
+#### What the driver taught us, which the documentation did not
+
+Wintab took four attempts, and all four failures produced the *same* symptom —
+"pressure does not work" — from four unrelated causes. They are written down
+here because none of them is guessable and each was found by a trace rather than
+by reading.
+
+**A refused queue resize destroys the queue.** `WTQueueSizeSet` asked for 512 and
+was refused, and a refusal does not leave the old queue alone — the context is
+left with no queue at all. From outside, that is hundreds of *a packet is ready*
+notifications with nothing behind any of them. The ask is a descent now: halve
+until one is accepted, because the last refusal is what has to be recovered from.
+This driver takes 128.
+
+**A default context's `lcMsgBase` is not the conventional one.** It is whatever
+the driver put there, and here it was zero — so `CXO_MESSAGES` was posting
+packets at a message number the window procedure had no reason to look at. Stated
+explicitly now, and the number the driver settles on is read back rather than
+assumed.
+
+**A negative output extent is accepted and ignored.** Mapping the tablet onto the
+screen with `lcOutExtY` negative is the documented way to say *and turn it over*,
+since Wintab measures up the tablet and a window measures down the glass. The
+driver echoed the negative value back in the context it granted, and then pinned
+every packet's y at the origin — a constant, while x tracked perfectly. So the
+context's output transform is not used at all: packets come back in the tablet's
+own units, which is the identity and the one thing any driver can be asked for,
+and the mapping onto the screen is `model::map_axis` — a dozen lines, unit-tested
+including the flip, and impossible to quietly decline. Native units are finer
+than any sub-pixel scheme was going to be anyway: this tablet reports some 52000
+of them across, against 8760 screen px.
+
+**A driver's own mouse messages need not be marked as a pen's.** Windows marks
+the messages *it* synthesizes from a stylus, and that mark is what tells a
+stylus's shadow from an actual mouse — but a driver moving the system cursor
+itself is under no obligation to set it, and this one does not. So the question a
+mouse message is asked is not *were you made by a pen* but *is a pen on the
+tablet right now*, which the packets and the proximity notification answer
+directly. Without that, a full-pressure mouse stroke is drawn underneath every
+pen one.
+
+The axis ranges are **read rather than assumed** for the same family of reasons.
+Pressure is commonly 0..1023; this tablet reports 0..32767, and an assumed 1023
+would have saturated at a thirtieth of full force — which reads exactly like a
+pressure curve that is far too steep, and is the kind of wrong that is easy to
+mistake for a preference.
+
+None of this is reachable by a test, which is why `STARK_PEN_TRACE=1` stays: the
+readers talk to a driver through a window procedure, on hardware CI does not have,
+and every one of the four failures above was one stroke away from an answer once
+there was something to read.
 
 #### The two problems, and the one rectangle that solves both
 

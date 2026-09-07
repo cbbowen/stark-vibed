@@ -16,6 +16,26 @@ raw-window-handle = "0.6"
 # `windows-sys` 0.52 for its own window procedure, so the version is pinned to
 # match it and cargo unifies the two — this crate adds features to a crate the
 # native build was building anyway, not a second copy of it.
+# Wintab, the vendor-standard API a Wacom driver brings with it. **`libloading`, not
+# `raw-dylib`**: the DLL belongs to a driver rather than to Windows, so linking it at
+# build time would make a tablet driver a build requirement and a machine without one
+# unable to compile this crate at all. Loaded at startup instead, and its absence is
+# the ordinary case rather than a failure.
+#
+# What the crate buys is the fiddly half: the `LOGCONTEXT` layout, the `WTPKT` mask
+# and the packed packet it describes, which have to match the DLL's idea of them byte
+# for byte or every reading is garbage.
+[target.'cfg(windows)'.dependencies.wintab_lite]
+version = "1"
+features = ["libloading"]
+
+# How `Wintab32.dll` is reached. A direct dependency rather than `wintab_lite`'s,
+# because the symbols are loaded here: that crate declares the signatures and this one
+# decides which of them it needs, `WTQueueSizeSet` among them — which it does not
+# declare, and which a polled queue cannot do without.
+[target.'cfg(windows)'.dependencies.libloading]
+version = "0.8"
+
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.52"
 features = [

@@ -1,0 +1,16 @@
+[package]
+name = "wintab_lite"
+description="Read pen tablet pressure with these lightly oxidized wintab bindings"
+version = "1.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/thehappycheese/wintab_lite"
+
+[dependencies]
+bitflags = "2.5.0"
+libloading = {version = "0.8.3", optional = true}
+
+[features]
+default=[]
+raw-dylib=[]
+libloading=["dep:libloading"]

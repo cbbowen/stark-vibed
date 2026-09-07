@@ -183,6 +183,68 @@ pub fn map_device(at: [f32; 2], device: Rect, display: Rect) -> Option<[f32; 2]>
     ])
 }
 
+/// The lean of a stylus that reports its orientation as two angles rather than as two
+/// tilts, normalized the way [`Pose::tilt`] is.
+///
+/// Wintab describes a stylus by where it points and how far over it is: `azimuth` is
+/// the compass bearing of the lean, clockwise from straight away from the user, and
+/// `altitude` is the angle between the barrel and the **tablet surface** — a right
+/// angle when the pen stands upright, nothing when it lies flat. Both in radians. The
+/// pointer API describes the same lean as two angles from vertical instead, so one of
+/// the two has to be converted, and this is it.
+///
+/// The conversion is the projection of the barrel onto each axis — across the tablet
+/// with `sin`, along it with `cos`, the second negated because a pen leaning away from
+/// the user reports negative there, which is the convention `POINTER_PEN_INFO` states
+/// for `tiltY` and so the one both backends have to hand the engine.
+///
+/// Written as `atan2` rather than as the `atan(sin(azimuth) / tan(altitude))` the
+/// formula is usually quoted in, and not for tidiness: `tan` of a right angle is not
+/// an infinity in an `f32` but a large number of *whichever sign* the rounding of
+/// `π/2` lands on, so the quotient form needs a guard against a pen lying flat and
+/// gets an upright one wrong when the guard is written against the sign. `atan2` has
+/// no division to protect and is exact at both ends.
+///
+/// One reading has no answer rather than a hard one: a pen lying flat in the tablet's
+/// own plane is fully over on one axis and **undefined on the other**, because its
+/// projection onto that plane is the zero vector and there is no angle in it to
+/// report. What comes back there is a finite number in range and nothing more is
+/// promised — the reading is unphysical anyway, since a nib in contact is not in the
+/// tablet's plane.
+#[must_use]
+pub fn tilt_from_orientation(azimuth: f32, altitude: f32) -> [f32; 2] {
+    let (sin_az, cos_az) = azimuth.sin_cos();
+    // Absolute, because a tablet that senses below its own plane reports a negative
+    // altitude for a lean this side of it and means the same angle by it.
+    let (sin_alt, cos_alt) = altitude.abs().sin_cos();
+    let right = std::f32::consts::FRAC_PI_2;
+    [
+        (sin_az * cos_alt).atan2(sin_alt) / right,
+        -(cos_az * cos_alt).atan2(sin_alt) / right,
+    ]
+}
+
+/// Map a reading on one axis onto another, where each is an origin and a **signed**
+/// extent.
+///
+/// Signed because the flip is the point: a digitizer measures up the tablet and a
+/// screen measures down the glass, so the extent that carries one to the other is
+/// negative on that axis and the arithmetic has to survive it. A rectangle could not
+/// say this — [`Rect`] is normalized, and an inverted one reads as enclosing
+/// nothing — which is why this is a pair of numbers rather than two corners.
+///
+/// `None` for a source that spans nothing, which is what an axis a device does not
+/// report looks like and would otherwise be a division by zero.
+#[must_use]
+pub fn map_axis(value: f32, from: (f32, f32), to: (f32, f32)) -> Option<f32> {
+    let (from_origin, from_extent) = from;
+    let (to_origin, to_extent) = to;
+    if from_extent == 0.0 {
+        return None;
+    }
+    Some(to_origin + (value - from_origin) * to_extent / from_extent)
+}
+
 /// How far a [`map_device`] reading may sit from the platform's own rounded pixel
 /// before the mapping is judged wrong, in screen px.
 ///
@@ -300,6 +362,102 @@ mod tests {
         let ok = rect(0.0, 0.0, 100.0, 100.0);
         assert_eq!(map_device([1.0, 1.0], empty, ok), None);
         assert_eq!(map_device([1.0, 1.0], ok, empty), None);
+    }
+
+    /// A pen standing straight up leans nowhere, whichever way it is pointing.
+    #[test]
+    fn an_upright_pen_has_no_tilt() {
+        let right = std::f32::consts::FRAC_PI_2;
+        for eighth in 0..8 {
+            let azimuth = eighth as f32 * std::f32::consts::FRAC_PI_4;
+            let [x, y] = tilt_from_orientation(azimuth, right);
+            assert!(
+                x.abs() < 1e-6 && y.abs() < 1e-6,
+                "azimuth {azimuth} upright gave {x}, {y}"
+            );
+        }
+    }
+
+    /// The sign convention both backends have to agree about: leaning away from the
+    /// user is negative on y, and leaning right is positive on x — which is what
+    /// `POINTER_PEN_INFO` says its own `tiltY`/`tiltX` mean.
+    #[test]
+    fn leaning_away_is_negative_and_leaning_right_is_positive() {
+        let eighth = std::f32::consts::FRAC_PI_4;
+        let away = tilt_from_orientation(0.0, eighth);
+        assert!(
+            away[1] < -0.1,
+            "leaning away should be negative y, got {away:?}"
+        );
+        assert!(away[0].abs() < 1e-6, "and nothing on x, got {away:?}");
+
+        let right = tilt_from_orientation(std::f32::consts::FRAC_PI_2, eighth);
+        assert!(
+            right[0] > 0.1,
+            "leaning right should be positive x, got {right:?}"
+        );
+        assert!(right[1].abs() < 1e-6, "and nothing on y, got {right:?}");
+    }
+
+    /// A pen laid flat is a number rather than a NaN, whichever way it points.
+    ///
+    /// Only that. The lean of a flat pen is fully over on one axis and **undefined on
+    /// the other** — its projection onto the perpendicular plane is the zero vector,
+    /// so there is no angle in it to report and one answer is as good as another. A
+    /// test that pinned one down would be asserting a choice rather than a fact. What
+    /// has to hold is that no NaN reaches `InputSample::is_admissible`, which refuses
+    /// one and takes the whole gesture with it.
+    #[test]
+    fn a_flat_pen_is_a_number_whichever_way_it_points() {
+        for step in 0..16 {
+            let azimuth = step as f32 * std::f32::consts::TAU / 16.0;
+            let [x, y] = tilt_from_orientation(azimuth, 0.0);
+            assert!(
+                x.is_finite() && y.is_finite(),
+                "azimuth {azimuth} flat gave {x}, {y}"
+            );
+        }
+    }
+
+    /// Tilt never leaves the range the engine reads it in, at any lean.
+    #[test]
+    fn tilt_stays_within_a_right_angle() {
+        for step in 0..64 {
+            let azimuth = step as f32 * std::f32::consts::TAU / 64.0;
+            for rung in 0..=16 {
+                let altitude = rung as f32 * std::f32::consts::FRAC_PI_2 / 16.0;
+                let [x, y] = tilt_from_orientation(azimuth, altitude);
+                assert!(
+                    (-1.0..=1.0).contains(&x) && (-1.0..=1.0).contains(&y),
+                    "azimuth {azimuth} altitude {altitude} gave {x}, {y}"
+                );
+            }
+        }
+    }
+
+    /// The flip is the reason this takes signed extents rather than two corners: a
+    /// digitizer measures up the tablet and a screen measures down the glass.
+    #[test]
+    fn a_negative_extent_flips_the_axis() {
+        let up = (0.0, 1000.0);
+        let down = (1080.0, -1080.0);
+        assert_eq!(
+            map_axis(0.0, up, down),
+            Some(1080.0),
+            "the tablet's bottom edge"
+        );
+        assert_eq!(map_axis(1000.0, up, down), Some(0.0), "and its top");
+        assert_eq!(
+            map_axis(500.0, up, down),
+            Some(540.0),
+            "and the middle of both"
+        );
+    }
+
+    /// An axis the device does not report spans nothing, and must not divide by it.
+    #[test]
+    fn an_axis_that_spans_nothing_maps_nothing() {
+        assert_eq!(map_axis(5.0, (0.0, 0.0), (0.0, 100.0)), None);
     }
 
     /// The guard the sub-pixel path is worth having *because of*: a mapping that
