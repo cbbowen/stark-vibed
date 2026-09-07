@@ -242,7 +242,6 @@ pub fn color_panel(
     pictures: &mut Pictures,
     regions: &Regions,
 ) -> impl IntoElement + use<> {
-    regions.borrow_mut().clear();
     let (mx, my) = color::wheel_xy(wheel.hue, wheel.sat);
     let rgb_now = wheel.rgb();
     let swatch = ((rgb_now[0] * 255.0) as u32) << 16

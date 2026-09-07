@@ -18,11 +18,14 @@
 //! both — `carry_onto` and `release_to` — so a row's two buttons are a `Some` each
 //! rather than a rule written here.
 
+use std::collections::HashSet;
+
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, LayerId, Place};
 use stark_ui::icons::Icon;
 use stark_ui::layer_tree::{self, Row};
+use stark_ui::panels::PanelId;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, Window, canvas, div, prelude::*, px, rgb,
 };
@@ -32,6 +35,19 @@ use crate::style::{self, StyleExt};
 /// The panel's width in logical px — wider than the brush's, because a row carries a
 /// name, a depth indent and four controls.
 pub const WIDTH: f32 = 268.0;
+
+/// The roster's width, given what is hidden: [`WIDTH`] while it is up and nothing at
+/// all when the Window menu has put it away (`crate::panel::width`, on the other edge).
+pub fn width(hidden: &HashSet<PanelId>) -> f32 {
+    if crate::visibility::ROSTER
+        .iter()
+        .any(|id| !hidden.contains(id))
+    {
+        WIDTH
+    } else {
+        0.0
+    }
+}
 
 /// What a press on the layers panel landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -156,7 +172,6 @@ pub fn layers_panel(
     rows: &[Row],
     regions: &Regions,
 ) -> impl IntoElement {
-    regions.borrow_mut().clear();
     let active = obs.map(|o| o.active_layer);
     let selected = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
     let opacity = selected.map_or(1.0, |r| r.info.opacity);

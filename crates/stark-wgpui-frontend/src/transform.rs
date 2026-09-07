@@ -91,7 +91,6 @@ pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
 /// chrome on both sides and nothing above it, so the top is the one edge where a bar
 /// costs no painting room it was not already costing.
 pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl IntoElement {
-    regions.borrow_mut().clear();
     let family = ui.family();
     div()
         .absolute()

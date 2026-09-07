@@ -223,6 +223,7 @@ pub fn brush_panel(
     dragging: Option<Knob>,
     effects: &[(BrushEffectType, &'static str)],
     regions: &Regions,
+    hidden: &HashSet<PanelId>,
     folded: &HashSet<PanelId>,
     sections: Sections<impl IntoElement, impl IntoElement, impl IntoElement, impl IntoElement>,
 ) -> impl IntoElement {
@@ -233,10 +234,6 @@ pub fn brush_panel(
         substrates,
     } = sections;
     let effect = brush.config.effect;
-    // Cleared here rather than after the press: prepaint refills it every frame, and
-    // clearing on read would leave the frame between a press and the next paint with
-    // no layout to test against.
-    regions.borrow_mut().clear();
     let brush_body = div()
         .flex()
         .flex_col()
@@ -292,9 +289,28 @@ pub fn brush_panel(
         .overflow_y_scroll()
         .border_r_1()
         .border_color(rgb(style::EDGE))
-        .child(section(regions, folded, PanelId::Color, color))
-        .child(section(regions, folded, PanelId::Brush, brush_body))
-        .child(section(regions, folded, PanelId::Select, select))
+        .children(section(regions, hidden, folded, PanelId::Color, color))
+        .children(section(regions, hidden, folded, PanelId::Brush, brush_body))
+        .children(section(regions, hidden, folded, PanelId::Select, select))
+}
+
+/// The column's width, given what is hidden: [`WIDTH`] while it still holds a panel,
+/// and **nothing at all** once every panel in it has been put away.
+///
+/// The canvas takes the room back, because a column is what the surface is laid out
+/// *beside* rather than over — so this number is not only what a press is tested
+/// against ([`within`]) but where canvas space begins (`Canvas::origin`). Which is the
+/// whole reason hiding a panel here is a different kind of act from hiding one in the
+/// web app, where a floating panel costs the painting nothing to begin with.
+pub fn width(hidden: &HashSet<PanelId>) -> f32 {
+    if crate::visibility::COLUMN
+        .iter()
+        .any(|id| !hidden.contains(id))
+    {
+        WIDTH
+    } else {
+        0.0
+    }
 }
 
 /// One panel in the stack: a title bar that folds it, and its body when it is not.
@@ -304,22 +320,30 @@ pub fn brush_panel(
 /// stores its own under, and a variant renamed costs the row rather than mis-matching
 /// it (`stark_ui::visibility`).
 ///
-/// **Folded rather than hidden.** A hidden panel is one a person has to remember
-/// exists; a folded one leaves its title behind, which is the whole difference in a
-/// column that is read top to bottom.
+/// **Folded is not hidden, and the Window menu is the difference.** A folded panel
+/// leaves its title bar in the column, which is what lets it be opened again by the
+/// thing that closed it; a hidden one is not built at all, so the only way back is
+/// the map of what is on screen (`crate::menu`'s Window menu, §25.5). Both facts are
+/// this client's and both are kept (`crate::visibility`).
 fn section(
     regions: &Regions,
+    hidden: &HashSet<PanelId>,
     folded: &HashSet<PanelId>,
     id: PanelId,
     body: impl IntoElement,
-) -> impl IntoElement {
+) -> Option<impl IntoElement> {
+    if hidden.contains(&id) {
+        return None;
+    }
     let open = !folded.contains(&id);
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(title(regions, folded, id))
-        .children(open.then_some(body))
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(title(regions, folded, id))
+            .children(open.then_some(body)),
+    )
 }
 
 /// A section's title bar.
@@ -420,9 +444,12 @@ pub fn fraction_at(regions: &Regions, knob: Knob, at: Point<Pixels>) -> Option<f
 /// this ends, so a press the panel does not want is paint.
 ///
 /// The one measurement that is *not* read back off the layout, because it is what the
-/// layout is told: the column is `WIDTH` wide because this module says so.
-pub fn within(at: Point<Pixels>) -> bool {
-    (0.0..=WIDTH).contains(&f32::from(at.x))
+/// layout is told: the column is [`width`] wide because this module says so. Taking
+/// that as an argument rather than reading it here is what keeps one press and one
+/// stroke agreeing about where the canvas starts — the caller has the number already,
+/// and a second read of it is a second chance to read it from a stale set.
+pub fn within(at: Point<Pixels>, width: f32) -> bool {
+    width > 0.0 && (0.0..=width).contains(&f32::from(at.x))
 }
 
 /// The value a fraction along `knob`'s track means.
@@ -464,8 +491,22 @@ mod tests {
     /// A press past the panel's column is the canvas's, whatever it is level with.
     #[test]
     fn a_press_past_the_panel_is_paint() {
-        assert!(!within(at(WIDTH + 1.0, 100.0)));
-        assert!(within(at(WIDTH - 1.0, 100.0)));
+        assert!(!within(at(WIDTH + 1.0, 100.0), WIDTH));
+        assert!(within(at(WIDTH - 1.0, 100.0), WIDTH));
+    }
+
+    /// A column with nothing in it is not a column: the canvas starts at the window's
+    /// own edge, and a press at x=0 is paint rather than a press on a strip of nothing.
+    #[test]
+    fn a_column_of_no_panels_takes_no_room() {
+        let mut hidden: HashSet<PanelId> = crate::visibility::COLUMN.into_iter().collect();
+        assert_eq!(width(&hidden), 0.0);
+        assert!(!within(at(0.0, 100.0), width(&hidden)));
+        // One panel left is a whole column: the width is what the layout is told, not
+        // a sum over what is in it.
+        hidden.remove(&PanelId::Select);
+        assert!(within(at(WIDTH - 1.0, 100.0), width(&hidden)));
+        assert!(!within(at(WIDTH + 1.0, 100.0), width(&hidden)));
     }
 
     /// Before the first frame has painted there is nothing measured, and a press

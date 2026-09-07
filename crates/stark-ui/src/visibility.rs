@@ -56,10 +56,23 @@ pub fn stored_showing(what: VisibilityToggle) -> bool {
     stored().iter().any(|row| row.what == what)
 }
 
+/// The panels this client left open, or `None` where it has never said.
+///
+/// The distinction [`stored_hidden`] throws away, and the two frontends want opposite
+/// halves of it. A stack that floats over the painting starts empty (`layout`), so
+/// "never been here" and "closed everything" are one screen there. A **docked** column
+/// cannot take that reading: its panels are the window's furniture, and a first run
+/// that opened on a menu bar and nothing else would read as broken rather than tidy.
+/// So the native frontend asks this and keeps its own default for the absent case
+/// (`stark-wgpui-frontend`'s `visibility`).
+pub fn stored_open() -> Option<HashSet<PanelId>> {
+    Some(panels(storage::load_list()?).map(|(id, _)| id).collect())
+}
+
 /// The panels this browser did **not** leave open, as `PanelLayout::hidden` — every
 /// panel, for a browser that has never been here or whose record will not read.
 pub fn stored_hidden() -> HashSet<PanelId> {
-    let open: HashSet<PanelId> = panels(stored()).map(|(id, _)| id).collect();
+    let open = stored_open().unwrap_or_default();
     PanelId::ALL
         .into_iter()
         .filter(|id| !open.contains(id))
@@ -209,6 +222,24 @@ mod tests {
         assert_eq!(
             read(r#"{"what":"Navigator"}"#).unwrap(),
             (VisibilityToggle::Navigator, false)
+        );
+    }
+
+    /// A client that has never said is not a client that closed everything.
+    ///
+    /// The one case the two readers answer differently, and the one every first run
+    /// is in. It leans on no backend being installed in this test binary, which is
+    /// what lets it ask the real readers rather than a stand-in.
+    #[test]
+    fn never_having_said_is_its_own_answer() {
+        assert!(
+            stored_open().is_none(),
+            "no store is no record, which is not an empty one"
+        );
+        assert_eq!(
+            stored_hidden(),
+            PanelId::ALL.into_iter().collect::<HashSet<_>>(),
+            "and a floating stack still reads that as every panel closed"
         );
     }
 

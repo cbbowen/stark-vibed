@@ -1216,6 +1216,34 @@ the exit criterion is an act, not a diff.
   belonged — the panel row existed because the shipped chord table binds no file acts
   and this frontend had nowhere else to put them (N5).
 
+  **A Window menu came next**, which is the visibility menu (§25.5) as a menu bar
+  draws one: a row per panel, each wearing its own title-bar mark and a tick saying
+  whether it is up. Only the four panels this frontend has, by the rule above — a row
+  offering a Guides panel it does not draw is exactly the dead act that rule forbids.
+  A menu reserves the tick column when *any* of its rows carries a state and gives it
+  to no row otherwise, so a menu of switches aligns and a menu of acts is not indented
+  for a column it never fills. "Am I in it?" is the one thing about a row the registry
+  cannot answer, so the bar asks the window rather than looking it up — which is the
+  web app's `commands::active`, arrived at from the other side.
+
+  **Hiding a docked panel is not hiding a floating one**, and that is what the menu
+  cost. The web app's panels float over the painting, so closing one changes nothing
+  about where the canvas is. These are columns the surface is laid out *beside*, so a
+  column with nothing left in it is not built at all and the surface flexes into the
+  room — which means `panel::WIDTH` could no longer be the constant every mapping from
+  a pointer to the picture subtracted. There is one `Canvas::origin` now, where the
+  surface begins in both coordinates, and the press, the drag, the stroke sample and
+  the rectangle the stylus is captured in all read it. The y half was owed anyway: the
+  mapping had been measuring from the *window's* corner since the bar landed, which
+  put every stroke the bar's own height above the nib.
+
+  It also settled where a region list is cleared. Each control's builder cleared its
+  own, which works exactly as long as every builder runs every frame — and a panel
+  that can be hidden is one whose builder does not, leaving its last frame's
+  rectangles standing as controls a press still finds and the artist can no longer
+  see. The frame clears all of them now, which is what the transform bar's list had
+  needed from the start.
+
   Two things the bar needed that are worth recording. The drop-down is **deferred**:
   the bar is the window's *first* child, because it is the top row of a column, and a
   first child paints under everything after it — so the panel hung off it was drawn
@@ -1864,7 +1892,13 @@ impl storage::Entry for StoredVisible { const STORE: Store = Store::Visible; }
 
 A row is a thing that is *showing*, and absence answers for everything else —
 which is what makes an entry added in a later release arrive put away rather than
-appearing unbidden over the painting of every existing user. Folding rides the
+appearing unbidden over the painting of every existing user. The **native** window
+reads that one step more carefully, because its panels are docked rather than
+floating: an absent *record* is a first run and opens furnished, where an empty one
+is a person who closed everything and gets what they asked for. `stored_open`
+answers `Option` for exactly that, and the web app collapses the two because over
+there a stack that has never been used and one that has been emptied are the same
+screen. Folding rides the
 panel's row rather than taking a record of its own: same fact, same panel, and a
 panel is only ever folded while it is open. Reading happens where each signal is
 built (`AppState::new`), so the first render is already the screen the artist

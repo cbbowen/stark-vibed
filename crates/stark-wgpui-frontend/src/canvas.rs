@@ -162,6 +162,14 @@ pub struct Canvas {
     /// Which panels this client has folded away, remembered across sessions
     /// (`stark_ui::visibility`).
     folded: std::collections::HashSet<PanelId>,
+    /// Which it has put away entirely — the Window menu's answer (`crate::menu`),
+    /// kept across sessions beside the fold above (`crate::visibility`).
+    ///
+    /// The one piece of chrome state the *canvas geometry* depends on. A column that
+    /// is not built is room the surface takes, so where a press lands in the picture
+    /// is a function of this set ([`Canvas::origin`]) — which is the difference
+    /// between hiding a docked panel and hiding a floating one.
+    hidden: std::collections::HashSet<PanelId>,
     /// Whether space is down — the modifier that turns a left drag into a pan
     /// (§18.1.7).
     ///
@@ -313,6 +321,7 @@ impl Canvas {
             wheel,
             pictures: color::Pictures::default(),
             folded: stark_ui::visibility::stored_collapsed(),
+            hidden: crate::visibility::stored(),
             space: false,
             menu_open: None,
             menu_regions: menu::Regions::default(),
@@ -398,11 +407,11 @@ impl Canvas {
                 self.bar_act(ui, region, cx);
                 return;
             }
-            if !panel::within(ev.position)
+            if !panel::within(ev.position, panel::width(&self.hidden))
                 && !self.over_layers(window, ev.position)
                 && let Some(view) = self.view()
             {
-                let at = canvas_at(view, ev.position, window.scale_factor());
+                let at = canvas_at(view, ev.position, self.origin(), window.scale_factor());
                 self.held = Some(Held::Transform(Box::new(grab_at(ui, at, view))));
                 return;
             }
@@ -512,7 +521,7 @@ impl Canvas {
                 }
                 return;
             }
-            None if panel::within(ev.position) => {
+            None if panel::within(ev.position, panel::width(&self.hidden)) => {
                 // Somewhere on the panel that is not a control. Not paint either.
                 return;
             }
@@ -546,12 +555,15 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // Read before anything borrows the renderer: where the canvas begins is a
+        // question about the chrome, and the arms below are holding the engine.
+        let origin = self.origin();
         // Navigation before paint, and before the drag table: a press that is
         // looking around is not a press on the picture, whatever else it would have
         // meant. Which press that is is `stark_ui::nav`'s answer.
         if let Some(mode) = nav::press(
             nav::Button::Left,
-            screen_at(at, window.scale_factor()),
+            screen_at(at, origin, window.scale_factor()),
             self.space,
             mods.ctrl,
         ) {
@@ -626,7 +638,7 @@ impl Canvas {
         let view = r.view();
         r.process(GestureCommand::Start {
             tool,
-            sample: sample_at(view, at, scale, now, pen),
+            sample: sample_at(view, at, origin, scale, now, pen),
             // Both are canvas-space lengths the frontend alone can state, and both
             // are mapped by `stark_ui::input` rather than here — which is the
             // point of that module: this frontend had its own copy of the rope's
@@ -671,11 +683,14 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // [`open_canvas`](Self::open_canvas)'s reason, and one more: three of the arms
+        // below want it, and a second reading is a second place to get it from.
+        let origin = self.origin();
         match self.held {
             Some(Held::Navigate { mode, last }) => {
                 if let Some(command) = mode.moved(
-                    screen_at(last, window.scale_factor()),
-                    screen_at(at, window.scale_factor()),
+                    screen_at(last, origin, window.scale_factor()),
+                    screen_at(at, origin, window.scale_factor()),
                 ) {
                     self.send(command, cx);
                 }
@@ -689,7 +704,7 @@ impl Canvas {
                 let (Some(ui), Some(view)) = (self.mode, self.view()) else {
                     return;
                 };
-                let held = canvas_at(view, at, window.scale_factor());
+                let held = canvas_at(view, at, origin, window.scale_factor());
                 // `ui` is what the validity clamps hold at — the last shape the
                 // family could express — and the *start* is inside the grab, so a
                 // long drag stays one map (`stark_ui::transform`).
@@ -738,7 +753,7 @@ impl Canvas {
                 };
                 let view = r.view();
                 r.process(GestureCommand::To {
-                    sample: sample_at(view, at, scale, now, pen),
+                    sample: sample_at(view, at, origin, scale, now, pen),
                 });
                 self.repaint(cx);
             }
@@ -748,7 +763,7 @@ impl Canvas {
             // shape with three meanings, and nothing else distinguishes them.
             None => {
                 if let (Some(ui), Some(view)) = (self.mode, self.view()) {
-                    let over = canvas_at(view, at, window.scale_factor());
+                    let over = canvas_at(view, at, origin, window.scale_factor());
                     let hint = grab_at(ui, over, view).hint();
                     if hint != self.hover {
                         self.hover = hint;
@@ -817,8 +832,9 @@ impl Canvas {
     /// paint — the same bargain `panel::within` makes on the other side, measured
     /// from the right because that is the edge this column is pinned to.
     fn over_layers(&self, window: &Window, at: Point<Pixels>) -> bool {
+        let width = layers::width(&self.hidden);
         let right = f32::from(window.viewport_size().width);
-        f32::from(at.x) >= right - layers::WIDTH
+        width > 0.0 && f32::from(at.x) >= right - width
     }
 
     /// Do what a press on the layers panel means.
@@ -1141,15 +1157,61 @@ impl Canvas {
         if !self.folded.insert(id) {
             self.folded.remove(&id);
         }
-        let folded = self.folded.clone();
-        // What is *showing* is every panel this frontend has: folding is the only
-        // thing it offers, so nothing is ever hidden outright, and the three entries
-        // that are not panels belong to surfaces it has not got (§25).
-        stark_ui::visibility::persist(
-            |what| matches!(what, stark_ui::commands::VisibilityToggle::Panel(_)),
-            &folded,
-        );
+        crate::visibility::persist(&self.hidden, &self.folded);
         self.repaint(cx);
+    }
+
+    /// Show a panel, or put it away — the Window menu's act (§25.5).
+    ///
+    /// Through the same writer as the fold above, because the two are one record: a
+    /// panel that is not showing cannot also be folded, and two writers for one record
+    /// is a record that can come to hold half of each (`stark_ui::visibility`).
+    ///
+    /// Nothing else has to happen here. A hidden panel is one the column does not
+    /// build, and everything downstream of that — the room the canvas takes, where a
+    /// press lands in the picture, where the stylus is captured — reads this same set
+    /// ([`Canvas::origin`]) rather than being told.
+    fn toggle_panel(&mut self, id: PanelId, cx: &mut Context<'_, Self>) {
+        // A chord could name a panel this frontend has not got, since the table is
+        // the registry's and the registry knows six (`stark_ui::panels`). Showing one
+        // is not something this window can do, so it does nothing rather than
+        // remembering a panel it will never draw.
+        if !crate::visibility::PANELS.contains(&id) {
+            return;
+        }
+        if !self.hidden.insert(id) {
+            self.hidden.remove(&id);
+        }
+        crate::visibility::persist(&self.hidden, &self.folded);
+        self.repaint(cx);
+    }
+
+    /// Whether a command names something this window is currently *in* — `None` for
+    /// an act, which is in no state at all.
+    ///
+    /// The web frontend's `commands::active`, asked of this window's own fields, and
+    /// it is what a menu row's tick reads (`menu::bar`). One answer for the row and
+    /// for the chord that reaches the same command, so a switch cannot move without
+    /// the tick moving with it.
+    fn active(&self, command: Command) -> Option<bool> {
+        match command {
+            Command::TogglePanel(id) => Some(!self.hidden.contains(&id)),
+            Command::ToggleHdr => Some(self.hdr.on),
+            _ => None,
+        }
+    }
+
+    /// Where the canvas surface begins in the window, in logical px: what is left once
+    /// the menu bar and whatever columns are up have taken theirs.
+    ///
+    /// **The one number every mapping from a pointer to the picture goes through**
+    /// ([`screen_at`], [`canvas_at`]) and the one the stylus is captured against
+    /// ([`Canvas::pen_claim`]). It is a *derived* layout rather than a measured one,
+    /// which is the exception `panel::within` already was — the bar's height and each
+    /// column's width are what the tree is told, so reading them back would be asking
+    /// taffy to confirm an arithmetic this module did.
+    fn origin(&self) -> Point<Pixels> {
+        point(px(panel::width(&self.hidden)), px(menu::HEIGHT))
     }
 
     /// A middle-button press: the pan for a hand already on the mouse, whatever else
@@ -1162,7 +1224,7 @@ impl Canvas {
     ) {
         let Some(mode) = nav::press(
             nav::Button::Middle,
-            screen_at(ev.position, window.scale_factor()),
+            screen_at(ev.position, self.origin(), window.scale_factor()),
             self.space,
             false,
         ) else {
@@ -1184,7 +1246,9 @@ impl Canvas {
         // A press on a panel scrolls it; only the canvas zooms. Asked the way every
         // other press is (`panel::within`, `over_layers`), so the three columns agree
         // about where each begins.
-        if panel::within(ev.position) || self.over_layers(window, ev.position) {
+        if panel::within(ev.position, panel::width(&self.hidden))
+            || self.over_layers(window, ev.position)
+        {
             return;
         }
         let notches = match ev.delta {
@@ -1193,7 +1257,7 @@ impl Canvas {
             ScrollDelta::Lines(d) => d.y,
             ScrollDelta::Pixels(d) => f32::from(d.y) / nav::WHEEL_PIXELS_PER_NOTCH,
         };
-        let anchor = screen_at(ev.position, window.scale_factor());
+        let anchor = screen_at(ev.position, self.origin(), window.scale_factor());
         if let Some(command) = nav::wheel(anchor, notches) {
             self.send(command, cx);
         }
@@ -1737,6 +1801,7 @@ impl Canvas {
             Command::CancelMode => self.cancel_mode(cx),
             Command::FinishMode => self.finish_mode(cx),
             Command::ToggleHdr => self.toggle_hdr(window, cx),
+            Command::TogglePanel(id) => self.toggle_panel(id, cx),
             _ => {}
         }
         if let Some(doc) = doc {
@@ -1812,11 +1877,12 @@ impl Canvas {
     fn pen_claim(&self, window: &Window) -> Claim {
         let scale = window.scale_factor();
         let size = window.viewport_size();
+        let origin = self.origin();
         Claim {
             rect: stark_pen::Rect {
-                left: panel::WIDTH * scale,
-                top: menu::HEIGHT * scale,
-                right: (f32::from(size.width) - layers::WIDTH) * scale,
+                left: f32::from(origin.x) * scale,
+                top: f32::from(origin.y) * scale,
+                right: (f32::from(size.width) - layers::width(&self.hidden)) * scale,
                 bottom: f32::from(size.height) * scale,
             },
             enabled: self.mode.is_none() && self.menu_open.is_none(),
@@ -1903,9 +1969,23 @@ impl Render for Canvas {
             Some(Held::Knob(k)) => Some(k),
             _ => None,
         };
-        // Both galleries write into one region list, so it is cleared once, here,
-        // rather than by whichever of the two is built first.
+        // **Every region list is cleared by the frame, not by the control that fills
+        // it.** A panel the Window menu has put away is not built at all, so a builder
+        // that cleared its own list would leave the last frame's rectangles standing —
+        // controls a press still finds and the artist can no longer see. The transform
+        // bar was cleared here for that reason from the start; a panel that can be
+        // hidden made it every list's rule.
+        //
+        // Nothing is lost by clearing here rather than there: prepaint refills them
+        // after this returns, so what a press between two frames reads is the layout
+        // that is actually on screen.
+        self.menu_regions.borrow_mut().clear();
+        self.regions.borrow_mut().clear();
+        self.color_regions.borrow_mut().clear();
+        self.select_regions.borrow_mut().clear();
         self.gallery_regions.borrow_mut().clear();
+        self.layer_regions.borrow_mut().clear();
+        self.bar_regions.borrow_mut().clear();
         let shape_rows = Self::shipped(assets::SHIPPED_SHAPES);
         let substrate_rows = Self::shipped(assets::SHIPPED_SUBSTRATES);
         let held_shape = match self.brush.config.shape {
@@ -1960,28 +2040,36 @@ impl Render for Canvas {
             self.menu_open,
             self.obs.as_ref(),
             &self.bindings,
+            &|command| self.active(command),
             &self.menu_regions,
         );
         let picker = color::color_panel(self.wheel, &mut self.pictures, &self.color_regions);
-        let chrome = panel::brush_panel(
-            &self.brush,
-            dragging,
-            EFFECTS,
-            &self.regions,
-            &self.folded,
-            panel::Sections {
-                color: picker,
-                select: select::select_panel(
-                    self.obs.as_ref(),
-                    &self.bindings,
-                    &self.select_regions,
-                ),
-                shapes,
-                substrates,
-            },
-        );
+        // Built only where there is a column to put it in: with every panel in it
+        // hidden the tree has no left-hand child at all, and the surface beside it
+        // flexes into the room — which is the same fact `Canvas::origin` states.
+        let column = (panel::width(&self.hidden) > 0.0).then(|| {
+            panel::brush_panel(
+                &self.brush,
+                dragging,
+                EFFECTS,
+                &self.regions,
+                &self.hidden,
+                &self.folded,
+                panel::Sections {
+                    color: picker,
+                    select: select::select_panel(
+                        self.obs.as_ref(),
+                        &self.bindings,
+                        &self.select_regions,
+                    ),
+                    shapes,
+                    substrates,
+                },
+            )
+        });
         let rows = self.rows();
-        let roster = layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions);
+        let roster = (layers::width(&self.hidden) > 0.0)
+            .then(|| layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions));
         // The mode's two pieces are built here, where `self` is still borrowable —
         // the surface below takes a mutable borrow of the renderer that outlives the
         // rest of the tree.
@@ -1992,10 +2080,7 @@ impl Render for Canvas {
                 self.view()
                     .map(|view| transform::overlay(ui, view, window.scale_factor(), self.hover)),
             ),
-            None => {
-                self.bar_regions.borrow_mut().clear();
-                (None, None)
-            }
+            None => (None, None),
         };
 
         let Some(r) = self.renderer.as_mut() else {
@@ -2020,7 +2105,7 @@ impl Render for Canvas {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(chrome)
+                    .children(column)
                     .child(
                         div()
                             .relative()
@@ -2033,7 +2118,7 @@ impl Render for Canvas {
                             .children(overlay)
                             .children(bar),
                     )
-                    .child(roster),
+                    .children(roster),
             )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::press_middle))
@@ -2055,17 +2140,19 @@ impl Render for Canvas {
 /// `position` is window-relative and **logical**, while the view is denominated in
 /// the surface's device px — so the scale factor is the whole of the conversion.
 ///
-/// The panel's width comes off first: the surface begins where the panel ends, and
-/// `screen_to_canvas` maps out of the *surface's* space rather than the window's.
+/// The chrome's own rectangle comes off first ([`Canvas::origin`]): the surface begins
+/// where the bar and the column end, and `screen_to_canvas` maps out of the
+/// *surface's* space rather than the window's.
 fn sample_at(
     view: ViewTransform,
     position: Point<Pixels>,
+    origin: Point<Pixels>,
     scale: f32,
     time: f64,
     pen: Option<&Pose>,
 ) -> InputSample {
     InputSample {
-        pos: canvas_at(view, position, scale),
+        pos: canvas_at(view, position, origin, scale),
         // A mouse is always pressed home (`ModSource::Pressure`) and reports no tilt
         // at all. A stylus answers both, in the units the engine measures in —
         // `stark-pen` normalizes, for the reason it gives: the ranges are the
@@ -2104,24 +2191,35 @@ fn grab_at(ui: TransformUi, at: Vec2, view: ViewTransform) -> Grab {
 }
 
 /// A window position in the **screen** px the view is denominated in — logical px
-/// times the display's scale factor, with the panel's width taken off.
+/// times the display's scale factor, measured from where the surface begins.
+///
+/// `origin` is [`Canvas::origin`], and it is both coordinates rather than the panel's
+/// width alone: the surface sits under the menu bar as well as beside the column, and
+/// a pointer read from the window's corner was every stroke landing the bar's height
+/// above the nib.
 ///
 /// Not `canvas_at`: a pan is a screen-space delta and a zoom anchors on a screen-space
 /// point, so both stay in the frame the surface renders in rather than the one the
 /// paint lives in (`ViewCommand::Pan`, `ViewCommand::Zoom`).
-fn screen_at(position: Point<Pixels>, scale: f32) -> Vec2 {
-    let x = f32::from(position.x) - panel::WIDTH;
-    Vec2::new(x * scale, f32::from(position.y) * scale)
+fn screen_at(position: Point<Pixels>, origin: Point<Pixels>, scale: f32) -> Vec2 {
+    let x = f32::from(position.x) - f32::from(origin.x);
+    let y = f32::from(position.y) - f32::from(origin.y);
+    Vec2::new(x * scale, y * scale)
 }
 
 /// A window position in canvas px.
 ///
 /// Split out of [`sample_at`] because the transform widget wants the point without
 /// the pen fields around it — and because one mapping is the whole of what keeps the
-/// widget under the pointer that grabbed it.
-fn canvas_at(view: ViewTransform, position: Point<Pixels>, scale: f32) -> Vec2 {
-    let x = f32::from(position.x) - panel::WIDTH;
-    view.screen_to_canvas(Vec2::new(x * scale, f32::from(position.y) * scale))
+/// widget under the pointer that grabbed it. Through [`screen_at`] rather than beside
+/// it, so the two cannot come to disagree about where the surface starts.
+fn canvas_at(
+    view: ViewTransform,
+    position: Point<Pixels>,
+    origin: Point<Pixels>,
+    scale: f32,
+) -> Vec2 {
+    view.screen_to_canvas(screen_at(position, origin, scale))
 }
 
 /// What the window shows when there is no wgpu device to paint with.

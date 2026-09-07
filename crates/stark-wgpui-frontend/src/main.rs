@@ -44,6 +44,7 @@ mod select;
 mod store;
 mod style;
 mod transform;
+mod visibility;
 mod window;
 
 use stark_engine::GpuContext;

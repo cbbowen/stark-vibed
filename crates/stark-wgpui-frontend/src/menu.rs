@@ -12,7 +12,9 @@
 //! Everything *about* a row is the registry's — its name, its mark, the chord that
 //! also reaches it, and whether the document makes it available
 //! (`Command::enabled`). A menu row and a panel button are then the same control
-//! reached two ways rather than two controls that resemble each other.
+//! reached two ways rather than two controls that resemble each other. The one thing
+//! the registry cannot answer is whether this *window* is in the state a row names,
+//! which is why the tick is asked for rather than looked up (`Canvas::active`).
 //!
 //! **Which** commands, and in which menu, is this frontend's. That is not a
 //! reluctance to share: the menus differ between the two apps *because the apps
@@ -23,6 +25,7 @@
 
 use stark_engine::ObservableState;
 use stark_ui::commands::{Bindings, Command};
+use stark_ui::panels::PanelId;
 use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb};
 
 use crate::style::{self, StyleExt};
@@ -90,6 +93,25 @@ pub const MENUS: &[Menu] = &[
         title: "Brush",
         rows: &[Some(Command::BrushSmaller), Some(Command::BrushLarger)],
     },
+    Menu {
+        title: "Window",
+        // What is on screen (§25.5): the web app's visibility menu, as a menu bar
+        // draws one. Its rows carry a state where every other row here is an act, so
+        // they are the reason a row can wear a tick at all ([`item`]).
+        //
+        // The four panels this frontend has, and no more — a row offering to show a
+        // Guides panel it does not draw would be exactly the dead act the rule above
+        // forbids. The list is `crate::visibility`'s, so what the menu offers and what
+        // the record can hold cannot come apart; the rule between the runs is where
+        // the window's two columns divide.
+        rows: &[
+            Some(Command::TogglePanel(PanelId::Color)),
+            Some(Command::TogglePanel(PanelId::Brush)),
+            Some(Command::TogglePanel(PanelId::Select)),
+            None,
+            Some(Command::TogglePanel(PanelId::Layers)),
+        ],
+    },
 ];
 
 /// What a press on the bar landed on.
@@ -147,13 +169,18 @@ pub fn command(menu: usize, row: usize) -> Option<Command> {
 /// then covered by the canvas. `deferred` keeps the layout where it is and moves the
 /// paint to after every ancestor, which is the one thing that wants two different
 /// answers to "where in the tree is this".
+///
+/// `state` answers "am I in it?" for a row that has such a state and `None` for one
+/// that does not — the web frontend's `commands::active`, asked of this window
+/// (`Canvas::active`). A `dyn` rather than an `impl Fn` because there is one call
+/// site and the return type deliberately captures nothing.
 pub fn bar(
     open: Option<usize>,
     obs: Option<&ObservableState>,
     bindings: &Bindings,
+    state: &dyn Fn(Command) -> Option<bool>,
     regions: &Regions,
 ) -> impl IntoElement + use<> {
-    regions.borrow_mut().clear();
     div()
         .relative()
         .w_full()
@@ -177,6 +204,13 @@ pub fn bar(
         .children(
             open.and_then(|i| MENUS.get(i).map(|menu| (i, menu)))
                 .map(|(i, menu)| {
+                    // Whether *this* menu reserves the tick column, decided once for
+                    // the whole drop-down rather than per row: a menu where three rows
+                    // of ten are indented and the rest are not reads as a ragged list
+                    // rather than as a set of switches. So a menu with any state in it
+                    // gives every row the gutter, and a menu with none gives it to no
+                    // row at all.
+                    let gutter = menu.rows.iter().flatten().any(|c| state(*c).is_some());
                     // Hung from the bar's own left edge with the title's offset added,
                     // rather than from the title element: an absolutely-positioned child
                     // is placed where the flow had reached unless it is told otherwise,
@@ -196,7 +230,9 @@ pub fn bar(
                             .rounded_sm()
                             .children(menu.rows.iter().enumerate().map(|(j, row)| match row {
                                 Some(command) => {
-                                    item(*command, i, j, obs, bindings, regions).into_any_element()
+                                    let tick = gutter.then(|| state(*command) == Some(true));
+                                    item(*command, i, j, obs, bindings, tick, regions)
+                                        .into_any_element()
                                 }
                                 None => rule().into_any_element(),
                             })),
@@ -232,12 +268,17 @@ fn title_x(regions: &Regions, menu: usize) -> f32 {
 }
 
 /// One command's row.
+///
+/// `tick` carries both halves of the switch: `None` where this row's *menu* reserves
+/// no tick column at all ([`bar`]), and otherwise whether this row's own command is a
+/// state that is on.
 fn item(
     command: Command,
     menu: usize,
     row: usize,
     obs: Option<&ObservableState>,
     bindings: &Bindings,
+    tick: Option<bool>,
     regions: &Regions,
 ) -> impl IntoElement {
     // The registry's own gate, so a row greys out for the same reason a panel button
@@ -261,6 +302,7 @@ fn item(
             el.cursor_pointer().hover(|s| s.bg(rgb(style::LIT)))
         })
         .child(probe(regions, Region::Row(menu, row)))
+        .children(tick.map(|on| switch(on, ink)))
         .child(crate::icons::icon(command.icon(), ink))
         // The full name here, not the terse word: a menu row stands alone, where a
         // chip sits under a header that has already named the subject (§25).
@@ -274,6 +316,24 @@ fn item(
                 }))
                 .child(chord)
         }))
+}
+
+/// The tick a row with a state wears, and the space it holds when the state is off.
+///
+/// A **character**, not [`crate::icons`]' own tick: that one is the mark of *finishing*
+/// — every Done chip in the application wears it — and the catalog is explicit that a
+/// state and that verb must not be confused by sharing a glyph. What is drawn here is
+/// the gutter a native menu bar puts beside a checkable row, which is the same kind of
+/// mark as the fold triangle in the panel column and no more an icon than that is.
+///
+/// The width is the mark's, so a row's word starts in the same place whether its
+/// state is on or off.
+fn switch(on: bool, ink: u32) -> impl IntoElement {
+    div()
+        .w(px(crate::icons::SIZE))
+        .flex_none()
+        .text_color(rgb(ink))
+        .children(on.then_some("\u{2713}"))
 }
 
 /// A rule between two runs of rows.
@@ -297,14 +357,42 @@ mod tests {
         let answered = include_str!("canvas.rs");
         for menu in MENUS {
             for command in menu.rows.iter().flatten() {
-                let arm = format!("Command::{command:?} =>");
+                // The variant, not the value: an arm for a command that carries a
+                // payload *binds* the payload rather than spelling it, so a menu of
+                // four `TogglePanel` rows shares one arm and this is what they share.
+                let debug = format!("{command:?}");
+                let head = debug.split('(').next().unwrap_or(&debug);
+                let arm = format!("Command::{head}");
                 assert!(
-                    answered.contains(&arm),
+                    answered.contains(&format!("{arm} =>"))
+                        || answered.contains(&format!("{arm}(")),
                     "{} offers {command:?}, which `Canvas::run` has no arm for",
                     menu.title
                 );
             }
         }
+    }
+
+    /// The Window menu is the panels this frontend draws — all of them, once each.
+    ///
+    /// Both lists are written out by hand and each is edited for its own reason: a
+    /// panel arrives in `visibility::PANELS` because the window now has one, and in
+    /// the menu because somebody remembered. This is the remembering.
+    #[test]
+    fn the_window_menu_is_every_panel_this_frontend_has() {
+        let listed: Vec<PanelId> = MENUS
+            .iter()
+            .find(|m| m.title == "Window")
+            .expect("there is a Window menu")
+            .rows
+            .iter()
+            .flatten()
+            .map(|command| match command {
+                Command::TogglePanel(id) => *id,
+                other => panic!("the Window menu offers {other:?}, which shows no panel"),
+            })
+            .collect();
+        assert_eq!(listed, crate::visibility::PANELS.to_vec());
     }
 
     /// A row's name comes off the registry, so a menu entry and the palette row the

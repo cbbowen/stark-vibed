@@ -164,7 +164,6 @@ pub fn select_panel(
     bindings: &Bindings,
     regions: &Regions,
 ) -> impl IntoElement {
-    regions.borrow_mut().clear();
     let tool = o.map_or(Tool::Brush, |o| o.tool);
     let action = o.map_or(ShapeAction::default(), |o| o.shape_action);
     let dials = dials(o);
