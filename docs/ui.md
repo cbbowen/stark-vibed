@@ -1378,19 +1378,22 @@ opened is one the tablet also closes.
 
 #### The one lint exception in the tree
 
-`stark-pen` is the only crate that does not take the workspace's
-`forbid(unsafe_code)`, and its manifest restates the table with that one row
-replaced. A window procedure and six `extern "system"` calls are what a pen is on
-Windows; there is no version of this that does not need it, and taking
-`octotablet` instead would have moved the same `unsafe` into a dependency rather
-than removed it.
+A window procedure and six `extern "system"` calls are what a pen is on Windows.
+There is no version of this that does not need `unsafe`, and taking `octotablet`
+instead would have moved the same `unsafe` into a dependency rather than removed
+it — so the workspace lint is `deny` rather than `forbid`, and `stark-pen`'s
+`windows` module is the one `mod` in the tree that lifts it.
 
-What is kept is narrower and still the compiler's: every module but `win32`
-carries its own `#[forbid(unsafe_code)]`, `unsafe_op_in_unsafe_fn` is forbidden
-crate-wide, and `undocumented_unsafe_blocks` is denied — every raw pointer this
-crate dereferences comes from a reference word Windows hands back, and a block
-that cannot say why that is sound does not compile. The workspace comment's claim
-is unchanged everywhere it applied before.
+One attribute on one module is the whole exemption, which is what keeps the
+confinement the compiler's rather than a convention's: nothing else anywhere
+lifts the deny, so a block that strayed into any other module of this crate would
+not build. `expect` rather than `allow`, for the reason the workspace table
+gives — it reports itself the day it stops being needed.
+
+What is kept beside it: `undocumented_unsafe_blocks` is denied, so a block that
+cannot say why it is sound does not compile. Every raw pointer this crate
+dereferences comes from a reference word Windows hands back, and that is a claim
+each block has to make in writing.
 
 #### What a test can reach
 

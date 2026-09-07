@@ -88,11 +88,10 @@ crates/
                    Depends on nothing of ours, which is what lets it be tested:
                    the frontend that consumes it is excluded from CI, so
                    everything that is arithmetic rather than FFI lives in `model`
-                   and every round compiles it. **The one crate that does not take
-                   the workspace's `forbid(unsafe_code)`** — a window procedure is
-                   what a pen is on Windows — and the only one; `win32` is the only
-                   module in it that may, which the other modules' own `forbid`
-                   states
+                   and every round compiles it. **The one place in the tree that
+                   lifts the workspace's `deny(unsafe_code)`** — a window procedure is
+                   what a pen is on Windows — and it lifts it on one `mod`, so every
+                   other module of this crate is as covered as every other crate
   stark-ui/    the **frontend's model** (§11.2): what a chrome is written in, below
                    any toolkit. The brush's durable/transient halves, the whole of a
                    transform gesture — the algebra, what a press takes hold of and what

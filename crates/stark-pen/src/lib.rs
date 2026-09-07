@@ -55,14 +55,20 @@ mod none;
 
 mod tablet;
 
-// **The one module that may contain `unsafe`**, and the only one — a window
-// procedure and six `extern "system"` calls are what a pen is on Windows, so this
-// crate is the single place in the tree that does not take the workspace's
-// `forbid(unsafe_code)` (its own `Cargo.toml` says why). Every module beside it
-// carries its own `#[forbid(unsafe_code)]` above, which is the compiler keeping the
-// confinement rather than a convention asking for it.
+// **The one module in the tree that may contain `unsafe`**, and the only one: a
+// window procedure and six `extern "system"` calls are what a pen is on Windows.
+//
+// The exemption is one attribute on one `mod`, which is what keeps the confinement
+// the compiler's rather than a convention's — the workspace denies `unsafe_code`
+// everywhere and nothing else anywhere lifts it, so a block that strayed into any
+// other module of this crate would not build. `expect` rather than `allow` for the
+// reason the workspace table gives: it reports itself the day it stops being needed,
+// and the day this file no longer needs it is a day worth hearing about.
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "a window procedure and the pointer API are what a stylus is on Windows"
+)]
 mod windows;
 
 pub use model::{Claim, DEVICE_AGREEMENT_PX, Phase, Pose, Rect, Report, agrees, map_device};

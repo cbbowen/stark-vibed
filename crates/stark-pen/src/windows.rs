@@ -31,12 +31,33 @@
 //! Ownership is latched at the **press**, not per message: a stroke that starts on
 //! the canvas and wanders over a panel is still one stroke, and asking the rectangle
 //! again halfway through would hand the rest of it to the mouse.
+//!
+//! # winit is already in this message's path, and that changes both answers
+//!
+//! winit 0.30 handles `WM_POINTERDOWN`, `WM_POINTERUPDATE` and `WM_POINTERUP` itself,
+//! for **every** pointer type rather than only for touch, and *consumes* them: it
+//! turns each into a `WindowEvent::Touch` — which wgpui does not read — and returns
+//! zero without reaching `DefWindowProc`. Two consequences, and this file is written
+//! around both.
+//!
+//! **A pen outside the claim goes to `DefWindowProc` directly** rather than down the
+//! subclass chain. The compatibility mouse message a stylus needs in order to press a
+//! button is one Windows makes only when `DefWindowProc` is reached, and winit is
+//! what stops it being reached. Skipping winit for these four messages is therefore
+//! not a liberty taken with the chain — it is the only way the chrome hears a pen at
+//! all. Touch is untouched: nothing below runs unless the pointer is a stylus.
+//!
+//! **A press this file takes has to wake the window itself.** wgpui's event loop
+//! genuinely sleeps when idle, and every one of its wake sources is an OS event —
+//! so a contact whose messages are all answered here delivers a full stroke to the
+//! queue and never a frame to draw it in, and the picture arrives all at once when
+//! the pen finally leaves range. [`wake`] is the missing edge.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, RDW_INTERNALPAINT, RedrawWindow};
 use windows_sys::Win32::System::Performance::QueryPerformanceFrequency;
 use windows_sys::Win32::UI::Input::Pointer::{
     GetPointerDeviceRects, GetPointerPenInfo, GetPointerPenInfoHistory, GetPointerType,
@@ -44,9 +65,9 @@ use windows_sys::Win32::UI::Input::Pointer::{
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y,
-    POINTER_INPUT_TYPE, PT_PEN, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN, WM_POINTERUP,
-    WM_POINTERUPDATE,
+    DefWindowProcW, GetForegroundWindow, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_TILT_X,
+    PEN_MASK_TILT_Y, POINTER_INPUT_TYPE, PT_PEN, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+    WM_POINTERUP, WM_POINTERUPDATE,
 };
 
 use crate::model::{Claim, Phase, Pose, Rect, Report, agrees, map_device};
@@ -240,7 +261,7 @@ unsafe extern "system" fn subclass_proc(
     _id: usize,
     data: usize,
 ) -> LRESULT {
-    let pass = || {
+    let chain = || {
         // SAFETY: forwarding the message this procedure was called with, to whatever
         // stands behind this subclass — which is what a subclass that declines to
         // handle something is required to do.
@@ -250,7 +271,7 @@ unsafe extern "system" fn subclass_proc(
         msg,
         WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERCAPTURECHANGED
     ) {
-        return pass();
+        return chain();
     }
     // SAFETY: `data` is the reference word given to `SetWindowSubclass` in `attach`,
     // which is an `Arc<Shared>` whose strong count the window holds. `Hook::drop`
@@ -262,17 +283,61 @@ unsafe extern "system" fn subclass_proc(
     // SAFETY: a pointer id out of a pointer message. A stale one answers `FALSE` and
     // is read as "not a pen", which is the safe direction: the message is forwarded.
     if !unsafe { is_pen(id) } {
-        return pass();
+        return chain();
     }
     // SAFETY: `hwnd` is this window and `id` a live pointer; every call inside reads
     // into locals and is checked.
-    if unsafe { take(shared, hwnd, msg, id) } {
+    let outcome = unsafe { take(shared, hwnd, msg, id) };
+    if outcome.queued {
+        // SAFETY: `hwnd` is this window.
+        unsafe { wake(hwnd) };
+    }
+    if outcome.swallow {
         // Handled here, so `DefWindowProc` is never reached and Windows synthesizes
         // no mouse message from this stylus report. That is the whole of the
         // double-input fix (the module note).
         return 0;
     }
-    pass()
+    // **Not `chain`**: winit stands behind this subclass and would consume the message
+    // without letting `DefWindowProc` synthesize anything, which is what would leave a
+    // pen unable to press a button (the module note).
+    //
+    // SAFETY: the message this procedure was called with, handed to the default
+    // handler — which is what the chain would have reached had winit not been in it.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Ask Windows for a frame, the way winit's own `request_redraw` asks for one.
+///
+/// The same call with the same flags, which is the point of choosing it: what has to
+/// happen is winit's `WM_PAINT` arm running and sending `RedrawRequested`, and the
+/// surest way to reach it is the call winit reaches it with.
+///
+/// **Every report this file queues needs this**, because it has just taken away the
+/// event that would otherwise have caused the frame. wgpui draws on OS events and
+/// sleeps otherwise (`platform::about_to_wait`), and the OS events a stylus would
+/// have produced are exactly the ones being answered here.
+unsafe fn wake(hwnd: HWND) {
+    // SAFETY: `hwnd` is this window, and both pointer arguments are the nulls that
+    // mean "the whole window" — which is what winit passes.
+    unsafe { RedrawWindow(hwnd, std::ptr::null(), 0, RDW_INTERNALPAINT) };
+}
+
+/// What one pointer message came to.
+struct Outcome {
+    /// Whether anything reached the queue, and so whether a frame is owed.
+    queued: bool,
+    /// Whether Windows should be told the message was handled — which is what stops
+    /// it synthesizing a mouse message from this report (the module note).
+    swallow: bool,
+}
+
+impl Outcome {
+    /// Nothing happened: no report, and the message is still somebody else's.
+    const PASS: Self = Self {
+        queued: false,
+        swallow: false,
+    };
 }
 
 /// The pointer id in a pointer message's `wParam` — its low word.
@@ -290,7 +355,7 @@ unsafe fn is_pen(id: u32) -> bool {
 /// Read one pointer message, queue what it reported, and answer whether this file
 /// handled it — which is to say, whether Windows should synthesize no mouse message
 /// from it.
-unsafe fn take(shared: &Shared, hwnd: HWND, msg: u32, id: u32) -> bool {
+unsafe fn take(shared: &Shared, hwnd: HWND, msg: u32, id: u32) -> Outcome {
     let mut state = lock(shared);
     match msg {
         WM_POINTERDOWN => {
@@ -301,23 +366,26 @@ unsafe fn take(shared: &Shared, hwnd: HWND, msg: u32, id: u32) -> bool {
             //
             // SAFETY: no arguments.
             if unsafe { GetForegroundWindow() } != hwnd {
-                return false;
+                return Outcome::PASS;
             }
             let mut info = zeroed_info();
             // SAFETY: `id` is a live pointer and the out parameter is a live local.
             if unsafe { GetPointerPenInfo(id, &mut info) } == 0 {
-                return false;
+                return Outcome::PASS;
             }
             // SAFETY: `info` was filled by the call above and `hwnd` is this window.
             let Some(pose) = (unsafe { pose_of(shared, &mut state, hwnd, &info) }) else {
-                return false;
+                return Outcome::PASS;
             };
             if !state.claim.takes(pose.position) {
-                return false;
+                return Outcome::PASS;
             }
             state.owned = Some(id);
             push(&mut state, Phase::Down, pose);
-            true
+            Outcome {
+                queued: true,
+                swallow: true,
+            }
         }
         WM_POINTERUPDATE if state.owned == Some(id) => {
             // Taken out of the state so the poses can be pushed back into the queue
@@ -334,7 +402,10 @@ unsafe fn take(shared: &Shared, hwnd: HWND, msg: u32, id: u32) -> bool {
             }
             infos.clear();
             state.infos = infos;
-            true
+            Outcome {
+                queued: true,
+                swallow: true,
+            }
         }
         WM_POINTERUP | WM_POINTERCAPTURECHANGED if state.owned == Some(id) => {
             state.owned = None;
@@ -355,9 +426,12 @@ unsafe fn take(shared: &Shared, hwnd: HWND, msg: u32, id: u32) -> bool {
             push(&mut state, Phase::Up, pose);
             // A capture that was taken away still has to reach the rest of the chain:
             // this file is reporting the loss, not consuming the notice of it.
-            msg == WM_POINTERUP
+            Outcome {
+                queued: true,
+                swallow: msg == WM_POINTERUP,
+            }
         }
-        _ => false,
+        _ => Outcome::PASS,
     }
 }
 
