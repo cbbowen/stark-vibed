@@ -7,7 +7,7 @@ use crate::model::{Claim, Report};
 #[cfg(not(windows))]
 use crate::none::Backend;
 #[cfg(windows)]
-use crate::win32::Backend;
+use crate::windows::Backend;
 
 /// A stylus, attached to one window.
 ///

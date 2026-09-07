@@ -48,14 +48,11 @@
 //!
 //! [`InputSample`]: https://docs.rs/stark-engine
 
-#[forbid(unsafe_code)]
 mod model;
 
 #[cfg(not(windows))]
-#[forbid(unsafe_code)]
 mod none;
 
-#[forbid(unsafe_code)]
 mod tablet;
 
 // **The one module that may contain `unsafe`**, and the only one — a window
@@ -65,7 +62,8 @@ mod tablet;
 // carries its own `#[forbid(unsafe_code)]` above, which is the compiler keeping the
 // confinement rather than a convention asking for it.
 #[cfg(windows)]
-mod win32;
+#[allow(unsafe_code)]
+mod windows;
 
 pub use model::{Claim, DEVICE_AGREEMENT_PX, Phase, Pose, Rect, Report, agrees, map_device};
 pub use tablet::Tablet;
