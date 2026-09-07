@@ -198,6 +198,101 @@ impl Renderer {
         )
     }
 
+    /// Take a picture's bytes under the id that asked for them (§23) — the third
+    /// store an arriving asset can belong in, beside a shape and a substrate.
+    ///
+    /// Only a peer ever supplies one: no build ships a picture, so this has no file
+    /// path and no library behind it (`crate::collab`).
+    pub fn accept_picture(&self, expected: stark_model::AssetId, png: &[u8]) -> Result<(), String> {
+        self.engine
+            .accept_picture(expected, png)
+            .map_err(|e| e.to_string())
+    }
+
+    // --- collaboration (§12) — thin engine delegates for the session glue in
+    // `crate::collab`. The web frontend's `Renderer` carries the same run, and the
+    // two lists are short for the same reason: what a session *is* belongs to the
+    // engine, and what a link is belongs to `stark_ui::collab`. What is left over
+    // here is delegation. ---
+
+    /// Convert the current document into a shared one, authored as `identity`.
+    pub fn start_collaboration(&mut self, identity: impl Into<stark_engine::Identity>) {
+        self.engine.start_collaboration(identity);
+    }
+
+    /// Replace the document with a joined session's log — or `Err`, leaving this
+    /// client's own document alone, when the session is in a color space this build
+    /// cannot render (§6.7).
+    pub fn join_collaboration(
+        &mut self,
+        file: &stark_model::DocumentFile,
+        identity: impl Into<stark_engine::Identity>,
+    ) -> stark_engine::Result<()> {
+        self.engine.join_collaboration(file, identity)
+    }
+
+    /// Leave a shared session: keep the canvas and its history, stop broadcasting.
+    pub fn end_collaboration(&mut self) {
+        self.engine.end_collaboration();
+    }
+
+    /// Snapshot the document — the full shared log with the assets it references,
+    /// which is what a joining peer is served.
+    pub fn document_file(&self) -> stark_model::DocumentFile {
+        self.engine.document_file()
+    }
+
+    /// Every imported asset's canonical bytes, for seeding a session's blob store.
+    pub fn all_asset_bytes(&self) -> Vec<(stark_model::AssetId, Vec<u8>)> {
+        self.engine.all_asset_bytes()
+    }
+
+    /// Integrate one remote action; `true` if it was new.
+    pub fn merge_remote(&mut self, action: stark_model::document::Action) -> bool {
+        self.engine.merge_remote(action)
+    }
+
+    /// Drain locally-committed actions awaiting broadcast.
+    pub fn take_outbox(&mut self) -> Vec<stark_model::document::Action> {
+        self.engine.take_outbox()
+    }
+
+    /// Whether [`take_presence`](Self::take_presence) would do anything — a `&self`
+    /// test, so an idle frame of a shared session takes no mutable borrow.
+    pub fn presence_due(&self, now: f64) -> bool {
+        self.engine.presence_due(now)
+    }
+
+    /// Drain this client's presence latch, and expire peers gone quiet (§17.5). The
+    /// frame is `None` when there is nothing new to say; `repaint` reports that the
+    /// expiry took a departed peer's paint off the canvas.
+    pub fn take_presence(&mut self, now: f64) -> stark_engine::PresenceTick {
+        self.engine.take_presence(now)
+    }
+
+    // No `leaving_presence` here, and its absence is a fact about the frontend rather
+    // than an oversight: leaving a session is not an act this window offers yet, so
+    // there is nothing to say goodbye *at*. A session ends when the process does, and
+    // peers drop this client on the presence timeout instead of at once. The engine
+    // has the farewell whenever a Leave arrives to send it.
+
+    /// Integrate a peer's presence; `true` when the **canvas** needs repainting.
+    ///
+    /// Narrower than "anything changed": a moved cursor or a switched layer is chrome,
+    /// and this frontend draws none of it yet — so here the narrow answer is the only
+    /// one, and a remote pointer move costs nothing at all.
+    ///
+    /// `now` dates the frame for expiry — the caller's clock, because the engine's own
+    /// only advances when something drains it.
+    pub fn merge_presence(
+        &mut self,
+        actor: stark_model::document::ActorId,
+        frame: stark_model::PeerFrame,
+        now: f64,
+    ) -> bool {
+        self.engine.merge_presence(actor, frame, now)
+    }
+
     /// The view a pointer position is mapped through.
     pub fn view(&self) -> ViewTransform {
         self.engine.view()

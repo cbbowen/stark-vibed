@@ -37,6 +37,7 @@ use wgpui::{
 };
 
 use crate::brush::Brush;
+use crate::collab::{self, Collab};
 use crate::color;
 use crate::files::{self, Done};
 use crate::gallery;
@@ -227,9 +228,10 @@ pub struct Canvas {
     /// *changes* rather than every frame: a title is a platform call, and the frame
     /// loop runs whether or not the document moved.
     title: String,
-    /// What went wrong, if anything, since the last act. Shown on the title bar for
-    /// want of anywhere better — see [`Canvas::report`].
-    failure: Option<String>,
+    /// What this window has to say about the last act, if anything — a failure, or
+    /// the one kind of success that leaves nothing on screen. Shown on the title bar
+    /// for want of anywhere better; see [`Canvas::report`] and [`Canvas::say`].
+    notice: Option<String>,
     /// The file act in flight, if any. **Held rather than detached**: a wgpui `Task`
     /// cancels when it is dropped, and a save dropped mid-dialog is a file the user
     /// asked for and did not get.
@@ -253,6 +255,12 @@ pub struct Canvas {
     /// What it has reported and this frame has not yet spent. A field so the drain
     /// costs no allocation per frame (`pump_pen`); empty between frames.
     pen: Vec<Report>,
+    /// The shared session, if any, and where it stands (§12.4, `crate::collab`).
+    ///
+    /// One value rather than a phase beside a session, because they are one fact and a
+    /// pair could come to hold half of each — a phase saying Shared with nothing to
+    /// broadcast through is a client silently painting alone.
+    collab: Collab,
 }
 
 impl Canvas {
@@ -339,13 +347,14 @@ impl Canvas {
             path: None,
             written: 0,
             title: String::new(),
-            failure,
+            notice: failure,
             file_task: None,
             collapsed: std::collections::HashSet::new(),
             clock,
             epoch,
             tablet,
             pen: Vec::new(),
+            collab: Collab::default(),
         }
     }
 
@@ -890,10 +899,18 @@ impl Canvas {
         command: impl Into<stark_engine::command::InputCommand>,
         cx: &mut Context<'_, Self>,
     ) {
+        // Whatever the title was last saying has been read by now, or was never going
+        // to be: the artist is doing something else. So the title goes back to saying
+        // which file this is — which matters most for the thing that has no other way
+        // out, the note that a link went to the clipboard (`say`).
+        self.notice = None;
         if let Some(r) = self.renderer.as_mut() {
             r.process(command);
             self.obs = Some(r.observe());
         }
+        // Every document change goes through here, so this is where a shared session
+        // hears about one — one seam for the projection and the wire alike (§12.4).
+        self.broadcast();
         self.repaint(cx);
     }
 
@@ -1026,7 +1043,7 @@ impl Canvas {
     /// a known path and the three that wait on a dialog all end here, so what a
     /// success does to the title and the clean/dirty mark is written once.
     fn settle(&mut self, done: Done, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.failure = None;
+        self.notice = None;
         match done {
             Done::Saved { path, revision } => {
                 self.path = Some(path);
@@ -1106,14 +1123,27 @@ impl Canvas {
     /// surface, and a failure that reached only a log nobody is tailing is a failure
     /// nobody is told about. A proper report is a surface of its own (§25.7).
     fn report(&mut self, why: String) {
-        self.failure = Some(why);
+        self.notice = Some(why);
     }
 
-    /// Put the file's name — or the last failure — on the window, if it has changed.
+    /// Say something that went *right*, in the same place and by the same means.
+    ///
+    /// The title carries both because there is nowhere else, and it has to carry the
+    /// good news too: Share's whole product is a string on the clipboard, which leaves
+    /// nothing at all on screen to say it worked (§12.4).
+    fn say(&mut self, what: String) {
+        self.notice = Some(what);
+    }
+
+    /// Put the file's name — or the last thing said — on the window, if it changed.
     fn retitle(&mut self, window: &mut Window) {
-        let title = match &self.failure {
-            Some(why) => format!("{why} — Stark"),
-            None => files::window_title(self.path.as_deref(), self.unsaved()),
+        let title = match &self.notice {
+            Some(what) => format!("{what} — Stark"),
+            None => files::window_title(
+                self.path.as_deref(),
+                self.unsaved(),
+                self.collab.phase == collab::Phase::Shared,
+            ),
         };
         if title != self.title {
             window.set_window_title(&title);
@@ -1184,6 +1214,337 @@ impl Canvas {
         }
         crate::visibility::persist(&self.hidden, &self.folded);
         self.repaint(cx);
+    }
+
+    // --- sharing (§12.4) -----------------------------------------------------
+
+    /// Share this painting, and put the invitation on the clipboard.
+    ///
+    /// **The clipboard is the whole of the handing-over**, because this window has
+    /// nothing else to hand a string with: there is no dialog to show a link in and no
+    /// URL bar to keep one in (`crate::collab`). So the act ends by saying what it
+    /// did, and what a person does next is paste.
+    ///
+    /// Pressed again while a session is live it mints a *fresh* link rather than doing
+    /// nothing. A link names this peer and the members it could vouch were alive when
+    /// it was made, so the one from an hour ago may name nobody who is still here —
+    /// and a link that dials nothing is worse than no link at all.
+    fn share(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match self.collab.phase {
+            // Binding and waiting for a relay takes a moment, and a second press
+            // inside it would bind a second endpoint over the first.
+            collab::Phase::Connecting => return,
+            collab::Phase::Shared => {
+                let Some(tx) = self.collab.broadcaster() else {
+                    return;
+                };
+                self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
+                    let done = collab::link(tx).await;
+                    let _ = this
+                        .update_in(cx, |this, window, cx| this.settle_session(done, window, cx));
+                }));
+                return;
+            }
+            collab::Phase::Solo => {}
+        }
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        // The actor id derives from the endpoint's own key, and the shared log has to
+        // carry it *before* the snapshot is served — so the engine is converted here
+        // and the session is bound around what that produced. The identity is this
+        // machine's persisted one, so sharing the same document twice is the same
+        // author twice (`crate::identity`).
+        let id = crate::identity::get();
+        let actor = stark_net::actor_from_endpoint_id(id.secret.public());
+        r.start_collaboration(stark_engine::Identity::new(actor, id.boot));
+        let (doc, assets) = (r.document_file(), r.all_asset_bytes());
+        self.obs = Some(r.observe());
+        self.collab.phase = collab::Phase::Connecting;
+        self.say("making a link\u{2026}".to_string());
+        self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let done = collab::host(doc, assets).await;
+            let _ = this.update_in(cx, |this, window, cx| this.settle_session(done, window, cx));
+        }));
+        self.repaint(cx);
+    }
+
+    /// Join the session whose link is on the clipboard.
+    ///
+    /// The paste is read here rather than on the task, so that "there is nothing to
+    /// join" is answered before anything binds — and because reading a clipboard is a
+    /// platform call, which is the view's side of the seam. What is *in* the paste is
+    /// `stark_ui::collab`'s: a whole URL and a bare ticket are both links, and deciding
+    /// that twice is how the two frontends would come to accept different things.
+    fn join(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match self.collab.phase {
+            collab::Phase::Connecting => return,
+            // Not silence: a row that looked available and did nothing is the failure
+            // the menu's own rule is about (`crate::menu`).
+            collab::Phase::Shared => {
+                self.report("this canvas is already in a session".to_string());
+                return self.repaint(cx);
+            }
+            collab::Phase::Solo => {}
+        }
+        let Some(link) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            self.report("copy a session link first — Join reads one off the clipboard".to_string());
+            return self.repaint(cx);
+        };
+        self.collab.phase = collab::Phase::Connecting;
+        self.say("joining\u{2026}".to_string());
+        self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let done = collab::join(link).await;
+            let _ = this.update_in(cx, |this, window, cx| this.settle_session(done, window, cx));
+        }));
+        self.repaint(cx);
+    }
+
+    /// Take a finished session act back into the view — [`Canvas::settle`]'s
+    /// counterpart, and one place for the same reason: what a success does to the
+    /// title and to the phase is written once, whichever act arrived at it.
+    fn settle_session(
+        &mut self,
+        done: collab::Done,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match done {
+            collab::Done::Started {
+                session,
+                events,
+                link,
+            } => {
+                self.install_session(*session, events, window, cx);
+                self.hand_over(link, cx);
+            }
+            collab::Done::Arrived {
+                session,
+                events,
+                file,
+                owed,
+            } => {
+                if !self.take_session_document(&file, &owed) {
+                    // Refused, with the painting on screen untouched and the reason
+                    // already reported. Dropping the session is what ends it.
+                    self.collab.phase = collab::Phase::Solo;
+                    self.retitle(window);
+                    return self.repaint(cx);
+                }
+                // Everything this client had imported before it arrived, so a peer can
+                // fetch whatever the joiner is about to paint with.
+                let tx = session.broadcaster();
+                if let Some(r) = self.renderer.as_ref() {
+                    collab::seed(&tx, r.all_asset_bytes());
+                }
+                self.install_session(*session, events, window, cx);
+                // No link is minted here, and none is needed: every member is a valid
+                // entry point (§12.4), so the invitation a joiner passes on is the one
+                // Share makes when it is asked.
+                self.say("joined — Share hands the link on".to_string());
+            }
+            collab::Done::Link(link) => self.hand_over(link, cx),
+            collab::Done::Failed(why) => {
+                // A share converts the engine *before* it binds, so a bind that failed
+                // leaves a document queueing broadcasts for a session that never
+                // started. Put it back, which also hands its history back (§18.2.4).
+                if self.collab.session.is_none()
+                    && let Some(r) = self.renderer.as_mut()
+                {
+                    r.end_collaboration();
+                    self.obs = Some(r.observe());
+                }
+                self.collab.phase = collab::Phase::Solo;
+                self.report(why);
+            }
+        }
+        self.retitle(window);
+        self.repaint(cx);
+    }
+
+    /// Replace the document with a joined session's log, settling what the snapshot
+    /// left out first; `false` if it was refused.
+    ///
+    /// The owed content goes in **before** the replay, which is the whole reason this
+    /// is a step rather than a call: a substrate that is not registered when its
+    /// `SetSubstrate` replays deposits every later stroke against the flat stand-in,
+    /// and those pixels are stored (§6.4).
+    fn take_session_document(
+        &mut self,
+        file: &stark_model::DocumentFile,
+        owed: &[AssetNeed],
+    ) -> bool {
+        let id = crate::identity::get();
+        let Some(r) = self.renderer.as_mut() else {
+            return false;
+        };
+        if let Err(e) = collab::settle_owed(r, owed) {
+            self.report(e);
+            return false;
+        }
+        let actor = stark_net::actor_from_endpoint_id(id.secret.public());
+        // Fallible, and refused here — before anything of this client's own document
+        // has been disturbed. A session painted in a color space this build lacks is a
+        // fact about *this build*, not about the link (§6.7).
+        if let Err(e) = r.join_collaboration(file, stark_engine::Identity::new(actor, id.boot)) {
+            self.report(format!("cannot join this session: {e}"));
+            return false;
+        }
+        // Frame what arrived, which a file open does not need and this does: a view is
+        // per-client and never sent (§18.1.2), so a joiner starts at the origin at 1:1
+        // while the drawing they came to see can be anywhere on an unbounded canvas —
+        // including entirely off their screen.
+        r.process(ViewCommand::ShowPiece(None));
+        self.obs = Some(r.observe());
+        // The document is somebody else's wholesale, so everything the panel
+        // remembered is stale — the folded groups above all, whose ids are gone.
+        self.collapsed.clear();
+        true
+    }
+
+    /// Hold the session and start the incoming pump.
+    ///
+    /// The pump is a **wgpui** task rather than a tokio one, which is the shape the
+    /// whole module is arranged around: every event ends in the engine, the engine
+    /// belongs to this view, and the channel the events arrive on needs no runtime to
+    /// receive from (`crate::collab`).
+    fn install_session(
+        &mut self,
+        session: stark_net::CollabSession,
+        events: stark_net::Events,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.collab.session = Some(session);
+        self.collab.phase = collab::Phase::Shared;
+        let mut events = collab::pump(events);
+        // Replacing the pump drops the old one, and a dropped wgpui `Task` is a
+        // cancelled one — which is what keeps a previous session's tail out of this
+        // one.
+        self.collab.pump = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(event) = events.recv().await {
+                // The view is gone, so there is nothing left to feed.
+                if this
+                    .update_in(cx, |this, _, cx| this.take_remote(event, cx))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// Put the invitation where a person can paste it, and say that it is there.
+    fn hand_over(&mut self, link: String, cx: &mut Context<'_, Self>) {
+        cx.write_to_clipboard(wgpui::ClipboardItem::new_string(link));
+        self.say("link copied — anyone who opens it paints here with you".to_string());
+        self.repaint(cx);
+    }
+
+    /// Feed one remote event into the engine and pay what it owes the screen.
+    fn take_remote(&mut self, event: stark_net::RemoteEvent, cx: &mut Context<'_, Self>) {
+        let now = self.elapsed();
+        let Some(tx) = self.collab.broadcaster() else {
+            return;
+        };
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        let wake = collab::apply(r, &tx, event, now);
+        // Re-read the projection only where the *document* moved: `observe` walks the
+        // layer roster, and presence arrives at pointer rate from every peer at once.
+        if wake.observe {
+            self.obs = Some(r.observe());
+        }
+        // Requested, not painted inline: peer gesture frames arrive at ~30 Hz per
+        // stroking peer, and the dirty latch is what folds all of it into one paint.
+        if let Some(why) = wake.trouble {
+            self.report(why);
+        }
+        if wake.repaint {
+            self.repaint(cx);
+        }
+    }
+
+    /// Put whatever the engine just committed on the wire (§12.4).
+    ///
+    /// **Inline on the dispatch path**, not spawned, and that is the one thing here
+    /// worth getting right: broadcasting queues, and the session's own send task puts
+    /// things on the wire in order. A task per dispatch let two commands in one frame
+    /// race onto the sender, and every inversion cost a receiver a timeline resync.
+    ///
+    /// Free when solo — there is no sender, and the engine queues nothing.
+    fn broadcast(&mut self) {
+        let Some(tx) = self.collab.broadcaster() else {
+            return;
+        };
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        let trouble = collab::send(&tx, r.take_outbox());
+        // Said where a person will see it rather than logged, which is this crate's
+        // rule (`report`) and is right here for a reason of its own: work that stopped
+        // reaching the session looks exactly like work that reached it, on both
+        // canvases, until somebody compares them.
+        if let Some(why) = trouble {
+            self.report(why);
+        }
+    }
+
+    /// Hand a just-imported asset to the session, so a peer can fetch what this client
+    /// is about to reference (§12.4).
+    ///
+    /// The snapshot a peer was served carries what the *log* named. A shape or a
+    /// substrate imported since is content only this client holds, and the action
+    /// naming it parks on the far side until the bytes turn up — so they are offered
+    /// where they enter the engine, which is the one place the id and the canonical
+    /// bytes are both in hand.
+    ///
+    /// Nothing to do when solo, which is what lets the import paths call it
+    /// unconditionally rather than each asking whether there is a session.
+    fn offer(&mut self, need: AssetNeed) {
+        let Some(tx) = self.collab.broadcaster() else {
+            return;
+        };
+        let bytes = self.renderer.as_ref().and_then(|r| match need {
+            AssetNeed::Substrate(id) => r.substrate_bytes(SubstrateId::Image(id)),
+            _ => r.asset_bytes(need.content()),
+        });
+        if let Some(bytes) = bytes {
+            collab::offer(&tx, need, bytes);
+        }
+    }
+
+    /// Publish this client's presence, and expire peers who have gone quiet (§17.5).
+    ///
+    /// **On the frame loop rather than on a timer of its own**, which is the one thing
+    /// this frontend has here that the web app does not: `render` already runs on the
+    /// display's cadence (`window.request_animation_frame`), and the engine gates the
+    /// work itself — `presence_due` is a `&self` comparison, so an idle shared session
+    /// costs it per frame and takes no mutable borrow at all.
+    fn tick_presence(&mut self, cx: &mut Context<'_, Self>) {
+        if self.collab.phase != collab::Phase::Shared {
+            return;
+        }
+        let now = self.elapsed();
+        if !self.renderer.as_ref().is_some_and(|r| r.presence_due(now)) {
+            return;
+        }
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        let tick = r.take_presence(now);
+        // The expiry may have taken a departed peer's live stroke off the canvas.
+        // Nothing else would notice: the pump repaints for frames that *arrive*, and
+        // this is precisely the case where they stopped.
+        if tick.repaint {
+            self.repaint(cx);
+        }
+        if let Some(frame) = tick.frame
+            && let Some(tx) = self.collab.broadcaster()
+        {
+            collab::publish(tx, frame);
+        }
     }
 
     /// Whether a command names something this window is currently *in* — `None` for
@@ -1494,7 +1855,12 @@ impl Canvas {
     /// where a person will see it.
     fn import_substrate(&mut self, png: &[u8], cx: &mut Context<'_, Self>) -> Option<SubstrateId> {
         match self.renderer.as_mut()?.import_substrate(png) {
-            Ok(id) => Some(id),
+            Ok(id) => {
+                if let SubstrateId::Image(content) = id {
+                    self.offer(AssetNeed::Substrate(content));
+                }
+                Some(id)
+            }
             Err(e) => {
                 self.report(format!("that substrate would not load: {e}"));
                 self.repaint(cx);
@@ -1530,6 +1896,10 @@ impl Canvas {
                 &rows, entry.id, actual, &entry.png,
             ));
         }
+        // The bytes have just entered the engine, so this is the moment a peer could
+        // need them. The early return above needs no such offer: an asset the engine
+        // already held was seeded when the session started.
+        self.offer(AssetNeed::Brush(actual));
         Some(actual)
     }
 
@@ -1616,6 +1986,7 @@ impl Canvas {
                 // library whose rows do not match its blobs.
                 let canonical = r.asset_bytes(id).unwrap_or(png);
                 self.keep::<assets::Shapes>(id, name, canonical);
+                self.offer(AssetNeed::Brush(id));
                 self.wear_shape(BrushShape::Stamp(id), cx);
                 if inverted {
                     self.report(
@@ -1794,6 +2165,8 @@ impl Canvas {
             Command::SaveDocument => self.save(window, cx),
             Command::OpenDocument => self.open(window, cx),
             Command::ExportImage => self.export(window, cx),
+            Command::Share => self.share(window, cx),
+            Command::Join => self.join(window, cx),
             Command::SelectRect => self.arm_tool(Tool::SelectRect, cx),
             Command::SelectEllipse => self.arm_tool(Tool::SelectEllipse, cx),
             Command::SelectLasso => self.arm_tool(Tool::SelectLasso, cx),
@@ -1960,6 +2333,9 @@ impl Render for Canvas {
         // Then say where a press *is* paint, off the same constants the hit tests
         // measure against (`pen_claim`).
         self.tablet.claim(self.pen_claim(window));
+        // Then this client's presence, on the same frame the hand made (§17.5). Free
+        // when solo, and nearly free when shared and idle — see `tick_presence`.
+        self.tick_presence(cx);
         // The dirty mark follows the document rather than the last file act, so the
         // title is refreshed with the frame — cheaply, since `retitle` only calls the
         // platform when the words changed.

@@ -6,12 +6,17 @@ license.workspace = true
 description = "Native wgpui frontend for Stark (§11): a winit/wgpu window over the same engine."
 
 [features]
-default = ["mixbox"]
+default = ["mixbox", "webrtc"]
 # Offer the Mixbox pigment space (§6.7) and forward it to the engine, which is where
 # turning it off actually drops the vendored CC BY-NC 4.0 code. The same switch the
 # web frontend carries, spelled the same way — and `device_descriptor` asks the
 # device for what *this* build needs, so the two cannot disagree.
 mixbox = ["stark-engine/mixbox"]
+# The direct peer transport (§12.4), forwarded and defaulted exactly as the web
+# frontend forwards and defaults it — and it is the *same* switch, because a session
+# shared from this window is one a browser joins: both ends have to agree about which
+# paths exist or the upgrade off the relay never happens.
+webrtc = ["stark-net/webrtc"]
 
 [dependencies]
 # The document (§2), depended on directly rather than through the engine, for the
@@ -39,6 +44,16 @@ stark-pen = { path = "../stark-pen" }
 # the feature said. `main::device_descriptor` states the limits now, over a
 # vendored patch that threads a `DeviceDescriptor` down (vendor/wgpui).
 stark-engine = { path = "../stark-engine", default-features = false }
+# The wire a shared session rides (§12.4), on the web frontend's terms: it names no
+# engine type, so what it moves is the log and the assets and nothing derived. What
+# is different here is the *executor* — see `collab::net`, which is the whole of what
+# a native frontend owes iroh that a browser does not.
+stark-net = { path = "../stark-net", default-features = false }
+# iroh is a tokio library and wgpui's executor is not tokio, so this binary carries
+# one runtime for the network and bridges to it (`collab::net`). `rt-multi-thread`
+# because relaying, gossip and the blob fetches are concurrent work that must not
+# take turns behind whichever of them is currently awaiting a socket.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"] }
 # The fork of GPUI that renders through wgpu, which is the whole reason it is the
 # toolkit here: `WgpuSurface` puts the engine's own texture in the element tree,
 # so the canvas is composited rather than copied.

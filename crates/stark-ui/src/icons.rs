@@ -255,6 +255,15 @@ icons! {
     // here comes from a file.
     IMPORT_IMAGE => "file-image-bold",
     SHARE => "share-network-bold",
+    // Join, beside Share and deliberately *not* a second network: the two are the
+    // opposite ends of one invitation, and a mesh drawn twice would say they were the
+    // same act. What is drawn instead is arriving — an arrow going in through a door —
+    // which is the picture every application with this act uses, and the one thing
+    // Share's mesh cannot say.
+    //
+    // Composed here rather than downloaded, like `funnel-plus-bold` and `fisheye-bold`:
+    // the set has the parts and not this pairing.
+    JOIN => "sign-in-bold",
     // The invite link's Copy. A clipboard is what the act *is* here, which is worth
     // saying because the button's label changes to "Copied" and back: the glyph is
     // the half that holds still. Named for the destination rather than for the verb,

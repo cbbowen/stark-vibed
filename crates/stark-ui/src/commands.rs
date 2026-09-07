@@ -226,6 +226,14 @@ pub enum Command {
     /// command, not on a second button inside the dialog: the dialog exists to
     /// hand over the link. A no-op once the session is live.
     Share,
+    /// Take a session link and join the session it names (§12.4).
+    ///
+    /// The other end of [`Share`](Self::Share)'s invitation, and an act rather
+    /// than a mode: what a frontend does with it is find a link — in the page's
+    /// own URL, on the clipboard, in a field — and hand the ticket in it to the
+    /// transport. Where the link comes from is the whole of what the two
+    /// frontends do differently here; [`crate::collab`] is what they share.
+    Join,
     /// Enter or leave Timeline mode (§18.2.4) — a mode rather than a dialog, so
     /// its row in the visibility menu carries a check
     /// ([`VisibilityToggle::Timeline`]) rather than a trailing `…`.
@@ -640,6 +648,7 @@ pub const ALL: &[Command] = &[
     Command::ImportImage,
     Command::ExportImage,
     Command::Share,
+    Command::Join,
     Command::Undo,
     Command::Redo,
     // Drawing a region, then the acts on the region you drew.
@@ -696,6 +705,7 @@ pub const BASIC: &[Command] = &[
     Command::ImportImage,
     Command::ExportImage,
     Command::Share,
+    Command::Join,
 ];
 
 /// One entry of the rail's **visibility menu** (§11): a thing the window shows
@@ -847,6 +857,7 @@ impl Command {
             Command::ImportImage => "Import image\u{2026}",
             Command::ExportImage => "Export image\u{2026}",
             Command::Share => "Share\u{2026}",
+            Command::Join => "Join\u{2026}",
             Command::ToggleTimeline => "Timeline",
             Command::TimingStats => "Timing stats\u{2026}",
             Command::Credits => "Credits\u{2026}",
@@ -917,6 +928,7 @@ impl Command {
             Command::ImportImage => crate::icons::IMPORT_IMAGE,
             Command::ExportImage => crate::icons::EXPORT,
             Command::Share => crate::icons::SHARE,
+            Command::Join => crate::icons::JOIN,
             Command::ToggleTimeline => crate::icons::TIMELINE,
             Command::TimingStats => crate::icons::TIMING,
             Command::Credits => crate::icons::CREDITS,
@@ -1025,6 +1037,7 @@ impl Command {
             Command::ImportImage => &["Place image", "Paste"],
             Command::ExportImage => &["Save as"],
             Command::Share => &["Collaborate"],
+            Command::Join => &["Open a session link", "Enter a session"],
             // The timeline is the undo history made scrubbable (§18.2.4), and
             // its replay is what other tools sell as a timelapse.
             Command::ToggleTimeline => &["History", "Timelapse"],
@@ -1099,6 +1112,10 @@ impl Command {
                     "Sample every visible layer \u{2014} the color the canvas shows"
                 }
             },
+            // Said without naming where the link comes from: a page reads it out
+            // of its own URL and a window off the clipboard, and the sentence has
+            // to be true of a frontend that has neither yet.
+            Command::Join => "Open a session link and paint with whoever is in it",
             Command::MirrorView => "Mirror the view left-to-right",
             Command::ToggleHdr => {
                 "Show the light above white, or the canvas as an export will look (§6.5)"

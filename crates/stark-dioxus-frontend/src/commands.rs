@@ -202,6 +202,12 @@ pub fn run(command: Command, state: AppState) {
             crate::collab::share(state);
             open_dialog(state.dialogs.session);
         }
+        // The same dialog, without starting anything: its solo half is where a link
+        // is pasted (`collab::SessionModal`). Opening a shared link still joins on
+        // load and always will — this is the door for a link that arrives *after* the
+        // app is already open, which used to mean pasting it into the address bar and
+        // throwing the page away.
+        Command::Join => open_dialog(state.dialogs.session),
         Command::ToggleTimeline => {
             let open = *state.timeline.open.peek();
             crate::panels::timeline::set_open(state, !open);

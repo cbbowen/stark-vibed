@@ -9397,8 +9397,10 @@ dependencies = [
  "stark-assetid",
  "stark-engine",
  "stark-model",
+ "stark-net",
  "stark-pen",
  "stark-ui",
+ "tokio",
  "wgpu",
  "wgpui",
 ]

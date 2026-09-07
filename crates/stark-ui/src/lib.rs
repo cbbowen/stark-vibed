@@ -59,10 +59,14 @@
 //! - [`input`] — the two screen-denominated lengths a gesture declares, and the map
 //!   from a knob to each (§6.2, §6.11). The module this crate was built to prevent a
 //!   second copy of.
+//! - [`collab`] — a shared session as a *link* (§12.4): the address a peer opens,
+//!   and the ticket read back out of one. The whole of what both frontends say
+//!   about sharing that is not the network.
 
 pub mod assets;
 pub mod bounds;
 pub mod brush_config;
+pub mod collab;
 pub mod color;
 pub mod commands;
 pub mod drags;

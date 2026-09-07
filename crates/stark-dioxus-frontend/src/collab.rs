@@ -6,10 +6,12 @@
 //! - **incoming**: a spawned task feeds [`RemoteEvent`]s into the engine and
 //!   repaints.
 //!
-//! Both ends of the invitation are one gesture. Sharing starts the moment
-//! "Share…" is picked, and [`SessionModal`] only hands over the resulting link;
-//! joining has no UI at all — opening a link whose fragment carries a ticket
-//! joins on load.
+//! Sharing starts the moment "Share…" is picked, and [`SessionModal`] only hands
+//! over the resulting link. Joining has two doors and neither is much of a UI:
+//! opening a link whose fragment carries a ticket joins on load, and "Join…" opens
+//! the same dialog on its solo half, which is a field to paste one into. The second
+//! door exists for the link that arrives *after* the app is open — which used to mean
+//! pasting it into the address bar and throwing the page away.
 //!
 //! The session itself lives in a signal beside the renderer; iroh runs in the
 //! browser over its relay transport, so this is the same code path native
@@ -110,14 +112,22 @@ pub fn share(state: AppState) {
     });
 }
 
-/// Join the session a ticket names. Replaces the current document. The only
-/// caller is the page-load path in `main.rs`, which reads the ticket out of the
-/// URL fragment — a shared link is the whole of the joining UI.
-pub fn join(state: AppState, ticket_text: String) {
+/// Join the session a link names. Replaces the current document.
+///
+/// Takes the **link**, not the ticket: the two callers hold different things — the
+/// page-load path has a bare URL fragment and the dialog has whatever was pasted into
+/// it, which is usually a whole URL — and deciding what part of that is the ticket
+/// twice is how two doors onto one act come to accept different strings. So it is
+/// decided once, in `stark_ui::collab`, which the native frontend reads too.
+pub fn join(state: AppState, link: String) {
     if (state.collab.phase)() != CollabPhase::Solo {
         return;
     }
-    let ticket: SessionTicket = match ticket_text.parse() {
+    let Some(text) = stark_ui::collab::ticket_in(&link) else {
+        fail(state, "That is not a session link.".to_string());
+        return;
+    };
+    let ticket: SessionTicket = match text.parse() {
         Ok(t) => t,
         Err(e) => {
             fail(state, format!("Bad ticket: {e}"));
@@ -618,11 +628,17 @@ fn link_badge(kind: Option<LinkKind>) -> (&'static str, &'static str) {
     }
 }
 
-/// The "Share" dialog. Sharing has already started by the time this opens (the
-/// menu item calls [`share`]), so the dialog's whole job is to hand over the
-/// link — and to let this client leave again. There is no join half: opening a
-/// shared link *is* joining (see `url_ticket`), so nothing here asks for a
-/// ticket.
+/// The session dialog. Reached two ways, and which half it shows is the phase
+/// rather than which command opened it: "Share…" starts a session before this mounts
+/// ([`share`]), so the dialog's job there is to hand over the link and to let this
+/// client leave again; "Join…" starts nothing, so it opens on the solo half, which is
+/// a field to paste a link into.
+///
+/// The paste is a *second* door onto joining rather than the only one — opening a
+/// shared link still joins on load (see `url_ticket`), and always will, because that
+/// is the gesture the whole design is built around. What this adds is the case that
+/// gesture cannot serve: a link that arrives when the app is already open and holding
+/// work.
 #[component]
 pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
@@ -630,6 +646,10 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
     let ticket = (state.collab.ticket)();
     let error = (state.collab.error)();
     let mut copied = use_signal(|| false);
+    // What has been pasted into the join field. Kept here rather than read off the
+    // element at the click: a disabled Join button has to know whether there is
+    // anything to join *before* it is pressed.
+    let mut pasted = use_signal(String::new);
 
     rsx! {
         Modal { on_close,
@@ -640,20 +660,46 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
             }
 
             match phase {
-                // Only reached when sharing failed — the menu starts it before
-                // this dialog mounts, so there is nothing to wait for otherwise.
+                // Where "Join…" opens, and where "Share…" lands when sharing
+                // failed — which is why the offer below is both halves rather than a
+                // "Try again": the two cases want different buttons and the dialog
+                // cannot tell them apart, so it offers both and neither is wrong.
                 CollabPhase::Solo => rsx! {
                     div { class: "modal-subtitle",
-                        "This canvas isn't shared."
+                        "This canvas isn't shared. Paste a link to join someone else's, or start a session of your own."
+                    }
+                    div { class: "invite-row",
+                        input {
+                            class: "invite-url",
+                            placeholder: "Paste a session link",
+                            value: "{pasted}",
+                            oninput: move |e| pasted.set(e.value()),
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            // Nothing pasted, nothing to join. The link itself is not
+                            // validated here — what is or is not a ticket is the
+                            // transport's answer, and a button that greyed itself on
+                            // a link it had misread would be unpressable with no way
+                            // to find out why.
+                            disabled: pasted.read().trim().is_empty(),
+                            onclick: move |_| join(state, pasted()),
+                            {icon(stark_ui::icons::JOIN)}
+                            "Join"
+                        }
                     }
                     button {
-                        class: "btn btn-primary",
+                        class: "btn btn-secondary",
                         onclick: move |_| share(state),
-                        "Try again"
+                        {icon(stark_ui::icons::SHARE)}
+                        "Share this canvas"
                     }
                 },
+                // One word for both acts: which one is in flight is already on the
+                // screen behind this, and "Creating a link…" said the wrong thing to
+                // somebody who had just pressed Join.
                 CollabPhase::Connecting => rsx! {
-                    div { class: "modal-subtitle", "Creating a link…" }
+                    div { class: "modal-subtitle", "Connecting…" }
                 },
                 CollabPhase::Shared => rsx! {
                     div { class: "modal-subtitle",

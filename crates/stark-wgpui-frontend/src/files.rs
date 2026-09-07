@@ -120,17 +120,25 @@ pub fn encode(image: &stark_engine::RgbaImage, path: &Path) -> Result<Vec<u8>, S
 /// web frontend offers as its default.
 const EXPORT_JPEG_QUALITY: u8 = 90;
 
-/// The title bar's text: the file this window holds, and whether it has unsaved work.
+/// The title bar's text: the file this window holds, whether it has unsaved work,
+/// and whether anyone else is painting on it.
 ///
 /// A window title is where a desktop app says which document it is, and the marker is
 /// the convention for "not written yet" on every platform this runs on.
-pub fn window_title(path: Option<&Path>, unsaved: bool) -> String {
+///
+/// The session mark is here for a reason that is this frontend's alone: sharing is a
+/// standing state with nothing on screen to show it (§12.4). The web app has a rail
+/// badge and a dialog; this window has a title bar, so the title bar says it — and it
+/// has to be *said*, because a client that is quietly broadcasting every stroke and
+/// does not know it is the one failure mode sharing has.
+pub fn window_title(path: Option<&Path>, unsaved: bool, shared: bool) -> String {
     let name = path
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".to_string());
     let mark = if unsaved { "• " } else { "" };
-    format!("{mark}{name} — Stark")
+    let session = if shared { " (shared)" } else { "" };
+    format!("{mark}{name}{session} — Stark")
 }
 
 /// What the engine should render for an export, and at what scale.
@@ -187,11 +195,17 @@ mod tests {
     /// The title says which file, and whether it holds work the disk does not.
     #[test]
     fn the_title_names_the_file_and_its_state() {
-        assert_eq!(window_title(None, false), "Untitled — Stark");
-        assert_eq!(window_title(None, true), "• Untitled — Stark");
+        assert_eq!(window_title(None, false, false), "Untitled — Stark");
+        assert_eq!(window_title(None, true, false), "• Untitled — Stark");
         assert_eq!(
-            window_title(Some(Path::new("/x/sketch.stark")), true),
+            window_title(Some(Path::new("/x/sketch.stark")), true, false),
             "• sketch.stark — Stark"
+        );
+        // A session is a standing state, so it rides beside the name rather than
+        // replacing it: which file this is stays the first thing the title says.
+        assert_eq!(
+            window_title(Some(Path::new("/x/sketch.stark")), false, true),
+            "sketch.stark (shared) — Stark"
         );
     }
 }

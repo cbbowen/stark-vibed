@@ -18,10 +18,14 @@
 //!
 //! **Which** commands, and in which menu, is this frontend's. That is not a
 //! reluctance to share: the menus differ between the two apps *because the apps
-//! implement different subsets* — there is no `NewDocument` here, no `Share`, no
-//! `ImportImage` — so a shared table would be a list of things one of them has to
-//! filter. The day the web app grows a menu bar, what moves down is whatever the two
-//! then agree about.
+//! implement different subsets* — there is no `NewDocument` here and no `ImportImage`
+//! — so a shared table would be a list of things one of them has to filter. The day
+//! the web app grows a menu bar, what moves down is whatever the two then agree about.
+//!
+//! Share and Join are where that filtering runs the other way. Both apps answer both
+//! acts, but only one of them can be reached from a menu here, because a browser tab
+//! joins by *being opened* on a link and a window has no such door (§12.4,
+//! `crate::collab`).
 
 use stark_engine::ObservableState;
 use stark_ui::commands::{Bindings, Command};
@@ -50,8 +54,8 @@ pub struct Menu {
 ///
 /// Every row is a command this frontend actually answers (`Canvas::run`) — a menu
 /// that offers a dead act is worse than one that is short, because the act looks
-/// available and does nothing. The absences are therefore real: no New, no Import, no
-/// Share, and a View menu of one row, because one is what this frontend answers.
+/// available and does nothing. The absences are therefore real: no New, no Import, and
+/// a View menu of one row, because one is what this frontend answers.
 pub const MENUS: &[Menu] = &[
     Menu {
         title: "File",
@@ -60,6 +64,14 @@ pub const MENUS: &[Menu] = &[
             Some(Command::SaveDocument),
             None,
             Some(Command::ExportImage),
+            None,
+            // The two ends of one invitation (§12.4): Share puts a link on the
+            // clipboard, Join takes one off it. In the File menu because that is where
+            // the acts that move the whole document in and out of this window live —
+            // sharing hands the painting to someone else exactly as saving hands it to
+            // a disk, and a person looking for either looks in the same place.
+            Some(Command::Share),
+            Some(Command::Join),
         ],
     },
     Menu {
@@ -401,6 +413,8 @@ mod tests {
     fn a_row_is_named_by_the_registry() {
         assert_eq!(Command::ExportImage.name(), "Export image\u{2026}");
         assert_eq!(command(0, 3), Some(Command::ExportImage));
+        assert_eq!(command(0, 5), Some(Command::Share));
+        assert_eq!(command(0, 6), Some(Command::Join));
         // A rule is a row with no command, and reading one is not an error.
         assert_eq!(command(0, 2), None);
         assert_eq!(command(99, 0), None);

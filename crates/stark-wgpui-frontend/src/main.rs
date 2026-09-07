@@ -31,10 +31,12 @@
 mod assets;
 mod brush;
 mod canvas;
+mod collab;
 mod color;
 mod files;
 mod gallery;
 mod icons;
+mod identity;
 mod keys;
 mod layers;
 mod menu;

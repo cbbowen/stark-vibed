@@ -1279,7 +1279,70 @@ the exit criterion is an act, not a diff.
   (§15), the navigator and timeline mode. Each is a large panel with an overlay of
   its own, which is why they sequence after the stack that will hold them.
 - **N9 — collaboration.** `collab`'s two pumps move down; the ticket is pasted
-  rather than linked. *Exit:* the two frontends paint on one document.
+  rather than linked. *Exit:* the two frontends paint on one document. **Done**,
+  and the half of the plan that was wrong is the more useful half.
+
+  **The pumps did not move down, and could not.** Both name `stark-net` types —
+  `Broadcaster`, `Events`, `RemoteEvent` — and `stark-ui` depends on the model and
+  the engine and nothing else. Putting iroh under the crate the web app's *panels*
+  are written in, to share two loops, is the tail wagging the dog — which is the
+  argument `identity` already made about a 32-byte key and is why that module keeps
+  bytes rather than a `SecretKey`. So each frontend keeps its own pump, and what
+  came down is the thing both were about to spell twice: what a session **link**
+  is. `stark_ui::collab` is `invite_link` and `ticket_in`, and it is the whole of
+  the sharing vocabulary that is not the network.
+
+  **A window has no address**, which is the difference the stage was really about.
+  The web app builds its invitation out of `location`, because the page *is* the
+  client: sharing a drawing is sharing the address. The native app has no address
+  to share, so the link it hands out names the hosted web build — anyone who opens
+  it gets a client and joins through it, including somebody with no copy of the app
+  at all. That is a constant in `stark_ui::collab`, and it is the one piece of this
+  that is a fact about the *project* rather than about either frontend.
+
+  **The clipboard is the door**, read backwards. Nothing opens a window by URL, so
+  Join takes a link off the clipboard exactly as Share puts one on it. What is
+  stripped off a paste is shared rather than done twice, and that turned out to be
+  a fix for the web app too: `collab::join` took a ticket and now takes a *link*,
+  so the page-load path's bare fragment and the dialog's pasted URL are the same
+  string to it. The dialog grew the field to paste into — its solo half had said
+  "This canvas isn't shared" and offered a Try again, which was only ever true for
+  a share that failed.
+
+  **Two executors, and the thing that is invisible between them.** iroh is written
+  against tokio's timers and reactor; wgpui's executor is neither. Work that waits
+  goes through `collab::on_net` — spawned onto a runtime the binary keeps, its join
+  handle awaited from a wgpui task, so the code that touches the engine stays on the
+  thread the engine is on. The runtime is a leaked `static`, because dropping a
+  multi-threaded one blocks and the place that would drop it is a window closing.
+
+  That much was designed. What was *not* is that *synchronous* transport calls need
+  the runtime too, and nothing at the call site says so: `Broadcaster::add_content`
+  and `broadcast` return immediately and hand their work to a spawned task, and a
+  tokio spawn from a thread with no runtime in scope **panics** rather than failing.
+  The first build crashed on Join, in the seeding step, with "there is no reactor
+  running" — a crash in a thread that has nothing to do with the mistake.
+
+  The fix is not a call site remembering: it is that the `Canvas` calls nothing of
+  `stark-net`'s at all. Every synchronous one goes through a `collab` function that
+  runs it inside `in_net`, and the event stream is read on the runtime and forwarded
+  over a plain channel (`collab::pump`) rather than polled from the view — which
+  costs one move of a `RemoteEvent` and removes the question of which of the
+  transport's futures need a reactor. `collab::tests` is the seam stated as two
+  assertions, since it is the seam this crate owns and the transport is not.
+
+  **The frame loop is the presence pump.** The web app spawns a 30 Hz task, because
+  it has no other clock to offer the engine. This frontend already runs `render` on
+  the display's cadence, and `presence_due` is a `&self` comparison — so the tick
+  is three lines in `render` and an idle shared session costs one comparison a
+  frame and takes no mutable borrow at all. It is the first place the native app's
+  shape is *better* than the web's rather than behind it.
+
+  **Still open: leaving.** There is no act for it, so a session ends when the
+  process does and peers drop this client on the presence timeout rather than at
+  once — `Engine::leaving_presence` has the farewell and nothing calls it. It wants
+  a `Command` of its own, which both frontends would then answer; the web app's
+  Stop sharing is a button inside a dialog this one has not got.
 
 N0–N3 are the ones with leverage: after them every later stage is markup over
 rules that already exist and are already tested. N8 is the only stage that is
