@@ -32,11 +32,9 @@ use stark_model::geom::{TileCoord, Vec2};
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
 /// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
 ///
-/// Here rather than in `stark_model::geom`, where it grew up: it is a statement about
-/// this pass's buffer layout and nothing in the model ever read it. What the *document*
-/// says about a lasso is its vertex list and the bound on how long that may be
-/// (`SelectionShape`, `MAX_LASSO_POINTS`); turning one into edge texels is the
-/// shader's own business.
+/// Here rather than in the model (§2): the document says what a lasso *is* — its
+/// vertex list, and `MAX_LASSO_POINTS` bounding it — while turning one into edge
+/// texels is a statement about this pass's buffer layout.
 fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
     if points.len() < 3 {
         return Vec::new();
@@ -58,14 +56,9 @@ fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
 /// peer's is the §6.8 disagreement, so the bound has to be the *guaranteed* one.
 const MIN_MAX_TEXTURE_DIM_1D: usize = 8192;
 
-// `MAX_LASSO_POINTS` is what keeps a lasso inside it, and until this assert existed
-// that was a sentence in the model's doc comment with nothing behind it: the
-// constant was not even re-exported, so this file could name it only in prose while
-// `edge_texture` sized a texture straight from `edges.len()`. One edge per vertex,
-// so the two numbers are directly comparable.
-//
-// Same shape and same reason as `gpu::fill`'s assert against the shader's stop
-// count: a bound is worth having where the thing it bounds is built.
+// One edge per vertex, so `MAX_LASSO_POINTS` and the row bound are directly
+// comparable — and the bound is worth asserting here, where `edge_texture` sizes a
+// texture straight from `edges.len()`.
 const _: () = assert!(
     stark_model::document::MAX_LASSO_POINTS <= MIN_MAX_TEXTURE_DIM_1D,
     "a lasso can name more edges than a guaranteed 1-D texture row holds, so the \
@@ -118,9 +111,9 @@ pub struct SelectionRenderer {
     /// The 1×1 constant masks, one slot per quantized coverage byte, built on first
     /// ask (see [`Self::constant`]).
     ///
-    /// Shared across clones and lock-free after the first write, which is what lets
-    /// it be a cache at all: a `SelectionRenderer` is cloned into every action's
-    /// context, so a per-instance cache would be re-filled by each of them.
+    /// Shared across clones, which is what lets it be a cache at all: a
+    /// `SelectionRenderer` is cloned into every action's context, so a per-instance
+    /// cache would be re-filled by each of them.
     constants: Arc<[OnceLock<wgpu::TextureView>; 256]>,
     /// 1×1 stand-in for the lasso edge list, bound by the analytic shapes.
     dummy_edges: wgpu::TextureView,
@@ -255,13 +248,11 @@ impl SelectionRenderer {
     /// Quantized to a byte, which is not a loss: [`MASK_FORMAT`] is `R8Unorm`, so
     /// this is the same rounding the mask tiles themselves took, and a texel of the
     /// constant has to answer as one of theirs would.
-    /// **Cached per byte, built on first ask.** 0 and 255 are what nearly every
-    /// selection asks for, but a *partially* selected plane — reachable by inverting
-    /// a partial selection, and only that way (§6.8) — asks for a byte in between,
-    /// and [`mask_for`](Self::mask_for) asks once per tile of every fill, transform
-    /// and stroke under one. Creating and uploading a texture per tile for a value
-    /// that never changes is the shape of cost this whole module is arranged to
-    /// avoid; the cache is 256 slots of one texel.
+    ///
+    /// **Cached per byte, built on first ask** — 256 slots of one texel.
+    /// [`mask_for`](Self::mask_for) asks once per tile of every fill, transform and
+    /// stroke under a selection, and a partially selected plane (reachable only by
+    /// inverting a partial selection, §6.8) asks for a byte between 0 and 255.
     pub fn constant(&self, coverage: f32) -> wgpu::TextureView {
         let byte = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
         self.constants[byte as usize]
@@ -279,22 +270,13 @@ impl SelectionRenderer {
     /// The mask bound for `coord`: the selection's own tile, or the constant that
     /// reigns outside its tile set.
     ///
-    /// **The coverage the mask holds**, and only that — the whole mask's opacity
+    /// **The coverage the mask holds, and only that** — the whole mask's opacity
     /// ([`Selection::opacity`]) is *not* folded in, since it is not in the tiles.
-    /// Three kinds of reader want exactly this: one *carrying* the mask (the
-    /// transform's own mask pass), one reading a shape that is not a selection at
-    /// all (a fill's region, rasterized through the same shader), and one that has
-    /// **a ceiling of its own to fold the opacity into** — the stroke paths, whose
-    /// `stroke_constants` already multiplies it into the one ceiling both renderers
-    /// read (§6.2).
-    ///
-    /// **The opacity is the caller's, and it is not per tile.** It scales every read
-    /// of the whole mask, so a pass applies it once — the fill into its uniform lane
-    /// from the [`Selection`], the stroke paths into the one ceiling both renderers
-    /// read — while this is asked per tile. Anything pairing the two here would have
-    /// nowhere per-tile to put the scalar. The transform is the reader that must
-    /// *not* apply it at all: it carries coverage rather than gating by it, and the
-    /// opacity rides on the moved selection instead (§16).
+    /// It scales every read of the mask, so a caller applies it once and elsewhere:
+    /// the fill into its uniform lane, the stroke paths into the one ceiling both
+    /// renderers read (§6.2). This is asked per tile and has nowhere per-tile to put
+    /// a scalar. The transform must not apply it at all — it carries coverage rather
+    /// than gating by it, and the opacity rides on the moved selection instead (§16).
     pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> MaskSource {
         match selection.tile(coord) {
             Some(handle) => MaskSource::Tile(handle.clone()),
@@ -347,9 +329,9 @@ impl SelectionRenderer {
     /// and so does the coverage outside them. Constant cost on an unbounded canvas —
     /// the whole point of carrying `outside` as one number (§6.8).
     ///
-    /// The level rides in the shape lane the shader reads an op's opacity from: an
-    /// inversion has no shape, and both numbers are "the strength this mask is drawn
-    /// at" (`selection.wesl`).
+    /// The level rides in the lane the shader reads an op's opacity from: an inversion
+    /// has no shape, and both numbers are "the strength this mask is drawn at"
+    /// (`selection.wesl`).
     pub fn invert(&self, pool: &TilePool, prev: &Selection) -> Selection {
         let plan = prev.plan_invert();
         self.rasterize(
@@ -382,14 +364,9 @@ impl SelectionRenderer {
     /// actually exists.
     ///
     /// **The target is the caller's**, at [`REGION_MASK_USAGE`](Self::REGION_MASK_USAGE)
-    /// and `MASK_FORMAT`. It used to be created here and destroyed at the piece's
-    /// submit: a region is up to `MAX_REGION_DIM`² of `R8Unorm`, so a live stroke
-    /// under any selection was creating and destroying megabytes of texture per piece
-    /// per pointer move, and never reusing one. Leased from the stroke's scratch pool
-    /// it is the same texture every move, and the pool's own rule — a lease returns to
-    /// the free list only through a submit — is what keeps that sound.
-    ///
-    /// The pass writes every texel it owns, clear included, so the pool's
+    /// and `MASK_FORMAT` — a region is up to `MAX_REGION_DIM`² of `R8Unorm`, so a live
+    /// stroke leases one from the scratch pool rather than creating one per pointer
+    /// move. The pass writes every texel it owns, clear included, so the pool's
     /// no-zero-init contract is met (`gpu::scratch`).
     ///
     /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
@@ -406,9 +383,8 @@ impl SelectionRenderer {
         let (region_origin, size) = region;
         let (w, h) = (size.width, size.height);
         let device = &self.ctx.device;
-        // Leased for the same reason the target above it is: a live stroke re-gathers
-        // this per piece per pointer move, and these two were the last things on the
-        // path still created and thrown away every time.
+        // Leased for the same reason the target is: a live stroke re-gathers this per
+        // piece per pointer move.
         let u = RegionUniform {
             a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
         };
@@ -565,11 +541,10 @@ impl SelectionRenderer {
     /// Upload the lasso's edge list as an `N×1` texture (see `selection.wesl`),
     /// **leased for the scope** at a power-of-two width.
     ///
-    /// `apply` runs live through a lasso drag, so this was a texture created and
-    /// abandoned — never `destroy()`ed — per pointer move, one more object for the
-    /// web's collector each time. Pooled, a drag settles into a handful of widths and
-    /// reuses them; the shader reads the live edge count from `Params::c[2]`
-    /// (`sd_lasso`), so the slack texels past `edges.len()` are never loaded.
+    /// `apply` runs live through a lasso drag, so a drag settles into a handful of
+    /// pooled widths rather than a texture per pointer move. The shader reads the live
+    /// edge count from `Params::c[2]` (`sd_lasso`), so the slack texels past
+    /// `edges.len()` are never loaded.
     fn edge_texture(&self, scope: &mut SubmitScope, edges: &[[f32; 4]]) -> wgpu::TextureView {
         let n = edges.len() as u32;
         let (tex, view) = scope.take_run(Key {
@@ -599,13 +574,10 @@ impl SelectionRenderer {
 /// The mask bound for one tile, **holding whatever keeps it alive**.
 ///
 /// A `TextureView` on its own keeps the texture alive and nothing else: the pool slot
-/// behind a mask tile is reserved by its handle, and a reader left with only the view
+/// behind a mask tile is reserved by its handle, so a reader left with only the view
 /// after the `Selection` dropped would read a slot the pool has re-handed out — or,
-/// past a `tick` that `destroy()`ed it, nothing at all. That is the class
-/// [`TexHandle`](crate::gpu::tile::TexHandle) closes by never handing out a texture,
-/// reopened from the other side. So a tile answers with the handle, and the constant
-/// — which no pool owns — with its view. Every current reader keeps the selection
-/// alive anyway; the point is that one no longer has to.
+/// past a `tick` that `destroy()`ed it, nothing at all. A tile therefore answers with
+/// the handle, and the constant — which no pool owns — with its view.
 pub enum MaskSource {
     /// The selection's own tile at this coordinate.
     Tile(crate::gpu::tile::MaskHandle),
@@ -642,16 +614,13 @@ pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Operations<wgpu::Col
 // —— packing an op for `selection.wesl` ————————————————————————————————————————
 //
 // The op is a fact about the document and lives in `stark-model`; how it is packed
-// into a uniform is a fact about the shader and lives here (§2). The codes come
-// through the generated mirror (§6.10) rather than being transcribed, which is why
-// this had to end up on the side that has the shaders at all.
+// into a uniform is a fact about the shader and lives here (§2) — on the side that
+// has the generated mirror the codes come from (§6.10).
 
 /// The mode's discriminant as the mask shader sees it.
 ///
-/// The numbers are `selection.wesl`'s own, generated from its declarations
-/// (§6.10) rather than transcribed: which `u32` a mode is numbered is a fact
-/// about the shader, and a `match` writing `0.0, 1.0, 2.0, 3.0` beside it was a
-/// second declaration of it with nothing checking the correspondence.
+/// The numbers are `selection.wesl`'s own, generated from its declarations (§6.10)
+/// rather than transcribed: which `u32` a mode is numbered is a fact about the shader.
 ///
 /// `f32` because the lane it lands in is one — `Params::c` packs the kind, the
 /// mode, the edge count and the opacity into one `vec4<f32>`, and the shader
@@ -702,9 +671,6 @@ mod tests {
     /// The edge list closes the polygon, which is what makes it a *region* rather
     /// than a polyline — `selection.wesl` counts crossings, so a loop that did not
     /// return to its start would leave the winding open and the coverage undefined.
-    ///
-    /// Moved here with [`lasso_edges`] from `stark_model::geom`, where it was the
-    /// only test of a function the model never called.
     #[test]
     fn lasso_edges_close_the_loop() {
         let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];

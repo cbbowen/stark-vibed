@@ -1,34 +1,25 @@
 //! Turning an imported image into paint tiles (§23).
 //!
-//! **The only tile writer in this engine with no shader.** Every other one computes a
-//! texel from texels — a stroke's sweep over what is resident, a fill's parcel over a
-//! base, a transform's resample of a source quad — so it belongs on the GPU, where the
-//! inputs already are. A placed image has no such input: it lands on a layer that did
-//! not exist a moment ago (§23), so there is nothing beneath it to stack onto, and its
-//! texels are simply the file's texels read through the paint representation. Uploading
-//! the image to a texture in order to have a fragment shader copy it into another
-//! texture would be a round trip to say nothing.
+//! **The only tile writer in this engine with no shader.** A placed image lands on a
+//! layer that did not exist a moment ago (§23), so there is nothing beneath it to stack
+//! onto and its texels are simply the file's texels read through the paint
+//! representation. Three things follow:
 //!
-//! Three things fall out of that, and each is worth more than the pass it replaces:
-//!
-//! - **Bit-exact everywhere.** These tiles are pure CPU f32 arithmetic, so two peers
-//!   and two replays on different adapters produce the same bytes — which is true of no
-//!   render pass in this crate (§9's goldens are adapter-specific for exactly that
-//!   reason).
+//! - **Bit-exact everywhere.** These tiles are pure CPU f32 arithmetic, so two peers and
+//!   two replays on different adapters produce the same bytes — true of no render pass
+//!   in this crate (§9's goldens are adapter-specific for that reason).
 //! - **No dimension cap from the hardware.** Nothing here binds the image as a texture,
 //!   so the only bound on its size is the document's own
 //!   ([`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM)) rather than whatever
 //!   `max_texture_dimension_2d` this device reports.
 //! - **The apron is free and provably right.** Each texel is computed from its own
 //!   canvas position, so a tile's apron is bit-identical to its neighbour's interior by
-//!   construction — §6.4's rule, met by the strongest form of the argument rather than
-//!   by a pass being careful.
+//!   construction (§6.4).
 //!
-//! The color conversion is the host's `rgb_to_channels` (§6.7), the same function a
-//! fill converts its parcel with — so an image and a fill of the same color land the
-//! same paint, in an Oklab document and a pigment one alike. That it runs per texel
-//! here rather than once per fill is the cost of an image being a picture, and it is
-//! paid on import and on replay.
+//! The color conversion is the host's `rgb_to_channels` (§6.7), the same function a fill
+//! converts its parcel with, so an image and a fill of the same color land the same
+//! paint in an Oklab document and a pigment one alike. It runs per texel here, on import
+//! and on replay.
 
 use std::sync::Arc;
 
@@ -43,16 +34,13 @@ use stark_model::document::image_tiles;
 use stark_model::geom::{IVec2, TILE_APRON, TILE_SIZE, TILE_TEX};
 
 // The deposit law's two ends, read from the shader that declares them (§6.10) rather
-// than restated here. `fill.wesl` inverts the identical law to lay the identical paint;
-// a second copy of either number would be a second opinion about what "opaque" means,
-// in the one file with no `.wesl` to compare against.
+// than restated here — `fill.wesl` inverts the identical law to lay the identical paint.
 use stark_shaders::mirror::paint_common::{OPACITY_K, OPAQUE_MASS};
 
 /// Builds the tiles of a placed image.
 ///
-/// Holds no pipeline and no bind group layout — there is no pass — so this is the
-/// color space and the device handle, and nothing else. `Clone` like its siblings so
-/// it rides in the `Action::Context` (§5).
+/// Holds no pipeline and no bind group layout — there is no pass. `Clone` like its
+/// siblings so it rides in the `Action::Context` (§5).
 #[derive(Clone)]
 pub struct PlaceRenderer {
     ctx: GpuContext,
@@ -64,10 +52,9 @@ pub struct PlaceRenderer {
 
 /// One texel of paint, as the three channels store it.
 ///
-/// Named rather than returned as a tuple because the residual's presence is a property
-/// of the *document* and not of the texel: a colorimetric space simply never reads it
-/// (§6.7), and writing that as an `Option` per texel would be a branch on a constant,
-/// sixty-five thousand times a tile.
+/// Named rather than a tuple because the residual's presence is a property of the
+/// *document* and not of the texel (§6.7): an `Option` per texel would be a branch on a
+/// constant, sixty-five thousand times a tile.
 struct Texel {
     /// Latent color premultiplied by per-unit opacity, with that opacity in `.w`.
     color: [f32; 4],
@@ -100,9 +87,8 @@ impl PlaceRenderer {
     /// The tiles `image` becomes when its top-left texel is placed at `at`.
     ///
     /// `None` refuses the whole action, deterministically, when the placement falls off
-    /// the tile grid an `i32` can address — the one thing [`image_tiles`] can refuse,
-    /// and refused rather than clamped for the reason a transform's degenerate map is
-    /// (§16.1): a placement somewhere else is not the placement that was asked for.
+    /// the tile grid an `i32` can address — refused rather than clamped for a
+    /// transform's reason (§16.1): a placement somewhere else is not the one asked for.
     pub fn render(&self, pool: &TilePool, at: IVec2, image: &Picture) -> Option<TileMap> {
         let coords = image_tiles(at, image)?;
         let mut tiles = TileMap::new();
@@ -130,12 +116,11 @@ impl PlaceRenderer {
             // pixels on both sides, so the image's texels land on canvas pixels one for
             // one and nothing is resampled (§23).
             //
-            // Derived in integers rather than through `mask_tex_origin`, whose answer is
-            // an `f32`: a tile a few million pixels from the origin has an origin past
-            // where `f32` can count in single pixels, and rounding it would slide the
-            // image within that tile — differently per tile, which is a seam (§6.4) in
-            // the far reaches of an infinite canvas. What is needed here is not the
-            // origin but its offset from the image, and that is always small.
+            // In integers rather than through `mask_tex_origin`, whose answer is an
+            // `f32`: a tile a few million pixels out has an origin past where `f32`
+            // counts in single pixels, and rounding it would slide the image within that
+            // tile — differently per tile, which is a seam (§6.4). What is wanted here
+            // is not the origin but its offset from the image, which is always small.
             let (ox, oy) = (offset(coord.x, at.x), offset(coord.y, at.y));
 
             for j in 0..i64::from(TILE_TEX) {
@@ -172,15 +157,14 @@ fn offset(tile: i32, at: i32) -> i64 {
 /// What one source pixel becomes as paint.
 ///
 /// **The same law a fill lands its parcel by** (`fill.wesl`), evaluated here because
-/// there is no shader to evaluate it in: the source's alpha is a *coverage* — the
-/// quantity the eye reads — and the paint that produces it is fully opaque paint of
-/// whatever mass the slab law needs, `m = −ln(1 − w)/K`. So an opaque photograph lands
-/// opaque paint that takes the light and can be glazed over or scraped back, and a
-/// soft-edged cut-out thins to nothing at its edge rather than fading in color.
+/// there is no shader to evaluate it in: the source's alpha is a *coverage*, and the
+/// paint that produces it is fully opaque paint of whatever mass the slab law needs,
+/// `m = −ln(1 − w)/K`. So an opaque photograph lands paint that takes the light and can
+/// be glazed over or scraped back, and a soft-edged cut-out thins to nothing at its edge
+/// rather than fading in color.
 ///
 /// A free function over the space rather than a method, so the tests below can hold the
-/// arithmetic to its claims without a GPU — this is where every one of them lives, and
-/// a copy of it written out in the test module would be a test of the copy.
+/// arithmetic to its claims without a GPU.
 fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     // An exact branch on "nothing here", for `fill.wesl`'s reason: a fully transparent
     // source pixel must produce an *empty* texel rather than a vanishing one, because
@@ -243,15 +227,12 @@ mod tests {
     ///
     /// The infinite canvas is addressed by an `i32` of *tiles*, so a legal tile index
     /// has a pixel origin far past where `f32` counts in single pixels. Reading the
-    /// offset off `mask_tex_origin` would therefore slide the image within such a tile —
-    /// and slide it by a *different* amount per tile, since the rounding depends on the
-    /// value — which is a seam (§6.4) at the far reaches of the canvas, invisible until
-    /// someone pans there.
+    /// offset off `mask_tex_origin` would slide the image within such a tile, by a
+    /// different amount per tile — a seam (§6.4) invisible until someone pans there.
     ///
     /// Both halves are asserted: that the integer derivation is right, and that the
     /// `f32` one is genuinely wrong somewhere in an ordinary span of tiles. Without the
-    /// second half this would pass just as well if the hazard were imaginary, and the
-    /// integer arithmetic would look like caution rather than a fix.
+    /// second half this would pass just as well if the hazard were imaginary.
     #[test]
     fn a_distant_tile_addresses_the_image_exactly() {
         use crate::gpu::mask_tex_origin;
@@ -283,11 +264,9 @@ mod tests {
 
     /// **The source's alpha is a coverage, and the paint laid reproduces it.**
     ///
-    /// The whole of what makes an imported image behave like paint rather than like a
-    /// pasted rectangle: half-transparent pixels come out as half-covering paint, so a
-    /// cut-out's soft edge thins away instead of fading, and an opaque pixel covers.
-    /// Checked through the slab law itself, which is the law the media pass runs
-    /// forward (§6.1).
+    /// What makes an imported image behave like paint rather than a pasted rectangle: a
+    /// cut-out's soft edge thins away instead of fading. Checked through the slab law
+    /// itself, which the media pass runs forward (§6.1).
     #[test]
     fn a_source_alpha_lands_as_the_coverage_it_asks_for() {
         for a in [1u8, 64, 128, 200, 255] {
@@ -318,8 +297,7 @@ mod tests {
     ///
     /// The one lossy step between a file and a tile is the `f32 → f16` write, and the
     /// signed encoder is what carries an Oklab latent's `a` and `b` axes through it
-    /// (see `gpu::half`). A red that came back green here is the failure the old
-    /// non-negative encoder would have produced, silently.
+    /// (see `gpu::half`). A red that comes back green is that encoder gone wrong.
     #[test]
     fn a_color_survives_the_half_float_store() {
         let space = OkLabColorSpace;

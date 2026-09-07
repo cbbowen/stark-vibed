@@ -1,20 +1,19 @@
 //! GPU execution of a layer merge-down (§14.11).
 //!
-//! [`MergeRenderer::apply`] takes the two layers' tile maps and their opacities and
-//! produces the one tile map that composites to the same texels — copy-on-write like
-//! every other rewrite, so old history versions keep their tiles and the pool reclaims
-//! what falls out of reach.
+//! **[`MergeRenderer::apply`] produces the one tile map that composites to the same
+//! texels** the two layers did — that invariant is the whole of what this file owes.
+//! Copy-on-write like every other rewrite, so old history versions keep their tiles
+//! and the pool reclaims what falls out of reach.
 //!
 //! The arithmetic is `merge.wesl`'s and the rule is
 //! [`document::merge`](crate::document::merge)'s; what is left here is the tile
 //! bookkeeping, and the one part of it worth stating is **what this does not draw**.
 //! A merge is normally lopsided — a few tiles of stroke onto a background that spans
 //! the canvas — so a tile only one side has, and which that side's opacity leaves
-//! unchanged, is passed through **by handle**. No pass is encoded and no texture is
-//! acquired for it, which means merging onto a large layer costs the tiles the small
-//! one actually covers rather than the tiles the large one has. The `Clip` law goes
-//! further: a clipped layer is deleted where its backdrop has no coverage, so a tile
-//! the destination lacks is not merged at all.
+//! unchanged, is passed through **by handle**: merging onto a large layer costs the
+//! tiles the small one actually covers rather than the tiles the large one has. The
+//! `Clip` law goes further: a clipped layer is deleted where its backdrop has no
+//! coverage, so a tile the destination lacks is not merged at all.
 //!
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
 //! `Clone` and rides in the `Action::Context` (§5).
@@ -48,9 +47,8 @@ use stark_shaders::mirror::slab::decl as sd;
 /// One list, read by both sides: a [`Bindings`](desc::Bindings) builds the layout
 /// from it and every group after, so neither can disagree with the other about which
 /// slots are present or of what type. The two residual entries sit beside the colors
-/// they ride with rather than in a countable tail — the `@if(resid)` gate is on the
-/// declaration, so the `if resid { push }` this replaces had nothing left to say
-/// (§6.7).
+/// they ride with rather than in a countable tail, since the `@if(resid)` gate is on
+/// the declaration itself (§6.7).
 const MERGE_SLOTS: &[desc::Slot] = &[
     desc::Slot::at(md::M),
     desc::Slot::at(md::LOWER_COLOR),
@@ -77,9 +75,8 @@ fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
 
 /// One side of a merge: a layer's tiles and the opacity slider that scales them.
 ///
-/// The two travel together because neither means anything without the other here —
-/// the pass folds the slider into the tiles, which is what lets the merged layer come
-/// out at full opacity (§14.11) — and taking them as one is what stops a call site
+/// The pass folds the slider into the tiles, which is what lets the merged layer come
+/// out at full opacity (§14.11); taking the two as one is what stops a call site
 /// pairing the destination's map with the source's slider.
 #[derive(Copy, Clone)]
 pub struct MergeSide<'a> {
@@ -89,11 +86,9 @@ pub struct MergeSide<'a> {
 
 /// One merge, described: the two layers and how the upper's paint meets the lower's.
 ///
-/// The four travel together because they are one description of the operation, decided
-/// in one place — [`merge::plan`](crate::document::merge::plan) — and meaningless
-/// apart. `blend` and `clip` are the **source layer's own** (§14.11): a merge folds the
-/// upper layer into the lower through exactly the merge the compositor would have run
-/// between them.
+/// Decided in one place, [`merge::plan`](crate::document::merge::plan). `blend` and
+/// `clip` are the **source layer's own** (§14.11): a merge folds the upper layer into
+/// the lower through exactly the merge the compositor would have run between them.
 #[derive(Copy, Clone)]
 pub struct MergeScene<'a> {
     pub lower: MergeSide<'a>,
@@ -108,9 +103,9 @@ impl MergeScene<'_> {
     /// the ordinary one and the whole of what `merge.wesl` is written for (§14.11.3).
     ///
     /// The **clip is not a reason to go the long way round**: it rides as a flag the
-    /// shader branches on, so both of §14.11.3's two laws are settled here. Only the
-    /// blend mode decides, because only a mode needs the composited representation
-    /// the tile does not carry.
+    /// shader branches on, so both of §14.11.3's laws are settled here. Only the blend
+    /// mode decides, because only a mode needs the composited representation a tile
+    /// does not carry.
     fn is_direct(&self) -> bool {
         self.blend.is_normal()
     }
@@ -279,12 +274,10 @@ impl MergeRenderer {
             scope.tile_done();
         }
 
-        // Tiles the source alone has, which every pass here would only be copying. A
-        // layer over an empty backdrop is that layer whatever its mode — the identity
-        // `tests/blend.rs` pins to the byte — so at full opacity the source's own
-        // handle *is* the answer, and merging onto virgin canvas costs neither a pass
-        // nor a texture. **Clipping is the exception**: a clipped layer has no backdrop
-        // there, so nothing of it survives and the tile is dropped rather than copied.
+        // A layer over an empty backdrop is that layer whatever its mode — the
+        // identity `tests/blend.rs` pins to the byte — so at full opacity the source's
+        // own handle *is* the answer for a tile the destination lacks. Clipping is the
+        // exception: with no backdrop nothing of it survives, so the tile is dropped.
         if !clip && upper.opacity >= 1.0 {
             for (coord, handle) in upper.tiles.iter() {
                 if lower.tiles.get(coord).is_none() {
@@ -300,17 +293,15 @@ impl MergeRenderer {
     /// The tiles of `dest` with `draw`'s filter run over each — what a **filter
     /// layer** merged into the paint beneath it leaves behind (§14.11.7).
     ///
-    /// A different shape from [`apply`](Self::apply) beside it, and the difference is
-    /// the operation's: nothing is stacked, so there is no second tile map, no
-    /// coverage arithmetic and no slab conversion. One pass per tile rewrites the
-    /// channels and copies everything else, which is what a filter does to what it
-    /// sits on — see the tile entry point in `filter_oklab.wesl` for why a tile needs
-    /// no trip out to composite space to be filtered.
+    /// Nothing is stacked, so there is no second tile map, no coverage arithmetic and
+    /// no slab conversion: one pass per tile rewrites the channels and copies
+    /// everything else. See the tile entry point in `filter_oklab.wesl` for why a tile
+    /// needs no trip out to composite space to be filtered.
     ///
     /// **Every tile is rewritten**, with no passthrough-by-handle: a filter has an
-    /// opinion about every texel it can reach, so there is no counterpart to the
-    /// lopsided-merge shortcut above. The one tile that costs nothing is the one that
-    /// does not exist — an empty destination merges to an empty destination.
+    /// opinion about every texel it can reach, so [`apply`](Self::apply)'s lopsided
+    /// shortcut has no counterpart here. An empty destination merges to an empty
+    /// destination.
     pub fn apply_filter(&self, pool: &TilePool, dest: &TileMap, draw: &FilterDraw) -> TileMap {
         // The law, not one kind that breaks it: any other gather named here would
         // pass a `kind` check and render through `fs_tile` with the blur pass's 1×1
@@ -342,10 +333,8 @@ impl MergeRenderer {
     /// is the blend pass's, as it is on screen.
     ///
     /// The tile is not an `Option` where the merge's other encoders take one: a
-    /// filter layer is *defined* as a function of the paint beneath it (§21), so a
-    /// tile the lower layer does not have is a tile this merge never plans — the
-    /// caller walks the lower map's own coords. Bare canvas is a real case for the
-    /// blend and has no meaning here.
+    /// filter layer is *defined* as a function of the paint beneath it (§21), so the
+    /// caller walks the lower map's own coords and bare canvas has no meaning here.
     fn encode_filter(
         &self,
         scope: &mut SubmitScope,
@@ -353,11 +342,10 @@ impl MergeRenderer {
         tile: &TilePairHandle,
         out: &Channels,
     ) {
-        // **The filter pass's own group**, built by the filter pass: a merged filter
-        // runs the very pipeline the screen would (§14.11.7), so it binds the very
-        // group rather than a second description of one.
-        // `None`: the blur planes' 1×1 stand-ins. A merge refuses a resampling
-        // filter (§14.11.7), so no tile pass ever reads them.
+        // Built by the filter pass, not described a second time here: a merged filter
+        // runs the very pipeline the screen would (§14.11.7). `None` is the blur
+        // planes' 1×1 stand-ins, which a merge — refusing a resampling filter — never
+        // reads.
         let bg = self.filter.bind_group(
             &self.ctx.device,
             uniform.resource(),
@@ -376,18 +364,13 @@ impl MergeRenderer {
     }
 
     /// The filter pass's uniform, in a buffer of one slot.
-    ///
-    /// [`blend_uniform`](Self::blend_uniform)'s twin, and now the same call: what used
-    /// to differ was that this uniform is wider than an alignment quantum (it carries
-    /// the gradient map's ramp), which `UniformSlots` takes from the type rather than
-    /// from a constant either of them had to remember.
     fn filter_uniform(&self, draw: &FilterDraw) -> UniformSlots<FilterUniform> {
         // The compositor's own assembly, at the identity view. The one lane that is a
-        // fact about the *view* is the chromatic gather's dispersion — measured in
-        // screen px (§21.10) — and a merge has no view: `merge::plan` refuses the
-        // chromatic filter outright, since a filter baked into a tile cannot depend on
-        // how the tile is being looked at (§14.11.7). So a view that disperses by
-        // nothing is not a stand-in here, it is the only one that means anything.
+        // fact about the *view* is the chromatic gather's dispersion, in screen px
+        // (§21.10), and a merge has no view: `merge::plan` refuses the chromatic
+        // filter outright, since a filter baked into a tile cannot depend on how the
+        // tile is being looked at (§14.11.7). So a view that disperses by nothing is
+        // not a stand-in here, it is the only one that means anything.
         self.slot(
             "stark merge filter uniform",
             &crate::gpu::composite::filter_uniform(
@@ -434,9 +417,8 @@ impl MergeRenderer {
     /// tile (§14.11).
     ///
     /// Four passes and three scratch trios per tile where the direct path takes one and
-    /// none — which is the right trade for an action, not a frame: a merge runs once
-    /// over the tiles the two layers share, and what it buys is that the merged tile is
-    /// produced by the very shader the screen would have run.
+    /// none — the right trade for an action rather than a frame, since what it buys is
+    /// that the merged tile is produced by the very shader the screen would have run.
     fn encode_blended(
         &self,
         scope: &mut SubmitScope,
@@ -491,10 +473,9 @@ impl MergeRenderer {
         src: &Channels,
         out: &Channels,
     ) {
-        // **The compositor's own group**, built by the compositor (§18.0.4) — which is
-        // the whole argument for merging through this pass rather than restating its
-        // algebra (§14.11), and was not true while this file spelled the group out
-        // arm for arm beside it.
+        // Built by the compositor (§18.0.4), not described a second time here — the
+        // whole argument for merging through this pass rather than restating its
+        // algebra (§14.11).
         let bg = self.blend.bind_group(
             &self.ctx.device,
             uniform.resource(),
@@ -549,13 +530,10 @@ impl MergeRenderer {
 
     /// One uniform in a buffer of exactly one slot.
     ///
-    /// [`UniformSlots`] rather than a hand-rolled buffer of one alignment quantum,
-    /// which is what this was: the layouts a merge borrows are the screen's and
-    /// declare a dynamic offset, since several merges share one buffer in a frame —
-    /// and the type that answers "what is a dynamic-offset slot" already exists, gets
-    /// the stride from the uniform rather than from a constant, and is what the screen
-    /// side binds. A merge has one merge in flight, so the count is one and the offset
-    /// is always the first.
+    /// The layouts a merge borrows are the screen's and declare a dynamic offset, so
+    /// the slot has to be one — [`UniformSlots`] takes its stride from the uniform
+    /// rather than from a constant. A merge has one merge in flight, so the count is
+    /// one and the offset is always the first.
     fn slot<T: bytemuck::Pod>(&self, label: &'static str, uniform: &T) -> UniformSlots<T> {
         let mut slots = UniformSlots::new(&self.ctx.device, label, 1);
         slots.write(
@@ -569,10 +547,9 @@ impl MergeRenderer {
     /// The coordinates a pass has to be encoded for: everything both sides touch,
     /// less the tiles that pass through by handle.
     ///
-    /// Stated as one list rather than as conditions inside the loop, because "which
-    /// tiles change" is also what the caller's footprint and the history's tile diff
-    /// are about (§12.6) — a tile that keeps its handle is a tile the undo has nothing
-    /// to restore.
+    /// One list rather than conditions inside the loop, because "which tiles change"
+    /// is also what the caller's footprint and the history's tile diff are about
+    /// (§12.6): a tile that keeps its handle is one the undo has nothing to restore.
     fn rewritten(&self, scene: &MergeScene<'_>) -> Vec<stark_model::geom::TileCoord> {
         let MergeScene { lower, upper, .. } = *scene;
         let mut out: Vec<_> = lower
@@ -601,8 +578,8 @@ impl MergeRenderer {
         }
         // Sorted so the encoding order is a function of the document rather than of a
         // hash seed. Nothing here depends on the order — the tiles are disjoint — but
-        // a deterministic one is what keeps a captured command stream comparable
-        // between runs when something else goes wrong (§12.1).
+        // a deterministic one keeps a captured command stream comparable between runs
+        // (§12.1).
         out.sort_unstable_by_key(|c| (c.y, c.x));
         out
     }
@@ -611,8 +588,7 @@ impl MergeRenderer {
 /// One fullscreen pass over a tile's three channel targets.
 ///
 /// Thin, because [`SubmitScope::fullscreen_pass`] carries the attachment count — the
-/// residual's `Option` (§6.7) — for this pass, the transform and the fill alike,
-/// rather than each deciding it again.
+/// residual's `Option` (§6.7) — for this pass, the transform and the fill alike.
 fn pass(
     scope: &mut SubmitScope,
     label: &str,

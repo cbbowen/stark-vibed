@@ -1,26 +1,20 @@
 //! The pooled stroke scratch (§6.2): working textures kept across folds, and the
 //! **submit scope** that is the only way to hand one back.
 //!
-//! A live update's region, snapshot, cell, reservoir and bake textures are the same
-//! sizes fold after fold, so allocating them afresh and `destroy()`ing them at submit
-//! is tens of megabytes of creation, zero-initialization and teardown per fold for
-//! nothing. This pool keeps them: a checkout reuses a free texture whose [`Key`]
-//! matches exactly, and a lease goes back on the free list *after the submit* of the
-//! commands recorded against it — commands on one queue run in submission order, so a
-//! texture whose last use is already submitted can be re-recorded against freely.
+//! A checkout reuses a free texture whose [`Key`] matches exactly, and a lease goes
+//! back on the free list *after the submit* of the commands recorded against it.
 //!
-//! **A lease can reach the free list only through a submit**, and that is carried by
-//! the types rather than argued at each release site. What a missed site costs is the
-//! `TilePool` free-list-vs-open-encoder failure: "no live handle" is not "no pending
-//! GPU work", and a texture handed out while an unsubmitted encoder still names it is
-//! either a failed submit or another stroke's pixels. So the pool's `give` is private
+//! **A lease can reach the free list only through a submit.** Commands on one queue
+//! run in submission order, so a texture whose last use is already submitted is safe
+//! to re-record against, while one an unsubmitted encoder still names is either a
+//! failed submit or another stroke's pixels. The pool's `give` is therefore private
 //! to this module, and the two ways a lease comes back both carry the ordering in
 //! their shape:
 //!
 //! * [`SubmitScope`] — owns the encoder *and* the leases recorded against it, and
 //!   releases the leases only in the same call that submits the encoder
-//!   ([`SubmitScope::flush`] / [`SubmitScope::finish`]). A call site cannot return
-//!   a lease early because it never holds one loose.
+//!   ([`SubmitScope::flush`] / [`SubmitScope::finish`]), so a call site never holds
+//!   one loose.
 //! * [`Kept`] — a lease that outlives its run (the tool-state copies), returned on
 //!   drop. Sound on a borrow argument rather than a convention: see the type.
 //!
@@ -28,50 +22,36 @@
 //! its commands were never submitted, so nothing pending names its leases.
 //!
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
-//! through — the transform, the merge, the fill, the selection. As two types, one per
-//! side, it is two copies of one flush cadence and two statements of one ordering rule
-//! that are free to drift. Those four still take their working tiles from
-//! [`TilePool`](crate::gpu::TilePool) rather than from here; what they get from this
-//! type is the ordering, which is the half that would be duplicated.
+//! through — the transform, the merge, the fill, the selection. Those four take
+//! their working tiles from [`TilePool`](crate::gpu::TilePool) rather than from
+//! here; what they get from this type is the ordering.
 //!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the
-//! zero-initialization a fresh texture gets. That is an audited property of every
-//! key taken here: the region and narrow targets load with a clear; the reservoir is
-//! cleared or fully copied into before any read, and its passes store every texel
-//! they own; the bake is fully rewritten per segment (it is already reused across a
-//! stroke's segments on exactly this argument); the snapshot's stores and the
-//! deposit's reads are gated by the same `outside_sweep` predicate, so a texel one
-//! skips the other never loads; and a cell the coarse deposit can name is one its
-//! own hoist wrote (`plan::cell_geometry`). The tool-state copies are written whole
-//! by the very copy that checks them out; the erase pass's accumulators (§6.12)
-//! are cleared by their first sweep pass or fully copied into from the carried
-//! total before anything loads them.
+//! zero-initialization a fresh texture gets. Every key taken here is audited against
+//! that: each target either loads with a clear, is fully copied into, or is fully
+//! rewritten before anything reads it.
 
 use std::sync::{Arc, Mutex};
 
-/// How many tiles one a scope records before it submits what it has and
-/// releases the scratch behind it.
+/// How many tiles a scope records before it submits what it has and releases the
+/// scratch behind it.
 ///
 /// **This is what stops peak GPU memory scaling with the operation.** A blended
-/// merge takes three scratch trios per tile on top of the destination it keeps
-/// (`merge::encode_blended`), and a merge has no cap — its tile count is the union
-/// of two layers the document already holds, which on a full canvas is tens of
-/// thousands. Recorded into one encoder that is submitted once, that is every one
-/// of those trios live at the same moment: ~15 GB at 10k tiles, and ~40,000 render
-/// passes in a single command buffer, which is a Windows TDR as much as it is an
-/// allocation failure.
+/// merge takes three scratch trios per tile (`merge::encode_blended`) and has no cap
+/// on its tile count, so one encoder submitted once would hold every trio at the
+/// same moment: ~15 GB and ~40,000 render passes at 10k tiles, a Windows TDR as much
+/// as an allocation failure.
 ///
-/// A cadence rather than a cap on the operation, because the operation is not the
-/// problem — holding all of it at once is. Tiles are independent: destinations are
-/// disjoint, each pass reads only its own tile's inputs and per-operation uniforms
-/// that outlive the whole recording, and submits on one queue execute in order. So
-/// cutting the recording anywhere is invisible in the result.
+/// A cadence rather than a cap on the operation, because tiles are independent:
+/// destinations are disjoint, each pass reads only its own tile's inputs and
+/// per-operation uniforms that outlive the whole recording, and submits on one queue
+/// execute in order. So cutting the recording anywhere is invisible in the result.
 ///
 /// 256 bounds the blended merge's transient scratch at roughly 150 MB and its
 /// command buffers at about a thousand render passes. Like
 /// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::tile) it is **a bound on a cost that has
-/// not been measured**, not a tuned figure: raising it costs memory and lowers the
-/// submit count, and the honest way to change it is to measure and say so.
+/// not been measured**: raising it costs memory and lowers the submit count, and the
+/// honest way to change it is to measure and say so.
 pub(crate) const FLUSH_TILES: usize = 256;
 
 use crate::gpu::channels::Targets;
@@ -81,11 +61,11 @@ use stark_model::geom::TILE_TEX;
 use crate::unpoisoned;
 
 /// How many bytes of free textures **and buffers** the pool will hold before it
-/// starts destroying the least-recently-used. One wide-tip piece's working set — region, narrow,
-/// snapshot and cells, three channels each in a pigment space — is on the order of
-/// 120 MB, so this keeps roughly one generation warm plus headroom for the sizes to
-/// drift across a tile boundary; anything beyond that is destroyed eagerly, for the
-/// same reason `ScopedResources` destroys rather than waiting on GC (§6.2).
+/// starts destroying the least-recently-used. One wide-tip piece's working set —
+/// region, narrow, snapshot and cells, three channels each in a pigment space — is
+/// on the order of 120 MB, so this keeps roughly one generation warm plus headroom
+/// for the sizes to drift across a tile boundary. Anything beyond is destroyed
+/// eagerly rather than left to a collector (§6.2).
 const POOL_BUDGET: u64 = 256 << 20;
 
 /// What a checkout asks for: the exact descriptor it would otherwise create with,
@@ -94,13 +74,10 @@ const POOL_BUDGET: u64 = 256 << 20;
 /// stand-in would change what they compute, not just what it costs.
 ///
 /// **The label is not part of what makes two textures interchangeable**, which is
-/// why there is no derived `Eq` here to say otherwise. A checkout wants a texture of
-/// a shape, and the shape is the descriptor; a name for it is a debug affordance,
-/// and letting one into the match meant the piece target and the bleed target — the
-/// same square, the same format, the same usage — kept separate free lists and the
-/// [`POOL_BUDGET`] held half as many useful textures as it could. What it costs is
-/// that a capture may show a reused texture under the name it was first created
-/// with, which is a label being stale rather than a picture being wrong.
+/// why there is no derived `Eq` here to say otherwise: two targets of the same
+/// square, format and usage share one free list whatever they are called. The cost
+/// is that a capture may show a reused texture under the name it was first created
+/// with.
 #[derive(Clone, Copy)]
 pub(crate) struct Key {
     pub(crate) size: (u32, u32),
@@ -111,12 +88,8 @@ pub(crate) struct Key {
 
 impl Key {
     /// A key for one **whole tile texture** — interior plus apron, the size every
-    /// scratch that stands in for a tile is.
-    ///
-    /// A constructor rather than three call sites repeating `(TILE_TEX, TILE_TEX)`,
-    /// because that pair is not a size somebody chose: it is what a tile *is* (§6.4),
-    /// and a scratch that got it wrong would be one the write-back cut the wrong block
-    /// out of.
+    /// scratch that stands in for a tile is (§6.4). A scratch that got it wrong is
+    /// one the write-back cuts the wrong block out of.
     pub(crate) const fn tile(
         format: wgpu::TextureFormat,
         usage: wgpu::TextureUsages,
@@ -133,10 +106,6 @@ impl Key {
     /// The same key at `n×` the linear resolution — the supersampled sweep's parcel
     /// lanes (§6.2), which cover the same canvas extent at `n` texels per px so the
     /// integrate can box-resolve the slab law's output rather than its input.
-    ///
-    /// Derived from the key it scales rather than constructed beside it, so the two
-    /// cannot disagree about anything but the size — and the free list keeps one line
-    /// per size, since `size` is part of what makes textures interchangeable.
     pub(crate) const fn scaled(self, n: u32) -> Self {
         Self {
             size: (self.size.0 * n, self.size.1 * n),
@@ -146,11 +115,8 @@ impl Key {
 
     /// A copy extent covering the whole of a texture this key describes.
     ///
-    /// Asked of the key rather than written beside it, which is what the three
-    /// `Extent3d` constants in this module's callers each were: a copy whose extent
-    /// disagreed with the allocation it addresses does not fail, it moves the wrong
-    /// block — and there is nothing in a bare `Extent3d` to compare against the key
-    /// that made the texture.
+    /// Asked of the key rather than written beside it: a copy whose extent disagrees
+    /// with the allocation it addresses does not fail, it moves the wrong block.
     pub(crate) const fn extent(&self) -> wgpu::Extent3d {
         wgpu::Extent3d {
             width: self.size.0,
@@ -172,10 +138,8 @@ impl Key {
 /// **Rounded, because a buffer's size follows the drawing.** A sweep's instance
 /// buffer is one record per segment-in-a-tile and grows through the stroke, so exact
 /// matching would put a fresh buffer on the free list at every size the stroke passed
-/// through and reuse none of them. Rounding to the next power of two turns that into
-/// a handful of buckets a stroke settles into, for at most a factor of two of slack —
-/// which is the same bargain `InstanceStream`'s high-water mark makes, arrived at
-/// from the pool side.
+/// through and reuse none of them. Rounding to the next power of two gives a handful
+/// of buckets a stroke settles into, for at most a factor of two of slack.
 ///
 /// The label is out of the match for [`Key`]'s reason.
 #[derive(Clone, Copy)]
@@ -216,10 +180,9 @@ struct BufEntry {
     last: u64,
 }
 
-/// One checked-out scratch texture and the view onto it, pooled together for the
-/// same reason the tile pool's are ([`Pooled`](crate::gpu::tile)): every checkout
-/// wants the same whole-texture view, so re-creating it bought nothing but an
-/// object per fold.
+/// One checked-out scratch texture and the whole-texture view onto it, pooled
+/// together for the same reason the tile pool's are ([`Pooled`](crate::gpu::tile)):
+/// every checkout wants that same view.
 struct Lease {
     tex: wgpu::Texture,
     view: wgpu::TextureView,
@@ -251,11 +214,10 @@ struct Inner {
 /// commit that replaces it draw from one free list. `Default` is the empty pool —
 /// it needs no device; each checkout brings one.
 ///
-/// **The stroke path and the whole-tile renderers beside it hold the same one**, so
-/// that when those renderers' working textures do move onto the pool the two paths
-/// draw from one free list. Today they take only the scope: their working textures
-/// still come from `TilePool` through `Channels::scratch`, so what the pool buys them
-/// is the submit-then-release ordering (§7).
+/// **The stroke path and the whole-tile renderers beside it hold the same one.** The
+/// latter take only the scope — their working textures come from `TilePool` through
+/// `Channels::scratch` — so what the pool buys them is the submit-then-release
+/// ordering (§7).
 #[derive(Clone, Default)]
 pub(crate) struct ScratchPool(Arc<Mutex<Inner>>);
 
@@ -379,7 +341,7 @@ impl ScratchPool {
     ///
     /// **Private on purpose** — the module doc's whole argument. The callers are
     /// [`SubmitScope`], which has just submitted the commands naming the lease, and
-    /// [`Kept`]'s drop, whose ordering the borrow checker carries.
+    /// [`Kept`]'s drop.
     fn give(&self, lease: Lease) {
         let mut inner = unpoisoned(self.0.lock());
         inner.tick += 1;
@@ -398,9 +360,8 @@ impl ScratchPool {
     /// Hold the free lists to [`POOL_BUDGET`] by destroying the least-recently
     /// returned entry, whichever list it is on.
     ///
-    /// **One budget over both**, and evicted strictly by age: a stroke that stops
-    /// using a size should give it back whether it was a texture or a buffer, and two
-    /// budgets would be two numbers to pick where the device has one memory.
+    /// **One budget over both**, evicted strictly by age: the device has one memory,
+    /// so two budgets would be two numbers to pick.
     fn trim(inner: &mut Inner) {
         while inner.bytes > POOL_BUDGET {
             let tex = inner
@@ -442,12 +403,11 @@ impl ScratchPool {
 /// A pooled lease held **outside** any scope — the tool-state copies, which outlive
 /// the run that recorded them — returned to the pool when its owner drops it.
 ///
-/// Sound on a borrow argument rather than a convention. The commands that read one
-/// of these are recorded by the run that *resumes* from it, which takes the owning
-/// `stroke::incremental`'s `ToolState` by `&` and submits before it returns — so the
-/// owner can only drop this, and return the lease, after that submit. An unwind
-/// mid-run drops the run's encoder unsubmitted, so nothing pending names the lease
-/// on that path either.
+/// Sound on a borrow argument rather than a convention: the commands that read one
+/// are recorded by the run that *resumes* from it, which takes the owning
+/// `stroke::incremental`'s `ToolState` by `&` and submits before it returns, so the
+/// owner can only drop this after that submit. An unwind mid-run drops the run's
+/// encoder unsubmitted, so nothing pending names the lease on that path either.
 pub(crate) struct Kept {
     lease: Option<Lease>,
     pool: ScratchPool,
@@ -490,8 +450,8 @@ impl Drop for Kept {
 /// Two lease lifetimes, because a dynamics stroke has two: **run** leases carry
 /// state across pieces (the reservoir ping-pong, the bake pair) and go back only at
 /// [`finish`](Self::finish); **piece** leases (the region, the snapshot, the cells)
-/// go back at each [`flush`](Self::flush), which is what keeps a long stroke's peak
-/// transient memory at one region however many pieces it takes.
+/// go back at each [`flush`](Self::flush), which keeps a long stroke's peak transient
+/// memory at one region however many pieces it takes.
 pub(crate) struct SubmitScope {
     ctx: GpuContext,
     pool: ScratchPool,
@@ -499,11 +459,10 @@ pub(crate) struct SubmitScope {
     label: &'static str,
     run_leases: Vec<Lease>,
     piece_leases: Vec<Lease>,
-    /// The buffer leases, on the same two lifetimes and for the same reason. A plan
-    /// or a snapshot's staging is written afresh for the piece that draws with it;
-    /// the sweep's instance run, its per-tile transform slots and its opacity ceiling
-    /// are built once and drawn from by **every** tile of the stroke, which is the
-    /// run lifetime exactly.
+    /// The buffer leases, on the same two lifetimes. A plan or a snapshot's staging
+    /// is written afresh for the piece that draws with it; the sweep's instance run,
+    /// its per-tile transform slots and its opacity ceiling are built once and drawn
+    /// from by **every** tile of the stroke, which is the run lifetime exactly.
     run_buf_leases: Vec<BufLease>,
     /// See [`run_buf_leases`](Self::run_buf_leases).
     piece_buf_leases: Vec<BufLease>,
@@ -515,7 +474,6 @@ pub(crate) struct SubmitScope {
     /// uniform buffers written at creation, which cannot come from a pool.
     piece_scoped: crate::gpu::submit::ScopedResources,
     /// Whether anything has been recorded or taken since the last submit — what
-    /// makes [`flush`](Self::flush) free when there is nothing to flush, and what
     /// keeps an operation that touched no tile from submitting an empty command
     /// buffer.
     piece_open: bool,
@@ -541,20 +499,16 @@ impl SubmitScope {
 
     /// Register a per-piece buffer; returns it unchanged, destroyed at the submit.
     ///
-    /// For a buffer that cannot be pooled because it is written at creation.
-    /// Everything else takes [`take_piece_buffer`](Self::take_piece_buffer), where the
-    /// rate is not merely bounded but gone — and since the transform's per-draw
-    /// uniforms moved onto leased slots, everything does. Kept as the door for the
-    /// next such buffer, with `ScopedResources` (`gpu::submit`) still owning the
-    /// destroy behind it; the `expect` reports the first caller.
+    /// For a buffer that cannot be pooled because it is written at creation;
+    /// everything else takes [`take_piece_buffer`](Self::take_piece_buffer).
+    /// `ScopedResources` (`gpu::submit`) owns the destroy behind it.
     ///
     /// Opens the piece where the checkouts do not, and **conservatively rather than
     /// necessarily**: a map-at-creation buffer stages nothing on the queue, so an
-    /// unrecorded scope naming one has nothing pending and could destroy it outright.
-    /// The flag is kept because what this registers is arbitrary and its only cost is
-    /// an empty command buffer in a case no caller has — where getting it wrong is a
-    /// resource freed ahead of the work naming it. [`write_lease`](Self::write_lease)
-    /// is where the distinction is load-bearing and is drawn exactly.
+    /// unrecorded scope naming one could destroy it outright. What this registers is
+    /// arbitrary, so the flag costs an empty command buffer against a resource freed
+    /// ahead of the work naming it. [`write_lease`](Self::write_lease) is where the
+    /// distinction is load-bearing and is drawn exactly.
     #[expect(
         dead_code,
         reason = "no unpooled per-piece buffer is left since the transform's went onto slots; \
@@ -568,15 +522,12 @@ impl SubmitScope {
     /// Record one **fullscreen pass over a tile's channels**: the shape every
     /// renderer here writes a destination tile with.
     ///
-    /// The merge's four passes, the fill's one and the transform's combine were each
-    /// spelling out the same fifteen lines — a render pass over two-or-three
-    /// attachments, a pipeline, a bind group, `draw(0..3, 0..1)` — and the attachment
-    /// count was the residual's `Option` decided a fourth and fifth time (§6.7). With
-    /// [`Targets`] carrying that, what is left is one call.
+    /// [`Targets`] carries the attachment count — the residual's `Option` (§6.7) — so
+    /// the merge's four passes, the fill's one and the transform's combine each state
+    /// only their pipeline, bind group and target.
     ///
-    /// `ops` because the callers do differ there, if only just: everything writes
-    /// every texel and clears, but a pass that reads its own target would not, and a
-    /// helper that hid the choice would be the wrong kind of shared.
+    /// `ops` because the callers do differ there, if only just: everything here writes
+    /// every texel and clears, but a pass that reads its own target would not.
     pub(crate) fn fullscreen_pass(
         &mut self,
         label: &str,
@@ -602,8 +553,8 @@ impl SubmitScope {
     /// Note that one tile has been recorded, submitting and releasing if that
     /// reaches [`FLUSH_TILES`].
     ///
-    /// Called once per destination tile, at the point where everything that tile
-    /// needs has been recorded — never in the middle of one, since the scratch a
+    /// Call once per destination tile, at the point where everything that tile needs
+    /// has been recorded — never in the middle of one, since the scratch a
     /// half-recorded tile is holding is exactly what a flush would hand away.
     pub(crate) fn tile_done(&mut self) {
         self.since_flush += 1;
@@ -634,11 +585,9 @@ impl SubmitScope {
     /// Check out a pooled buffer that carries **across** pieces — released only at
     /// [`finish`](Self::finish), exactly as [`take_run`](Self::take_run) is.
     ///
-    ///
-    /// Taking does **not** open the piece; [`write_lease`](Self::write_lease) does, and
-    /// the distinction is the point — a lease nobody wrote and nobody recorded against
-    /// has nothing pending, and submitting for it is the empty command buffer
-    /// [`finish`](Self::finish) exists to skip.
+    /// Taking does **not** open the piece; [`write_lease`](Self::write_lease) does. A
+    /// lease nobody wrote and nobody recorded against has nothing pending, and
+    /// submitting for it is the empty command buffer [`finish`](Self::finish) skips.
     pub(crate) fn take_run_buffer(&mut self, key: BufKey) -> wgpu::Buffer {
         let lease = self.pool.take_buf(&self.ctx.device, key);
         let out = lease.buf.clone();
@@ -647,10 +596,8 @@ impl SubmitScope {
     }
 
     /// Check out a pooled buffer for the piece being recorded — released at the
-    /// piece's own submit, exactly as [`take_piece`](Self::take_piece) is.
-    ///
-    /// Like [`take_run_buffer`](Self::take_run_buffer), taking does not open the piece
-    /// — [`write_lease`](Self::write_lease) does.
+    /// piece's own submit, exactly as [`take_piece`](Self::take_piece) is. Taking does
+    /// not open the piece; [`write_lease`](Self::write_lease) does.
     ///
     /// **At least `key.size` bytes, and possibly more** ([`BufKey::bucket`]): a
     /// caller writes its own prefix and draws its own range, so slack past the end is
@@ -664,19 +611,12 @@ impl SubmitScope {
 
     /// Stage `bytes` into a **leased** buffer, opening the piece.
     ///
-    /// **The one way to write a lease, and the reason it is a method here.**
-    /// `queue.write_buffer` does not write anything: it stages the bytes and hands them
-    /// over at the next submit. So a leased buffer with a pending write must not reach
-    /// the free list before one — and the moment that becomes true is the *write*, not
-    /// the checkout. Routing it through the scope makes the write and the flag one
-    /// operation; a caller reaching past this to `ctx.queue` is the hazard spelled out
-    /// by hand, which is what this module exists not to rely on.
-    ///
-    /// This was found the other way round. `take_run_buffer` was added without setting
-    /// the flag, on the reasoning that a buffer taken before anything is recorded is not
-    /// yet something to submit — true of the checkout, false the instant the caller
-    /// writes, which all three of its callers did on the next line. It was unreachable
-    /// only because an unrelated `hold` in `sweep_binds` opened the piece first.
+    /// **The one way to write a lease.** `queue.write_buffer` does not write anything:
+    /// it stages the bytes and hands them over at the next submit. So a leased buffer
+    /// with a pending write must not reach the free list before one — and the moment
+    /// that becomes true is the *write*, not the checkout. Routing it through the scope
+    /// makes the write and the flag one operation; a caller reaching past this to
+    /// `ctx.queue` reopens the hazard.
     pub(crate) fn write_lease(&mut self, buf: &wgpu::Buffer, bytes: &[u8]) {
         self.piece_open = true;
         self.ctx.queue.write_buffer(buf, 0, bytes);
@@ -702,10 +642,9 @@ impl SubmitScope {
     /// Keep `thing` alive past the submit, dropping it just after — for resources
     /// whose drop *is* their release to some other pool.
     ///
-    /// Opens the piece on [`buffer`](Self::buffer)'s terms: unrecorded, nothing names
-    /// what is held and dropping it at once would be right, but `thing` is
-    /// `dyn Any` — this call cannot know what its drop releases, so it assumes the
-    /// worst for the price of one empty command buffer.
+    /// Opens the piece on [`buffer`](Self::buffer)'s terms: `thing` is `dyn Any`, so
+    /// this call cannot know what its drop releases and assumes the worst for the
+    /// price of one empty command buffer.
     pub(crate) fn hold(&mut self, thing: impl std::any::Any) {
         self.piece_open = true;
         self.piece_held.push(Box::new(thing));
@@ -713,9 +652,8 @@ impl SubmitScope {
 
     /// Close out the piece already recorded, if any: submit the encoder, then
     /// release the piece's resources — in that order, which is the type's whole
-    /// reason to exist. Run leases stay. Peak transient memory is then one region
-    /// however long the stroke, and a stroke that fits one region never records a
-    /// second submit.
+    /// reason to exist. Run leases stay, so peak transient memory is one region
+    /// however long the stroke.
     pub(crate) fn flush(&mut self) {
         // Above the early return, not below it: `tile_done` counts unconditionally, so
         // a tile that recorded nothing still counts, and leaving the tally standing
@@ -781,14 +719,11 @@ mod tests {
     /// [`FLUSH_TILES`] exists: without it a merge holds every tile's scratch at once,
     /// and a merge has no cap on its tile count.
     ///
-    /// Asked of the pool rather than of the scope, because the pool is where the cost
-    /// actually lands. A scope that never flushed would leave every texture it ever
-    /// took on the free list at `finish` — one per tile — where a flushing one keeps
-    /// reusing the same working set and ends with about a cadence's worth. The gap
-    /// between `3 · FLUSH_TILES` and `FLUSH_TILES` is the finding.
-    ///
-    /// The tile count stays under `TRIM_INTERVAL` acquires so the pool's own trim
-    /// cannot fire and make the numbers a matter of two policies rather than one.
+    /// Asked of the pool, where the cost lands: a scope that never flushed would leave
+    /// one texture per tile on the free list at `finish`, where a flushing one reuses
+    /// the same working set and ends with about a cadence's worth. The tile count stays
+    /// under `TRIM_INTERVAL` acquires so the pool's own trim cannot fire and make the
+    /// numbers a matter of two policies rather than one.
     #[test]
     fn a_scope_hands_its_scratch_back_as_it_goes() {
         let Some(ctx) = context_or_skip() else { return };

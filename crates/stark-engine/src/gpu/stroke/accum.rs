@@ -9,39 +9,29 @@
 //! full opacity (§6.2) — so applying it per piece would compound at every cut a
 //! live stroke makes.
 //!
-//! Both answer it the same way, and it is the only answer: keep the *composable*
-//! half accumulating across the pieces — a **parcel** per touched tile, summed by
-//! the sweep — and apply the non-composable law exactly once per tile per render,
-//! always against **pristine** paint, the tile as the stroke first found it rather
-//! than an earlier piece's output. The parcels and the pristine handles ride the
-//! stroke's carry ([`ParcelCarry`]) beside the stamp loop's reservoir, and a
-//! resuming piece *copies* the parcel it resumed rather than writing it, which is
+//! Both answer it the same way: keep the *composable* half accumulating across the
+//! pieces — a **parcel** per touched tile, summed by the sweep — and apply the
+//! non-composable law exactly once per tile per render, always against **pristine**
+//! paint, the tile as the stroke first found it rather than an earlier piece's output.
+//! The parcels and the pristine handles ride the stroke's carry ([`ParcelCarry`]), and
+//! a resuming piece *copies* the parcel it resumed rather than writing it, which is
 //! what lets the live tail re-render from the same frozen head every frame.
 //!
-//! **What the two effects actually differ in** is short, and none of it is
-//! bookkeeping: which fragment rasterizes the extent (`stamp.wesl`'s `fs_erase`
-//! against its `fs_main`), how many lanes the parcel has (one transparency mass
-//! against the channel trio), what the landing pass computes (`erase.wesl` against
-//! `integrate.wesl`), and what bare canvas means ([`BareCanvas`]). Everything
-//! else — resolving the pristine handle, taking the working leases, the resume
-//! copy, load-versus-clear, the swept draw, the copy-on-write destination, the
-//! dirty list, the carry, and the submit that has to precede the carry leaving the
-//! call — is otherwise written twice, in two files, with the same comments on it.
-//!
-//! So this holds the orchestration and **not** the rendering:
-//! [`IncrementalTileAccumulator::run`] is handed the effect's own pipelines and
-//! asks the effect to bind its own landing group, so a reader still finds
-//! `erase.wesl`'s slots in `erase.rs` and `integrate.wesl`'s in `swept.rs`, next to
-//! the shader each mirrors (§6.10). The two are one *procedure*, not one pass.
+//! The two effects differ only in which fragment rasterizes the extent (`stamp.wesl`'s
+//! `fs_erase` against its `fs_main`), how many lanes the parcel has (one transparency
+//! mass against the channel trio), what the landing pass computes (`erase.wesl` against
+//! `integrate.wesl`), and what bare canvas means ([`BareCanvas`]). So this holds the
+//! orchestration and **not** the rendering: [`IncrementalTileAccumulator::run`] is
+//! handed the effect's own pipelines and asks the effect to bind its own landing group,
+//! so a reader still finds `erase.wesl`'s slots in `erase.rs` and `integrate.wesl`'s in
+//! `swept.rs`, next to the shader each mirrors (§6.10). The two are one *procedure*,
+//! not one pass.
 //!
 //! **The stamp loop's carried tiles are deliberately not here.** `LoopCarry::fresh`
-//! (§6.2) obeys the same share-never-write contract, but nothing else of this: its
-//! state is seeded into a shared region at a per-tile offset rather than into a
-//! working texture per tile, no pass ever binds it, it has no pristine handle at
-//! all — the mint budget is running state, like the reservoir — and its
-//! copy-on-write tiles come from the region write-back rather than from a landing
-//! pass. Folding it in would mean an abstraction over what a pass *is*, which is
-//! the thing worth not having.
+//! (§6.2) obeys the same share-never-write contract and nothing else of this: its state
+//! is seeded into a shared region at a per-tile offset rather than into a working
+//! texture per tile, no pass ever binds it, it has no pristine handle at all, and its
+//! copy-on-write tiles come from the region write-back rather than from a landing pass.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -57,22 +47,20 @@ use super::swept::SweepDraws;
 use super::{StrokeRenderer, StrokeScene};
 use crate::gpu::scratch::{Kept, Key, SubmitScope};
 
-/// The most lanes a parcel can have: the channel trio (§6.7) plus the ceiling lane
-/// a pen-driven opacity adds (§6.2), which is the widest thing a swept pass writes.
-/// The erase's single transparency mass is the other end of the same range.
+/// The most lanes a parcel can have: the channel trio (§6.7) plus the ceiling lane a
+/// pen-driven opacity adds (§6.2), which is the widest thing a swept pass writes. The
+/// erase's single transparency mass is the other end of the same range.
 ///
-/// A lane list may have a **hole**: the sweep's targets are the shader's
-/// `@location`s, and the ceiling sits at 3 whether or not the space has a residual
-/// at 2 — so a colorimetric space under a pen-driven ceiling attaches
-/// `[color, aux, none, ceiling]`, and the hole rides the list as a `None` rather
-/// than shifting the lane after it.
+/// A lane list may have a **hole**: the sweep's targets are the shader's `@location`s,
+/// and the ceiling sits at 3 whether or not the space has a residual at 2 — so a
+/// colorimetric space under a pen-driven ceiling attaches `[color, aux, none, ceiling]`,
+/// the hole riding the list as a `None` rather than shifting the lane after it.
 const MAX_LANES: usize = 4;
 
-/// An effect's parcel lanes by index — the sweep shader's `@location`s — with
-/// `None` at a lane this stroke does not carry. Fixed-size so that a hole is a
-/// `None` at a *named* index rather than a push order the lane constants have to
-/// agree with; how many of them the pass attaches is [`lane_count`], read off the
-/// same array.
+/// An effect's parcel lanes by index — the sweep shader's `@location`s — with `None` at
+/// a lane this stroke does not carry. Fixed-size so a hole is a `None` at a *named*
+/// index rather than a push order the lane constants have to agree with; how many the
+/// pass attaches is [`lane_count`].
 pub(super) type LaneKeys = [Option<Key>; MAX_LANES];
 
 /// One past the last lane that exists: how many of a parcel's attachments the
@@ -83,16 +71,14 @@ fn lane_count<T>(lanes: &[Option<T>; MAX_LANES]) -> usize {
     lanes.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
 }
 
-/// One parcel lane's pool key: a full tile texture (interior + apron), renderable
-/// (the sweep accumulates into it), bindable (the landing pass reads it), and
-/// copyable both ways (a resuming piece copies the carried total into its working
-/// lane). Only the format and the label are the effect's — what a missing usage
-/// would cost is the same on both paths, so it is stated once.
+/// One parcel lane's pool key: a full tile texture (interior + apron), renderable (the
+/// sweep accumulates into it), bindable (the landing pass reads it), and copyable both
+/// ways (a resuming piece copies the carried total into its working lane). Only the
+/// format and the label are the effect's.
 ///
-/// The whole texture, apron included, because the apron is rasterized with the
-/// interior and a piece that resumed only the interior would seam (§6.4). The resume
-/// copy takes its extent from this key ([`Key::extent`]) rather than from a constant
-/// beside it, so the two cannot name different blocks.
+/// The whole texture, apron included, because the apron is rasterized with the interior
+/// and a piece that resumed only the interior would seam (§6.4). The resume copy takes
+/// its extent from this key ([`Key::extent`]), so the two cannot name different blocks.
 pub(super) fn lane_key(format: wgpu::TextureFormat, label: &'static str) -> Key {
     Key::tile(
         format,
@@ -104,13 +90,10 @@ pub(super) fn lane_key(format: wgpu::TextureFormat, label: &'static str) -> Key 
     )
 }
 
-/// The stroke's accumulated parcel over one tile: the working textures the sweep
-/// sums into, in the lane order the effect's keys named them.
-///
-/// Ordered rather than named, because the order is what the sweep pipeline's own
-/// target list declares — the effect names its lanes with index constants beside
-/// the keys it builds them from, so the two cannot drift into a parcel that
-/// attaches in a different order than it binds.
+/// The stroke's accumulated parcel over one tile: the working textures the sweep sums
+/// into, in the lane order the effect's keys named them — which is the order the sweep
+/// pipeline's own target list declares, so a parcel cannot attach in one order and bind
+/// in another.
 pub(super) struct Parcel {
     /// `None` is a hole (see [`MAX_LANES`]): no lease, and no attachment at that
     /// index of the sweep — inside the lane count or past it.
@@ -125,15 +108,10 @@ impl Parcel {
         }
     }
 
-    /// Lane `i`, as the landing pass binds it.
-    ///
-    /// The panic says what the bare index would not. A lane is asked for only where
-    /// the effect's landing shader declares a slot for it, and how many lanes exist
-    /// is what the effect's key list said — both derived from the same predicates
-    /// (§6.7: a space has a residual or it does not; §6.2: the pen drives the
-    /// ceiling or it does not). So this is unreachable, and unreachable through an
-    /// agreement between two lists in the *effect's* file, which is exactly the
-    /// kind that goes stale quietly.
+    /// Lane `i`, as the landing pass binds it. Panics on a hole: a lane is asked for
+    /// only where the effect's landing shader declares a slot for it, and both that and
+    /// the key list follow the same predicates (§6.7: a space has a residual or it does
+    /// not; §6.2: the pen drives the ceiling or it does not).
     pub(super) fn lane(&self, i: usize) -> &wgpu::TextureView {
         self.lanes
             .get(i)
@@ -149,10 +127,9 @@ impl Parcel {
     }
 
     /// The lanes as the sweep attaches them, in key order — a fixed array plus
-    /// [`Self::len`] rather than a `Vec`, [`Targets::attachments`]' reason: one of
-    /// these is built per tile per piece, and that rate is what a per-pass
-    /// allocation costs (§6.2). A hole attaches nothing, at the index the sweep
-    /// pipeline's own target list has nothing.
+    /// [`Self::len`] rather than a `Vec`, [`Targets::attachments`]' reason: one is built
+    /// per tile per piece, and that rate is what a per-pass allocation costs (§6.2). A
+    /// hole attaches nothing.
     fn attachments(
         &self,
         ops: wgpu::Operations<wgpu::Color>,
@@ -173,10 +150,9 @@ impl Parcel {
 /// An effect's carried parcels (§6.2, §6.12): per touched tile, the paint the
 /// stroke found there and everything it has accumulated over it so far.
 ///
-/// One type for both effects, and one variant each in
-/// [`Carried`](super::incremental::Carried) — the payloads are the same shape, but
-/// which one a stroke resumes is still worth asserting, since the lane count is the
-/// effect's and a carry only ever resumes the stroke that captured it.
+/// One type for both effects, with a variant each in
+/// [`Carried`](super::incremental::Carried): the payloads are the same shape, but the
+/// lane count is the effect's, so which one a stroke resumes is still asserted.
 pub(super) struct ParcelCarry {
     pub(super) tiles: BTreeMap<TileCoord, ParcelTile>,
 }
@@ -184,19 +160,16 @@ pub(super) struct ParcelCarry {
 /// One tile's share of a [`ParcelCarry`].
 pub(super) struct ParcelTile {
     /// The layer's tile as the stroke found it — the paint every piece's rewrite is
-    /// derived from. A piece rendered later must not read the *output* of an earlier
-    /// one (the base it is handed holds exactly that), or the effect would compound
-    /// per piece instead of per stroke. An `Arc`'d pool handle, so keeping it is a
-    /// refcount, not a copy.
+    /// derived from. A piece rendered later must not read the *output* of an earlier one
+    /// (the base it is handed holds exactly that), or the effect would compound per
+    /// piece instead of per stroke. An `Arc`'d pool handle, so keeping it is a refcount.
     ///
-    /// `None` is bare canvas, reachable only under [`BareCanvas::Mint`]: a deposit
-    /// onto nothing mints a tile over the 1×1 zeroes, where an erase has nothing to
-    /// erase and never records the tile at all.
+    /// `None` is bare canvas, reachable only under [`BareCanvas::Mint`]: a deposit onto
+    /// nothing mints a tile over the 1×1 zeroes, where an erase never records the tile.
     pub(super) pristine: Option<TilePairHandle>,
     /// The stroke's parcel over this tile, summed so far. Shared between successive
     /// carries rather than copied: a piece never writes the parcel it resumed — it
-    /// copies into fresh working lanes and extends those — so the tiles a piece does
-    /// not touch ride forward as clones of the same lease.
+    /// copies into fresh working lanes and extends those.
     pub(super) accum: Arc<Parcel>,
 }
 
@@ -214,12 +187,11 @@ pub(super) enum BareCanvas {
     Mint,
 }
 
-/// The swept-extent rasterization half of one tile, which the two effects differ in
-/// by **pipeline alone**: the same segments in the same order, the same per-tile
-/// instance runs and transform slots ([`sweep_draws`](super::swept::sweep_draws)),
-/// the same brush-resolved bind groups ([`sweep_binds`](super::swept::sweep_binds))
-/// — `stamp.wesl`'s `fs_main` laying paint, or its `fs_erase` accumulating
-/// transparency.
+/// The swept-extent rasterization half of one tile, which the two effects differ in by
+/// **pipeline alone**: the same segments in the same order, the same instance runs and
+/// transform slots ([`sweep_draws`](super::swept::sweep_draws)) and the same
+/// brush-resolved bind groups ([`sweep_binds`](super::swept::sweep_binds)) —
+/// `stamp.wesl`'s `fs_main` laying paint, or its `fs_erase` accumulating transparency.
 pub(super) struct Sweep<'a> {
     /// This pass's label, so a debug capture still names the effect that recorded it
     /// rather than the procedure the two share.
@@ -264,10 +236,9 @@ pub(super) struct Landed {
 /// The shared procedure (§6.2, §6.12): resume a stroke's parcels, extend them over
 /// this piece's tiles, and land each one on the paint the stroke found there.
 ///
-/// Owns the [`SubmitScope`] for the whole of it, which is what makes the ordering
-/// structural rather than a comment: [`run`](Self::run) consumes the accumulator and
-/// submits before it returns the carry, so a caller cannot hand a [`Kept`] lease out
-/// ahead of the submit of the commands naming it (`scratch`).
+/// Owns the [`SubmitScope`] for the whole of it: [`run`](Self::run) consumes the
+/// accumulator and submits before it returns the carry, so a caller cannot hand a
+/// [`Kept`] lease out ahead of the submit of the commands naming it (`scratch`).
 pub(super) struct IncrementalTileAccumulator<'a> {
     r: &'a StrokeRenderer,
     scene: StrokeScene<'a>,
@@ -326,9 +297,9 @@ impl<'a> IncrementalTileAccumulator<'a> {
 
     /// Draw the piece: per tile the sweep reaches, extend the parcel and land it.
     ///
-    /// `bind` builds the landing pass's group from what the accumulator resolved —
-    /// the one thing here that cannot be shared, since the two effects' shaders
-    /// declare different slots and each names its own (§6.10).
+    /// `bind` builds the landing pass's group from what the accumulator resolved — the
+    /// one thing here that cannot be shared, the two effects' shaders declaring
+    /// different slots (§6.10).
     pub(super) fn run(
         mut self,
         sweep: &Sweep<'_>,
@@ -338,13 +309,10 @@ impl<'a> IncrementalTileAccumulator<'a> {
         for (i, coord) in sweep.draws.coords.iter().enumerate() {
             // The paint the stroke found under this tile: what an earlier piece
             // recorded, or — for a tile this stroke reaches for the first time — the
-            // base itself, which no earlier piece can have rewritten.
-            //
-            // A carried entry answers for itself, `None` included: under
-            // [`BareCanvas::Mint`] a tile first touched on bare canvas has this
-            // stroke's own minted tile in the base by now, and falling back to it
-            // would re-derive from that — exactly the compounding the pristine
-            // handle exists to rule out.
+            // base itself, which no earlier piece can have rewritten. A carried entry
+            // answers for itself, `None` included: under [`BareCanvas::Mint`] a tile
+            // first touched on bare canvas has this stroke's own minted tile in the
+            // base by now, and falling back to it would re-derive from that.
             let pristine = match self.tiles.get(coord) {
                 Some(t) => t.pristine.clone(),
                 None => self.scene.base.get(coord).cloned(),
@@ -353,11 +321,10 @@ impl<'a> IncrementalTileAccumulator<'a> {
                 continue;
             }
 
-            // This piece's working parcel: the carried total copied in, or a clear
-            // for a first touch — either way every texel is written before the
-            // landing pass reads it, the pool's no-zero-init contract (`scratch`).
-            // The carried lanes themselves are only ever read: the live tail resumes
-            // the same frozen carry on every pointer move.
+            // This piece's working parcel: the carried total copied in, or a clear for
+            // a first touch — either way every texel is written before the landing pass
+            // reads it, the pool's no-zero-init contract (`scratch`). The carried lanes
+            // themselves are only ever read.
             let work = Parcel::take(self.r, self.keys);
             let resumed = self.tiles.get(coord).map(|t| Arc::clone(&t.accum));
             if let Some(old) = &resumed {
@@ -453,19 +420,17 @@ impl<'a> IncrementalTileAccumulator<'a> {
             );
         }
 
-        // Submit before the carry leaves this call: a `Kept` may reach the pool's
-        // free list only behind the submit of the commands naming it, and handing the
-        // carry out first would let a caller drop it ahead of one. Consuming `self`
-        // is what says so — there is no accumulator left to hand anything out of
-        // until this has happened.
+        // Submit before the carry leaves this call: a `Kept` may reach the pool's free
+        // list only behind the submit of the commands naming it, and handing the carry
+        // out first would let a caller drop it ahead of one. Consuming `self` is what
+        // says so.
         //
-        // `finish` submits only when the scope has something recorded, so what the
-        // sentence above rests on is that a lease worth protecting implies a recording:
-        // every `Kept` this call can put into the carry came from a `Parcel::take` past
-        // the `BareCanvas::Skip` arm, and every one of those is then named by a copy, a
-        // sweep pass and a landing pass — all through `scope.encoder()`, which opens the
-        // piece. A carry with nothing recorded behind it holds only `Arc` clones of the
-        // *previous* carry's parcels, whose commands an earlier run already submitted.
+        // `finish` submits only when the scope has something recorded, so that rests on
+        // a lease worth protecting implying a recording: every `Kept` this call can put
+        // into the carry came from a `Parcel::take` past the `BareCanvas::Skip` arm, and
+        // each is then named by a copy, a sweep pass and a landing pass. A carry with
+        // nothing recorded behind it holds only `Arc` clones of the *previous* carry's
+        // parcels, whose commands an earlier run already submitted.
         self.scope.finish();
         Landed {
             map: self.map,
@@ -475,11 +440,9 @@ impl<'a> IncrementalTileAccumulator<'a> {
     }
 }
 
-/// The pristine tile's channels as a landing pass reads them, with the renderer's
-/// 1×1 zeroes standing in where the layer has nothing (§6.8's pattern) — the landing
-/// shaders clamp their loads, so bare canvas costs no tile at all, where acquiring a
-/// real pooled trio would mean allocating and clearing one on every pointer move
-/// whether or not the stroke reached anything unpainted.
+/// The pristine tile's channels as a landing pass reads them, with the renderer's 1×1
+/// zeroes standing in where the layer has nothing (§6.8's pattern) — the landing shaders
+/// clamp their loads, so bare canvas costs no tile at all.
 pub(super) fn base_targets<'a>(
     r: &'a StrokeRenderer,
     pristine: Option<&'a TilePairHandle>,

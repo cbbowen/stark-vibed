@@ -31,29 +31,25 @@ pub struct MatteDraw {
     pub resid: [f32; 4],
     /// The layer's opacity.
     pub opacity: f32,
-    /// A gradient paint's ramp (§22.4), already packed for the
-    /// shader's per-matte uniform — stops in working-space channels, axis in
-    /// canvas px. `None` for a solid matte, which binds the shared zeroed ramp.
-    /// Boxed so the rare gradient does not carry its 544 bytes of stop lanes
-    /// into every [`CompositeItem`] — a tile is the common item by thousands.
+    /// A gradient paint's ramp (§22.4), packed for the shader's per-matte uniform:
+    /// stops in working-space channels, axis in canvas px. `None` for a solid matte,
+    /// which binds the shared zeroed ramp. Boxed so the rare gradient's 544 bytes of
+    /// stop lanes do not ride every [`CompositeItem`].
     pub ramp: Option<Box<stark_shaders::mirror::matte::Ramp>>,
 }
 
 /// One item of compositing pass A, in bottom-to-top stack order.
 ///
-/// An ordered list rather than a flat tile array because a matte composites at
-/// its own place in the stack — a frame over the painting, a substrate under it
-/// (§15.4.4). Tiles already cost one draw each (each needs its own
-/// bind group), so interleaving mattes adds no per-tile overhead.
+/// An ordered list rather than a flat tile array because a matte composites at its own
+/// place in the stack — a frame over the painting, a substrate under it (§15.4.4).
+/// Tiles already cost one draw each, so interleaving mattes adds no per-tile overhead.
 #[derive(Clone)]
 pub enum CompositeItem {
     Tile {
-        /// Where the tile's interior sits **on the canvas**: its own origin plus
-        /// the layer's translation (§14.12). Resolved by the item builder rather
-        /// than derived at encode from the tile's coordinate, because the builder
-        /// is the one place that knows whose layer the tile is — this is the whole
-        /// of how a translated layer reaches the screen, and it is why the
-        /// coordinate itself does not travel.
+        /// Where the tile's interior sits **on the canvas**: its own origin plus the
+        /// layer's translation (§14.12), resolved by the item builder because that is
+        /// the one place that knows whose layer the tile is. This is the whole of how
+        /// a translated layer reaches the screen.
         origin: Vec2,
         handle: TilePairHandle,
         opacity: f32,
@@ -64,11 +60,10 @@ pub enum CompositeItem {
 impl CompositeItem {
     /// Draw this item at `opacity` instead of the one it was built with.
     ///
-    /// **Private, with exactly one caller**: [`CompositeGroup::leaf`], which is where
-    /// a layer's opacity is folded into items that do not overlap. Building the items
-    /// already faded and letting a group apply its own on top is precisely the double
-    /// fade §14.7 describes, so the only way to set an item's opacity is to go through
-    /// the constructor that takes it off the group in the same breath.
+    /// **Private, with one caller**: [`CompositeGroup::leaf`], which folds a layer's
+    /// opacity into items that do not overlap. Setting it anywhere else risks the
+    /// double fade §14.7 describes — the item faded, then the group's merge fading it
+    /// again.
     fn set_opacity(&mut self, opacity: f32) {
         match self {
             CompositeItem::Tile { opacity: o, .. } => *o = opacity,
@@ -79,27 +74,22 @@ impl CompositeItem {
 
 /// A filter layer's pass parameters (§21).
 ///
-/// Deliberately **not** a `Filter`: what the shader reads is a code and two uniform
-/// lanes of floats, and which code a filter is numbered is a fact about
-/// `filter_common.wesl` rather than about the document (the same split
-/// [`blend_code`](super::blend::blend_code) makes for a blend mode). Flattening it
-/// here also puts the layer's opacity where the pass wants it — as a strength — so
-/// the encoder has one thing to write rather than two to remember to combine.
+/// Deliberately **not** a `Filter`: the shader reads a code and two uniform lanes of
+/// floats, and which code a filter is numbered is a fact about `filter_common.wesl`
+/// rather than about the document (the split
+/// [`blend_code`](super::blend::blend_code) makes for a blend mode).
 ///
-/// **Both of the two [`CompositeParams`] a filter reads live here**, for that reason
-/// and no other. They are not on the enclosing [`CompositeGroup`] because a filter
-/// merges nothing outward for them to describe (see [`GroupContent::Filter`]) — they
-/// are settings of the pass, and this is the pass's description.
+/// **Both [`CompositeParams`] a filter reads live here** rather than on the enclosing
+/// [`CompositeGroup`], because a filter merges nothing outward for them to describe
+/// (see [`GroupContent::Filter`]): they are settings of a pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilterDraw {
     /// The filter's shader code — see `filter_common.wesl`.
     pub kind: u32,
     /// Whether this filter **gathers**: reads texels other than the one it writes
-    /// (§21.10, §21.12).
-    ///
-    /// Carried from [`Filter::resamples`] rather than re-derived from `kind`, which is
-    /// a `u32` and so has no exhaustive match to keep it honest. Read by the one pass
-    /// that must refuse a gather —
+    /// (§21.10, §21.12). Carried from [`Filter::resamples`] rather than re-derived from
+    /// `kind`, which is a `u32` with no exhaustive match to keep it honest. Read by the
+    /// one pass that must refuse a gather —
     /// [`MergeRenderer::apply_filter`](crate::gpu::merge::MergeRenderer::apply_filter).
     pub resamples: bool,
     /// How much of the adjustment lands: the layer's opacity (§21.4).
@@ -113,11 +103,10 @@ pub struct FilterDraw {
     /// layout learning anything (`filter_common.wesl`).
     pub params: [f32; 4],
     pub params2: [f32; 4],
-    /// The gradient map's ramp (§21.11), already in the shader's own terms: Oklab
-    /// `(L, a, b)` and the stop's position per lane, `params[0]` of them live.
-    /// `None` for every other kind — the uniform's lanes are zeroed at write.
-    /// Boxed on [`MatteDraw::ramp`]'s argument: the 256 bytes ride only the draws
-    /// that carry a ramp.
+    /// The gradient map's ramp (§21.11), in the shader's own terms: Oklab `(L, a, b)`
+    /// and the stop's position per lane, `params[0]` of them live. `None` for every
+    /// other kind — the uniform's lanes are zeroed at write. Boxed for
+    /// [`MatteDraw::ramp`]'s reason.
     pub stops: Option<Box<[[f32; 4]; MAX_MAP_STOPS]>>,
 }
 
@@ -128,28 +117,20 @@ const MAX_MAP_STOPS: usize = stark_model::gradient::MAX_STOPS;
 
 impl FilterDraw {
     /// Whether this is the focal blur (§21.12) — the one kind whose pass is preceded
-    /// by a convolution, and so the one question three sites used to spell for
-    /// themselves.
+    /// by a convolution.
     pub fn is_focal_blur(&self) -> bool {
         self.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR
     }
 
-    /// The draw parameters for `filter` under the layer's own `params`.
+    /// The draw parameters for `filter` under the layer's own `params`: the opacity
+    /// becomes the strength, the clip travels as itself, and the blend is the one a
+    /// filter never has (§21.4).
     ///
-    /// The whole [`CompositeParams`] rather than the two scalars it reads, because
-    /// the rule about which of the three a filter has is a rule about the value as a
-    /// whole (§21.4): the opacity becomes the strength, the clip travels as itself,
-    /// and the blend is the one a filter never has — state declines to store one, so
-    /// there is no mode here to drop.
-    ///
-    /// The one place a `Filter` becomes numbers, so the ABI is stated once — and
-    /// each arm's code is the **mirrored** `FILTER_*` constant from
-    /// `filter_common.wesl` (§6.10), never a literal. That is what makes the claim
-    /// structural: a filter kind added to the document without a declaration in the
-    /// shader has no constant to name here, so this match fails to compile rather
-    /// than rendering as whichever kind happens to share its index. (The shader's
-    /// `filtered()` still needs its arm; what cannot happen is the two agreeing on
-    /// the *wrong* number.)
+    /// The one place a `Filter` becomes numbers, so the ABI is stated once — and each
+    /// arm's code is the **mirrored** `FILTER_*` constant from `filter_common.wesl`
+    /// (§6.10), never a literal. A kind the shader does not declare has no constant to
+    /// name here, so this match fails to compile rather than rendering as whichever
+    /// kind happens to share its index.
     pub fn new(filter: Filter, composite: CompositeParams) -> Self {
         // Named apart from the `params` lanes below, which are the *filter's* own
         // numbers and have nothing to do with the layer's.
@@ -180,11 +161,11 @@ impl FilterDraw {
                 params2: [0.0; 4],
                 stops: None,
             },
-            // The radius stays in canvas terms on the chromatic pair's argument;
-            // the trip into accumulator texels is the blur plan's, per frame
-            // (§21.12, `blur::blur_kernels`). The aperture rides the three lanes
-            // beside it, and is the one filter whose numbers no *fullscreen* pass
-            // reads: `blur::aperture` picks them back up to build the kernel.
+            // The radius stays in canvas terms, on the chromatic pair's argument; the
+            // trip into accumulator texels is the blur plan's, per frame (§21.12,
+            // `blur::blur_kernels`). The aperture rides the three lanes beside it, and
+            // no *fullscreen* pass reads them — `blur::aperture` picks them back up to
+            // build the kernel.
             Filter::FocalBlur(b) => {
                 let (shape, param, angle) = aperture_lanes(b.aperture);
                 Self {
@@ -197,12 +178,10 @@ impl FilterDraw {
                     stops: None,
                 }
             }
-            // The one conversion the ramp pays, here and once: stops are straight
-            // sRGB in the document and Oklab in the pass, because Oklab is where
-            // `Gradient::sample`'s interpolation — the thing the map *is* — is
-            // defined (§21.11). A rampless map never reaches this constructor:
-            // it is neutral, and the draw list dropped it (§21.3); the `None` arm
-            // exists so the match stays total rather than as a path.
+            // Stops are straight sRGB in the document and Oklab in the pass, because
+            // Oklab is where `Gradient::sample`'s interpolation — the thing the map
+            // *is* — is defined (§21.11). A rampless map is neutral and the draw list
+            // dropped it (§21.3); the `None` arm only keeps the match total.
             Filter::GradientMap(g) => {
                 let stops = g.as_ref().map(|g| {
                     let mut lanes = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
@@ -239,14 +218,12 @@ impl FilterDraw {
 /// The focal blur's aperture as the three lanes beside its radius: the shape's
 /// mirrored `APERTURE_*` code, its own number, and its turn (§21.12).
 ///
-/// One lane for the parameter rather than one per shape, on `FilterDraw::params`'
-/// own terms — the lanes are read according to the code, and one shape is
-/// rasterized at a time. The codes are `blur.wesl`'s (§6.10), never literals, for
-/// [`FilterDraw::new`]'s reason: a variant added to [`Aperture`] without a
-/// declaration in the shader has no constant to name here.
+/// One lane for the parameter rather than one per shape — the lanes are read according
+/// to the code, and one shape is rasterized at a time. The codes are `blur.wesl`'s
+/// (§6.10), never literals, for [`FilterDraw::new`]'s reason: a variant added to
+/// [`Aperture`] without a declaration in the shader has no constant to name here.
 ///
-/// The inverse is `blur::aperture`, and the two are pinned against each other
-/// there rather than trusted to read alike.
+/// The inverse is `blur::aperture`, pinned against this there.
 fn aperture_lanes(aperture: Aperture) -> (f32, f32, f32) {
     use stark_shaders::mirror::blur as a;
     match aperture {
@@ -256,27 +233,23 @@ fn aperture_lanes(aperture: Aperture) -> (f32, f32, f32) {
     }
 }
 
-/// One **blend group** of pass A: something that composites on its own, and how
-/// its result merges into everything below it (§18.0.4,
-/// §14.7).
+/// One **blend group** of pass A: something that composites on its own, and how its
+/// result merges into everything below it (§18.0.4, §14.7).
 ///
-/// A group is defined against *what is underneath it* — which means it has to be
-/// composited alone, on nothing, before it can be merged. That is the per-layer
-/// isolation §6.3 names as the prerequisite for richer modes, and layer
-/// groups are the same investment recursed: [`GroupContent::Stack`] is a group
+/// A group is defined against *what is underneath it*, so it has to be composited
+/// alone, on nothing, before it can be merged — the per-layer isolation §6.3 names as
+/// the prerequisite for richer modes, recursed: [`GroupContent::Stack`] is a group
 /// whose members are themselves groups.
 #[derive(Clone)]
 pub struct CompositeGroup {
     /// How this group's composited result merges into everything below it — the
     /// **layer's own** params, applied once, to the whole (§14.4.3).
     ///
-    /// The same [`CompositeParams`] the document holds, carried through unchanged,
-    /// which is what stops the render path taking them apart and putting two of them
-    /// back in different places. Clipping costs the same isolation a blend mode does,
-    /// and for the same reason: the merge has to *read* the backdrop's alpha.
-    ///
-    /// [`Self::leaf`] is the one constructor that moves anything out of here, and it
-    /// moves only the opacity, only onto items that provably do not overlap.
+    /// The same [`CompositeParams`] the document holds, carried through unchanged.
+    /// Clipping costs the same isolation a blend mode does, and for the same reason:
+    /// the merge has to *read* the backdrop's alpha. [`Self::leaf`] is the one
+    /// constructor that moves anything out of here, and it moves only the opacity,
+    /// only onto items that provably do not overlap.
     pub params: CompositeParams,
     pub content: GroupContent,
 }
@@ -289,9 +262,8 @@ pub enum GroupContent {
     /// "over", with **no isolation**.
     ///
     /// Consecutive `Normal`, unclipped layers carrying nothing compose correctly
-    /// against each other *and* against the accumulator, so a document that uses
-    /// no modes, no clipping and no groups is a single `Run` and costs exactly
-    /// what the flat tile list cost before any of this existed.
+    /// against each other *and* against the accumulator, so a document with no modes,
+    /// no clipping and no groups is a single `Run`.
     Run(Vec<CompositeItem>),
     /// Members composited bottom-to-top, each merging into the one below through
     /// its own blend mode and clip — a **layer group** (§14.2).
@@ -303,19 +275,15 @@ pub enum GroupContent {
     /// A **filter layer**: no content of its own, one pass that reads the
     /// accumulator this stack has built so far and writes it back adjusted (§21).
     ///
-    /// The odd member of this enum, and the shape says why: a `Run` and a `Stack`
-    /// are both *things to composite*, which a filter is not — it is a function of
-    /// what has been composited already. That is exactly the blend pass's own
-    /// relationship to the accumulator with the isolated source removed, so it takes
-    /// the same ping-pong and the same scratch and costs the same one pass
-    /// (`composite/filter.rs`).
+    /// Not a *thing to composite* like a `Run` or a `Stack`, but a function of what has
+    /// been composited already — which is the blend pass's own relationship to the
+    /// accumulator with the isolated source removed, so it takes the same ping-pong and
+    /// the same scratch and costs the same one pass (`composite/filter.rs`).
     ///
-    /// Its enclosing [`CompositeGroup`]'s params are [`CompositeParams::IDENTITY`],
-    /// always: those describe a **merge**, and a filter has no source to merge. The
-    /// two of them a filter does read are inside the draw instead — the opacity as
-    /// the filter's strength, the clip as the bound on what the pass may write
-    /// (§21.4) — which is why they are settings of a pass here rather than
-    /// parameters of a merge that does not happen.
+    /// Its enclosing [`CompositeGroup`]'s params are always
+    /// [`CompositeParams::IDENTITY`]: those describe a **merge**, and a filter has no
+    /// source to merge. The two it does read live in the draw instead — the opacity as
+    /// the filter's strength, the clip as the bound on what the pass may write (§21.4).
     Filter(FilterDraw),
 }
 
@@ -323,11 +291,10 @@ impl CompositeGroup {
     /// A run of drawables that merges outward through `params`, **each item carrying
     /// whatever opacity it was built with**.
     ///
-    /// The raw constructor, for a caller that already holds finished items — the
-    /// collapse in [`Self::stack`], which concatenates runs whose opacities are
-    /// already folded in. A caller turning *one layer* into a run wants
-    /// [`Self::leaf`] instead, which is the difference between "these items are
-    /// ready" and "fold this layer's opacity into them".
+    /// For a caller that already holds finished items — the collapse in
+    /// [`Self::stack`], which concatenates runs whose opacities are already folded in.
+    /// A caller turning *one layer* into a run wants [`Self::leaf`], which folds that
+    /// layer's opacity in.
     pub fn run(params: CompositeParams, items: Vec<CompositeItem>) -> Self {
         Self {
             params,
@@ -336,22 +303,16 @@ impl CompositeGroup {
     }
 
     /// **One layer's** drawables, merging outward through `params` — the constructor
-    /// every layer goes through, and the only place opacity is ever folded into an
-    /// item.
+    /// every layer goes through, and the only place opacity is folded into an item.
     ///
-    /// The fold is what keeps a faded layer on the fast path: `params.opacity` on the
+    /// The fold keeps a faded layer on the fast path: `params.opacity` left on the
     /// group would make it non-direct and cost two render passes, while a layer's
     /// tiles do not overlap, so scaling each of them is identical to scaling the
-    /// composited layer. Two granularities of one fact, and the cheaper one is taken
-    /// wherever it is equivalent.
+    /// composited layer.
     ///
     /// **Equivalent, and therefore exclusive.** The opacity comes *off* the params on
-    /// the way past, so what is folded is never also applied at a merge. That is not
-    /// a nicety: it is the bug this constructor exists to make unrepresentable. A
-    /// group's base composites with [`CompositeParams::IDENTITY`] — the layer's own
-    /// params belong to the group as a whole — and for as long as the base's items
-    /// were tagged by the item builder instead, a base at 0.5 drew its paint at 0.25
-    /// while everything it carried drew at 0.5 (§14.7).
+    /// the way past, so what is folded is never also applied at a merge — the double
+    /// fade §14.7 describes, which this constructor exists to make unrepresentable.
     pub fn leaf(params: CompositeParams, mut items: Vec<CompositeItem>) -> Self {
         for item in &mut items {
             item.set_opacity(params.opacity);
@@ -380,18 +341,16 @@ impl CompositeGroup {
     /// when nothing about it could tell itself apart from one**
     /// (§14.7 rule 2).
     ///
-    /// This is where "organization is free" is made structural rather than
-    /// promised. A group that merges normally, unclipped, at full opacity, and
-    /// whose every member draws directly, changes no blending scope: its members
-    /// were composing against everything below them under `over` already, and
-    /// isolating them would produce the same pixels through two extra render
-    /// passes per member. So it produces the identical draw list to no group at
-    /// all — which is the property the golden test pins, and the answer to
-    /// "grouping my layers changed my painting".
+    /// A group that merges normally, unclipped, at full opacity, and whose every
+    /// member draws directly, changes no blending scope: its members were already
+    /// composing against everything below them under `over`, and isolating them would
+    /// produce the same pixels through two extra render passes each. So it produces
+    /// the identical draw list to no group at all, which is what makes "organization
+    /// is free" structural rather than promised.
     ///
-    /// The condition cannot be relaxed to "the group itself is normal": a member
-    /// with a mode of its own *does* blend against a different backdrop once
-    /// isolated, and that difference is the feature (§14.5).
+    /// The condition cannot be relaxed to "the group itself is normal": a member with
+    /// a mode of its own *does* blend against a different backdrop once isolated, and
+    /// that difference is the feature (§14.5).
     pub fn stack(params: CompositeParams, members: Vec<Self>) -> Self {
         if params.is_free() && members.iter().all(|m| m.as_direct_run().is_some()) {
             let items = members
@@ -422,12 +381,9 @@ impl CompositeGroup {
     /// needs isolating — an unclipped `Normal` `Run` at full opacity is the fast
     /// path, and everything else is a merge.
     ///
-    /// **Returning the run is what deletes the invariant rather than checking it.**
-    /// A `bool` `is_direct` leaves every call site to re-match the content: behind an
-    /// `unreachable!`, or — as in the stack builder in `Engine` — behind an `if let`
-    /// whose failure branch silently drops the merge. Three places that can disagree
-    /// about what "direct" implies, and the third
-    /// would not even have said so.
+    /// **Returning the run is what deletes the invariant rather than checking it.** A
+    /// `bool` `is_direct` leaves every call site to re-match the content, and a call
+    /// site that gets that wrong silently drops the merge.
     pub fn as_direct_run(&self) -> Option<&[CompositeItem]> {
         match &self.content {
             GroupContent::Run(items) if self.is_free() => Some(items),
@@ -474,10 +430,9 @@ mod tests {
 
     /// The opacity of every drawable in a group, in composite order.
     ///
-    /// A test-local walk, deliberately not a method on [`CompositeGroup`] the render
-    /// path could also call: the plan's traversal (`composite::plan`) is the only one
-    /// of this tree, and a second one shared with the tests is a second one to agree
-    /// with.
+    /// Test-local rather than a method the render path could also call: the plan's
+    /// traversal (`composite::plan`) is the only walk of this tree, and a shared second
+    /// one is a second one to agree with.
     fn opacities(group: &CompositeGroup) -> Vec<f32> {
         match &group.content {
             GroupContent::Run(items) => items
@@ -501,13 +456,10 @@ mod tests {
         }
     }
 
-    /// [`CompositeGroup::leaf`] folds the opacity into the items **and takes it off
-    /// the merge**. Both halves, because either alone is a bug: folding without
-    /// clearing fades the layer twice (§14.7), and clearing without folding loses the
-    /// fade entirely.
-    ///
-    /// The third assertion is what the fold is *for*: a faded leaf stays on the fast
-    /// path, where the same opacity left on the group would cost it two render passes.
+    /// [`CompositeGroup::leaf`] folds the opacity into the items **and takes it off the
+    /// merge**. Either half alone is a bug: folding without clearing fades the layer
+    /// twice (§14.7), clearing without folding loses the fade. The third assertion is
+    /// what the fold is *for* — a faded leaf stays on the fast path.
     #[test]
     fn a_leaf_folds_its_opacity_into_its_items_and_off_its_merge() {
         let group = CompositeGroup::leaf(faded(0.4), vec![item(1.0), item(1.0)]);
@@ -541,12 +493,10 @@ mod tests {
     /// their own layers' opacities, and the collapse is a concatenation rather than a
     /// new layer.
     ///
-    /// This is the trap [`CompositeGroup::run`] exists to keep open. `stack` ends in a
-    /// constructor call, and reaching for `leaf` there — the one every other caller
-    /// uses — would set every item to the group's own opacity, which the collapse has
-    /// just proved is 1.0. Two faded layers tidied into a folder would come back out
-    /// at full strength, which is exactly the "grouping changed my painting" failure
-    /// §14.7 rule 2 exists to rule out.
+    /// This is the trap [`CompositeGroup::run`] exists to keep open: reaching for
+    /// `leaf` in `stack` instead would set every item to the group's own opacity —
+    /// which the collapse has just proved is 1.0 — so two faded layers tidied into a
+    /// folder would come back out at full strength (§14.7 rule 2).
     #[test]
     fn collapsing_a_free_group_keeps_its_members_folded_opacities() {
         let group = CompositeGroup::stack(
@@ -567,8 +517,7 @@ mod tests {
     ///
     /// The arrangement `composite_stack` builds: the base's content as a member at
     /// [`CompositeParams::IDENTITY`], the layer's own params on the group. Applied at
-    /// both, an opacity of `a` would reach the base's paint as `a²`, which is the bug
-    /// this shape was rebuilt to make unrepresentable.
+    /// both, an opacity of `a` would reach the base's paint as `a²`.
     #[test]
     fn a_groups_params_ride_the_group_and_never_its_base() {
         let group = CompositeGroup::stack(

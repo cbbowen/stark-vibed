@@ -15,14 +15,8 @@ use stark_shaders::mirror::guides::decl as gd;
 /// The guide overlay's one binding (§20.4).
 ///
 /// One slot per visible guide in the frame, the stride derived from
-/// [`GuideUniform`] itself. It was a hand-written `GUIDE_SLOT = 512` for
-/// as long as this pass allocated its own buffer — and 512 is what
-/// `UniformSlots` computes, so the constant was *right* and would have
-/// stayed right only until the next time the uniform grew. It had
-/// already been widened once, when the fisheye brought the second set of
-/// poles (§20.8); a second such growth past 512 would have under-strided
-/// every slot, and two visible guides would have read each other's
-/// lanes with nothing to say so.
+/// [`GuideUniform`] itself rather than named here: a stride that under-strides the
+/// uniform has two visible guides reading each other's lanes, with nothing to say so.
 const GUIDE_SLOTS: &[Slot] = &[Slot::dynamic(gd::GUIDE)];
 use crate::gpu::uniforms::UniformSlots;
 
@@ -173,10 +167,8 @@ impl GuidePass {
         }
         let packed: Vec<GuideUniform> = scenes.iter().map(|s| pack_guides(s, view)).collect();
         slots.write(&ctx.device, &ctx.queue, &packed);
-        // Kept, and dropped by the write that replaced the buffer under it
-        // (`UniformSlots::group`) — which is the whole of what made it a per-render
-        // build before: it has to follow the buffer through reallocation, and that is
-        // now the buffer's own business rather than a rule stated here.
+        // Cached, and dropped by whatever write reallocates the buffer under it, which
+        // `UniformSlots::group` handles.
         let layout = &self.bgl;
         let bg = slots.group(|slot| {
             desc::bind_group_for(

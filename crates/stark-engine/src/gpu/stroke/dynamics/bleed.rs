@@ -1,15 +1,12 @@
 //! The **bleed** axis: how far a firing reaches, how hard it relaxes, and how often it
 //! fires (§6.2).
 //!
-//! One model, so one file. The cadence lived in `budget.rs` beside the flattening
-//! caps, the stencil solve beside it, and [`bleed_fires`] — which is the other half
-//! of the same thing — a directory away in the plan, where it was the only reader of
-//! the two constants above. They are together now: the axis is a **diffusivity**, and
-//! everything that decides what that buys is here. `plan.rs` is left asking
-//! [`bleed_stencil`] what a window costs and nothing about when one fires.
+//! One model, so one file: the axis is a **diffusivity**, and everything that decides
+//! what that buys is here. `plan.rs` asks [`bleed_stencil`] what a window costs and
+//! nothing about when one fires.
 //!
-//! Nothing here touches the GPU. It is float arithmetic over a radius and a span, which
-//! is what lets the whole calibration be pinned without an adapter (`tests`).
+//! Nothing here touches the GPU — float arithmetic over a radius and a span, so the
+//! whole calibration is testable without an adapter.
 
 use super::super::budget::TAU_PER_PASS;
 /// The segment vocabulary the cadence is written in: what it reads (a `Segment`'s
@@ -24,40 +21,27 @@ use stark_shaders::mirror::dynamics as shader;
 /// How much travel (in radii) the `bleed` stencil carries per firing (§6.2):
 /// **the cadence carries the step, so the segmentation cannot.**
 ///
-/// Firing per segment was measured non-conservative on real input, and the failure is
-/// numeric rather than conceptual. A hand that draws slowly is fitted at a control
-/// point per pointer sample — the repro's stroke carries 177 knots over 68 px, mean
-/// span 0.39 px — and at that cut a texel's per-segment flux is
-/// `share · w · Δ ≈ 1e-4` of a height whose f16 ULP is ~4e-3: deep in the regime
-/// where every store either snaps the flux away or ratchets a whole ULP, and the
+/// Keyed on **absolute arc length**, so the firings — and the windows they sweep — are
+/// a pure function of the record, independent of how the path was cut (§6.2,
+/// live == committed). Each firing is a dedicated **bleed slot** in the dispatch plan
+/// (`dynamics::bleed_fires`): a quad whose sweep *is* the window, bent along the path it
+/// stands for, so its exposure is a well-conditioned prefix difference over the window's
+/// travel, far above the f16 noise floor. A per-*segment* flux is not: a slowly-drawn
+/// stroke is fitted at a control point per pointer sample, and at sub-pixel spans a
+/// texel's per-segment flux is `share · w · Δ ≈ 1e-4` of a height whose f16 ULP is
+/// ~4e-3, so every store either snaps it away or ratchets a whole ULP — and the
 /// nonlinear rebuild of `(premult, op, height)` between segments turns that into a
-/// *directional* drift. Measured on the repro: 20 levels of ghost at 176 spans, 2 at
-/// 44, bit-exact zero on a uniform coat at any cut — so the arithmetic is right and
-/// the quantization regime is the whole defect.
+/// *directional* drift. The painting segments themselves carry λ_bleed = 0 and take the
+/// no-bleed path bit-for-bit.
 ///
-/// Keyed on **absolute arc length**, so the
-/// firings — and the windows they sweep — are a pure function of the record,
-/// independent of how the path was cut (§6.2, live == committed). Each firing is a
-/// dedicated **bleed slot** in the dispatch plan (`dynamics::bleed_fires`): a quad
-/// whose sweep *is* the window — bent along the path it stands for, since a quarter
-/// radius of travel is many tip-widths of it once the pen modulates the radius
-/// down — so its exposure is an ordinary,
-/// well-conditioned prefix difference over the window's travel, and one firing
-/// moves the paint 176 micro-segments would have tried to move — in one step that
-/// sits far above the f16 noise floor. The painting segments themselves carry
-/// λ_bleed = 0 and take the no-bleed path bit-for-bit.
-///
-/// **A quarter rather than the half it was**, and the reason is the ladder the stencil
-/// became (`dynamics.wesl`, [`BLEED_SHARE_LADDER`](shader::BLEED_SHARE_LADDER)):
-/// spreading a firing's shed evenly over the reach instead of loading it onto the
-/// longest tap costs second moment — `(T+1)(2T+1)/(6T²)` of what the same share
-/// carries out at the reach, 0.40 at eight rungs. Variance adds linearly in the travel,
-/// so buying it back is exactly a cadence this much finer, which is what
-/// [`BLEED_DIFFUSIVITY`] being *derived* through both then re-establishes: the knob's
-/// top is where it was, spent in twice as many, half as long steps. The firings are
-/// cheap next to what they are cut into (measured at radius 500, the whole bleed is
-/// ~2 ms of a ~25 ms replay) and [`MAX_BLEED_FIRES_PER_SEGMENT`] doubles with it, so
-/// no segment is cut shorter than before either.
+/// **A quarter** because of the ladder the stencil is (`dynamics.wesl`,
+/// [`BLEED_SHARE_LADDER`](shader::BLEED_SHARE_LADDER)): spreading a firing's shed evenly
+/// over the reach instead of loading it onto the longest tap costs second moment —
+/// `(T+1)(2T+1)/(6T²)` of what the same share carries out at the reach, 0.40 at eight
+/// rungs. Variance adds linearly in the travel, so buying it back is exactly a cadence
+/// this much finer, which is what [`BLEED_DIFFUSIVITY`] being *derived* through both
+/// re-establishes. The firings are cheap next to what they are cut into (at radius 500
+/// the whole bleed is ~2 ms of a ~25 ms replay).
 pub(in crate::gpu::stroke) const BLEED_TRAVEL_QUANTUM: f32 = 0.25;
 /// How many firings one segment may contribute, so a plan's slot count stays bounded
 /// ([`MAX_STAMPS`](super::super::budget::MAX_STAMPS)).
@@ -67,8 +51,7 @@ pub(in crate::gpu::stroke) const BLEED_TRAVEL_QUANTUM: f32 = 0.25;
 /// length off the brush's **nominal** radius while the cadence is the **modulated**
 /// one, so a pen thinning the tip runs the count up without shortening a thing. Sixteen
 /// covers a tip down to a quarter of its brush — every ordinary stroke, where a segment
-/// at the travel cap crosses four times — and is sixteen rather than eight only because
-/// the cadence is twice as fine. What it stands for is unchanged.
+/// at the travel cap crosses four times.
 ///
 /// Below that the axis quietly under-delivers, on a tip carrying almost no paint to
 /// spread. The alternative is not "diffuse correctly", it is a plan whose size a
@@ -78,45 +61,40 @@ pub(super) const MAX_BLEED_FIRES_PER_SEGMENT: usize = 16;
 /// The blend one firing aims to move — the fraction of a texel's difference from a
 /// neighbour that crosses at the window's nominal exposure.
 ///
-/// **Not "as much as possible", and that is the point.** The stencil's worst-case
-/// eigenvalue is `1 − 8·Σshare·w = 1 − w` (`dynamics.wesl`, `BLEED_SHARE_NEAR`), so a
-/// firing driven to `w → 1` annihilates its worst mode instead of damping it: the
-/// operator stops being a Laplacian and becomes a hard local average, and consecutive
-/// firings stop composing. Half leaves the margin the diffusion model is written
-/// against, and costs nothing — the variance a firing is asked for is bought with the
-/// *reach* instead, which is quadratic in it and bounded only by geometry.
+/// **Not "as much as possible".** The stencil's worst-case eigenvalue is
+/// `1 − 8·Σshare·w = 1 − w` (`dynamics.wesl`, `BLEED_SHARE_NEAR`), so a firing driven
+/// to `w → 1` annihilates its worst mode instead of damping it: the operator stops
+/// being a Laplacian and consecutive firings stop composing. Half leaves the margin the
+/// diffusion model is written against, and costs nothing — the variance is bought with
+/// the *reach* instead, which is quadratic in it and bounded only by geometry.
 ///
-/// It is an aim rather than a law: the reach is an integer texel count and has a
-/// ceiling of its own, so [`bleed_stencil`] lands `w` here when it can and spends the
-/// difference on the rate when it cannot.
+/// An aim rather than a law: the reach is an integer texel count with a ceiling of its
+/// own, so [`bleed_stencil`] lands `w` here when it can and spends the difference on
+/// the rate when it cannot.
 const BLEED_BLEND: f32 = 0.5;
 /// The longest tap a firing may take, as a fraction of the tip's radius.
 ///
 /// The bound is the extent, not stability. A tap landing outside the sweep has
 /// `w_n = 0` and carries nothing (`dynamics.wesl`), so a reach approaching the tip's
-/// own size is truncated for most of the tip: the delivered diffusivity falls below
-/// the asked-for one, and does so *position-dependently*, which is worse than falling
-/// short evenly. Half the radius keeps the long tap live over the inner half of the
-/// extent. Past this the honest way to diffuse further is a finer cadence
-/// ([`BLEED_TRAVEL_QUANTUM`]) — more steps, not longer ones, exactly as it would be
-/// in any explicit diffusion solver.
+/// own size is truncated for most of the tip: the delivered diffusivity falls short
+/// *position-dependently*, which is worse than falling short evenly. Half the radius
+/// keeps the long tap live over the inner half of the extent. Past this the honest way
+/// to diffuse further is a finer cadence ([`BLEED_TRAVEL_QUANTUM`]) — more steps, not
+/// longer ones, exactly as in any explicit diffusion solver.
 const BLEED_REACH_MAX: f32 = 0.5;
 /// The diffusivity `bleed = 1` asks for, in **radius² per pass of the tip** — the
 /// unit that makes the axis mean the same look at every brush size, as
 /// [`TAU_PER_PASS`] does for the vertical rates.
 ///
-/// **Derived, not chosen.** It is whatever puts a full-crank firing at both of its
-/// ceilings at once: the reach at [`BLEED_REACH_MAX`] and the blend at
-/// [`BLEED_BLEND`]. Solving `σ² = 2·D·radius²` per pass against the stencil's own
-/// second moment at that reach gives the expression below, so the three constants
-/// cannot drift apart — moving either ceiling moves the top of the knob to match, and
-/// the knob stays linear in `D` all the way to it.
+/// **Derived, not chosen**: whatever puts a full-crank firing at both of its ceilings
+/// at once, the reach at [`BLEED_REACH_MAX`] and the blend at [`BLEED_BLEND`]. Solving
+/// `σ² = 2·D·radius²` per pass against the stencil's own second moment at that reach
+/// gives the expression below, so the three constants cannot drift apart — moving
+/// either ceiling moves the top of the knob to match, and the knob stays linear in `D`
+/// all the way to it.
 ///
 /// A pass of the tip at full crank buys `σ = sqrt(2·D) · radius`, about a fifth of the
-/// radius. That figure is a *consequence* of the two ceilings, not a number to be kept:
-/// the ladder's moment and its cadence move the two factors in opposite directions, and
-/// deriving the diffusivity is what lets either ceiling move without the top of the
-/// knob having to be re-tuned by hand.
+/// radius — a *consequence* of the two ceilings, not a number to be kept.
 const BLEED_DIFFUSIVITY: f32 =
     2.0 * BLEED_BLEND * STENCIL_MOMENT_PER_REACH2 * BLEED_REACH_MAX * BLEED_REACH_MAX
         / BLEED_TRAVEL_QUANTUM;
@@ -134,9 +112,9 @@ const STENCIL_MOMENT_PER_REACH2: f32 = shader::BLEED_SHARE_LADDER
 ///
 /// Exact rather than the continuous form above, down to flooring each rung the way the
 /// shader's integer division does — including the rungs that collapse onto one another
-/// (and onto the near tap's 1) once a small tip's reach is only a few texels. This is
-/// the number the delivered diffusivity is computed against, so an approximation here
-/// is a quiet calibration error rather than a rounding one.
+/// (and onto the near tap's 1) once a small tip's reach is only a few texels. The
+/// delivered diffusivity is computed against this, so an approximation here is a quiet
+/// calibration error rather than a rounding one.
 fn stencil_moment(reach: i32) -> f32 {
     let per_rung = shader::BLEED_SHARE_LADDER / shader::BLEED_LADDER_TAPS as f32;
     let mut moment = shader::BLEED_SHARE_NEAR;
@@ -194,15 +172,14 @@ pub(super) fn bleed_stencil(bleed: f32, radius: f32, span: f32) -> (f32, f32) {
 }
 
 /// The domain guard on [`bleed_stencil`]'s solve, not a tuning knob: `ln(1 − w)` is
-/// `−∞` at 1 and NaN past it, and a NaN λ does not render a wrong picture, it poisons
-/// every texel the firing touches.
+/// `−∞` at 1 and NaN past it, and a NaN λ poisons every texel the firing touches.
 ///
 /// As calibrated the solve never reaches it — [`BLEED_DIFFUSIVITY`] is *derived* from
 /// the two ceilings, so a full-crank firing lands at [`BLEED_BLEND`], and rounding the
 /// reach to a texel only ever moves the blend down (the near and middle taps make the
 /// discrete moment exceed the continuous one that sized it). `the_calibration_never_
-/// needs_the_blend_ceiling` is what states that, so retuning either ceiling into a
-/// regime where this bites fails a test rather than shipping.
+/// needs_the_blend_ceiling` states that, so retuning either ceiling into a regime where
+/// this bites fails a test rather than shipping.
 const BLEED_BLEND_CEILING: f32 = 0.9;
 
 /// The bleed cadence (§6.2): one dedicated **bleed slot** per crossing of
@@ -215,30 +192,24 @@ const BLEED_BLEND_CEILING: f32 = 0.9;
 /// **One quantum per firing is what makes the axis a diffusivity** rather than a
 /// number that means less the faster the hand moves. A window asks the stencil for
 /// `σ² ∝ its own travel`, and what one firing can carry is `2·Σ(share·d²)` — a
-/// property of the stencil, flat in the travel. So a merged N-quantum window asks for
-/// N times what a firing can give and is clamped back to roughly `1/N` of it
-/// ([`bleed_stencil`]). That is not the exotic case: a segment at the travel cap
-/// crosses a half-radius cadence twice, so an ordinary fast stroke was already
-/// diffusing a tenth short before this fired per crossing. Variance adds linearly in
-/// travel across firings, so N of them deliver N quanta's worth exactly — more steps,
+/// property of the stencil, flat in the travel — so a merged N-quantum window is
+/// clamped back to roughly `1/N` of it ([`bleed_stencil`]). Variance adds linearly in
+/// travel across firings, so N of them deliver N quanta's worth exactly: more steps,
 /// not bigger ones, as in any explicit diffusion solver.
 ///
-/// Counted off the **absolute** arc, so the firings, and the windows they sweep,
-/// are a pure function of the record, independent of how the path was cut (§6.2,
-/// live == committed). Why the lateral flux cannot simply ride the painting segments is a
-/// numeric story told at the shader (`dynamics.wesl`, the bleed-slot note): on real
-/// slow input the fitter emits sub-pixel segments, whose per-texel exposure is
-/// prefix-cancellation noise and whose per-segment fluxes sit under the f16 ULP of
-/// the heights they edit — measured as a 20-level directional ghost on a 177-knot
-/// repro. A half-radius window has neither problem.
+/// Counted off the **absolute** arc, so the firings, and the windows they sweep, are a
+/// pure function of the record, independent of how the path was cut (§6.2,
+/// live == committed). Why the lateral flux cannot ride the painting segments is a
+/// numeric argument told at the shader (`dynamics.wesl`, the bleed-slot note): on slow
+/// input the fitter emits sub-pixel segments, whose per-texel exposure is
+/// prefix-cancellation noise and whose per-segment fluxes sit under the f16 ULP of the
+/// heights they edit. A quarter-radius window has neither problem.
 ///
-/// Each window is an **arc**, not the chord across one. At this cadence the two are
-/// a fraction of a texel apart, so this is not a correction — it is that a window
-/// *is* a stretch of the path, and a representation that says so cannot be wrong at
-/// whatever cadence some later tuning picks. Its start is walked **back along the
-/// crossing segment's own arc** rather than looked up among the segments in hand, so a
-/// window is never truncated by where the range being drawn happens to begin — see the
-/// note at the walk itself for what that truncation cost.
+/// Each window is an **arc**, not the chord across one: a window *is* a stretch of the
+/// path, and a representation that says so cannot be wrong at whatever cadence a later
+/// tuning picks. Its start is walked **back along the crossing segment's own arc**
+/// rather than looked up among the segments in hand, so a window is never truncated by
+/// where the range being drawn happens to begin.
 pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, bool) {
     let mut fires = Vec::new();
     // Whether any segment wanted more firings than it may have — see the cap below.
@@ -253,12 +224,10 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, 
     for (i, seg) in segments.iter().enumerate() {
         let s = &seg.sweep;
         let bq = BLEED_TRAVEL_QUANTUM * s.radius;
-        // Before the division, not after it. A tip with no width sweeps nothing and has
-        // nothing to relax, and asking how many quanta fit in it first made `crossings`
-        // a NaN that only fell through by the grace of `NaN < 1.0` being false.
-        // `generate_segments_in` floors the radius at 0.5, so no real segment reaches
-        // here — which is the reason to state the guard plainly rather than lean on the
-        // ordering of two comparisons.
+        // Before the division: a tip with no width sweeps nothing, and dividing by its
+        // quantum first makes `crossings` a NaN that falls through only by the grace of
+        // `NaN < 1.0` being false. `generate_segments_in` floors the radius at 0.5, so
+        // no real segment reaches here.
         if bq <= 1e-3 {
             continue;
         }
@@ -266,37 +235,24 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, 
         if crossings < 1.0 {
             continue;
         }
-        // Capped so a plan stays bounded. `crossings` is the segment's travel over its
-        // *own* radius' quantum, and those two are priced apart: the flattener buys
-        // segment length off the brush's nominal radius while the cadence is the
-        // modulated one, so a pen thinning the tip drives the count up without
-        // shortening anything. Sixteen covers a tip down to a quarter of the brush;
-        // under that the axis under-delivers, on a tip carrying almost no paint to
-        // spread. Without a cap this is a memory blow-up on a degenerate stroke, which
-        // is a worse failure than a gentle one.
+        // Capped so a plan stays bounded: a pen thinning the tip drives the crossing
+        // count up without shortening a segment, and unbounded memory on a degenerate
+        // stroke is the worse failure (`MAX_BLEED_FIRES_PER_SEGMENT`).
         capped |= crossings as usize > MAX_BLEED_FIRES_PER_SEGMENT;
         let crossings = (crossings as usize).min(MAX_BLEED_FIRES_PER_SEGMENT);
         let (end, end_dir) = crate::path::arc_at(s.start, s.dir, s.curvature, s.length);
-        // Walked **back along the crossing segment's own arc**, rather than looked up
-        // in the segments this piece happens to hold. Reversing an arc is negating
-        // both its direction and its curvature, so this is the same circle traced the
-        // other way and is exact for any path the segment itself describes.
+        // Walked back along the crossing segment's own arc rather than looked up among
+        // the segments this piece holds: reversing an arc is negating both its
+        // direction and its curvature, so this is the same circle traced the other way,
+        // exact for any path the segment describes. A lookup would clamp to the first
+        // segment in hand and cut short any window reaching past the range being drawn
+        // — and a live tail starts at a span boundary while the commit renders the
+        // whole stroke from zero, so the two would relax different amounts of paint at
+        // that seam (`preview == committed`, §1.3, where it cannot be repainted).
         //
-        // It is history-free, and that is the point. Looking the position up means
-        // clamping to the first segment in hand, so a window reaching further back
-        // than the range being drawn comes out short — and a live tail always starts at
-        // a span boundary while the commit renders the whole stroke from zero, so the
-        // two would relax different amounts of paint at exactly that seam. That is a
-        // `preview == committed` break (§1.3), in the one place it cannot be
-        // repainted, and a visible one: a bleeding stroke lightens when the pointer
-        // comes up.
-        //
-        // What it costs is extrapolating one segment's curvature over the window —
-        // the same bend for the whole span rather than each segment's own, which is
-        // what walking the true path would give. Bounded by
-        // [`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN), which caps how far the tip's
-        // curvature may move at all, and the window is the arc that extrapolation
-        // describes rather than a chord across it, so nothing else is given up on top.
+        // The cost is extrapolating one segment's curvature over the window rather than
+        // each segment's own, bounded by `budget::MAX_TIP_TURN`, which caps how far the
+        // tip's curvature may move at all.
         //
         // Emitted oldest first: the firings tile back from the segment's end, but they
         // edit the canvas in sequence and paint laid earlier should relax first.
@@ -305,12 +261,9 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, 
             let (start, back_dir) = crate::path::arc_at(end, end_dir * -1.0, -s.curvature, back);
             fires.push(BleedFire {
                 after: i,
-                // The window inherits the crossing segment's `bleed`, and **only** that
-                // — it is that segment's own firing, and the axis is the one thing the
-                // slot it becomes will read. A [`Sweep`] has nowhere to put the other
-                // rates, which is what keeps `dynamics_plan` from having to zero them
-                // back out lane by lane. Reading the axis from one point of the window
-                // is the cadence's usual approximation about the radius it fires at.
+                // The axis is the one thing the slot this becomes will read; taking it
+                // from one point of the window is the cadence's usual approximation
+                // about the radius it fires at.
                 bleed: seg.paint.bleed,
                 window: Sweep {
                     start,
@@ -318,29 +271,19 @@ pub(super) fn bleed_fires(bleed: f32, segments: &[Segment]) -> (Vec<BleedFire>, 
                     // window's own heading is its negation — the tangent the path had
                     // at `start`, which is where the arc below is measured from.
                     dir: back_dir * -1.0,
-                    // **The window bends with the path it stands for.** Its two
-                    // endpoints were always on the arc; carrying the curvature is what
-                    // puts the sweep between them there too. At this cadence a chord
-                    // would sit `span²·κ/8` off the paint, which the tip covers many
-                    // times over — so this is not a correction, it is that a window
-                    // *is* a stretch of the path and nothing is gained by representing
-                    // it as something else. Nothing downstream needs telling:
-                    // `coverage_bounds` already grows a box by the sagitta, and
-                    // `deposit` sweeps an arc for every painting segment by unrolling
-                    // the annulus (`stamp_common::sweep_at`) — a bleed slot just takes
-                    // the same path. The unroll's own error is `radius·|curvature|/2`,
-                    // which the window inherits from the crossing segment and the
-                    // flattener has capped
-                    // ([`MAX_TIP_TURN`](super::budget::MAX_TIP_TURN)).
+                    // The window bends with the path it stands for: carrying the
+                    // curvature puts the sweep between its two endpoints on the arc
+                    // too. Nothing downstream needs telling — `coverage_bounds` grows a
+                    // box by the sagitta, and `deposit` unrolls the annulus for every
+                    // painting segment (`stamp_common::sweep_at`), whose own
+                    // `radius·|curvature|/2` error the flattener has capped
+                    // (`budget::MAX_TIP_TURN`).
                     curvature: s.curvature,
                     radius: s.radius,
-                    // **A window does not ramp**, even when the segment it fires after
-                    // does. A firing is a stretch of lateral diffusion at one tip, and
-                    // that tip is the radius `bleed_stencil` solved its reach and rate
-                    // against (`plan`, below) — a sweep whose rim moved under it would
-                    // be diffusing at a width its own stencil was not built for. The
-                    // cadence's usual approximation about the radius it fires at, and
-                    // the same one the inherited rates below make.
+                    // A window does not ramp, even when the segment it fires after
+                    // does: the tip it diffuses at is the radius `bleed_stencil` solved
+                    // its reach and rate against, and a rim moving under the sweep
+                    // would diffuse at a width its own stencil was not built for.
                     radius_ramp: 0.0,
                     // The crossing segment's shape is the window's shape — a firing is
                     // that segment relaxing its own extent, so it reaches exactly as
@@ -373,11 +316,10 @@ mod tests {
     /// [`bleed_stencil`] hands the shader — the reach it builds its stencil at and the
     /// rate it relaxes with. In radius² per pass, the unit the axis is quoted in.
     ///
-    /// This is the shader's own arithmetic read backwards: it blends
-    /// `w = 1 − exp(−k·e)` of each neighbour's difference across a stencil of second
-    /// moment `Σ(share·d²)`, injecting `σ² = 2·w·Σ` per axis over a window of
-    /// `radius · span` — so anything the solve gets wrong shows up here rather than
-    /// only on a GPU.
+    /// The shader's own arithmetic read backwards: it blends `w = 1 − exp(−k·e)` of
+    /// each neighbour's difference across a stencil of second moment `Σ(share·d²)`,
+    /// injecting `σ² = 2·w·Σ` per axis over a window of `radius · span` — so anything
+    /// the solve gets wrong shows up here rather than only on a GPU.
     fn delivered(bleed: f32, radius: f32, span: f32) -> f32 {
         let (reach, lambda) = bleed_stencil(bleed, radius, span);
         let e_nom = TAU_PER_PASS * span / (2.0 * radius);
@@ -388,10 +330,8 @@ mod tests {
     /// The windows the solve is actually handed: one cadence quantum, at tips from
     /// "the reach has a single texel to work with" up to a full-canvas blender.
     ///
-    /// One quantum is not a simplification here — `bleed_fires` emits a firing *per*
-    /// crossing precisely so that it is the only span this is ever asked for, since
-    /// what a firing can carry is flat in the travel while what a window asks for grows
-    /// with it.
+    /// One quantum is not a simplification: `bleed_fires` emits a firing *per* crossing
+    /// precisely so that it is the only span the solve is ever asked for.
     fn cases() -> impl Iterator<Item = (f32, f32)> {
         [1.0f32, 3.0, 8.0, 20.0, 40.0, 100.0]
             .into_iter()
@@ -402,12 +342,10 @@ mod tests {
     /// buys is linear in the knob — at every brush size, and through the reach's
     /// rounding to whole texels.
     ///
-    /// Linearity is the whole claim. Drive only the rate and the knob's top end
-    /// delivers nothing at all, since the rate enters through a blend that clips at 1:
-    /// measured on a 40 px tip, all of 0.95 → 1.0 buys ×1.9 in diffusivity and then
-    /// stops. Here the reach carries what the rate cannot, and
-    /// the solve re-derives the blend from the *rounded* reach — which is why this can
-    /// assert a tight relative error rather than a trend.
+    /// Driving only the rate delivers almost nothing at the knob's top end, since the
+    /// rate enters through a blend that clips at 1. Here the reach carries what the rate
+    /// cannot, and the solve re-derives the blend from the *rounded* reach — which is
+    /// why this can assert a tight relative error rather than a trend.
     #[test]
     fn the_bleed_axis_delivers_a_diffusivity_linear_in_the_knob() {
         for (radius, span) in cases() {
@@ -447,14 +385,13 @@ mod tests {
     /// Checked on a tip large enough that the reach is not dominated by its rounding
     /// to a whole texel.
     ///
-    /// The reach lands on its cap *exactly* — that half of the derivation is algebra,
-    /// and cancels. The blend only lands near its aim, and the slack is the ladder:
+    /// The reach lands on its cap *exactly* — that half of the derivation is algebra.
+    /// The blend only lands near its aim, and the slack is the ladder's quantization:
     /// every rung is an integer texel, so the stencil the shader builds has a slightly
-    /// different second moment from the continuous one
-    /// ([`STENCIL_MOMENT_PER_REACH2`]) that sized the reach, and `bleed_stencil`
-    /// re-derives the blend against the *discrete* moment — which is the whole reason
-    /// it re-derives it. A few percent either way is that quantization; a drift of the
-    /// kind this test exists to catch would move the top of the knob, not nudge it.
+    /// different second moment from the continuous [`STENCIL_MOMENT_PER_REACH2`] that
+    /// sized the reach, and `bleed_stencil` re-derives the blend against the *discrete*
+    /// one. A few percent either way is that; a drift worth catching would move the top
+    /// of the knob, not nudge it.
     #[test]
     fn full_crank_lands_on_both_ceilings_at_once() {
         let (radius, span) = (40.0, BLEED_TRAVEL_QUANTUM * 40.0);
@@ -515,17 +452,14 @@ mod tests {
         }
     }
 
-    /// **Why `bleed_fires` fires per crossing rather than per segment**, stated as the
-    /// arithmetic that forced it: what one firing can carry is a property of the
-    /// stencil and flat in the travel, while what a window asks for grows with it. So
-    /// a window merged across N quanta is clamped back towards `1/N` of the axis.
+    /// **Why `bleed_fires` fires per crossing rather than per segment**: what one firing
+    /// can carry is a property of the stencil and flat in the travel, while what a
+    /// window asks for grows with it, so a window merged across N quanta is clamped back
+    /// towards `1/N` of the axis.
     ///
-    /// Two quanta is not an exotic case — it is half a segment at the travel cap
-    /// against a quarter-radius cadence, i.e. an ordinary fast stroke — which is what
-    /// makes the
-    /// merged form a shortfall on real input rather than a corner. The clamp itself is
-    /// the right behaviour for a solve that cannot be satisfied; this pins that it is
-    /// still a clamp and not a NaN, and that the loss is the shape the ceiling implies.
+    /// Two quanta is half a segment at the travel cap against a quarter-radius cadence —
+    /// an ordinary fast stroke, not a corner. This pins that the loss is still a clamp
+    /// of the shape the ceiling implies, and not a NaN.
     #[test]
     fn a_window_merged_across_quanta_cannot_be_satisfied() {
         let radius = 40.0;
@@ -549,12 +483,10 @@ mod tests {
     /// sweeps, is a pure function of the record — not of where the renderer happened to
     /// cut the stroke into pieces or ranges.
     ///
-    /// This is a `preview == committed` property (§1.3) in the one place it cannot be
-    /// repainted. A live tail always starts at a span boundary while the commit renders
-    /// the whole stroke from zero, so if a window came out shorter for one than the
-    /// other, a bleeding stroke would visibly lighten the moment the pointer came up —
-    /// which it did, before the window learned to walk back along the crossing
-    /// segment's own arc instead of looking its start up among the segments in hand.
+    /// A `preview == committed` property (§1.3) in the one place it cannot be
+    /// repainted: a live tail always starts at a span boundary while the commit renders
+    /// the whole stroke from zero, so a window that came out shorter for one than the
+    /// other would visibly lighten a bleeding stroke the moment the pointer came up.
     ///
     /// Checked at every cut point rather than one, since the interesting cuts are
     /// exactly the ones that land mid-window.
@@ -598,15 +530,13 @@ mod tests {
     /// The firings of a curved segment **tile it**, a quantum each, and every one of
     /// them lies on the path rather than on a chord across it.
     ///
-    /// Two properties that hold each other up. Tiling is what makes the axis a
-    /// diffusivity: a firing carries a fixed variance, so N quanta of travel have to
-    /// arrive as N firings or the axis is quietly scaled by `1/N` (`bleed_stencil`).
-    /// And a window on the arc is what makes each of those tiles a stretch of the path
-    /// rather than an approximation to one — at this cadence the bow a chord would sit
-    /// off it is under a thousandth of a texel, so this is not a correction the picture
-    /// needs today; it is that the representation cannot go wrong if the cadence is
-    /// ever coarsened, which is the lever `BLEED_REACH_MAX` names as the way to
-    /// diffuse further.
+    /// Tiling is what makes the axis a diffusivity: a firing carries a fixed variance,
+    /// so N quanta of travel have to arrive as N firings or the axis is quietly scaled
+    /// by `1/N` (`bleed_stencil`). A window on the arc makes each tile a stretch of the
+    /// path rather than an approximation to one — at this cadence the bow a chord would
+    /// sit off it is under a thousandth of a texel, so what this guards is that the
+    /// representation cannot go wrong if the cadence is ever coarsened, which is the
+    /// lever `BLEED_REACH_MAX` names as the way to diffuse further.
     #[test]
     fn a_segments_firings_tile_it_along_its_own_arc() {
         use crate::gpu::stroke::budget::MAX_TIP_TURN;
@@ -673,11 +603,11 @@ mod tests {
     /// however finely the path was cut, so its exposure is a well-conditioned prefix
     /// difference rather than the f16 noise a per-segment flux would be.
     ///
-    /// A hand that draws slowly is fitted at a control point per pointer sample — the
-    /// repro that prompted this carried 177 knots over 68 px — and at that cut a texel's
-    /// per-segment flux lands under the f16 ULP of the height it is editing, so every
-    /// store either snaps it away or ratchets a whole ULP. One firing moves what those
-    /// micro-segments would each have tried to move, in a step far above the floor.
+    /// A hand that draws slowly is fitted at a control point per pointer sample, and at
+    /// that cut a texel's per-segment flux lands under the f16 ULP of the height it is
+    /// editing, so every store either snaps it away or ratchets a whole ULP. One firing
+    /// moves what those micro-segments would each have tried to move, in a step far
+    /// above the floor.
     #[test]
     fn a_firing_sweeps_its_own_quantum_however_finely_the_path_was_cut() {
         let radius = 20.0;

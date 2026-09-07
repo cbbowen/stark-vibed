@@ -1,15 +1,12 @@
 //! Importing a height map: canonical bytes, and the id that names them (§6.4, §8).
 //!
 //! No GPU here either. This is the asset half of a substrate — decode, cap, hash — and
-//! it is separate from the upload because it answers a different question: not "how
-//! does this substrate light and bite" but "which substrate is this, and what exactly do we
-//! store and send for it".
+//! it answers a different question from the upload: not "how does this substrate light
+//! and bite" but "which substrate is this, and what exactly do we store and send for it".
 //!
-//! The decode, the cap and the hash themselves are [`stark_assetid`]'s. They are the
-//! identity contract every build has to agree on, and nothing here is free to
-//! reinterpret them (§19) — what is left in this module is the part that is a
-//! *substrate's*: wrapping the id in a [`SubstrateId`], because a substrate is named by one
-//! and a brush shape is not.
+//! The decode, the cap and the hash themselves are [`stark_assetid`]'s — the identity
+//! contract every build has to agree on, which nothing here may reinterpret (§19). What
+//! is left is the part that is a *substrate's*: wrapping the id in a [`SubstrateId`].
 
 use stark_assetid::Canonical;
 

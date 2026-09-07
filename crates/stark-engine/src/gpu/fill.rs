@@ -5,12 +5,11 @@
 //! so old history versions keep their tiles and the pool reclaims what falls out of
 //! reach.
 //!
-//! Almost all of it is borrowed, which is the point. The region's coverage is
-//! rasterized by [`SelectionRenderer`] — a `Replace` op over an empty mask *is* the
-//! shape's coverage, so the analytic shapes, the feather ramp and the tile caps are
-//! shared with the selection tools rather than reimplemented for paint. What is left
-//! is one pass of `fill.wesl` per written tile, stacking the parcel by the law
-//! `paint_common.wesl` shares with the brush.
+//! The region's coverage is rasterized by [`SelectionRenderer`] — a `Replace` op over an
+//! empty mask *is* the shape's coverage, so the analytic shapes, the feather ramp and the
+//! tile caps are shared with the selection tools rather than reimplemented for paint.
+//! What is left is one pass of `fill.wesl` per written tile, stacking the parcel by the
+//! law `paint_common.wesl` shares with the brush.
 //!
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
 //! `Clone` and rides in the `Action::Context` (§5).
@@ -45,8 +44,7 @@ use stark_shaders::mirror::fill::decl as fd;
 ///
 /// One list, read by both sides — the layout and the group are built from it, so
 /// neither can disagree with the other. The residual sits beside the base color it
-/// rides with, its `@if(resid)` gate carried on the declaration, where the
-/// `if resid { push }` this replaces had to restate it.
+/// rides with, carrying its `@if(resid)` gate on the declaration.
 ///
 /// `TILE` is the one slot whose *binding* the shader does not decide: `f` and `tile`
 /// are both `var<uniform>` in the WESL, and the difference is that the first is one
@@ -66,12 +64,9 @@ const FILL_SLOTS: &[desc::Slot] = &[
 // commented, since the two are declared in different crates and nothing else would
 // notice them parting (§6.10).
 //
-// **What this does not guard is the data**, and it cannot: it is a statement about
-// two constants. The loop below indexes `stop_c` by a stop's position, so a ramp
-// longer than the array is an index off the end of a uniform — a panic, not the
-// silent truncation this comment used to claim. That bound belongs to `Gradient`,
-// which holds it in `new`; this assert only keeps the number the same on both sides
-// of the seam.
+// **What this does not guard is the data**: the loop below indexes `stop_c` by a stop's
+// position, so a ramp longer than the array is an index off the end of a uniform. That
+// bound belongs to `Gradient`, which holds it in `new`.
 const _: () = assert!(
     stark_shaders::mirror::fill::MAX_GRADIENT_STOPS as usize == stark_model::gradient::MAX_STOPS,
     "the shader's stop count and the model's have drifted apart across the seam"
@@ -157,10 +152,9 @@ impl FillRenderer {
             return Some(base.clone());
         }
 
-        // The shape's own coverage, as mask tiles. `Replace` over the unrestricted
-        // selection is exactly "the shape, and nothing else", so this is the
-        // selection rasterizer doing its ordinary job — the reason a fill's edge and
-        // a marquee's edge cannot drift apart. `All` needs no rasterize: its
+        // The shape's own coverage, as mask tiles: `Replace` over the unrestricted
+        // selection is exactly "the shape, and nothing else", which is why a fill's
+        // edge and a marquee's edge cannot drift apart. `All` needs no rasterize — its
         // coverage is 1 everywhere, and the gate is then the whole boundary.
         let region = match op.shape() {
             SelectionShape::All => Selection::everything(),
@@ -174,10 +168,9 @@ impl FillRenderer {
         let device = &self.ctx.device;
         let mut scope = self.scratch.scope(&self.ctx, "stark fill");
 
-        // Every stop's color converts to this space's channels **on the CPU, once
-        // per fill** — the shader then interpolates in the working space, which is
-        // what makes an Oklab ramp the library strip's and a Mixbox ramp a pigment
-        // mixture (§22.4).
+        // Every stop's color converts to this space's channels on the CPU, once per
+        // fill; the shader interpolates in the working space, which is what makes an
+        // Oklab ramp the library strip's and a Mixbox ramp a pigment mixture (§22.4).
         let mut uniform = FillUniform::default();
         uniform.p[0] = op.opacity();
         // How strongly the author's mask gates this fill (§6.8) — the whole mask's

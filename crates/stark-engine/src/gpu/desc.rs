@@ -6,23 +6,17 @@
 //! `immediate_size: 0` — so a call site states only what makes it different from
 //! its neighbours.
 //!
-//! That is the whole argument for the module. Before it there were ten separately
-//! written closures for "a fragment-visible float texture", three
-//! `clear_attachment`s, two byte-identical `zero_texture`s, and seventeen render
-//! pipelines each restating the same five defaults. None of that was wrong; it was
-//! just impossible to see, at a call site, which of the differences from the one
-//! beside it were *meant*. A shared descriptor makes the meant ones the only ones
-//! written down.
+//! That is the whole argument for the module: a shared descriptor makes the meant
+//! differences the only ones written down.
 //!
-//! **A layout is no longer written here at all**, it is read off the shader (§6.10).
+//! **A layout is not written here at all**, it is read off the shader (§6.10).
 //! [`layout_for`] and [`bind_group_for`] take a list of [`Slot`]s naming the generated
-//! declarations, and everything a `desc::` call used to spell — the index, whether the
-//! slot is a uniform and how wide, a sampler, a texture, or a storage texture of a
-//! particular format, and whether the residual build has it — comes from the WESL. What
-//! a list still says is [`How`] the host binds: through a sampler, as a dynamic-offset
-//! slot, in which stages, and (once) that a slot exists only where the space has a
-//! residual. Each of those four is a fact about the *host*, and each has a case in this
-//! codebase that proves it cannot be read off the declaration. [`Bindings`] holds a
+//! declarations, and the index, whether the slot is a uniform and how wide, a sampler,
+//! a texture, or a storage texture of a particular format, and whether the residual
+//! build has it, all come from the WESL. What a list still says is [`How`] the host
+//! binds: through a sampler, as a dynamic-offset slot, in which stages, and (once) that
+//! a slot exists only where the space has a residual. Each of those four is a fact
+//! about the *host*, and none can be read off the declaration. [`Bindings`] holds a
 //! layout together with the list and the residual it was built from, so a group built
 //! through it cannot be handed a different pair.
 
@@ -139,8 +133,8 @@ enum How {
 /// **The declaration is carried, not looked up.** A slot list names
 /// `decl::REGION_COLOR`, so there is no index to resolve against a table — which is
 /// what makes a multi-group module safe to describe at all: `@binding(0)` means a
-/// different slot in each of a module's groups, and a lookup keyed on the index alone
-/// silently answered with whichever came first.
+/// different slot in each of a module's groups, and an index alone cannot tell them
+/// apart.
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
     decl: stark_shaders::Binding,
@@ -202,15 +196,14 @@ impl Slot {
     /// (§6.7).
     ///
     /// The one thing about the residual the WESL cannot say. `blend_mixbox.wesl`
-    /// declares bindings 7 and 8 with no `@if`, past where `blend_common` (0–4) and
-    /// `mixbox_lut` (5–6) stop, and it is right not to gate them: that shader is *only*
-    /// compiled for the pigment space, so inside it they always exist. What varies is
-    /// which shader the document runs, and that is `colorspace.rs`'s business — so the
-    /// host states it, here, once per slot.
+    /// declares its residual bindings with no `@if`, and rightly so: that shader is
+    /// *only* compiled for the pigment space, so inside it they always exist. What
+    /// varies is which shader the document runs, which is `colorspace.rs`'s business
+    /// — so the host states it, here, once per slot.
     ///
-    /// Orthogonal to [`How`] rather than folded into it, because the two genuinely vary
-    /// independently: `filter_mixbox.wesl` **samples** its `back_resid` for the
-    /// chromatic gather (§21.10) where `blend_mixbox.wesl` loads its two.
+    /// Orthogonal to [`How`], because the two vary independently:
+    /// `filter_mixbox.wesl` **samples** its `back_resid` for the chromatic gather
+    /// (§21.10) where `blend_mixbox.wesl` loads its two.
     pub(crate) const fn only_with_resid(mut self) -> Self {
         self.resid_only = true;
         self
@@ -218,10 +211,10 @@ impl Slot {
 
     /// The stages that read **this** slot, where they are not the whole layout's.
     ///
-    /// Most layouts are one stage's, and pass it once. The two that are not are pass A's
-    /// view group and the overlay's: a `View` uniform is read by the vertex stage to
-    /// place the quad while the sampler beside it is the fragment's, so declaring the
-    /// pair `VERTEX_FRAGMENT` would ask for a visibility neither binding uses.
+    /// Most layouts are one stage's and pass it once. Pass A's view group and the
+    /// overlay's are not: a `View` uniform is the vertex stage's while the sampler
+    /// beside it is the fragment's, and declaring the pair `VERTEX_FRAGMENT` would ask
+    /// for a visibility neither binding uses.
     pub(crate) const fn in_stages(mut self, vis: wgpu::ShaderStages) -> Self {
         self.vis = Some(vis);
         self
@@ -277,11 +270,10 @@ fn slot_entry(
     })
 }
 
-/// The most slots one list may name — what [`bind_group_for`] fills its entries into
-/// on the stack, since it runs once per tile per pass and a `Vec` there was an
-/// allocation at exactly the rate `Targets::attachments` beside it avoids. Checked at
-/// [`layout_for`] too, so a longer list fails where its renderer is built rather
-/// than at its first draw. The longest list today is the dynamics' deposit at 17.
+/// The most slots one list may name — [`bind_group_for`] fills its entries into an
+/// array of this size on the stack, since it runs once per tile per pass. Checked at
+/// [`layout_for`] too, so a longer list fails where its renderer is built rather than
+/// at its first draw. The longest list today is the dynamics' deposit at 17.
 const MAX_SLOTS: usize = 24;
 
 /// A bind group layout for the `slots` one entry point reads, typed from the shader's
@@ -290,12 +282,12 @@ const MAX_SLOTS: usize = 24;
 /// The list of slots is the *only* thing written on the host, and it is written once:
 /// [`bind_group_for`] builds the matching group from the same list, so a layout and its
 /// group cannot disagree about which bindings are present, in what order, or of what
-/// type. Two hand-kept arrays per entry point joined by a magic element count — seven
-/// pairs of them for `dynamics.wesl` alone — is what that saves.
+/// type.
 ///
 /// A bind group layout describes exactly one `@group`, so a list spanning two is a
-/// mistake in the list rather than a layout with a meaning: the assertion below is what
-/// says so, and it is only sayable because the declaration carries its group.
+/// mistake in the list rather than a layout with a meaning — which is only sayable
+/// because the declaration carries its group. Panics if it does, or if the list is
+/// longer than [`MAX_SLOTS`].
 pub(crate) fn layout_for(
     device: &wgpu::Device,
     label: &str,
@@ -544,12 +536,10 @@ pub(crate) fn fullscreen_pipeline(
 /// An instanced quad drawn as a triangle strip — the shape every pass that
 /// rasterizes per-tile geometry takes (`draw(0..4, i..i+1)`).
 ///
-/// Spelled out field by field because a `const` cannot call `Default::default()`,
-/// which is the one thing here that could change a pixel silently: the ten pipelines
-/// that take this would otherwise each write
-/// `{ topology: TriangleStrip, ..Default::default() }`, and a field here disagreeing
-/// with that default would alter what they rasterize without failing anything.
-/// `quad_strip_is_the_default_with_a_strip_topology` is what checks it.
+/// Spelled out field by field because a `const` cannot call `Default::default()`, so
+/// a field here disagreeing with that default would alter what ten pipelines
+/// rasterize without failing anything. `quad_strip_is_the_default_with_a_strip_topology`
+/// is what checks it.
 ///
 /// `cull_mode: None` is load-bearing for the transform in particular: a
 /// negative-determinant affine (a flip) reverses winding, so both faces must draw
@@ -647,16 +637,10 @@ mod tests {
     /// and [`fullscreen_pipeline`]'s primitive is exactly the default.
     ///
     /// Both are written out by hand rather than derived from the pipelines that use
-    /// them, so this is the assertion that they still agree. It is the only way that
-    /// could move a
-    /// pixel: every other field these helpers fill in is one wgpu validates or one
-    /// the shader ignores, whereas winding, culling and topology decide what gets
-    /// rasterized and would simply come out different, on ten pipelines, with
-    /// nothing failing to say so.
-    ///
-    /// It also pins the pair against wgpu itself. A future release that changed a
-    /// `PrimitiveState` default would leave these constants behind — which is the
-    /// safe direction, and this says which way round it happened.
+    /// them, and winding, culling and topology are the fields that decide what gets
+    /// rasterized: a drift here comes out as different pixels on ten pipelines with
+    /// nothing failing to say so. It also pins the pair against wgpu itself, whose
+    /// own `PrimitiveState` defaults could move underneath them.
     #[test]
     fn quad_strip_is_the_default_with_a_strip_topology() {
         assert_eq!(

@@ -2,12 +2,10 @@
 //! the ceilings on one region-sized piece of it, and the flattening budget those two
 //! together buy (§6.2).
 //!
-//! These are the numbers a person actually tunes, and they are only meaningful
-//! against one another — so they live together, with the measurements and the dead
-//! ends that fixed each one recorded on the constant itself. [`flatten_budget`] is
-//! where they are spent: it is the single place a brush's settings become a segment
-//! length, which is what makes a live tail and the commit that replaces it cut the
-//! same path (§1.3).
+//! These numbers are only meaningful against one another, so they live together.
+//! [`flatten_budget`] is where they are spent: the single place a brush's settings
+//! become a segment length, which is what makes a live tail and the commit that
+//! replaces it cut the same path (§1.3).
 //!
 //! Nothing here touches the GPU. It is float arithmetic over a [`BrushParams`], which
 //! is what lets the segment-budget tests pin it exactly (`segments::tests`).
@@ -20,12 +18,11 @@ use super::dynamics::BLEED_TRAVEL_QUANTUM;
 /// The optical depth one full pass of an opaque tip lays over a point — the τ
 /// ceiling `assets::build_prefix` clamps to.
 ///
-/// Every exchange in the stamp loop is a rate *per unit optical depth*, because
-/// that is the currency the swept integral is denominated in and the only one both
-/// sides can agree on (§6.2). But τ ≈ 7 for a single pass, so read
-/// literally a `lift` of 0.5 would strip 99% of the canvas in one pass. Dividing
-/// the rates through by this makes an axis mean a fraction **per pass of the tip**
-/// — hardness-independent, and what a 0..1 knob is expected to mean.
+/// Every exchange in the stamp loop is a rate *per unit optical depth*, that being the
+/// currency the swept integral is denominated in (§6.2). But τ ≈ 7 for a single pass,
+/// so read literally a `lift` of 0.5 would strip 99% of the canvas in one pass.
+/// Dividing the rates through by this makes an axis mean a fraction **per pass of the
+/// tip** — hardness-independent, and what a 0..1 knob is expected to mean.
 pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// Region edge (canvas px) the chunker aims to keep a piece inside. A stroke that
 /// wants more is drawn in as many pieces as it takes
@@ -33,42 +30,37 @@ pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// transient GPU memory rather than deciding which strokes the loop can draw at all
 /// (§6.2).
 ///
-/// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so
-/// each is 2048² × 8 B = 32 MiB. And it really is *per piece* rather than per stroke,
-/// because a piece's region is a `ScratchPool` lease its `SubmitScope` releases at the
-/// flush that submits it (`gpu::scratch`), so the next piece takes the same memory.
+/// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so each
+/// is 2048² × 8 B = 32 MiB. Per *piece* rather than per stroke, because a piece's
+/// region is a `ScratchPool` lease its `SubmitScope` releases at the flush that submits
+/// it (`gpu::scratch`), so the next piece takes the same memory.
 ///
-/// **A target, not a ceiling** — [`MAX_REGION_DIM`] is the ceiling, and the two are
-/// different numbers for a reason. Cutting is by *segment*, so a piece can be made to
-/// fit this only while a single segment does; a brush whose tip alone wants more gets
-/// a piece the size of its tip and pays for it. Raising this instead would let an
-/// ordinary long stroke grow its pieces to the ceiling too, which is the same
-/// megabytes bought for nobody: a 10 px tip crossing the canvas draws exactly as well
-/// in 67 MB pieces as in 1 GB ones.
+/// **A target, not a ceiling** — [`MAX_REGION_DIM`] is the ceiling. Cutting is by
+/// *segment*, so a piece fits this only while a single segment does; a brush whose tip
+/// alone wants more gets a piece the size of its tip. Raising this instead would let
+/// every ordinary long stroke grow its pieces to the ceiling too, for a picture no
+/// better than the one 67 MB pieces draw.
 pub(super) const REGION_BUDGET_DIM: u32 = 2048;
 
 /// **The largest region a piece may ever allocate** — the hard ceiling, where
 /// [`REGION_BUDGET_DIM`] is the target the chunker aims at (§6.2).
 ///
-/// A region is a texture, so this is the device's texture limit and nothing else is
-/// available to be. It is reached only by the floor no cutting gets under — one
-/// segment of one brush — which is why it also sets the ceiling on a brush's reach
-/// ([`max_tip_reach`]).
+/// A region is a texture, so this is the device's texture limit. It is reached only by
+/// the floor no cutting gets under — one segment of one brush — which is why it also
+/// sets the ceiling on a brush's reach ([`max_tip_reach`]).
 ///
 /// **Paid only by the stroke that asks.** A tip needing more than
 /// [`REGION_BUDGET_DIM`] gets one segment per piece, so its region is the size of its
 /// own extent rather than of this constant: ~124 MB for the widest brush the editor
-/// offers drawn along its facing axis, and ~500 MB for the same brush drawn at 45°,
-/// where an axis-aligned box around a long diagonal tip is at its worst. Transient,
-/// freed per piece, and only for a brush somebody deliberately built at the extreme.
+/// offers drawn along its facing axis, ~500 MB for the same brush at 45°, where an
+/// axis-aligned box around a long diagonal tip is at its worst. Transient, freed per
+/// piece.
 pub(super) const MAX_REGION_DIM: u32 = crate::gpu::context::MAX_TEXTURE_DIM_2D;
 
-// A region is a texture, so the ceiling may never be set past what the device was
-// asked for. Written down even though the line above derives it from exactly that
-// constant, because the failure it guards against is somebody replacing that
-// derivation with a literal — which is the natural thing to do when raising one of
-// the two, and which `create_texture` would then report as a validation error from
-// inside the render path rather than as a number being wrong.
+// A region is a texture, so the ceiling may never be set past what the device was asked
+// for. Asserted rather than left to the derivation above, because replacing that
+// derivation with a literal would surface only as a `create_texture` validation error
+// from inside the render path.
 const _: () = assert!(
     MAX_REGION_DIM <= crate::gpu::context::MAX_TEXTURE_DIM_2D,
     "a region would not fit the texture limit the device was asked for",
@@ -85,17 +77,11 @@ const _: () = assert!(
 ///
 /// It bounds the stamp uniform buffer, but not one slot per segment: `dynamics_plan`
 /// also emits a bleed slot per crossing of the bleed cadence — up to
-/// `dynamics::bleed::MAX_BLEED_FIRES_PER_SEGMENT` of them — and the pen-up settle, so a piece plans
-/// at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
-/// `dynamics::plan::STAMP_STRIDE` apiece that is ~17.8 MB, which is why the
-/// factor is worth stating and not worth chunking around: making the cut count planned
-/// slots would couple `chunk_segments` to the bleed cadence to save a few megabytes it
-/// does not need. Only a bleeding brush pays any of it, and only one whose segments
-/// outrun its own cadence pays more than double.
-///
-/// The figure moved with the cadence: it was ~9.4 MB when a firing carried half a
-/// radius, and halving [`BLEED_TRAVEL_QUANTUM`] doubled the fires a segment may
-/// contribute and so this bound with it.
+/// `dynamics::bleed::MAX_BLEED_FIRES_PER_SEGMENT` of them — and the pen-up settle, so a
+/// piece plans at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
+/// `dynamics::plan::STAMP_STRIDE` apiece that is ~17.8 MB. Making the cut count planned
+/// slots instead would couple `chunk_segments` to the bleed cadence to save megabytes
+/// only a bleeding brush pays at all.
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool exchanges once per *segment*, is simply a cap on the
@@ -103,18 +89,16 @@ pub(super) const MAX_STAMPS: usize = 4096;
 ///
 /// **Quoted at one transfer rate.** This is the travel for `lift = deposit = 0.95`;
 /// [`exchange_travel`] scales it by how fast the brush being drawn actually trades,
-/// because that — not the travel — is what the error is first order in. A gentler brush
-/// is not being given a tolerance, it is being charged its own price.
+/// because that — not the travel — is what the error is first order in.
 ///
 /// A property of the exchange loop rather than of the tip, so nothing about a shape's
 /// coverage mask should change it. What it bounds is the pair of mean-field
 /// approximations either side of the transfer — `bake` gives the canvas a reservoir
 /// frozen at the segment's entry, `exchange` gives the tool a canvas frozen at the same
-/// instant — and halving it halves that error, cleanly, with no knee to sit on.
+/// instant — and halving it halves that error, with no knee to sit on.
 ///
-/// Why the error is a visible bug rather than a tolerance, why no reformulation of the
-/// pair kernel avoids it, and why the gain from the sliding kernel was banked as
-/// accuracy instead of spent here: **§6.2**.
+/// Why the error is a visible bug rather than a tolerance, and why no reformulation of
+/// the pair kernel avoids it: **§6.2**.
 /// `golden_drained_brush_length_independent` is what pins it.
 const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 
@@ -142,16 +126,6 @@ pub(super) const MIN_SEGMENT_LEN: f32 = 0.5;
 ///
 /// rising monotonically to that worst case and tending to 1 as the edge straightens.
 /// 1.095 rounds it up.
-///
-/// It read 1.1 while `max_len` capped the *chord*, and that number was covering two
-/// terms rather than one: the arc over the chord (0.68% at the same backstop) as well
-/// as the bow. The first was never the region's to pay — it was a flattener that
-/// measured `dist` along chords while everything downstream walked arcs, and 1.1 was
-/// the compensating constant. With the flattener fixed the term is gone; what stayed
-/// is the half that was always real. Against the chord the same pair needed
-/// `1 + 2·sagitta/chord = 1.10102`, so 1.1 was in fact a hair *short* of it — nobody
-/// saw that, because reaching the backstop takes a segment bending ~23° when
-/// `FLATTEN_TOLERANCE.angle` admits 5.7°.
 const ARC_MARGIN: f32 = 1.095;
 
 /// The longest `max_len` one segment of `b` can flatten at and still fit a
@@ -162,17 +136,15 @@ const ARC_MARGIN: f32 = 1.095;
 /// reservoir pickup reduces over the whole tip at once, so the region can never be
 /// smaller than one extent. What the extent holds beyond the tip is the segment's
 /// travel, and that is the one knob subdivision still has — so [`flatten_budget`]
-/// spends it, shortening segments until one fits, and only a brush whose *minimal*
-/// segment overflows is refused. Shorter segments are never wrong, only more
-/// numerous: the exchange step they set is a first-order discretization that
-/// tightens as they shrink ([`exchange_travel`]).
+/// shortens segments until one fits, and only a brush whose *minimal* segment overflows
+/// is refused. Shorter segments are never wrong, only more numerous
+/// ([`exchange_travel`]).
 ///
-/// Bounded rather than measured, since it has to hold for segments that do not
-/// exist yet: radius peaks at the brush's own (pressure only scales it down), and a
-/// coverage box of a given extent spans at most one tile more than it covers,
-/// whichever tile boundary it happens to straddle — so the budget is the largest
-/// whole-tile block whose texture (apron ring included, `Covered::rect`) fits the
-/// region.
+/// Bounded rather than measured, since it has to hold for segments that do not exist
+/// yet: radius peaks at the brush's own (pressure only scales it down), and a coverage
+/// box of a given extent spans at most one tile more than it covers, whichever tile
+/// boundary it straddles — so the budget is the largest whole-tile block whose texture
+/// (apron ring included, `Covered::rect`) fits the region.
 ///
 /// **A pure function of the brush**, like everything in this file: a live tail and
 /// the commit that replaces it cap the same brush to the same segment length.
@@ -189,12 +161,12 @@ fn region_extent_budget() -> f32 {
 
 /// How far from the centreline `b`'s tip can deposit, in canvas px.
 ///
-/// The tip's radius bounds every shape's reach exactly — nothing a canonical mask
-/// can paint lies outside the disc inscribed in its square
-/// ([`Sweep::reach`](super::segments::Sweep)) — drawn out along its facing axis by
-/// the brush's **own** elongation and not by any one segment's (§6.6). A modulation
-/// can only scale either knob down ([`Modulation`](stark_model::document::Modulation)),
-/// so the brush's value bounds every segment's.
+/// The tip's radius bounds every shape's reach exactly — nothing a canonical mask can
+/// paint lies outside the disc inscribed in its square
+/// ([`Sweep::reach`](super::segments::Sweep)) — drawn out along its facing axis by the
+/// brush's **own** elongation, not by any one segment's (§6.6): a modulation can only
+/// scale either knob down ([`Modulation`](stark_model::document::Modulation)), so the
+/// brush's value bounds every segment's.
 fn tip_reach(b: &BrushParams) -> f32 {
     b.size.max(0.5) * BrushParams::elongation(b.stretch)
 }
@@ -218,12 +190,10 @@ fn bleed_reach(b: &BrushParams) -> f32 {
     }
 }
 
-/// The four dynamics axes as the budget prices them: the wet effect's, and all
-/// zero on a plain paint brush or an eraser — which have none to price. Neither
-/// of those paths needs a region at all, but the caps here are also *published*
-/// limits an editor clamps any brush against ([`max_tip_reach`], [`max_stretch`]),
-/// so they have to answer for every effect — and zero axes is the relaxed answer
-/// the swept paths earn.
+/// The dynamics axes as the budget prices them: the wet effect's, and all zero on a
+/// plain paint brush or an eraser. Neither of those needs a region at all, but the caps
+/// here are also *published* limits an editor clamps any brush against
+/// ([`max_tip_reach`], [`max_stretch`]), so they have to answer for every effect.
 fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
     b.wet().map_or(
         stark_model::document::BrushDynamics {
@@ -237,13 +207,6 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
     )
 }
 
-// What used to stand here: `manipulates_paint`, the rate predicate that sent a
-// stroke down the stamp loop — four `> 0.0`s whose float complement a NaN axis
-// satisfied from neither side, which is why it had to be one function with two
-// callers. The [`BrushEffect::Wet`](stark_model::document::BrushEffect) split
-// retired the question: the loop is the variant's, and a variant has no number
-// for two spellings to disagree over (§6.2).
-
 /// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
 /// draw for a brush settled like `b`** (§6.2). A brush past it loses its dynamics
 /// altogether ([`StrokePath::TipTooLarge`](super::dynamics::StrokePath)), because
@@ -252,18 +215,15 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
 /// to fit inside it whole.
 ///
 /// **This is a limit an editor is expected to clamp against, not one a stroke is
-/// expected to discover.** It is the exact frontier [`fit_len`] refuses at — the
-/// same arithmetic inverted, and `the_published_reach_limit_is_the_gates_frontier`
-/// is what keeps the two from drifting — so a brush built inside it is drawable and
-/// one built outside it is not, with nothing in between for a caller to guess at.
+/// expected to discover.** It is the exact frontier [`fit_len`] refuses at — the same
+/// arithmetic inverted, and `the_published_reach_limit_is_the_gates_frontier` is what
+/// keeps the two from drifting — so a brush built inside it is drawable and one built
+/// outside it is not, with nothing in between for a caller to guess at.
 ///
-/// Around 3936 canvas px for a non-bleeding brush, which is past `MAX_RADIUS × 7.8`:
-/// wide enough that the editor gives up nothing until the very top of its size
-/// slider. It was ~887 while a region was capped at 2048.
-///
-/// It reads `b` for everything *except* the two knobs it bounds: a bleeding brush
-/// gets less, because its firings reach back past the segment they follow. Handed
-/// the brush being edited, it answers for that brush.
+/// Around 3936 canvas px for a non-bleeding brush, past `MAX_RADIUS × 7.8`: wide enough
+/// that the editor gives up nothing until the very top of its size slider. It reads `b`
+/// for everything *except* the two knobs it bounds — a bleeding brush gets less,
+/// because its firings reach back past the segment they follow.
 pub fn max_tip_reach(b: &BrushParams) -> f32 {
     // `fit_len(b) ≥ MIN_SEGMENT_LEN`, solved for the reach.
     let spare = region_extent_budget() - bleed_reach(b) - MIN_SEGMENT_LEN * ARC_MARGIN;
@@ -274,26 +234,19 @@ pub fn max_tip_reach(b: &BrushParams) -> f32 {
 /// still be drawn by the stamp loop** — [`max_tip_reach`] expressed in the units the
 /// editor's slider actually moves in (§6.6).
 ///
-/// [`BrushParams::MAX_STRETCH`] whenever the reach cap is out of the knob's own
-/// reach, which is every brush up to about a 492 px radius: the knob tops out at an
-/// elongation of [`MAX_ELONGATION`](BrushParams::MAX_ELONGATION), so a tip cannot
-/// spend its way past the region until it is nearly as wide as the editor allows.
-/// Only the top of the size slider trades at all, and only a little.
+/// [`BrushParams::MAX_STRETCH`] whenever the reach cap is out of the knob's own reach,
+/// which is every brush up to about a 492 px radius: the knob tops out at an elongation
+/// of [`MAX_ELONGATION`](BrushParams::MAX_ELONGATION), so a tip cannot spend its way
+/// past the region until it is nearly as wide as the editor allows.
 ///
 /// **The engine answers this rather than the editor deriving it**, because the
 /// derivation does not survive being written twice. `elongation` is `1/(1 − knob)`
-/// clamped at the top, so inverting it round-trips to within an ulp and not to the
-/// bit — and an ulp on the wrong side is a brush the gate refuses and the slider
-/// offered.
-///
-/// So the answer is settled by **asking the gate**, not by a second expression that
-/// ought to agree with it: [`max_tip_reach`] only supplies the starting guess, and
-/// the knob is stepped down until [`fit_len`] — the very call
+/// clamped at the top, so inverting it round-trips to within an ulp and not to the bit —
+/// and an ulp on the wrong side is a brush the gate refuses and the slider offered. So
+/// the answer is settled by **asking the gate**: [`max_tip_reach`] only supplies the
+/// starting guess, and the knob is stepped down until [`fit_len`] — the very call
 /// [`dynamics_setup`](super::dynamics::dynamics_setup) makes — accepts the brush.
-/// A predicate written as `size · elongation ≤ cap` instead is the same inequality
-/// in a different association order, and it disagreed with the gate by one ulp at a
-/// 500 px tip the moment the region grew; `the_offered_stretch_is_always_drawable`
-/// is what caught it and what keeps it caught.
+/// `the_offered_stretch_is_always_drawable` is what keeps that caught.
 pub fn max_stretch(b: &BrushParams) -> f32 {
     let drawable = |knob: f32| {
         fit_len(&BrushParams {
@@ -333,57 +286,52 @@ pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
 /// overtaken. Half rather than a hair under 1, so the turn of a bent sweep and the
 /// drain fit inside the same margin.
 ///
-/// Only the gradient *along* the travel is priced, because only it can fold the
-/// map. The follow's lateral gradient — across the tip's shoulder — is a **shear**,
-/// and a shear is a bijection at any slope: two rows sliding past each other never
-/// occupy one place. The budget the first field design held, on the lateral slope,
-/// bought nothing a texel could show and cost a hard tip hundreds of steps.
+/// Only the gradient *along* the travel is priced, because only it can fold the map.
+/// The follow's lateral gradient — across the tip's shoulder — is a **shear**, and a
+/// shear is a bijection at any slope: two rows sliding past each other never occupy one
+/// place.
 ///
-/// Also what defines a tip's **rise** (`tips::round_rise`, `assets::mask_rise`):
-/// the travel over which its coverage climbs by this much. The two are one number
-/// on purpose — at strength 1 the step is the rise, and the climb over it is the
-/// bound by definition — so a change here is a change to both.
+/// Also what defines a tip's **rise** (`tips::round_rise`, `assets::mask_rise`): the
+/// travel over which its coverage climbs by this much. The two are one number on
+/// purpose — at strength 1 the step is the rise, and the climb over it is the bound by
+/// definition — so a change here is a change to both.
 pub(crate) const WARP_CONTRACTION: f32 = 0.5;
 
 /// The floor under a tip's rise, canvas px (§6.13): a coverage that climbs by
-/// [`WARP_CONTRACTION`] inside one texel is a step at the field's own resolution,
-/// and the paint ahead of it is squashed by the texel whatever the segment does —
-/// no shortening resolves a fold narrower than a texel. Priced as a texel-wide
-/// rise rather than as the fraction of one the mask names, so a hard tip steps by
-/// the texel and not by the mask's resolution under it.
+/// [`WARP_CONTRACTION`] inside one texel is a step at the field's own resolution, and
+/// no shortening resolves a fold narrower than a texel. Priced as a texel-wide rise
+/// rather than as the fraction of one the mask names, so a hard tip steps by the texel
+/// and not by the mask's resolution under it.
 pub(super) const LIQUIFY_RISE_FLOOR_PX: f32 = 1.0;
 
-/// The travel a liquify brush's own budget puts on one segment (§6.13) — the
-/// longest step that is still a contraction, divided by the brush's `quality` —
-/// floored at [`MIN_SEGMENT_LEN`]. What [`flatten_budget`] spends for the liquify
-/// path, and the number the shortening warning quotes, exactly as
+/// The travel a liquify brush's own budget puts on one segment (§6.13) — the longest
+/// step that is still a contraction, divided by the brush's `quality` — floored at
+/// [`MIN_SEGMENT_LEN`]. What [`flatten_budget`] spends for the liquify path, exactly as
 /// [`dynamics_len`] is for the loop.
 ///
-/// `rise` is the tip's (`tips::ResolvedTip::rise`), in radii: the shortest travel
-/// over which its coverage climbs by [`WARP_CONTRACTION`], measured off the mask
-/// the brush names rather than assumed of it. The follow at a texel is
-/// `strength · ∫coverage` over the texel's stretch of the pass, so its gradient
-/// along the travel is `strength` times the coverage's climb across one step — at
-/// most `strength · WARP_CONTRACTION` while the step is inside the rise, and at
-/// most `strength · 1` past it, which is under the bound whenever
-/// `strength ≤ WARP_CONTRACTION`. That climb is priced as a slope of
-/// `WARP_CONTRACTION / rise` per radius, with the tangent's own turn on a bent
-/// sweep ([`MAX_TIP_TURN`] per radius, the flattener's cap) and the drain's
-/// falloff along the arc beside it; [`WARP_CONTRACTION`] over the sum is the
-/// contraction step. The rise is floored at [`LIQUIFY_RISE_FLOOR_PX`] first.
+/// `rise` is the tip's (`tips::ResolvedTip::rise`), in radii: the shortest travel over
+/// which its coverage climbs by [`WARP_CONTRACTION`], measured off the mask the brush
+/// names rather than assumed of it. The follow at a texel is `strength · ∫coverage`
+/// over the texel's stretch of the pass, so its gradient along the travel is `strength`
+/// times the coverage's climb across one step — at most `strength · WARP_CONTRACTION`
+/// while the step is inside the rise, and at most `strength · 1` past it, which is
+/// under the bound whenever `strength ≤ WARP_CONTRACTION`. That climb is priced as a
+/// slope of `WARP_CONTRACTION / rise` per radius, with the tangent's own turn on a bent
+/// sweep ([`MAX_TIP_TURN`] per radius, the flattener's cap) and the drain's falloff
+/// along the arc beside it; [`WARP_CONTRACTION`] over the sum is the contraction step.
+/// The rise is floored at [`LIQUIFY_RISE_FLOOR_PX`] first.
 ///
-/// **`quality` stretches the step** (`LiquifyEffect::quality`): a step
-/// `1/quality` as long climbs the coverage `1/quality` as far, so at ½ the paint
-/// just ahead of a hard edge can be compressed to nothing in one step — squashed
-/// rather than pushed — and the map is no longer a bijection there. What the knob
-/// buys is `quality` times the segments, and so the dispatches. 0 is no budget at
-/// all — infinite, like strength 0, and the flattener's own segmentation governs.
+/// **`quality` stretches the step** (`LiquifyEffect::quality`): a step `1/quality` as
+/// long climbs the coverage `1/quality` as far, so at ½ the paint just ahead of a hard
+/// edge can be compressed to nothing in one step — squashed rather than pushed — and
+/// the map is no longer a bijection there. What the knob buys is `quality` times the
+/// segments, and so the dispatches. 0 is no budget at all — infinite, like strength 0,
+/// and the flattener's own segmentation governs.
 ///
 /// Priced off the brush's own strength, not the modulated one, for
-/// [`exchange_travel`]'s reason: a modulation only ever scales the axis down, so
-/// the brush's value bounds every segment's. **Infinite at strength 0** — a drag
-/// that moves nothing has no step to be a contraction; a caller comparing against
-/// it asks `is_finite` first.
+/// [`exchange_travel`]'s reason: a modulation only ever scales the axis down.
+/// **Infinite at strength 0** — a drag that moves nothing has no step to be a
+/// contraction; a caller comparing against it asks `is_finite` first.
 pub(super) fn liquify_len(b: &BrushParams, rise: f32) -> f32 {
     let Some(l) = b.liquify() else {
         return f32::INFINITY;
@@ -405,9 +353,8 @@ pub(super) fn liquify_len(b: &BrushParams, rise: f32) -> f32 {
 /// How far a liquify run may let its displacement accumulate before it re-bases
 /// (§6.13), canvas px: a bound on `|d|` over any tile of the run, and so on how far
 /// outside a piece's region its base composite has to reach. Past it a stroke
-/// materializes the picture and starts the field afresh from a segment boundary —
-/// one extra resample per this much of accumulated drag, where the first design
-/// paid one per quarter-radius.
+/// materializes the picture and starts the field afresh from a segment boundary — one
+/// extra resample per this much of accumulated drag.
 ///
 /// **Under the model's reach contract, with room for the margins**
 /// ([`LiquifyEffect::REACH_PX`](stark_model::document::LiquifyEffect::REACH_PX)):
@@ -443,21 +390,20 @@ const _: () = assert!(
 /// Cap on `radius · |curvature|`: how fat the tip may be relative to the turn it is
 /// swept through before the segment goes back to being straight (§6.2).
 ///
-/// Both shaders sweep a curved segment by **unrolling** the annulus about its centre
-/// of curvature into the straight travel frame, which treats a canvas point as sliding
-/// through the tip frame along a line of constant lateral offset. It does not: the
-/// true track is an arc of radius `ρ`, so a point out at the extent's shoulder is
-/// off that line by `≈ r²/2R`, i.e. **`radius · |curvature| / 2` as a fraction of the
-/// tip radius**. That is the constant's real job. The annular sector the swept path
+/// Both shaders sweep a curved segment by **unrolling** the annulus about its centre of
+/// curvature into the straight travel frame, which treats a canvas point as sliding
+/// through the tip frame along a line of constant lateral offset. It does not: the true
+/// track is an arc of radius `ρ`, so a point out at the extent's shoulder is off that
+/// line by `≈ r²/2R`, i.e. **`radius · |curvature| / 2` as a fraction of the tip
+/// radius**. That is the constant's real job. The annular sector the swept path
 /// rasterizes also folds over itself once `radius ≥ |R|`, but that bound (1.0) is five
 /// times looser and never the one that bites.
 ///
-/// 0.1 holds the lateral error to 5% of the tip. It was 0.5 — 25% — which the plain
-/// swept deposit absorbed (its segments overlap heavily and the error is smooth) but
-/// the dynamics loop did not: there the same offset picks the wrong reservoir texel to
-/// serve a canvas texel, and because the loop is sequential the error compounds down
-/// the stroke into crescent seams at the reservoir cadence, worst where the tool is
-/// dragging paint with nothing left to `add` over them.
+/// 0.1 holds the lateral error to 5% of the tip. The plain swept deposit absorbs far
+/// more (its segments overlap heavily and the error is smooth); the dynamics loop does
+/// not, because there the same offset picks the wrong reservoir texel to serve a canvas
+/// texel, and the loop being sequential the error compounds down the stroke into
+/// crescent seams at the reservoir cadence.
 pub(super) const MAX_TIP_TURN: f32 = 0.1;
 
 /// The two sides of a binding fit cap, in canvas px — what the budget stood at per
@@ -478,13 +424,11 @@ pub(super) fn flatten_tolerance(b: &BrushParams) -> crate::path::FlattenToleranc
 
 /// The flatten budget with its reason: the tolerance, and what the region floor took
 /// off it — `None` when the fit cost nothing, which is every brush whose full-length
-/// segment already fits. The two are one answer because the second is a fact about
-/// the `min` the first takes; read off the tolerance where it is taken rather than
-/// re-derived from the two lengths, so the price quoted is the price paid.
+/// segment already fits.
 ///
 /// `rise` is the tip's ([`liquify_len`]), read only for a liquify brush — the one
-/// number here that is the *mask's* rather than the brush's, and a pure function
-/// of the mask the record names, so a live tail and its commit still cut alike.
+/// number here that is the *mask's* rather than the brush's, and a pure function of the
+/// mask the record names, so a live tail and its commit still cut alike.
 pub(super) fn flatten_budget(
     b: &BrushParams,
     rise: f32,
@@ -493,45 +437,34 @@ pub(super) fn flatten_budget(
     // Use a more relaxed tolerance for larger brushes.
     tol.position = tol.position.max(0.01 * b.size);
     // The `attribute` bound is a step in the **pen's** own units, so it prices a brush
-    // quantity correctly only while the two are proportional — 2% of pressure being 2%
-    // of radius. A modulation puts a curve between them (§6.2), and a steep one turns
-    // that 2% into as much as 18% of the parameter, which draws a ramp as a staircase
-    // since a segment sweeps at one value of everything. So the budget is charged the
-    // curve's own slope, bounded by construction (`document::MIN_BIAS`) precisely so
-    // this bill is.
-    //
-    // Exactly 1 for the unmodulated brush and for every plain linear mapping,
-    // including the default pressure → size, so those brushes are unaffected to the
-    // bit.
+    // quantity correctly only while the two are proportional. A modulation puts a curve
+    // between them (§6.2), and a steep one draws a ramp as a staircase, a segment
+    // sweeping at one value of everything — so the budget is charged the curve's own
+    // slope, bounded by construction (`document::MIN_BIAS`). Exactly 1 for every plain
+    // linear mapping, the default pressure → size included.
     tol.attribute /= b.max_slope();
     // The tightest arc this tip may be swept along (§6.2). Both the
     // flattener and the segment generator get it from here, so an edge too tight to
     // sweep as an arc is priced as a chord as well as drawn as one.
     //
-    // Against the tip's **stretched** reach, not its radius (§6.6). Every reason the
-    // cap exists is about the extent rather than about the number that names it: the
-    // swept sector stays a simple polygon only while the inner rim clears the centre of
-    // curvature, and the reservoir's crescent seams are a misplacement measured across
-    // the tip. An extent drawn out `s` times reaches `s` times as far, so it may bend
-    // `s` times less. The brush's own elongation and not a segment's, for the reason
-    // every bound here is stated against `b`: a modulation only ever scales the knob
-    // down, so this one bounds them all.
+    // Against the tip's **stretched** reach, not its radius (§6.6): the swept sector
+    // stays a simple polygon only while the inner rim clears the centre of curvature,
+    // and the reservoir's crescent seams are a misplacement measured across the tip, so
+    // an extent drawn out `s` times may bend `s` times less. The brush's own elongation
+    // and not a segment's — a modulation only ever scales the knob down.
     tol.max_arc_curvature = MAX_TIP_TURN / (b.size * BrushParams::elongation(b.stretch)).max(0.5);
     // **`drain` is deliberately not bought here.** A `0.02 / drain` px cap per segment
     // dominates everything else (at `drain = 0.02`, one segment per pixel), and it buys
-    // nothing: the falloff is not a per-segment constant, since both paths evaluate it
-    // from the fragment's own arc length. The amount laid is exactly independent of how
-    // the path was cut, so there is nothing for a length cap to bound
+    // nothing: both paths evaluate the falloff from the fragment's own arc length, so
+    // the amount laid is exactly independent of how the path was cut
     // (`generate_segments_in`).
-    // The stamp loop exchanges once per segment, so the segment length *is* the step
-    // at which the tool reloads and drains — and unlike the canvas side, which the
-    // prefix-τ integral makes exact at any length, that step is a plain first-order
-    // discretization of a coupled ODE. [`RESERVOIR_EXCHANGE_STEP`] is what keeps it
-    // fine enough. The cap also bounds the snapshot scratch, which is sized by the
-    // longest segment.
-    // The two effects that run the region machinery each price their own step —
-    // the exchange's mean-field freeze for wet, the contraction of one field step
-    // for liquify (§6.13) — and both then pay the region floor below.
+    //
+    // The two effects that run the region machinery each price their own step. The
+    // stamp loop exchanges once per segment, so the segment length *is* the step at
+    // which the tool reloads and drains — a plain first-order discretization of a
+    // coupled ODE, which [`RESERVOIR_EXCHANGE_STEP`] keeps fine enough, and which also
+    // bounds the snapshot scratch, sized by the longest segment. Liquify prices the
+    // contraction of one field step (§6.13). Both then pay the region floor below.
     let own_len = if b.wet().is_some() {
         Some(dynamics_len(b))
     } else if b.liquify().is_some() {
@@ -543,22 +476,19 @@ pub(super) fn flatten_budget(
         return (tol, None);
     };
     tol.max_len = tol.max_len.min(own);
-    // The region floor's price (§6.2): a tip so wide that a full-length
-    // segment's extent would overflow [`MAX_REGION_DIM`] gets shorter segments
-    // instead of losing its dynamics — the same trade `chunk_segments` makes
-    // along the stroke, made along the segment. Never taken below
-    // [`MIN_SEGMENT_LEN`]: a fit under the floor means the tip alone
-    // overflows, which is `dynamics_setup`'s refusal, and capping here would
-    // flatten dust for a loop that cannot run.
+    // The region floor's price (§6.2): a tip so wide that a full-length segment's
+    // extent would overflow [`MAX_REGION_DIM`] gets shorter segments instead of losing
+    // its dynamics. Never taken below [`MIN_SEGMENT_LEN`]: a fit under the floor means
+    // the tip alone overflows, which is `dynamics_setup`'s refusal, and capping here
+    // would flatten dust for a loop that cannot run.
     let fit = fit_len(b);
     if fit < MIN_SEGMENT_LEN {
         return (tol, None);
     }
-    // What the budget stood at before the floor — the brush's own length, nothing
-    // above capping `max_len` — but read here rather than recomputed, so the
-    // comparison is against whatever the min actually was. Infinite for a liquify
-    // brush at strength 0 ([`liquify_len`]): no step error for a cap to bound, so
-    // nothing was shortened and nothing warns.
+    // What the budget stood at before the floor, read off the tolerance rather than
+    // recomputed so the comparison is against whatever the min actually was. Infinite
+    // for a liquify brush at strength 0 ([`liquify_len`]): no step error for a cap to
+    // bound, so nothing was shortened and nothing warns.
     let wanted = tol.max_len;
     tol.max_len = wanted.min(fit);
     let shortened = (fit < wanted && wanted.is_finite()).then_some(Shortened { wanted, got: fit });
@@ -571,11 +501,10 @@ pub(super) fn flatten_budget(
 /// **per pass of the tip** rather than per unit optical depth. Zero is "no
 /// transfer".
 ///
-/// The one definition, on purpose: the plan fills every slot's λ lanes from it,
-/// and [`exchange_travel`] prices the flattening budget off the same clamp
-/// ([`ln_keep`]). The flattener charging exactly the rates the shader will run is
-/// what the exchange-step bound rests on, so it cannot rest on two closures — one
-/// here, one in the plan — agreeing by comment.
+/// The one definition, on purpose: the plan fills every slot's λ lanes from it, and
+/// [`exchange_travel`] prices the flattening budget off the same clamp ([`ln_keep`]).
+/// The exchange-step bound rests on the flattener charging exactly the rates the shader
+/// will run.
 pub(super) fn lambda(axis: f32) -> f32 {
     ln_keep(axis) / TAU_PER_PASS
 }
@@ -605,46 +534,35 @@ fn ln_keep(axis: f32) -> f32 {
 /// * **`charge` is not a rate.** It sets the load the tool *starts* with, and a brush
 ///   that charges but neither lifts nor deposits has `k = 0`: `exchange_at` takes its
 ///   no-trading branch and the only thing reaching the canvas is `add`, which is linear
-///   in exposure and therefore exact at any segment length. Such a brush must not pay
-///   the full cap for a transfer that never happens.
-/// * **It is continuous in the rates, not a boolean.** Priced on "has a non-zero axis"
-///   alone, every brush is charged as the most extreme one, and a tip that lifts a
-///   tenth of a pass costs the same per pixel as a full smear.
+///   in exposure and therefore exact at any segment length.
+/// * **It is continuous in the rates, not a boolean**, so a tip that lifts a tenth of a
+///   pass does not cost per pixel what a full smear does.
 ///
-/// The budget is calibrated so that `lift = deposit = 0.95` — the repro's brush, and
-/// about as hard as the transfer gets — comes out at exactly
-/// [`RESERVOIR_EXCHANGE_STEP`], leaving every golden that uses it untouched. A gentler
-/// brush earns its relaxation and nothing else changes.
+/// Calibrated so that `lift = deposit = 0.95` — about as hard as the transfer gets —
+/// comes out at exactly [`RESERVOIR_EXCHANGE_STEP`].
 ///
-/// Priced off the brush's own rates, not the modulated ones. A modulation only ever
-/// scales an axis down (`document::Modulation`), which lowers the transfer a segment
-/// completes and so the error the step bounds — the brush is charged its worst case
-/// and every segment of every stroke it draws comes in under it. `flow` is the
-/// brush's own overall rate (`WetEffect::flow`) for the same reason: the plan
-/// scales every λ by the segment's modulated flow, which is never above it, so
-/// charging the brush's puts every segment under the price.
+/// Priced off the brush's own rates, not the modulated ones: a modulation only ever
+/// scales an axis down (`document::Modulation`), lowering the transfer a segment
+/// completes and so the error the step bounds, so the brush is charged its worst case.
+/// `flow` is the brush's own overall rate (`WetEffect::flow`) for the same reason — the
+/// plan scales every λ by the segment's modulated flow, which is never above it.
 fn exchange_travel(d: BrushDynamics, flow: f32) -> f32 {
     // [`ln_keep`] — the very clamp [`lambda`] hands the shader, so the flattener
     // prices the rates it will actually run (an axis at 1.0 is `−∞` otherwise).
     let rate_of = |axis: f32| -ln_keep(axis);
     // `bleed` is deliberately *not* in this sum: it fires on its own travel cadence
-    // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does
-    // not set its step and shortening segments buys it nothing.
-    //
-    // The flow multiplies the whole sum because it multiplies both λs (§6.2).
-    // Past 1 it can only walk the step down to the reference floor below — the
-    // same "only ever a relaxation" clamp that already catches an axis at 1.
+    // with the window's exposure ([`BLEED_TRAVEL_QUANTUM`]), so segment length does not
+    // set its step and shortening segments buys it nothing. The flow multiplies the
+    // whole sum because it multiplies both λs (§6.2).
     let rate = flow.max(0.0) * (rate_of(d.lift) + rate_of(d.deposit));
     if rate <= 0.0 {
         return MAX_EXCHANGE_TRAVEL;
     }
-    // **Only ever a relaxation.** Rates above the reference are left at the reference
-    // step rather than priced below it. Partly because the scaling has only been
-    // measured across the band where a brush is usable — `lift = 1.0` is clamped to
-    // `λ = −20` in the shader anyway (`dynamics.rs`), so past a point the axis stops
-    // meaning what the rule reads it as — and partly because this is a *cost* change:
-    // clamping here is what makes it incapable of charging any brush more than it
-    // already pays, so no setting can regress on either axis.
+    // **Only ever a relaxation.** Rates above the reference keep the reference step
+    // rather than being priced below it: `lift = 1.0` is clamped to `λ = −20` in the
+    // shader anyway (`dynamics.rs`), so past a point the axis stops meaning what this
+    // rule reads it as, and the clamp is what keeps the pricing from ever charging a
+    // brush more than it already pays.
     (RESERVOIR_EXCHANGE_STEP * EXCHANGE_REFERENCE_RATE / rate)
         .clamp(RESERVOIR_EXCHANGE_STEP, MAX_EXCHANGE_TRAVEL)
 }
@@ -657,8 +575,8 @@ const EXCHANGE_REFERENCE_RATE: f32 = 5.991_465;
 ///
 /// Not an accuracy bound — a structural one. A segment carries **one** tip orientation
 /// and one curvature (§6.6), the snapshot scratch is sized by the longest of them, and
-/// the sweep's own arc approximation is only good while the segment is short next to
-/// the tip. None of those care how fast paint changes hands.
+/// the sweep's arc approximation is only good while the segment is short next to the
+/// tip. None of those care how fast paint changes hands.
 const MAX_EXCHANGE_TRAVEL: f32 = 1.0;
 
 /// Ceiling on the extent cell, in texels. [`extent_cell`]'s own law reaches 10
@@ -675,14 +593,11 @@ const EXTENT_CELL_MAX: f32 = 16.0;
 /// `3·(1−hardness)·radius` for the `1 − |y|^h` profile family — because that is the
 /// finest feature the extent-domain fields can carry: the prefix-τ differences, the
 /// baked reservoir means and the exchange solves the cell hoists are all smooth at the
-/// scale the coverage itself varies. A quarter of the shoulder puts at least four
-/// cells across the falloff; the `0.02·radius` term keeps the cell a fixed small
-/// fraction of the tip where the shoulder is generous. Both constants are the
-/// stroke-space march round's, kept because they were *measured* there: the ripple a
-/// coarse cell prints stayed at the no-coarsening floor under the shoulder bound
-/// (0.62 vs 0.58 levels rms column-mean) and broke it under a radius-only bound
-/// (1.04), and a radius-scaled cell over a shoulderless tip was exactly the
-/// stroke-end spike regression of 2026-08-07.
+/// scale the coverage itself varies. A quarter of the shoulder puts at least four cells
+/// across the falloff; the `0.02·radius` term keeps the cell a fixed small fraction of
+/// the tip where the shoulder is generous. Both constants are *measured*: the ripple a
+/// coarse cell prints stays at the no-coarsening floor under the shoulder bound (0.62
+/// vs 0.58 levels rms column-mean) and breaks it under a radius-only bound (1.04).
 ///
 /// Two properties are load-bearing rather than tuning:
 ///
@@ -696,13 +611,7 @@ const EXTENT_CELL_MAX: f32 = 16.0;
 ///
 /// The threshold is 2: a cell must *beat* two texels before the coarse path engages,
 /// because below that the hoist pass costs more than the ~4× it saves — which also
-/// means the whole bench sweep at radius ≤ 100 (where `0.02·r ≤ 2`) stays on the
-/// exact kernel, dispatch for dispatch.
-///
-/// The **shoulder** — the width of the tip's coverage falloff per unit radius — is
-/// [`shoulder_per_radius`], shared with the taper's subdivision, which leans on the
-/// same fact from the other side: a feature narrower than a quarter of the shoulder
-/// is one the coverage cannot show.
+/// keeps every radius ≤ 100 (where `0.02·r ≤ 2`) on the exact kernel.
 pub(super) fn extent_cell(shape: &BrushShape, radius: f32) -> u32 {
     let shoulder = shoulder_per_radius(shape) * radius;
     let cell = (0.02 * radius).min(0.25 * shoulder);
@@ -717,11 +626,11 @@ pub(super) fn extent_cell(shape: &BrushShape, radius: f32) -> u32 {
 /// `3·(1−hardness)` for the round tip's `1 − |y|^h` profile family, and 0 for a
 /// `Stamp`, which may be arbitrarily hard and is treated as the sharpest case.
 ///
-/// The one definition, used from both sides of the same fact: features narrower than
-/// a fraction of the shoulder are ones the coverage cannot carry. [`extent_cell`]
-/// spends that as *coarsening* (the cell the coarse deposit may evaluate at), the
-/// taper's subdivision as *smoothness* (the radius step a segment boundary may take
-/// without printing, `segments::taper::Taper`).
+/// One definition for both sides of the same fact — features narrower than a fraction
+/// of the shoulder are ones the coverage cannot carry: [`extent_cell`] spends it as
+/// *coarsening* (the cell the coarse deposit may evaluate at), the taper's subdivision
+/// as *smoothness* (the radius step a segment boundary may take without printing,
+/// `segments::taper::Taper`).
 pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
     match shape {
         BrushShape::Round { hardness } => 3.0 * (1.0 - hardness.clamp(0.0, 1.0)),
@@ -750,25 +659,23 @@ const SUPERSAMPLE_EDGE_PX: f32 = 0.75;
 ///
 /// The pixel footprint's box filter makes **τ** cross a rim as a ~px ramp, but what
 /// the eye sees is the parcel's visible alpha `1 − exp(−K·m)`, and the exponential
-/// re-sharpens the ramp: the 10–90% transition occupies `ln 9 / (K·m_interior)` of
-/// it, so a heavy stroke renders a fraction of a px of visible edge from a full px
-/// of coverage. No per-segment correction can widen it back — a shape other than
-/// §6.2's two makes the stroke depend on where the flattener cut — so the correct
-/// pixel is the **average of the finished parcel**, taken after the cross-segment
-/// composition: the sweep rasterizes at 2× and the integrate box-resolves what the
-/// slab law produced (`integrate.wesl`). This gate is what decides who pays for
-/// that, from the numbers already in hand:
+/// re-sharpens the ramp: the 10–90% transition occupies `ln 9 / (K·m_interior)` of it,
+/// so a heavy stroke renders a fraction of a px of visible edge from a full px of
+/// coverage. No per-segment correction can widen it back — a shape other than §6.2's
+/// two makes the stroke depend on where the flattener cut — so the correct pixel is the
+/// **average of the finished parcel**, taken after the cross-segment composition: the
+/// sweep rasterizes at 2× and the integrate box-resolves what the slab law produced
+/// (`integrate.wesl`). This gate decides who pays for that, from:
 ///
 ///   * the interior mass of one nominal pass, `flow · TAU_PER_PASS` — drain, tooth
 ///     and modulation only ever scale it down, so the brush's own value bounds it;
 ///   * the τ ramp's width: the tip's shoulder in px, floored at the box filter's
 ///     one px — a `Stamp` may be arbitrarily hard, so it gets the floor alone.
 ///
-/// A **pure function of the brush**, like everything in this file: a live tail,
-/// its commit and a replay make the same choice, which is what lets the carried
-/// parcel resume across pieces at one resolution (§1.3). Only the paint effect
-/// answers with 2: the wet loop's exposure is paired point-for-point with its bake
-/// rows and the erase reads a different law — both stay 1×.
+/// A **pure function of the brush**: a live tail, its commit and a replay make the same
+/// choice, which is what lets the carried parcel resume across pieces at one resolution
+/// (§1.3). Only the paint effect answers with 2 — the wet loop's exposure is paired
+/// point-for-point with its bake rows and the erase reads a different law.
 pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
     let Some(p) = b.paint() else { return 1 };
     let mass = stark_shaders::mirror::paint_common::OPACITY_K * p.flow * TAU_PER_PASS;
@@ -782,17 +689,16 @@ pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
     }
 }
 
-/// The hardness a round tip actually **bakes** at `radius` px (§6.6): the brush's
-/// own, floored so the shoulder above never falls under one canvas px. A falloff
-/// narrower than a px is content past the tile grid's Nyquist — it can only shimmer —
-/// so a hard edge keeps the ~px antialiased rim every selection mask's feather
-/// already has ("floored at one, which *is* the antialiased hard edge", §6.8), and a
-/// tip too small to carry even that comes out as soft as its own footprint.
+/// The hardness a round tip actually **bakes** at `radius` px (§6.6): the brush's own,
+/// floored so the shoulder above never falls under one canvas px. A falloff narrower
+/// than a px is content past the tile grid's Nyquist — it can only shimmer — so a hard
+/// edge keeps the ~px antialiased rim every selection mask's feather already has
+/// ("floored at one, which *is* the antialiased hard edge", §6.8), and a tip too small
+/// to carry even that comes out as soft as its own footprint.
 ///
-/// Beside [`shoulder_per_radius`] because it is the same fact bounded from the other
-/// side. Deliberately **not** fed back into the budgets built on the nominal
-/// hardness (the taper's subdivision, [`extent_cell`]): the nominal shoulder is the
-/// narrower of the two, so those bounds only over-provide for a floored tip.
+/// Deliberately **not** fed back into the budgets built on the nominal hardness (the
+/// taper's subdivision, [`extent_cell`]): the nominal shoulder is the narrower of the
+/// two, so those bounds only over-provide for a floored tip.
 pub(super) fn effective_hardness(hardness: f32, radius: f32) -> f32 {
     hardness.min(1.0 - 1.0 / (3.0 * radius.max(0.5)))
 }

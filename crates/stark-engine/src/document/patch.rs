@@ -1,14 +1,14 @@
-//! [`unapply`]: the implementation of `Action::inverse` (§12.6) —
-//! remove one action's effect from a state by restoring what it wrote from the
-//! state it was originally applied to.
+//! [`unapply`]: the implementation of `Action::inverse` (§12.6) — remove one
+//! action's effect from a state by restoring what it wrote from the state it was
+//! originally applied to.
 //!
 //! The two states handed in are *not* adjacent: the history calls this while
 //! shifting an undone action past later actions it commutes with, so `state`
-//! contains their work too. Commutation is exactly what makes the restore
-//! sound — nothing in between touched the action's footprint, so inside it
-//! every difference belongs to the action, and outside it nothing may be
-//! touched (see [`tile_diff`]). Restored tile values are `Arc` handles shared
-//! with `previous`, so removal re-renders nothing.
+//! contains their work too. Commutation is exactly what makes the restore sound —
+//! nothing in between touched the action's footprint, so inside it every difference
+//! belongs to the action, and outside it nothing may be touched (see [`tile_diff`]).
+//! Restored tile values are `Arc` handles shared with `previous`, so removal
+//! re-renders nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -52,11 +52,9 @@ enum PatchOp {
     /// The layer tree had this **shape** (undoes a move): every layer in
     /// composite order, each with the layer carrying it.
     ///
-    /// One op restoring the whole structure, exactly as the flat order it
-    /// replaces did. It has to be the whole shape rather than a per-layer
-    /// carrier, because a move can change several layers' relative positions at
-    /// once and `StackOrder` is the single coarse resource that covers all of
-    /// them (`footprint.rs`).
+    /// The whole shape rather than a per-layer carrier, because a move can change
+    /// several layers' relative positions at once and `StackOrder` is the single
+    /// coarse resource that covers all of them (`footprint.rs`).
     Structure(Vec<(LayerId, Option<LayerId>)>),
     Blend(LayerId, BlendMode),
     Clip(LayerId, bool),
@@ -76,11 +74,8 @@ enum PatchOp {
     /// substrate's rise over a reach in canvas px, so which substrate and how large
     /// it is laid decide a deposit together.
     ///
-    /// Carrying only the id restored only the id, so undoing a `SetSubstrateScale`
-    /// through the commuting splice put the substrate back and left the *scale* where
-    /// the undone action had set it — a document holding a scale its own log no
-    /// longer contains, and a later stroke toothed against it. The two fields the
-    /// resource names are the two fields the op carries.
+    /// Restoring the id alone would leave the document holding a scale its own log no
+    /// longer contains, and a later stroke toothed against it.
     Substrate(SubstrateId, SubstrateScale),
     SubstrateColor(Srgb),
     /// The **whole drawing-guide roster** (§20.5): every guide and the order they
@@ -88,9 +83,8 @@ enum PatchOp {
     ///
     /// One op for all five guide actions, because `Resource::Guides` is one
     /// resource for all five — the same correspondence `Structure` keeps with
-    /// `StackOrder`, and cheap for the same kind of reason it is not there: the
-    /// roster is a persistent vector, so capturing it whole is an `Arc` bump
-    /// rather than a walk.
+    /// `StackOrder`. Cheap: the roster is a persistent vector, so capturing it whole
+    /// is an `Arc` bump rather than a walk.
     Guides(Vector<Guide>),
     /// A layer's liquify run (§6.13) — the run whole, by handle, because a run is
     /// replaced rather than edited and only a liquify stroke writes it
@@ -100,10 +94,8 @@ enum PatchOp {
 
 impl PatchOp {
     /// `state` with this op's value written back — the other half of
-    /// [`capture_resource`], and the reason both are per-op rather than per-action:
-    /// what a resource *is* decides how it is recorded and how it is put back, and
-    /// the two belong next to each other rather than in two matches over
-    /// `ActionKind`.
+    /// [`capture_resource`]. Both are per-op rather than per-action because what a
+    /// resource *is* decides how it is recorded and how it is put back.
     fn restore(&self, state: &DocState) -> DocState {
         match self {
             PatchOp::Tiles { layer, tiles } => {
@@ -171,13 +163,10 @@ impl StatePatch {
     /// holds, diffed against `from` so untouched entries cost nothing.
     ///
     /// **Driven by the footprint's own write list**, resource for resource, rather
-    /// than by a second match on [`ActionKind`](stark_model::document::ActionKind). That is
-    /// what makes "a patch restores exactly what the action declared" true by
-    /// construction instead of by inspection. As parallel matches in two files there
-    /// is nothing but prose between them, and Rust's exhaustiveness gets the
-    /// *presence* of an arm, never its *correspondence*; driven by the write list, a
-    /// kind whose footprint grows a resource grows the op that puts it back in the
-    /// same edit.
+    /// than by a second match on [`ActionKind`](stark_model::document::ActionKind) —
+    /// which is what makes "a patch restores exactly what the action declared" true by
+    /// construction instead of by inspection. A kind whose footprint grows a resource
+    /// grows the op that puts it back in the same edit.
     ///
     /// `Undo` falls out rather than needing an arm: it is never materialized, which
     /// is why its footprint is empty, so it captures nothing.
@@ -195,16 +184,10 @@ impl StatePatch {
         // names but the state has lost. Partitioning here rather than relying on the
         // footprints being written that way is what keeps that from being a rule
         // `footprint.rs` has to remember.
-        // The **cached** write list the `Logged` carries, handed down through
-        // `Materialize::unfold`. Derived here instead, it was a fresh derivation per
-        // `inverse` — once per cached state per shift, and for a `TransformWarp` a
-        // whole fine-lattice solve — which is the cost `Logged` holds a footprint to
-        // avoid.
         //
-        // `action` is therefore unread: a patch is built from *what was written*, and
-        // the footprint is the whole of that. It stays in the signature because
-        // `Materialize::unfold` hands it down and a caller reading this line should
-        // see that ignoring it is the design rather than an omission.
+        // `action` is unread: a patch is built from *what was written*, and the
+        // cached footprint beside it is the whole of that. The parameter stays
+        // because `Materialize::unfold` hands both down.
         let _ = action;
         let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = footprint
             .writes
@@ -226,10 +209,9 @@ impl StatePatch {
     }
 }
 
-/// Record what `to` holds for one written resource — the map from the
-/// [`Footprint`] vocabulary to the [`PatchOp`] that
-/// puts that resource back, and the whole of the correspondence [`StatePatch::capture`]
-/// rests on.
+/// Record what `to` holds for one written resource — the map from the [`Footprint`]
+/// vocabulary to the [`PatchOp`] that puts that resource back, and the whole of the
+/// correspondence [`StatePatch::capture`] rests on.
 ///
 /// Silence is a real answer here and it means "nothing of this action's to restore":
 /// a layer absent on both sides (the action no-oped), a `Matte` prop on something
@@ -270,20 +252,15 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
             });
         }
         // The coarse claim expands into the fine ones it stands for, so a footprint
-        // that *writes* a whole layer restores a whole layer.
-        //
-        // **Five kinds write one**, and this arm is on the undo path of every one of
-        // them: `AddLayer`/`AddFilter`, `PlaceImage`, `AddMatte`, `DuplicateLayer`
-        // (one per copy) and `RemoveLayer` (one per layer in the subtree). It is the
-        // claim every action that mints a layer makes over the id it minted, and the
-        // one a removal makes over each id it took away — see `compute_footprint`.
+        // that *writes* a whole layer restores a whole layer. Five kinds write one:
+        // `AddLayer`/`AddFilter`, `PlaceImage`, `AddMatte`, `DuplicateLayer` (one per
+        // copy) and `RemoveLayer` (one per layer in the subtree).
         //
         // The subtree case is why `restore_layer` refuses an id already present. A
         // group removal claims the group *and* each of its descendants, and the
         // group's own `Existence` op puts the whole subtree back before the
         // descendants' ops are read; each of those would otherwise insert a layer that
-        // is already there. Nine ops per claimed layer is also what this costs, which
-        // is the price of expanding rather than restoring the layer whole.
+        // is already there.
         Resource::Layer(id) => {
             capture_resource(&Resource::Existence(*id), to, from, ops);
             capture_resource(&Resource::Paint(*id, TileRect::ALL), to, from, ops);
@@ -310,11 +287,9 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
     }
 }
 
-/// The shape of `state`'s layer tree: every layer in composite order, paired
-/// with the layer carrying it (§14.8).
-///
-/// Composite order matters — a carrier is always recorded before anything it
-/// carries — so [`restore_structure`] can rebuild top-down without a sort.
+/// The shape of `state`'s layer tree: every layer in composite order, paired with the
+/// layer carrying it (§14.8). A carrier is always recorded before anything it carries,
+/// so [`restore_structure`] can rebuild top-down without a sort.
 fn structure(state: &DocState) -> Vec<(LayerId, Option<LayerId>)> {
     let mut out = Vec::new();
     let mut stack: Vec<Option<LayerId>> = Vec::new();
@@ -329,10 +304,9 @@ fn structure(state: &DocState) -> Vec<(LayerId, Option<LayerId>)> {
 /// `state` rebuilt into `shape`, keeping each layer's **current record** — its
 /// tiles, its name, its opacity.
 ///
-/// That is the whole point of restoring a shape rather than a snapshot: the two
-/// states this runs between are not adjacent, and a commuting action in the gap
-/// may have painted on a layer or renamed it. Only the tree's shape belongs to
-/// the move being undone, so only the shape is put back.
+/// The two states this runs between are not adjacent, so a commuting action in the
+/// gap may have painted on a layer or renamed it. Only the tree's shape belongs to the
+/// move being undone, so only the shape is put back.
 fn restore_structure(state: &DocState, shape: &[(LayerId, Option<LayerId>)]) -> DocState {
     // Every layer, stripped of what it carries — the tree is rebuilt from
     // `shape`, so the old nesting must not travel along inside the records.
@@ -378,11 +352,10 @@ fn restore_structure(state: &DocState, shape: &[(LayerId, Option<LayerId>)]) -> 
 /// differs between the two states. Handle identity is change detection:
 /// committed tiles are never rewritten in place (see [`TilePairHandle::same`]).
 ///
-/// The rect bound is load-bearing, not an optimization: in the `inverse` use
-/// the two states are not adjacent — commuting actions applied in between have
-/// changed this layer *outside* the action's footprint, and "restoring" those
-/// entries would erase their work. Inside the footprint the gate guarantees
-/// every difference belongs to this action alone.
+/// The rect bound is load-bearing, not an optimization: the two states are not
+/// adjacent, so commuting actions applied in between have changed this layer *outside*
+/// the action's footprint, and "restoring" those entries would erase their work.
+/// Inside it the commutation gate guarantees every difference belongs to this action.
 fn tile_diff(
     layer: LayerId,
     rect: TileRect,
@@ -399,10 +372,8 @@ fn tile_diff(
     // **Walk whichever side is smaller**: the rect the action declared, or the maps
     // themselves. A stroke claims the handful of tiles it painted while the layer
     // under it may hold thousands, and this runs once per cached state in a shift
-    // window — so scanning the map for a rect of four tiles was tens of thousands of
-    // lookups to find four. `TileRect::ALL` saturates its count, so a whole-layer
-    // claim (a transform, a removal) still takes the map walk, which is the smaller
-    // side there.
+    // window. `TileRect::ALL` saturates its count, so a whole-layer claim (a
+    // transform, a removal) still takes the map walk, which is the smaller side there.
     //
     // Both walks answer identically: a coord outside `rect` is skipped by one and
     // never visited by the other.
@@ -448,22 +419,14 @@ mod tests {
     /// [`unapply`] with the footprint its caller would have carried.
     ///
     /// Production hands the cached one down from the `Logged` (`Materialize::unfold`);
-    /// a test builds a bare `Action`, so this is where it is derived. One helper so
-    /// the derivation is not written out at every call — and so a test cannot
-    /// accidentally hand `unapply` a footprint that is not this action's, which is
-    /// the one way the new parameter could be got wrong.
+    /// a test builds a bare `Action`, so this is where it is derived — in one helper,
+    /// so a test cannot hand `unapply` a footprint that is not this action's.
     fn undo(action: &Action, before: &DocState, after: &DocState) -> DocState {
         unapply(action, &compute_footprint(action), before, after)
     }
 
     /// The action folded into `state` — **the fold itself**, through the half of
     /// [`apply`](super::super::apply) that is a `DocState` call and nothing else (§4).
-    ///
-    /// Written out here it was a third statement of the same mutation: a match over
-    /// `ActionKind` in a test, with nothing tying it to the real one, so a sanitize
-    /// or a refusal added to an arm left this whole module round-tripping a fold
-    /// nobody runs. That is the hazard [`StatePatch::capture`] argues against one
-    /// level up, and it was sitting here.
     ///
     /// A GPU kind hands the state straight back and there is nothing here to render
     /// it with, which is what makes "this suite drives the ctx-free half" a fact
@@ -613,12 +576,8 @@ mod tests {
     }
 
     /// **The two states are not adjacent** — the whole subtlety of `Action::inverse`
-    /// (§12.6). The history calls this while shifting an undone action past later
-    /// ones it commutes with, so the state handed in carries their work too and the
-    /// restore must leave it standing.
-    ///
-    /// Here `B`'s opacity is undone across a rename of `C` that commutes with it. A
-    /// patch restoring more than its footprint would take the rename with it.
+    /// (§12.6). Here `B`'s opacity is undone across a rename of `C` that commutes with
+    /// it; a patch restoring more than its footprint would take the rename with it.
     #[test]
     fn a_restore_leaves_a_commuting_edit_alone() {
         let before = flat();
@@ -785,10 +744,9 @@ mod tests {
     /// [`flat`] with one of everything the ctx-free fold can bite on: a matte, a
     /// filter layer and a two-row guide roster.
     ///
-    /// The furniture is what keeps [`sample`] honest. A `SetFilter` on a document
-    /// with no filter layer, a `SetMatteRect` with no matte, a `MoveGuide` with no
-    /// roster are all *no-ops* — they would round-trip perfectly and prove nothing,
-    /// which is the way this test would rot if nothing watched for it. The run
+    /// The furniture is what keeps [`sample`] honest: a `SetFilter` on a document with
+    /// no filter layer, a `SetMatteRect` with no matte, a `MoveGuide` with no roster
+    /// are all *no-ops*, and would round-trip perfectly while proving nothing. The run
     /// asserts that exactly one kind came out inert.
     fn furnished() -> DocState {
         use stark_model::document::{ColorAdjust, Parcel, PerspectiveGuide};
@@ -816,15 +774,13 @@ mod tests {
 
     /// One action of every kind in the roster, each payload aimed at [`furnished`].
     ///
-    /// **Exhaustive over [`ActionTag`], with no `_` arm**, which is the whole reason
-    /// it is keyed by the tag rather than written as a list: the roster is the
-    /// model's own and a kind added later stops this compiling until it has a sample
-    /// (§8, §17.9).
+    /// **Exhaustive over [`ActionTag`], with no `_` arm**, which is why it is keyed by
+    /// the tag rather than written as a list: a kind added later stops this compiling
+    /// until it has a sample (§8, §17.9).
     ///
-    /// It holds the GPU kinds too, and deliberately. Which half of the fold a kind
-    /// belongs to is not restated here — `apply_pure` declines the ones that need a
-    /// renderer and the runs below sort by exactly that, so an arm moved across that
-    /// line moves here with it and no second list can disagree.
+    /// It holds the GPU kinds too, deliberately. Which half of the fold a kind belongs
+    /// to is not restated here — `apply_pure` declines the ones that need a renderer
+    /// and the runs below sort by exactly that, so no second list can disagree.
     fn sample(tag: ActionTag) -> ActionKind {
         use stark_model::document::{
             BrushParams, ColorAdjust, FillOp, Parcel, PerspectiveGuide, PerspectiveMap,
@@ -843,7 +799,7 @@ mod tests {
             })
         };
         match tag {
-            // The renderer's half. Never folded here — the payloads are the smallest
+            // The renderer's half, never folded here: the payloads are the smallest
             // well-formed ones, since what they are for is to make this list one of
             // *every* kind rather than of the ones a GPU-free test can drive.
             ActionTag::CommitStroke => ActionKind::CommitStroke(StrokeRecord {
@@ -991,22 +947,20 @@ mod tests {
     /// every kind the ctx-free half of `apply` can answer, with no adapter in the
     /// room.
     ///
-    /// The three claims are all asked through [`undeclared`], which is the one
-    /// enumeration of what can differ between two states (§12.6) — so a `DocState`
-    /// field that grows is a field this test compares without being told:
+    /// The three claims are all asked through [`undeclared`], the one enumeration of
+    /// what can differ between two states (§12.6) — so a `DocState` field that grows
+    /// is a field this test compares without being told:
     ///
     /// - the fold **did something**, or the round trip proves nothing. `Undo` is the
     ///   one kind that is identity by design, so the inert set is asserted to be
     ///   exactly that rather than each sample being trusted to bite;
     /// - the fold touched **only what its footprint declares** — the rule
-    ///   `Materialize::audit` holds every fold in the workspace to, and which every
-    ///   run of it until now needed a GPU to reach at all (`tests/footprint.rs`);
+    ///   `Materialize::audit` holds every fold in the workspace to (§12.6);
     /// - the unfold put back **everything**, asked against an empty footprint, which
     ///   declares no writes and so reports any surviving difference at all.
     ///
     /// It is the round trip the tests above make one kind at a time, made over the
-    /// vocabulary — possible only because `apply_pure` exists to be called. That
-    /// function's own note has what was standing in for it here.
+    /// whole vocabulary.
     #[test]
     fn every_pure_kind_folds_and_unfolds_exactly() {
         let before = furnished();
@@ -1048,9 +1002,8 @@ mod tests {
     }
 
     /// The other side of that partition, and **the half no `match` can hold**: a kind
-    /// named on the wrong side of both exhaustive lists compiles, and the action then
-    /// folds to nothing wherever it is applied. It shows up here as a tag this list
-    /// does not have.
+    /// named on the wrong side of both exhaustive lists compiles, and then folds to
+    /// nothing wherever it is applied. It shows up here as a tag this list lacks.
     #[test]
     fn every_renderer_kind_declines_with_the_document_untouched() {
         let before = furnished();

@@ -4,10 +4,9 @@
 //! **The blend pass with the source removed.** A filter layer has no content to
 //! isolate — it is a function of what its stack has already composited — so where
 //! [`blend`](super::blend) binds a backdrop *and* an isolated layer, this binds only
-//! the backdrop. Everything else is shared: the same ping-pong (a texture cannot be
-//! both read and written), the same [`ScratchLevel`] to bounce through, the same
-//! [`UniformSlots`] mechanism for a slot per pass, and the same "no fixed-function
-//! blend, the pass computes the whole result" pipeline.
+//! the backdrop. Everything else is shared: the ping-pong (a texture cannot be both
+//! read and written), the [`ScratchLevel`] to bounce through, [`UniformSlots`] for a
+//! slot per pass, and the "the pass computes the whole result" pipeline.
 //!
 //! [`ScratchLevel`]: super::blend::ScratchLevel
 //! [`UniformSlots`]: crate::gpu::uniforms::UniformSlots
@@ -33,12 +32,10 @@ pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 
 /// Which bindings the filter pass reads, in layout order (§6.10).
 ///
-/// **The gap at 4 is the point of the list, not a gap in it.** This pass is the blend's
-/// shape with one input instead of two, so binding 3 — one of the two the source layer
-/// would have occupied — carries the chromatic gather's sampler instead and 4 stays
-/// undeclared, while everything after keeps the number it has in the pass this one is a
-/// narrowing of. A slot list says that by naming six declarations; an array indexed by
-/// position could only say it in a comment.
+/// **The gap at 4 is deliberate.** The numbers are the blend pass's: this pass is
+/// that shape with one input instead of two, so binding 3 carries the chromatic
+/// gather's sampler, 4 stays undeclared, and everything after keeps the number it
+/// has there.
 ///
 /// The accumulator textures are declared **sampled** rather than loaded, because the
 /// chromatic filter (§21.10) reads them through `back_samp` at fractional positions.
@@ -50,11 +47,9 @@ const FILTER_SLOTS: &[Slot] = &[
     Slot::sampled(fcd::BACK_COLOR),
     Slot::sampled(fcd::BACK_AUX),
     Slot::at(fcd::BACK_SAMP),
-    // The focal blur's convolved planes (§21.12), at the blend's other source
-    // slot and past the space partition — `filter_common.wesl` says why those
-    // numbers. Loaded exactly, never sampled: their `f32` formats are not
-    // filterable everywhere this runs, and the resolve wants its own texel.
-    // A 1×1 zero stands in whenever the frame has no blur (§6.8's pattern).
+    // The focal blur's convolved planes (§21.12). Loaded exactly, never sampled:
+    // their `f32` formats are not filterable everywhere this runs, and the resolve
+    // wants its own texel. A 1×1 zero stands in when the frame has no blur (§6.8).
     Slot::at(fcd::BLUR_LIGHT),
     Slot::sampled(mld::PIGMENT_LUT),
     Slot::at(mld::PIGMENT_SAMP),
@@ -67,9 +62,8 @@ const FILTER_SLOTS: &[Slot] = &[
 /// The filter pass: one fullscreen draw rewriting the accumulator.
 ///
 /// `pub(crate)` and shared behind an `Arc` for [`BlendPass`]'s reason: `gpu::merge`
-/// runs this very module's other entry point on tile-sized targets to merge a filter
-/// layer into the paint beneath it (§14.11.7), and a second copy would decode the
-/// Mixbox LUT twice.
+/// runs this module's tile-space entry point to merge a filter layer into the paint
+/// beneath it (§14.11.7), and a second copy would decode the Mixbox LUT twice.
 ///
 /// [`BlendPass`]: super::blend::BlendPass
 pub(crate) struct FilterPass {
@@ -78,34 +72,30 @@ pub(crate) struct FilterPass {
     /// layout: `fs_tile` reads a tile's stored channels where `fs_main` reads the
     /// accumulator's, and writes them back adjusted (§14.11.7).
     ///
-    /// One layout for both because they bind the same shapes in the same slots — a
-    /// tile's three channel textures answer to `back_color` / `back_aux` /
-    /// `back_resid` exactly as the accumulator's do, and the pigment LUT is the same
-    /// LUT. What differs is what the alpha lane *means* (per-unit opacity rather than
-    /// coverage), which is a fact about the caller rather than about the binding.
+    /// One layout serves both — a tile's three channel textures answer to
+    /// `back_color` / `back_aux` / `back_resid` exactly as the accumulator's do. What
+    /// differs is what the alpha lane *means* (per-unit opacity rather than
+    /// coverage), which is the caller's fact rather than the binding's.
     pub(crate) tile: wgpu::RenderPipeline,
     /// The focal blur's decode (§21.12): the same module's `fs_blur_decode`, on the
     /// same layout, into `blur.wesl`'s two spatial-domain planes — the accumulator
     /// as premultiplied XYZ light plus coverage, height and the border weight.
-    /// Here rather than in [`BlurPass`](super::blur::BlurPass) because the decode
-    /// is the per-space half of the blur: the FFT is arithmetic on light, this is
-    /// what makes a texel light at all.
+    ///
+    /// Here rather than in [`BlurPass`] because the decode is the per-color-space
+    /// half of the blur; the FFT itself is arithmetic on light.
     ///
     /// [`BlurPass`]: super::blur::BlurPass
     pub(super) blur_decode: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
-    /// rim rather than wrapping the far side of the picture into a fringe. The
-    /// point filters keep their exact `textureLoad`s and never touch it.
-    ///
-    /// Bound by the tile pass too, which never reads it: a bind group has to satisfy
-    /// the whole layout, and one layout for two pipelines is the trade that buys.
+    /// rim rather than wrapping the far side of the picture into a fringe. The point
+    /// filters keep their exact `textureLoad`s and never touch it, and the tile pass
+    /// binds it without reading it, a bind group having to satisfy the whole layout.
     sampler: wgpu::Sampler,
-    /// What stands at the blur-plane slots when the frame has no blur — and in
-    /// every merge, which refuses a resampling filter and so never reads them
-    /// (§14.11.7). The §6.8 stand-in pattern; a bind group answers to the whole
-    /// layout.
+    /// What stands at the blur-plane slots when the frame has no blur — and in every
+    /// merge, which refuses a resampling filter and so never reads them (§14.11.7).
+    /// The §6.8 stand-in pattern.
     blur_zero: (wgpu::TextureView, wgpu::TextureView),
 }
 
@@ -119,19 +109,6 @@ impl FilterPass {
             source: wgpu::ShaderSource::Wgsl(color_space.filter_shader().into()),
         });
         let resid_format = formats.resid;
-        // The binding numbers are the blend pass's, gaps and all: `filter_common`
-        // owns 0–3 where `blend_common` owns 0–4, and `mixbox_lut.wesl` hard-codes
-        // the LUT at 5–6 for whoever imports it (see the note in that file). Slot 3
-        // — one of the two the source layer would have occupied — carries the
-        // chromatic gather's sampler instead, and 4 stays undeclared; everything
-        // after keeps the number it has in the pass this one is a narrowing of.
-        //
-        // The accumulator textures are declared *sampled* rather than loaded,
-        // because the chromatic filter (§21.10) reads them through `sampler` at
-        // fractional positions. That asks their formats to be filterable, which
-        // `Rgba16Float`/`R16Float` are everywhere this runs — including WebGPU's
-        // core feature set — and costs the point filters nothing: a sampled
-        // declaration still serves their exact `textureLoad`s.
         let bgl = desc::layout_for(
             device,
             "stark filter bgl",
@@ -200,26 +177,16 @@ impl FilterPass {
         }
     }
 
-    /// Encode one filter layer: the accumulator `b.back` read and written back
-    /// adjusted into `b.out`, through filter slot `b.slot` (§21.3).
+    /// **The one description of `filter_common.wesl`'s group**, the screen's and the
+    /// merge's alike: merging a filter layer into the paint beneath it runs this
+    /// module's tile-space entry point (§14.11.7), so it must bind this very group
+    /// rather than a second description of it.
     ///
-    /// `pigment` is the **blend pass's** LUT, passed in rather than owned. Both passes
-    /// ask it the same question and an Oklab document binds the same 1×1 stand-in, so
-    /// there is one table per space rather than one per pass — a coupling that now
-    /// shows in this signature instead of only in a comment.
-    /// **The one description of `filter_common.wesl`'s group** — the screen's and the
-    /// merge's alike, on [`BlendPass::bind_group`](super::blend::BlendPass::bind_group)'s
-    /// argument: merging a filter layer into the paint beneath it runs this module's
-    /// tile-space entry point (§14.11.7), so the merged tile comes out of the shader
-    /// the screen runs and must bind the very group rather than a second description
-    /// of it.
-    ///
-    /// The sampler at `BACK_SAMP` is bound by the tile pass and never read — `fs_tile`
-    /// takes no taps — because a bind group answers to the whole layout.
-    /// `blur` is the frame's convolved planes when it has a focal blur (§21.12),
-    /// and absent otherwise — the 1×1 zeroes stand in, so the layout is answered
-    /// either way and a document without a blur pays two stand-in bindings rather
-    /// than a variant of this group.
+    /// `pigment` is the **blend pass's** LUT, passed in rather than owned: both
+    /// passes ask it the same question, so there is one table per color space rather
+    /// than one per pass. `blur` is the frame's convolved planes when it has a focal
+    /// blur (§21.12); the 1×1 zeroes stand in otherwise, so the layout is answered
+    /// either way.
     pub(crate) fn bind_group(
         &self,
         device: &wgpu::Device,
@@ -252,12 +219,13 @@ impl FilterPass {
         )
     }
 
-    /// `blur` is this consumer's blur scratch when the frame has a focal blur
-    /// anywhere — the planes it lands in ride the bind group either way, so a
-    /// point filter beside a blur reads the same group (§21.12). `convolve` is
-    /// `Some` exactly when **this** layer is the blur: the frame's kernel,
-    /// decode and FFT round trip are encoded ahead of the fullscreen pass, whose
-    /// `FILTER_FOCAL_BLUR` arm then reads what they landed.
+    /// Encode one filter layer: the accumulator `b.back` read and written back
+    /// adjusted into `b.out`, through filter slot `b.slot` (§21.3).
+    ///
+    /// `blur` is this consumer's blur scratch whenever the frame has a focal blur
+    /// anywhere, since the planes ride the bind group either way (§21.12).
+    /// `convolve` is `Some` exactly when **this** layer is the blur; its kernel,
+    /// decode and FFT round trip are then encoded ahead of the fullscreen pass.
     #[expect(
         clippy::too_many_arguments,
         reason = "every argument is a distinct piece of what one filter pass names"
@@ -316,17 +284,15 @@ pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUnifo
 /// The uniform's view-derived lanes for this frame — `disp`, whose meaning is
 /// the kind's to say (`filter_common.wesl`).
 ///
-/// For the **chromatic** filter: the red-end → blue-end displacement, carried
-/// from the canvas terms the document states (`params` = spread in canvas px,
-/// angle in canvas radians) into the **accumulator texels** the pass samples in,
-/// through the view's full canvas→screen linear map — zoom, rotation and mirror
-/// alike, so the fringes stay attached to the artwork exactly as the canvas
-/// substrate does (§21.10, §6.4).
+/// For the **chromatic** filter: the red-end → blue-end displacement, carried from
+/// the canvas terms the document states (`params` = spread in canvas px, angle in
+/// canvas radians) into the **accumulator texels** the pass samples in, through the
+/// view's full linear map — zoom, rotation and mirror alike, so the fringes stay
+/// attached to the artwork as the canvas substrate does (§21.10, §6.4).
 ///
 /// For the **focal blur**: `.x` is the decimation scale the convolution runs at
-/// (§21.12) — the same rule [`BlurPass::prepare`] plans the transform with
-/// (`blur::scale` of the same view-mapped radius), stated once there so the
-/// decode, the transform and the resolve cannot disagree about it.
+/// (§21.12), by the same rule [`BlurPass::prepare`] plans the transform with, so
+/// the decode, the transform and the resolve cannot disagree about it.
 ///
 /// Zero for every other kind, which is the true value rather than a stand-in.
 ///

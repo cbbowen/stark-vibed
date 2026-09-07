@@ -15,33 +15,27 @@ use super::selection::Selection;
 /// `None` refuses the whole action, deterministically:
 ///
 /// - **Unbounded** — [`SelectionShape::All`] with nothing selected, or with a
-///   selection that reaches everywhere at *any* strength. There is no
-///   rectangle to fill, and picking one silently (the frame? the layer's bounds?)
-///   would be a different fill on every client. This is §18.0.4's wrinkle, answered by
-///   refusing rather than by inventing a boundary.
+///   selection that reaches everywhere at *any* strength: there is no rectangle to
+///   fill, and inventing one would be a different fill on every client (§18.0.4).
 /// - **Too large** — more than [`MAX_FILL_TILES`].
 ///
 /// A shape that encloses nothing yields an empty plan, not a refusal: a stray click
-/// is a fill of nothing, which is a no-op rather than an error.
+/// is a fill of nothing.
 pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
     let bounded = gate.outside() <= 0.0;
     let mut coords: Vec<TileCoord> = match fill_bounds(op) {
         // A bounded shape: the tiles its coverage can reach, minus any the gate
-        // masks out entirely. Filtering rather than letting the shader write zeros
-        // is what keeps a fill inside a small selection from rewriting the whole
-        // rectangle it was dragged over.
+        // masks out entirely — which is what keeps a fill inside a small selection
+        // from rewriting the whole rectangle it was dragged over.
         //
-        // Quantized from [`fill_bounds`] — the same box the footprint quantizes,
-        // by the same `TileRect::covering` — so the tiles this writes and the
-        // tiles the action declares cannot be two different sets. See there.
+        // Quantized from `fill_bounds` by the same `TileRect::covering` the footprint
+        // uses, so the tiles written and the tiles declared cannot differ (§12.6).
         Some((lo, hi)) => {
             let reach = TileRect::covering(lo, hi, 0)?;
             if bounded {
-                // Walk the **gate**, not the shape's box. The two intersect to the
-                // same set either way, but only the gate is bounded in advance (by
-                // `MAX_SELECTION_TILES`): the box is quadratic in the drag, so a
-                // rectangle swept at far zoom-out over a small selection would cost
-                // millions of coordinates to describe an answer of a dozen.
+                // Walk the **gate**, not the shape's box: both intersect to the same
+                // set, but only the gate is bounded in advance (by
+                // `MAX_SELECTION_TILES`), and the box is quadratic in the drag.
                 gate.tiles()
                     .map(|(c, _)| *c)
                     .filter(|c| reach.contains(*c))
@@ -112,20 +106,11 @@ mod tests {
         assert!(plan(&op, &Selection::everything()).is_none());
     }
 
-    /// **The footprint has to name every tile the plan writes** — §12.6, and the
-    /// first of CLAUDE.md's rules that break silently.
+    /// **The footprint has to name every tile the plan writes** — §12.6.
     ///
-    /// It did not. The two derived the box separately, and the plan's was an apron
-    /// wider, so a fill whose padded bound fell within a pixel of a tile boundary
-    /// wrote a tile its action never declared: a peer-diverging under-claim through
-    /// the commutation gate, and a tile undo could not take back, since
-    /// `patch::tile_diff` bounds the restore by the declared rect on purpose.
-    ///
-    /// Swept across a **whole tile stride** rather than checked at one alignment,
-    /// because one alignment is precisely what hid it — `tests/footprint.rs` drives
-    /// its fills at (40, 40)–(80, 80), which is nowhere near a boundary. At a
-    /// quarter-pixel step several samples land inside the one-pixel window where the
-    /// two answers can differ.
+    /// Swept across a **whole tile stride** at quarter-pixel steps rather than checked
+    /// at one alignment: the plan and the footprint can only disagree within a pixel
+    /// of a tile boundary, which a fixed alignment will never land on.
     #[test]
     fn the_footprint_names_every_tile_the_plan_writes() {
         use stark_model::document::fill_rect;

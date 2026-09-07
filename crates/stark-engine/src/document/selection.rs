@@ -21,24 +21,22 @@ pub struct Selection {
     ///
     /// A value rather than a flag, since a selection can be partial
     /// ([`SelectionOp::opacity`]): inverting one leaves the whole plane selected at
-    /// the strength the region had, which no boolean can say. Ops themselves still
-    /// only ever put 0 or 1 here — the only shape with coverage at infinity is
-    /// `All`, pinned to full strength — so the in-between values come from
-    /// [`Self::plan_invert`] alone.
+    /// the strength the region had, which no boolean can say. Ops only ever put 0 or
+    /// 1 here — the only shape with coverage at infinity is `All`, pinned to full
+    /// strength — so in-between values come from [`Self::plan_invert`] alone.
     outside: f32,
     /// The strongest coverage anywhere in the mask, and so the level whose *half*
     /// is the boundary.
     ///
-    /// **Visualization, and the reflection invert needs.** The outline pass finds
-    /// the contour by differencing the mask (`overlay.wesl`), which needs to know
-    /// what "fully selected" means here — a selection at 0.4 has no 0.5-contour at
-    /// all, and the marching ants would simply vanish. Inversion needs the same
-    /// number for a different reason: the complement of a region selected at 0.4 is
-    /// its outside selected at 0.4, which is `level − m` and not `1 − m`.
+    /// The outline pass finds the contour by differencing the mask (`overlay.wesl`),
+    /// which needs to know what "fully selected" means here — a selection at 0.4 has
+    /// no 0.5-contour at all, and the marching ants would vanish. Inversion needs the
+    /// same number: the complement of a region selected at 0.4 is its outside
+    /// selected at 0.4, which is `level − m` and not `1 − m`.
     ///
     /// Conservative in the same sense [`Self::hull`] is: coverage ≤ level, never
-    /// that the level is reached. `Intersect` multiplies the two peaks, which is an
-    /// upper bound unless they peak in the same place. A selection built only from
+    /// that the level is reached (`Intersect` multiplies the two peaks, an upper
+    /// bound unless they peak in the same place). A selection built only from
     /// full-strength ops has `level == 1`, and every expression below collapses to
     /// the plain hard-edged answer for it.
     level: f32,
@@ -46,11 +44,11 @@ pub struct Selection {
     /// selection bar's Opacity slider, and what
     /// [`ActionKind::SetSelectionOpacity`](stark_model::document::ActionKind) sets.
     ///
-    /// Not in the tiles, and that is the point. The mask holds whatever the ops
-    /// made it; this says how strongly it is *read*, so moving it costs no
-    /// rasterization and applies to a region already drawn — which is the whole
-    /// feature. [`SelectionOp::opacity`] is the same question asked of one shape,
-    /// baked into that shape's coverage where it was struck; the two multiply.
+    /// Not in the tiles: the mask holds whatever the ops made it, and this says how
+    /// strongly it is *read*, so moving it costs no rasterization and applies to a
+    /// region already drawn. [`SelectionOp::opacity`] is the same question asked of
+    /// one shape, baked into that shape's coverage where it was struck; the two
+    /// multiply.
     ///
     /// What a reader does with the product is the reader's law, and there are two
     /// (§6.8): paint that is *minted* takes it as the other factor of the brush's
@@ -61,20 +59,18 @@ pub struct Selection {
     ///
     /// Carried through the op algebra — an op says where the mask is, never how
     /// strongly it is read — so a region drawn over a dimmed selection is dimmed
-    /// too, and a universal mask keeps the number as well: set before anything is
-    /// selected, it is the strength the coming region will take, and until one is
-    /// drawn it is the whole canvas taking paint at that strength — the dial's
-    /// other factor, everywhere. The one op that resets it is a **deselect**,
-    /// `Replace` with `All` ([`Self::plan`]), which hands the canvas back at full
-    /// strength so a dimming never outlives its selection by accident.
+    /// too, and a universal mask keeps the number as well: until a region is drawn
+    /// it is the whole canvas taking paint at that strength. The one op that resets
+    /// it is a **deselect**, `Replace` with `All` ([`Self::plan`]), which hands the
+    /// canvas back at full strength.
     opacity: f32,
     /// A conservative analytic bounding box of the selected coverage, in canvas px
     /// — `None` when the selection is unbounded (`outside`) or its extent is not
-    /// analytically known. Carried through the op algebra so the transform chrome
-    /// has a rect to hang its handles on (§16); nothing about the
-    /// mask itself depends on it. Conservative means coverage ⊆ hull, never that
-    /// the hull is tight: `Subtract` keeps the previous hull, `Intersect`
-    /// intersects boxes.
+    /// analytically known. Conservative means coverage ⊆ hull, never that the hull
+    /// is tight: `Subtract` keeps the previous hull, `Intersect` intersects boxes.
+    ///
+    /// Carried through the op algebra so the transform chrome has a rect to hang its
+    /// handles on (§16); nothing about the mask itself depends on it.
     hull: Option<(Vec2, Vec2)>,
 }
 
@@ -148,8 +144,7 @@ impl Selection {
     ///
     /// Unclamped here: the number arrives through `ActionKind::sanitized`, the one
     /// funnel an action passes into the document through, and a second bound would
-    /// be a second policy to keep in step (§8). A universal mask takes it like any
-    /// other — see the field.
+    /// be a second policy to keep in step (§8).
     pub(crate) fn with_opacity(&self, opacity: f32) -> Self {
         Self::from_parts(
             self.tiles.clone(),
@@ -182,20 +177,15 @@ impl Selection {
 
     /// Whether two selections are the same state, for the fold's audit (§12.6).
     ///
-    /// **Written as a destructuring `let`, and that is the whole point.** This is
-    /// what `document::audit` asks to decide whether a selection differed, so it is
-    /// the one place that has to learn about a new field — and a `let` over the
-    /// whole struct stops compiling until somebody teaches it, where a chain of
-    /// accessor comparisons would silently keep answering about the fields it already
-    /// knew.
+    /// **Written as a destructuring `let`** so that a new field stops it compiling
+    /// until somebody teaches it: this is the one place that has to learn about one.
     ///
-    /// `hull` is deliberately *not* compared, and the exclusion is a decision rather
-    /// than an omission: it is a conservative box carried through the op algebra —
-    /// `Subtract` keeps the previous one, `Intersect` intersects — so it is
-    /// path-dependent by construction, and nothing about the mask depends on it
-    /// (§16 hangs transform handles on it and that is all). `level` *is* compared,
-    /// conservative in the same sense but load-bearing: it decides the outline
-    /// contour and the reflection [`plan_invert`](Self::plan_invert) takes.
+    /// `hull` is deliberately *not* compared: it is a conservative box carried
+    /// through the op algebra, so it is path-dependent by construction, and nothing
+    /// about the mask depends on it (§16 hangs transform handles on it and that is
+    /// all). `level` *is* compared, conservative in the same sense but load-bearing:
+    /// it decides the outline contour and the reflection
+    /// [`plan_invert`](Self::plan_invert) takes.
     pub(crate) fn same(&self, other: &Self) -> bool {
         let Self {
             tiles,
@@ -246,18 +236,15 @@ impl Selection {
         let shape_outside = op.shape().coverage_outside();
         let outside = op.mode().combine(self.outside, shape_outside);
         // The result's peak. The same algebra as the coverage for three of the four
-        // modes; `Subtract` is the exception, and deliberately so — subtracting
-        // *removes* coverage, so what survives peaks no higher than it did, wherever
-        // the op did not reach. Running `combine` here would have said a full-strength
-        // Subtract flattens the level to zero, which is true only of the texels it
-        // covered. See [`Self::level`] on why an upper bound is the right kind of
-        // answer.
+        // modes; `Subtract` is the exception, since subtracting *removes* coverage —
+        // what survives peaks no higher than it did, wherever the op did not reach.
+        // `combine` here would say a full-strength Subtract flattens the level to
+        // zero, which is true only of the texels it covered.
         //
         // The one corner: a region selected at opacity 0 is an empty selection at
-        // level 0, and reflecting through 0 makes its inverse empty too. That is what
-        // "the complement, at the strength in play" reduces to when the strength is
-        // none, and it is reachable only by deliberately asking to select nothing —
-        // where Deselect is the way back.
+        // level 0, and reflecting through 0 makes its inverse empty too — reachable
+        // only by deliberately asking to select nothing, where Deselect is the way
+        // back.
         let level = match op.mode() {
             SelectionMode::Replace => op.opacity(),
             SelectionMode::Union => self.level.max(op.opacity()),
@@ -267,10 +254,8 @@ impl Selection {
 
         // A shape that reaches to infinity has no boundary to rasterize: the result is
         // the constant `outside` everywhere the previous mask was constant, and the
-        // previous tiles survive under the combine (Union with All swallows them,
-        // Intersect with All keeps them, and so on). `All` is pinned to full strength
-        // ([`SelectionOp::opacity`]), which is exactly what keeps each of these four
-        // constant and this branch as cheap as it always was.
+        // previous tiles survive under the combine. `All` is pinned to full strength
+        // (`SelectionOp::opacity`), which is what keeps each of these four constant.
         if shape_outside > 0.0 {
             return Some(match op.mode() {
                 // `s = 1` everywhere ⇒ Replace/Union give all-selected, Subtract
@@ -281,11 +266,10 @@ impl Selection {
                         rasterize: Vec::new(),
                         outside,
                         level,
-                        // A deselect — Replace with All, the one op whose whole
-                        // meaning is "hand the canvas back" — lands on full
-                        // strength; the opacity rides through every other op
-                        // (see the field). Decided here rather than in the fold
-                        // so replay, undo and a peer's copy agree by construction.
+                        // A deselect — Replace with All — lands on full strength;
+                        // the opacity rides through every other op. Decided here
+                        // rather than in the fold so replay, undo and a peer's
+                        // copy agree by construction.
                         opacity: if op.mode() == SelectionMode::Replace {
                             1.0
                         } else {
@@ -331,8 +315,7 @@ impl Selection {
         //
         // The cap rides *inside* the cover, not on its length: an op naming more
         // tiles than MAX_SELECTION_TILES is refused without the list ever being
-        // built, which is the difference between refusing a shape the size of the
-        // explored canvas and dying trying to describe it.
+        // built.
         let pad = op.feather().max(1.0) + TILE_APRON as f32 + 1.0;
         let rasterize = tiles_covering(
             lo - Vec2::splat(pad),
@@ -342,11 +325,10 @@ impl Selection {
         )?;
 
         // Whether the previous mask survives outside the rasterized set. Under Union
-        // and Subtract it does — the result there is `max(p, 0) = p` and `p·(1−0) = p`
-        // — so those ops only rewrite the tiles the shape actually reaches. Replace
-        // and Intersect collapse everything else to the constant `outside`, so the old
-        // tiles are dropped rather than rewritten: a Replace over a big old selection
-        // costs the new shape's tiles, not the union of both.
+        // and Subtract it does — `max(p, 0) = p` and `p·(1−0) = p` — so those ops only
+        // rewrite the tiles the shape reaches. Replace and Intersect collapse
+        // everything else to the constant `outside`, so the old tiles are dropped
+        // rather than rewritten.
         let keep_prev = match op.mode() {
             SelectionMode::Replace | SelectionMode::Intersect => false,
             SelectionMode::Union | SelectionMode::Subtract => true,
@@ -370,17 +352,12 @@ impl Selection {
     /// 0.4 is its outside selected at 0.4 rather than at full strength. The two agree
     /// for any selection built at full strength, where `level == 1`.
     pub(crate) fn plan_invert(&self) -> SelectionPlan {
-        // Sorted, because the map is an `rpds::HashTrieMap` under a `RandomState`
-        // and so hands its keys out in an order that differs run to run. No pixel
-        // depends on it — each tile is an independent clear-and-draw, and the hull
-        // below is a fold that does not care — but every other planner names its
-        // tiles in the row-major order `TileRect::coords` walks, and an invariant
-        // that holds everywhere is worth more than the sort costs on a set bounded
-        // by `MAX_SELECTION_TILES`.
-        //
+        // Sorted, because the map is an `rpds::HashTrieMap` under a `RandomState` and
+        // so hands its keys out in an order that differs run to run. No pixel depends
+        // on it, but every other planner names its tiles in the row-major order
+        // `TileRect::coords` walks, and the set is bounded by `MAX_SELECTION_TILES`.
         // By `(y, x)` rather than `TileCoord`'s own `Ord`, which orders by x first:
-        // the point is to name the same order the covering planners do, and that one
-        // is y-outer.
+        // the covering planners are y-outer.
         let mut rasterize: Vec<TileCoord> = self.tiles.keys().copied().collect();
         rasterize.sort_unstable_by_key(|c| (c.y, c.x));
         let outside = self.level - self.outside;
@@ -419,9 +396,8 @@ pub(crate) struct SelectionPlan {
     pub level: f32,
     /// The result's overall opacity — the previous one, always. An op says where
     /// the mask is; how strongly it is read is a separate question with a separate
-    /// action (§6.8), and carrying it here is what keeps a region redrawn over a
-    /// dimmed selection dimmed. (A deselect lands on 1 all the same — [`Selection::plan`]
-    /// pins `Replace` there, which is the only op that hands the canvas back.)
+    /// action (§6.8). (A deselect lands on 1 all the same — [`Selection::plan`]
+    /// pins `Replace` there, the only op that hands the canvas back.)
     pub opacity: f32,
     /// The result's analytic hull — see [`Selection::hull`].
     pub hull: Option<(Vec2, Vec2)>,

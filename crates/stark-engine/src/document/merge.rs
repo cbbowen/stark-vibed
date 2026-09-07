@@ -1,89 +1,52 @@
 //! Merging a layer **down** onto the one beneath it (§14.11): when the pair can be
-//! replaced by one layer, and how the paint lands when it can.
+//! replaced by one layer, and what the survivor's params become when it can.
 //!
-//! Pure CPU, no GPU anywhere in this file — [`crate::gpu::merge`] does the tiles. What
-//! is decided here is the harder half, because merge-down has exactly one law:
+//! Pure CPU — [`crate::gpu::merge`] does the tiles. The one law:
 //!
 //! > **A merge must not change what the document looks like.**
 //!
-//! That is not a nicety, it is what distinguishes a merge from a destructive edit. A
-//! painter merges to spend fewer layers on a thing that is finished, not to accept a
-//! new picture — so a merge that shifts a pixel is a bug with no way to notice it
-//! until the work is saved and the layers are gone.
-//!
-//! The law is not free, and this module is where it costs something: **it is not
-//! always possible**, so this returns an `Option` and the panel offers the control
-//! only where there is one.
+//! It cannot always be obeyed, which is why [`plan`] returns an `Option` and the panel
+//! offers the control only where there is one.
 //!
 //! # What has to hold
 //!
-//! Write `B` for everything composited beneath the pair, `D` for the lower layer
-//! (the **destination**, which survives) and `S` for the upper (the **source**, which
-//! is consumed). The document currently shows `merge_S(merge_D(B, D), S)`; after the
-//! merge it shows `merge_D(B, D ⊕ S)` for whatever tile-space `⊕` this module names.
-//! Those two agreeing for **every** backdrop `B` is the whole question, and it splits
-//! into two independent ones:
+//! Write `B` for everything composited beneath the pair, `D` for the lower layer (the
+//! **destination**, which survives) and `S` for the upper (the **source**, which is
+//! consumed). The document shows `merge_S(merge_D(B, D), S)` and must go on showing
+//! `merge_D(B, D ⊕ S)` for **every** backdrop `B`. That splits in two:
 //!
 //! - **Does `S` reach the accumulator by plain "over"?** Only then is `⊕` the stacking
-//!   law, and only then does over's associativity — `over(over(B,D),S) =
-//!   over(B, over(D,S))` — carry the result across. A blend mode does not associate
-//!   with over at all, and a clip is a deletion rather than a stack.
-//! - **Is the backdrop `S` is defined against exactly `D`?** A clip reads the
-//!   backdrop's coverage, so the answer decides whether "clipped to `D`" is even what
-//!   `S` means. It is `D` alone in exactly two places: `S` is the bottom of the stack
-//!   its carrier `D` opens (a group's members composite over its base, §14.1), or `S`
-//!   sits second from the bottom of the **root** stack, whose accumulator starts
-//!   cleared.
+//!   law, and only then does over's associativity carry the result across. A blend mode
+//!   does not associate with over at all, and a clip is a deletion rather than a stack.
+//! - **Is the backdrop `S` is defined against exactly `D`?** It is `D` alone in exactly
+//!   two places: `S` is the bottom of the stack its carrier `D` opens (a group's members
+//!   composite over its base, §14.1), or `S` sits second from the bottom of the **root**
+//!   stack, whose accumulator starts cleared.
 //!
-//! # Two kinds of source
-//!
-//! Everything above is about a source made of **paint**, which is stacked into the
-//! destination. A **filter layer** is the other kind, and it merges by a different
-//! sentence (§14.11.7): it has nothing to stack, being a function of what it sits on,
-//! so the merge *rewrites* the destination's channels and leaves every other thing
-//! about that layer alone — its blend, its clip, its opacity, its place.
-//!
-//! Only the second question above binds it, and it binds absolutely: a filter rewrites
-//! the accumulator beneath it, so baking it into `D` is the same picture exactly when
-//! that accumulator is `D` alone. The first question is vacuous — nothing arrives, so
-//! there is no "over" to associate and no mode to agree about.
-//!
-//! What it costs is one refusal of its own. The merged tiles are written by a pass
-//! that must be a pure function of canvas position (§6.4) — the rule that keeps a
-//! tile's apron bit-identical to its neighbour's interior — and a filter that reads
-//! *neighbouring* texels (§21.10) is not one, at any apron width, since its reach is
-//! the document's to set. So [`Filter::resamples`](stark_model::document::Filter::resamples)
-//! is asked, and a gather is declined.
+//! A **filter layer** source is the other kind of merge (§14.11.7): it stacks nothing,
+//! being a function of what it sits on, so the merge *rewrites* the destination's
+//! channels and leaves everything else about that layer alone. Only the second question
+//! binds it, and it binds absolutely. It carries one refusal of its own: the merged
+//! tiles are written by a pass that must be a pure function of canvas position (§6.4),
+//! which a filter reading *neighbouring* texels (§21.10) is not at any apron width — so
+//! `Filter::resamples` is asked, and a gather is declined.
 //!
 //! # What is deliberately refused
 //!
-//! **Two layers sharing a blend mode — unimplemented, not unsound.** The soundness
-//! question is settled: the emissive modes weigh coverage in emission, where the
-//! combination is addition, so they are associative at any coverage (§18.0.4,
-//! `blend_common::added_light`). What it still needs is the mode's algebra evaluated
-//! in **tile** space: the light conversion is per color space, and in a pigment
-//! document that means binding the Mixbox LUT into a pass that has never needed it.
-//! The slab-law inversion the result then has to be stored through already exists
-//! (`merge.wesl::optical_mass`).
+//! **Two layers sharing a blend mode**, and **a source with a blend mode merged into
+//! its carrier**: sound (§18.0.4) but unimplemented — both wait on the mode's algebra
+//! evaluated in *tile* space, which in a pigment document means binding the Mixbox LUT
+//! into a pass that has never needed it.
 //!
-//! **A source with a blend mode, merged into its carrier.** Sound for a different and
-//! simpler reason — the group's isolated content is what the merge rewrites, so the
-//! outward merge is unchanged whatever the mode — and blocked on the same tile-space
-//! conversion. The two arrive together when it does.
+//! **Groups**, on either side: a source that carries layers would have to flatten a
+//! subtree, and what sits beneath a source is a destination group's *whole* group
+//! rather than its base. (A **carrier** as the destination is not this case and is
+//! offered, §14.1.)
 //!
-//! **Groups.** A source that carries layers would have to flatten a whole subtree, and
-//! a destination that carries layers is not what sits beneath the source — its whole
-//! group is. Both are refused rather than partially handled. (A **carrier** as the
-//! destination is not this case and is offered: there the source is the bottom member
-//! of the stack that carrier opens, so what sits beneath it *is* the carrier's own
-//! content, §14.1.)
-//!
-//! **A filter as the destination, and a matte as either.** Neither holds tiles, so
-//! there is nothing to rewrite and nothing to rewrite into. A solid matte is the one
-//! case with an obvious answer — its composited color is its fill, so a filter merged
-//! into one would be that matte with a filtered fill — and it is left out on purpose
-//! rather than overlooked: a *gradient* matte has no such answer, because the
-//! adjustment is nonlinear and filtering the stops is not filtering the ramp.
+//! **A filter as the destination, and a matte as either**: neither holds tiles. A solid
+//! matte is left out on purpose rather than overlooked — a *gradient* matte has no such
+//! answer, the adjustment being nonlinear, so filtering the stops is not filtering the
+//! ramp.
 
 use super::layer::{CompositeParams, Layer, LayerContent};
 use super::state::DocState;
@@ -93,10 +56,10 @@ use stark_model::document::LayerId;
 /// lands, and what each side's tiles are worth on their own.
 ///
 /// The destination is derived rather than chosen — "down" names exactly one layer —
-/// but it is carried anyway, because a [`Footprint`] is built from the action alone
-/// and cannot go looking for it (§12.6). The applying side re-derives the plan and
-/// declines if it names a different destination, which is what keeps a peer's action
-/// honest against a tree that has moved under it.
+/// but it is carried anyway, because a [`Footprint`] is built from the action alone and
+/// cannot go looking for it (§12.6). The applying side re-derives the plan and declines
+/// if it names a different destination, which keeps a peer's action honest against a
+/// tree that has moved under it.
 ///
 /// [`Footprint`]: stark_model::document::Footprint
 #[derive(Clone, Debug, PartialEq)]
@@ -109,27 +72,20 @@ pub struct MergePlan {
 
 /// The two things a merge can be, which are two because a source can be two things.
 ///
-/// A layer of paint is **stacked into** the destination — two slabs become one, and
-/// every number in [`Stack`](Self::Stack) is about reconciling two layers' params
-/// into the one set that speaks for both afterwards. A **filter** is not stacked into
-/// anything; it is a function of what it sits on, so merging it **rewrites** the
-/// destination's channels and leaves everything else about that layer alone. Nothing
-/// is reconciled, because nothing arrives.
-///
-/// One enum rather than one struct with fields that go quiet: `dest_opacity` and
-/// `keeps` have no meaning for a filter merge, and a field that cannot change a pixel
-/// is a field somebody eventually reads anyway.
+/// A layer of paint is **stacked into** the destination, and every number in
+/// [`Stack`](Self::Stack) reconciles the two layers' params into the one set that
+/// speaks for both afterwards. A **filter** stacks nothing, so merging it **rewrites**
+/// the destination's channels and leaves everything else about that layer alone —
+/// there is nothing to reconcile.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MergeKind {
     /// The source's paint stacked into the destination's, through the source's own
     /// params (§14.11.3).
     Stack {
         /// How the source's paint meets the destination's — **the source layer's own**
-        /// params, always. A merge folds the upper layer into the lower through exactly
-        /// the merge the compositor would have run between the two, which is the whole of
-        /// why the result is the same picture.
-        ///
-        /// Its `opacity` is the source's own, and it is folded into the merged tiles.
+        /// params, always, since the same picture requires exactly the merge the
+        /// compositor would have run between the two. Its `opacity` is folded into the
+        /// merged tiles.
         source_params: CompositeParams,
         /// What the destination's tiles are worth on their own: its own opacity when the
         /// two are siblings, and **1.0 when the destination is the carrier** — a group's
@@ -144,28 +100,22 @@ pub enum MergeKind {
     /// The source is a **filter layer**, and the merge runs it over the destination's
     /// stored channels (§14.11.7).
     ///
-    /// The filter travels rather than being re-read on the far side, on
-    /// `source_params`' argument: the plan is the whole description of the operation,
-    /// and the applying side should not have to go back to the tree for half of it.
-    ///
     /// **No `dest_opacity` and no `keeps`**, and their absence is the content of this
-    /// variant. The destination keeps every one of its params — a filter merge does
-    /// not stack anything onto it, so there is nothing for its sliders to have to
-    /// absorb — and its opacity never enters the arithmetic at all: pass A's slab law
-    /// scales coverage and height and leaves the color alone, so the un-premultiplied
-    /// color the filter is defined on is the same whatever the slider says.
+    /// variant: the destination keeps every one of its params, and its opacity never
+    /// enters the arithmetic at all — pass A's slab law scales coverage and height and
+    /// leaves the color alone, so the un-premultiplied color the filter is defined on
+    /// is the same whatever the slider says.
     Filter {
         filter: stark_model::document::Filter,
-        /// The filter layer's own params, which is what the **compositor** reads of
-        /// one (§21.4): the opacity is the filter's strength and has to be baked in,
-        /// or a half-applied grade would merge to a fully applied one.
+        /// The filter layer's own params, which is what the **compositor** reads of one
+        /// (§21.4): the opacity is the filter's strength and has to be baked in, or a
+        /// half-applied grade would merge to a fully applied one.
         ///
         /// Carried whole rather than as that one number, so the merge builds its draw
-        /// through the same `FilterDraw::new` the draw list does. The clip rides along
-        /// having nothing to do — it is the identity for every filter that may come
-        /// this way (§21.4.1) — and dropping it here would mean this path and the
-        /// screen's read the layer differently, which is the divergence the shared
-        /// constructor exists to rule out.
+        /// through the same `FilterDraw::new` the draw list does — this path and the
+        /// screen's must read the layer identically. The clip rides along having
+        /// nothing to do, being the identity for every filter that may come this way
+        /// (§21.4.1).
         source_params: CompositeParams,
     },
 }
@@ -174,9 +124,9 @@ pub enum MergeKind {
 /// preserves the document's appearance — see the module header for which is which.
 ///
 /// A **pure function of the state**, which is what lets the action carry only the two
-/// ids: every peer and every replay asks this question of the same document and gets
-/// the same answer, so a merge is accepted or declined identically everywhere without
-/// the log having to carry the reasoning.
+/// ids: every peer and every replay asks this of the same document and gets the same
+/// answer, so a merge is accepted or declined identically everywhere without the log
+/// carrying the reasoning.
 pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     let site = state.site_of(source)?;
     let s = state.layer(source)?;
@@ -213,13 +163,10 @@ pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
 /// Where a candidate source sits, as a **compositing walk of the tree already knows
 /// it** — the pure input [`plan_at`] decides from.
 ///
-/// Split out from [`plan`] because the projection asks this question of *every*
-/// layer (the control is offered per row, §14.11), and `plan`'s own `site_of` is a
-/// walk of the whole tree: asking it per layer made `Engine::observe` quadratic in
-/// the layer count. A walk in composite order already knows each of these — the
-/// lower sibling it just visited, the carrier it descended through — so the search
-/// was for an answer the caller had in hand, which is the argument `LayerInfo`'s
-/// own `has_backdrop` already makes one field over.
+/// Reach for this over [`plan`] when the caller is already walking in composite order:
+/// it knows the lower sibling it just visited and the carrier it descended through,
+/// where `plan`'s own `site_of` searches the whole tree, which the projection asks of
+/// *every* layer (the control is offered per row, §14.11).
 pub(crate) struct MergeSite<'a> {
     /// The layer that would be consumed.
     pub source: &'a Layer,
@@ -237,12 +184,9 @@ pub(crate) struct MergeSite<'a> {
     pub dest_is_carrier: bool,
 }
 
-/// The merge on offer at a located site, or `None` when there is none that
-/// preserves the document's appearance — [`plan`] without the search.
-///
-/// Everything below this point is a question about the two layers themselves, which
-/// is why the split falls here: the tree is consulted only to find `dest` and to
-/// answer the two flags, and nothing after that reads it again.
+/// The merge on offer at a located site, or `None` when there is none that preserves
+/// the document's appearance — [`plan`] without the search. Reads nothing but the site,
+/// so a caller that already has one need not consult the tree again.
 pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
     let (s, d) = (site.source, site.dest);
     let backdrop_is_dest = site.backdrop_is_dest;
@@ -261,25 +205,15 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
         return None;
     }
 
-    // A **filter** source, which is the whole of the second kind of merge (§14.11.7).
-    //
-    // It asks §14.11.2's second question and nothing else, because for a filter that
-    // question *is* the operation: a filter rewrites the accumulator beneath it, so
-    // baking it into the destination is the same picture exactly when the accumulator
-    // beneath it is that destination alone. Which is `backdrop_is_dest` — the same
-    // predicate a clipped layer answers, asked of a layer that is nothing but its
-    // backdrop, rewritten.
-    //
-    // The first question — does the source reach the accumulator by plain "over"? —
-    // has no bearing here. Nothing arrives to be stacked, so there is no
-    // associativity to lean on and no mode to agree about; the filter's own blend is
-    // refused by state (§21.4) and its clip is absorbed, being the identity for every
-    // filter that may come this way.
+    // A **filter** source, the second kind of merge (§14.11.7). It asks §14.11.2's
+    // second question and nothing else: a filter rewrites the accumulator beneath it,
+    // so baking it into the destination is the same picture exactly when that
+    // accumulator is the destination alone. The first question is vacuous — nothing
+    // arrives to be stacked, and the filter's own blend is refused by state (§21.4).
     if let Some(f) = filter {
-        // A filter that **resamples** is refused, and by a law rather than a
-        // preference: the merged tiles are written by a pass that must be a pure
-        // function of canvas position (§6.4), and a gather is not one at any apron
-        // width. `Filter::resamples` is where that is decided, once.
+        // A resampling filter is refused by a law rather than a preference: the merged
+        // tiles are written by a pass that must be a pure function of canvas position
+        // (§6.4), and a gather is not one at any apron width.
         //
         // The destination must be **paint**, and — unless it is the carrier, which by
         // definition carries this filter — must carry nothing itself: what a group's
@@ -309,48 +243,39 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
 
     let keeps = if site.dest_is_carrier {
         // Into the **carrier**. Everything about it survives untouched: its blend and
-        // its clip point outward — they describe how the group meets what lies under
-        // the group (§14.4.3) — and its opacity is applied to the group's composited
-        // whole, which is exactly what this merge rewrites the inside of. So the
-        // merge runs against the base's content at full strength and the slider stays
-        // where it is, on the layer.
+        // clip point outward, describing how the group meets what lies under it
+        // (§14.4.3), and its opacity applies to the group's composited whole — whose
+        // inside is exactly what this rewrites. So the merge runs against the base's
+        // content at full strength and the slider stays on the layer.
         //
-        // The source may carry **any** mode here, and that is not a special case: the
-        // group's isolated content is `merge_source(base, source)` before and after,
-        // so what the group merges outward is unchanged whatever the source's mode is.
+        // The source may carry **any** mode here: the group's isolated content is
+        // `merge_source(base, source)` before and after, so what the group merges
+        // outward is unchanged whatever that mode is.
         if !d.content_is_paint() {
             return None;
         }
         d.composite
     } else {
-        // Into a **sibling**. Here the destination is a leaf whose own opacity rides
-        // on its tiles, so it folds in with the source's and the survivor stands at
-        // full strength.
+        // Into a **sibling**. The destination is a leaf whose own opacity rides on its
+        // tiles, so it folds in with the source's and the survivor stands at full
+        // strength.
         //
-        // The two must **agree** about how they meet the backdrop, because after the
-        // merge one set of params speaks for both: same mode, and neither clipped
-        // (the destination's clip would start applying to the source's paint, and the
-        // source's is refused above unless the destination *is* its whole backdrop —
-        // which a sibling with anything under it is not).
-        //
-        // Same-mode siblings merge because the modes are associative at any coverage
-        // (§18.0.4): `merge(merge(B,D),S)` is `merge(B, merge(D,S))`, so the pair
-        // composites as one layer carrying `merge(D,S)`. That was false until the
-        // emissive modes stopped weighing coverage in the working space, and the merge
-        // was refused for exactly that reason.
+        // The two must **agree** about how they meet the backdrop, because afterwards
+        // one set of params speaks for both: same mode, and neither clipped (the
+        // destination's clip would start applying to the source's paint). Same-mode
+        // siblings merge because the modes are associative at any coverage (§18.0.4):
+        // `merge(merge(B,D),S)` is `merge(B, merge(D,S))`, so the pair composites as
+        // one layer carrying `merge(D,S)`.
         if !is_plain_paint(d) || d.composite.clip {
             return None;
         }
-        // At the foot of the root stack neither mode is stated against anything,
-        // so they need not agree — both are the identity there, and so is
-        // whichever one the survivor ends up wearing. Anywhere else one set of
-        // params has to speak for both afterwards, so they must.
+        // At the foot of the root stack neither mode is stated against anything, so
+        // they need not agree — both are the identity there, and so is whichever the
+        // survivor wears.
         //
-        // `!=` and not "the same mode": a mode that carries parameters is a
-        // *family* of curves (§18.0.4), and the associativity that carries this
-        // merge is each curve's own — two `Drago`s at different bends are two
-        // different functions, and folding one through the other's curve would be
-        // exactly the silently-different picture a merge promises not to be.
+        // `!=` and not "the same mode": a mode that carries parameters is a *family* of
+        // curves (§18.0.4), and the associativity above is each curve's own — two
+        // `Drago`s at different bends are two different functions.
         if !backdrop_is_dest && d.composite.blend != s.composite.blend {
             return None;
         }
@@ -426,9 +351,8 @@ mod tests {
     /// What each side is worth and what the survivor keeps — the whole plan bar the
     /// two ids, which `dest` covers.
     ///
-    /// `None` for a **filter** merge as well as for no merge at all, and that is the
-    /// right shape rather than a lossy one: none of these three exists there (see
-    /// [`MergeKind`]), and the filter merge has [`merged_filter`] to ask instead.
+    /// `None` for a **filter** merge as well as for no merge at all: none of these
+    /// three exists there — ask [`merged_filter`] instead.
     fn terms(state: &DocState, source: LayerId) -> Option<(CompositeParams, f32, CompositeParams)> {
         match plan(state, source)?.kind {
             MergeKind::Stack {
@@ -484,13 +408,10 @@ mod tests {
         );
     }
 
-    /// **Siblings sharing a blend mode merge**, and that turns on the modes being
-    /// associative at any coverage (§18.0.4). While they weighed coverage in the
-    /// working space they were not, and this was refused for exactly that reason.
-    ///
-    /// Modes that *disagree* are still refused, and always will be: after the merge one
-    /// set of params speaks for both, and there is no third mode that means "multiply
-    /// here and glow there".
+    /// **Siblings sharing a blend mode merge**, which turns on the modes being
+    /// associative at any coverage (§18.0.4). Modes that *disagree* are refused: one
+    /// set of params speaks for both afterwards, and there is no third mode meaning
+    /// "multiply here and glow there".
     #[test]
     fn siblings_merge_when_their_modes_agree_and_not_otherwise() {
         for mode in MODES {
@@ -520,13 +441,8 @@ mod tests {
 
     /// **Two bends are two modes.** A mode's parameters are part of which function it
     /// is (§18.0.4), so `Radiance` at one bend and `Radiance` at another are as
-    /// unmergeable as `Glow` and `Multiply` — associativity is each curve's own, and
-    /// folding a layer through a curve that is not its own is exactly the silent
-    /// change of picture a merge promises not to be.
-    ///
-    /// The one that would have been easy to get wrong: this is the test that fails if
-    /// the agreement check is ever relaxed to "the same mode", which reads like a
-    /// tidy-up and is a hole.
+    /// unmergeable as `Glow` and `Multiply`. Fails if the agreement check is ever
+    /// relaxed to "the same mode", which reads like a tidy-up and is a hole.
     #[test]
     fn siblings_at_different_bends_do_not_merge() {
         let apart = flat()
@@ -590,12 +506,10 @@ mod tests {
         assert_eq!(dest(&state.set_layer_clip(C, true), C), Some(B));
     }
 
-    /// The carrier's own params survive the merge untouched — all three of them.
-    ///
-    /// Its blend and its clip point outward, describing how the *group* meets what lies
-    /// under it, and its opacity is applied to the group's composited whole. The merge
-    /// rewrites the inside of that whole, so none of the three has anything to do with
-    /// it — which is why the base expands at **1.0** rather than at its own slider.
+    /// The carrier's own params survive the merge untouched — all three of them. Its
+    /// blend and clip point outward and its opacity applies to the group's composited
+    /// whole, whose *inside* is what the merge rewrites, which is why the base expands
+    /// at **1.0** rather than at its own slider.
     #[test]
     fn a_carrier_keeps_all_of_its_own_params() {
         let state = flat()
@@ -648,11 +562,9 @@ mod tests {
         );
     }
 
-    /// A **matte** has no tile map, so it is neither merged nor merged into (§15.2) —
-    /// the same refusal a stroke aimed at one gets — and neither is a **filter**
-    /// merged *into*, for the same reason read the other way: there are no channels
-    /// there to rewrite. (A filter as the *source* is the second kind of merge, and
-    /// the tests below are its.)
+    /// A **matte** has no tile map, so it is neither merged nor merged into (§15.2),
+    /// and a **filter** is never merged *into* for the same reason: no channels to
+    /// rewrite. (A filter as the *source* is the second kind of merge, tested below.)
     #[test]
     fn only_paint_is_merged_into() {
         use stark_model::document::MatteRegion;
@@ -694,12 +606,10 @@ mod tests {
     });
 
     /// **A filter merges exactly where its backdrop is the destination alone**
-    /// (§14.11.7) — the same predicate §14.11.2 asks of every source, and for a
-    /// filter the only one that binds.
-    ///
-    /// Both positions, because they are two different sentences that happen to agree:
-    /// carried onto a layer, the base composites at the bottom of the group it opens
-    /// (§14.1); second from the foot of the root, the accumulator starts cleared.
+    /// (§14.11.7) — the predicate §14.11.2 asks of every source, and for a filter the
+    /// only one that binds. Both positions, since they are two sentences that happen to
+    /// agree: carried onto a layer, the base composites at the bottom of the group it
+    /// opens (§14.1); second from the foot of the root, the accumulator starts cleared.
     #[test]
     fn a_filter_merges_where_its_backdrop_is_its_destination() {
         let carried = DocState::with_layer(A).insert_filter(B, Some(A), None, GREY);
@@ -742,11 +652,9 @@ mod tests {
 
     /// **The destination keeps everything**, and the filter's own strength travels.
     ///
-    /// Two halves of one claim, which is why they are one test. A filter merge
-    /// rewrites channels and stacks nothing, so there is no reconciling to do and
-    /// [`terms`] has nothing to report — while the *strength* is exactly what a merge
-    /// that dropped it would get silently wrong, turning a half-applied grade into a
-    /// fully applied one with the layer that said so already gone.
+    /// A filter merge stacks nothing, so [`terms`] has nothing to report — while a
+    /// merge that dropped the *strength* would turn a half-applied grade into a fully
+    /// applied one, with the layer that said so already gone.
     #[test]
     fn a_filter_merge_bakes_its_strength_and_reconciles_nothing() {
         let state = DocState::with_layer(A)

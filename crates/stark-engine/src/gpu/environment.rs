@@ -1,13 +1,13 @@
 //! HDR **environment maps** for image-based lighting (§6.3).
 //!
-//! A studio (or any) HDR is decoded from its Radiance RGBE file into a linear-RGB
-//! equirectangular image, then used to light the painting: the media pass samples
-//! it in the substrate-normal direction (diffuse irradiance) and the view-reflection
-//! direction (the paint's specular), so impasto relief catches the environment's lights.
+//! A Radiance RGBE file is decoded into a linear-RGB equirectangular image and used to
+//! light the painting: the media pass samples it in the substrate-normal direction
+//! (diffuse irradiance) and the view-reflection direction (the paint's specular), so
+//! impasto relief catches the environment's lights.
 //!
 //! Like [`super::substrate::SubstrateMap`], the bytes come from the frontend at runtime
-//! (the engine embeds none); decoding and prefiltering happen here, on the CPU,
-//! once per environment.
+//! (the engine embeds none); decoding and prefiltering happen here, on the CPU, once per
+//! environment.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,9 +25,9 @@ use hdr::decode_hdr;
 pub enum EnvironmentId {
     /// The procedural **reference** light: achromatic, generated on the fly, no HDR
     /// file. A soft overhead key over an ambient dome — enough directionality that
-    /// impasto relief still reads, but no color cast, so paint reads as its own
-    /// hue. This is what you switch to when you want to judge color rather than
-    /// enjoy the room; it is also the fallback before any HDR's bytes arrive.
+    /// impasto relief still reads, but no color cast, so paint reads as its own hue.
+    /// What to switch to in order to judge color, and the fallback before any HDR's
+    /// bytes arrive.
     #[default]
     Neutral,
     /// The bundled `ferndale_studio` HDR.
@@ -38,11 +38,10 @@ pub enum EnvironmentId {
 }
 
 /// A decoded, prefiltered environment ready for image-based lighting: an
-/// equirectangular `Rgba16Float` texture with a full mip chain (each level a box
-/// downsample of the last). The media pass samples a high mip in the substrate-normal
-/// direction for diffuse irradiance and a gloss-selected mip in the reflection
-/// direction for the paint's specular (§6.3). Cloning is cheap (Arc-backed wgpu
-/// handles), so it can live alongside the [`super::substrate::SubstrateMap`].
+/// equirectangular `Rgba16Float` texture with a full mip chain. The media pass samples a
+/// high mip in the substrate-normal direction for diffuse irradiance and a
+/// gloss-selected mip in the reflection direction for the paint's specular (§6.3).
+/// Cloning is cheap — the wgpu handles are reference-counted.
 #[derive(Clone)]
 pub struct Environment {
     pub view: wgpu::TextureView,
@@ -52,12 +51,11 @@ pub struct Environment {
     /// only exact if the CPU samples the level the shader will.
     pub diffuse_lod: u32,
     /// The irradiance a **flat** canvas receives — the diffuse mip sampled in the one
-    /// direction an untilted normal faces (dead ahead, the equirect's centre), which
-    /// is exactly what `finish` in `media_common.wesl` looks up when the relief is
-    /// flat. **The media pass shades by its reciprocal**, which is what makes "a flat
-    /// canvas reads its own albedo" true in *any* environment, procedural or HDR —
-    /// and is the whole of the normalization now that no light carries an exposure of
-    /// its own (§6.3).
+    /// direction an untilted normal faces (dead ahead, the equirect's centre), which is
+    /// exactly what `finish` in `media_common.wesl` looks up when the relief is flat.
+    /// **The media pass shades by its reciprocal**, which is what makes "a flat canvas
+    /// reads its own albedo" true in *any* environment, procedural or HDR, and is the
+    /// whole of the normalization: no light carries an exposure of its own (§6.3).
     ///
     /// Not the whole-image mean luminance, which only approximates it: a mean over
     /// equirect texels over-weights the poles and includes light no front-facing canvas
@@ -79,12 +77,11 @@ impl Environment {
     /// decoder made of the bytes.
     ///
     /// **Fallible because the bytes come from outside**: an environment is fetched at
-    /// runtime and handed straight in, so a truncated download or a file that is not
-    /// an `.hdr` at all reaches here — the class §5 exists to remove, and one
-    /// [`hdr`]'s own header says this path has to be
-    /// defensive about. [`Resource::decode`] is the door a caller learns at;
-    /// [`Resource::build`] is where a byte string that got past it anyway degrades to
-    /// the procedural light rather than killing the renderer.
+    /// runtime and handed straight in, so a truncated download or a file that is not an
+    /// `.hdr` at all reaches here — the class §5 exists to remove.
+    /// [`Resource::decode`] is the door a caller learns at; [`Resource::build`] is where
+    /// a byte string that got past it anyway degrades to the procedural light rather
+    /// than killing the renderer.
     ///
     /// [`Resource::decode`]: crate::gpu::registry::Resource::decode
     ///
@@ -317,13 +314,12 @@ impl crate::gpu::registry::Resource for EnvironmentId {
         self == EnvironmentId::Neutral
     }
 
-    /// **Nothing**, deliberately, where the substrate keeps its decoded height field.
-    /// An environment is built exactly once per registration — its `Gpu` is the mip
-    /// chain, and no second thing is derived from the same bytes — so keeping the
-    /// decode would be several megabytes of float image held for a build that already
-    /// happened. The decode still runs at the door, in
-    /// [`decode`](crate::gpu::registry::Resource::decode); what is not kept is its
-    /// result.
+    /// **Nothing**, deliberately, where the substrate keeps its decoded height field. An
+    /// environment is built exactly once per registration — its `Gpu` is the mip chain,
+    /// and no second thing is derived from the same bytes — so keeping the decode would
+    /// be several megabytes of float image held for a build that already happened. The
+    /// decode still runs at the door, in
+    /// [`decode`](crate::gpu::registry::Resource::decode); its result is what is dropped.
     type Decoded = ();
 
     fn decode(bytes: &[u8]) -> std::result::Result<(), stark_model::DocError> {
@@ -341,9 +337,9 @@ impl crate::gpu::registry::Resource for EnvironmentId {
     ) -> Environment {
         match registered {
             // Bytes that will not decode fall back to the procedural light, exactly as
-            // bytes that never arrived do — the canvas stays lit and says so, where a
+            // bytes that never arrived do: the canvas stays lit and says so, where a
             // panic here would take the document with it. `Registry::register` refuses
-            // them at the door; reaching this arm means bytes were registered by some
+            // them at the door, so reaching this arm means bytes were registered by some
             // other path.
             Some(r) if !self.is_builtin() => Environment::load(gpu, r.bytes).unwrap_or_else(|e| {
                 tracing::warn!(

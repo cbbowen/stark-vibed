@@ -17,32 +17,24 @@ use stark_model::{Srgb, SubstrateScale};
 /// Longest name that will be recorded, in `char`s — the wire's bound, reached for
 /// rather than restated.
 ///
-/// The argument is one argument: a name travels, so it is bounded, and nothing about
-/// a text field stops a paste from being a megabyte. It is stated where the *wire*
-/// can also reach it ([`stark_model::MAX_NAME`]), because a presence frame's
-/// name is capped by the same number and the model cannot depend on this crate (§2).
-/// Two constants agreeing at 64 would be two things to keep level.
+/// A name travels, so it is bounded, and nothing about a text field stops a paste
+/// from being a megabyte. Stated where the *wire* can also reach it
+/// ([`stark_model::MAX_NAME`]), since a presence frame's name is capped by the same
+/// number and the model cannot depend on this crate (§2).
 use stark_model::MAX_NAME;
 
 /// The name to record, given what a frontend collected: surrounding whitespace
-/// trimmed, length capped, and anything that comes out empty treated as *no name*
-/// rather than as a name that happens to be blank.
+/// trimmed, length capped at `MAX_NAME`, and anything that comes out empty treated as
+/// *no name* rather than as a name that happens to be blank.
 ///
-/// One funnel for every source — the panel's field, a script, a peer's command —
-/// so "a name is either absent or something you can read" is a property of the
-/// model rather than a habit of the UI. The logged action carries the result, so
-/// replay reproduces it without re-running these rules.
+/// One funnel for every source — the panel's field, a script, a peer's command — and
+/// for both layers and drawing guides, so what a name *is* is not a property of which
+/// command carried it. The logged action carries the result, so replay reproduces it
+/// without re-running these rules.
 ///
-/// Shared by layers and drawing guides: the two are named through different commands
-/// — one logged, one view state — and the rule for what a name *is* should not be a
-/// property of which command carried it.
-///
-/// Generic at both ends for that reason too, and only for that reason: the two
-/// callers hold their names differently — a logged action carries a `String`,
-/// because that is what goes on the wire, while a guide holds an `Arc<str>`, because
-/// its list is re-projected at pointer rate — and neither difference is about what a
-/// name is. `String: From<String>` is the identity, so the logged path still moves
-/// its bytes rather than copying them.
+/// Generic at both ends because the callers hold their names differently: a logged
+/// action a `String`, a guide an `Arc<str>`. `String: From<String>` is the identity,
+/// so the logged path still moves its bytes rather than copying them.
 fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     let trimmed = name?;
     let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
@@ -78,11 +70,10 @@ enum Capture {
 }
 
 impl Engine {
-    /// The canvas offset of a layer's frame (§14.12) — zero for a layer that is
-    /// not there, which every action aimed at one is refused as anyway. Off the
-    /// **committed** document, which is what a mint reads and what every preview
-    /// entry point reads too, so the frame a gesture is converted into is the
-    /// frame its commit will carry.
+    /// The canvas offset of a layer's frame (§14.12) — zero for a layer that is not
+    /// there, which every action aimed at one is refused as anyway. Off the
+    /// **committed** document, which every mint and every preview entry point reads,
+    /// so the frame a gesture is converted into is the frame its commit will carry.
     pub(crate) fn frame_of(&self, layer: LayerId) -> stark_model::geom::IVec2 {
         self.timeline
             .current()
@@ -90,25 +81,22 @@ impl Engine {
             .map_or(stark_model::geom::IVec2::ZERO, |l| l.translation)
     }
 
-    /// The whole move a translate gesture means (§14.12): `layer`'s subtree —
-    /// a group moves as one, and translation does not inherit — with each
-    /// member that has a frame to move
+    /// The whole move a translate gesture means (§14.12): `layer`'s subtree — a group
+    /// moves as one, and translation does not inherit — with each member that has a
+    /// frame to move
     /// ([`Layer::is_translatable`](crate::document::Layer::is_translatable): paint and
     /// mattes) displaced by the same delta. Filters are left out rather than
-    /// named-and-refused: a move naming one would answer "not a no-op" forever,
-    /// and a drag out and back would log a step that does nothing. Read off the
-    /// committed document, like every mint. An absent layer expands to no moves,
-    /// which `is_noop_on` then declines to log.
+    /// named-and-refused, so a drag out and back does not log a step that does
+    /// nothing. Read off the committed document, like every mint; an absent layer
+    /// expands to no moves, which `is_noop_on` then declines to log.
     fn translate_moves(
         &self,
         layer: LayerId,
         to: stark_model::geom::IVec2,
     ) -> Vec<(LayerId, stark_model::geom::IVec2)> {
         use stark_model::document::FRAME_LIMIT;
-        // The command's `to` has not been through the funnel yet, and this
-        // arithmetic runs before the commit that would clamp it — so hold it
-        // here, where the subtraction below would otherwise be the first thing
-        // an unbounded value reaches.
+        // Clamped before the subtraction below, which is otherwise the first thing an
+        // unbounded `to` reaches: the commit's own clamp comes too late for it.
         let to = to.clamp(
             stark_model::geom::IVec2::splat(-FRAME_LIMIT),
             stark_model::geom::IVec2::splat(FRAME_LIMIT),
@@ -126,9 +114,10 @@ impl Engine {
     /// The action a setter commits — and the very one its preview folds (§21.6).
     ///
     /// **One function, so `preview == committed` (§1.3) is a property of the code
-    /// rather than of a setter's two arms agreeing.** Whatever a kind needs beyond its payload
-    /// is read here, once, off the committed document: the canvas-to-frame conversion
-    /// a matte's rect and paint carry (§14.12), and the subtree a translate expands to.
+    /// rather than of a setter's two arms agreeing.** Whatever a kind needs beyond its
+    /// payload is read here, once, off the committed document: the canvas-to-frame
+    /// conversion a matte's rect and paint carry (§14.12), and the subtree a translate
+    /// expands to.
     fn setter_kind(&self, setter: Setter) -> ActionKind {
         match setter {
             Setter::LayerBlend(id, blend) => ActionKind::SetLayerBlend(id, blend),
@@ -165,13 +154,11 @@ impl Engine {
             } => {
                 if tool.is_selection() {
                     // A marquee or lasso fits no curve, so it has no use for the
-                    // tolerance (or the rope); its own decimation is a mask-cost
-                    // knob (§6.8).
-                    //
-                    // What it does need is whether there is a mask to combine with,
-                    // which only this side holds: an Add drawn over nothing is a New
-                    // (`session::against_selection`). Off the committed document and
-                    // read at the press, so the gesture's meaning is fixed before it
+                    // tolerance (or the rope); its own decimation is a mask-cost knob
+                    // (§6.8). What it does need is whether there is a mask to combine
+                    // with — an Add drawn over nothing is a New
+                    // (`session::against_selection`) — read at the press off the
+                    // committed document, so the gesture's meaning is fixed before it
                     // has drawn anything.
                     let has_selection = self.document().has_selection(self.actor());
                     let frame = self.frame_of(self.session.active_layer());
@@ -189,10 +176,9 @@ impl Engine {
             GestureCommand::To { sample } => {
                 // The CPU half of a pointer sample, and the *whole* of what arrives at
                 // input rate — the fold and the render it marks stale are paid once a
-                // frame instead (`mark_live_stale`). Worth its own row because it is
-                // the one phase that grows with stroke length rather than with the
-                // tail: the fitter re-solves its unfrozen prefix on every push, and
-                // that has measured ~350× the flattening beside it.
+                // frame instead. Its own row because it is the phase that grows with
+                // stroke length rather than with the tail: the fitter re-solves its
+                // unfrozen prefix on every push, ~350× the flattening beside it.
                 crate::timing::span!("input.fit");
                 if self.session.is_selecting() {
                     self.session.selection_to(sample.pos);
@@ -202,18 +188,15 @@ impl Engine {
                 }
                 self.mark_live_stale();
             }
-            // A held pointer: snap the stroke to the shape it resembles (§6.9). Nothing
-            // is committed and nothing is decided about the gesture's end — a snap
-            // changes what the *same* drag builds, and the release still commits one
-            // stroke either way.
+            // A held pointer: snap the stroke to the shape it resembles (§6.9).
+            // Nothing is committed — a snap changes what the *same* drag builds, and
+            // the release still commits one stroke either way.
             GestureCommand::Hold => {
-                // Built here rather than inside the session, because the two halves
-                // of a guide live in two places now (§20.5) and this is the only
-                // side holding both. Off the **committed** document, which is what
-                // a stroke is drawn over — a guide being dragged elsewhere in the
-                // same instant previews without moving what a snap aims at, and a
-                // snap that changed underfoot mid-gesture is the surprise §20.5
-                // rules out.
+                // Built here rather than inside the session, because the two halves of
+                // a guide live in two places (§20.5) and this is the only side holding
+                // both. Off the **committed** document, so a guide being dragged
+                // elsewhere in the same instant cannot move what a snap aims at —
+                // the surprise §20.5 rules out.
                 let scaffold = self.scaffold(self.timeline.current());
                 if self.session.assist_stroke(&scaffold) {
                     self.mark_live_stale();
@@ -241,10 +224,10 @@ impl Engine {
                         None => {}
                     }
                 } else {
-                    // Fold first, so what is offered to the commit is the stroke as
-                    // it stands at the release — the frame that would have shown the
-                    // last few samples, drawn now instead of never. A fold costs the
-                    // live tail; the render it saves the commit costs the stroke.
+                    // Fold first, so the commit is offered the stroke as it stands at
+                    // the release — the frame that would have shown the last few
+                    // samples. A fold costs the live tail; the render it saves the
+                    // commit costs the stroke.
                     self.flush_live();
                     if let Some(rec) = self.session.end_stroke() {
                         self.log_debug_samples();
@@ -265,18 +248,15 @@ impl Engine {
     /// channel so collaborators can see where this client is working.
     pub(super) fn process_peer(&mut self, command: PeerCommand) {
         match command {
-            // Any existing layer, including a matte. `active_layer` is *the
-            // selected layer*, not "a paint target" — a frame is selected the same
-            // way a paint layer is, which is what lets the frontend have one
-            // selection concept instead of two (§15.7). A stroke aimed
-            // at a matte then simply draws nothing, refused identically by `apply`
-            // and by the preview path.
+            // Any existing layer, including a matte. `active_layer` is *the selected
+            // layer*, not "a paint target", which is what lets the frontend have one
+            // selection concept instead of two (§15.7). A stroke aimed at a matte
+            // draws nothing, refused identically by `apply` and by the preview path.
             PeerCommand::SetActiveLayer(id) => {
                 if self.session.set_active_layer(id, self.timeline.current()) {
-                    // The hover mark follows the brush's target (§18.1.10): it
-                    // is built against the active layer at fold time, so moving
-                    // the selection has to re-lay it there. Free when nothing is
-                    // in flight — a clean fold's rebuild is an early return.
+                    // The hover mark follows the brush's target (§18.1.10): it is
+                    // built against the active layer at fold time, so moving the
+                    // selection has to re-lay it there.
                     self.mark_live_stale();
                 }
             }
@@ -289,10 +269,8 @@ impl Engine {
     /// navigates the history that holds them.
     pub(super) fn process_doc(&mut self, command: DocCommand) {
         self.process_doc_inner(command);
-        // Every arm changes the document the in-flight previews are drawn over, so
-        // the fold is rebuilt once, here, rather than at each of a dozen call sites.
-        // Cheap when nothing is in flight (there is nothing to fold) and correct when
-        // a peer is mid-stroke while this client edits.
+        // Every arm changes the document the in-flight previews are drawn over, so the
+        // fold is marked stale once here rather than at each of a dozen call sites.
         self.mark_live_stale();
     }
 
@@ -311,10 +289,9 @@ impl Engine {
             DocCommand::Seek(to) => {
                 self.preview.set_doc(None);
                 if self.timeline.seek(to, &mut self.shared.apply) {
-                    // A scrub crosses layer additions wholesale — dragging to the
-                    // start of the log withdraws every one of them — so the selected
-                    // layer routinely stops existing here. `committed_changed`
-                    // repoints the brush for every such cause at once (§17.9).
+                    // A scrub crosses layer additions wholesale, so the selected layer
+                    // routinely stops existing here. `committed_changed` repoints the
+                    // brush for every such cause at once (§17.9).
                     self.committed_changed();
                     self.apply_document_substrate();
                 }
@@ -336,11 +313,10 @@ impl Engine {
                 });
             }
             DocCommand::Transform { layer, map } => {
-                // A degenerate or non-finite map would be rejected by `apply`
-                // anyway (deterministically — §16.1); refusing it
-                // here as well keeps a knowably-dead action out of the log.
-                // Each family goes to its own action kind — the wire format
-                // never carries the routing enum, only the map it named.
+                // A degenerate or non-finite map is rejected by `apply` anyway
+                // (deterministically — §16.1); refusing it here as well keeps a
+                // knowably-dead action out of the log. Each family goes to its own
+                // action kind — the wire format never carries the routing enum.
                 if map.usable() {
                     use stark_model::document::TransformMap;
                     // The map stays stated on the canvas; the frame rides beside
@@ -366,8 +342,8 @@ impl Engine {
                     });
                 } else {
                     // Nothing is logged, but the gesture's preview still has to be
-                    // superseded — `commit`'s bargain, made by hand because the
-                    // refusal is about the map rather than about the document.
+                    // superseded — `commit`'s bargain, made by hand because the refusal
+                    // is about the map rather than about the document.
                     self.preview.set_doc(None);
                 }
             }
@@ -407,9 +383,9 @@ impl Engine {
             DocCommand::SetSubstrateScale(scale) => {
                 self.commit(self.setter_kind(Setter::SubstrateScale(scale)));
                 // The same call for the same reason, and it is the same *state*: a
-                // `SubstrateMap` is built from the substrate and its scale together, so laying
-                // the substrate larger invalidates the bound substrate exactly as switching
-                // it does (`gpu::substrate::Substrate`).
+                // `SubstrateMap` is built from the substrate and its scale together, so
+                // laying it larger invalidates the bound substrate exactly as switching
+                // it does.
                 self.apply_document_substrate();
             }
             DocCommand::AddLayer { carrier, above } => {
@@ -455,10 +431,9 @@ impl Engine {
                     region,
                     paint,
                 });
-                // Deliberately *not* made the active layer, unlike `AddLayer`: a
-                // matte has no tile map, so painting on it is refused
-                // (§15.7) and arming it as the target would just
-                // swallow the user's next stroke.
+                // Deliberately *not* made the active layer, unlike `AddLayer`: a matte
+                // has no tile map, so painting on it is refused (§15.7) and arming it
+                // as the target would swallow the user's next stroke.
             }
             DocCommand::AddFilter {
                 carrier,
@@ -471,10 +446,9 @@ impl Engine {
                     above,
                     filter,
                 });
-                // Deliberately *not* made the active layer, for the reason
-                // `AddMatte` is not: a filter has no tile map, so arming it as the
-                // paint target would swallow the next stroke (§21.4). The frontend
-                // selects it, which is what raises its bar.
+                // Deliberately *not* made the active layer, for `AddMatte`'s reason: a
+                // filter has no tile map, so arming it as the paint target would
+                // swallow the next stroke (§21.4).
             }
             DocCommand::SetFilter(id, filter) => {
                 self.commit(self.setter_kind(Setter::Filter(id, filter)))
@@ -491,15 +465,13 @@ impl Engine {
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries (§14.8).
-                // The copies are this action's own ids at `k = 0..n`, so the map is
-                // only a list of *sources* wearing its positions; it is still written
-                // as pairs because that is the shape `apply` reads and the shape the
-                // footprint claims a `Layer(src)` from.
+                // Written as pairs because that is the shape `apply` reads and the
+                // shape the footprint claims a `Layer(src)` from.
                 //
                 // Through the document's own walk, not a second one here: `apply`
                 // declines the action unless `ids` names exactly the subtree
-                // `duplicate_layer` walks, so a copy of the traversal in the engine is
-                // two walks that must agree — on this client and on every peer.
+                // `duplicate_layer` walks, so a copy of the traversal here would be two
+                // walks that must agree — on this client and on every peer.
                 if let Some(sources) = self.document().subtree_ids(source) {
                     let action = self.commit_minting(|a| ActionKind::DuplicateLayer {
                         ids: sources
@@ -512,26 +484,24 @@ impl Engine {
                     self.arm_active(LayerId::new(action, 0));
                 }
             }
-            // The subtree travels in the action, read off the document the command
-            // was aimed at (§12.6) — see `ActionKind::RemoveLayer`. A layer that is
-            // not there mints an empty list and the fold declines it, which is what
-            // every other action naming an absent layer does.
+            // The subtree travels in the action, read off the document the command was
+            // aimed at (§12.6) — see `ActionKind::RemoveLayer`. An absent layer mints
+            // an empty list and the fold declines it, as every other action naming one
+            // does.
             DocCommand::RemoveLayer(id) => {
                 let carried = self.document().carried_ids(id).unwrap_or_default();
                 self.commit(ActionKind::RemoveLayer { id, carried })
             }
             DocCommand::MergeLayerDown(id) => {
                 // Asked here rather than only inside `apply`, so a merge that cannot
-                // preserve the document's appearance never reaches the log at all —
-                // the same argument `Transform` makes about a degenerate map. `apply`
-                // asks again anyway, because a peer's action arrives without passing
-                // through here (§14.11).
+                // preserve the document's appearance never reaches the log — the same
+                // argument `Transform` makes about a degenerate map. `apply` asks again
+                // anyway, because a peer's action does not pass through here (§14.11).
                 if let Some(plan) = crate::document::merge::plan(self.document(), id) {
-                    // The frame bake's own refusal, asked here for the reason the
-                    // plan is (§14.12.3): a source too large to restate in the
-                    // destination's frame is declined by `apply`, and an offer
-                    // that outran that would log a dead action and still repoint
-                    // the brush below as if it had worked.
+                    // The frame bake's own refusal, asked here for the reason the plan
+                    // is (§14.12.3): a source too large to restate in the destination's
+                    // frame is declined by `apply`, and an offer that outran that would
+                    // log a dead action and still repoint the brush below.
                     let shift = self.frame_of(plan.source) - self.frame_of(plan.dest);
                     if shift != stark_model::geom::IVec2::ZERO {
                         let bakeable = self
@@ -560,9 +530,8 @@ impl Engine {
                     });
                     // The merged layer is where the work now is, so the brush follows
                     // it. The repoint has already put it somewhere that exists; this
-                    // says *which* somewhere, because picking the nearest paintable
-                    // layer is not the same as picking the paint that just absorbed
-                    // what you were working on.
+                    // says *which* somewhere, since the nearest paintable layer is not
+                    // the paint that just absorbed what you were working on.
                     if follow {
                         self.arm_active(plan.dest);
                     }
@@ -586,9 +555,8 @@ impl Engine {
             }
 
             // The drawing guides (§20.5). A guide's identity is the id of the action
-            // that adds it, minted through the same door a layer's is — so there is
-            // no counter here and nothing for `resync_counters` to resume past
-            // (`GuideId`, §17.9).
+            // that adds it, minted through the same door a layer's is — so there is no
+            // counter here and nothing for `resync_counters` to resume past (§17.9).
             DocCommand::AddGuide { guide, after, name } => {
                 self.commit_minting(|a| ActionKind::AddGuide {
                     id: GuideId(a),
@@ -613,8 +581,8 @@ impl Engine {
     ///
     /// `None` clears the preview, which is what the release of a drag that changed
     /// nothing sends. The sanitize and the fold both happen inside
-    /// [`crate::document::apply::preview_of`], which is the point: an arm cannot forget a
-    /// step it does not perform. See that function for the two arms that had.
+    /// [`crate::document::apply::preview_of`], so an arm cannot forget a step it does
+    /// not perform.
     fn preview_setter(&mut self, setter: Option<Setter>) {
         let kind = setter.map(|s| self.setter_kind(s));
         let actor = self.actor();
@@ -640,21 +608,20 @@ impl Engine {
                 self.mark_live_stale();
             }
             ViewCommand::SetBrush { brush, color } => {
-                // Held here for the reason `PeerFrame::sanitized` holds a peer's:
-                // a committed stroke's brush is held by `ActionKind::sanitized`,
-                // and a live one is drawn by the same renderer without ever
-                // becoming an action, so nothing else would. `preview ==
-                // committed` needs both doors (§6.2).
+                // Held here for the reason `PeerFrame::sanitized` holds a peer's: a
+                // committed stroke's brush is held by `ActionKind::sanitized`, and a
+                // live one is drawn by the same renderer without ever becoming an
+                // action. `preview == committed` needs both doors (§6.2).
                 self.session.set_brush(brush);
                 self.session.set_color(color);
                 self.mark_live_stale();
             }
             // Grab-and-drag: content follows the cursor, so the view center moves
-            // opposite by the drag delta, carried into canvas units — through the
-            // whole map, since a turned or mirrored canvas sends a screen-space drag
-            // somewhere else entirely. Every arm here names a mutator rather than
-            // writing a view field, so a command carrying a non-finite number is
-            // refused by the view rather than stored (see [`ViewTransform`]).
+            // opposite by the drag delta, carried into canvas units through the whole
+            // map — a turned or mirrored canvas sends a screen-space drag somewhere
+            // else entirely. Every arm here names a mutator rather than writing a view
+            // field, so a command carrying a non-finite number is refused by
+            // `ViewTransform` rather than stored.
             ViewCommand::Pan { delta } => self.session.view.pan_by(delta),
             ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
             ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
@@ -680,8 +647,7 @@ impl Engine {
                 // The eye is the one per-client thing about a guide (§20.5), so it
                 // moves the session and never the document. The bump is what a
                 // frontend's memo on the roster watches: nothing in `doc_revision`
-                // moves when an eye does, and without saying so the panel would
-                // keep showing the eye it drew last time.
+                // moves when an eye does.
                 if self.session.set_guide_visible(id, visible) {
                     self.guide_epoch.bump();
                     self.mark_live_stale();
@@ -696,13 +662,12 @@ impl Engine {
             ViewCommand::PreviewSubstrateColor(rgb) => {
                 self.preview_setter(rgb.map(Setter::SubstrateColor));
             }
-            // The preview moves the *document* the compositor reads, and stops there:
+            // The preview moves the *document* the compositor reads and stops there:
             // no `apply_document_substrate`, so nothing is baked while the hand is on
-            // the slider. What that costs: a preview shows the scale in the
-            // **light**, since the media pass re-reads the substrate every frame off
-            // one uniform, and not in the **tooth**, whose substrate is a stored bake.
-            // Paint already down looks right immediately;
-            // what the next stroke will bite is right from the commit.
+            // the slider. So it shows the scale in the **light**, which the media pass
+            // re-reads every frame, and not in the **tooth**, whose substrate is a
+            // stored bake — paint already down looks right immediately; what the next
+            // stroke will bite is right from the commit.
             ViewCommand::PreviewSubstrateScale(scale) => {
                 self.preview_setter(scale.map(Setter::SubstrateScale));
             }
@@ -734,9 +699,9 @@ impl Engine {
             }
             ViewCommand::PreviewHover(report) => match report {
                 Some(r) => {
-                    // The CPU half of a hover report — the window refit — on its
-                    // own row, so the cost of following a resting pointer is
-                    // never folded into what painting costs (`input.fit`, §7.1).
+                    // The CPU half of a hover report — the window refit — on its own
+                    // row, so following a resting pointer is never folded into what
+                    // painting costs (`input.fit`, §7.1).
                     crate::timing::span!("input.hover");
                     // A report the window declined — sub-tolerance drift under a
                     // resting pen — refolds nothing.
@@ -758,13 +723,11 @@ impl Engine {
         }
     }
 
-    /// Replay a whole recorded stroke as a single commit: start → samples →
-    /// end, without the per-sample staleness marks. Interactive samples go
-    /// through `GestureCommand::To`, whose marks a frame's `flush_live` services
-    /// by rendering the in-flight tail — right for drawing (the user must see
-    /// each frame's moves), pointless across a replay where nothing is presented
-    /// in between. This renders the stroke exactly once, at commit. Used by the
-    /// brush editor's test-stroke replay.
+    /// Replay a whole recorded stroke as a single commit: start → samples → end,
+    /// rendering the stroke exactly once, at commit — where interactive samples go
+    /// through `GestureCommand::To` and are folded once a frame. Used by the brush
+    /// editor's test-stroke replay.
+    ///
     /// Answers the id of the action it committed, or `None` where the samples held no
     /// stroke — empty, or a hand that never left the first point.
     pub fn replay_stroke(
@@ -775,26 +738,22 @@ impl Engine {
         self.replay_stroke_seeded(tool, samples, self.authoring.clock, 0.0)
     }
 
-    /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the
-    /// Lamport clock. Replaying the same samples repeatedly advances the clock
-    /// (each replay commits), so the seed — and with it the color dynamics and
-    /// dither — changes on every replay. A caller re-rendering *one* stroke to
-    /// show the effect of a brush change (the brush editor's preview) wants the
-    /// jitter held fixed, so only the edited parameter moves.
-    /// `rope` is the §6.11 smoothing string, and it is a parameter here — where
-    /// [`Engine::replay_stroke`] pins it to zero — because the brush editor's
-    /// preview replays a *recorded hand* (the user's own test stroke) and has to
-    /// show what the smoothing slider beside it would do to that hand.
-    /// **Answers what it committed**, which is §4's requirement of anything that
-    /// mutates and is not a command: this is a batch of inputs ending in a logged,
-    /// replicated action, so a caller has to be able to tell a committed stroke from a
-    /// refused one. `None` is "these samples held no stroke": none at all, or a hand
-    /// that never left its first point.
+    /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the Lamport
+    /// clock, so a caller re-rendering *one* stroke to show the effect of a brush
+    /// change (the brush editor's preview) can hold the color dynamics and dither fixed
+    /// while only the edited parameter moves. `rope` is the §6.11 smoothing string, a
+    /// parameter here — where [`Engine::replay_stroke`] pins it to zero — because that
+    /// preview replays a recorded hand and has to show what the smoothing slider beside
+    /// it would do to it.
     ///
-    /// Not routed through `GestureCommand` instead, deliberately. The command tier's
-    /// payloads are values a frontend builds per event; this takes a borrowed slice a
-    /// bench replays in a loop, and making it a command would mean an `Arc<[_]>` per
-    /// call to say the same thing. Answering is what §4 actually asks for.
+    /// **Answers what it committed**, which is §4's requirement of anything that
+    /// mutates and is not a command: a caller has to be able to tell a committed stroke
+    /// from a refused one. `None` is "these samples held no stroke": none at all, or a
+    /// hand that never left its first point.
+    ///
+    /// Not routed through `GestureCommand`, deliberately: the command tier's payloads
+    /// are values a frontend builds per event, and this takes a borrowed slice a bench
+    /// replays in a loop.
     pub fn replay_stroke_seeded(
         &mut self,
         tool: Tool,
@@ -832,11 +791,9 @@ impl Engine {
     /// ([`log_debug_samples`](Self::log_debug_samples)).
     ///
     /// A diagnostic, so a shipping build carries neither the samples nor the field
-    /// that would hold them: this is `#[cfg]`, not a runtime `cfg!` around a `Vec`
-    /// that exists either way. Keeping the capture behind a *call* rather than an
-    /// `#[cfg]` block at each site keeps the gesture arms readable, and stops the two
-    /// of them disagreeing about the gate — one gated and one not means a shipping
-    /// build accumulates the first sample of every stroke and drops the rest.
+    /// that would hold them: `#[cfg]`, not a runtime `cfg!` around a `Vec` that exists
+    /// either way. Behind a *call* rather than an `#[cfg]` block at each site, so the
+    /// two sites cannot come to disagree about the gate.
     #[cfg(feature = "debug-unfrozen")]
     fn note_debug_sample(&mut self, capture: Capture, sample: crate::command::InputSample) {
         if capture == Capture::Restart {

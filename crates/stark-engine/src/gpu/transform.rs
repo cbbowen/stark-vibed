@@ -1,24 +1,22 @@
 //! GPU execution of the transforms (§16): the whole-plane affine, and the
 //! rect-scoped perspective (§16.8) and warp (§16.9).
 //!
-//! [`TransformRenderer::apply`] takes a layer's tile map, the author's selection,
+//! [`TransformRenderer::apply`] takes a layer's tile map, the author's selection
 //! and a [`TransformMap`], and produces the transformed tile map plus the carried
 //! selection — copy-on-write like every stroke, so old history versions keep
-//! their tiles and the pool reclaims what falls out of reach.
+//! their tiles.
 //!
 //! The plan (which tiles, which quads) is CPU-side and pure
 //! ([`crate::document::transform`]); this module owns only the passes of
 //! `transform.wesl`:
 //!
-//! - **parcel** — the selected source interiors forward-rasterized as transformed
-//!   quads into a scratch pair, one destination tile at a time. Source interiors
-//!   tile the plane, so their images are disjoint and the pass needs no blending
-//!   and no order. The gated families draw *pieces* (`tile ∩ rect`, further split
-//!   per warp sub-cell) with CPU-precomputed corners, watertight the same way.
+//! - **parcel** — source interiors forward-rasterized as transformed quads into a
+//!   scratch pair. Source interiors tile the plane, so their images are disjoint
+//!   and the pass needs no blending and no order; the gated families draw *pieces*
+//!   (`tile ∩ rect`, split further per warp sub-cell), watertight the same way.
 //! - **combine** — cut the destination's own base by its mask (the lift law) and
-//!   stack the parcel by the shared parcel-deposit law (`paint_common.wesl`);
-//!   for the gated families the cut is additionally scoped by the source rect's
-//!   coverage.
+//!   stack the parcel by the shared parcel-deposit law (`paint_common.wesl`), the
+//!   cut additionally scoped by the source rect for the gated families.
 //! - **mask** — the selection mask resampled under the same map: pure Replace
 //!   for the affine, residue-plus-max-blended-union for the gated families
 //!   (§16.8).
@@ -58,17 +56,12 @@ use stark_shaders::mirror::transform::{
 
 /// The affine's group: its map, and the bilinear clamp sampler.
 ///
-/// **Two lists where there was one layout**, and that is the migration paying for
-/// itself. `transform.wesl` puts `Quad` (the affine) and `Gated` (perspective/warp) at
-/// `@group(0) @binding(0)` because no entry point reaches both — its header explains
-/// why that is sound. The host had described the slot once, with `min_binding_size:
-/// None`, which is the only size that serves two structs and therefore checks neither.
-///
-/// Naming the declaration means naming *which* struct, and a layout then bounds the
-/// uniform its own pipelines actually read. `wgpu` requires the bound size to be at
-/// least what the shader needs, so one layout genuinely could not have covered both:
+/// Separate from [`GATED_SLOTS`] rather than one shared layout: `transform.wesl` puts
+/// `Quad` (the affine) and `Gated` (perspective/warp) at the same
+/// `@group(0) @binding(0)` because no entry point reaches both, and `wgpu` requires a
+/// bound size at least what the shader reads — so one layout cannot cover both.
 /// `Quad`'s bound rejects the gated pipelines at creation, and `Gated`'s rejects the
-/// affine's buffer at bind time. Two layouts is what the shader was saying all along.
+/// affine's buffer at bind time.
 const QUAD_SLOTS: &[Slot] = &[
     // The vertex stage places the quad through the forward map; the fragment stage
     // taps the source through the inverse. One slot per draw of a whole `apply`
@@ -109,8 +102,8 @@ const COMBINE_SLOTS: &[Slot] = &[
     // The gate rect: zeroed for the affine's whole-plane cut, the source rect for
     // perspective/warp. One slot per destination tile ([`Slots`]).
     Slot::dynamic(td::QC),
-    // The base's and the parcel's residuals — past the gate rect because 7 was already
-    // taken when they were added, and the shader says the same.
+    // The base's and the parcel's residuals, past the gate rect — the shader says the
+    // same.
     Slot::at(td::BASE_RESID),
     Slot::at(td::PARCEL_RESID),
 ];
@@ -198,8 +191,8 @@ fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
     u.i2 = [rows[2][0], rows[2][1], rows[2][2], 0.0];
 }
 
-/// Whether (and where) the cut is gated by a source rect. The affine path binds the
-/// zero gate, whose arithmetic is untouched from before the gate existed.
+/// Whether (and where) the cut is gated by a source rect. The affine's whole-plane cut
+/// binds the zero gate.
 fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) -> CombineUniform {
     let dest_origin = mask_tex_origin(dest);
     match gate {
@@ -215,9 +208,7 @@ fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) ->
 }
 
 /// Every group-0 uniform of one kind that an `apply` draws with, as **one** leased
-/// buffer of dynamic-offset slots ([`UniformSlots::STRIDE`]) — where there was a
-/// `create_buffer_init` and a bind group per quad, thousands for a full-canvas
-/// transform, at the allocation rate the web cannot collect (`gpu::uniforms`).
+/// buffer of dynamic-offset slots ([`UniformSlots::STRIDE`]).
 ///
 /// **Staged in full before anything is submitted.** The scope flushes every
 /// [`FLUSH_TILES`](crate::gpu::scratch::FLUSH_TILES) destinations and a slot has to be
@@ -365,7 +356,7 @@ fn stage_gated_masks(
 /// neighbours, not the tile alone: a tile's texture reaches an apron past its
 /// interior, and under the identity that band lies in the neighbours' interiors, so
 /// drawing them is what keeps the child's aprons bit-identical to its neighbours
-/// (§6.4), exactly as the affine path's `reached_tiles` arranges for every transform.
+/// (§6.4).
 fn neighbours_in(base: &TileMap, coord: TileCoord) -> Vec<TileCoord> {
     (-1..=1)
         .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
@@ -377,11 +368,7 @@ fn neighbours_in(base: &TileMap, coord: TileCoord) -> Vec<TileCoord> {
 }
 
 /// What a transform's passes draw **from**, as against which piece they are drawing.
-///
-/// Assembled once per [`TransformRenderer::apply`] and threaded through every pass —
-/// the shape `stroke::dynamics`'s `PlanCtx` and `StrokeScene` already use, and for
-/// the same reason: these four travel together through every hop, so they are one
-/// parameter rather than four repeated at each.
+/// Assembled once per [`TransformRenderer::apply`] and threaded through every pass.
 ///
 /// `src_bgs` rides along because it is scoped to exactly this: a source tile's bind
 /// group is shared across every destination its image reaches, and there is no
@@ -419,8 +406,7 @@ type Parcel = Channels;
 
 /// The tile rect spanning `base`'s keys — every coord whose gate a cut can read
 /// (sources are base tiles; a destination's mask only ever cuts base paint), so
-/// the shifted mask is built no wider (§14.12). Bounds the shift's allocation by
-/// the layer's extent where `TileRect::ALL` bounded it by the mask's.
+/// the shifted mask is built no wider than the layer's extent (§14.12).
 fn base_rect(base: &TileMap) -> stark_model::geom::TileRect {
     let mut keys = base.keys();
     let Some(first) = keys.next() else {
@@ -646,13 +632,12 @@ impl TransformRenderer {
 
     /// Transform `base` (one layer's tiles) and `selection` (the author's mask)
     /// under `map`, stated on the canvas, against a layer whose frame sits at
-    /// `frame` (§14.12): the paint side runs the map conjugated into the frame
-    /// and gates through the mask brought into it, while the mask side moves the
-    /// canvas mask under the canvas map — so the moved paint and its outline
-    /// land together on the canvas. A zero frame is bit-for-bit the pre-frame
-    /// path. `None` rejects the whole action — an unusable map, or more tiles
-    /// than the caps allow — deterministically, so peers and replays agree
-    /// (§16.1).
+    /// `translation` (§14.12): the paint side runs the map conjugated into the
+    /// frame and gates through the mask brought into it, while the mask side
+    /// moves the canvas mask under the canvas map — so the moved paint and its
+    /// outline land together on the canvas. `None` rejects the whole action —
+    /// an unusable map, or more tiles than the caps allow — deterministically,
+    /// so peers and replays agree (§16.1).
     pub fn apply(
         &self,
         pool: &TilePool,
@@ -671,16 +656,15 @@ impl TransformRenderer {
     }
 
     /// The author's selection as it stands over a layer's frame placed at
-    /// `frame` (§14.12): a mask whose value at a frame position `p` is the
-    /// canvas mask's at `p + frame`, built only over the tiles in `within` —
-    /// everywhere else it answers with `outside`, so it may gate exactly the
+    /// `translation` (§14.12): a mask whose value at a frame position `p` is the
+    /// canvas mask's at `p + translation`, built only over the tiles in `within`
+    /// — everywhere else it answers with `outside`, so it may gate exactly the
     /// tiles it was scoped to and nothing more.
     ///
     /// **Exact.** The frame is whole pixels, so every resample tap lands on a
     /// texel centre (§16.4's second exactness property, which the mask pass
-    /// shares with the parcel). A zero frame — every untranslated layer — and a
-    /// universal mask are both the mask itself, by handle: no pass runs, which
-    /// is what keeps this off the cost of every ordinary stroke.
+    /// shares with the parcel). A zero translation and a universal mask are both
+    /// the mask itself, by handle: no pass runs.
     pub fn shifted_selection(
         &self,
         pool: &TilePool,
@@ -693,7 +677,7 @@ impl TransformRenderer {
         }
         let f = Vec2::new(translation.x as f32, translation.y as f32);
         // dest(p) = src(A⁻¹·p) is the pass's contract, and src is to be read at
-        // p + frame — so the drawn map is the *negated* translation.
+        // p + translation — so the drawn map is the *negated* translation.
         let affine = Affine2::from_translation(-f);
         let rewrites: Vec<(TileCoord, Vec<TileCoord>)> = within
             .iter()
@@ -843,8 +827,8 @@ impl TransformRenderer {
 
     /// The whole-plane affine (§16): one quad per selected source tile, pure
     /// Replace on the mask. `local` is the map in the layer's frame — the paint
-    /// side — and `affine` the canvas map the mask moves under; at a zero frame
-    /// the two are the same value and the path is untouched.
+    /// side — and `affine` the canvas map the mask moves under; at a zero
+    /// translation the two are the same value.
     fn apply_affine(
         &self,
         pool: &TilePool,

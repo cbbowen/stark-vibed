@@ -7,20 +7,16 @@
 /// the prefix-τ volume is looked up in, once the extent is drawn out by
 /// [`BrushParams::elongation`](stark_model::document::BrushParams::elongation).
 ///
-/// The whole feature is here, and it costs three floats and no new texture.
-/// Stretching the tip by `s` along a canvas axis `û` is the linear map
-/// `A = R_û·diag(s, 1)·R_ûᵀ` on the extent, and the deposit is that extent's
-/// integral as it is dragged along the travel `t̂`. Substituting `q = A⁻¹p` turns that
-/// integral into one of the **unstretched** extent — dragged along
-/// `v̂ = normalize(A⁻¹t̂)` instead of `t̂`, over a travel `m = |A⁻¹t̂|` times as long,
-/// with `1/m` on the result. Every one of those is something the existing volume
-/// already answers: it is indexed by the angle between the mask's native axis and the
-/// direction of integration, so a different direction is a different *slice*, not a
-/// different bake.
+/// The whole feature costs three floats and no new texture, because stretching the tip
+/// by `s` along an axis `û` (the linear map `A = R_û·diag(s, 1)·R_ûᵀ`) and dragging it
+/// along the travel `t̂` is, under `q = A⁻¹p`, the **unstretched** extent dragged along
+/// `v̂ = normalize(A⁻¹t̂)` over a travel `m = |A⁻¹t̂|` times as long, with `1/m` on the
+/// result. The volume is indexed by the angle between the mask's native axis and the
+/// direction of integration, so another direction is another *slice* and not another
+/// bake.
 ///
-/// That holds because the axis is the brush's **facing** axis
-/// ([`orientation_turns`](super::orientation_turns)'s), which is what makes the whole of it fit in the volume the
-/// brush already binds:
+/// That holds only because the axis is the brush's **facing** axis
+/// ([`orientation_turns`](super::orientation_turns)'s):
 ///
 /// - `FollowStroke` faces along the tangent, so `û = t̂` and therefore `v̂ = t̂` — the
 ///   relative angle stays 0 and the single identity layer still serves.
@@ -28,9 +24,8 @@
 /// - `Pen` on a stamp already reads the stack of every angle, so a shifted slice
 ///   index is free.
 ///
-/// An axis free of the facing one would break all three at once — a follow-stroke
-/// stamp would need the rotatable stack it never builds — which is why there is no
-/// second direction to set.
+/// A free axis would break all three at once — a follow-stroke stamp would need the
+/// rotatable stack it never builds — which is why there is no second direction to set.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(in crate::gpu::stroke) struct Stretch {
     /// `m` — the segment's travel measured in the stretched frame, as a multiple of
@@ -53,10 +48,9 @@ pub(in crate::gpu::stroke) struct Stretch {
 }
 
 impl Stretch {
-    /// The identity: the tip as its mask draws it. What every brush without a stretch
-    /// gets, and **exactly** the neutral element of every expression that reads one —
-    /// `travel = 1`, `shear = 0`, `lateral = 1` leave the shaders' arithmetic an
-    /// identity in floats, not merely close to one.
+    /// The identity: the tip as its mask draws it, and **exactly** the neutral element
+    /// of every expression that reads one — `travel = 1`, `shear = 0`, `lateral = 1`
+    /// leave the shaders' arithmetic an identity in floats, not merely close to one.
     pub(in crate::gpu::stroke) const NONE: Self = Self {
         travel: 1.0,
         shear: 0.0,
@@ -65,14 +59,12 @@ impl Stretch {
     };
 
     /// Solve the map for an elongation `s` along a facing axis sitting `orient` turns
-    /// round from the travel direction — which is [`orientation_turns`](super::orientation_turns)'s own answer,
-    /// for both sources: `FollowStroke` faces along the tangent and reports 0, and
-    /// `Pen` reports the azimuth relative to the travel, which is the same angle.
+    /// round from the travel direction — which is
+    /// [`orientation_turns`](super::orientation_turns)'s own answer for both sources.
     ///
-    /// Short-circuited at `s = 1` rather than left to fall out of the general path.
-    /// The trigonometry below *does* return the identity there — `A⁻¹` is `I`, `v` is
-    /// `(1, 0)` — but a brush with no stretch should not be relying on `atan2(0, 1)`
-    /// being exactly zero to render what it always rendered.
+    /// Short-circuited at `s = 1` rather than left to fall out of the general path: the
+    /// trigonometry below *does* return the identity there, but a brush with no stretch
+    /// should not rely on `atan2(0, 1)` being exactly zero.
     pub(super) fn solve(elongation: f32, orient: f32) -> Self {
         // A non-finite elongation takes the same exit as an absent one, since the
         // values here arrive from files, presets and peers: a NaN would otherwise reach
@@ -107,17 +99,15 @@ impl Stretch {
     /// The box in the tip's **reference travel frame** that holds everything the mask
     /// can put on the canvas, as a multiple of the frame radius: `(along, across)`.
     ///
-    /// **The shaders' — `stamp_common::stretch_hull` is this function**, and only they
-    /// need it: it is the sweep strip and the dynamics loop's rim test that are drawn
-    /// in the reference travel frame, where the host's boxes are canvas-aligned and
-    /// take [`Sweep::reach`](super::Sweep::reach) instead. So this side is `#[cfg(test)]`, existing to hold
-    /// the shader to a formula rather than to be called in anger — the derivation is
-    /// short enough to restate and wrong enough to matter, since under-reporting it is
-    /// a stroke cut off along a straight line where its own geometry ran out.
-    ///
     /// A point takes paint only where the map lands it inside the mask's `|x| ≤ 1,
     /// |y| ≤ 1`, so `|y| ≤ 1/lateral` and `|x| ≤ (1 + |shear|/lateral)/travel`.
     /// `(1, 1)` exactly for [`NONE`](Self::NONE).
+    ///
+    /// `#[cfg(test)]` because only the shaders need it — `stamp_common::stretch_hull`
+    /// **is** this function, and the host's boxes are canvas-aligned and take
+    /// [`Sweep::reach`](super::Sweep::reach) instead. It exists to hold the shader to a
+    /// formula: under-reporting the hull is a stroke cut off along a straight line where
+    /// its own geometry ran out.
     #[cfg(test)]
     fn hull(&self) -> (f32, f32) {
         let across = 1.0 / self.lateral;
@@ -127,18 +117,16 @@ impl Stretch {
 
 /// The stretched tip (§6.6).
 ///
-/// One claim is being tested here, and everything else is a reading of it: **the swept
+/// One claim is being tested here and everything else is a reading of it: **the swept
 /// integral of an extent drawn out along an axis is the integral of the *undrawn*
-/// extent, along another direction, over another travel, times a constant.** That is
-/// what lets a stretch cost three floats and no new texture, and it is exactly the kind
-/// of claim that is either exact or quietly wrong by a few percent everywhere — the mask
-/// is still swept, the stroke still looks like a stroke, and the profile it draws is not
-/// the one the brush names.
+/// extent, along another direction, over another travel, times a constant.** It is the
+/// kind of claim that is either exact or quietly wrong by a few percent everywhere — the
+/// mask is still swept and the stroke still looks like a stroke.
 ///
-/// So it is checked against a **direct numerical sweep** of the stretched extent,
-/// with a mask that is deliberately neither round nor symmetric: a rotation-invariant
-/// tip would satisfy the identity at every angle for the wrong reason (any slice would
-/// do), and a symmetric one would hide the shear.
+/// So it is checked against a **direct numerical sweep** of the stretched extent, with a
+/// mask deliberately neither round nor symmetric: a rotation-invariant tip would satisfy
+/// the identity at every angle for the wrong reason, and a symmetric one would hide the
+/// shear.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,11 +141,10 @@ mod tests {
 
     /// A stand-in for a brush mask's optical-depth field `κ`, in mask coordinates.
     ///
-    /// **Anisotropic and off-centre on purpose.** The identity under test moves the
-    /// direction of integration, so a field that reads the same along every direction
-    /// would pass it however the slice was chosen; and it puts a shear on the travel
-    /// coordinate, which a field symmetric about `y = 0` would leave undetectable.
-    /// Smooth and compactly supported so the quadrature below converges quickly.
+    /// **Anisotropic and off-centre on purpose**: a field that read the same along every
+    /// direction would pass the identity however the slice was chosen, and one symmetric
+    /// about `y = 0` would leave the shear undetectable. Smooth and compactly supported
+    /// so the quadrature below converges quickly.
     fn mask(q: (f32, f32)) -> f32 {
         let r2 = q.0 * q.0 + q.1 * q.1;
         if r2 >= 1.0 {
@@ -227,10 +214,9 @@ mod tests {
     ///
     /// Across elongations, facing angles, sample points and travels: the definite
     /// integral of the stretched extent equals the unstretched volume read at
-    /// [`Stretch`]'s slice, over its travel, times its gain. If the derivation is wrong
-    /// anywhere — the sign of the slice shift, the shear, the Jacobian — this is where
-    /// it shows, because the left-hand side is the picture and the right-hand side is
-    /// the renderer.
+    /// [`Stretch`]'s slice, over its travel, times its gain. A wrong sign on the slice
+    /// shift, the shear or the Jacobian shows here — the left-hand side is the picture
+    /// and the right-hand side is the renderer.
     #[test]
     fn a_stretched_sweep_is_the_unstretched_volume_read_at_another_slice() {
         let mut worst = 0.0f32;
@@ -290,10 +276,8 @@ mod tests {
     }
 
     /// `hull` has to hold **everything the mask can paint**, because what is drawn for
-    /// the extent is drawn from it: the sweep strip in the shader, and the tile box
-    /// on the host. Under-report it and the stroke is cut off along a straight line
-    /// where its own geometry ran out — the failure every under-reported reach lands
-    /// on ([`Sweep::reach`]), which a stretch reintroduces at a different scale.
+    /// the extent is drawn from it. Under-report it and the stroke is cut off along a
+    /// straight line where its own geometry ran out ([`Sweep::reach`]).
     ///
     /// So: every point of the reference travel frame that the map lands *inside* the
     /// mask's square must be inside the hull.
@@ -357,14 +341,11 @@ mod tests {
         }
     }
 
-    /// What the axis is *for*, stated as the two readings a hand would recognise — and
-    /// the reason a pencil could not be built out of the size mapping it used to use,
-    /// which scales both of these together.
-    ///
-    /// Lean the pen **along** the stroke and the mark gets heavier without getting
-    /// wider; lean it **across** and it gets wider without the centreline getting
-    /// heavier per unit travel. Measured off the solved map rather than off a picture,
-    /// which is what makes it a statement about the model.
+    /// What the axis is *for*, as the two readings a hand would recognise: lean the pen
+    /// **along** the stroke and the mark gets heavier without getting wider; lean it
+    /// **across** and it gets wider without the centreline getting heavier per unit
+    /// travel — where a size mapping scales both together. Measured off the solved map
+    /// rather than off a picture, which is what makes it a statement about the model.
     #[test]
     fn leaning_along_the_stroke_darkens_it_and_leaning_across_widens_it() {
         let s = 3.0;

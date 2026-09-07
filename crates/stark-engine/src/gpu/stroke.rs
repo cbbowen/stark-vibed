@@ -91,10 +91,9 @@ pub struct StrokeRenderer {
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
     /// weights by, and the color-dynamics field. **One of the three mutable things
-    /// here** (the others are [`scratch`](Self::scratch) and
-    /// [`complained`](Self::complained)), which is why it is a type of its own rather
-    /// than five fields: the sentence above about immutable objects is then true of
-    /// everything else without qualification.
+    /// here**, with [`scratch`](Self::scratch) and [`complained`](Self::complained) —
+    /// a type of its own rather than five fields, so the claim above about immutable
+    /// objects holds of everything else without qualification.
     tips: TipCache,
 
     /// The stamp loop's pooled working textures (§6.2): checked out per fold, handed
@@ -125,9 +124,8 @@ pub struct StrokeRenderer {
 ///
 /// Named rather than counted, because one stroke can earn several: a large tip both
 /// shortens its segments (`budget::fit_len`) and caps its bleed firings
-/// (`dynamics::bleed`), and under a gate that remembered only the seed the second
-/// went unsaid — on that render and on every later one, the seed being already
-/// recorded. The brush that reaches both caps is the one those warnings exist for.
+/// (`dynamics::bleed`), and a gate keyed on the seed alone would leave the second
+/// unsaid. The brush that reaches both caps is the one those warnings exist for.
 #[derive(Copy, Clone)]
 enum Complaint {
     /// The brush's stamp asset has not loaded, so the stroke is deferred.
@@ -155,12 +153,12 @@ impl Complaint {
 /// pure function of the brush, which is what lets a live tail and its commit agree for
 /// free ([`dynamics_setup`]). But the *answers* are properties of the record, so
 /// repeating them per frame turns one undrawable brush into an unbounded stream of
-/// `error!` and buries whatever else the log was carrying.
+/// `error!`.
 ///
-/// One stroke deep rather than a set of seeds: a gesture draws one stroke at a time,
-/// so the last is the one being drawn, and a replay that alternates between two
-/// undrawable records is welcome to say so twice. What this rules out is the unbounded
-/// case, which is one stroke shouting on every pointer move.
+/// One stroke deep rather than a set of seeds: a gesture draws one stroke at a time, so
+/// the last is the one being drawn, and a replay alternating between two undrawable
+/// records is welcome to say so twice. What this rules out is the unbounded case, one
+/// stroke shouting on every pointer move.
 #[derive(Default)]
 struct Complaints(std::sync::Mutex<Option<(u64, u32)>>);
 
@@ -184,10 +182,8 @@ impl Complaints {
 /// Everything a stroke is drawn *against*, as opposed to the stroke itself.
 ///
 /// [`StrokeRenderer`] holds only immutable GPU objects — pipelines, layouts, the
-/// prefix-τ cache — so the mutable scene is handed in per call. These travel
-/// together through every entry point ([`StrokeRenderer::render`],
-/// [`render_range`](StrokeRenderer::render_range), and every path underneath), so
-/// they are one parameter rather than four repeated at each hop.
+/// prefix-τ cache — so the mutable scene is handed in per call. These travel together
+/// through every entry point, so they are one parameter rather than four at each hop.
 #[derive(Copy, Clone)]
 pub struct StrokeScene<'a> {
     pub pool: &'a TilePool,
@@ -206,10 +202,9 @@ pub struct StrokeScene<'a> {
     /// the substrate whose tooth gates how much of the brush's own paint lands
     /// (`BrushParams::tooth_give`).
     ///
-    /// Handed in per call, like everything else here, rather than held on the
-    /// renderer: it is *document* state, and a renderer that cached it would answer
-    /// a replayed stroke with whatever the compositor happens to be showing. That is
-    /// the shape the deleted `StrokeRenderer::set_substrate` had (§6.4).
+    /// Handed in per call rather than held on the renderer: it is *document* state,
+    /// and a renderer that cached it would answer a replayed stroke with whatever the
+    /// compositor happens to be showing (§6.4).
     pub substrate: &'a crate::gpu::substrate::SubstrateMap,
 }
 
@@ -236,12 +231,10 @@ impl Painted {
 /// The range in hand, resolved once for whichever path draws it — what
 /// [`render_range`](StrokeRenderer::render_range)'s prologue hands down.
 ///
-/// §6.2's claim that every path flattens through one funnel at one budget, and reads
-/// one set of constants, used to be upheld by three paths each calling the same
-/// three functions in the same order. Resolving here is what makes it structural: a
-/// path cannot flatten differently because it is not handed a `StrokeSpans` to
-/// flatten. The empty range is answered before a path is chosen, so `segments` is
-/// never empty.
+/// Resolving here is what makes §6.2's claim structural — every path flattens through
+/// one funnel at one budget and reads one set of constants — since a path cannot
+/// flatten differently for not being handed a `StrokeSpans` to flatten. The empty range
+/// is answered before a path is chosen, so `segments` is never empty.
 #[derive(Copy, Clone)]
 struct ResolvedRange<'a> {
     rec: &'a StrokeRecord,
@@ -271,13 +264,9 @@ impl StrokeRenderer {
         tile_bgl: wgpu::BindGroupLayout,
         scratch: ScratchPool,
     ) -> Self {
-        // Composition, not construction: each path's objects are built by the module
-        // that uses them, and the brush textures both paths resolve live with their
-        // caches. What is left here is the pair of them plus the scene-independent
-        // things a renderer is handed.
-        // One compile of `stamp.wesl` per variant — plain, and with the ceiling
-        // lane (§6.2) — lent to the two kits that draw the swept extent through
-        // them (`swept::stamp_module`).
+        // One compile of `stamp.wesl` per variant — plain, and with the ceiling lane
+        // (§6.2) — lent to the two kits that draw the swept extent through them
+        // (`swept::stamp_module`).
         let stamp = swept::stamp_module(&ctx.device, color_space.as_ref(), false);
         let stamp_ceiling = swept::stamp_module(&ctx.device, color_space.as_ref(), true);
         let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp, &stamp_ceiling);

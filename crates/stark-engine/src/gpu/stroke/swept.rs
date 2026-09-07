@@ -1,9 +1,7 @@
-//! The swept fast path (§6.2): one quad per segment, coverage integrated
-//! along the sweep through a precomputed prefix-τ texture, over-blended so optical
-//! depth sums exactly.
-//!
-//! Carries no brush state between segments, which is what makes it the fast path —
-//! a range needs nothing from its predecessor but the arc length.
+//! The swept fast path (§6.2): one quad per segment, coverage integrated along the
+//! sweep through a precomputed prefix-τ texture, over-blended so optical depth sums
+//! exactly. Carries no brush state between segments — a range needs nothing from its
+//! predecessor but the arc length.
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::Targets;
@@ -16,45 +14,33 @@ use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
 
-/// The stamp pass's three groups (§6.2, §6.10), and the integrate's one.
-///
-/// `stamp.wesl` declares none of these itself: they are `stamp_common.wesl`'s, which is
-/// where the swept-segment scaffolding lives — so naming the declarations is also what
-/// says which file to read.
-///
-/// One buffer for the whole stroke with a slot per tile, rather than a buffer built per
-/// tile on every pointer move.
+/// Group 0 of the stamp pass (§6.2, §6.10): one buffer for the whole stroke with a
+/// slot per tile, selected by a dynamic offset. Declared by `stamp_common.wesl`, where
+/// the swept-segment scaffolding lives, rather than by `stamp.wesl`.
 const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
 
 /// The prefix-τ volume at group 1 — an Rg32Float 2-D array (x, y, + orientation
 /// layers; travel prefix in `r`, its lateral prefix in `g`, §6.2) read with
-/// `textureLoad`, since the shader does its own trilinear lookup (§6.6). The
-/// array dimension comes from the declaration; the host used to name it.
+/// `textureLoad`, since the shader does its own trilinear lookup (§6.6).
 pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 
-/// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and beside
-/// them the canvas substrate's map — height and the rise ahead — with its own sampler,
-/// for the deposition tooth (§6.4). In this group rather than one of its own because it
-/// is the same kind of thing as the noise: a tileable field the deposit samples per
-/// fragment, resolved per stroke.
+/// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and the
+/// canvas substrate's map — height and the rise ahead — for the deposition tooth
+/// (§6.4). Both are tileable fields the deposit samples per fragment, resolved once
+/// per stroke, so they share a group.
 pub(super) const NOISE_SLOTS: &[Slot] = &[
     Slot::sampled(sd::NOISE_TEX),
     Slot::at(sd::NOISE_SAMP),
-    // The substrate is read **nearest** (`substrate_texel_at`, §6.4), so it needs no filtering and
-    // has no sampler — which is what naming the declarations turned up here. The host
-    // had been declaring a fourth entry, a filtering sampler at binding 3, and binding
-    // `substrate.sampler` into it; `stamp_common.wesl` declares no such slot and says on
-    // its face that it does not ("No sampler: the tap is nearest"). A layout may carry
-    // an entry no shader reads, so nothing failed — it was a sampler bound for a
-    // lookup that stopped existing.
+    // The substrate is read **nearest** (`substrate_texel_at`, §6.4), so it needs no
+    // filtering and has no sampler.
     Slot::at(sd::SUBSTRATE_TEX),
 ];
 
 /// The integrate pass (`integrate.wesl`, §6.2/§6.1): the layer's resident paint, the
-/// stroke's scratch parcel, the selection each is gated by, the paint
-/// effect's opacity — bound on every stroke, exactly 1 (the shader's identity
-/// branch) on the unscaled path — and the ceiling lane, which is the parcel's
-/// fourth lane under a pen-driven opacity and the 1×1 zero everywhere else.
+/// stroke's scratch parcel, the selection each is gated by, the paint effect's opacity
+/// — exactly 1 on the unscaled path, the shader's identity branch — and the ceiling
+/// lane, the parcel's fourth lane under a pen-driven opacity and the 1×1 zero
+/// everywhere else.
 const INTEGRATE_SLOTS: &[Slot] = &[
     Slot::at(id::BASE_COLOR),
     Slot::at(id::BASE_AUX),
@@ -78,18 +64,12 @@ use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, T
 use crate::gpu::scratch::{BufKey, Key};
 use crate::gpu::uniforms::UniformSlots;
 
-// Vertices in one segment's swept geometry: a triangle strip of two rims across
-// `SWEEP_SLICES` steps along the travel, since a segment's centreline is an arc rather
-// than a chord (§6.2). Generated from `stamp_common.wesl`, which is where the strip is
-// actually built — asking for fewer would clip the sweep short, more would fold the
-// strip back over itself.
+// A segment's centreline is an arc rather than a chord (§6.2), so its swept geometry is
+// a triangle strip of two rims across `SWEEP_SLICES` steps of travel. Both numbers are
+// `stamp_common.wesl`'s, which is where the strip is built.
 use stark_shaders::mirror::stamp_common::{SWEEP_SLICES, SWEEP_VERTS};
 
 /// The draw call and the strip agree on the vertex count.
-///
-/// Both numbers are the shader's now, so this is the shader's own invariant rather
-/// than a boundary check — and it holds at compile time, where the runtime test that
-/// scraped `SWEEP_SLICES` out of the linked source used to.
 const _: () = assert!(
     SWEEP_VERTS == 2 * (SWEEP_SLICES + 1),
     "the sweep strip's slice count and its vertex count have diverged",
@@ -105,40 +85,28 @@ use stark_shaders::mirror::stamp_common::TileXform;
 /// sweep's layout declares, taken from the struct rather than written down.
 const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
 
-/// Stride between the per-tile [`TileXform`] slots, from the type rather than from a
-/// number written here (§6.10, and `gpu::uniforms`' own law): the padded size a
-/// dynamic offset must be a multiple of.
+/// Stride between the per-tile [`TileXform`] slots (§6.10, and `gpu::uniforms`' own
+/// law): the padded size a dynamic offset must be a multiple of, taken from the type
+/// rather than written here — a uniform that outgrew a hand-written quantum would
+/// silently write over the next slot.
 ///
-/// **Taken from [`UniformSlots`] without taking its buffer**, which is the one place
-/// this path departs from that type. What `UniformSlots` owns is a grow-only
-/// allocation per pass, and the stroke path has something better — a leased buffer
-/// from the scratch pool (`scratch::BufKey`), recycled across strokes rather than
-/// across frames of one. What it does *not* have on its own is the stride law: spelled
-/// as a bare `256` beside a `copy_from_slice` of the uniform's real size, a uniform
-/// that outgrew the quantum would write over the next slot rather than widening them —
-/// silently, and only for whichever brush reached it.
+/// **Taken from [`UniformSlots`] without taking its buffer**: this path leases its
+/// buffer from the scratch pool (`scratch::BufKey`) instead, recycled across strokes.
 const XFORM_STRIDE: u64 = UniformSlots::<TileXform>::STRIDE;
 
 /// How many scratch pairs the sweep rotates through (§6.2) — see
 /// [`render_swept`](StrokeRenderer::render_swept), where the ring is acquired.
 ///
-/// The floor is the dependency being removed: at 1, tile `n+1`'s sweep waits on tile
-/// `n`'s integrate, and the path's `2N` render passes cannot overlap at all. The
-/// ceiling is memory — one pair is `TILE_TEX²` of the color format plus the wide
-/// scratch aux plus a residual, so ~1.5 MB in a pigment space. Three is enough for the
-/// driver to keep a sweep, an integrate and a spare in flight; past that the win falls
-/// off well before the megabytes do.
+/// At 1, tile `n+1`'s sweep waits on tile `n`'s integrate and the path's `2N` render
+/// passes cannot overlap at all; the ceiling is memory, one pair being `TILE_TEX²` of
+/// the color format plus the wide scratch aux plus a residual — ~1.5 MB in a pigment
+/// space. Three keeps a sweep, an integrate and a spare in flight, which is where the
+/// win flattens.
 const SCRATCH_RING: usize = 3;
 
-/// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates
-/// a stroke's extent into a scratch tile, and the integrate that stacks that
-/// scratch over the base into a fresh CoW tile.
-///
-/// A kit for the same reason [`DynamicsKit`](super::DynamicsKit) is one, and it is
-/// overdue: these five sat loose on [`StrokeRenderer`] among the caches, so a struct
-/// documented as holding "only immutable GPU objects" held one path's pipelines by
-/// name and the other's behind a type. Both are behind a type now, and the renderer is
-/// composition rather than storage.
+/// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates a
+/// stroke's extent into a scratch tile, and the integrate that stacks that scratch over
+/// the base into a fresh CoW tile.
 ///
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 #[derive(Clone)]
@@ -147,11 +115,10 @@ pub(super) struct SweptKit {
     /// pair, with the per-tile transform at group 0, the prefix-τ volume at group 1
     /// and the noise + substrate fields at group 2.
     pub(super) pipeline: wgpu::RenderPipeline,
-    /// The same sweep with the **ceiling lane** as a fourth target (§6.2): the
-    /// pipeline a stroke whose opacity the pen drives takes. Its own pipeline
-    /// because a target list is fixed at pipeline creation, and its own artifact
-    /// because the shader's output is `@if(ceiling)` — every other stroke never
-    /// pays the lane's two bytes a fragment.
+    /// The same sweep with the **ceiling lane** as a fourth target (§6.2), taken by a
+    /// stroke whose opacity the pen drives. A pipeline of its own because a target list
+    /// is fixed at pipeline creation, and an artifact of its own because the shader's
+    /// output is `@if(ceiling)`-gated, so no other stroke pays the lane.
     pub(super) pipeline_ceiling: wgpu::RenderPipeline,
     /// The ceiling lane **alone** (`stamp.wesl::fs_levels`): what the stamp loop
     /// draws per painting segment into its region, so its claim advances by the
@@ -161,11 +128,10 @@ pub(super) struct SweptKit {
     pub(super) uniform_bgl: wgpu::BindGroupLayout,
     pub(super) prefix_bgl: wgpu::BindGroupLayout,
     pub(super) noise_bgl: wgpu::BindGroupLayout,
-    /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile + the
+    /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile and the
     /// stroke's extent scratch and writing `new = f(base, scratch)` into a fresh CoW
-    /// tile's color+aux MRT — the scratch's accumulated parcel stacked on the base
-    /// through the shared law in `paint_common.wesl`, the same one a fill lands through
-    /// and the stamp loop's `deposit` uses.
+    /// tile's color+aux MRT, through the shared law in `paint_common.wesl` that a fill
+    /// and the stamp loop's `deposit` also land by.
     pub(super) integrate_pipeline: wgpu::RenderPipeline,
     pub(super) integrate_bgl: wgpu::BindGroupLayout,
 }
@@ -173,12 +139,10 @@ pub(super) struct SweptKit {
 /// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the
 /// ceiling lane, the two artifacts `stark_shaders::stamp` chooses between.
 ///
-/// **Once per renderer per variant, lent to both kits.** The erase pass builds its
-/// own pipelines over the very same modules (§6.12) — only the fragment entry point
-/// and the target list differ — so a second `create_shader_module` was a second
-/// parse and a second translation of source already in hand, which on the web is
-/// startup the artist waits through. A module is immutable and entry points are
-/// resolved per pipeline, so lending it is all there is to it.
+/// **Once per renderer per variant, lent to both kits.** The erase pass builds its own
+/// pipelines over the same modules (§6.12), differing only in fragment entry point and
+/// target list, and a second `create_shader_module` is a second parse and translation
+/// of source already in hand — on the web, startup the artist waits through.
 pub(super) fn stamp_module(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
@@ -200,14 +164,13 @@ pub(super) fn stamp_module(
 /// `OPAQUE_MASS`, and past f16's mantissa the coverage they decide is 1 anyway.
 pub(super) const CEILING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The ceiling lane as a sweep target: **additive**, like the aux, because every
-/// one of its four channels is a sum over segments. That is the whole reason the
-/// law is stated in gated sums (`paint_common::claimed_coverage`): a max is not
-/// something fixed-function blending can take of a running quantity, but the mass
-/// above a level is a sum a blend can accumulate, and the point-wise max of the
-/// ceilings falls out of two of them and their moments. For the erase sweep too,
-/// which attaches the same lane by the same rule (§6.12), and for the stamp loop's
-/// per-segment draw of it over its region (`fs_levels`).
+/// The ceiling lane as a sweep target: **additive**, like the aux, because each of its
+/// four channels is a sum over segments. That is why the law is stated in gated sums
+/// (`paint_common::claimed_coverage`) rather than as a max — fixed-function blending
+/// has no max of a running quantity, but the mass above a level is a sum, and the
+/// point-wise max of the ceilings falls out of two of them and their moments. The erase
+/// sweep attaches the same lane by the same rule (§6.12), as does the stamp loop's
+/// per-segment draw of it (`fs_levels`).
 pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::ColorTargetState> {
     desc::blended_target(CEILING_FORMAT, Some(color_space.aux_blend()))
 }
@@ -238,12 +201,9 @@ pub(super) fn build_swept_kit(
     // lookup.
     let prefix_bgl = desc::layout_for(device, "stark sweep prefix bgl", PREFIX_SLOTS, frag, false);
 
-    // Group 2: the color-dynamics noise field (a tileable 3-D volume) + its
-    // repeat sampler (§6.2), and beside it the canvas substrate's map (height +
-    // the rise ahead) + its own repeat sampler — the deposition tooth (§6.4). In
-    // this group rather than one of its own because it is the same kind of thing
-    // as the noise: a tileable field the deposit samples per fragment, resolved
-    // per stroke.
+    // Group 2: the noise field (a tileable 3-D volume) and its repeat sampler (§6.2),
+    // beside the canvas substrate's map — the deposition tooth's height and the rise
+    // ahead of it (§6.4).
     let noise_bgl = desc::layout_for(device, "stark sweep noise bgl", NOISE_SLOTS, frag, false);
 
     let layout = desc::pipeline_layout(
@@ -321,11 +281,10 @@ pub(super) fn build_swept_kit(
 }
 
 impl StrokeRenderer {
-    /// [`Self::render_range`] through the plain swept fast path: no carried brush
-    /// state at all, so a range needs nothing from its predecessor but the arc length.
-    /// The segments and constants arrive resolved ([`ResolvedRange`]): `render_range`
-    /// has already decided — from the brush — that this stroke takes the fast path,
-    /// or that the loop cannot draw it, and flattened at that decision's budget.
+    /// [`Self::render_range`] through the plain swept fast path: no carried brush state
+    /// at all, so a range needs nothing from its predecessor but the arc length. The
+    /// segments and constants arrive already resolved and flattened
+    /// ([`ResolvedRange`]).
     pub(super) fn render_swept(
         &self,
         scene: StrokeScene<'_>,
@@ -354,29 +313,19 @@ impl StrokeRenderer {
 
         // Below full opacity the parcel's finished coverage is scaled, which is
         // neither of §6.2's two piece-composable forms — so the path stops being
-        // stateless and takes the erase pass's shape instead: the parcel
-        // accumulates across pieces, every piece re-derived from pristine paint
-        // under the whole of it (`accum::ParcelCarry`). A branch on the brush and on
-        // the mask, so a live tail and its commit make the same choice for free.
+        // stateless and takes the erase pass's shape instead: the parcel accumulates
+        // across pieces, every piece re-derived from pristine paint under the whole of
+        // it (`accum::ParcelCarry`).
         //
-        // Under a pen-driven ceiling too, whatever the dial: the ceiling lane is
-        // a claim the pieces of a stroke build up together, and the coverage it
-        // admits is below 1 wherever the pen was light.
-        //
-        // On the mask as well as the dial, because the mask is the ceiling's other
-        // factor *per texel* (§6.8): every selection has a rim at least a pixel
-        // soft, and a texel under it scales the parcel exactly as a dial below 1
-        // does. A ring of stateless pieces there would cap each piece on its own
-        // and let a stroke crossing itself outrun the mask.
-        //
-        // A **supersampled** stroke (§6.2, `budget::supersample_scale`) takes the
-        // same shape for the same theorem, one level up: the resolve averages the
-        // parcel's *finished* visible alpha, and an average of parcels over-blended
-        // per piece differs from the whole parcel averaged by the covariance of the
-        // subsample alphas — a cut-dependent term worth a quarter of the alpha at a
-        // rim texel where pieces meet. Landing the whole accumulated parcel from
-        // pristine paint each piece is what makes the resolve exact whatever the
-        // pointer's cadence, and it is why the ring below never supersamples.
+        // A pen-driven ceiling is a claim the pieces build up together, and a soft
+        // selection rim is the ceiling's other factor *per texel* (§6.8), scaling a
+        // parcel exactly as a dial below 1 does — stateless pieces would cap each piece
+        // on its own and let a stroke crossing itself outrun the mask. A supersampled
+        // stroke (`budget::supersample_scale`) needs the same shape one level up: the
+        // resolve averages the parcel's *finished* visible alpha, and an average of
+        // per-piece parcels differs from the whole parcel averaged by the covariance of
+        // the subsample alphas — worth a quarter of the alpha at a rim texel where
+        // pieces meet. That is why the ring below never supersamples.
         let ss = super::budget::supersample_scale(&rec.brush);
         if k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1 {
             return self.render_swept_scaled(scene, range, ss);
@@ -413,29 +362,21 @@ impl StrokeRenderer {
             },
         };
 
-        // Extent → cleared scratch tile: within-stroke accumulation of the parcel
-        // this stroke lays (the color target over-blends the parcel's visible alpha
-        // with the latent premultiplied by it, the aux accumulates its height and
-        // optical mass additively). The scratch aux is the wide format.
+        // Extent → cleared scratch tile: within-stroke accumulation of the parcel this
+        // stroke lays (the color target over-blends the parcel's visible alpha with the
+        // latent premultiplied by it, the aux accumulates its height and optical mass
+        // additively). The scratch aux is the wide format.
         //
-        // **A ring, not one pair and not one per tile.** Sharing *one* pair across
-        // every tile is sound — each sweep pass clears both targets, so no tile can see
-        // what
-        // the tile before it left — but it serializes the path: tile `n+1`'s sweep
-        // writes the very texture tile `n`'s integrate reads, a write-after-read the
-        // driver has to order, so the `2N` passes ran strictly back to back. A ring of
-        // [`SCRATCH_RING`] lets that many tiles' work be in flight before the
-        // dependency comes round again, for a few MB against the pool's budget — and a
-        // stroke touching fewer tiles than the ring takes only as many as it has.
+        // **A ring, not one pair and not one per tile.** One shared pair is sound —
+        // each sweep pass clears both targets — but it serializes the path: tile
+        // `n+1`'s sweep writes the very texture tile `n`'s integrate reads, so the `2N`
+        // passes run strictly back to back. A ring of [`SCRATCH_RING`] lets that many
+        // tiles' work be in flight before the dependency comes round again, and a
+        // stroke touching fewer tiles takes only as many as it has.
         //
-        // The first reason is gone with the pool it borrowed from. These are
-        // `ScratchPool` leases now, taken through the scope, and they are taken on the
-        // **run** tier: the ring is the loop's running state, not the current tile's,
-        // and `take_run` is what says so. That matters beyond tidiness — the piece tier
-        // is released at every `flush`, so a ring held there would be correct only for
-        // as long as this loop never flushed, which nothing here states and every other
-        // tile-writing loop in the crate already does not honour. They are the very
-        // keys the scaled path's parcel lanes take, so the two share one warm set.
+        // Leased on the **run** tier: the ring is the loop's running state, not the
+        // current tile's, and the piece tier is released at every `flush`. They are the
+        // very keys the scaled path's parcel lanes take, so the two share one warm set.
         let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(coords.len()))
             .map(|_| RingSlot::take(self, &mut scope))
             .collect();
@@ -472,14 +413,9 @@ impl StrokeRenderer {
             // by this tile's selection coverage — its own mask if it has one, or the
             // 1×1 constant standing in for the rest of the canvas (§6.8).
             let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
-            // The layer's resident paint here, or the 1×1 zero where it has none —
-            // the integrate clamps its loads, so bare canvas costs no tile at all
-            // (§6.8's pattern), where acquiring a real pooled pair would mean
-            // allocating and clearing one on every pointer move whether or not the
-            // stroke reached anything unpainted.
-            // The pristine paint under this tile, or the 1×1 zeroes where the layer has
-            // none — the accumulator's own derivation (`accum::base_targets`), which
-            // this loop open-coded a third time.
+            // The pristine paint under this tile, or the 1×1 zeroes where the layer
+            // has none: the integrate clamps its loads, so bare canvas costs no tile at
+            // all (§6.8's pattern).
             let base_t = super::accum::base_targets(self, base.get(coord));
             // The coverage alone: the mask's opacity is in `k.opacity` already
             // (`stroke_constants`), which the integrate multiplies this by.
@@ -516,32 +452,27 @@ impl StrokeRenderer {
         (new_map, carry)
     }
 
-    /// [`Self::render_swept`] below full opacity (§6.2): the same sweep, but
-    /// into a **per-tile accumulator carried across the pieces of a live
-    /// stroke**, with every piece's integrate re-deriving its tiles from
-    /// pristine paint under the whole parcel — the erase pass's shape
-    /// (`erase.rs`), forced by the same theorem: the opacity scales the parcel's
-    /// finished coverage, which is not composable per piece, so pieces cannot
-    /// stack scaled parcels and be the whole.
+    /// [`Self::render_swept`] below full opacity (§6.2): the same sweep, but into a
+    /// **per-tile accumulator carried across the pieces of a live stroke**, every
+    /// piece's integrate re-deriving its tiles from pristine paint under the whole
+    /// parcel — the erase pass's shape (`erase.rs`), forced by the same theorem, that
+    /// the opacity scales the parcel's finished coverage and so pieces cannot stack
+    /// scaled parcels and be the whole.
     ///
-    /// The same shape *and the same code*: the bookkeeping the two share is
-    /// [`accum`](super::accum), and what stays here is `integrate.wesl`'s slots,
-    /// this path's pipelines, and the one decision that is the deposit's own — a
-    /// stroke onto nothing mints a tile ([`BareCanvas::Mint`]), where an erase
-    /// has nothing to erase.
+    /// The bookkeeping is [`accum`](super::accum)'s; what stays here is
+    /// `integrate.wesl`'s slots, this path's pipelines, and the one decision that is
+    /// the deposit's own — a stroke onto nothing mints a tile ([`BareCanvas::Mint`]),
+    /// where an erase has nothing to erase.
     ///
-    /// What that shape costs relative to the ring above: a persistent scratch
-    /// pair per touched tile for the stroke's lifetime, a copy per resumed tile
-    /// per piece, and no ring overlap. The full-opacity path — every stroke
-    /// whose dial is at 1 — never comes here, which is why the branch is on the
-    /// brush and not a uniform alone.
+    /// It costs a persistent scratch pair per touched tile for the stroke's lifetime, a
+    /// copy per resumed tile per piece, and no ring overlap, so every stroke at full
+    /// opacity stays on [`Self::render_swept`].
     ///
-    /// `ss` is the supersampling factor (§6.2, `budget::supersample_scale`): at 2
-    /// the parcel lanes hold 2 subsample texels per canvas px, the sweep
-    /// rasterizes into them with its pixel-footprint window halved to match
-    /// (`TileXform::params.w`), and the integrate box-resolves each destination
-    /// texel from the finished 2×2 block (`integrate.wesl`). 1 is this path
-    /// exactly as it was, to the bit.
+    /// `ss` is the supersampling factor (§6.2, `budget::supersample_scale`): at 2 the
+    /// parcel lanes hold 2 subsample texels per canvas px, the sweep rasterizes into
+    /// them with its pixel-footprint window halved to match (`TileXform::params.w`),
+    /// and the integrate box-resolves each destination texel from the finished 2×2
+    /// block (`integrate.wesl`). 1 is [`Self::render_swept`]'s rasterization to the bit.
     fn render_swept_scaled(
         &self,
         scene: StrokeScene<'_>,
@@ -565,13 +496,11 @@ impl StrokeRenderer {
         let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);
         let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
 
-        // The carried parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`])
-        // — the same channels at the same formats the unscaled path's ring pairs
-        // carry, differing only in outliving their piece (and in coming from the
-        // scratch pool rather than the tile pool, since nothing here ever becomes a
-        // document tile). A supersampled stroke's lanes are the same set at `ss`
-        // texels per px — the one place the 4× memory is paid, and it is
-        // transient: no document tile ever holds a subsample.
+        // The carried parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`]):
+        // the channels the unscaled path's ring pairs carry, from the scratch pool
+        // rather than the tile pool, since nothing here ever becomes a document tile.
+        // A supersampled stroke holds the same set at `ss` texels per px — the one
+        // place the 4× memory is paid, and it is transient.
         let keys = parcel_keys(
             self.color_space.color_format(),
             self.color_space.resid_format(),
@@ -633,11 +562,10 @@ impl StrokeRenderer {
     }
 }
 
-/// The carried parcel's lanes (`render_swept_scaled`), in the order `stamp.wesl`
-/// declares its own targets, which is what the sweep attaches them as: the index
-/// is the shader's `@location`, so the ceiling is at 3 with or without a residual
-/// at 2. [`parcel_keys`] fills them by these names, which is what keeps the attach
-/// order and the bind order one list ([`Parcel`](super::accum::Parcel)).
+/// The carried parcel's lanes (`render_swept_scaled`): the index is the shader's own
+/// `@location` in `stamp.wesl`, so the ceiling is at 3 with or without a residual at 2.
+/// [`parcel_keys`] fills them by these names, which keeps the attach order and the bind
+/// order one list ([`Parcel`](super::accum::Parcel)).
 const COLOR: usize = 0;
 const AUX: usize = 1;
 const RESID: usize = 2;
@@ -668,10 +596,8 @@ fn parcel_key(format: wgpu::TextureFormat) -> Key {
 }
 
 /// One slot of the sweep's scratch ring: the three working textures a tile's sweep
-/// writes and its integrate reads, leased for the piece.
-///
-/// Views only — the pass attaches and binds them, and nothing here copies — where the
-/// leases themselves live in the scope until the submit that releases them.
+/// writes and its integrate reads, leased for the piece. Views only; the leases live in
+/// the scope until the submit that releases them.
 pub(super) struct RingSlot {
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
@@ -703,11 +629,10 @@ impl RingSlot {
     }
 }
 
-/// The sweep's brush-resolved bind groups — the prefix-τ volume at group 1, the
-/// noise + substrate fields at group 2. One derivation for the three passes that
-/// rasterize the swept extent (the plain deposit, its scaled sibling and the
-/// erase sweep), for [`sweep_draws`]' reason: they draw the *same* extent, and a
-/// second copy of its inputs would be a place to disagree about what that is.
+/// The sweep's brush-resolved bind groups — the prefix-τ volume at group 1, the noise
+/// and substrate fields at group 2. One derivation for all three passes that rasterize
+/// the swept extent (the plain deposit, its scaled sibling and the erase sweep), for
+/// [`sweep_draws`]' reason: they draw the *same* extent.
 pub(super) fn sweep_binds(
     r: &StrokeRenderer,
     scope: &mut crate::gpu::scratch::SubmitScope,
@@ -730,12 +655,10 @@ pub(super) fn sweep_binds(
         false,
         |_| wgpu::BindingResource::TextureView(&prefix_view),
     );
-    // Color dynamics (§6.2): the noise tile baked for this stroke, of the
-    // brush's kind. An inactive brush binds the zero tile with zero amplitudes
-    // — the deposit is exactly the constant color. The canvas substrate beside
-    // it (§6.4): the deposition tooth's height and the rise ahead of it, in the
-    // same group because it is the same kind of thing — a field the deposit
-    // samples per fragment.
+    // Color dynamics (§6.2): the noise tile baked for this stroke, of the brush's
+    // kind. An inactive brush binds the zero tile with zero amplitudes, so the deposit
+    // is exactly the constant color. The canvas substrate beside it (§6.4): the
+    // deposition tooth's height and the rise ahead of it.
     let noise = r.tips.noise(&rec.brush.color_dynamics(), k.noise_seed);
     scope.hold(noise.clone());
     let noise_bg = desc::bind_group_for(
@@ -759,11 +682,10 @@ pub(super) fn sweep_binds(
 /// (`stroke_constants`) — or exactly 1, the shader's identity branch, on the
 /// unscaled path, which binds it because the layout names it either way.
 ///
-/// `ss` rides beside it: how many subsample texels per canvas px the scratch
-/// holds (§6.2), which is what tells the shader to box-resolve the parcel — 1,
-/// the plain 1:1 load, everywhere the sweep did not supersample. And `lane`,
-/// whether the ceiling lane bound beside the parcel is real — the stroke's
-/// opacity is pen-driven — or the 1×1 zero the shader must not read.
+/// `ss` is how many subsample texels per canvas px the scratch holds (§6.2), which
+/// tells the shader whether to box-resolve the parcel — 1 is the plain 1:1 load.
+/// `lane` says whether the ceiling lane bound beside the parcel is real or the 1×1
+/// zero the shader must not read.
 pub(super) fn opacity_uniform(
     scope: &mut crate::gpu::scratch::SubmitScope,
     opacity: f32,
@@ -786,11 +708,10 @@ pub(super) fn opacity_uniform(
 /// contiguous instance range, the instance buffer, and the per-tile transform
 /// slots behind one dynamic-offset bind group.
 ///
-/// One derivation for both consumers — the plain deposit ([`StrokeRenderer::render_swept`])
-/// and the erase pass (`erase.rs`) — for [`StrokeConstants`](super::StrokeConstants)'s reason: the two
-/// rasterize the *same* extent, gated by the same drain, tooth and jitter, and a
-/// second copy of this construction would be a place for them to disagree about
-/// what the extent is.
+/// One derivation for both consumers — the plain deposit
+/// ([`StrokeRenderer::render_swept`]) and the erase pass (`erase.rs`) — for
+/// [`StrokeConstants`](super::StrokeConstants)'s reason: the two rasterize the *same*
+/// extent, gated by the same drain, tooth and jitter.
 pub(super) struct SweepDraws {
     /// The tiles the piece's segments reach, texture (interior + apron) included —
     /// [`tiles_with_segments`]' answer, in its order, which the instance runs below
@@ -806,31 +727,27 @@ pub(super) struct SweepDraws {
 
 impl SweepDraws {
     /// The dynamic offset that selects tile `i` of [`coords`](Self::coords) in
-    /// [`xforms`](Self::xforms).
-    ///
-    /// Asked of the draws rather than computed at each pass, so the stride the slots
-    /// were *written* at and the stride they are *bound* at are one expression.
+    /// [`xforms`](Self::xforms) — asked of the draws rather than computed at each pass,
+    /// so the stride the slots were *written* at and the stride they are *bound* at are
+    /// one expression.
     pub(super) fn xform_offset(&self, i: usize) -> u32 {
         UniformSlots::<TileXform>::offset(i as u32)
     }
 }
 
-/// Build a piece's [`SweepDraws`]: which segments reach which tile, and the
-/// instance buffer laid out to match — each tile's segments contiguous, so its
-/// draw is one instance *range* rather than the whole stroke. A segment writes
-/// exactly zero outside the tiles it is listed under, and zero is an exact
-/// identity through both blends, so this is the same picture as drawing everything
-/// everywhere — for `Σ tiles-per-segment` instances instead of `segments × tiles`
+/// Build a piece's [`SweepDraws`]: which segments reach which tile, and the instance
+/// buffer laid out to match — each tile's segments contiguous, so its draw is one
+/// instance *range* rather than the whole stroke. A segment writes exactly zero outside
+/// the tiles it is listed under, and zero is an exact identity through both blends, so
+/// this is the same picture as drawing everything everywhere, for
+/// `Σ tiles-per-segment` instances instead of `segments × tiles`
 /// ([`tiles_with_segments`]).
-///
-/// The duplication is real but small: a segment is at most a tip wide, so it
-/// appears under a handful of tiles. What it replaces grew with the *stroke*.
 ///
 /// `ss` is the supersampling factor the piece rasterizes at (§6.2): it reaches the
 /// shader as the pixel footprint's half-width, `0.5 / ss` canvas px
-/// (`TileXform::params.w`), so each subsample box-filters over its own footprint
-/// rather than the whole pixel's. 1 — half a px, the value the lane always meant —
-/// on every path that does not supersample, the erase sweep included.
+/// (`TileXform::params.w`), so each subsample box-filters over its own footprint rather
+/// than the whole pixel's. 1 — half a px — on every path that does not supersample, the
+/// erase sweep included.
 pub(super) fn sweep_draws(
     r: &StrokeRenderer,
     scope: &mut crate::gpu::scratch::SubmitScope,
@@ -858,12 +775,10 @@ pub(super) fn sweep_draws(
         runs.push(from..instances.len() as u32);
     }
     // Leased and written through the scope (`SubmitScope::write_lease`), never
-    // `create_buffer_init`: that maps at creation, and Chrome/Dawn caps
-    // map-at-creation buffers well below the normal `maxBufferSize`, so a long stroke
-    // would panic in `createBuffer`. Leasing is the other half of the same problem —
-    // this is the largest buffer the stroke path builds and it was built afresh on
-    // every pointer move, where the pool hands back the one the previous move used
-    // (`scratch::BufKey`).
+    // `create_buffer_init`: that maps at creation, and Chrome/Dawn caps map-at-creation
+    // buffers well below the normal `maxBufferSize`, so a long stroke would panic in
+    // `createBuffer`. It is also the largest buffer the stroke path builds, rebuilt on
+    // every pointer move, so the pool hands back the previous move's (`scratch::BufKey`).
     let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
     let instance_buf = scope.take_run_buffer(BufKey {
         size: instance_bytes.len() as u64,
@@ -872,15 +787,14 @@ pub(super) fn sweep_draws(
     });
     scope.write_lease(&instance_buf, instance_bytes);
 
-    // Per-tile sweep transforms, one [`XFORM_STRIDE`] slot each in a single
-    // buffer the draws select with a dynamic offset. The texture top-left is
-    // the interior origin shifted out by the apron, so the full TILE_TEX target
-    // maps to NDC [-1, 1]; everything else is a stroke constant, repeated per slot
-    // because the slot is what the shader reads.
+    // Per-tile sweep transforms, one [`XFORM_STRIDE`] slot each in a single buffer the
+    // draws select with a dynamic offset. The texture top-left is the interior origin
+    // shifted out by the apron, so the full TILE_TEX target maps to NDC [-1, 1];
+    // everything else is a stroke constant, repeated per slot because the slot is what
+    // the shader reads.
     //
-    // One buffer and one bind group for the stroke, not one of each per tile: this
-    // path redraws on every pointer move, and the allocation *rate* is what OOMs
-    // the tab (`gpu::uniforms`).
+    // One buffer and one bind group for the whole stroke: this path redraws on every
+    // pointer move, and the allocation *rate* is what OOMs the tab (`gpu::uniforms`).
     let apron = TILE_APRON as f32;
     let mut xform_data = vec![0u8; coords.len() * XFORM_STRIDE as usize];
     for (i, coord) in coords.iter().enumerate() {
@@ -901,11 +815,9 @@ pub(super) fn sweep_draws(
         label: "stark sweep xforms",
     });
     scope.write_lease(&xform_buf, &xform_data);
-    // Through the slot list the layout was built from, like every other group in the
-    // crate — a hand-written `binding: 0` is the shader's own number transcribed onto
-    // the host, which is the drift §6.10 exists to remove. The window is the
-    // uniform's size and the offset is the draw's, so the entry names a slot rather
-    // than the whole buffer.
+    // Through the slot list the layout was built from (§6.10). The window is the
+    // uniform's size and the offset is the draw's, so the entry names a slot rather than
+    // the whole buffer.
     let xforms = desc::bind_group_for(
         device,
         "stark sweep bg",
@@ -975,11 +887,10 @@ pub(super) fn tile_xform(
             origin.x,
             origin.y,
             0.0,
-            // Half the deposit's own footprint in canvas px (§6.2): the box
-            // filter's half-window at 1×, and each subsample's own share of
-            // the pixel when the sweep supersamples. The canvas→NDC scale
-            // below does *not* move — a supersampled target covers the
-            // same canvas extent; only the rasterizer's grid is finer.
+            // Half the deposit's own footprint in canvas px (§6.2): the box filter's
+            // half-window at 1×, each subsample's own share of the pixel above that.
+            // The canvas→NDC scale below does *not* move — a supersampled target
+            // covers the same canvas extent, only on a finer grid.
             0.5 / ss as f32,
         ],
         color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
@@ -1064,14 +975,10 @@ pub(super) fn build_integrate_pipeline(
 /// otherwise (the uniform says which, and the shader reads the lane only when
 /// it does).
 ///
-/// **One derivation for both swept paths.** The unscaled loop and the scaled
-/// accumulator each spelled these eight slots out — the same list, the same
-/// `unreachable!`, the same two `expect`s on the residual lanes — differing only in
-/// where the six views came from: a resident tile and a ring slot on one side, a
-/// `Targets` and a parcel's lanes on the other. Both of those *are* trios, so the
-/// difference disappears once they are asked for as trios, and what is left is the one
-/// thing that was genuinely shared: what the integrate reads. Two spellings of that
-/// was a place for the two paths to disagree about it.
+/// **One derivation for both swept paths.** The unscaled loop's resident tile and ring
+/// slot and the scaled accumulator's `Targets` and parcel lanes are both trios, so what
+/// is left once they are asked for as trios is the one thing genuinely shared: what the
+/// integrate reads.
 ///
 /// The residual predicate is `base && parcel` because both must be bound for the
 /// `_resid` build to be legal. On the scaled path the two are the same question — the

@@ -2,8 +2,8 @@
 //! with matte layers drawn at their own place in the stack (§6.3, §15.4).
 //!
 //! One instanced quad per tile, one per matte, both in the canvas → NDC frame
-//! [`ViewUniform`](super::view::ViewUniform) holds. The two pipelines share group 0, so a run that interleaves them
-//! changes only the pipeline and the vertex buffer.
+//! [`ViewUniform`](super::view::ViewUniform) holds. The two pipelines share group 0,
+//! so a run that interleaves them changes only the pipeline and the vertex buffer.
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
@@ -15,19 +15,18 @@ use stark_shaders::mirror::matte::decl as md;
 /// Pass A's **view** group (§6.3) — the canvas→NDC map and the tile sampler, shared
 /// with the matte pass drawn inside it and with the overlay (§6.10).
 ///
-/// The two slots differ in visibility, and that is what [`Slot::in_stages`] is for: the
-/// vertex stage places the quad from `view`, the fragment stage samples through `samp`,
-/// and neither wants the other's.
+/// The two slots differ in visibility: the vertex stage places the quad from `view`,
+/// the fragment stage samples through `samp`, and neither wants the other's.
 pub(crate) const VIEW_SLOTS: &[Slot] = &[
     Slot::dynamic(cd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
     Slot::at(cd::SAMP),
 ];
 
-/// The matte's gradient ramp at group 1, per matte where the view is per pass (§22.4).
-/// Fragment-only — the vertex stage has no use for it.
+/// The matte's gradient ramp at group 1, per matte where the view is per pass
+/// (§22.4). Fragment-only — the vertex stage has no use for it.
 ///
-/// Left the module because the layout is built here and the group beside the ramps'
-/// upload, and one list is what keeps the two from disagreeing about the binding.
+/// Visible outside this module because the layout is built here and the group beside
+/// the ramps' upload; one list keeps the two from disagreeing about the binding.
 pub(super) const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
 
 /// Pass A's **tile** group: one layer tile's channels, sampled through the view's
@@ -61,17 +60,16 @@ pub(super) struct TilePass {
     pub(super) tile_bgl: wgpu::BindGroupLayout,
     /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4), read
     /// through a **dynamic offset** so one buffer and one bind group serve every
-    /// matte in the frame. A solid matte's slot is simply zeroed, its stop count
-    /// then saying "use the instance's own channels" — so the absent-ramp case is 544
-    /// zero bytes in the buffer everything else reads, not a bind group of its own.
+    /// matte in the frame. A solid matte's slot is zeroed, its stop count then
+    /// saying "use the instance's own channels".
     pub(super) ramp_bgl: wgpu::BindGroupLayout,
 }
 
 impl TilePass {
-    /// `tile_bgl` is handed in rather than built here: a tile caches the group over
-    /// its own channels ([`TilePairHandle::composite_bg`]), and the stamp loop binds
-    /// that same group, so there has to be exactly one layout it answers to
-    /// ([`tile_bind_group_layout`](super::tile_bind_group_layout)).
+    /// `tile_bgl` must be the one layout every tile group answers to
+    /// ([`tile_bind_group_layout`](super::tile_bind_group_layout)): a tile caches the
+    /// group over its own channels ([`TilePairHandle::composite_bg`]), and the stamp
+    /// loop binds that same group.
     ///
     /// [`TilePairHandle::composite_bg`]: crate::gpu::tile::TilePairHandle::composite_bg
     pub(super) fn new(
@@ -98,14 +96,10 @@ impl TilePass {
             "stark composite layout",
             &[Some(&view_bgl), Some(&tile_bgl)],
         );
-        // Pass A's blends come from the color space (§6.7): premultiplied `over` on
-        // color, additive on the height aux.
-        // The residual composites through the *color's* blend, never the aux's: it is
-        // premultiplied by the same coverage and covers by the same rule, being the
-        // rest of the same color (§6.7).
-        // Spelled out rather than `formats.blended(..)`: pass A is the one pipeline
-        // whose three targets do *not* share a blend — the height aux is additive
-        // where the color and its residual composite `over` (§6.7).
+        // Pass A is the one pipeline whose targets do *not* share a blend, so this is
+        // spelled out rather than `formats.blended(..)`: premultiplied `over` on the
+        // color, additive on the height aux, and the residual through the *color's*
+        // blend, being the rest of the same color (§6.7).
         let mut space_targets = vec![
             desc::blended_target(formats.color, Some(color_space.color_blend())),
             desc::blended_target(formats.aux, Some(color_space.aux_blend())),
@@ -134,20 +128,18 @@ impl TilePass {
             label: Some("stark matte"),
             source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(resid).into()),
         });
-        // Group 1: the gradient ramp, per matte where the view is per pass
-        // (§22.4). Fragment-only — the vertex stage has no use for it.
         let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
         let matte_layout = desc::pipeline_layout(
             device,
             "stark matte layout",
             &[Some(&view_bgl), Some(&ramp_bgl)],
         );
-        // Premultiplied `over` on BOTH targets. The aux one is the load-bearing
-        // difference from pass A's additive aux: additive would keep the height of
-        // paint *underneath* the matte, and the media pass would emboss that paint's
-        // impasto as ghost ridges through an opaque mat board (§15.4.2).
-        // `OneMinusSrcAlpha` is valid on the alpha-less R16Float aux: the factor
-        // reads the *source* alpha from the shader's output vec4.
+        // Premultiplied `over` on BOTH targets. On the aux that is the load-bearing
+        // difference from pass A's additive blend: additive would keep the height of
+        // paint *underneath* the matte, and the media pass would emboss it as ghost
+        // ridges through an opaque mat board (§15.4.2). `OneMinusSrcAlpha` is valid on
+        // the alpha-less R16Float aux — the factor reads the *source* alpha, from the
+        // shader's output vec4.
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let matte_targets = formats.blended(over);
         let matte_pipeline = desc::render_pipeline(
@@ -178,10 +170,9 @@ impl TilePass {
     /// Encode one run of pass A: `draws` into `into`, in stack order, switching
     /// pipelines where a matte sits between runs of tiles.
     ///
-    /// Both pipelines share group 0 (the view uniform), so only the pipeline and the
-    /// vertex buffer change at the boundary. Each [`Draw`] carries its own index into
-    /// the flat streams, so the encoder walks no cursors of its own — that is the
-    /// plan's job (`composite::plan`).
+    /// `draws` must already be in stack order and each [`Draw`] must carry its own
+    /// index into the streams of `s` — the plan's job (`composite::plan`), since this
+    /// walks no cursors of its own.
     pub(super) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -216,10 +207,8 @@ impl TilePass {
                         pass.set_vertex_buffer(0, s.mattes.slice());
                         pipeline_is_matte = Some(true);
                     }
-                    // Group 1 is the ramp, at this matte's own slot (§22.4). Re-set
-                    // per matte either way: the offset changes, and a pipeline switch
-                    // has already invalidated whatever was bound, the two pipelines'
-                    // group-1 layouts differing.
+                    // Group 1 is the ramp, at this matte's own slot (§22.4) — re-set
+                    // per matte because the offset changes.
                     let ramp = s.ramp_bg.expect("a matte draw without its ramp slots");
                     pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(i)]);
                     pass.draw(0..4, i..i + 1);
@@ -236,8 +225,8 @@ pub(super) struct TileStreams<'a> {
     pub(super) view_bg: &'a wgpu::BindGroup,
     /// Which view slot this run draws through
     /// ([`ViewBindings::offset`](super::view::ViewBindings::offset)). A frame has one
-    /// and passes 0; the eyedropper's trace has one per sampled point, all in the
-    /// same submit.
+    /// view and passes 0; the eyedropper's trace has one per sampled point, all in
+    /// the same submit.
     pub(super) view_offset: u32,
     pub(super) instances: &'a InstanceStream<Instance>,
     pub(super) mattes: &'a InstanceStream<MatteInstance>,

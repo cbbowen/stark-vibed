@@ -1,16 +1,16 @@
 //! Drawing a stroke in pieces, and resuming where the last one stopped (§6.2).
 //!
 //! A live stroke re-renders on every pointer move, so it must cost its *tail* rather
-//! than its length. That works because a stroke can be cut into ranges of spans and
-//! composited in order for the same result as one pass — the swept path because its
-//! deposit is a definite integral that composes by summing optical depth, the stamp
-//! loop because [`ToolState`] carries the only thing it threads between segments that
-//! is not already on the canvas.
+//! than its length. A stroke can be cut into ranges of spans and composited in order
+//! for the same result as one pass: the swept path because its deposit is a definite
+//! integral that composes by summing optical depth, the stamp loop because
+//! [`ToolState`] carries the only thing it threads between segments that is not
+//! already on the canvas.
 //!
-//! The catch is anything measured against the **whole** stroke — the trailing
-//! taper — which a stroke still under the pointer does not know yet.
-//! [`safe_frozen`] is the one rule that holds it back until its answer can no
-//! longer change, and it is what makes `preview == committed` hold here (§1.3).
+//! Anything measured against the **whole** stroke — the trailing taper — is the
+//! catch, since a stroke still under the pointer does not know it yet.
+//! [`safe_frozen`] holds such a span back until its answer can no longer change,
+//! which is what makes `preview == committed` hold here (§1.3).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,38 +21,29 @@ use stark_model::geom::TileCoord;
 use super::accum::ParcelCarry;
 use crate::gpu::scratch::Kept;
 
-/// A stroke's carried state at a cut point (§6.2) — what its path threads
-/// between pieces that does not already live on the canvas. Which of the two kinds
-/// it holds follows the path itself, and cannot disagree with it: the path is a
-/// pure function of the brush ([`dynamics_setup`](super::dynamics::dynamics_setup)),
-/// and a carry only ever resumes the stroke that captured it.
+/// A stroke's carried state at a cut point (§6.2) — what its path threads between
+/// pieces that does not already live on the canvas. Which kind it holds cannot
+/// disagree with the path: the path is a pure function of the brush
+/// ([`dynamics_setup`](super::dynamics::dynamics_setup)), and a carry only ever
+/// resumes the stroke that captured it.
 ///
-/// The textures ride in [`Kept`] leases rather than being created and destroyed
-/// per pointer move: one of these is captured per fold, and the pool hands the
-/// same textures back on drop — which is sound *because* a run only ever borrows a
-/// `ToolState`, so the drop that returns a lease can only happen after the run's
-/// own submit (see [`Kept`]).
+/// The textures ride in [`Kept`] leases, which is sound only because a run
+/// *borrows* a `ToolState`: the drop that returns a lease cannot happen before the
+/// run's own submit.
 pub(crate) struct ToolState(pub(super) Carried);
 
 /// The two halves of resuming a stroke across ranges: what the range before this one
-/// left, and whether a range after it will want what this one leaves.
-///
-/// One value because they are one question asked from both ends, and because the
-/// second half was being derived three times — once in each path that has cross-piece
-/// state — from `spans` and `rec`, which every path had for its own reasons. Two of
-/// the three then ignored the answer and captured unconditionally, which is the kind
-/// of drift a shared derivation does not have.
+/// left, and whether a range after it will want what this one leaves. One value
+/// because they are one question asked from both ends.
 #[derive(Clone, Copy)]
 pub(super) struct Resume<'a> {
     /// What the previous range left, if this is not the first.
     pub(super) prior: Option<&'a ToolState>,
     /// Whether a later range will resume this stroke.
     ///
-    /// **False is the common case**, and that is the point: the live tail is exactly
-    /// the range that reaches the end of the stroke, and it re-renders on every
-    /// pointer move. Capturing there builds state with no reader and holds the
-    /// parcel's working lanes — or the loop's reservoir — out of the pool for the
-    /// length of the fold that discards them.
+    /// **False is the common case**: the live tail is the range that reaches the end
+    /// of the stroke, and capturing there would build state with no reader while
+    /// holding the parcel's working lanes — or the loop's reservoir — out of the pool.
     pub(super) capture: bool,
 }
 
@@ -87,19 +78,17 @@ pub(super) enum Carried {
     Sweep(ParcelCarry),
 }
 
-// The two above hold the *same* payload, and one variant each is still worth
-// having: the lane count of a `ParcelCarry`'s parcels is the effect's — one
-// transparency mass against the channel trio — so a carry crossing between them
-// would bind the wrong number of textures. The accessors below are where that is
-// said, and they are the only reason the distinction is kept.
+// `Erase` and `Sweep` hold the same payload and stay separate variants because a
+// `ParcelCarry`'s lane count is the effect's — one transparency mass against the
+// channel trio — so a carry crossing between them would bind the wrong number of
+// textures.
 
 impl ToolState {
     /// The loop's carried state, on a carry the loop captured.
     ///
-    /// The other kinds are unreachable rather than an error to handle: which path a
-    /// stroke takes is a pure function of its brush (§6.2), a carry resumes only
-    /// the stroke that captured it, and the brush is snapshotted when the gesture
-    /// starts — so the loop can only ever be handed its own kind back.
+    /// Panics on another kind, which is unreachable: the path is a pure function of
+    /// the brush (§6.2), the brush is snapshotted when the gesture starts, and a
+    /// carry resumes only the stroke that captured it.
     pub(super) fn looped(&self) -> &LoopCarry {
         match &self.0 {
             Carried::Loop(l) => l,
@@ -145,27 +134,18 @@ impl ToolState {
 pub(super) struct LoopCarry {
     /// The brush-local half: what the tip is carrying.
     pub(super) reservoir: Reservoir,
-    /// The canvas-local half: per touched tile, the opacity ceiling's running
-    /// **raw mint totals** — the region aux whose `.yz` lanes the capped mint
-    /// budgets against, and whose `.w` is the ceiling lane a pen-driven opacity
-    /// claims coverage in (`dynamics.wesl::lay_parcel`) — cut per tile exactly
-    /// as the write-back cuts paint. Empty at full opacity, where the lanes are
-    /// never read: the identity ceiling needs no budget, and the common case
-    /// carries and copies nothing.
+    /// The canvas-local half: per touched tile, the opacity ceiling's running **raw
+    /// mint totals** — the region aux whose `.yz` lanes the capped mint budgets
+    /// against, and whose `.w` is the ceiling lane a pen-driven opacity claims
+    /// coverage in (`dynamics.wesl::lay_parcel`) — cut per tile exactly as the
+    /// write-back cuts paint. Empty at full opacity, where the identity ceiling
+    /// needs no budget and the lanes are never read.
     ///
-    /// [`ParcelTile::accum`](super::accum::ParcelTile)'s sharing contract: a piece
-    /// never writes a tile it resumed from — it seeds its region by *copying*
-    /// these in and extracts fresh leases out — so the tiles a piece does not
-    /// touch ride forward as clones of the same lease, and the live tail
-    /// re-renders from the same frozen totals every pointer move.
-    ///
-    /// That contract is all these share with the two parcel carries, which is why
-    /// they are not one type: no pristine handle beside them (the loop does not
-    /// re-derive from pristine paint — the budget is running state, exactly like
-    /// the reservoir), no pass ever binds one, they are seeded into a shared
-    /// region at a per-tile offset rather than into a working texture per tile,
-    /// and the tiles they end up in come from the region write-back rather than
-    /// from a landing pass.
+    /// A piece never writes a tile it resumed from: it seeds its region by *copying*
+    /// these in and extracts fresh leases out, so tiles a piece does not touch ride
+    /// forward as clones of the same lease and the live tail re-renders from the
+    /// same frozen totals every pointer move
+    /// ([`ParcelTile::accum`](super::accum::ParcelTile)).
     pub(super) fresh: BTreeMap<TileCoord, Arc<Kept>>,
     /// The ceiling lane over the same tiles (§6.2): the gated mass and moment sums
     /// a pen-driven opacity claims coverage with, drawn into the region per
@@ -174,21 +154,15 @@ pub(super) struct LoopCarry {
     pub(super) levels: BTreeMap<TileCoord, Arc<Kept>>,
 }
 
-/// The loop's tool reservoir (§6.2).
+/// The loop's tool reservoir (§6.2): what paint the tip is carrying, and where on
+/// the tip it sits. Remembered at a span boundary, the rest of the stroke can be
+/// drawn later over the already-composited head for the same result as one pass.
 ///
-/// The sequential loop threads exactly two things from one segment to the next that
-/// do not already live on the canvas: the **tool reservoir** — what paint the tip is
-/// carrying, and where on the tip it sits — and how far the tip has travelled since
-/// it last exchanged with the canvas. Remember those at a span boundary and the rest
-/// of the stroke can be drawn later, over the already-composited head, for the same
-/// result as one pass. That is what lets a `lift`/`deposit`/`charge` brush get the
-/// same incremental repaint the swept path gets.
-///
-/// The reservoir is brush-*local*, which is why this works at all: it says nothing
-/// about where the stroke is, so the region rectangle may change completely between
-/// the piece that produced this state and the piece that resumes from it. (The mint
-/// budget beside it in [`LoopCarry`] is the one canvas-local exception, and it is
-/// addressed by tile for exactly that reason.)
+/// Brush-*local*, which is why that works: it says nothing about where the stroke
+/// is, so the region rectangle may change completely between the piece that produced
+/// it and the piece that resumes from it. (The mint budget beside it in
+/// [`LoopCarry`] is the one canvas-local exception, addressed by tile for that
+/// reason.)
 pub(super) struct Reservoir {
     /// Reservoir color: per texel, the latent paint (rgb) and its per-unit opacity.
     pub(super) color: Kept,
@@ -201,14 +175,12 @@ pub(super) struct Reservoir {
     pub(super) resid: Option<Kept>,
 }
 
-// The other two kinds of carried state — the erase pass's accumulated extent
-// (§6.12) and the swept deposit's accumulated parcel below full opacity (§6.2) —
-// are one type, [`ParcelCarry`] in `accum`, because they are one *procedure*: an
-// effect whose law is neither of §6.2's two composable forms has to keep the
-// composable half summing across pieces and apply the law once per render from
-// pristine paint, and there is no second way to do that. Where the reservoir above
-// is brush-local, both of those are **canvas-local** — a field over the tiles the
-// stroke has reached — which is why they are addressed by tile and it is not.
+// The erase pass's accumulated extent (§6.12) and the swept deposit's accumulated
+// parcel below full opacity (§6.2) are one type — `ParcelCarry` in `accum` —
+// because they are one procedure: an effect whose law is neither of §6.2's two
+// composable forms keeps the composable half summing across pieces and applies the
+// law once per render from pristine paint. Both are **canvas-local** where the
+// reservoir above is brush-local, which is why they are addressed by tile.
 
 /// What a range render leaves behind for the range that resumes after it.
 pub(crate) struct StrokeCarry {
@@ -228,36 +200,30 @@ pub(crate) enum Progress {
     /// empty return — and this is what it hands on.
     Finished {
         /// The brush state to resume with, for a stroke that runs the stamp loop.
-        /// `None` means *nothing changed*: the swept path carries no state at all, a
-        /// range that reaches the end of the stroke has nothing following it to hand
-        /// off to, and a range with no geometry leaves the brush as it found it — so
-        /// a caller holding earlier state should keep it rather than treat this as
-        /// a reset.
+        /// `None` means *nothing changed* — the swept path carries no state, a range
+        /// reaching the stroke's end has no successor, and a range with no geometry
+        /// leaves the brush as it found it — so a caller holding earlier state must
+        /// keep it rather than treat this as a reset.
         tool: Option<ToolState>,
         /// The tiles this range rewrote: every coordinate the returned map holds a
         /// fresh handle at.
         ///
-        /// A **superset** of the tiles whose pixels changed, deliberately. What the
-        /// renderer enumerates is where the stroke's geometry *reaches*
-        /// (`region::cover`), and a tile at the very edge of that reach can receive
-        /// a fresh copy-on-write tile whose every fragment differenced its prefix-τ
-        /// taps to zero — bit-identical to the base, and still listed here.
-        /// Narrowing it would mean comparing pixels, which is the whole cost this
-        /// field exists to avoid.
-        ///
-        /// Reporting them is what lets several in-flight strokes be composited over
-        /// one committed document without diffing whole tile maps (§17.6), and a
-        /// superset costs that a redundant composite rather than a wrong picture.
+        /// A **superset** of the tiles whose pixels changed: what is enumerated is
+        /// where the stroke's geometry *reaches* (`region::cover`), so an edge tile
+        /// can be listed while staying bit-identical to its base. Narrowing it would
+        /// mean comparing pixels. Callers use it to composite several in-flight
+        /// strokes over one committed document without diffing whole tile maps
+        /// (§17.6), where a superset costs a redundant composite, not a wrong
+        /// picture.
         dirty: Vec<TileCoord>,
     },
     /// **This range drew nothing, and will have to be drawn again** — the brush's
     /// stamp asset has not arrived yet (`StrokeRenderer::render_range`), and `dist`
     /// stands where the range began. A caller that freezes ranges must not freeze
     /// this one: the commit renders the stroke once with the asset present, so a
-    /// head that took it would measure every later `drain` falloff and
-    /// colour-dynamics tap from an arc length the commit does not (§1.3) — and
-    /// nothing bumps the preview's epoch to repair it, because no *document*
-    /// changed when the asset landed.
+    /// frozen head would measure every later `drain` falloff and colour-dynamics tap
+    /// from an arc length the commit does not (§1.3), and nothing bumps the preview's
+    /// epoch to repair it — no *document* changed when the asset landed.
     Deferred,
 }
 
@@ -288,13 +254,12 @@ impl StrokeCarry {
 /// that the fitter has settled `frozen` of them (§6.2).
 ///
 /// Freezing is what makes a long live stroke cost its tail rather than its length
-/// ([`StrokeRenderer::render_range`](super::StrokeRenderer::render_range)), and it rests on a frozen span's pixels being
-/// final. Everything the sweep measures against the **whole** stroke breaks that on
-/// its own terms, because while the pointer is down the whole stroke has not happened
-/// yet. Bake such a quantity into a span too early and the stroke carries something
-/// the commit does not — the live == committed invariant (§1.3), failing in the one
-/// place it cannot be repainted. The taper is that quantity, and this is the one
-/// rule that holds it back until the answer can no longer change.
+/// ([`StrokeRenderer::render_range`](super::StrokeRenderer::render_range)), and it
+/// rests on a frozen span's pixels being final. Anything measured against the
+/// **whole** stroke is not final while the pointer is down; baking it into a span too
+/// early makes the stroke carry something the commit does not — a
+/// `preview == committed` break (§1.3) in the one place it cannot be repainted. The
+/// taper is that quantity.
 ///
 /// A span is held back unless both are already settled for it:
 ///
@@ -305,22 +270,17 @@ impl StrokeCarry {
 ///   together, so the "scale both to fit" compression ([`Taper`](super::segments::taper::Taper))
 ///   is 1 and likewise stays 1.
 ///
-/// Both are tested on **chords**, which under-estimate arc length — so a span
-/// this admits genuinely satisfies them, and a stroke that doubles back near its own
-/// start or end merely re-renders a little more than it had to. Only the last span
-/// in the candidate prefix is tested: arc length
-/// increases monotonically along the stroke, so it is the hardest case, and once a
-/// prefix is admitted it stays admissible however the stroke continues (which is what
-/// lets a kept head survive this shrinking under it).
+/// Both are tested on **chords**, which under-estimate arc length, so a span this
+/// admits genuinely satisfies them. Only the last span in the candidate prefix is
+/// tested: arc length increases monotonically along the stroke, so it is the hardest
+/// case, and an admitted prefix stays admissible however the stroke continues.
 ///
-/// The stroke's start is its **marker** ([`StrokeRecord::start`]), not the
-/// curve's head: the leading taper is measured from where the deposit begins
-/// (§6.2). A cut behind the marker passes or fails these chord tests
-/// meaninglessly and harmlessly — a prefix that ends behind the marker renders
-/// nothing, and final pixels of nothing are final. Freezing a span past a
-/// marker that could still move is ruled out structurally: the marker is placed
-/// by the fitter's arc profile, whose prefix settles exactly as spans freeze,
-/// so by the time a span beyond it may freeze the marker is already final
+/// The stroke's start is its **marker** ([`StrokeRecord::start`]), not the curve's
+/// head: the leading taper is measured from where the deposit begins (§6.2). A cut
+/// behind the marker passes or fails these chord tests meaninglessly and harmlessly
+/// — a prefix that ends behind the marker renders nothing. Freezing past a marker
+/// that could still move is ruled out structurally: the marker is placed by the
+/// fitter's arc profile, whose prefix settles exactly as spans freeze
 /// (`PathFitter::start_on`).
 pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
     let (start_px, end_px) = rec.brush.taper_px();
@@ -345,10 +305,10 @@ pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
 /// sample carries.
 ///
 /// `dist` is not derivable from `range` — it is the arc length accumulated along
-/// everything *before* it — so an incremental caller has to carry it forward. It
-/// matters because the `drain` falloff and the color-dynamics noise are both
-/// parameterized by distance travelled: restarting it at zero would make the tail
-/// of a stroke look like the head of one.
+/// everything *before* it — so an incremental caller has to carry it forward: the
+/// `drain` falloff and the color-dynamics noise are parameterized by distance
+/// travelled, and restarting it at zero would make the tail of a stroke look like
+/// the head of one.
 #[derive(Clone, Debug)]
 pub(crate) struct StrokeSpans {
     pub(super) range: std::ops::Range<usize>,

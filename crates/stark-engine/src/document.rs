@@ -4,13 +4,9 @@
 //! planning that needs it. The actions themselves, and the vocabulary they are
 //! written in, are `stark-model`'s `document`.
 //!
-//! The submodules are **crate-private**, and the re-exports below are the API.
-//! Publishing both gave every type two paths — `document::BrushParams` and
-//! `document::brush::BrushParams` — with nothing choosing between them, and the
-//! list here is the one that says what the module offers rather than how it is
-//! filed. Inside the crate the paths still work, which is what lets `gpu/` reach
-//! the `pub(crate)` planners (`fill::plan`, `selection::SelectionPlan`) that were
-//! never part of this list to begin with.
+//! The submodules are **crate-private**; the re-exports below are the API. Inside
+//! the crate the module paths still work, which is what lets `gpu/` reach the
+//! `pub(crate)` planners (`fill::plan`, `selection::SelectionPlan`).
 
 pub(crate) mod apply;
 /// The §12.6 rule, checked on every fold of every debug build — see the module.

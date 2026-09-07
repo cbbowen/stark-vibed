@@ -2,26 +2,14 @@
 //! §18.0.4, §21.3).
 //!
 //! Pure description — no GPU anywhere in this file, and no `wgpu` type in [`Plan`].
-//! It is `group.rs`'s counterpart on the other side of the boundary: that file says
-//! what the document *is*, this one says what drawing it *does*.
+//! `group.rs`'s counterpart across the boundary: that file says what the document
+//! *is*, this one says what drawing it *does*.
 //!
-//! # One walk, not four
-//!
-//! The alternative is a walk per product — the flat instance order, the blend and
-//! filter uniform slots, how many levels isolate — with the encoder consuming all
-//! three **positionally**, by cursors. Nothing then ties them together but a sentence
-//! claiming they recurse alike. A slot walk that failed to recurse into a `Stack`
-//! would render every group through its *sibling's* blend mode: silently, and
-//! identically to the correct result whenever the two modes happened to agree. A
-//! depth walk that disagreed would panic mid-encode, at a message naming whichever
-//! feature happened to ask.
-//!
-//! So each [`Step`] carries the slot index it draws from and the targets it reads and
-//! writes. The orders cannot drift because there is only one of them, and what the
-//! encoder needs is a fact recorded when the decision was made rather than a count
-//! reconstructed while executing it. The parity that lands the final accumulator in
-//! the caller's own targets, the level a group isolates into, and which uniform slot a
-//! merge binds are all byproducts of the same pass — and, being plain data, all
+//! Each [`Step`] carries the uniform slot it draws from and the targets it reads and
+//! writes, so the encoder reads facts recorded when the decision was made rather than
+//! counts reconstructed by cursors while executing it. The parity that lands the final
+//! accumulator in the caller's own targets, the level a group isolates into, and which
+//! uniform slot a merge binds are byproducts of the one walk — and, being plain data,
 //! testable without an adapter.
 
 use std::ops::Range;
@@ -91,16 +79,11 @@ pub(super) enum Step {
 
 /// Which way round a bouncing pass found the ping-pong, and at which level.
 ///
-/// Recorded because it is exactly the identity of the bind group the pass reads
-/// through: a merge at level `l` binds either that level's `swap` or the stack's own
-/// target as its backdrop, and always that level's `iso` as its source. Two phases per
-/// level, so a document with fifty merges still needs two bind groups per level rather
-/// than one per merge per frame (`ScratchLevel::blend_bg`).
-///
-/// Derived here rather than recovered in the encoder because the plan is where the
-/// ping-pong is decided — recovering it from `back` alone would mean asking which of
-/// two slots a name refers to, which is the class of question this module exists to
-/// stop being asked.
+/// It is the identity of the bind group the pass reads through: a merge at level `l`
+/// binds either that level's `swap` or the stack's own target as its backdrop, and
+/// always that level's `iso` as its source. Two phases per level, so a document with
+/// fifty merges needs two bind groups per level rather than one per merge per frame
+/// (`ScratchLevel::blend_bg`).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct Phase {
     pub(super) level: usize,
@@ -141,13 +124,10 @@ pub(super) struct Plan<'a> {
 
     pub(super) blends: Vec<BlendUniform>,
     /// The filter layers in slot order, kept as **descriptions** where the blends are
-    /// kept as uniforms.
-    ///
-    /// The asymmetry is one lane's: the chromatic filter's dispersion is stated by
-    /// the document in canvas terms and read by the pass in accumulator texels
-    /// (§21.10), so the uniform cannot be built until the view is known — and the
-    /// view is not known until the *sample count* is, which is chosen from this
-    /// plan's own [`Self::scratch`] (§6.4). A blend uniform has no such lane.
+    /// kept as uniforms: the chromatic filter's dispersion is stated by the document
+    /// in canvas terms and read by the pass in accumulator texels (§21.10), so its
+    /// uniform cannot be built until the sample count — chosen from this plan's own
+    /// [`Self::scratch`] (§6.4) — has settled.
     pub(super) filters: Vec<&'a FilterDraw>,
 
     /// One entry per level of nesting this frame reaches; `true` where the level
@@ -177,19 +157,17 @@ impl<'a> Plan<'a> {
 
     /// Composite one stack's members into `target`, bottom-to-top (§14.7).
     ///
-    /// Called on the document's root stack, and again on each group's members one
-    /// level deeper. `level` selects this stack's ping-pong pair and the `iso` its
-    /// members composite alone into; a member that is itself a group recurses into
-    /// that `iso` at `level + 1`, which is why nesting costs a pair-set per level
-    /// rather than per group.
+    /// `level` selects this stack's ping-pong pair and the `iso` its members
+    /// composite alone into; a member that is itself a group recurses into that `iso`
+    /// at `level + 1`, so nesting costs a pair-set per level rather than per group.
     ///
     /// **The ping-pong, and why the caller's targets always win.** A blend pass reads
-    /// the accumulator and writes the merge, so it needs somewhere else to write; the
-    /// accumulator therefore alternates between `target` and this level's `swap`.
-    /// Rather than copy at the end, the *start* is chosen by parity: with an odd
-    /// number of bounces the stack begins in `swap`, and every flip lands the final
-    /// result exactly where the caller asked for it. That is what lets the media pass
-    /// keep one bind group and the eyedropper keep its own targets.
+    /// the accumulator and writes the merge, so the accumulator alternates between
+    /// `target` and this level's `swap`. Rather than copy at the end, the *start* is
+    /// chosen by parity: with an odd number of bounces the stack begins in `swap`, and
+    /// every flip lands the final result exactly where the caller asked for it. That
+    /// is what lets the media pass keep one bind group and the eyedropper keep its own
+    /// targets.
     fn stack(&mut self, members: &'a [CompositeGroup], target: Slot, level: usize) {
         // A merge and a filter both bounce, and it is the count of *bounces* that the
         // parity is about — not of blend modes.
@@ -235,10 +213,9 @@ impl<'a> Plan<'a> {
                 written = true;
             }
             // A **filter layer** takes the same ping-pong with nothing isolated into
-            // it: there is no source, so it reads `cur` and writes the adjusted
-            // result to `alt` directly (§21.3). That is the whole of what it shares
-            // with a merge, and it is why this level may end up with a `Swap` pair
-            // and no `Iso` trio at all.
+            // it: no source, so it reads `cur` and writes the adjusted result to `alt`
+            // (§21.3) — which is why a level may end up with a `Swap` pair and no
+            // `Iso` trio at all.
             if let GroupContent::Filter(f) = &member.content {
                 let slot = self.filters.len() as u32;
                 self.filters.push(f);
@@ -337,10 +314,8 @@ impl<'a> Plan<'a> {
 
 /// The blend pass's uniform for one merge (§18.0.4).
 ///
-/// **The one place it is assembled**, screen and merge alike. `gpu::merge` runs this
-/// very pipeline on tile-sized targets (§14.11) and built its own, which is a lane at
-/// a time and so a lane away from being different — and `..Default::default()` fills
-/// one missed in either with a zero rather than failing.
+/// **The one place it is assembled**, screen and merge alike: `gpu::merge` runs this
+/// very pipeline on tile-sized targets (§14.11).
 ///
 /// `opacity` is the caller's because the two mean different things by it: the screen
 /// folds the group's slider in here, where a merge has already folded the source
@@ -407,11 +382,8 @@ mod tests {
     /// Every slot a step names must be one the scratch was told to allocate, and an
     /// `Iso` must be one the level was told to *isolate*.
     ///
-    /// Checkable here because the plan is plain data. Split across an encoder
-    /// recursion and a separate scratch-sizing walk, the invariant is held by nothing
-    /// but a matched pair of `if`s, and its failure is an
-    /// `expect("a merge without scratch targets")` mid-encode — a message that names
-    /// one of the features depending on it.
+    /// Checkable here because the plan is plain data; held anywhere else, its failure
+    /// is an `expect` mid-encode naming whichever feature happened to ask.
     fn every_slot_is_allocated(plan: &Plan<'_>) {
         let check = |slot: Slot| match slot {
             Slot::Target => {}
@@ -444,10 +416,9 @@ mod tests {
         }
     }
 
-    /// The parity claim, stated once here instead of implied by arithmetic in a
-    /// comment: however many times the accumulator bounced, it ends where the caller
-    /// asked for it. This is what lets the media pass keep one bind group across
-    /// every document, and the eyedropper read back its own targets.
+    /// However many times the accumulator bounced, it ends where the caller asked for
+    /// it — which is what lets the media pass keep one bind group across every
+    /// document, and the eyedropper read back its own targets.
     fn lands_in_the_callers_targets(plan: &Plan<'_>) {
         assert_eq!(
             plan.steps.last().map(Step::out),
@@ -598,9 +569,6 @@ mod tests {
 
     /// The slot indices are dense and in step order, for both passes independently —
     /// a filter and a blend group side by side never count each other's slots.
-    ///
-    /// Recorded when the decision is made, rather than reconstructed by cursors while
-    /// encoding from a list some other function built.
     #[test]
     fn uniform_slots_are_dense_and_independent() {
         let groups = vec![plain(), blended(), filter(), blended(), filter()];
@@ -630,8 +598,7 @@ mod tests {
 
     /// A group's members merge before the group itself does, because the group cannot
     /// be merged until it has been composited — so the inner blend takes the lower
-    /// slot. Post-order, and now by construction rather than by two functions
-    /// agreeing to recurse the same way.
+    /// slot.
     #[test]
     fn an_inner_merge_takes_the_lower_slot() {
         let groups = vec![CompositeGroup::stack(
@@ -658,7 +625,7 @@ mod tests {
     }
 
     /// Every arrangement the encoder can meet, checked against both invariants at
-    /// once. Cheap to extend, and the reason to have written the plan as data.
+    /// once.
     #[test]
     fn every_shape_lands_where_it_should() {
         let group = |members| {

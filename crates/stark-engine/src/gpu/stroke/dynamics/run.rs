@@ -1,11 +1,11 @@
 //! Recording one dynamics render: regions, the reservoir ping-pong, the compute pass
 //! the plan's slots are dispatched through, and the write-back (§6.2). The region
 //! composite, the selection gather, the stamp upload and the slice are free functions
-//! beside the run, because the liquify path runs the same region machinery around
-//! a different kernel (§6.13, `liquify.rs`).
+//! beside the run, since the liquify path runs the same region machinery around a
+//! different kernel (§6.13, `liquify.rs`).
 //!
-//! This is the half that owns GPU state. What it is *asked* to record comes from
-//! [`plan`](super::plan); what it records *with* comes from [`kit`](super::kit).
+//! The half that owns GPU state: what it is *asked* to record comes from
+//! [`plan`](super::plan), what it records *with* from [`kit`](super::kit).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -63,16 +63,14 @@ use stark_model::document::BrushDynamics;
 // here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
 
-/// The mint-budget tile's pool key (`LoopCarry::fresh`): copies both ways, nothing
-/// else — no pass ever binds one, they exist purely to ferry the region aux's `.yz`
-/// lanes across pieces. The whole aux texel rides along (the `.x` height is the very
-/// value the write-back sliced into the base tile, so seeding it back over the freshly
-/// composited region is bit-identical), because a copy cannot address two lanes of a
-/// texel and a pass that could would cost more than the lanes.
+/// The mint-budget tile's pool key (`LoopCarry::fresh`): copy usages only — no pass
+/// binds one. They ferry the region aux's `.yz` lanes across pieces, and the whole aux
+/// texel rides along because a copy cannot address two lanes of one; seeding the `.x`
+/// height back is bit-identical, being the value the write-back sliced out.
 ///
-/// A whole `TILE_TEX` block — interior plus apron — cut from and seeded into the region
-/// aux exactly as the write-back cuts paint tiles, so the two address the region with
-/// one rule. Adjacent blocks overlap by the apron; the overlaps are cut from one
+/// A whole `TILE_TEX` block — interior plus apron — cut from and seeded into the
+/// region aux exactly as the write-back cuts paint tiles, so the two address the
+/// region with one rule. Adjacent blocks overlap by the apron and are cut from one
 /// region, so seeding them back writes identical texels twice. The copies take their
 /// extent from this key ([`Key::extent`]).
 const fn fresh_key() -> Key {
@@ -149,16 +147,11 @@ impl CarriedLanes {
                 kept.tex().as_image_copy(),
                 self.key.extent(),
             );
-            // Held, not dropped. The lease this displaces is the *previous*
-            // piece's, and the seed copy that read it is recorded into an encoder
-            // this call does not submit — so dropping it here returns a texture to
-            // the free list while pending commands still name it, which is
-            // `scope.hold(base.clone())`'s hazard one level down and the ordinary
-            // case for the same reason: consecutive pieces share the tiles around
-            // their cut. Reuse happens to be harmless (commands in one encoder run
-            // in recorded order, and the seed was recorded first), but `trim`'s
-            // `destroy` is not, and neither is an argument that rests on statement
-            // order.
+            // Held, not dropped: the lease this displaces is the previous piece's,
+            // still named by a seed copy recorded into an encoder this call does not
+            // submit. Dropping it would return the texture to the free list while
+            // pending commands read it. Consecutive pieces share the tiles around
+            // their cut, so this is the ordinary case, not a corner.
             if let Some(displaced) = self.tiles.insert(*coord, Arc::new(kept)) {
                 scope.hold(displaced);
             }
@@ -199,37 +192,33 @@ struct LevelsPass {
     instances: wgpu::Buffer,
 }
 
-/// Workgroup counts for the reservoir half of `exchange`, which is dispatched over
-/// these *plus* the slot's extent groups on x, since the snapshot shares its
-/// grid.
+/// Workgroup counts for the reservoir half of `exchange`, dispatched over these *plus*
+/// the slot's extent groups on x, since the snapshot shares its grid.
 ///
-/// A constant, not per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever the
-/// segment does, and the two slot kinds that do not run an exchange never read it.
+/// A constant rather than per-dispatch data: the reservoir is [`BRUSH_RES`]² whatever
+/// the segment does.
 const RESERVOIR_GROUPS: (u32, u32) = (BRUSH_RES.div_ceil(TILE_WG), BRUSH_RES.div_ceil(TILE_WG));
 
 impl StrokeRenderer {
     /// Render a range of a paint-manipulating stroke via the **sequential
-    /// swept-exchange loop** (§6.2): composite the base under it into a 1:1
-    /// region, then walk it *in order* on the GPU — the canvas-side exchange swept per
-    /// flattened segment through the prefix-τ integral (the same definite-integral
-    /// extent as the plain deposit), the 2-D tool reservoir taking the complement
-    /// of it over the same segment — and slice the evolved region back into fresh CoW
-    /// tiles.
+    /// swept-exchange loop** (§6.2): composite the base under it into a 1:1 region,
+    /// walk it *in order* on the GPU — the canvas-side exchange swept per flattened
+    /// segment through the prefix-τ integral (the same definite-integral extent as the
+    /// plain deposit), the 2-D tool reservoir taking the complement of it over the same
+    /// segment — then slice the evolved region back into fresh CoW tiles.
     ///
-    /// A region is a 1:1 copy of the canvas under the stroke, so the range is drawn in
-    /// as many region-sized **pieces** as it takes ([`chunk_segments`]) rather than in
-    /// one: the loop is sequential, so pieces run back to back over the same segments
-    /// in the same order, each compositing what the last wrote back. Length therefore
-    /// costs the stroke extra pieces, not correctness. Degrading past
-    /// [`MAX_REGION_DIM`](super::super::budget::MAX_REGION_DIM) to the plain swept deposit instead
-    /// would cost correctness, since that path cannot manipulate paint at all.
+    /// The range is drawn in as many region-sized **pieces** as it takes
+    /// ([`chunk_segments`]): the loop is sequential, so pieces run back to back over
+    /// the same segments in the same order, each compositing what the last wrote back.
+    /// Length costs extra pieces, not correctness — where degrading past
+    /// [`MAX_REGION_DIM`](super::super::budget::MAX_REGION_DIM) to the plain swept
+    /// deposit would cost correctness, that path being unable to manipulate paint.
     ///
-    /// The loop starts from `tool` rather than from a fresh tip when one is given, and
-    /// hands back the state it ends in whenever a further range remains to be drawn,
-    /// so a live stroke redraws only its tail (see [`ToolState`]). The segments and
-    /// constants arrive resolved ([`ResolvedRange`]): `render_range` has already
-    /// decided — from the brush — that this stroke runs the loop at all, and
-    /// flattened at that decision's budget.
+    /// Resumes from the tool it is handed rather than a fresh tip when one is given,
+    /// and hands back the state it ends in whenever a further range remains, so a live
+    /// stroke redraws only its tail (see [`ToolState`]). The segments and constants
+    /// arrive resolved ([`ResolvedRange`]): `render_range` has already decided from the
+    /// brush that this stroke runs the loop, and flattened at that decision's budget.
     pub(in crate::gpu::stroke) fn render_dynamic(
         &self,
         scene: StrokeScene<'_>,
@@ -237,12 +226,10 @@ impl StrokeRenderer {
         dynamics: BrushDynamics,
     ) -> (TileMap, StrokeCarry) {
         // The sequential stamp loop end to end. Everything below it — `stroke.piece`
-        // and the four phases inside that, then `stroke.submit` — partitions this
-        // row, which is what makes the table a phase split rather than a pile of
-        // unrelated timings: the shares have a denominator, and a phase that is
-        // missing from the sum is a phase nobody has instrumented yet. The
-        // flattening is not below it: `stroke.segments` is cut once for every path
-        // now, so it sits beside this row under `stroke.range`.
+        // and its phases, then `stroke.submit` — partitions this row, so the shares
+        // have a denominator and a phase missing from the sum is one nobody has
+        // instrumented. Flattening is not below it: `stroke.segments` is cut once for
+        // every path, so it sits beside this row under `stroke.range`.
         crate::timing::span!("stroke.dynamics");
         let ResolvedRange {
             rec,
@@ -256,17 +243,14 @@ impl StrokeRenderer {
         let mut run = DynamicsRun::new(self, scene, range, dynamics);
         let mut map = scene.base.clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
-        // sliced per piece rather than re-derived inside each: the chunker must
-        // measure every piece **with its windows** — a window can reach back a
-        // quantum before the segment it fires after, which for a piece's first
-        // segment is substrate no segment box covers ([`chunk_segments`]).
+        // sliced per piece: the chunker must measure every piece **with its windows**,
+        // since a window can reach back a quantum before the segment it fires after —
+        // for a piece's first segment, substrate no segment box covers
+        // ([`chunk_segments`]).
         let (fires, bleed_capped) = bleed_fires(dynamics.bleed, segments);
-        // The third budget, said out loud like the other two. A segment wanting more
-        // than `MAX_BLEED_FIRES_PER_SEGMENT` firings gets the cap, and past it the axis
-        // "quietly under-delivers" — `bleed.rs`'s own words. The artist sees a bleed
-        // knob that stops meaning what it says at small modulated radii, with nothing
-        // in the log; the segment-shortening cap next door has been reported since it
-        // existed, on the same once-per-stroke gate and for the same reason.
+        // The third budget, reported like the other two: past
+        // `MAX_BLEED_FIRES_PER_SEGMENT` the bleed knob stops meaning what it says at
+        // small modulated radii, and nothing else would say so.
         if bleed_capped && self.complained.say(rec.seed, Complaint::BleedCapped) {
             tracing::warn!(
                 radius = rec.brush.size,
@@ -274,16 +258,11 @@ impl StrokeRenderer {
                 "a segment wants more bleed firings than it may have: the bleed axis under-delivers on this stroke",
             );
         }
-        // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's* end,
-        // and within it to the last piece — which is the same condition that says there
-        // is no reservoir worth keeping. A range that stops short hands its tool on
+        // The pen-up settle (§6.2) belongs to the range that reaches the *stroke's*
+        // end, and within it to the last piece — the same condition that says there is
+        // no reservoir worth keeping. A range that stops short hands its tool on
         // instead, so nothing is stranded for the settle to hand back, and a live tail
         // computes the same settle its commit will.
-        // Asked of the iterator rather than counted against `len() - 1`, which
-        // underflowed on an empty cut. That cut cannot be empty — `chunk_segments`
-        // pushes a run whenever it is given a segment, and the empty range returned
-        // above — but the proof was two functions away from the subtraction relying on
-        // it, and "is there another piece after this one" is the question anyway.
         let mut pieces = chunk_segments(segments, &fires).into_iter().peekable();
         while let Some(piece) = pieces.next() {
             let is_last = pieces.peek().is_none();
@@ -302,18 +281,15 @@ impl StrokeRenderer {
             map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
         }
         let tool_out = capture.then(|| run.capture_tool());
-        // The pieces partition the segments, so the union of what each one enumerated
-        // for itself *is* what the whole range touched — accumulated as they went
-        // rather than walked a second time over every (segment, tile) pair, which is
-        // the very cost cutting a stroke into region-sized pieces exists to keep off a
-        // long one (`region::chunk_segments`).
+        // The pieces partition the segments, so the union of what each enumerated for
+        // itself *is* what the whole range touched — no second walk over every
+        // (segment, tile) pair.
         let dirty = std::mem::take(&mut run.dirty).into_iter().collect();
         {
             // `queue.submit` plus the scratch releases that may only follow it
             // (`SubmitScope`). Its own row because it is the one phase here that is
-            // not encoding: on the web `submit` hands a command buffer across the
-            // wasm boundary, and if that ever became the wall it would be invisible
-            // folded into the piece that recorded it.
+            // not encoding — on the web `submit` hands a command buffer across the
+            // wasm boundary.
             crate::timing::span!("stroke.submit");
             run.submit();
         }
@@ -333,12 +309,10 @@ impl StrokeRenderer {
 /// One [`StrokeRenderer::render_dynamic`] call in progress: the brush-local state the
 /// loop threads along the stroke, and the GPU objects that outlive any one region.
 ///
-/// What survives from piece to piece is exactly what survives from one *range* to the
-/// next — the tool reservoir — because that is all the loop carries between segments
-/// that is not already on the canvas. It lives
-/// here rather than being copied out into a [`ToolState`] and back in at every cut:
-/// the pieces are recorded one after another against the same reservoir textures, so
-/// the ping-pong simply keeps going.
+/// What survives from piece to piece is what survives from one *range* to the next —
+/// the tool reservoir — that being all the loop carries between segments which is not
+/// already on the canvas. It lives here rather than being copied out into a
+/// [`ToolState`] and back in at every cut, so the ping-pong simply keeps going.
 struct DynamicsRun<'a> {
     r: &'a StrokeRenderer,
     rec: &'a StrokeRecord,
@@ -347,12 +321,11 @@ struct DynamicsRun<'a> {
     /// can re-cut a piece of the record the same way — see [`PlanCtx::tol`].
     tol: crate::path::FlattenTolerance,
     scene: StrokeScene<'a>,
-    /// The encoder this run records into, and every resource whose release must
-    /// trail a submit — the run-scoped leases (reservoir ping-pong, bake pair) and the
-    /// piece-scoped ones (region, snapshot, cells, the selection mask, and every
-    /// buffer). The scope releases each tier only in the call that submits the
-    /// commands naming it ([`SubmitScope`]), so the ordering is the type's rather than
-    /// three fields and a flag holding it by convention.
+    /// The encoder this run records into, and every resource whose release must trail
+    /// a submit — the run-scoped leases (reservoir ping-pong, bake pair) and the
+    /// piece-scoped ones (region, snapshot, cells, the selection mask, every buffer).
+    /// The scope releases each tier only in the call that submits the commands naming
+    /// it ([`SubmitScope`]).
     scope: SubmitScope,
     /// Every tile the run has rewritten, accumulated as each piece enumerates its own.
     /// The pieces partition the range's segments, so this ends up the set a second
@@ -408,12 +381,11 @@ struct DynamicsRun<'a> {
 }
 
 impl<'a> DynamicsRun<'a> {
-    /// Whether the mint runs under a ceiling anywhere in this stroke, and so
-    /// whether its budget lanes have to be carried across pieces (§6.2): the
-    /// dial below 1, the pen driving it — the ceiling lane in the aux's `.w`
-    /// then rides the same carry — *or* a mask in force, whose rim is at least
-    /// a pixel soft, and a texel under it caps its mint exactly as a dial below
-    /// 1 does (§6.8). The mask's overall opacity is already inside
+    /// Whether the mint runs under a ceiling anywhere in this stroke, and so whether
+    /// its budget lanes have to be carried across pieces (§6.2): the dial below 1, the
+    /// pen driving it — the ceiling lane in the aux's `.w` then rides the same carry —
+    /// *or* a mask in force, a texel under whose soft rim caps its mint exactly as a
+    /// dial below 1 does (§6.8). The mask's overall opacity is already inside
     /// `consts.opacity` (`stroke_constants`); this is about its coverage.
     fn capped(&self) -> bool {
         self.consts.opacity < 1.0 || self.consts.ceiling_lane || self.scene.selection.is_active()
@@ -511,14 +483,10 @@ impl<'a> DynamicsRun<'a> {
                 )
             })
             .unzip();
-        // The carried mint budget (§6.2): shared forward — a piece only ever
-        // reads the tiles it resumed, seeding its region by copy and extracting
-        // fresh leases — so this clone is a refcount per tile. Empty at the
-        // identity opacity, and on a fresh tip.
-        // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives:
-        // the carried tiles, and the swept sweep's own bind groups for drawing the
-        // lane over the region — the brush bound exactly as the fast path binds
-        // it, so the lane's sums are the fast path's.
+        // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives: the
+        // carried tiles, and the swept sweep's own bind groups for drawing the lane
+        // over the region — the brush bound exactly as the fast path binds it, so the
+        // lane's sums are the fast path's.
         let leveled = consts.ceiling_lane;
         let levels: BTreeMap<TileCoord, Arc<Kept>> = prior
             .map(ToolState::looped)
@@ -575,12 +543,11 @@ impl<'a> DynamicsRun<'a> {
                             desc::clear_to(wgpu::Color {
                                 // Carried height = the pre-`charge` glob; the rest of
                                 // the reservoir aux is unused (height is the only
-                                // thing the tool carries, §6.1). The effect's opacity
-                                // scales the glob outright, and for a finite source
-                                // that *is* the ceiling: everything the glob can ever
-                                // deliver is the scaled glob, so no budget lane is
-                                // needed where the `add` rate's unbounded mint takes
-                                // one (§6.2, `dynamics.wesl::lay_parcel`).
+                                // thing the tool carries, §6.1). Opacity scales the
+                                // glob outright, and for a finite source that *is*
+                                // the ceiling — so no budget lane is needed here,
+                                // where the `add` rate's unbounded mint takes one
+                                // (§6.2, `dynamics.wesl::lay_parcel`).
                                 r: (charge * consts.opacity) as f64,
                                 g: 0.0,
                                 b: 0.0,
@@ -653,11 +620,12 @@ impl<'a> DynamicsRun<'a> {
     /// Evolve one region-sized piece of the stroke over `base`: composite the tiles
     /// under `segments` into a region, walk them through the loop, and slice the
     /// result back into fresh CoW tiles. The tool carries on from where the previous
-    /// piece left it, and the canvas side needs no carrying — it is in `base`, which
-    /// for a later piece is what the earlier ones wrote back.
-    /// `fires` is this piece's slice of the range's bleed firings, `after` re-keyed
-    /// to `segments`; `settle` is set only for the piece that ends the stroke: see
-    /// [`StrokeRenderer::render_dynamic`] and `dynamics.wesl::settle`.
+    /// piece left it; the canvas side needs no carrying — it is in `base`, which for a
+    /// later piece is what the earlier ones wrote back.
+    ///
+    /// `fires` is this piece's slice of the range's bleed firings, `after` re-keyed to
+    /// `segments`; `settle` is set only for the piece that ends the stroke (see
+    /// `dynamics.wesl::settle`).
     fn draw(
         &mut self,
         base: &TileMap,
@@ -692,27 +660,15 @@ impl<'a> DynamicsRun<'a> {
         // to enumerate the whole range's tiles a second time.
         self.dirty.extend(coords.iter().copied());
         // **Hold the map this piece is about to read.** The composite below samples
-        // `base`'s tiles into the piece's encoder, and the caller replaces its `map`
-        // with what this call returns — dropping, at that assignment, every tile handle
-        // the new map superseded. A `TilePairHandle`'s drop *is* its release to
-        // `TilePool`'s free list (`gpu::tile::GpuTex::drop`), so those textures become
-        // available to the next `acquire_tex` while the commands reading them are still
-        // only recorded. `PoolInner::trim` guards the irreversible half of that — it
-        // will not *destroy* a slot returned during the current epoch — but reuse is
-        // unguarded by construction, and reuse is enough: the next acquire renders over
-        // a texture this encoder is still compositing from.
-        //
-        // Consecutive pieces share the tiles around their cut, because `region::cover`
-        // grows every segment's box by an apron — so this is the ordinary case for any
-        // stroke long enough to be chunked, not a corner.
-        //
-        // It has never fired, and the reason was not a rule: the next statement the run
-        // executes is the following piece's `flush`, and nothing acquires in between.
-        // Holding the map moves that from an accident of statement order to the same
-        // footing everything else here stands on — the scope releases it in the call
-        // that submits the commands naming it, exactly as `render_swept` holds its
-        // scratch pair across the identical boundary. The clone is an `rpds` map of
-        // `Arc` handles: a refcount per tile, no pixels (§5.2).
+        // `base`'s tiles into this encoder, and the caller replaces its `map` with what
+        // this call returns — dropping every tile handle the new map supersedes. A
+        // `TilePairHandle`'s drop *is* its release to `TilePool`'s free list
+        // (`gpu::tile::GpuTex::drop`), so without this the next `acquire_tex` could
+        // render over a texture this encoder is still compositing from. Consecutive
+        // pieces share the tiles around their cut, `region::cover` growing every
+        // segment's box by an apron, so that is the ordinary case rather than a corner.
+        // The clone is an `rpds` map of `Arc` handles: a refcount per tile, no pixels
+        // (§5.2).
         self.scope.hold(base.clone());
         // Composite the canvas under the piece into a 1:1 region — the read half of
         // the loop's cost, and the one that scales with the *area* the stroke covers
@@ -721,12 +677,12 @@ impl<'a> DynamicsRun<'a> {
             crate::timing::span!("stroke.region");
             self.composite_region(base, &halo, region_origin, w, h)
         };
-        // Seed the opacity ceiling's mint budget (§6.2): the composite above
-        // laid zeros in the aux's `.yz` lanes, and a resumed tile's running
-        // totals are copied back over its block — the `.x` height rides along
-        // bit-identical, being the very value the write-back sliced into the
-        // tile the composite just re-laid. Nothing to seed at the identity
-        // ceiling, where the shader never reads the lanes.
+        // Seed the opacity ceiling's mint budget (§6.2): the composite above laid
+        // zeros in the aux's `.yz` lanes, and a resumed tile's running totals are
+        // copied back over its block — the `.x` height riding along bit-identical,
+        // being the value the write-back sliced into the tile the composite just
+        // re-laid. Nothing to seed at the identity ceiling, where the shader never
+        // reads the lanes.
         if self.capped() {
             self.fresh
                 .seed(&mut self.scope, coords, lo, &region.aux_tex);
@@ -740,26 +696,20 @@ impl<'a> DynamicsRun<'a> {
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
         //
-        // **Before the scratch it sizes**, which is the order the two are actually in:
-        // the plan measures every rect it will dispatch and the snapshot square is
-        // their maximum. Run the other way, the scratch would size itself from a
-        // position-independent bound over the same coverage boxes and the plan would
-        // have to assert each real rect came in under it.
-        //
-        // The plan, the scratch it sizes and the bind groups that name it are one
-        // row: they are the fixed per-piece setup, they move together (a slot count
-        // drives all three), and splitting them would put three sub-quantum numbers
-        // where the browser's clock can resolve one.
+        // It comes **before the scratch it sizes**: the plan measures every rect it
+        // will dispatch and the snapshot square is their maximum, so no rect has to be
+        // asserted against a bound. The plan, that scratch and the bind groups naming
+        // it share one timing row — they are the fixed per-piece setup, and three
+        // sub-quantum numbers is more than the browser's clock can resolve.
         //
         // **The block ends the scratch handles' scope, and that is sound** — worth
-        // stating outright in this file, where an early release is the standing
-        // hazard (`scratch::SubmitScope`). `take_piece` and `take_piece_buffer`
-        // register the *lease* with the scope and hand back refcounted `wgpu` clones,
-        // so what drops here is a handle and never a claim on the pool: the leases are
-        // released by the flush that submits the commands naming them, which is the
-        // next piece's or `finish`'s. The bind groups outlive the block because they
-        // are what the loop below is recorded against, and a `BindGroup` holds its
-        // own references to every view in it.
+        // stating in this file, where an early release is the standing hazard
+        // (`scratch::SubmitScope`). `take_piece` and `take_piece_buffer` register the
+        // *lease* with the scope and hand back refcounted `wgpu` clones, so what drops
+        // here is a handle and never a claim on the pool: the leases are released by
+        // the flush that submits the commands naming them. The bind groups outlive the
+        // block because the loop below is recorded against them, and a `BindGroup`
+        // holds its own references to every view in it.
         let (plan, bind, levels_pass) = {
             crate::timing::span!("stroke.plan");
             let ctx = PlanCtx {
@@ -963,9 +913,9 @@ impl<'a> DynamicsRun<'a> {
     /// something to read while they storage-write the region.
     ///
     /// `size` is the plan's own [`dsize`](super::plan::DynamicsPlan::dsize) — the
-    /// largest rect the piece will actually dispatch, rounded to the pool's quantum.
-    /// Nothing is asserted or clamped here because there is nothing left to check: the
-    /// square is a maximum over the rects, not a bound the rects have to respect.
+    /// largest rect the piece will actually dispatch, rounded to the pool's quantum —
+    /// so it is a maximum over the rects rather than a bound they must respect, and
+    /// nothing needs asserting or clamping.
     fn snapshot_scratch(&mut self, size: u32) -> Snapshot {
         let r = self.r;
         let mut under_tex = |label: &'static str| {
@@ -991,11 +941,10 @@ impl<'a> DynamicsRun<'a> {
     /// The bleed pair's mobility scratch (§6.2): where `bleed_weight` leaves the weight
     /// the ladder reads back thirty-six times a texel.
     ///
-    /// The **snapshot square**, not a firing's rect, and that is what makes the read
-    /// safe: the ladder clamps a tap into the scratch's own extent, so a texel outside
-    /// the dispatched rect can still be read, and one this pass had not written would
-    /// hold the previous firing's answer. Covering the square is the same
-    /// structural-fit argument the snapshot and the cells make, with the same `dsize`.
+    /// Sized to the **snapshot square**, not a firing's rect, and that is what makes
+    /// the read safe: the ladder clamps a tap into the scratch's own extent, so a
+    /// texel outside the dispatched rect can still be read, and one this pass had not
+    /// written would hold the previous firing's answer.
     fn bleed_scratch(&mut self, dsize: u32) -> wgpu::TextureView {
         self.scope
             .take_piece(Key {
@@ -1007,11 +956,10 @@ impl<'a> DynamicsRun<'a> {
             .1
     }
 
-    /// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell
-    /// means for `deposit_coarse` to read back. Sized by the same structural-fit
-    /// relation the snapshot scratch uses — [`cell_scratch_size`] of the piece's own
-    /// `dsize`, which `cell_geometry` asserted every slot's hoist grid against — and
-    /// leased on the piece like the region, for the same lifetime argument.
+    /// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell means
+    /// for `deposit_coarse` to read back. [`cell_scratch_size`] of the piece's own
+    /// `dsize`, which `cell_geometry` asserted every slot's hoist grid against, and
+    /// leased on the piece like the region.
     fn cell_scratch(&mut self, dsize: u32) -> Cells {
         let r = self.r;
         let size = cell_scratch_size(dsize);
@@ -1036,40 +984,30 @@ impl<'a> DynamicsRun<'a> {
     }
 
     /// The plan's uniform slots, one [`STAMP_STRIDE`]-aligned window each — dynamic
-    /// uniform offsets being the standard way to vary a uniform across dispatches
-    /// within one pass.
+    /// uniform offsets being how a uniform varies across dispatches within one pass.
     ///
-    /// Leased on the *piece*, like the region it works on and for the same reason:
-    /// nothing past this piece's own submission reads it, so holding it for the whole
-    /// run would make a long stroke's peak cost scale with the number of pieces —
-    /// which is what [`MAX_REGION_DIM`](super::super::budget::MAX_REGION_DIM) exists to prevent.
-    /// The scope returns it to the pool behind the piece's own submit
-    /// ([`SubmitScope::flush`]), so the next piece's plan is written into the buffer
-    /// this one used.
+    /// Leased on the *piece*, like the region it works on: nothing past this piece's
+    /// own submission reads it, so holding it for the whole run would make a long
+    /// stroke's peak cost scale with the number of pieces. The scope returns it to the
+    /// pool behind the piece's own submit ([`SubmitScope::flush`]), so the next piece's
+    /// plan is written into the buffer this one used.
     fn upload_plan(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
         upload_stamps(&mut self.scope, &mut self.stamps, plan)
     }
 
     /// Every bind group the loop switches between while recording one piece.
     ///
-    /// Each is built from the very slot list its layout was ([`slots`]),
-    /// so a group and its layout cannot disagree about which bindings are present or in
-    /// what order. Written as two hand-kept arrays per entry point — one here, one in
-    /// [`kit`](super::kit) — they would be aligned by nothing but the order they were
-    /// written in and a per-layout element count.
-    ///
-    /// What each arm below supplies is therefore only the **resources**: given a slot,
+    /// Each is built from the very slot list its layout was ([`slots`]), so a group
+    /// and its layout cannot disagree about which bindings are present or in what
+    /// order. Each arm below therefore supplies only the **resources**: given a slot,
     /// which view or buffer goes in it. A slot the residual gate excludes is never
-    /// asked for, which is what retired `push_resid` and the `Option` juggling around
-    /// it — a group takes its whole residual tail or none of it because the shader's
-    /// `@if(resid)` says so, not because the host counted correctly.
+    /// asked for — a group takes its whole residual tail or none of it, because the
+    /// shader's `@if(resid)` says so.
     ///
     /// `ST` binds a single slot-sized window of `stamp_buf` whose dynamic offset
     /// selects the dispatch, so all of these are built once per piece and the loop
-    /// varies only the offset.
-    ///
-    /// Only the groups `needs` names are built: a group is a WebGPU object per
-    /// piece per pointer move.
+    /// varies only the offset. Only the groups `needs` names are built: a group is a
+    /// WebGPU object per piece per pointer move.
     fn bind_piece<'p>(
         &'p self,
         region: &'p Region,
@@ -1333,9 +1271,7 @@ impl<'a> DynamicsRun<'a> {
         for (i, d) in plan.iter().enumerate() {
             // Asked of `UniformSlots`, like the swept path's `xform_offset`, so the
             // stride the slots were *written* at and the stride they are *bound* at
-            // are one expression rather than two that agree. This was
-            // `(i as u64 * STAMP_STRIDE) as u32` — the same number, arrived at
-            // independently.
+            // are one expression rather than two that happen to agree.
             let off =
                 UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
             match d.kind {
@@ -1377,15 +1313,14 @@ impl<'a> DynamicsRun<'a> {
                     cpass.dispatch_workgroups(1, BAKE_RES, 1);
                     // Then the tool's own side of this segment's transfer, off the
                     // region as the segment found it. Reads `cur` and writes the other
-                    // half, so the next segment's bake sees a tool that has actually
-                    // travelled and reloaded.
+                    // half, so the next segment's bake sees a tool that has travelled
+                    // and reloaded.
                     //
                     // The extent `snapshot` rides in the tail of this same grid: it
-                    // depends on nothing the exchange writes and the deposit needs
-                    // both, so a barrier between them would buy no ordering at all.
-                    // Hence the widened x — reservoir groups first, extent
-                    // groups after — and a y tall enough for the taller of the two
-                    // (`dynamics.wesl::exchange`).
+                    // depends on nothing the exchange writes, so a barrier between them
+                    // would buy no ordering. Hence the widened x — reservoir groups
+                    // first, extent groups after — and a y tall enough for the taller
+                    // of the two (`dynamics.wesl::exchange`).
                     cpass.set_pipeline(&kit.exchange_pipeline);
                     cpass.set_bind_group(0, bind.exchange(cur), &[off]);
                     cpass.dispatch_workgroups(
@@ -1396,9 +1331,9 @@ impl<'a> DynamicsRun<'a> {
                     // The canvas's half: exact per texel, or — where the tip's
                     // shoulder allows (`extent_cell`) — hoisted once per cell and
                     // applied over the same texel grid. The hoist reads the bake this
-                    // segment just wrote and nothing the exchange writes, so its
-                    // place in the chain costs one more serialized dispatch only on
-                    // the wide tips that are texel-bound rather than dispatch-bound.
+                    // segment just wrote and nothing the exchange writes, so the extra
+                    // serialized dispatch lands only on the wide tips that are
+                    // texel-bound rather than dispatch-bound.
                     match d
                         .cell_groups
                         .map(|cg| (cg, bind.coarse.as_ref().expect("a coarse slot binds cells")))
@@ -1487,20 +1422,10 @@ impl<'a> DynamicsRun<'a> {
     /// a fresh CoW tile → aprons stay bit-identical to neighbour interiors (§6.4), and
     /// the wide region aux narrows to the persistent one (height).
     ///
-    /// One region-sized narrow pass, then plain texture copies: the color and
-    /// residual tiles are the region's own formats, so a copy is exact, and the aux
-    /// copies out of the narrowed texture the single pass wrote — where this used to
-    /// record a render pass per tile, ~30 of them per fold under a wide tip, whose
-    /// fixed pass cost was most of the write-back's 15% share of a live gesture.
-    /// Rounding is untouched: a copy is bit-exact, and the narrow pass render-writes
-    /// a loaded f16 value back to its own lattice point (see `slice.wesl`).
-    ///
     /// `lo` is the region's *interior* origin — the top-left tile origin, an apron in
     /// from the region rectangle — so a tile's offset into the region is measured
-    /// against it. Offsets are integral and non-negative by [`Covered::rect`](super::super::region::Covered::rect)'s
-    /// construction, and the far edge of the last tile's block is exactly the region's
-    /// extent, so every copy is in bounds — and a violation is a loud validation error
-    /// here, where a draw would silently read out of bounds instead.
+    /// against it. See [`slice_region`], which does the work and states the bounds
+    /// argument.
     fn write_back(
         &mut self,
         base: &TileMap,
@@ -1523,16 +1448,13 @@ impl<'a> DynamicsRun<'a> {
         )
     }
 
-    /// Remember the tool for the range that resumes after this one. Copied rather
-    /// than aliased: the loop's own reservoir textures go back to the pool when the
-    /// run's scope closes, and the range that resumes will write its first exchange
-    /// straight into whatever it is handed. 64² rgba16f ×2, so the copy is ~64 KB —
-    /// nothing beside the region work it saves the next pointer move.
+    /// Remember the tool for the range that resumes after this one. Copied rather than
+    /// aliased: the loop's own reservoir textures go back to the pool when the run's
+    /// scope closes, and the range that resumes writes its first exchange straight into
+    /// whatever it is handed. 64² rgba16f ×2, so ~64 KB.
     ///
-    /// The copies are pooled [`Kept`] leases rather
-    /// than fresh textures: one of these is captured per pointer move, and the pool
-    /// hands the same textures back — the drop that returns one is provably behind
-    /// the resuming run's submit (see `Kept`).
+    /// The copies are pooled [`Kept`] leases — one is captured per pointer move, and
+    /// the drop that returns one is provably behind the resuming run's submit.
     fn capture_tool(&mut self) -> ToolState {
         let r = self.r;
         let cur = self.cur;
@@ -1583,12 +1505,9 @@ impl<'a> DynamicsRun<'a> {
     /// [`Self::capture_tool`] handed back is deliberately not among it: a `Kept`
     /// lease outlives this call by design.
     ///
-    /// **The mint budget is handed to the scope rather than left to drop.** Whatever
+    /// **The mint budget is handed to the scope rather than left to drop**: whatever
     /// `capture_tool` did not take is still named by the last piece's extract copies,
-    /// which this call is about to submit. Dropping it would be sound — un-bound
-    /// fields of a destructured value drop at the end of the function, after
-    /// `finish` — but only by a rule about drop timing, where every other release
-    /// here stands on the scope. One footing is better than two.
+    /// which this call is about to submit.
     fn submit(mut self) {
         let fresh = std::mem::take(&mut self.fresh.tiles);
         let levels = std::mem::take(&mut self.levels.tiles);
@@ -1684,11 +1603,9 @@ pub(super) fn composite_tiles(
             });
             // **The group the tile itself caches**, which is why this loop is
             // handed pass A's layout rather than building one from the same slot
-            // list (`kit.rs`). A live stroke re-composites its halo on every
-            // pointer move, and the halo of a wide tip is tens of tiles per piece
-            // — so a group built here was tens of WebGPU objects a move, which is
-            // the allocation *rate* `TilePairHandle::composite_bg` was introduced
-            // to stop pass A paying and this path went on paying.
+            // list (`kit.rs`): a live stroke re-composites its halo on every pointer
+            // move, and a wide tip's halo is tens of tiles per piece, so a group
+            // built here is tens of WebGPU objects a move.
             //
             // A resident tile in a pigment space always has a residual, so
             // `Zeroes` never stands in here.
@@ -1781,17 +1698,16 @@ pub(super) fn region_selection(
 /// wet or liquify (§6.13).
 ///
 /// One region-sized narrow pass, then plain texture copies: the color and residual
-/// tiles are the region's own formats, so a copy is exact, and the aux copies out of
-/// the narrowed texture the single pass wrote. Rounding is untouched: a copy is
-/// bit-exact, and the narrow pass render-writes a loaded f16 value back to its own
-/// lattice point (see `slice.wesl`).
+/// tiles are the region's own formats, so a copy is exact. Rounding is untouched — a
+/// copy is bit-exact, and the narrow pass render-writes a loaded f16 value back to its
+/// own lattice point (see `slice.wesl`).
 ///
 /// `lo` is the region's *interior* origin — the top-left tile origin, an apron in from
 /// the region rectangle — so a tile's offset into the region is measured against it.
-/// Offsets are integral and non-negative by [`Covered::rect`](super::super::region::Covered::rect)'s
-/// construction, and the far edge of the last tile's block is exactly the region's
-/// extent, so every copy is in bounds — and a violation is a loud validation error
-/// here, where a draw would silently read out of bounds instead.
+/// Offsets are integral and non-negative by
+/// [`Covered::rect`](super::super::region::Covered::rect)'s construction, and the far
+/// edge of the last tile's block is exactly the region's extent, so every copy is in
+/// bounds.
 pub(super) fn slice_region(
     r: &StrokeRenderer,
     scope: &mut SubmitScope,
@@ -1913,12 +1829,9 @@ struct Region {
     sel_mask: wgpu::TextureView,
 }
 
-/// The extent snapshot scratch.
-///
-/// It does not carry the square it was sized to: that number is the plan's
-/// ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), derived from the rects the
-/// plan will dispatch, and the scratch is allocated *from* it rather than the plan
-/// being checked against the scratch.
+/// The extent snapshot scratch. It does not carry the square it was sized to: that
+/// number is the plan's ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), and the
+/// scratch is allocated *from* it rather than the plan checked against it.
 struct Snapshot {
     color: wgpu::TextureView,
     aux: wgpu::TextureView,
@@ -1937,9 +1850,9 @@ struct Cells {
 }
 
 /// Which of a piece's bind groups its plan will bind — one flag per group
-/// [`DynamicsRun::record_loop`] reaches for, read off the slot kinds exactly as
-/// its arms consume them. `bleed_weight` and `coarse` are gated the same way by
-/// the scratch they need; these are the groups that were built on every piece.
+/// [`DynamicsRun::record_loop`] reaches for, read off the slot kinds exactly as its
+/// arms consume them. `bleed_weight` and `coarse` are gated the same way, by the
+/// scratch they need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Needs {
     snapshot: bool,

@@ -12,13 +12,9 @@ use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
 
-/// The prefix-τ volume at group 1 — **the fast path's own list** (`stroke::swept`),
-/// which is what it always said it was: one slot from one declaration (§6.6), written
-/// out twice with a comment on each saying it matched the other.
-///
-/// What genuinely differs is the *stage* the two layouts declare it at — compute here,
-/// fragment there — and that is `desc::layout_for`'s argument rather than the list's,
-/// so there was never anything for a second list to carry.
+/// The prefix-τ volume at group 1 — the fast path's own list (`stroke::swept`), one
+/// slot from one declaration (§6.6). Only the *stage* differs between the two
+/// layouts, and that is `desc::layout_for`'s argument rather than the list's.
 pub(super) use crate::gpu::stroke::swept::PREFIX_SLOTS;
 
 /// The write-back's aux narrowing (`slice.wesl`, §6.2/§6.4): the wide region aux in,
@@ -27,13 +23,11 @@ pub(super) const SLICE_SLOTS: &[Slot] = &[Slot::at(sld::REGION_AUX)];
 use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 
 use super::slots;
-/// GPU objects for the brush-dynamics stamp loop (§6.2), built once.
-/// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
+/// GPU objects for the brush-dynamics stamp loop (§6.2), built once. All handles are
+/// `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
-/// **Immutable throughout**, and the type says so rather than merely intending it: no
-/// cache lives here. The round tip's coverage cache and the rest of the lazily-baked
-/// brush textures sit together on the renderer
-/// ([`TipCache::round_tip`](super::super::tips::TipCache)).
+/// **Immutable throughout**: no cache lives here. The lazily-baked brush textures sit
+/// on the renderer instead ([`TipCache::round_tip`](super::super::tips::TipCache)).
 #[derive(Clone)]
 pub(in crate::gpu::stroke) struct DynamicsKit {
     // Region composite: base tiles → one 1:1 canvas region (color + wide aux).
@@ -45,13 +39,11 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// The extent copy that gives the `deposit`/`settle` something to read while
     /// they storage-write the region.
     ///
-    /// A painting segment does not dispatch it: its snapshot rides in the tail of its
-    /// own `exchange` grid, since it depends on nothing that pass writes
-    /// (`dynamics.wesl::exchange`). The two slot kinds with no exchange to ride in —
-    /// [`SlotKind::Bleed`](super::plan::SlotKind) and
-    /// [`SlotKind::Settle`](super::plan::SlotKind) — dispatch it standalone. (The
-    /// settle could not have shared a grid in any case: it *reads* the snapshot,
-    /// rather than merely sharing a consumer with it.)
+    /// A painting segment does not dispatch it — its snapshot rides in the tail of
+    /// its own `exchange` grid, depending on nothing that pass writes
+    /// (`dynamics.wesl::exchange`). Only the two slot kinds with no exchange to ride
+    /// in, [`SlotKind::Bleed`](super::plan::SlotKind) and
+    /// [`SlotKind::Settle`](super::plan::SlotKind), dispatch it standalone.
     pub(in crate::gpu::stroke) snapshot_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) snapshot_bgl: wgpu::BindGroupLayout,
     /// The bleed pair's mobility pass (§6.2) and its layout.
@@ -77,8 +69,8 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// the exchange be evaluated per cell instead of per texel
     /// (`budget::extent_cell`): `cell_hoist` distils the prefix and the bake into
     /// per-cell means, `deposit_coarse` reads them back over the exact kernel's own
-    /// texel grid. Slots with a cell of 1 — every hard or small tip, every bleed and
-    /// settle slot — never touch either and keep `deposit_pipeline` bit-for-bit.
+    /// texel grid. A slot with a cell of 1 touches neither and keeps
+    /// `deposit_pipeline` bit-for-bit.
     pub(in crate::gpu::stroke) hoist_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) hoist_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) deposit_coarse_pipeline: wgpu::ComputePipeline,
@@ -90,10 +82,10 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
     /// The liquify field's three kernels (§6.13, `liquify.wesl`): the field's
-    /// snapshot under a segment's square, the composition of one segment's step
-    /// into it (`warp`), and the one resample of a piece through it
-    /// (`warp_apply`). Each over its own layout ([`slots`]); the composition alone
-    /// takes group 1, bound to the tip's coverage prefix.
+    /// snapshot under a segment's square, the composition of one segment's step into
+    /// it (`warp`), and the one resample of a piece through it (`warp_apply`). Each
+    /// over its own layout ([`slots`]); only the composition takes group 1, bound to
+    /// the tip's coverage prefix.
     pub(in crate::gpu::stroke) snapshot_field_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) snapshot_field_bgl: wgpu::BindGroupLayout,
     pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
@@ -123,14 +115,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     composite_tile_bgl: wgpu::BindGroupLayout,
 ) -> DynamicsKit {
     let device = &ctx.device;
-    // The loop stores a tile's color through `region_color_w`, and copies the region
-    // back into tiles texel-for-texel — which is legal only where the space's tile
+    // The loop stores a tile's color through `region_color_w` and copies the region
+    // back into tiles texel-for-texel, which is legal only where the space's tile
     // format *is* the format that slot declares. Both spaces use `rgba16float` (§6.7),
-    // so either can hold the region.
-    //
-    // Compared against the declaration rather than a literal: the literal was a second
-    // copy of what `dynamics.wesl` already says (§6.10), so this assertion could only
-    // ever catch the color space drifting, never the pair drifting apart.
+    // so either can hold the region. Compared against the shader's own declaration
+    // rather than a literal (§6.10), so either side drifting is caught.
     debug_assert_eq!(
         color_space.color_format(),
         sd::REGION_COLOR_W.storage_format(),
@@ -149,11 +138,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         label: Some("stark dynamics composite"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
     });
-    // The very layout pass A builds, because it *is* pass A's: the group this loop
-    // binds per tile is the one the tile itself caches, which answers to one layout
-    // (`composite::tile_bind_group_layout`). The view group has no such cache and so
-    // is built here, from the same declarations pass A reads — this loop composites
-    // its working region through `composite.wesl` itself (§6.3).
+    // Pass A's own tile layout, because the group this loop binds per tile is the one
+    // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
+    // no such cache, so it is built here from the declarations pass A reads — this
+    // loop composites its working region through `composite.wesl` itself (§6.3).
     let composite_view_bgl = desc::layout_for(
         device,
         "stark dynamics composite view bgl",
@@ -204,13 +192,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         ..Default::default()
     });
 
-    // ---- The stamp loop: one module, eight entry points — `snapshot`,
-    // `bleed_weight`, `exchange`, `bake`, `deposit`, `cell_hoist`,
-    // `deposit_coarse`, `settle` — and the liquify field's module beside it with
-    // three more, `snapshot_field`, `warp` and `warp_apply` (§6.13), over as many
-    // bind group layouts, each built from the slot list in [`slots`](super::slots).
-    // Two modules off one slot declaration (`dynamics_common.wesl`), so a
-    // pipeline's layout names the same uniform whichever module it came from.
+    // ---- The stamp loop: one module with eight entry points, and the liquify
+    // field's module beside it with three more (§6.13), over as many bind group
+    // layouts, each built from the slot list in `slots`. Both modules take that
+    // declaration from `dynamics_common.wesl`, so a pipeline's layout names the same
+    // uniform whichever module it came from.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
         source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(resid).into()),
@@ -223,12 +209,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // slot; the binding numbers partition the module's group(0), so a layout lists only
     // the bindings its own entry point reads.
     //
-    // **The list is all the host says.** What kind of thing each slot holds — a uniform
-    // and how wide, a sampler, a texture, a storage texture of a particular format —
-    // and whether it exists at all without the residual, come from the generated
-    // `BINDINGS` table (§6.10). No array here closes with a `resid` count
-    // (`[..12 + 4 * usize::from(resid)]`, recounted by hand on every edit) — that gate
-    // is the `@if(resid)` on the declaration itself.
+    // **The list is all the host says.** What kind of thing each slot holds, and
+    // whether it exists at all without the residual, come from the generated
+    // `BINDINGS` table and the `@if(resid)` on the declaration itself (§6.10).
     let bgl = |label: &str, list: &[desc::Slot]| {
         desc::layout_for(device, label, list, wgpu::ShaderStages::COMPUTE, resid)
     };

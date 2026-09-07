@@ -3,19 +3,13 @@
 //!
 //! **Nothing here names `wgpu`.** It is float arithmetic over a [`StrokeRecord`] and
 //! the [`Segment`]s it was flattened into, producing [`Stamp`] slots and the workgroup
-//! counts that go with them — the same virtue `budget.rs` claims for itself, and for
-//! the same payoff: the properties that actually matter here are testable without an
-//! adapter. Which windows the bleed cadence fires, that they are independent of where
-//! the stroke was cut, that a rect fits the scratch its piece sized, that every named
-//! field lands in the lane the shader reads it from — all of it is pinned below, on
-//! any machine.
+//! counts that go with them, so every property below is testable without an adapter.
+//! The one GPU *type* that reaches in is the canvas
+//! [`SubstrateMap`](crate::gpu::substrate), and only for `bearing` — CPU arithmetic
+//! over statistics that happen to live on the struct owning the texture.
 //!
-//! The one GPU *type* that reaches in is the canvas [`SubstrateMap`](crate::gpu::substrate),
-//! and only for `bearing` — plain CPU arithmetic over the substrate's statistics, which
-//! happens to live on the struct that also owns its texture.
-//!
-//! Every slot is a pure function of the record and the piece's own geometry, in plain
-//! CPU float math, so replay is deterministic (§12.1).
+//! Every slot is a pure function of the record and the piece's own geometry, so replay
+//! is deterministic (§12.1).
 
 use stark_model::document::StrokeRecord;
 use stark_model::geom::Vec2;
@@ -24,17 +18,9 @@ use super::super::budget::extent_cell;
 use super::super::region::{coverage_bounds, segment_end};
 use super::super::segments::{BleedFire, Segment, Stretch};
 use super::bleed::bleed_stencil;
-// The `Stamp` uniform, generated from `dynamics_common.wesl`'s own declaration at build
-// time (`stark-shaders/build/mirror.rs`) — lanes, offsets, and the documentation of
-// what each lane holds, all on the generated fields.
-//
-// **The shader decides how the lanes are read, so it is the only place they are
-// written down** (§6.10). A hand-written twin here — nine `[f32; 4]` fields against
-// the shader's nine `vec4`s, with its own copy of the lane map in the doc comments —
-// is a second declaration nothing checks against the first.
-//
-// Every slot is a pure function of the `StrokeRecord` and the piece's own geometry,
-// computed in plain CPU float math, so replay is deterministic (§12.1).
+// The `Stamp` uniform, generated from `dynamics_common.wesl`'s own declaration
+// (`stark-shaders/build/mirror.rs`): the shader decides how the lanes are read, so it
+// is the only place they are written down (§6.10).
 use stark_shaders::mirror::dynamics::CELL_BORDER;
 use stark_shaders::mirror::dynamics_common::{Stamp, TILE_WG};
 
@@ -44,14 +30,12 @@ use stark_shaders::mirror::dynamics_common::{Stamp, TILE_WG};
 pub(super) const SLOT: usize = std::mem::size_of::<Stamp>();
 
 /// Stride between those windows: the padded size a dynamic offset must be a multiple
-/// of, from the type rather than from a number written here.
+/// of, derived from the type rather than written down here.
 ///
-/// [`SLOT`] is what a slot *holds* and this is what it *occupies*, and the difference
-/// is the whole reason to derive it: as a bare `256` beside a `copy_from_slice` of
-/// [`SLOT`] bytes, a `Stamp` that outgrew the quantum would have written over the next
-/// slot rather than widening them — silently, and only for whichever brush reached
-/// that dispatch. See `swept::XFORM_STRIDE`, which is the same law for the sweep's own
-/// per-tile uniform.
+/// [`SLOT`] is what a slot *holds* and this is what it *occupies*. Hard-coding the
+/// quantum would let a `Stamp` that outgrew it write over the next slot instead of
+/// widening them. `swept::XFORM_STRIDE` is the same law for the sweep's own per-tile
+/// uniform.
 pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>::STRIDE;
 
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
@@ -59,36 +43,29 @@ pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>
 pub(super) struct LoopDispatch {
     pub(super) slot: Stamp,
     /// Workgroup counts for the slot's extent work — the `deposit`, and the
-    /// `snapshot` that rides in `exchange`'s grid. The slot's own coverage box
-    /// rather than the piece-wide worst-case square, so an axis-aligned sweep pays for
-    /// the ~4·r² texels its extent can reach instead of the ~10·r² a diagonal one
-    /// might have needed.
+    /// `snapshot` that rides in `exchange`'s grid. Over the slot's own coverage box
+    /// rather than a piece-wide square, so an axis-aligned sweep pays for the ~4·r²
+    /// texels its extent can reach rather than the ~10·r² a diagonal one might need.
     pub(super) groups: (u32, u32),
     /// Workgroup counts for the `cell_hoist` grid when this slot takes the **coarse
     /// deposit** (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this
     /// segment's tip, which only a painting segment's can. `None` is the exact
-    /// per-texel `deposit`, bit-for-bit the kernel every slot ran before the coarse
-    /// path existed; bleed and settle slots are always `None`, so the lateral flux
-    /// and the pen-up never see a cell at all.
+    /// per-texel `deposit`; bleed and settle slots are always `None`, so the lateral
+    /// flux and the pen-up never see a cell at all.
     pub(super) cell_groups: Option<(u32, u32)>,
     pub(super) kind: SlotKind,
 }
 
-/// Which of the loop's three dispatch shapes a slot takes (§6.2).
-///
-/// A tag rather than a pair of flags because the three are genuinely different
-/// sequences over the same uniform, and only one of them touches the tool: the
-/// reservoir ping-pong advances on a [`Segment`](SlotKind::Segment) and on nothing
-/// else, which is easier to see as an arm than as an early `continue` plus a tail
-/// block indexed past the end of the loop.
+/// Which of the loop's dispatch shapes a slot takes (§6.2). Each is a different
+/// sequence over the same uniform, and only one touches the tool: the reservoir
+/// ping-pong advances on a [`Segment`](SlotKind::Segment) and on nothing else.
 pub(super) enum SlotKind {
     /// A stretch of painting: `bake` → `exchange` (+ `snapshot`) → `deposit`.
     Segment,
     /// A dedicated **bleed slot**: a quad whose sweep is one firing of the bleed
     /// cadence's travel window, with every vertical rate and the source zeroed.
-    /// Dispatched as `snapshot` + `deposit` alone — the tool plays no part, so there
-    /// is nothing to bake or exchange, and the reservoir ping-pong is left
-    /// exactly where the previous segment put it.
+    /// `snapshot` + `deposit` alone — the tool plays no part, so the reservoir
+    /// ping-pong is left exactly where the previous segment put it.
     Bleed,
     /// The pen-up: `snapshot` → `bake` → `settle`. At most one per plan, and always
     /// its last slot — the transfer the tip was still in the middle of when the
@@ -106,10 +83,8 @@ pub(super) enum SlotKind {
     WarpApply,
 }
 
-/// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once — so
-/// the three slot kinds below list only what actually differs between them, which
-/// is the whole of what makes a bleed slot or a settle slot readable against a
-/// painting segment.
+/// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once, so
+/// each slot kind below lists only what it differs by.
 struct SlotCommon<'a> {
     /// The stroke's own constants: `c` outright, and the color-dynamics lookup that
     /// fills `noise_freq` and `noise_amp`. Borrowed rather than copied out, so a slot
@@ -122,20 +97,16 @@ struct SlotCommon<'a> {
     /// The one lane here that is not a stroke constant: the bias is where the *piece*
     /// sits, which `k` cannot know.
     substrate: [f32; 3],
-    /// The region's canvas origin in texels — the deposit jitter's map from a
-    /// region texel to the absolute canvas one its gate is keyed on (§6.2).
-    /// Integral by the cell grid's own argument ([`cell_geometry`]'s assert), and
-    /// a plan fact like `substrate` above: the piece's placement, which `k`
-    /// cannot know.
+    /// The region's canvas origin in texels — the deposit jitter's map from a region
+    /// texel to the absolute canvas one its gate is keyed on (§6.2). Integral by the
+    /// cell grid's own argument ([`cell_geometry`]'s assert), and a plan fact like
+    /// `substrate` above: the piece's placement, which `k` cannot know.
     origin: [i32; 2],
 }
 
 impl SlotCommon<'_> {
     /// The lanes every slot fills the same way — the stroke's color and the substrate
     /// map — over the neutral value of everything a slot kind may leave alone.
-    ///
-    /// A slot kind then names only what it actually differs by, which is the whole of
-    /// what makes a bleed or settle slot readable against a painting segment.
     fn slot(&self) -> Slot {
         Slot {
             channels: self.k.channels,
@@ -173,9 +144,9 @@ impl SlotCommon<'_> {
     /// brush's own `add` paint: the shared field, this slot's arc length, and the
     /// bearing fraction it books the tool's half of the transfer against.
     ///
-    /// `lambda_bleed` stays 0, which is what every such slot wants: the lateral flux
-    /// runs only on the dedicated bleed slots, so between firings the canvas takes the
-    /// no-bleed path bit-for-bit (§6.2).
+    /// `lambda_bleed` stays 0: the lateral flux runs only on the dedicated bleed
+    /// slots, so between firings the canvas takes the no-bleed path bit-for-bit
+    /// (§6.2).
     fn painting(&self, dist: f32, bearing: f32) -> Slot {
         let namp = self.k.namp;
         Slot {
@@ -188,23 +159,9 @@ impl SlotCommon<'_> {
     }
 }
 
-/// One dispatch's uniform in **named fields**, packed into [`Stamp`]'s nine `vec4`
-/// lanes by [`Slot::pack`] — the one place on this side of the boundary that knows
-/// which lane is which.
-///
-/// The lanes are `vec4`s because that is what a uniform wants, and `dynamics.wesl`
-/// long ago stopped reading them as such: every consumer there goes through a named
-/// accessor (`radius()`, `travel_px()`, `lift_rate()`), so the shader's lane map lives
-/// beside the declaration that decides it. This is the same move on the host, and it
-/// is overdue for the same reason. Three slot kinds filled nine lanes at three sites
-/// with wholly different meanings per component — 108 positional floats, and nothing
-/// checking one of them. The generated `offset_of` assertions pin where a *lane*
-/// starts, not what lives inside it, so `lambda(lift)` and `lambda(deposit)` written
-/// the wrong way round was a silent wrong picture.
-///
-/// That it drifts is on the record: the note above the `Stamp` import remembers a
-/// host-side copy that "still described `e.zw` as the midpoint `exchange` samples the
-/// canvas at, some time after the shader had stopped reading the lane at all".
+/// One dispatch's uniform in **named fields**, packed into [`Stamp`]'s lanes by
+/// [`Slot::pack`] — the one place on this side of the boundary that knows which lane
+/// is which.
 ///
 /// [`Default`] is the neutral slot — every rate off, and `bearing` at the 1 that
 /// leaves an exchange alone — so each kind below lists only what it differs by.
@@ -297,22 +254,16 @@ struct Slot {
     /// [`frame`](Self::radius) — [`Sweep::ramp`](super::super::segments::Sweep).
     ///
     /// Zero on a bleed window and on a settle, and both are meant: a firing is a
-    /// stretch of *diffusion* at one tip (which is also the radius
-    /// [`bleed_stencil`] solved its stencil against), and a settle is the tip
-    /// standing still with no travel to ramp along. Zero is also
-    /// [`Default`]'s value, so a slot kind that has never heard of ramps cannot
-    /// accidentally acquire one.
+    /// stretch of *diffusion* at one tip (the radius [`bleed_stencil`] solved its
+    /// stencil against), and a settle is a standing tip with no travel to ramp along.
     radius_ramp: f32,
     /// The tip drawn out along its facing axis (§6.6), solved into the map that
     /// carries a point of the reference travel frame into the frame the prefix-τ
-    /// volume and the bake rows are indexed in
-    /// ([`Stretch`]).
+    /// volume and the bake rows are indexed in ([`Stretch`]).
     ///
-    /// The identity `(1, 0, 1)` for every brush that does not stretch — and, like
-    /// the other neutral-at-1 lanes below, that is a triple of *scales* and not of
-    /// zeroes: a zeroed lane is not "no stretch" but a tip of no width and infinite
-    /// gain. [`Stretch::NONE`](super::super::segments::Stretch::NONE) states it, so
-    /// neither this default nor the shader's neutral value is written twice.
+    /// The identity is `(1, 0, 1)`, a triple of *scales*: a zeroed lane is not "no
+    /// stretch" but a tip of no width and infinite gain
+    /// ([`Stretch::NONE`](super::super::segments::Stretch::NONE)).
     stretch: Stretch,
     /// The deposit jitter (§6.2): the gate's half-range (0 = off, the neutral
     /// value), the stroke's seed for it, and the region's canvas origin — the
@@ -323,19 +274,17 @@ struct Slot {
 }
 
 impl Default for Slot {
-    /// Zero everywhere except the three fields whose neutral value is **1**. Two are
-    /// there for one reason: they are *scales*, and a zeroed scale does not mean "none
-    /// of this" but "none of the thing it multiplies". `bearing` is the share of the
-    /// substrate a tip stands on where there is nothing to bite — zeroed it would book the
-    /// tool's half of every transfer against no substrate at all, which is not "no tooth"
-    /// but "infinite tooth". `cell` at 1 is the exact per-texel deposit.
+    /// Zero everywhere except the lanes whose neutral value is **1**, which are
+    /// *scales*: a zeroed scale does not mean "none of this" but "none of the thing it
+    /// multiplies". `bearing` at 0 would book the tool's half of every transfer
+    /// against no substrate at all — infinite tooth, not absent tooth; `cell` at 1 is
+    /// the exact per-texel deposit; `opacity` and `opacity_mod` at 1 are the identity
+    /// ceiling (§6.2).
     ///
-    /// The third, `tooth_give`, is there for a reason of its own: the knob runs the
-    /// other way (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but
-    /// the driest tip there is. 1 is a tip that follows every fall, which is what a
-    /// bleed slot needs — it is the only lane keeping the lateral flux clear of the
-    /// substrate (`dynamics.wesl::substrate_tooth`) — and what a slot kind that never
-    /// heard of the tooth ought to get.
+    /// `tooth_give` is 1 for a reason of its own: the knob runs the other way
+    /// (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but the driest
+    /// tip there is. 1 is a tip that follows every fall, which is what keeps a bleed
+    /// slot's lateral flux clear of the substrate (`dynamics.wesl::substrate_tooth`).
     fn default() -> Self {
         Self {
             start: Vec2::ZERO,
@@ -389,19 +338,14 @@ impl Default for Slot {
 
 impl Slot {
     /// This slot as the uniform `dynamics_common.wesl` declares and both roots read.
+    /// A rename rather than a packing: the mirror generates `Stamp`'s members from the
+    /// shader's own declaration (§6.10), so each line below pairs one name with one
+    /// name, checked by the compiler.
     ///
-    /// **A rename, not a packing.** `Stamp`'s members are named now, and the mirror
-    /// generates them from the shader's own declaration (§6.10), so the field names on
-    /// both sides of each line below are one name checked by the compiler. What stood
-    /// here was a lane map — `e: [self.add, self.curvature, self.bleed_reach, …]` —
-    /// whose correspondence to the shader's `st.e.z` nothing could see: the sizes
-    /// matched whatever order the four were written in.
-    ///
-    /// The casts are the members the shader declares **integral** because they are:
-    /// a rect origin, a cell edge, a stencil reach. They are `f32` in the plan because
-    /// the rect arithmetic around them is, and every one is a whole number by
-    /// construction — `rect.origin` is a texel corner, `cell` an edge in texels,
-    /// `reach` a tap count.
+    /// The casts are the members the shader declares **integral**: a rect origin, a
+    /// cell edge, a stencil reach. They are `f32` here because the rect arithmetic
+    /// around them is, and each is a whole number by construction — `rect.origin` is a
+    /// texel corner, `cell` an edge in texels, `reach` a tap count.
     fn pack(&self) -> Stamp {
         Stamp {
             start: self.start.to_array(),
@@ -455,11 +399,9 @@ impl Slot {
 }
 
 /// What a plan is built *against*, as opposed to the segments it is built *from*:
-/// where the piece's region sits, how large its snapshot scratch is, and the stroke
-/// constants every slot is filled from.
-///
-/// Bundled because these five travel together through the plan and its rect
-/// arithmetic, and because a slot's geometry is only meaningful relative to them.
+/// where the piece's region sits, the budget its segments were cut at, and the stroke
+/// constants every slot is filled from. A slot's geometry is only meaningful relative
+/// to these.
 pub(super) struct PlanCtx<'a> {
     pub(super) rec: &'a StrokeRecord,
     /// The budget `rec` was flattened at, handed down from [`dynamics_setup`](super::dynamics_setup) rather
@@ -484,20 +426,17 @@ const RECT_MARGIN: f32 = 1.5;
 /// The snapshot square's pool quantum: [`snapshot_square`] rounds the measured maximum
 /// up to a multiple of this.
 ///
-/// For the scratch pool's sake alone. The maximum drifts a few texels per fold as the
-/// tail's geometry evolves, which would make nearly every checkout a miss
-/// ([`ScratchPool`](crate::gpu::scratch)); rounded, the handful of sizes a stroke's
-/// folds actually take recur. Nothing the shaders compute changes — stores and reads
-/// are gated by the slot rects and the sweep test, and the `textureDimensions` bounds
-/// only widen onto texels those gates reject — so the round-up moves no pixel.
+/// For the scratch pool's sake alone: the raw maximum drifts a few texels per fold as
+/// the tail's geometry evolves, which would make nearly every checkout a miss
+/// ([`ScratchPool`](crate::gpu::scratch)). The round-up moves no pixel — stores and
+/// reads are gated by the slot rects and the sweep test, and the texels it adds fall
+/// outside both.
 const SNAPSHOT_QUANTUM: u32 = 64;
 
 /// One slot's dispatch rectangle over a canvas-space coverage box: its integral origin
-/// in region texels and its extent, from which the workgroup counts follow.
-///
-/// The slot's own box rather than the piece-wide worst case, so an axis-aligned sweep
-/// dispatches ~4·r² threads where a square would spend ~10·r². Texels the rounding adds
-/// beyond the box read zero exposure and fall out of `deposit` untouched.
+/// in region texels and its extent, from which the workgroup counts follow. Texels the
+/// rounding adds beyond the box read zero exposure and fall out of `deposit`
+/// untouched.
 fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2) -> Rect {
     let lo = lo - region_origin - Vec2::splat(RECT_MARGIN);
     let hi = hi - region_origin + Vec2::splat(RECT_MARGIN);
@@ -526,10 +465,9 @@ impl Rect {
 }
 
 /// Workgroups covering `texels` along one axis, at the tile kernels' declared side.
-///
-/// `TILE_WG` is generated from `dynamics_common.wesl`'s own `const` — the side that decides
-/// it — rather than transcribed here (§6.10). Every host expression that turns texels
-/// into groups, or groups back into texels, goes through this constant.
+/// `TILE_WG` is generated from `dynamics_common.wesl`'s own `const` (§6.10), and every
+/// host expression that turns texels into groups, or groups back into texels, goes
+/// through it.
 pub(super) fn groups_for(texels: u32) -> u32 {
     texels.div_ceil(TILE_WG)
 }
@@ -537,12 +475,9 @@ pub(super) fn groups_for(texels: u32) -> u32 {
 /// The snapshot scratch's square for a piece: **the largest rect the piece will
 /// actually dispatch**, rounded up to [`SNAPSHOT_QUANTUM`].
 ///
-/// **A maximum, not a bound**, and the distinction is the point. A bound would be a
-/// second derivation of this number — a position-independent extent folded over the
-/// coverage boxes — related to the real rects by an argument ("monotone in span") and
-/// defended by an assertion in the render path. The rects are computed once, so the
-/// scratch is sized by taking their maximum, and there is nothing for an assertion to
-/// state: a maximum is not a claim about the things it was taken over.
+/// **A maximum, not a bound**: it is taken over the very rects the plan dispatches,
+/// so no assertion in the render path has to hold two derivations of this number
+/// together.
 fn snapshot_square(rects: &[Rect]) -> u32 {
     // A floor of one workgroup, so an empty plan — which cannot happen, a piece holding
     // at least one segment — still names a texture the device will create.
@@ -554,11 +489,9 @@ fn snapshot_square(rects: &[Rect]) -> u32 {
 
 /// The cell scratch's square for a piece, in cells: enough for any rect the piece's
 /// snapshot scratch admits at the finest cell the coarse path runs (2), plus the
-/// [`CELL_BORDER`] ring on each side. The same structural-fit move as
-/// [`snapshot_square`]/[`dispatch_rect`]: both sides of the relation go through this
+/// [`CELL_BORDER`] ring on each side. Both sides of the relation go through this
 /// function — [`cell_geometry`] asserts against it, `DynamicsRun::cell_scratch`
-/// allocates from it — so no slot a plan can build reads cells the scratch does not
-/// hold.
+/// allocates from it — so no slot a plan can build reads cells the scratch lacks.
 pub(super) fn cell_scratch_size(dsize: u32) -> u32 {
     dsize.div_ceil(2) + 2 + (2 * CELL_BORDER) as u32
 }
@@ -614,12 +547,11 @@ fn cell_geometry(
     };
     let cx = cells(rect.origin.x, anchor.x, groups.0);
     let cy = cells(rect.origin.y, anchor.y, groups.1);
-    // Derived rather than defended, now that `dsize` is the maximum of the very rects
-    // this is asked about: a rect spans at most `dsize` texels, so at a cell of `c ≥ 2`
-    // it names at most `ceil(dsize/c) + 1 + 2·CELL_BORDER ≤ dsize.div_ceil(2) + 3`
-    // cells, and [`cell_scratch_size`] is that plus one. Debug-only for the reason the
-    // dispatch rect's assertion is gone altogether — a panic mid-render is a worse
-    // failure than the thing it guards, and this one is arithmetic.
+    // Arithmetic rather than a real risk: a rect spans at most `dsize` texels, so at
+    // a cell of `c ≥ 2` it names at most
+    // `ceil(dsize/c) + 1 + 2·CELL_BORDER ≤ dsize.div_ceil(2) + 3` cells, and
+    // `cell_scratch_size` is that plus one. Debug-only because a panic mid-render is a
+    // worse failure than what it guards.
     let fit = cell_scratch_size(dsize);
     debug_assert!(
         cx <= fit && cy <= fit,
@@ -631,10 +563,8 @@ fn cell_geometry(
 /// What one slot of the plan is built from, and — because the walk that produces these
 /// is the walk that defines the plan's order — the single statement of that order.
 ///
-/// The rects are measured over this list and the slots are built by zipping the two, so
-/// the two passes cannot drift into disagreeing about which rect belongs to which slot.
-/// That is the price of computing a rect once instead of twice, and it is paid here
-/// rather than by two `for` loops that happen to be written the same way.
+/// The rects are measured over this list and the slots built by zipping the two, so
+/// the two passes cannot disagree about which rect belongs to which slot.
 enum SlotSource<'a> {
     Segment(&'a Segment),
     Bleed(&'a BleedFire),
@@ -650,10 +580,9 @@ impl SlotSource<'_> {
             SlotSource::Segment(s) => coverage_bounds(&s.sweep),
             SlotSource::Bleed(f) => coverage_bounds(&f.window),
             // The tip's own extent rather than a swept box — a pen-up is a standing
-            // tip. Its half-extent is the tip's `reach` (`Sweep::reach`), so the
-            // settle writes the same extent the pass was laying. It cannot be the
-            // largest box in the piece: a segment's box is this square grown by its
-            // travel, and this is the last segment's.
+            // tip, whose half-extent is the tip's `reach` (`Sweep::reach`). It cannot
+            // be the largest box in the piece: a segment's box is this square grown by
+            // its travel, and this is the last segment's.
             SlotSource::Settle(s) => {
                 let end = segment_end(&s.sweep);
                 let reach = Vec2::splat(s.sweep.reach);
@@ -675,23 +604,19 @@ fn rects_for(sources: &[SlotSource<'_>], region_origin: Vec2) -> Vec<Rect> {
         .collect()
 }
 
-/// The plan's slots in dispatch order, and the snapshot square they fit.
-///
-/// The square rides with the slots because it is derived from them — see
-/// [`snapshot_square`]. A caller that has one has the other, so there is no way to
-/// allocate a scratch for a plan other than the one that measured it.
+/// The plan's slots in dispatch order, and the snapshot square they fit. The square
+/// rides with the slots because it is derived from them ([`snapshot_square`]): there
+/// is no way to allocate a scratch for a plan other than the one that measured it.
 pub(super) struct DynamicsPlan {
     pub(super) slots: Vec<LoopDispatch>,
     pub(super) dsize: u32,
 }
 
-/// Build the swept-exchange dispatch plan (§6.2): one `snapshot` +
-/// `deposit` pair per flattened segment (the canvas-side exchange, swept through
-/// the prefix-τ integral), each followed by the tool's own `exchange`.
-/// λ = ln(1 − axis) makes every rate exponential in
-/// exposure, so the exchange composes exactly across overlapping segment quads —
-/// the continuous path integral, independent of any spacing. Pure CPU float math
-/// → replay-deterministic.
+/// Build the swept-exchange dispatch plan (§6.2): one `snapshot` + `deposit` pair per
+/// flattened segment (the canvas-side exchange, swept through the prefix-τ integral),
+/// each followed by the tool's own `exchange`. λ = ln(1 − axis) makes every rate
+/// exponential in exposure, so the exchange composes exactly across overlapping
+/// segment quads — the continuous path integral, independent of any spacing.
 ///
 /// Every painting dispatch is a segment: the tool exchanges once per segment rather
 /// than on a cadence of its own, so there is no interval state to carry between
@@ -710,33 +635,25 @@ pub(super) fn dynamics_plan(
         ..
     } = ctx;
     let b = &rec.brush;
-    // The canvas → substrate map, folded so the shader can go straight from its *region*
-    // texel to the substrate under it: `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4). Only the
-    // bias belongs to the piece — the shader never learns where the piece sits, only
-    // where the substrate does; the scale is a stroke constant and comes off `consts`,
-    // which is what keeps it the same number the swept path writes.
+    // The canvas → substrate map, folded so the shader can go straight from its
+    // *region* texel to the substrate under it:
+    // `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4). Only the bias belongs
+    // to the piece — the shader never learns where the piece sits, only where the
+    // substrate does; the scale is a stroke constant off `consts`, which keeps it the
+    // same number the swept path writes.
     let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
-    // What share of the substrate a tip with this tooth, going this way, stands on — per
-    // segment because the tooth's *give* is modulated per segment (§6.2) and because
-    // the direction is the segment's own. The canvas side of the exchange asks the substrate
-    // ahead of each texel; the tool has none of its own and books against this mean,
-    // which is what makes a toothed smear conserve (`SubstrateMap::bearing`).
-    //
-    // The width of the transition is the brush's outright, so it closes over rather
-    // than being passed in: it is the same number on every segment, and the mean has
-    // to be taken through the very gate the canvas side evaluates or the two halves
-    // of the transfer stop agreeing.
-    //
-    // At the segment's **midpoint** tangent, the same second-order choice `mid` is
-    // sampled at below: a curved segment's canvas side reads a tangent that turns
-    // across the sweep, and the midpoint is the representative of that whose error is
-    // second order where either endpoint's would be first.
+    // What share of the substrate a tip with this tooth, going this way, stands on —
+    // per segment, because the tooth's *give* is modulated per segment (§6.2) and the
+    // direction is the segment's own. The canvas side of the exchange asks the
+    // substrate ahead of each texel; the tool has none of its own and books against
+    // this mean, which is what makes a toothed smear conserve
+    // (`SubstrateMap::bearing`). The mean has to be taken through the very gate the
+    // canvas side evaluates, or the two halves of the transfer stop agreeing — hence
+    // the transition width closed over from the brush.
     let bearing = |give: f32, dir: Vec2| substrate.bearing(give, b.tooth.softness, dir.to_array());
-    // λ per axis is [`lambda`](super::super::budget::lambda) — one definition, the
-    // same clamp the flattening budget prices. Taken **per segment**, off the rates
-    // the segment generator resolved from the pen (§6.2), rather than once for the
-    // stroke: every dispatch carries its own λs in its slot, because a segment is
-    // where the exchange happens.
+    // λ per axis is `budget::lambda` — one definition, the same clamp the flattening
+    // budget prices — taken **per segment** off the rates the segment generator
+    // resolved from the pen (§6.2), because a segment is where the exchange happens.
     let common = SlotCommon {
         k: consts,
         substrate: [
@@ -768,11 +685,9 @@ pub(super) fn dynamics_plan(
         }
     }
     // The pen-up (`dynamics.wesl::settle`), as one more slot on the same uniform: the
-    // tip standing at the stroke's last point with **zero travel**, which is what makes
-    // the shared `segment_frame`/`outside_sweep` reduce to the tip's own extent and
-    // `snapshot` copy exactly the texels the settle will write. Everything the settle
-    // reads is already here — the frame, the radius, the two λs and the orientation —
-    // so it costs a slot rather than a second uniform.
+    // tip standing at the stroke's last point with **zero travel**, which is what
+    // makes the shared `segment_frame`/`outside_sweep` reduce to the tip's own extent
+    // and `snapshot` copy exactly the texels the settle will write.
     if let Some(s) = settle.then(|| segments.last()).flatten() {
         sources.push(SlotSource::Settle(s));
     }
@@ -795,17 +710,15 @@ pub(super) fn dynamics_plan(
                 // the start, curvature), over the segment's own coverage box.
                 let p = sw.start - region_origin;
                 // The tangent at the segment's **midpoint**, along the arc rather than
-                // the chord: what the bearing below is read along, since a curved
-                // segment's canvas side sees a heading that turns across the sweep and
-                // the midpoint is the representative of that whose error is second
-                // order where either endpoint's would be first.
+                // the chord: a curved segment's canvas side sees a heading that turns
+                // across the sweep, and the midpoint's error is second order where
+                // either endpoint's would be first.
                 let (_, mid_dir) =
                     crate::path::arc_at(sw.start, sw.dir, sw.curvature, sw.length * 0.5);
-                // The extent cell this segment's deposit may evaluate the exchange
-                // at (§6.2): a pure function of the brush shape and the segment's own
-                // radius ([`extent_cell`]), so a live tail and its commit pick the
-                // same cell — and 1, the exact kernel, for every tip whose shoulder
-                // proves nothing.
+                // The extent cell this segment's deposit may evaluate the exchange at
+                // (§6.2): a pure function of the brush shape and the segment's own
+                // radius (`extent_cell`), so a live tail and its commit pick the same
+                // cell.
                 let cell = extent_cell(&b.shape, sw.radius);
                 let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, rect, dsize);
                 LoopDispatch {
@@ -833,23 +746,18 @@ pub(super) fn dynamics_plan(
                         stretch: sw.stretch,
                         drain: b.drain_px(),
                         // The `add` rate as the segment resolved it — mappings and
-                        // the wet flow already folded (`generate_segments_in`) —
-                        // with **no further gain here**, exactly as `stamp.wesl`
-                        // takes it. A gain here would make the same slider mean two
-                        // different amounts of paint depending on whether some
-                        // *other* axis happened to be non-zero — nudging `deposit`
-                        // off zero would change the flow. Nor is one needed to
-                        // make an effective rate of 1 lay a full-thickness deposit
-                        // per pass: a pass of the tip is `TAU_PER_PASS ≈ 6.9` of
-                        // exposure, so a rate of 1 lays 6.9 of height, which the
-                        // slab law reads as 0.999 coverage. The effect's opacity is
-                        // *not* folded in either — the raw rate is exactly what the
-                        // ceiling's prefix-difference law must accumulate (§6.2,
-                        // `dynamics.wesl::lay_parcel`), and the ceiling rides the
-                        // slot's own lane.
-                        //
-                        // Off the segment, since the pen can drive it (§6.2) — the same
-                        // number the swept path now reads off its instance.
+                        // the wet flow already folded (`generate_segments_in`), the
+                        // pen's drive included (§6.2) — with **no further gain
+                        // here**, exactly as `stamp.wesl` takes it. A gain would make
+                        // the same slider mean two different amounts of paint
+                        // depending on whether some *other* axis happened to be
+                        // non-zero, and none is needed: a pass of the tip is
+                        // `TAU_PER_PASS ≈ 6.9` of exposure, so a rate of 1 lays 6.9 of
+                        // height, which the slab law reads as 0.999 coverage. The
+                        // effect's opacity is *not* folded in either — the raw rate
+                        // is what the ceiling's prefix-difference law must accumulate
+                        // (§6.2, `dynamics.wesl::lay_parcel`), and the ceiling rides
+                        // the slot's own lane.
                         add: paint.add,
                         // The ceiling's factor as the segment resolved it, beside
                         // the rate it caps — the same pair the swept path reads
@@ -893,18 +801,12 @@ pub(super) fn dynamics_plan(
                     cell_groups: None,
                     kind: SlotKind::Bleed,
                     // Everything a painting segment carries and this does not is
-                    // `Slot::default`'s zero, which is what the slot *means*: λ_lift = 0
-                    // so the canvas keeps everything, λ_deposit = 0 so the (uninvolved)
-                    // tool lays nothing, no drain because nothing is laid, no `add`
-                    // because this is not a stretch of painting, no tooth because there
-                    // is no `add` for the substrate to gate, and no color jitter — which is
-                    // zeroed rather than shared, so the deposit skips its noise taps
-                    // entirely.
-                    //
-                    // A [`BleedFire`] cannot carry those rates in the first place: it
-                    // holds a [`Sweep`] and its one axis. Holding a whole `Segment`
-                    // instead, its five rates would be copied in by `bleed_fires` for
-                    // this arm to write straight back out.
+                    // `Slot::default`'s zero, which is what the slot *means*:
+                    // λ_lift = 0 so the canvas keeps everything, λ_deposit = 0 so the
+                    // uninvolved tool lays nothing, no drain because nothing is laid,
+                    // no `add` because this is not a stretch of painting, no tooth
+                    // because there is no `add` for the substrate to gate, and no
+                    // color jitter, so the deposit skips its noise taps entirely.
                     slot: Slot {
                         start: p,
                         dir: w.dir,
@@ -919,13 +821,12 @@ pub(super) fn dynamics_plan(
                         // The stencil's longest tap — the only slot that carries one.
                         bleed_reach: reach,
                         dist: w.dist,
-                        // The rate that lands this window's exposure on the blend its
-                        // reach needs — not `lambda(axis)`, which is the vertical rates'
-                        // mapping and would make the axis a rate rather than a
-                        // diffusivity. A firing whose modulated axis has fallen to zero
-                        // still dispatches: λ = 0 makes it the identity, and keeping the
-                        // plan a pure function of the segmentation is worth more than
-                        // the dispatch it would save.
+                        // The rate that lands this window's exposure on the blend
+                        // its reach needs — not `lambda(axis)`, which is the vertical
+                        // rates' mapping and would make the axis a rate rather than a
+                        // diffusivity. A firing whose modulated axis has fallen to
+                        // zero still dispatches: λ = 0 is the identity, and the plan
+                        // stays a pure function of the segmentation.
                         lambda_bleed,
                         ..common.slot()
                     }
@@ -950,12 +851,11 @@ pub(super) fn dynamics_plan(
                     slot: Slot {
                         start: p,
                         dir: tan,
-                        // No travel: a pen-up is a break of contact, not a stretch of
-                        // it. The rates are the *last* segment's, which is where the pen
-                        // was when it left the page — the same segment this slot takes
-                        // its radius and orientation from. (`travel_radii` stays at its
-                        // default 0.) The λs carry that segment's flow with them,
-                        // as the painting slots' do.
+                        // No travel: a pen-up is a break of contact, not a stretch
+                        // of it (`travel_radii` stays at its default 0). The rates are
+                        // the *last* segment's — where the pen was when it left the
+                        // page — and its λs carry that segment's flow, as a painting
+                        // slot's do.
                         radius: sw.radius,
                         lambda_lift: paint.lambda_lift,
                         lambda_deposit: paint.lambda_deposit,
@@ -963,27 +863,22 @@ pub(super) fn dynamics_plan(
                         orient: sw.orient,
                         stretch: sw.stretch,
                         drain: b.drain_px(),
-                        // The last segment's tooth: the settle delivers what the pass
-                        // still owed, and it owes it through the same substrate the pass
-                        // was laying through. What the valleys do not take stays on the
-                        // tool, which is discarded — a knife lifted off a canvas keeps
-                        // what it did not reach (§6.4).
+                        // The last segment's tooth: the settle delivers what the
+                        // pass still owed, through the same substrate the pass was
+                        // laying through. What the valleys do not take stays on the
+                        // discarded tool (§6.4).
                         tooth_give: paint.tooth_give,
-                        // No `add`: the source is a rate per unit of travel, and there
-                        // is none. No curvature, for the same reason — the frame is a
-                        // standing tip. No bleed reach: a settle is not a firing. And no
-                        // λ_bleed either — that axis carries no reservoir, every firing
-                        // having applied its window as the tip passed, so a break of
-                        // contact strands nothing for a settle to finish, unlike the
-                        // vertical transfer whose in-flight half lives on the tool. All
+                        // No `add`: the source is a rate per unit of travel, and
+                        // there is none. No curvature either — the frame is a standing
+                        // tip. No bleed reach and no λ_bleed: that axis carries no
+                        // reservoir, every firing having applied its window as the tip
+                        // passed, so a break of contact strands nothing to finish. All
                         // four are `Slot::default`'s zero.
                         //
-                        // The bearing is the neutral 1: the tool is not written back at
-                        // pen-up, so nothing reads it — the settle's own gate is per
-                        // texel, from the substrate. The color channels are filled
-                        // consistently with a segment slot rather than left as junk,
-                        // though the settle lays the tool's *carried* paint and so reads
-                        // none of them.
+                        // The bearing is the neutral 1: the tool is not written back
+                        // at pen-up, and the settle's own gate is per texel, from the
+                        // substrate. The color channels are filled as a segment slot's
+                        // are, though the settle lays the tool's *carried* paint.
                         ..common.painting(sw.dist + sw.length, 1.0)
                     }
                     .pack(),
@@ -1002,9 +897,7 @@ pub(super) fn dynamics_plan(
 /// is complete as the tip passes; a break of contact strands nothing).
 ///
 /// `base_offset` is where the region sits in the base composite, and `region` the
-/// region's own extent, both of which only the apply slot reads. Pure CPU float
-/// math over the record and the piece's geometry, like [`dynamics_plan`], and
-/// replay-deterministic for the same reason (§12.1).
+/// region's own extent; only the apply slot reads either.
 ///
 /// The snapshot square is measured over the **warp** slots alone: the apply slot
 /// reads no snapshot, and its rect — the region — would otherwise size a scratch
@@ -1067,14 +960,11 @@ pub(super) fn liquify_plan(
                 // texel's own arc, which needs the arc at the slot's start.
                 drain: b.drain_px(),
                 dist: sw.dist,
-                // Every rate a deposit would run on stays `Slot::default`'s
-                // zero — a warp slot lays nothing, lifts nothing, bleeds
-                // nothing — and the noise lanes stay zero with them: the effect
-                // has no color for a jitter to wander (§6.13). The tooth too: a
-                // field gated by the substrate's every step is a tear, not a
-                // warp — the tip's own coverage is the one texture the follow
-                // reads, and it reads it through the prefix the slot's frame
-                // already indexes.
+                // Every rate a deposit would run on stays `Slot::default`'s zero —
+                // a warp slot lays nothing, lifts nothing, bleeds nothing — and the
+                // noise lanes with them: the effect has no color for a jitter to
+                // wander (§6.13). The tooth too, since a field gated by the
+                // substrate's every step is a tear rather than a warp.
                 ..common.slot()
             }
             .pack(),
@@ -1099,44 +989,30 @@ pub(super) fn liquify_plan(
 /// chord over the **last extent's worth of path**, rather than the last segment's
 /// own tangent.
 ///
-/// The last segment's tangent cannot be trusted, and the reason is a property of real
-/// input rather than a rare edge case. A hand pauses before it lifts, so a pen-up
-/// arrives as a cluster of samples at almost one point; the fitter turns that into
-/// spans of no length, and the flattener into edges whose chord is a rounding error
-/// and whose direction is therefore arbitrary — measured on a straight drag down, the
-/// final edges came out at 0°, −90°, 90° and 180° against a stroke running at 90°.
+/// The last segment's tangent cannot be trusted, and that is a property of real input
+/// rather than a rare edge case: a hand pauses before it lifts, so a pen-up arrives as
+/// a cluster of samples at almost one point, and the flattener turns those into edges
+/// whose chord is a rounding error and whose direction is therefore arbitrary. Nothing
+/// else in the loop notices — a segment of no length deposits nothing — but the settle
+/// takes a whole tip's worth of exchange from that one frame, and its
+/// `min(owed, received)` lens is elongated *along* it, so a wrong direction lands a
+/// tip-shaped disc across the stroke instead of along it.
 ///
-/// Nothing else in the loop notices: a segment of no length deposits nothing, so its
-/// direction never reaches a pixel. The settle is the exception, because it takes a
-/// whole tip's worth of exchange from that one frame — and its `min(owed, received)`
-/// lens is elongated *along* it, so a wrong direction lands a tip-shaped disc across
-/// the stroke instead of along it, at a different angle every time the hand pauses
-/// differently. That is exactly what it looked like: a fade-out cap whose orientation
-/// wandered from stroke to stroke, and worse the higher `lift` and `deposit` were.
+/// One radius is the window because it is the extent of the thing being settled, so
+/// this is the direction the tip was travelling over precisely the stretch of canvas
+/// the settle acts on.
 ///
-/// One radius is the natural window because it is the extent of the thing being
-/// settled — the tip's own extent — so this is the direction the tip was travelling
-/// over precisely the stretch of canvas the settle acts on, and no new constant.
+/// **Measured on the record, not on the segments in hand**, which is why it takes a
+/// `rec`: the slice a plan is built from is one *piece* of one *range*, so a lookback
+/// that walked it would stop at whichever cut came first, and a live tail would settle
+/// at a different angle from its commit — a `preview == committed` break (§1.3) in the
+/// one place it cannot be repainted. It walks the curve's own polyline rather than
+/// back along the last segment's arc, the way
+/// [`bleed_fires`](super::bleed::bleed_fires) does, because the last segments *are*
+/// the degenerate ones (`span_end` prices a span boundary without subdividing
+/// anything, so finding them costs no polyline).
 ///
-/// **Measured on the record, not on the segments in hand**, and that is the whole of
-/// why it takes a `rec`. The slice a plan is built from is one *piece* of one *range*
-/// — `chunk_segments`'s cut of what `render_range` was asked for — so a lookback that
-/// walked it stopped at whichever boundary came first. A live tail always starts at a
-/// span boundary while the commit renders the whole stroke from zero, so a tail
-/// carrying less than a radius of travel measured its frame over a shorter window than
-/// the commit measured the same frame over, and on a curving stroke the two came out
-/// pointing different ways: the fade-out cap turned as the pointer came up, which is a
-/// `preview == committed` break (§1.3) in the one place it cannot be repainted.
-///
-/// This is the same defect [`bleed_fires`](super::bleed::bleed_fires) was fixed for, and the cure is the same in
-/// spirit — ask the record rather than the range — but not in mechanism. Walking back
-/// along the last segment's own arc, as a firing's window does, is exactly what this
-/// function exists to avoid: the last segments *are* the degenerate ones. So it walks
-/// the curve's own polyline instead, flattening only the trailing spans a radius
-/// reaches back over (`span_end` prices a span boundary without subdividing anything,
-/// so finding them costs no polyline).
-///
-/// `segments` is still read, for the two things only it knows: the radius of the tip
+/// `segments` is still read for the two things only it knows: the radius of the tip
 /// being settled, and a click's frame — a lone control point is not a curve, and
 /// `generate_segments_in` gives its dab a real direction where the path has none.
 fn settle_tangent(
@@ -1155,10 +1031,9 @@ fn settle_tangent(
     }
     let tip = crate::path::span_end(&rec.path, last - 1);
     // The first span boundary a radius or more back from the tip, measured on chords
-    // — which under-estimate arc length, so the span this admits genuinely holds a
-    // extent's worth of path behind it. Walking boundaries rather than the polyline
-    // is what keeps the flatten below proportional to the *radius* instead of to the
-    // length of the stroke.
+    // — which under-estimate arc length, so the span this admits genuinely holds an
+    // extent's worth of path behind it. Walking boundaries keeps the flatten below
+    // proportional to the *radius* rather than to the length of the stroke.
     let mut from = 0;
     for k in (0..last).rev() {
         let cut = if k == 0 {
@@ -1211,19 +1086,12 @@ mod tests {
     /// Every field of the plan's slot reaches the member of `Stamp` the shader reads
     /// it from.
     ///
-    /// **Much less is left to check than there was.** `Stamp`'s members are named now
-    /// (§6.10), so `pack` reads `lambda_lift: self.lambda_lift` and a swap of two
-    /// same-typed neighbours is a compile error rather than a wrong picture. What
-    /// survives is the handful of lines where the two sides spell one quantity
-    /// differently — `orient`/`orientation`, `dist`/`arc_at_start`,
-    /// `ramp`/`radius_ramp`, `bearing`/`tooth_bearing` — and the three that split a
-    /// host array (`channels`, `resid`, `noise_freq`). Those are the assertions
-    /// below; the rest are the compiler's.
-    ///
-    /// (`pack` used to close with a `..Default::default()` for the generated
-    /// padding's sake; `drag` filled the last hole, so the struct is written out
-    /// whole — the one trailing pad the ceiling's pair reopened named as the
-    /// zeroes it is — and a forgotten member is the compiler's to catch.)
+    /// `Stamp`'s members are named (§6.10), so a swap of two same-typed neighbours is
+    /// a compile error rather than a wrong picture. What is left to assert is the
+    /// handful of lines where the two sides spell one quantity differently —
+    /// `orient`/`orientation`, `dist`/`arc_at_start`, `ramp`/`radius_ramp`,
+    /// `bearing`/`tooth_bearing` — and the three that split a host array
+    /// (`channels`, `resid`, `noise_freq`).
     #[test]
     fn every_slot_field_lands_in_the_member_the_shader_reads_it_from() {
         let packed = Slot {
@@ -1330,19 +1198,15 @@ mod tests {
         assert_eq!(packed.ceiling_lane, 1, "the ceiling lane's flag (§6.2)");
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for seven fields
-    /// is not zero. Six are **scales**, and a zeroed scale does not say "none of
-    /// this" but "none of the thing it multiplies": a `bearing` of 0 books the tool's
-    /// half of every transfer against no substrate at all — infinite tooth, not absent
-    /// tooth; a `cell` of 0 is no deposit grid rather than the exact one; a
-    /// zeroed stretch is a tip of no width whose every prefix difference is divided by
-    /// it (§6.6); a zeroed `opacity` is the strongest ceiling there is where 1 is
-    /// the exact identity branch (§6.2), and a zeroed `opacity_mod` would take the
-    /// whole of it away on the lane. The seventh, `tooth_give`, is not a scale but
-    /// a knob that runs the other way (`BrushParams::tooth_give`): zeroed it is the
-    /// driest tip there is, where 1 is the short-circuit a slot with no tooth wants.
-    /// A derived `Default` would make every slot kind that leaves one alone quietly
-    /// wrong, and this is the list that says which they are.
+    /// The neutral slot is neutral *in the shader's terms*, which for seven fields is
+    /// not zero. Six are **scales**, where a zeroed lane says "none of the thing it
+    /// multiplies": a `bearing` of 0 is infinite tooth rather than absent tooth, a
+    /// `cell` of 0 no deposit grid rather than the exact one, a zeroed stretch a tip
+    /// of no width every prefix difference is divided by (§6.6), a zeroed `opacity`
+    /// or `opacity_mod` the strongest ceiling there is where 1 is the identity branch
+    /// (§6.2). The seventh, `tooth_give`, runs the other way
+    /// (`BrushParams::tooth_give`): zeroed it is the driest tip there is. A derived
+    /// `Default` would make every slot kind that leaves one alone quietly wrong.
     #[test]
     fn the_default_slot_is_neutral_rather_than_zeroed() {
         let d = Slot::default().pack();
@@ -1386,12 +1250,10 @@ mod tests {
 
     /// **The cell grid is anchored to the canvas, not to the region** (§6.4). Where a
     /// cell boundary falls must be a property of the canvas position and the brush
-    /// alone: region origins differ per piece and per live fold, and a grid that
-    /// moved with them would break tile aprons against neighbour interiors and
+    /// alone: region origins differ per piece and per live fold, and a grid that moved
+    /// with them would break tile aprons against neighbour interiors and
     /// `preview == committed` in one stroke. This replays the shader's own index
-    /// arithmetic (`div_floor(rt + anchor, c)`) against [`cell_geometry`]'s anchor
-    /// for a spread of origins and asserts every boundary lands on the same canvas
-    /// texel as it does with the origin at zero.
+    /// arithmetic against [`cell_geometry`]'s anchor for a spread of origins.
     #[test]
     fn cell_boundaries_are_canvas_anchored_whatever_the_region_origin() {
         let rect = Rect {
@@ -1422,13 +1284,11 @@ mod tests {
     /// bilinear read names four cells per texel — `floor((rt + anchor + ½)/c − ½)`
     /// and its upper neighbours — against a scratch that starts one cell *below* the
     /// rect's first (`cell_base`), and the hoist grid has to cover both ends of that
-    /// or the deposit reads whatever the previous segment left in the scratch: not a
-    /// wrong color but a stale one, from another segment's tip, which is the kind of
-    /// artifact a golden reports without naming.
+    /// or the deposit reads whatever the previous segment left in the scratch — not a
+    /// wrong color but a stale one, from another segment's tip.
     ///
     /// So this replays the shader's own tap arithmetic in f32, for every texel a
-    /// dispatch can scan, and asserts the window sits inside [`cell_span`]'s count —
-    /// the one the host dispatches and [`cell_scratch_size`] is asserted against.
+    /// dispatch can scan, and asserts the window sits inside [`cell_span`]'s count.
     #[test]
     fn the_bilinear_read_never_taps_a_cell_the_hoist_skipped() {
         let dsize = 64;
@@ -1508,16 +1368,14 @@ mod tests {
     /// pieces.
     ///
     /// A live tail starts at a span boundary while the commit renders the whole stroke
-    /// from zero, and both run the settle — the tail's range reaches the stroke's end,
-    /// which is exactly the condition that asks for one. A frame measured over "the
-    /// segments in hand" therefore spans a shorter window for the tail than for the
-    /// commit, and on a curving stroke that is a different direction: the settle's
-    /// `min(owed, received)` lens is elongated along it, so the fade-out cap visibly
-    /// turns at pen-up. That is a `preview == committed` break (§1.3) in the one place
-    /// it cannot be repainted — the same class `bleed_fires` has to answer.
+    /// from zero, and both run the settle. A frame measured over "the segments in
+    /// hand" therefore spans a shorter window for the tail, and on a curving stroke
+    /// that is a different direction — a visible turn of the fade-out cap at pen-up,
+    /// which is a `preview == committed` break (§1.3) in the one place it cannot be
+    /// repainted.
     ///
-    /// Checked at every cut point, since the interesting ones are those that leave the
-    /// tail shorter than the tip being settled.
+    /// Checked at every cut point, since the interesting ones leave the tail shorter
+    /// than the tip being settled.
     #[test]
     fn the_settle_frame_does_not_depend_on_where_the_stroke_was_cut() {
         // A circle of radius 200 under a 60 px tip: an extent's worth of path turns
@@ -1565,16 +1423,10 @@ mod tests {
     /// turns them into edges whose chord is a rounding error and whose direction is
     /// therefore arbitrary.
     ///
-    /// Nothing else in the loop notices — a segment of no length deposits nothing, so
-    /// its direction never reaches a pixel. The settle is the exception: it takes a
-    /// whole tip's worth of exchange from that one frame, and its `min(owed, received)`
-    /// lens is elongated *along* it, so a wrong direction lays a tip-shaped disc across
-    /// the stroke instead of along it. That is what a wandering fade-out cap was.
-    ///
-    /// Reading the record's own polyline is what makes this structural rather than a
+    /// Reading the record's own polyline is what makes that structural rather than a
     /// rule to remember: knots piled on one spot contribute nothing to the chord over
-    /// the last radius, so they cannot steer it whatever direction the fitter gave the
-    /// edges between them.
+    /// the last radius, so they cannot steer it whatever direction the fitter gave
+    /// the edges between them.
     #[test]
     fn the_settle_frame_ignores_a_paused_hands_arbitrary_last_edges() {
         // A straight drag along +y, then the pause: four knots on the stopping point.
@@ -1630,14 +1482,14 @@ mod tests {
     /// sized.**
     ///
     /// That a *rect* fits is no claim at all: [`snapshot_square`] takes the maximum of
-    /// the very rects the plan dispatches. What is a claim, and what the shaders'
-    /// bounds checks rest on, is one step further out — a dispatch is rounded **up to
-    /// whole 8×8 workgroups**, so the texels a slot scans reach `groups·8`, past its
-    /// own rect. That stays inside the scratch only because [`SNAPSHOT_QUANTUM`] is
-    /// itself a multiple of 8, and this is what pins it.
+    /// the very rects the plan dispatches. The claim the shaders' bounds checks rest
+    /// on is one step further out — a dispatch is rounded **up to whole 8×8
+    /// workgroups**, so the texels a slot scans reach `groups·8`, past its own rect,
+    /// and stay inside the scratch only because [`SNAPSHOT_QUANTUM`] is itself a
+    /// multiple of 8.
     ///
-    /// The stress is in the fractional origins: a rect floors its origin and rounds its
-    /// far edge outward, so the worst case is a box straddling texel boundaries at both
+    /// The stress is in the fractional origins: a rect floors its origin and rounds
+    /// its far edge outward, so the worst case straddles texel boundaries at both
     /// ends. Curvature is swept too, since a bent sweep bows a sagitta out of its box.
     #[test]
     fn every_dispatch_grid_fits_the_scratch_its_piece_sized() {
@@ -1679,11 +1531,9 @@ mod tests {
 
     /// A bleed window can be the largest extent in its piece — it sweeps up to a
     /// quarter-radius where the piece's own segments may be sub-pixel — so the scratch
-    /// has to be sized with the firings in it, not just the segments.
-    ///
-    /// Still worth stating with the rects computed once: the maximum is only over what
-    /// the walk collected, so a walk that forgot the firings would size the scratch
-    /// short and go on asserting nothing.
+    /// has to be sized with the firings in it, not just the segments. The maximum is
+    /// only over what the walk collected, so a walk that forgot the firings would size
+    /// the scratch short and go on asserting nothing.
     #[test]
     fn the_scratch_is_sized_with_the_bleed_windows_in_it() {
         // Long enough to cross the 0.25 · 30 px cadence, cut far finer than it.

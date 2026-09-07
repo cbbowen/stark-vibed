@@ -4,11 +4,8 @@
 //! — asked identically by both render paths, and because the answers are the only
 //! mutable state in a renderer otherwise documented as holding "only immutable GPU
 //! objects plus `Arc`-backed handles". Keeping them here is what lets that sentence
-//! stay true of [`StrokeRenderer`](super::StrokeRenderer) itself.
-//!
-//! `DynamicsKit` is the same rule from the other side: it holds built-once GPU objects
-//! and no cache, because a lazily-baked texture in a struct documented as immutable is
-//! the thing this module exists to collect.
+//! stay true of [`StrokeRenderer`](super::StrokeRenderer) itself, and it is why
+//! `DynamicsKit` beside it holds built-once GPU objects and no cache.
 //!
 //! Cheap to clone with its renderer — everything is `Arc`-backed or a wgpu handle.
 
@@ -27,41 +24,35 @@ pub(super) const ROUND_RES: u32 = 256;
 ///
 /// More than one because one brush is not the working set: two peers painting
 /// concurrently at different hardness (§12), or a replay interleaving strokes from
-/// different brushes, alternate keys on every render — and a single entry re-bakes
-/// 256² of `acos`/`exp` plus two texture uploads per miss, per frame. Four covers a
-/// handful of simultaneous brushes; a hardness slider still walks through fresh
-/// values per frame, which is why this is an LRU of a few rather than a map that
-/// banks ~590 KB of GPU texture per position and never hands it back.
+/// different brushes, alternate keys on every render, and a miss re-bakes 256² of
+/// `acos`/`exp` plus two texture uploads. Four covers a handful of simultaneous
+/// brushes; an LRU of a few rather than a map, because a hardness slider walks through
+/// fresh values per frame and each banks ~590 KB of GPU texture.
 const ROUND_TIPS_KEPT: usize = 4;
 
 /// How many color-dynamics tiles [`TipCache`] keeps baked at once.
 ///
 /// A tile is one stroke's (§6.2), so what has to stay hot is the stroke being
-/// *re*-rendered: the live one, per pointer move, and the brush editor's pinned
-/// preview per edit. A few more cover a peer's live stroke interleaving with it
-/// (§12). A replay reuses nothing — every stroke is a fresh seed — and bakes its
-/// way through whatever this says. Evicted tiles are `destroy()`ed rather than
-/// dropped: they go at the rate strokes do, and a dropped texture is not a freed
-/// one (`submit.rs`).
+/// *re*-rendered: the live one, per pointer move, and the brush editor's pinned preview
+/// per edit, with a few more for a peer's live stroke (§12). Evicted tiles are
+/// `destroy()`ed rather than dropped: they go at the rate strokes do, and a dropped
+/// texture is not a freed one (`submit.rs`).
 const NOISE_TILES_KEPT: usize = 4;
 
-/// One of [`TipCache`]'s two least-recently-used lists: newest last, shared across
-/// the renderer's clones, and bounded by the `*_KEPT` constant beside the field.
-///
-/// A `Vec` rather than a map because the bound is four: a linear scan of four keys
-/// is cheaper than a hash, and the order *is* the recency, which a map would have to
-/// carry separately.
+/// One of [`TipCache`]'s two least-recently-used lists: newest last, shared across the
+/// renderer's clones, bounded by the `*_KEPT` constant beside the field. A `Vec` rather
+/// than a map because the bound is four — a linear scan beats a hash, and the order *is*
+/// the recency.
 type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
 
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
-    /// The round tips' baked textures, keyed by the **effective** hardness's bits —
-    /// the brush's own floored by its size (`budget::effective_hardness`, §6.6) — an
-    /// LRU of [`ROUND_TIPS_KEPT`], newest last. Only a brush the floor binds (hard
-    /// *and* small) re-bakes as its size changes; every other key is the hardness
-    /// alone, as it always was.
+    /// The round tips' baked textures, keyed by the **effective** hardness's bits — the
+    /// brush's own floored by its size (`budget::effective_hardness`, §6.6) — an LRU of
+    /// [`ROUND_TIPS_KEPT`], newest last. Only a brush the floor binds (hard *and* small)
+    /// re-bakes as its size changes.
     round_tip: Lru<u32, RoundTip>,
     /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1 zero tile
     /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
@@ -100,15 +91,14 @@ impl TipCache {
     /// plain coverage beside it, and, for a liquify brush, the coverage prefix its
     /// follow reads and the tip's rise the step budget prices (§6.13).
     ///
-    /// Both render paths resolve it the same way — they differ in which bind-group
+    /// Both render paths resolve it the same way; they differ in which bind-group
     /// layout they hang it off, not in how the texture is chosen.
     ///
     /// The **orientation source** is part of the question for an image brush (§6.6):
-    /// follow-stroke reads a single identity layer, pen a stack of them. A round
-    /// tip is rotation-invariant and answers both with the same one slice, which is why
-    /// it is asked only for its hardness — floored by the brush's own size
-    /// (`budget::effective_hardness`, §6.6), so a hard edge keeps a ~px of
-    /// antialiased rim at any radius.
+    /// follow-stroke reads a single identity layer, pen a stack of them. A round tip is
+    /// rotation-invariant and answers both with one slice, so it is asked only for its
+    /// hardness — floored by the brush's own size (`budget::effective_hardness`), so a
+    /// hard edge keeps a ~px of antialiased rim at any radius.
     pub(super) fn resolve(&self, assets: &AssetStore, brush: &BrushParams) -> Option<ResolvedTip> {
         let warping = brush.liquify().is_some();
         match brush.shape {
@@ -137,14 +127,12 @@ impl TipCache {
     /// The round tip's baked textures for a given `hardness`, cached so live preview
     /// — which re-renders per pointer move — doesn't rebuild them each frame.
     ///
-    /// The set is built and cached **together**, off a single [`round_coverage`]
-    /// evaluation, because they are readings of one field: 256² texels of
-    /// `acos`/`exp`, which a texture each would run again for the same hardness.
-    /// Cached as one entry for a second reason — held apart, the stamp loop could find
-    /// its prefix hot and its coverage cold, and pay the field again anyway. The
-    /// coverage prefix is baked eagerly with them rather than on a liquify brush's
-    /// first ask: it is one linear pass over a field already in hand, against a
-    /// cache miss that has just paid the transcendental one.
+    /// Built and cached **together**, off a single [`round_coverage`] evaluation,
+    /// because they are readings of one field: 256² texels of `acos`/`exp` a texture
+    /// each would run again for the same hardness, and held apart the stamp loop could
+    /// find its prefix hot and its coverage cold. The coverage prefix is baked with them
+    /// rather than on a liquify brush's first ask — one linear pass over a field already
+    /// in hand.
     fn round_tip(&self, hardness: f32) -> RoundTip {
         let mut cache = unpoisoned(self.round_tip.lock());
         let (tip, _evicted) = lru(&mut cache, hardness.to_bits(), ROUND_TIPS_KEPT, || {
@@ -262,13 +250,9 @@ pub(super) struct ResolvedTip {
 }
 
 /// A baked round tip: the **prefix-τ** volume both render paths integrate the swept
-/// deposit against, the plain **coverage** mask the stamp loop's reservoir texels
-/// weight by, the **coverage prefix** the liquify follow reads (§6.13), and the
-/// tip's rise.
-///
-/// One type because they are one thing — the same coverage field, read four ways —
-/// and keeping them so is what makes a cache entry able to say it holds *the tip*
-/// rather than a texture that happens to be a tip's.
+/// deposit against, the plain **coverage** mask the stamp loop's reservoir texels weight
+/// by, the **coverage prefix** the liquify follow reads (§6.13), and the tip's rise. One
+/// type because they are one thing — the same coverage field, read four ways.
 #[derive(Clone)]
 struct RoundTip {
     prefix: wgpu::TextureView,
@@ -307,18 +291,9 @@ type NoiseKey = (NoiseKind, u32);
 /// family — a pass at strength `a` lays `1 − |y|^(a·h)`, the same shape at another
 /// hardness — and the field is radially symmetric, as a round tip's ought to be.
 ///
-/// What this replaces aimed at the same profile through the *linear* integral: a
-/// `1 − r^h` disc divided by its own chord half-length, `1/√(1 − y²)`. The log in
-/// between is what it did not account for, and it is not a small correction, because
-/// `−ln(1 − c)` weights the high-coverage core far above the rim: the stroke came out
-/// fuller than its hardness named everywhere, by 0.08 in coverage at `hardness = 0`
-/// and by 0.54 at `hardness = 0.9`, with the whole falloff crushed into the last few
-/// texels of the rim — and on a hard tip the flanks left the mask above coverage 1
-/// entirely, where the clamp ate the overshoot.
-///
 /// `κ` diverges at the centre, as it must for a profile that reaches exactly 1 there,
-/// so the core saturates against that same 0.999 clamp and lands a shade under 1
-/// instead. Outside it the profile is exact to a thousandth (`tests`, below).
+/// so the core saturates against the 0.999 clamp and lands a shade under 1 instead.
+/// Outside it the profile is exact to a thousandth (`tests`, below).
 fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
     let mut cov = vec![0.0f32; (res * res) as usize];
     for y in 0..res {
@@ -353,17 +328,15 @@ const RISE_SAMPLES: usize = 2048;
 /// coverage climbs by [`WARP_CONTRACTION`](super::budget::WARP_CONTRACTION),
 /// anywhere along a pass — what the liquify step budget prices.
 ///
-/// Along the centreline, where the pass crosses the profile head-on; any other
-/// chord crosses it obliquely and climbs slower, so this is the worst case. The
-/// profile is monotone in the radius, so the climb over a window is monotone in
-/// the window's width and the shortest window that climbs enough is a binary
-/// search over widths, each a sweep of the sampled profile.
+/// Along the centreline, where the pass crosses the profile head-on; any other chord
+/// crosses it obliquely and climbs slower, so this is the worst case. The profile is
+/// monotone in the radius, so the climb over a window is monotone in the window's width
+/// and the shortest window that climbs enough is a binary search over widths.
 ///
-/// Sampled rather than solved because the steepest window is not always at the
-/// rim: a hard tip climbs fastest where its `√(1 − r)` cusp meets the edge, a soft
-/// one somewhere inside, and one search answers both. The rim itself is the last
-/// sample — a hard tip's whole climb sits inside the final ten-thousandth of a
-/// radius, and a grid that stopped short of it would find no climb at all.
+/// Sampled rather than solved because the steepest window is not always at the rim: a
+/// hard tip climbs fastest where its `√(1 − r)` cusp meets the edge, a soft one
+/// somewhere inside. The rim itself is the last sample — a hard tip's whole climb sits
+/// inside the final ten-thousandth of a radius.
 pub(super) fn round_rise(hardness: f32) -> f32 {
     let n = RISE_SAMPLES;
     let cov: Vec<f32> = (0..=n)
@@ -404,14 +377,13 @@ pub(super) fn round_rise_of(b: &BrushParams) -> f32 {
 mod tests {
     use super::*;
 
-    /// The rise narrows as the tip hardens (§6.13) — a harder tip climbs its
-    /// coverage over a shorter travel — and lands where the profile puts it: at
-    /// hardness 0.8 the coverage climbs its ½ over a twelfth of a radius, so
-    /// that is the rise; at 1 it is the cusp's last thousandth or so, which the
-    /// budget's texel floor then takes over. Only from the middle of the range:
-    /// the softest tips climb steepest at their *centre*, where `κ = h/(2r)`
-    /// spikes, and that spike is narrower at hardness 0 than the mid-profile
-    /// climb of a slightly harder tip, so the two softest rises are merely finite.
+    /// The rise narrows as the tip hardens (§6.13) and lands where the profile puts it:
+    /// at hardness 0.8 the coverage climbs its ½ over a twelfth of a radius; at 1 it is
+    /// the cusp's last thousandth or so, which the budget's texel floor then takes over.
+    /// Monotone only from the middle of the range — the softest tips climb steepest at
+    /// their *centre*, where `κ = h/(2r)` spikes, and that spike is narrower at hardness
+    /// 0 than a slightly harder tip's mid-profile climb, so the two softest rises are
+    /// merely finite.
     #[test]
     fn the_round_tips_rise_narrows_with_hardness() {
         for hardness in [0.0f32, 0.25] {
@@ -451,15 +423,13 @@ mod tests {
         );
     }
 
-    /// The whole claim [`round_coverage`] makes, checked where it is a claim: a full
-    /// pass of the tip lays `1 − |y|^h` across the stroke.
+    /// The whole claim [`round_coverage`] makes: a full pass of the tip lays
+    /// `1 − |y|^h` across the stroke.
     ///
     /// Swept through the very integral the GPU volume is built from — the row sum
     /// `assets::build_prefix` does, sharing its `tau_of` so the clamp cannot drift
-    /// between the two — which is what makes this a test of the tip rather than of a
-    /// restatement of it. Inside `|y| < 0.2` the profile is past 0.99 for every
-    /// hardness and the clamped core takes over, so that is where the pin stops; the
-    /// centre's saturation is the tip's one documented departure.
+    /// between the two. Inside `|y| < 0.2` the profile is past 0.99 for every hardness
+    /// and the clamped core takes over, so that is where the pin stops.
     #[test]
     fn the_round_tip_sweeps_to_the_profile_its_hardness_names() {
         const RES: u32 = ROUND_RES;

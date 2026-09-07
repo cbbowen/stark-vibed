@@ -27,9 +27,8 @@ use crate::gpu::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
 /// its contour. `tint.a == 0` selects the local actor's black/white marching ants;
-/// anything else draws a flat line in `tint.rgb` at that alpha — which is how
-/// another collaborator's selection is distinguished from your own
-/// (§17.3).
+/// anything else draws a flat line in `tint.rgb` at that alpha, which is how a
+/// collaborator's selection is distinguished from your own (§17.3).
 // Generated from `overlay.wesl`'s vertex parameters (§6.10).
 pub(super) use stark_shaders::mirror::overlay::OverlayInstance;
 
@@ -59,9 +58,6 @@ pub(super) struct OverlayLayouts {
 impl OverlayLayouts {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         let frag = wgpu::ShaderStages::FRAGMENT;
-        // Its own view bind group rather than pass A's: the fragment stage needs the
-        // uniform too (it converts a canvas-space distance to screen px with the
-        // zoom), and pass A declares it vertex-only.
         Self {
             view: desc::layout_for(device, "stark overlay view bgl", VIEW_SLOTS, frag, false),
             tile: desc::layout_for(device, "stark overlay tile bgl", MASK_SLOTS, frag, false),
@@ -120,10 +116,9 @@ impl OverlayPass {
     /// Encode pass C: every selection's contour over the lit image, one instanced
     /// quad per mask tile (§6.8, §17.3).
     ///
-    /// The local actor's and every present peer's are flattened into **one** instance
-    /// stream, so N collaborators still cost one render pass. A universal selection
-    /// draws nothing, so an unmasked document costs one skipped iteration; a frame
-    /// with no outlined tile at all encodes no pass.
+    /// The local actor's and every peer's flatten into **one** instance stream, so N
+    /// collaborators still cost one render pass. A universal selection draws nothing,
+    /// and a frame with no outlined tile encodes no pass at all.
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
@@ -193,19 +188,15 @@ pub(super) struct OverlayScene<'a> {
     /// The renderer's group 0 — the canvas → NDC mapping, bound to both stages here
     /// (§6.8).
     pub(super) view_bg: &'a wgpu::BindGroup,
-    /// Which view slot to draw through. The outline only ever runs on the screen
-    /// path, which has one view, so this is 0 — stated rather than assumed, since the
-    /// group it binds is slotted for pass A's sake.
+    /// Which view slot to draw through — 0, the outline only ever running on the
+    /// screen path, whose group is slotted for pass A's sake.
     pub(super) view_offset: u32,
     /// The lit image to draw over: the supersampled target when there is one, so the
     /// ants go through the same resolve as the paint and come out antialiased.
     pub(super) target: &'a wgpu::TextureView,
     /// The tiles this view can reach, or `None` to claim all of them — pass A's cull
-    /// (§6.3), applied to the ants for its reason.
-    ///
-    /// A selection may hold up to `MAX_SELECTION_TILES` of them and the outline is
-    /// redrawn every frame it is live, so a zoomed-in view was building an instance
-    /// and looking up a bind group for a thousand tiles to draw the two on screen.
-    /// Same rect, same conservatism, same "cannot measure it, so cull nothing".
+    /// (§6.3), applied to the ants. A selection may hold up to `MAX_SELECTION_TILES`
+    /// and the outline redraws every frame it is live, so without the cull a zoomed-in
+    /// view builds an instance and a bind group per off-screen tile.
     pub(super) visible: Option<stark_model::geom::TileRect>,
 }

@@ -2,14 +2,12 @@
 //! composes through, so that working a spot over and over resamples the picture
 //! once rather than once per stroke.
 //!
-//! A liquify stroke is a homeomorphism of the canvas. Applied to pixels it would
-//! be a resample, and a resample per stroke — or, as the first design had it, per
-//! *segment* — blurs an edge a little each time until nothing sharp is left. So
-//! the stroke is kept as what it is: a **displacement field** `d`, composed from
-//! every step of every stroke in the run by gathering the field itself (smooth, so
-//! the gather is nearly lossless), and the picture the layer shows is the run's
-//! **pristine base** resampled through the composed field, `out(x) = base(x + d(x))`
-//! — one resample, whatever the run has been through.
+//! A liquify stroke is a homeomorphism of the canvas, and a resample per stroke would
+//! blur an edge a little each time until nothing sharp is left. So the stroke is kept
+//! as what it is: a **displacement field** `d`, composed across the run by gathering
+//! the field itself (smooth, so the gather is nearly lossless), and the picture the
+//! layer shows is the run's **pristine base** resampled through the composed field,
+//! `out(x) = base(x + d(x))` — one resample, whatever the run has been through.
 //!
 //! Three maps and a bound, all persistent and all handles (§5.1), so a `DocState`
 //! holding one is as cheap to keep as one holding tiles:
@@ -29,12 +27,12 @@
 //!   (`LiquifyEffect::REACH_PX`).
 //!
 //! **Only a liquify stroke ever writes one**, and that is the §12.6 argument. A paint
-//! stroke leaves the run alone; the next liquify stroke reads the tiles inside its
-//! declared reach and compares them to what the run expects, by identity — the same
-//! change detection the undo patch uses (§5.2) — and starts afresh from the picture
-//! if anything differs. Every decision is then a function of tile identities and
-//! the run, both of which the commuting splice restores exactly, so a liquify stroke
-//! and a paint stroke beyond its reach land the same picture in either order.
+//! stroke leaves the run alone; the next liquify stroke compares the tiles inside its
+//! declared reach against what the run expects, by identity (§5.2), and starts afresh
+//! from the picture if anything differs. Every decision is then a function of tile
+//! identities and the run, both of which the commuting splice restores exactly, so a
+//! liquify stroke and a paint stroke beyond its reach land the same picture in either
+//! order.
 
 use std::rc::Rc;
 
@@ -65,8 +63,8 @@ impl LiquifyRun {
     /// tiles it may consult (§12.6).
     ///
     /// Identity, never content: a committed tile is never rewritten in place (§5.2),
-    /// so a shared handle *is* an unchanged tile, and a handle the undo splice put
-    /// back reads as unchanged exactly as the canonical replay would have it.
+    /// so a shared handle *is* an unchanged tile, a handle the undo splice put back
+    /// included.
     pub(crate) fn is_fresh(&self, tiles: &TileMap, within: TileRect) -> bool {
         let same = |c: &TileCoord, want: Option<&TilePairHandle>| match (tiles.get(c), want) {
             (None, None) => true,

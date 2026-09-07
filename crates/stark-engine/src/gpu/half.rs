@@ -1,17 +1,9 @@
 //! IEEE-754 half-precision, both ways (§6.1, §9).
 //!
-//! Two functions that had drifted apart into different files — the encoder in the
-//! environment prefilter, the decoder in readback — doing inverse halves of one
-//! conversion, and here together so neither can drift again.
-//!
-//! The encoder used to clamp its input to `[0, 65504]` and say so: what it encoded was
-//! radiance, which is non-negative, and the asymmetry with the general decoder was
-//! deliberate. It is signed now, because a second caller arrived that is not radiance —
-//! a placed image's tile channels, which carry an Oklab latent whose `a` and `b` axes
-//! run either side of zero (§23). Clamping those to zero would have desaturated every
-//! imported photograph towards green, silently, in the one code path with no shader to
-//! read. A sign bit is the whole of the difference; the magnitude path is unchanged, so
-//! the prefilter encodes exactly the bits it did.
+//! The encoder is **signed**, because one of its callers is not radiance: a placed
+//! image's tile channels carry an Oklab latent whose `a` and `b` axes run either side of
+//! zero (§23), and clamping those to zero desaturates every imported photograph towards
+//! green — silently, in the one code path with no shader to read.
 
 /// Encode an `f32` to IEEE-754 half-precision bits (round-to-nearest-even).
 ///
@@ -20,10 +12,9 @@
 /// (radiance, and a color channel).
 pub fn f32_to_f16(x: f32) -> u16 {
     let sign = u16::from(x.is_sign_negative()) << 15;
-    // The NaN case is tested rather than clamped, and not as a courtesy: `clamp`
-    // *returns* the NaN, whose exponent field is `0xff` and would come out of the
-    // arithmetic below as a large finite half rather than as nothing. Zero is the one
-    // answer a channel or a radiance sample can survive.
+    // The NaN case is tested rather than clamped: `clamp` *returns* the NaN, whose
+    // exponent field is `0xff` and would come out of the arithmetic below as a large
+    // finite half. Zero is the one answer a channel or a radiance sample can survive.
     let magnitude = if x.is_nan() {
         0.0
     } else {
@@ -89,14 +80,11 @@ mod tests {
     }
 
     /// **The encoder is signed**, and the two directions here are inverses over the
-    /// whole range rather than over the non-negative half.
-    ///
-    /// This is the property that changed when a placed image's tile channels became a
-    /// caller (§23): an Oklab latent's `a` and `b` axes run either side of zero, and
-    /// the old encoder folded every negative one onto `+0`. That fails in exactly the
-    /// way that is hardest to see — no error, no NaN, just every imported photograph
-    /// pulled towards green — so it is pinned against the *decoder in this file*
-    /// rather than against a table of expected bits.
+    /// whole range rather than over the non-negative half — the property a placed
+    /// image's tile channels depend on (§23), an Oklab latent's `a` and `b` axes running
+    /// either side of zero. Folding a negative onto `+0` fails in the way that is
+    /// hardest to see — no error, no NaN, just every photograph pulled towards green —
+    /// so it is pinned against the *decoder in this file* rather than a table of bits.
     #[test]
     fn the_pair_round_trips_through_zero() {
         for &v in &[

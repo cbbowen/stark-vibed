@@ -7,14 +7,12 @@
 //! views/samplers are reference-counted.
 //!
 //! The texture carries the height in `R` — the media pass's relief, §6.3 — and, in
-//! `GB`, the **rise the substrate makes one `tooth::TOOTH_REACH` ahead** along each canvas
-//! axis ([`pack_substrate`]). The rise is the whole of the deposition model: what a
-//! dragged tip contacts is not a level set of the height but the *slope of the substrate
-//! along its own travel* — it is pressed up by substrate rising to meet it and left
-//! hanging by substrate falling away — so paint catches on the near faces of the grain
-//! and bridges the lee sides. The rise is baked here, once, because nothing at draw
-//! time should be recomputing a filter — which also means the filter can be as
-//! carefully chosen as the model deserves.
+//! `GB`, the **rise the substrate makes one `tooth::TOOTH_REACH` ahead** along each
+//! canvas axis ([`pack_substrate`]). The rise is the whole of the deposition model: what
+//! a dragged tip contacts is not a level set of the height but the *slope of the
+//! substrate along its own travel*, so paint catches on the near faces of the grain and
+//! bridges the lee sides. It is baked here, once, so nothing at draw time recomputes a
+//! filter.
 
 use crate::gpu::context::GpuContext;
 use stark_model::{SubstrateId, SubstrateScale};
@@ -38,13 +36,12 @@ pub const SUBSTRATE_TILE_PX: f32 = 1024.0;
 /// **A canvas substrate as the renderer builds it: which map, and how large it is
 /// laid** (§6.4).
 ///
-/// The pair, not the id alone, because the map that gets baked is a function of
-/// both. The rise a tip meets is a difference taken across [`TOOTH_REACH`] *canvas
-/// px* expressed in the map's own texels (`tooth::pack_substrate`), so laying the same
-/// substrate at twice the size halves that span and changes what the tooth bites — and
-/// the bearing table read off the result changes with it. Baking one map and scaling
-/// the lookup would be the compensating fudge §1 rules out: it would report the rise
-/// over six px as if it were the rise over three.
+/// The pair, not the id alone, because the map that gets baked is a function of both:
+/// the rise a tip meets is a difference taken across [`TOOTH_REACH`] *canvas px*
+/// expressed in the map's own texels (`tooth::pack_substrate`), so laying the same
+/// substrate at twice the size halves that span and changes what the tooth bites.
+/// Baking one map and scaling the lookup would be the compensating fudge §1 rules out:
+/// it would report the rise over six px as if it were the rise over three.
 ///
 /// So this is the registry's key, while the *bytes* stay keyed by the [`SubstrateId`]
 /// alone (`gpu::registry`): one height map, a bake per scale it is laid at.
@@ -75,11 +72,11 @@ impl Substrate {
 
     /// Canvas px → substrate-tile uv: `1 / tile_px`.
     ///
-    /// **The one definition**, which both passes that sample the substrate reach through
-    /// — the deposition tooth by way of the bake it was built for
-    /// ([`SubstrateMap::uv_scale`]), the media pass by asking the document (see there).
-    /// The substrate the paint catches on and the substrate the light catches on have to be
-    /// the *same* substrate, or the highlights sit beside the grain instead of on it.
+    /// **The one definition**, reached by both passes that sample the substrate — the
+    /// deposition tooth by way of the bake it was built for ([`SubstrateMap::uv_scale`]),
+    /// the media pass by asking the document. The substrate the paint catches on and the
+    /// substrate the light catches on have to be the *same* substrate, or the highlights
+    /// sit beside the grain instead of on it.
     pub fn uv_scale(self) -> f32 {
         1.0 / self.tile_px()
     }
@@ -93,11 +90,9 @@ pub struct SubstrateMap {
     pub sampler: wgpu::Sampler,
     /// [`Substrate::uv_scale`] for the pair this map was baked for.
     ///
-    /// Carried rather than recomputed because it is a fact *about this bake*: the
-    /// deposit samples the rise channels, which were measured over a reach in the
-    /// texels this scale implies, so reading them at any other uv would be reading
-    /// the wrong substrate. The media pass asks the document instead, and the reason it
-    /// may is on [`Substrate::uv_scale`].
+    /// A fact *about this bake*: the deposit samples the rise channels, which were
+    /// measured over a reach in the texels this scale implies, so reading them at any
+    /// other uv would be reading the wrong substrate.
     pub uv_scale: f32,
     /// 1.0 if this is a real (image) substrate with substrate to interact with, 0.0 for
     /// the procedural `Flat`. Lets effects keyed on substrate relief (e.g. the knife's
@@ -128,9 +123,9 @@ impl SubstrateMap {
     /// [`ToothParams::softness`](stark_model::document::ToothParams::softness)) — and
     /// direction of travel (§6.4).
     ///
-    /// [`Bearing::at`], with the one thing that is the *substrate's* business rather
-    /// than the model's: a substrate with no relief has nothing to bite, whatever the
-    /// tooth, and answers exactly 1.
+    /// [`Bearing::at`], plus the one thing that is the *substrate's* business rather than
+    /// the model's: a substrate with no relief has nothing to bite, whatever the tooth,
+    /// and answers exactly 1.
     pub fn bearing(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
         if self.relief <= 0.0 {
             return 1.0;
@@ -204,11 +199,9 @@ impl crate::gpu::registry::Resource for Substrate {
         self.id
     }
 
-    /// `Flat` is a 1x1 *zero*-height texel: a constant
-    /// height has zero gradient, so it is exactly equivalent to having no substrate
-    /// (§6.4). It is the only substrate with no bytes behind it, which is what makes
-    /// "the id names an image the holder may not have yet" a question with exactly
-    /// one shape.
+    /// `Flat` is a 1x1 *zero*-height texel: a constant height has zero gradient, so it is
+    /// exactly equivalent to having no substrate (§6.4). It is the only substrate with no
+    /// bytes behind it.
     fn is_builtin(self) -> bool {
         matches!(self.id, SubstrateId::Flat)
     }

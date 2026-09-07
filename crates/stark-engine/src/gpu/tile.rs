@@ -7,11 +7,10 @@
 //! textures; cloning one is two `Arc` bumps, which is what makes persistent
 //! `DocState` snapshots cheap.
 //!
-//! The pool keys its free lists by **format**, and hands out one texture at a time,
-//! so different consumers can mix formats freely. In particular a brush-dynamics
-//! *scratch* tile takes a wider `Rgba16Float` aux (an extra channel the deposit and
-//! integrate use internally) while persistent tiles keep the compact color-space
-//! `aux` format — the two never need to match (§6.2).
+//! The pool keys its free lists by **format** and hands out one texture at a time, so
+//! consumers may mix formats freely: a brush-dynamics *scratch* tile takes a wider
+//! `Rgba16Float` aux (an extra channel the deposit and integrate use internally) while
+//! persistent tiles keep the compact color-space `aux` format (§6.2).
 //!
 //! Channels (§6.1, normalized representation):
 //! - `color`: `Rgba16Float`, latent color premultiplied by **opacity**
@@ -30,14 +29,10 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 // —— the tile texture's geometry, as the shaders address it ——————————————————
 //
-// These are the engine's, not the document's, and they moved here from
-// `stark_model::geom` for the reason `io.rs` gives for not recording `TILE_SIZE` in
-// a save file: *an implementation detail is not a fact about a painting*. Nothing in
-// the model reads any of them — a footprint quantizes against `TILE_SIZE` and pads
-// by `TILE_APRON`, which is the whole of what a *log* is addressed in — while a
-// UV bias, a mask tile's edge length and where its texture starts are all questions
-// about how a pass samples a texture, which is this crate's business and nobody
-// else's.
+// These are the engine's, not the document's: a UV bias, a mask tile's edge length
+// and where its texture starts are all questions about how a pass samples a texture.
+// Nothing in the model reads any of them — a footprint quantizes against `TILE_SIZE`
+// and pads by `TILE_APRON`, which is the whole of what a *log* is addressed in.
 
 /// Maps a tile's interior quad corner (`∈ [0, 1]`) to a UV coordinate in the
 /// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The
@@ -54,33 +49,18 @@ pub const MASK_TEX: u32 = TILE_TEX;
 ///
 /// # Precision
 ///
-/// **Exact while `|coord| < 2^16`** — a canvas within about ±16.7 Mpx of the origin,
-/// which is every document anyone has painted. Past that, `f32` counts in steps
-/// larger than one pixel and the apron subtraction is absorbed: the value stops being
-/// the texel grid's and starts being the nearest representable thing to it.
+/// **Exact while `|coord| < 2^16`** — a canvas within about ±16.7 Mpx of the origin.
+/// Past that, `f32` counts in steps larger than one pixel and the apron subtraction is
+/// absorbed: the value stops being the texel grid's and starts being the nearest
+/// representable thing to it.
 ///
 /// That matters because every caller feeds this straight into a uniform a tile writer
 /// reads, and §6.4 requires each pass to be a pure function of canvas position — the
 /// property that makes a tile's apron bit-identical to its neighbour's interior with
 /// no copy pass. Adjacent tiles round consistently within a binade, so no seam has
-/// been demonstrated; the bound is stated because nothing else states it, and because
-/// [`gpu::place::offset`](crate::gpu::place) exists next door deriving the same kind
-/// of quantity in integers *precisely* to avoid this, with a test that asserts the
-/// `f32` form is already wrong around coord 300 000.
-///
-/// **Not asserted**, deliberately. `place`'s own
-/// `a_distant_tile_addresses_the_image_exactly` calls this at coord 300 000 precisely
-/// to prove the hazard is real rather than imagined, so a `debug_assert` on the bound
-/// would fail the test that documents it — and, worse, would turn "approximate out
-/// here" into "crashes out here" for an artist who panned a long way from the origin,
-/// which is a stronger claim than anything measured supports.
-///
-/// A caller needing an exact offset between two large canvas positions must derive it
-/// in integers, as `place` does. Making this one integral — `TileCoord::tex_origin()
-/// -> IVec2`, with the `as f32` pushed down to the uniform packing where the
-/// precision is actually lost and a reader can see it — would change what canvas
-/// position a tile writer computes far out on the canvas, so it is a change with a
-/// golden re-bless attached rather than a cleanup.
+/// been demonstrated, and the bound is not asserted: it is approximate out there, not
+/// a failure. A caller needing an exact offset between two large canvas positions must
+/// derive it in integers, as [`gpu::place::offset`](crate::gpu::place) does.
 pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
     coord.texture_box().0
 }
@@ -103,26 +83,21 @@ pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// The format of a liquify run's **displacement field** tiles (§6.13): two f32 lanes,
 /// the displacement in canvas px. Full float rather than half because the field is
-/// re-gathered by every segment of every stroke in a run — a smooth field survives a
-/// bilinear gather almost exactly, and what would erode it is the store's rounding —
-/// and because a displacement of a few hundred px at f16 has a sixteenth of a texel
-/// of slack, which is visible in a resample and pointless to pay for. Pooled like
-/// paint, in the same `TILE_TEX` block with the same apron (§6.4).
+/// re-gathered by every segment of every stroke in a run and what would erode it is
+/// the store's rounding: a displacement of a few hundred px at f16 has a sixteenth of
+/// a texel of slack, which is visible in a resample. Pooled like paint, in the same
+/// `TILE_TEX` block with the same apron (§6.4).
 pub const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
 
 /// What a texture was taken out of the pool *for*.
 ///
-/// It earns its place twice over, which is worth saying because it is otherwise the
-/// shape of plumbing added for a log. At the 26 call sites it is documentation the
-/// compiler keeps honest — `AllocSource::TransformScratch` says what the acquire is,
-/// where a bare `acquire_tex(format)` would say only that one happened. And it is
-/// the only way to answer the question a large pool actually raises: not *how many*
-/// textures are out, which `capacity` already reports, but **who is holding them**.
+/// Documentation the compiler keeps honest at the acquire site, and the only way to
+/// answer what a large pool actually raises: not *how many* textures are out, which
+/// `capacity` already reports, but **who is holding them**.
 ///
 /// What it must not be is a cost. The census it feeds is an array indexed by
 /// discriminant ([`Census`]), not a map: incrementing it is an add, on a path that
-/// runs thousands of times a second and that §6.2's whole allocation-rate argument
-/// is about.
+/// runs thousands of times a second and that §6.2's allocation-rate argument is about.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AllocSource {
     #[default]
@@ -153,10 +128,10 @@ impl AllocSource {
     /// Every variant, in discriminant order — what [`Census`] indexes by.
     ///
     /// [`Self::name`] below has no wildcard, so adding a variant is a compile error
-    /// there; this array is what that error exists to remind you to extend, and
-    /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree.
-    /// A variant that slipped past both would go uncounted rather than out of
-    /// bounds — telemetry degrading is the right failure for telemetry.
+    /// there; extend this array too, and
+    /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree. A
+    /// variant that slipped past both would go uncounted rather than out of bounds —
+    /// telemetry degrading is the right failure for telemetry.
     const ALL: [Self; 12] = [
         Self::Unknown,
         Self::IntegrateDestination,
@@ -192,10 +167,9 @@ impl AllocSource {
 
 /// How many of the pool's textures each [`AllocSource`] is holding.
 ///
-/// An array rather than a `HashMap<AllocSource, usize>`, which is what this was: the
-/// map cost a hash on every acquire *and* every release, both under the pool's lock,
-/// to serve one `tracing::debug!`. Indexing by discriminant makes the same census an
-/// increment.
+/// An array rather than a `HashMap<AllocSource, usize>`: a map would cost a hash on
+/// every acquire *and* every release, both under the pool's lock, to serve one
+/// `tracing::debug!`. Indexing by discriminant makes the census an increment.
 #[derive(Default)]
 struct Census([usize; AllocSource::ALL.len()]);
 
@@ -222,9 +196,7 @@ impl Census {
 }
 
 impl std::fmt::Debug for Census {
-    /// Only the sources actually holding something, by name — which is both shorter
-    /// and more useful than the map's output, since that printed in whatever order
-    /// the hashing gave and kept every source it had ever seen, at zero.
+    /// Only the sources actually holding something, by name, in discriminant order.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
             .entries(
@@ -240,18 +212,13 @@ impl std::fmt::Debug for Census {
 
 /// A recycled texture **and the view onto it**, as the free list holds them.
 ///
-/// The view is pooled with the texture rather than made afresh at each acquire, and
-/// that is worth a word because it is the one thing a reader might expect to be
-/// per-consumer. It is not: every acquire built the same view — the whole texture,
-/// through the default descriptor — so making a new one bought nothing but an object.
-///
-/// The rate is what makes it matter. A stroke acquires ~4 of these per affected tile
-/// (a scratch pair, a destination pair) on every pointer move, so a stroke crossing
-/// twenty tiles at pen rate was creating thousands of views a second. Natively that
-/// is a small allocation and some validation; on the web it is a JS object per
-/// acquire, which is precisely the allocation *rate* this pool and the stroke's own
-/// scratch pool exist to keep down (§6.2) — this one was quietly the largest
-/// remaining source of it.
+/// The view is pooled with the texture rather than made afresh at each acquire: every
+/// acquire wants the same view — the whole texture, through the default descriptor —
+/// and a stroke acquires ~4 of these per affected tile (a scratch pair, a destination
+/// pair) on every pointer move. Natively a fresh view is a small allocation and some
+/// validation; on the web it is a JS object per acquire, which is precisely the
+/// allocation *rate* this pool and the stroke's own scratch pool exist to keep down
+/// (§6.2).
 struct Pooled {
     tex: wgpu::Texture,
     view: wgpu::TextureView,
@@ -263,9 +230,8 @@ struct Pooled {
 /// One pooled GPU texture (`TILE_TEX` square) checked out of the pool.
 ///
 /// `tex` is an `Option` only so [`Drop`] can move it back to the free list. `view`
-/// is not: it is `Clone` (an `Arc` handle), so the return path clones it and the
-/// read path — which runs once per bind group, per tile, per frame — stays a plain
-/// borrow with nothing to unwrap.
+/// is not: it is `Clone` (an `Arc` handle), so the return path clones it and the read
+/// path — once per bind group, per tile, per frame — stays a plain borrow.
 struct GpuTex {
     tex: Option<wgpu::Texture>,
     view: wgpu::TextureView,
@@ -289,13 +255,11 @@ impl Drop for GpuTex {
             }
             return;
         };
-        // Recovered from rather than propagated, because the alternative is a leak.
-        // A poisoned lock means some other thread panicked holding it; the state it
-        // guards is a free list and a counter, and neither can be left saying
-        // something a return would violate. [`unpoisoned`] hands the texture back;
-        // an `if let Ok(..)` would drop it on the floor — never recycled, and
+        // Recovered from rather than propagated, because the alternative is a leak:
+        // an `if let Ok(..)` would drop the texture on the floor — never recycled, and
         // `capacity` never told, so the pool would quietly grow a replacement for a
-        // texture it still owned.
+        // texture it still owns. Nothing the lock guards can be left inconsistent by a
+        // panic: it is a free list and a counter.
         let mut inner = unpoisoned(pool.lock());
         let Some(tex) = self.tex.take() else { return };
         inner.stamp += 1;
@@ -319,16 +283,13 @@ impl Drop for GpuTex {
 /// business (§6.7) and the pool has no view of that.
 ///
 /// **A handle hands out a view and never the texture**, and that is what keeps a
-/// recycled [`Pooled`] slot's view valid. The view outlives any one checkout, so a
-/// consumer that could reach the `wgpu::Texture` could `destroy()` it and leave the
-/// free list holding a view onto nothing — which the next acquire would hand to a
-/// bind group, and which no test would catch until a driver complained. Nothing
-/// needs the texture today (the accessors that offered one had no callers at all),
-/// so the way to rule that out is not to offer it. Re-adding one means reading this
-/// paragraph first, which is the point. The one consumer that needs the texture *as
-/// a copy destination* — the dynamics write-back — gets [`Self::copy_into`], which
-/// encodes the command in here and hands nothing out, so the class stays ruled out
-/// rather than re-opened with a caveat.
+/// recycled [`Pooled`] slot's view valid. The view outlives any one checkout, and
+/// `Texture::destroy` takes `&self`, so a consumer that could reach the
+/// `wgpu::Texture` could leave the free list holding a view onto nothing — which the
+/// next acquire would hand to a bind group, and which no test would catch until a
+/// driver complained. A consumer that needs the texture *as a copy destination* gets
+/// [`Self::copy_into`] or [`Self::copy_block_out`], which encode the command in here
+/// and hand nothing out.
 #[derive(Clone)]
 pub struct TexHandle(Arc<GpuTex>);
 
@@ -373,9 +334,8 @@ impl TexHandle {
     /// Encode a copy of a block **out of** this texture into `dst` — the liquify
     /// field's composite (§6.13), which lays a run's field tiles into a region-sized
     /// texture clipped to the region, so a ring tile contributes only the band the
-    /// region overlaps. [`copy_into`](Self::copy_into)'s mirror, and here for its
-    /// reason: the command is encoded in here and the texture handed to nobody, so
-    /// the pool's free list can never be left holding a view onto a destroyed one.
+    /// region overlaps. [`copy_into`](Self::copy_into)'s mirror, and in here for the
+    /// same reason: the texture is handed to nobody.
     ///
     /// `src` is the block's origin in this texture, `dst_origin` where it lands, and
     /// `extent` the block; a block past either texture is a validation error, which
@@ -413,11 +373,10 @@ impl TexHandle {
     /// Fill this texture with one full `TILE_TEX` block computed on the **CPU** —
     /// what a placed image's tiles are built by (§23).
     ///
-    /// The only writer here that is not a render pass, and the only one that needs to
-    /// be: an imported image's texels are already the answer, so there is nothing for a
-    /// shader to compute from them and a pass would be a round trip through the GPU to
-    /// copy a buffer. It is also what makes those tiles adapter-independent to the
-    /// byte, which no pass in this engine is.
+    /// The only writer here that is not a render pass: an imported image's texels are
+    /// already the answer, so there is nothing for a shader to compute from them. It is
+    /// also what makes those tiles adapter-independent to the byte, which no pass in
+    /// this engine is.
     ///
     /// `bytes` is the whole block, row-major, `TILE_TEX` rows of this format's texel
     /// size — the caller builds it, because what a texel *means* is the channel's
@@ -427,8 +386,7 @@ impl TexHandle {
     ///
     /// # Panics
     ///
-    /// Panics unless `bytes` is exactly one block, which is a caller arithmetic error
-    /// rather than a state to handle.
+    /// Panics unless `bytes` is exactly one block.
     pub fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
         let dst = self
             .0
@@ -468,8 +426,7 @@ struct TilePair {
     color: TexHandle,
     aux: TexHandle,
     /// The **residual** channel (§6.7) — present exactly when the document's color
-    /// space declares a `resid_format`, which is a property of the space and so is
-    /// the same for every tile of a document.
+    /// space declares a `resid_format`, so the same for every tile of a document.
     ///
     /// `Option` rather than a texture every space allocates: Oklab has no residual,
     /// and giving it one would be eight bytes a texel of zeroes on the default
@@ -491,10 +448,9 @@ pub type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandl
 /// **Lane counts differ per channel and that is the point**: the color is four lanes
 /// and the height is one, because a tile's aux is `R16Float` in every space this
 /// engine has (`ColorSpace::aux_format`) — the amount of paint is one number, and the
-/// color's fourth lane is a per-unit opacity rather than an amount (§6.1). The two are
-/// separate fields rather than a lane index into one buffer so that a caller cannot
-/// read the second as though it were the first, which is the confusion §6.1 exists to
-/// name.
+/// color's fourth lane is a per-unit opacity rather than an amount (§6.1). Separate
+/// fields rather than a lane index into one buffer, so a caller cannot read the second
+/// as though it were the first.
 pub struct TileChannels {
     /// Four lanes per texel: three of paint, and in `.3` the per-unit **opacity** —
     /// a material property, never the amount of paint (§6.1).
@@ -532,32 +488,24 @@ impl TilePairHandle {
     ///
     /// **The cache is sound because a tile is immutable.** Its texels are never
     /// rewritten once a commit lands — copy-on-write hands out a fresh tile instead
-    /// (§5.2), which is the same property [`Self::same`] rests on — so a bind group
-    /// naming this tile's three views describes it correctly for as long as it
-    /// exists. It is dropped with the tile, so the pool reclaims the textures and
-    /// the group naming them together, and no eviction policy is needed.
+    /// (§5.2), the same property [`Self::same`] rests on — so a bind group naming this
+    /// tile's three views describes it correctly for as long as it exists, and is
+    /// dropped with it, so no eviction policy is needed.
     ///
     /// **And the layout cannot change under it.** A bind group answers to one
-    /// `BindGroupLayout`, and there is exactly one this could have been built for:
-    /// `composite::tile_bind_group_layout` is built once per GPU stack and handed to
-    /// both consumers, which is what makes the cache shareable *between* them rather
-    /// than merely reusable within one. A sibling engine is handed the very same
-    /// `Arc<CompositorPasses>` ([`Engine::new_sharing`]), and the one thing that
-    /// builds a different layout is a color-space rebuild, which replaces the tile
-    /// pool and requires an empty document (`rebuild_gpu_for`) — so no tile survives
-    /// it to be asked twice.
+    /// `BindGroupLayout`, and `composite::tile_bind_group_layout` is built once per GPU
+    /// stack and handed to both consumers — pass A, and the stamp loop compositing the
+    /// same tile into the working region it evolves (§6.2), both through
+    /// `composite::tile_bind_group`. A sibling engine is handed the very same
+    /// `Arc<CompositorPasses>` ([`Engine::new_sharing`]), so the cache is shared
+    /// *between* engines rather than merely reused within one. The one thing that
+    /// builds a different layout is a color-space rebuild, which replaces the tile pool
+    /// and requires an empty document (`rebuild_gpu_for`) — so no tile survives it to
+    /// be asked twice.
     ///
-    /// **The two consumers.** Pass A composites a tile onto the screen, and the stamp
-    /// loop composites the same tile into the working region it evolves (§6.2). Both
-    /// bind this group; both go through `composite::tile_bind_group`, so neither can
-    /// describe it differently and quietly build a second one.
-    ///
-    /// What this replaces is a bind group per tile, per layer, **per frame** — and on
-    /// the stroke path, per halo tile per piece per *pointer move*. The visible tile
-    /// count scales as 1/zoom², so a zoomed-out multi-layer document was creating
-    /// ~10⁵ of them a frame — on the web, a JS object apiece, which is the allocation
-    /// *rate* `ScopedResources` and the pool's own [`Pooled`] exist to keep down
-    /// (§6.2). Now only a newly painted or newly loaded tile pays.
+    /// Without it a bind group is built per tile, per layer, **per frame** — and on the
+    /// stroke path, per halo tile per piece per *pointer move*, at a visible tile count
+    /// that scales as 1/zoom² (§6.2).
     ///
     /// [`Engine::new_sharing`]: crate::Engine::new_sharing
     pub(crate) fn composite_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
@@ -580,28 +528,16 @@ impl TilePairHandle {
     /// This tile's channels read straight off the GPU (§9) — **the one way to observe
     /// a tile's height and alpha without going through the lit composite**.
     ///
-    /// `None` where the machine could not be read; every other failure panics, since
-    /// the only caller is a test and a device that cannot be read is the finding.
+    /// Every failure panics: the only caller is a test, and a device that cannot be
+    /// read is the finding.
     ///
-    /// The reader is *here* rather than in `readback` or in a test helper, and that is
-    /// the whole design: `readback` reads `wgpu::Texture`s and a tile does not hand one
-    /// out — [`TexHandle`] offers a view alone, at length, because `Texture::destroy`
-    /// takes `&self`, so a borrow is enough to leave the pool's free list holding a
-    /// view onto nothing. What leaves *this call* is the decoded texels; the borrow
-    /// `readback::begin_read` is handed does cross the module line, so the guarantee is
-    /// "that one function does not destroy it" and not "it cannot be reached".
-    /// `readback` keeps the row-padding arithmetic, which is the half genuinely its.
+    /// Returns the whole `TILE_TEX` block, apron included, in the tile's own texel
+    /// order — the apron is exactly what a §6.4 seam claim is about, so trimming it
+    /// here would take the interesting half away.
     ///
-    /// The whole `TILE_TEX` block, apron included, in the tile's own texel order — the
-    /// apron is exactly what a §6.4 seam claim is about, so trimming it here would take
-    /// the interesting half away.
-    ///
-    /// One map per channel rather than one batched read, and only the **aux** forces
-    /// it: [`begin_read`](crate::gpu::readback) takes the slot stride from the first
-    /// texture, and the aux is `R16Float` where the color is `Rgba16Float`, so batching
-    /// the two would copy at the wrong pitch. Color and residual share a format and
-    /// could go in one read; they do not, because three reads spelled one way is worth
-    /// more here than two spelled two ways in a path that runs only under a test.
+    /// The reader is *here* rather than in `readback` because `readback` reads
+    /// `wgpu::Texture`s and a tile hands none out ([`TexHandle`]); what leaves this
+    /// call is the decoded texels. `readback` keeps the row-padding arithmetic.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
         use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
@@ -610,10 +546,8 @@ impl TilePairHandle {
             // The formats named, not their byte sizes: the decode is `f16` pairs, and
             // a size check would take `Rg32Float` for four halves. Asserted on the
             // *texture* rather than on the length that comes out, because that is what
-            // the claim is about — `read_many_rgba16f` states it the same way — and
-            // because a `debug_assert` is a check a release build drops. A space that
-            // widens its aux lands here instead of handing a caller every fourth texel
-            // as though it were a height.
+            // the claim is about. A space that widens its aux lands here instead of
+            // handing a caller every fourth texel as though it were a height.
             use wgpu::TextureFormat::{R16Float, Rgba16Float};
             assert!(
                 matches!((tex.format(), lanes), (R16Float, 1) | (Rgba16Float, 4)),
@@ -705,8 +639,7 @@ impl MaskHandle {
     /// through three different layouts and one cache slot can only answer for one of
     /// them: the overlay's here, the stamp loop's `region_tile_bgl`
     /// ([`Self::region_bg`]), and the transform's `mask_src_bgl` — which is per
-    /// *action* rather than per frame or per pointer move, so it has nothing to gain
-    /// and no slot here to take by mistake.
+    /// *action* rather than per frame, so it has no slot here to take by mistake.
     pub(crate) fn overlay_bg(&self, make: impl FnOnce() -> wgpu::BindGroup) -> &wgpu::BindGroup {
         self.1.overlay.get_or_init(make)
     }
@@ -740,9 +673,7 @@ impl MaskHandle {
 /// **The consequence, stated rather than hidden: an idle pool does not shrink.** A
 /// session that does something enormous and then sits still keeps that memory until
 /// the next spell of work, which is when the epoch advances and the surplus is
-/// measured against what that work actually needs. What this rules out is the thing
-/// §5.1 promises and did not deliver — that a peak reached once is resident for the
-/// rest of the session.
+/// measured against what that work actually needs (§5.1).
 ///
 /// 4096 is about fifty stroke renders (a stroke over twenty tiles acquires ~82), so
 /// an epoch is roughly a second of painting: long enough that the peak is a real
@@ -818,32 +749,23 @@ impl PoolInner {
     /// **The whole policy is `capacity > peak`.** The most the pool needed at once
     /// during the epoch was `peak`, so anything it owns beyond that was not needed by
     /// *any* moment of it — and since `in_use ≤ peak`, that surplus is provably all
-    /// sitting in `free` rather than checked out. Nothing a consumer holds, and
-    /// nothing the epoch's busiest instant wanted, can be dropped by it.
-    ///
-    /// Half the surplus rather than all of it, for hysteresis: demand that alternates
-    /// between epochs — a transform, then a stroke, then a transform — would otherwise
-    /// hand every texture back and build it again. Halving converges within a few
-    /// epochs and costs one epoch's patience.
+    /// sitting in `free` rather than checked out. Half of it goes back rather than all,
+    /// for hysteresis: demand that alternates between epochs would otherwise hand every
+    /// texture back and build it again.
     ///
     /// # The quarantine
     ///
-    /// **Only slots returned before this epoch opened may be destroyed**, which is a
-    /// second rule on top of the policy above and guards something else entirely.
+    /// **Only slots returned before this epoch opened may be destroyed**, which guards
+    /// something else entirely. "No live handle" is not "no pending GPU work": a
+    /// texture whose last handle drops while an unsubmitted encoder still names its
+    /// view reaches this free list early. Reuse alone makes that wrong pixels, which
+    /// the consumers' submit scopes prevent
+    /// ([`SubmitScope`](crate::gpu::scratch::SubmitScope)); `destroy()` makes it a
+    /// *dangling view*, handed to the next bind group.
     ///
-    /// "No live handle" is not "no pending GPU work". A texture whose last handle
-    /// drops while an unsubmitted encoder still names its view reaches this free list
-    /// early — and reuse alone makes that wrong pixels, which is bad but recoverable
-    /// and is what the consumers' submit scopes exist to prevent
-    /// ([`SubmitScope`](crate::gpu::scratch::SubmitScope)). `destroy()` makes the same
-    /// mistake a *dangling view*, handed to the next bind group: a device error, from
-    /// a pool that cannot see which of its consumers was careful.
-    ///
-    /// So the irreversible half waits. An epoch is [`TRIM_INTERVAL`] acquires and an
-    /// encoder spans one operation, so a slot that has survived a whole epoch on the
-    /// free list is long past any encoder that could still name it. Reuse is
-    /// unaffected and stays immediate: this delays only the `destroy`, and costs a
-    /// burst one extra epoch before its surplus starts to drain.
+    /// An epoch is [`TRIM_INTERVAL`] acquires and an encoder spans one operation, so a
+    /// slot that has survived a whole epoch on the free list is long past any encoder
+    /// that could still name it. Reuse stays immediate: this delays only the `destroy`.
     fn tick(&mut self, format: wgpu::TextureFormat) {
         self.peak = self.peak.max(self.in_use());
         self.countdown = self.countdown.saturating_sub(1);
@@ -859,11 +781,10 @@ impl PoolInner {
             let mut taken: Vec<usize> = eligible[..drop].to_vec();
             taken.sort_unstable_by(|a, b| b.cmp(a));
             for i in taken {
-                // Explicitly, not merely by dropping the handle. On the web a dropped
-                // texture only releases its JS object and waits for GC, which is the
-                // opposite of what a trim is for; `destroy()` hands the memory back as
-                // soon as the in-flight work referencing it retires. The view beside it
-                // goes with it and is never read again ([`Pooled`]).
+                // Explicitly, not merely by dropping the handle: on the web a dropped
+                // texture only releases its JS object and waits for GC, where
+                // `destroy()` hands the memory back as soon as the in-flight work
+                // referencing it retires.
                 self.free.swap_remove(i).tex.destroy();
             }
             self.capacity -= drop;
@@ -887,11 +808,9 @@ impl PoolInner {
 /// returned before the current epoch opened ([`PoolInner::tick`]).
 ///
 /// Oldest first so a repeated trim drains the quarantine in the order slots entered
-/// it, rather than stranding the same young ones at every boundary.
-///
-/// Taken as the slots' return stamps rather than the slots, so the rule is decidable
-/// without a GPU — the whole of it is an ordering on `u64`s, and a texture would only
-/// stop it being tested.
+/// it, rather than stranding the same young ones at every boundary. Taken as the
+/// slots' return stamps rather than the slots, so the rule — an ordering on `u64`s —
+/// is decidable without a GPU.
 fn quarantine_passed(returns: &[u64], epoch_start: u64) -> Vec<usize> {
     let mut passed: Vec<usize> = (0..returns.len())
         .filter(|&i| returns[i] < epoch_start)
@@ -907,9 +826,8 @@ fn quarantine_passed(returns: &[u64], epoch_start: u64) -> Vec<usize> {
 /// once. Half of that goes back, and never more than is actually idle.
 ///
 /// `free` is the count the trim may actually take: idle **and** past the quarantine
-/// ([`PoolInner::tick`]). Passing the eligible count rather than the whole free list
-/// is what keeps this function the only place the arithmetic lives — a young slot is
-/// simply not offered, rather than being subtracted somewhere else afterwards.
+/// ([`PoolInner::tick`]). It is the eligible count rather than the whole free list, so
+/// a young slot is simply not offered instead of being subtracted somewhere else.
 ///
 /// The `min` is not defensive padding: `free = capacity − in_use` and `in_use ≤ peak`
 /// together already prove `free ≥ surplus`, so the clamp is unreachable for the whole
@@ -928,11 +846,9 @@ fn surplus_to_release(capacity: usize, peak: usize, free: usize) -> usize {
 /// surplus in the thousands, half of which is a lot of `destroy()` calls to make
 /// while a stroke is waiting for a scratch tile.
 ///
-/// This is a **bound on a cost that has not been measured**, not a tuned figure: it
-/// says the spike stays within a few hundred driver calls whatever the surplus, and
-/// costs only that a very large one takes more epochs to drain. If profiling ever
-/// shows the release is cheap, the honest change is to raise this and say so, not to
-/// discover the cap by wondering why reclamation is slow.
+/// A **bound on a cost that has not been measured**, not a tuned figure: it says the
+/// spike stays within a few hundred driver calls whatever the surplus, and costs only
+/// that a very large one takes more epochs to drain.
 const MAX_RELEASE_PER_EPOCH: usize = 256;
 
 /// One `TILE_TEX` square of `format`, in bytes.
@@ -960,9 +876,8 @@ pub struct TilePool {
     /// There are four of them at most (see [`new`](Self::new)), and the lookup is on
     /// the hottest path in the crate — a stroke asks ~4 times per affected tile per
     /// pointer move — where hashing a `TextureFormat` costs more than comparing it to
-    /// three others. Distinct formats stay distinct and equal ones stay shared, which
-    /// is the property that matters and the reason this is keyed by the format itself
-    /// rather than by a channel enum: `SCRATCH_AUX_FORMAT` equals both colour spaces'
+    /// three others. Keyed by the format itself rather than by a channel enum so that
+    /// equal formats share one list: `SCRATCH_AUX_FORMAT` equals both colour spaces'
     /// `color_format` today, and a slot per *purpose* would give the same textures two
     /// free lists that could not serve one another.
     ///
@@ -974,14 +889,13 @@ impl TilePool {
     /// A pool serving `formats` — the color space's `color` and `aux` (§6.7), which
     /// are the only formats a caller knows — **plus the three the pool defines itself**.
     ///
-    /// [`MASK_FORMAT`], [`SCRATCH_AUX_FORMAT`] and [`FIELD_FORMAT`] are unioned in
-    /// here rather than asked of the caller, because they are this module's constants and a call site
-    /// that had to remember them could forget one. That is not hypothetical: the
-    /// scratch aux was omitted, and the omission was invisible only because
-    /// `SCRATCH_AUX_FORMAT` happens to equal both color spaces' `color_format` —
-    /// the very coincidence [`StrokeRenderer::acquire_tile`] warns about one level
-    /// down. The first space to choose otherwise would have met `acquire_tex`'s
-    /// "unsupported format" panic on its first stroke.
+    /// [`MASK_FORMAT`], [`SCRATCH_AUX_FORMAT`] and [`FIELD_FORMAT`] are unioned in here
+    /// rather than asked of the caller, because they are this module's constants and a
+    /// call site that had to remember them could forget one — invisibly, while
+    /// `SCRATCH_AUX_FORMAT` happens to equal both color spaces' `color_format`, the
+    /// coincidence [`StrokeRenderer::acquire_tile`] warns about one level down. The
+    /// first space to choose otherwise meets `acquire_tex`'s "unsupported format" panic
+    /// on its first stroke.
     ///
     /// [`StrokeRenderer::acquire_tile`]: crate::gpu::StrokeRenderer
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
@@ -1034,17 +948,15 @@ impl TilePool {
     /// A recycled slot brings its **view** with it ([`Pooled`]), so the common path
     /// creates no wgpu objects at all — it is a `Vec::pop` and an `Arc::new`.
     ///
-    /// **The device call is made outside the lock**, which is the whole reason this
-    /// is two phases rather than one. `create_texture` is the single slowest thing the
-    /// pool can do, and run *inside* the critical section a miss on one thread stalls
-    /// every other thread's `Vec::pop` behind a driver call — and
-    /// `Drop for GpuTex`, which returns a texture from whichever thread happened to
-    /// drop it, is exactly such a thread. The accounting still happens under the lock
-    /// and in the same order: a miss books its capacity there, so a second acquirer
-    /// arriving in the gap sees the texture as already owned and does not double-count
-    /// the peak. What that trades is a transient over-report from
-    /// [`resident_bytes`](Self::resident_bytes) — bounded by the number of acquires
-    /// in flight, and it is telemetry.
+    /// **The device call is made outside the lock**, which is why this is two phases.
+    /// `create_texture` is the slowest thing the pool can do, and inside the critical
+    /// section a miss on one thread would stall every other thread's `Vec::pop` behind
+    /// a driver call — `Drop for GpuTex`, returning a texture from whichever thread
+    /// dropped it, is exactly such a thread. The accounting still happens under the
+    /// lock and in the same order: a miss books its capacity there, so a second
+    /// acquirer arriving in the gap sees the texture as already owned and does not
+    /// double-count the peak. That trades a transient over-report from
+    /// [`resident_bytes`](Self::resident_bytes), bounded by the acquires in flight.
     ///
     /// # Panics
     ///
@@ -1054,10 +966,9 @@ impl TilePool {
         // Phase one, under the lock: take a recycled slot if there is one, and book
         // the acquire against the epoch either way.
         let recycled = {
-            // Poison recovered from, not propagated ([`unpoisoned`]). This is the
-            // hottest path in the crate — a stroke acquires ~4 per affected tile per
-            // pointer move — so a panic here is a renderer that never draws again,
-            // which is precisely the outcome that helper exists to rule out.
+            // Poison recovered from, not propagated ([`unpoisoned`]): this is the
+            // hottest path in the crate, so a panic here is a renderer that never
+            // draws again.
             let mut inner = unpoisoned(pool.lock());
             inner.sources.add(source);
             let slot = inner.free.pop();
@@ -1088,15 +999,14 @@ impl TilePool {
     /// How many bytes of tile texture this pool **owns**, across every format:
     /// what its consumers are holding plus what is idle on its free lists.
     ///
-    /// The number a history-retention policy is measured against (§5). It is what
-    /// the pool owns rather than what is in use, deliberately: a texture on the free
-    /// list has been paid for and is not given back to the driver until an epoch
-    /// boundary decides the pool no longer needs it ([`PoolInner::tick`]), so from
-    /// the process's point of view it is resident either way.
+    /// The number a history-retention policy is measured against (§5). What the pool
+    /// owns rather than what is in use, deliberately: a texture on the free list has
+    /// been paid for and is not given back to the driver until an epoch boundary
+    /// decides the pool no longer needs it ([`PoolInner::tick`]), so from the process's
+    /// point of view it is resident either way.
     ///
-    /// Derived rather than tracked, so it cannot drift from the capacity it is a
-    /// function of. `O(formats)` — four of them — under each format's lock in turn,
-    /// which is why it is safe to ask on a commit but not per tile.
+    /// Derived rather than tracked, so it cannot drift. `O(formats)` under each
+    /// format's lock in turn — safe to ask on a commit, not per tile.
     pub fn resident_bytes(&self) -> u64 {
         self.format_pools
             .iter()
@@ -1110,9 +1020,9 @@ impl TilePool {
     /// How many recycled textures of `format` are idle — what the pool would serve
     /// the next acquires from without touching the device.
     ///
-    /// Takes the format rather than assuming one: the pool's whole design is that free
-    /// lists are *per format*, so an answer that assumed `Rgba16Float` would quietly
-    /// tell a caller asking about the aux or the mask list about the color one.
+    /// Takes the format rather than assuming one: free lists are *per format*, so an
+    /// answer that assumed `Rgba16Float` would quietly tell a caller asking about the
+    /// aux or the mask list about the color one.
     pub fn free_count(&self, format: wgpu::TextureFormat) -> usize {
         unpoisoned(self.pool(format).lock()).free.len()
     }
@@ -1154,8 +1064,7 @@ mod tests {
     /// [`Census`] indexes by discriminant, so a slot only means anything if
     /// [`AllocSource::ALL`] lists the variants in that order. Reordering the enum
     /// without reordering the array would silently attribute every acquire to the
-    /// wrong subsystem — a wrong answer to the one question the census exists for,
-    /// and one nothing else would contradict.
+    /// wrong subsystem, and nothing else would contradict it.
     #[test]
     fn a_census_slot_belongs_to_the_source_that_indexes_it() {
         for (i, source) in AllocSource::ALL.iter().enumerate() {
@@ -1177,8 +1086,7 @@ mod tests {
     }
 
     /// The census reports who is holding textures, and stops reporting a source once
-    /// it has handed everything back — the map it replaced kept every source it had
-    /// ever seen, at zero.
+    /// it has handed everything back.
     #[test]
     fn the_census_names_only_live_sources() {
         let mut census = Census::default();
@@ -1199,14 +1107,11 @@ mod tests {
         assert!(live.contains("merge scratch"), "{live}");
     }
 
-    /// **A trim may never take a texture the epoch needed**, which is the one way
-    /// this policy could hurt: it runs on the acquire path, so getting it wrong
-    /// trades a memory win for recreating textures inside the work that is using
-    /// them.
-    ///
-    /// The invariant is that the pool never falls below the epoch's peak concurrent
-    /// demand, so every acquire the epoch actually made would still have been served
-    /// from the free list.
+    /// **A trim may never take a texture the epoch needed**: it runs on the acquire
+    /// path, so getting it wrong trades a memory win for recreating textures inside
+    /// the work that is using them. The invariant is that the pool never falls below
+    /// the epoch's peak concurrent demand, so every acquire the epoch actually made
+    /// would still have been served from the free list.
     #[test]
     fn a_trim_never_drops_below_the_epochs_peak_demand() {
         for capacity in [0usize, 1, 2, 7, 64, 1000] {
@@ -1232,11 +1137,10 @@ mod tests {
     }
 
     /// **A slot returned during this epoch is never destroyed at its end**, however
-    /// large the surplus looks — the quarantine ([`PoolInner::tick`]).
-    ///
-    /// The stake is the difference between a wrong pixel and a dangling view: a
-    /// texture handed back while an unsubmitted encoder still names it survives being
-    /// *reused*, but not being `destroy()`ed.
+    /// large the surplus looks — the quarantine ([`PoolInner::tick`]). The stake is
+    /// the difference between a wrong pixel and a dangling view: a texture handed back
+    /// while an unsubmitted encoder still names it survives being *reused*, but not
+    /// being `destroy()`ed.
     #[test]
     fn a_trim_never_destroys_a_slot_returned_this_epoch() {
         // Twenty slots the pool owns and is sitting on, all returned just now — the

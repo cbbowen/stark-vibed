@@ -17,10 +17,7 @@
 //! producing a flat list of steps — so that no part of this file walks it again.
 //!
 //! What is left here is the part no single pass owns: the two structs the passes hang
-//! off, and the order the passes run in. That "and its own encoding" was for a long
-//! time false, and the cost showed: the filter pass binds the **blend** pass's pigment
-//! LUT, a real and deliberate coupling that was invisible from `filter.rs` while both
-//! passes were encoded here. It is a parameter of `FilterPass::encode` now.
+//! off, and the order the passes run in.
 //!
 //! # Two types, split along one line: does it depend on the target?
 //!
@@ -30,15 +27,14 @@
 //! group over them, the blend scratch, the instance streams, and every uniform a
 //! render writes (what it is looking at, how it is lit, how many samples it took).
 //!
-//! The split exists because more than one thing gets drawn from the same document,
-//! at different sizes: the substrate every frame, and beside it an export or the
-//! navigator's miniature. One `Compositor` shared between them spends a rebuild of
-//! *both* sizes' attachments per alternation — which is affordable for a file export
-//! and not for a miniature refreshed on every edit. So each keeps its own, and they
-//! share the expensive half by reference. What they must not each keep a copy of is
-//! the view settings: two consumers disagreeing about the canvas substrate or the
-//! lighting would be a bug visible only in the smaller picture, so those live in the
-//! pipeline behind a generation counter that each `Compositor` notices.
+//! More than one thing gets drawn from the same document at different sizes — the
+//! substrate every frame, and beside it an export or the navigator's miniature — and
+//! one `Compositor` shared between them rebuilds *both* sizes' attachments per
+//! alternation. So each keeps its own and they share the expensive half by reference.
+//! What they must not each keep a copy of is the view settings: two consumers
+//! disagreeing about the canvas substrate or the lighting would be a bug visible only
+//! in the smaller picture, so those live in the pipeline behind a generation counter
+//! that each `Compositor` notices.
 
 mod attachment;
 mod blend;
@@ -92,11 +88,9 @@ pub(crate) use tiles::{TILE_SLOTS as COMPOSITE_TILE_SLOTS, VIEW_SLOTS as COMPOSI
 /// ([`TilePairHandle::composite_bg`]) and a cached group answers to one layout.
 ///
 /// Pass A binds it and so does the stamp loop's region composite, which runs
-/// `composite.wesl` over the same tiles into its working region (§6.2). They used to
-/// build a layout each from this one slot list, which was two objects describing one
-/// thing — enough for the pipelines, since WebGPU compares layouts structurally, but
-/// not a footing to share a *cache* on: what makes the tile's group reusable is that
-/// there is exactly one layout it could have been built for (§6.7).
+/// `composite.wesl` over the same tiles into its working region (§6.2). What makes a
+/// tile's group reusable is that there is exactly one layout it could have been built
+/// for (§6.7).
 ///
 /// A colour-space change rebuilds the whole GPU stack and empties the document
 /// (`rebuild_gpu_for`), so no tile outlives the layout it cached a group against.
@@ -116,12 +110,12 @@ pub(crate) fn tile_bind_group_layout(
 /// The pass objects a compositor is **given** rather than builds, because more than
 /// one consumer has to hold the very same one.
 ///
-/// Not a convenience bundle: each of these is here because a second object of the
-/// same *shape* would be wrong rather than merely wasteful. `gpu::merge` runs the
-/// blend and filter pipelines on tile-sized targets to merge a layer down (§14.11),
-/// so a merged tile has to come out of the shader the screen runs — and building a
-/// second pair would decode the Mixbox LUT twice. The tile layout is the one a
-/// *tile's* cached group answers to, so pass A and the stamp loop must name one.
+/// Not a convenience bundle: a second object of the same *shape* would be wrong
+/// rather than merely wasteful. `gpu::merge` runs the blend and filter pipelines on
+/// tile-sized targets to merge a layer down (§14.11), so a merged tile has to come out
+/// of the shader the screen runs — and a second pair would decode the Mixbox LUT
+/// twice. The tile layout is the one a *tile's* cached group answers to, so pass A and
+/// the stamp loop must name one.
 pub(crate) struct SharedPasses {
     pub(crate) blend: Arc<BlendPass>,
     pub(crate) filter: Arc<FilterPass>,
@@ -130,12 +124,11 @@ pub(crate) struct SharedPasses {
 
 /// Pass A's bind group over `handle`'s channels, built on the tile's first composite
 /// and kept on it thereafter — see [`TilePairHandle::composite_bg`] for why a tile's
-/// immutability makes that sound, and what it was costing.
+/// immutability makes that sound.
 ///
 /// One function rather than a closure at each consumer: pass A and the stamp loop's
-/// region composite bind the *same* group off the *same* tile, and two spellings of
-/// the group would be two ways for one of them to describe it differently and quietly
-/// lose the cache.
+/// region composite bind the *same* group off the *same* tile, and two spellings would
+/// be two ways to describe it differently and quietly lose the cache.
 pub(crate) fn tile_bind_group<'a>(
     device: &wgpu::Device,
     bgl: &wgpu::BindGroupLayout,
@@ -184,17 +177,14 @@ pub(crate) use plan::blend_uniform;
 pub(crate) use view::view_uniform;
 
 /// What [`Streams::upload`] hands the encoder: the per-tile bind groups, and the
-/// per-matte ramp bind group beside them. One value because they are one
-/// preparation, gathered from one plan and indexed by its `Draw`s.
+/// per-matte ramp bind group beside them — one preparation, gathered from one plan and
+/// indexed by its `Draw`s.
 ///
-/// The tile groups are **borrowed from the tiles themselves** — each is built once
-/// and kept for that tile's life ([`TilePairHandle::composite_bg`]) — so what this
-/// collects per frame is a list of references rather than a list of new wgpu
-/// objects. The lifetime is the draw list's, which outlives the render.
-///
-/// The ramps are one bind group over one slotted buffer, not one apiece: matte `i`
-/// binds slot `i`, which is the instance index the draw already carries. `None` only
-/// when the frame has no matte at all.
+/// The tile groups are **borrowed from the tiles themselves**, each built once and
+/// kept for that tile's life ([`TilePairHandle::composite_bg`]); the lifetime is the
+/// draw list's, which outlives the render. The ramps are one bind group over one
+/// slotted buffer, not one apiece: matte `i` binds slot `i`, which is the instance
+/// index the draw already carries. `None` only when the frame has no matte at all.
 struct PreparedStreams<'a> {
     tile_bgs: Vec<&'a wgpu::BindGroup>,
     matte_ramp_bg: Option<wgpu::BindGroup>,
@@ -203,10 +193,10 @@ struct PreparedStreams<'a> {
 /// What one render draws, as against *where and how* it draws it (the target and the
 /// view, which stay separate parameters).
 ///
-/// These four travel together because they are one description of the document at an
-/// instant, assembled in one place — [`Engine::render_view`](crate::Engine) — and
-/// meaningless apart: the substrate belongs under the stack, the outlines over it, and
-/// `transparent` says whether the substrate is drawn at all.
+/// One description of the document at an instant, assembled in one place —
+/// [`Engine::render_view`](crate::Engine) — and meaningless apart: the substrate
+/// belongs under the stack, the outlines over it, and `transparent` says whether the
+/// substrate is drawn at all.
 pub struct CompositeScene<'a> {
     /// The substrate color in the document's working channels — the substrate under
     /// the paint (§15.5).
@@ -219,9 +209,8 @@ pub struct CompositeScene<'a> {
     /// How large the canvas substrate is laid, as canvas px → substrate-tile uv
     /// ([`Substrate::uv_scale`]).
     ///
-    /// Travels with the scene beside `background`, and for that field's reason: both
-    /// are document state the media pass reads (§6.4, §15.5), so both follow an
-    /// unlogged preview without anything having to be rebuilt.
+    /// Document state the media pass reads (§6.4, §15.5), so it follows an unlogged
+    /// preview without anything having to be rebuilt.
     ///
     /// [`Substrate::uv_scale`]: crate::gpu::Substrate::uv_scale
     pub substrate_uv_scale: f32,
@@ -249,21 +238,16 @@ pub struct CompositeScene<'a> {
 ///
 /// Split from [`CompositorPipeline`] along a second line: does it ever *change*?
 /// Nothing here does, which is what lets a second engine on the same device share
-/// one of these by `Arc` ([`Engine::new_sharing`]) instead of compiling seven
-/// shaders and eight pipelines of its own — while each engine keeps its own view
-/// settings, since the brush editor's preview mirrors the canvas's look and a
-/// preset thumbnail deliberately does not.
+/// one of these by `Arc` ([`Engine::new_sharing`]) instead of compiling its own
+/// shaders and pipelines — while each engine keeps its own view settings, since the
+/// brush editor's preview mirrors the canvas's look and a preset thumbnail
+/// deliberately does not.
 ///
 /// **No uniform buffer is here**, and that is the whole content of "nothing here
-/// changes". The view, media and resolve uniforms live on the [`Compositor`] instead
-/// ([`ViewBindings`], [`TargetSized::media_buf`], and inside [`Supersampled`]). Sharing
-/// them would rest on each render writing them through the queue immediately before
-/// the submit that reads them, and submits on one queue being ordered — an argument
-/// about the *sequence of calls*, not about these types. Two `Compositor`s over one of
-/// these is the documented arrangement, `&CompositorPipeline` is all either needs, and
-/// nothing would stop a caller straddling a write and its submit with another render.
-/// Each of the three holds per-target state anyway: what this render is looking at,
-/// how it is lit, how many samples it took.
+/// changes". The view, media and resolve uniforms belong to the [`Compositor`] doing
+/// the render ([`ViewBindings`], [`TargetSized::media_buf`], and inside
+/// [`Supersampled`]): sharing them would rest on no caller ever straddling a queue
+/// write and its submit with another render, which nothing here could enforce.
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
 pub struct CompositorPasses {
@@ -277,11 +261,10 @@ pub struct CompositorPasses {
     /// targets to merge a layer down through its mode (§14.11).
     blend: Arc<BlendPass>,
     /// Filter layers (§21) — the blend pass with the isolated source removed, so
-    /// close to it that the two share the scratch and the pigment LUT.
-    ///
-    /// Shared with `gpu::merge` on the same terms as `blend` above: merging a filter
-    /// layer into the paint beneath it runs this module's tile-space entry point
-    /// (§14.11.7), so the merged tile comes out of the shader the screen runs.
+    /// close to it that the two share the scratch and the pigment LUT. Shared with
+    /// `gpu::merge` on `blend`'s terms: merging a filter layer into the paint beneath
+    /// it runs this module's tile-space entry point (§14.11.7), so the merged tile
+    /// comes out of the shader the screen runs.
     filter: Arc<FilterPass>,
     /// The focal blur's FFT machinery (§21.12) — space-independent, since by the
     /// time it runs a texel is XYZ light. The per-space halves (the decode and the
@@ -348,12 +331,9 @@ impl TargetPasses {
         // say so. The media pass encodes the display transfer itself
         // (`media_common.wesl::finish`) and the resolve averages in light around its
         // own decode/encode pair — so a `*UnormSrgb` target has the hardware encode on
-        // top of that and decode on every `textureLoad`, and the frame comes out
+        // top of that and a decode on every `textureLoad`, and the frame comes out
         // gamma-squared. Nothing *fails*: it is a picture, just the wrong one, which is
-        // exactly the class §1 spends structure to rule out rather than to document.
-        // The rule was real but lived in the frontend that happened to obey it
-        // (`stark-dioxus-frontend`'s surface configuration), so every other embedder
-        // — and one test — was free to get it wrong.
+        // the class §1 spends structure to rule out rather than to document.
         assert!(
             !format.is_srgb(),
             "a compositor renders to a non-sRGB format: the media pass encodes the display \
@@ -374,13 +354,11 @@ impl TargetPasses {
 /// One pick's draws, prepared once and recorded from many times
 /// ([`Compositor::prepare_pick`]).
 ///
-/// **Holding it is what keeps a trace correct**, in two ways a caller could not
-/// arrange for itself. The uploads inside it target buffers this `Compositor` owns one
+/// **Holding it from before the first patch is recorded until after the submit is
+/// what keeps a trace correct.** Its uploads target buffers this `Compositor` owns one
 /// of, so preparing per patch would leave every patch drawing the last one's records;
 /// and the blend scratch destroys its textures on drop, so dropping it before the
-/// submit would fail the submit and lose the whole trace. Both are answered by the
-/// value living from before the first patch is recorded until after the submit, which
-/// is what an owned value in the caller's frame makes hard to get wrong.
+/// submit would fail the submit and lose the whole trace.
 pub(crate) struct PreparedPick<'a> {
     plan: Plan<'a>,
     streams: PreparedStreams<'a>,
@@ -397,10 +375,10 @@ pub(crate) struct PreparedPick<'a> {
 ///
 /// Split from [`Compositor`] so several of them can share one of these. Each renders
 /// into a target of its own size and therefore keeps its own attachments; what they
-/// must *not* keep their own of is anything on this side of the line — the pipelines
-/// because they are expensive (six passes, plus a decoded Mixbox LUT), and the view
-/// settings because two consumers disagreeing about the canvas substrate or the lighting
-/// would be a bug that shows only in the smaller picture.
+/// must *not* keep their own of is the pipelines, because they are expensive (six
+/// passes, plus a decoded Mixbox LUT), and the view settings, because two consumers
+/// disagreeing about the canvas substrate or the lighting would be a bug that shows
+/// only in the smaller picture.
 ///
 /// Not immutable: the view settings change, through `&mut self` on this type. It
 /// holds no GPU-visible state that a render writes — every uniform a render fills in
@@ -417,8 +395,8 @@ pub struct CompositorPipeline {
     /// The display the screen is presented on (§6.5) — a view setting like
     /// `media_params`. An 8-bit render still reads the *transfer* from here, so an
     /// 8-bit Display-P3 screen shows P3; what [`Compositor::render`] drops for it is
-    /// the headroom. Keeping this away from a *file* is `Engine::render_view`'s, which
-    /// draws an export through [`Output::SDR`] entirely.
+    /// the headroom. An export never reads it at all: `Engine::render_view` draws one
+    /// through [`Output::SDR`] entirely.
     output: Output,
     // The canvas substrate (bump) sampled by the media pass for relief.
     substrate: SubstrateMap,
@@ -433,35 +411,27 @@ pub struct CompositorPipeline {
     /// two states anywhere ever share a value: "same stamp" then implies "same
     /// pipeline", and a consumer's decision to reuse cannot be wrong.
     ///
-    /// The case that needs that is a color-space rebuild (§6.7), which does
-    /// not mutate a pipeline but *replaces* it. A per-pipeline counter would start the
-    /// replacement back at its initial value — the very value a consumer that had
-    /// rendered against the old pipeline is holding — so a kept [`Compositor`] would
-    /// see "no change" and keep attachments belonging to the pipeline that is gone.
-    /// Today both color spaces happen to use the same channel formats, so that would
-    /// come out *harmless*; but which formats a space wants is a decision the
-    /// `ColorSpace` trait deliberately leaves open ([`ColorSpace::color_format`]), and
-    /// "correct because two implementations coincide" is not a property to build on.
+    /// The case that needs that is a color-space rebuild (§6.7), which does not mutate
+    /// a pipeline but *replaces* it: a per-pipeline counter would start the
+    /// replacement back at the very value a consumer of the old pipeline is holding,
+    /// so a kept [`Compositor`] would see "no change" and keep attachments belonging
+    /// to a pipeline that is gone. Today both color spaces happen to use the same
+    /// channel formats, but which formats a space wants is deliberately left open
+    /// ([`ColorSpace::color_format`]).
     generation: u64,
 
     /// A stamp for "the substrate and light a media bind group would name". Moved
     /// whenever either is swapped.
     ///
     /// **Separate from [`generation`](Self::generation) because the two invalidate
-    /// different things**, and one stamp for both charged the swap the price of the
-    /// rebuild. A substrate or a light is *bound into* each consumer's media group
-    /// and named nowhere else: the accumulator trio is sized by the target and
-    /// carries the color space's formats, and the scratch levels' groups do not name
-    /// either. So a swap costs one `create_bind_group`
-    /// ([`media::Offscreen::rebind`]), where one stamp for both would drop and rebuild
+    /// different things.** A substrate or a light is *bound into* each consumer's
+    /// media group and named nowhere else, so a swap costs one `create_bind_group`
+    /// ([`media::Offscreen::rebind`]) where one stamp for both would drop and rebuild
     /// the accumulator, the supersampled target and the whole blend scratch — up to
-    /// `MAX_SUPERSAMPLED_BYTES`.
-    ///
-    /// What made that worth splitting is how ordinary the swap is: every undo or redo
-    /// across a logged `SetSubstrate` or `SetSubstrateScale`, every commit of the
-    /// scale slider, every switch in the Lighting panel and every late-arriving HDR
-    /// moves it — and on the web that reallocation is the destroy/create churn
-    /// [`Attachment`] warns about, at a rate.
+    /// `MAX_SUPERSAMPLED_BYTES`. And the swap is ordinary: every undo or redo across a
+    /// logged `SetSubstrate` or `SetSubstrateScale`, every commit of the scale slider,
+    /// every switch in the Lighting panel and every late-arriving HDR moves it, which
+    /// on the web is the destroy/create churn [`Attachment`] warns about, at a rate.
     ///
     /// Process-wide for `generation`'s reason, and for one of its own: a rebuild
     /// replaces the substrate and the light too, so a consumer must not mistake the
@@ -481,8 +451,7 @@ fn next_generation() -> u64 {
 /// allocation rules draw: [`TargetSized`], everything sized by the target and managed
 /// by [`TargetSized::ensure_targets`]; and [`Streams`], everything grown to how much
 /// there is to draw and written per render. Two fields rather than one struct so a
-/// render can hold the [`Frame`] it was handed while it still writes the streams —
-/// as one struct, that was a `&mut self` collision paid for with an `expect`.
+/// render can hold the [`Frame`] it was handed while it still writes the streams.
 ///
 /// One per thing being drawn into — the substrate, and (with its own) anything that
 /// renders beside it: an export, the navigator's miniature. Sharing one across
@@ -515,8 +484,7 @@ struct TargetKey {
 
 /// The attachments one render sized, with the key they answer to. Absent until the
 /// first render, because only a render knows the zoom and therefore the
-/// supersampling factor: built at the caller's guess, a whole viewport was allocated
-/// and thrown away on the first `ensure_targets`.
+/// supersampling factor.
 struct Built {
     key: TargetKey,
     /// The [`CompositorPipeline::bindings`] `accum`'s media bind group names. A
@@ -596,12 +564,12 @@ struct Streams {
 ///
 /// - A **one-shot** — writing a PNG — makes one of these locally and drops it, so an
 ///   8192-px export does not leave half a gigabyte of attachments parked for the rest
-///   of the session waiting for a render that may never come.
-/// - A **repeating** render at a steady size — the navigator's miniature, refreshed
-///   on every edit — holds one for its lifetime and pays the allocation once.
+///   of the session.
+/// - A **repeating** render at a steady size — the navigator's miniature — holds one
+///   for its lifetime and pays the allocation once.
 ///
 /// Empty is the valid initial state, so nothing needs a size or a pipeline to make
-/// one; the first render fills it in and later renders reuse or resize it.
+/// one.
 #[derive(Default)]
 pub struct Offscreen(Option<Compositor>);
 
@@ -609,19 +577,15 @@ impl Offscreen {
     /// The compositor, built against `p` if this is the first use.
     ///
     /// No size: the attachments are sized by the first *render*, which is the only
-    /// thing that knows the zoom and therefore the supersampling factor. This used to
-    /// take one and pass it to `Compositor::new`, where it was overwritten by the
-    /// very next call — so a miniature allocated a whole 1:1 viewport and threw it
-    /// away, and the parameter told a reader something that was not true.
+    /// thing that knows the zoom and therefore the supersampling factor.
     pub(crate) fn get(&mut self, p: &CompositorPipeline) -> &mut Compositor {
         self.0.get_or_insert_with(|| Compositor::new(p))
     }
 }
 
-// The passes are what almost every read wants — `p.tiles`, `p.ctx`, `p.resolve` —
-// and they moved wholesale into [`CompositorPasses`]. `Deref` keeps those reads
-// spelled as they were, so the split shows up only where it means something: the
-// three view settings, which stayed behind.
+// The passes are what almost every read wants — `p.tiles`, `p.ctx`, `p.resolve` — so
+// `Deref` makes the split show up only where it means something: the view settings,
+// which are this type's own.
 impl std::ops::Deref for CompositorPipeline {
     type Target = CompositorPasses;
 
@@ -749,10 +713,9 @@ impl CompositorPipeline {
     /// (§6.4). A view-time swap — the composited tiles are untouched.
     ///
     /// Each [`Compositor`] rebuilds its media bind group when it next notices the
-    /// binding stamp moved, rather than being told: a swap has to reach every
-    /// consumer, and the one that would be forgotten is exactly the one nobody is
-    /// looking at. Its attachments are untouched — see
-    /// [`CompositorPipeline::bindings`].
+    /// binding stamp moved, rather than being told: the consumer that would be
+    /// forgotten is exactly the one nobody is looking at. Its attachments are
+    /// untouched — see [`CompositorPipeline::bindings`].
     pub fn set_substrate(&mut self, substrate: SubstrateMap) {
         self.substrate = substrate;
         self.bindings = next_generation();
@@ -768,17 +731,15 @@ impl CompositorPipeline {
     /// targets to [`Compositor::composite_channels`] has to allocate.
     ///
     /// The whole [`ChannelFormats`] rather than a `(color, aux, resid)` tuple: the
-    /// residual is not a channel a caller may decide to skip, and handing back the
-    /// type that says so is cheaper than a paragraph asking.
+    /// residual is not a channel a caller may decide to skip.
     pub(crate) fn channel_formats(&self) -> ChannelFormats {
         self.formats
     }
 
-    /// The offscreen pair and the media bind group over it, at `size`. `media_buf`
-    /// is the consumer's own uniform, which that bind group names.
     /// Point an existing accumulator's media group at this pipeline's current
     /// substrate and light, keeping its attachments — see
-    /// [`CompositorPipeline::bindings`].
+    /// [`CompositorPipeline::bindings`]. `media_buf` is the consumer's own uniform,
+    /// which that group names.
     fn rebind_media(&self, accum: &mut media::Offscreen, media_buf: &wgpu::Buffer) {
         accum.rebind(
             &self.ctx.device,
@@ -826,14 +787,12 @@ impl TargetSized {
     /// **Two stamps, because two of those are not the same event.** A resize or a
     /// rebuilt pipeline invalidates the attachments themselves (the [`TargetKey`]);
     /// a swapped substrate or light invalidates only the group that names them
-    /// ([`CompositorPipeline::bindings`]), and is rebound in place. One stamp for
-    /// both charged an undo across a `SetSubstrate` a viewport of allocation to say
-    /// that a texture view had moved.
+    /// ([`CompositorPipeline::bindings`]), and is rebound in place.
     ///
     /// The blend scratch and the blur planes are dropped rather than kept through a
     /// rebuild: both are sized like the attachments and carry their formats, so
     /// "everything that depends on the target or the pipeline is rebuilt together"
-    /// holds by construction instead of by a second condition that could disagree
+    /// holds by construction rather than by a second condition that could disagree
     /// with this one. It costs one reallocation on the next blended render.
     ///
     /// `buffers_moved` is [`Streams::upload`]'s report that a uniform buffer the
@@ -875,11 +834,10 @@ impl TargetSized {
             }
             stale => {
                 // Released *before* their replacements are built, never by the
-                // assignment that would drop them after ([`Attachment`] frees on drop,
-                // so the order is the difference between one set resident and two). A
-                // resize drag is where that shows: it rebuilds every frame, and holding
-                // both sets across the build doubles the peak of the largest allocation
-                // the app makes.
+                // assignment that would drop them after: `Attachment` frees on drop,
+                // so the order is the difference between one set resident and two —
+                // which on a resize drag, rebuilding every frame, doubles the peak of
+                // the largest allocation the app makes.
                 self.scratch = None;
                 self.blur = None;
                 drop(stale);
@@ -949,9 +907,8 @@ enum ScratchDecision {
 ///
 /// Grown to the most the document has *reached* — depth and per-level iso alike —
 /// and never shrunk within a size: a group opened and closed again over and over
-/// would otherwise reallocate viewport-sized targets each time. The union with what
-/// the cache already holds is what makes "never shrunk" one rule for both axes. A
-/// new size starts over, since nothing at the old one can be kept.
+/// would otherwise reallocate viewport-sized targets each time. A new size starts
+/// over, since nothing at the old one can be kept.
 fn scratch_plan<I>(cached: Option<(Extent2, I)>, size: Extent2, needs: &[bool]) -> ScratchDecision
 where
     I: ExactSizeIterator<Item = bool> + Clone,
@@ -979,11 +936,9 @@ where
 /// ([`scratch_plan`] says when it already does). Nothing when the frame bounces
 /// nowhere — the common case, which never allocates.
 ///
-/// The cache belongs to the *render* path, whose size changes only when this
-/// compositor's target does. [`Compositor::composite_channels`] deliberately does
-/// not use it: a pick viewport is a handful of texels, and letting the two share one
-/// cache would reallocate a target-sized pair twice a frame for the whole of an
-/// Alt-drag.
+/// The render path's alone. [`Compositor::composite_channels`] deliberately does not
+/// use it: a pick viewport is a handful of texels, and sharing one cache would
+/// reallocate a target-sized pair twice a frame for the whole of an Alt-drag.
 fn ensure_scratch(
     cache: &mut Option<ScratchTargets>,
     p: &CompositorPipeline,
@@ -1024,7 +979,7 @@ impl Streams {
     /// Upload everything `plan` decided, returning the per-tile bind groups pass A
     /// draws with — and, beside them, the per-matte ramp bind group (`None` when the
     /// frame has no matte at all; §22.4) — and whether a uniform buffer was
-    /// **replaced** rather than rewritten, which is the caller's to answer: the
+    /// **replaced** rather than rewritten, which is the caller's to answer for: the
     /// scratch's cached bind groups name those buffers, and this is the one place
     /// that knows one moved.
     ///
@@ -1036,14 +991,9 @@ impl Streams {
     /// **The view's own slot is not among what this writes**, because the two callers
     /// lay theirs down differently: a frame writes one before its single submit, and a
     /// pick writes every point's before recording any of them
-    /// ([`ViewBindings::write`](view::ViewBindings::write)). What a plan reads is the
-    /// slot, and `encode_plan` takes that. `view` is still needed here for the one
-    /// uniform that is a function of it — the chromatic filter's dispersion, which is
-    /// measured in screen px (§21.10).
-    ///
-    /// No walk of its own. Everything here is a loop over what [`Plan::build`]
-    /// already ordered, which is what makes "slot `n` is the `n`th merge the encoder
-    /// reaches" true by construction rather than by two recursions agreeing.
+    /// ([`ViewBindings::write`](view::ViewBindings::write)); `encode_plan` takes the
+    /// slot. `view` is still needed here for the one uniform that is a function of it
+    /// — the chromatic filter's dispersion, measured in screen px (§21.10).
     fn upload<'a>(
         &mut self,
         p: &CompositorPipeline,
@@ -1054,8 +1004,8 @@ impl Streams {
         let queue = &p.ctx.queue;
 
         // Built once per tile and kept on it, not once per tile per frame — see
-        // [`TilePairHandle::composite_bg`] for why a tile's immutability makes that
-        // sound, and what it was costing.
+        // `TilePairHandle::composite_bg` for why a tile's immutability makes that
+        // sound.
         let tile_bgs = plan
             .tiles
             .iter()
@@ -1065,11 +1015,10 @@ impl Streams {
         self.instances.write(device, queue, &plan.instances);
         if !plan.mattes.is_empty() {
             self.matte_instances.write(device, queue, &plan.mattes);
-            // Written first, then the group — which is kept across frames and dropped
-            // by the write that replaced the buffer under it (`UniformSlots::group`).
-            // The ordering still matters and now it is the only thing that does: a
-            // group asked for before the write would be built over the old buffer and
-            // then kept.
+            // Written first, then the group: `UniformSlots::group` keeps the group
+            // across frames and drops it when a write replaces the buffer under it, so
+            // a group asked for before the write would be built over the old buffer
+            // and then kept.
             self.matte_ramps.write(device, queue, &plan.ramps);
             let layout = &p.tiles.ramp_bgl;
             self.matte_ramps.group(|slot| {
@@ -1085,24 +1034,21 @@ impl Streams {
         }
         // `None` when the frame has no matte, which is also when nothing above built
         // one — a group kept from an earlier frame is still valid, and a frame with no
-        // matte simply never binds it.
-        //
-        // Cloned rather than borrowed, because the borrow would be of `self` and the
-        // encode below needs `self` too. A `BindGroup` is a refcounted handle, so what
-        // this costs is an atomic where the creation it replaces was a wgpu object.
+        // matte simply never binds it. Cloned because the borrow would be of `self`,
+        // which the encode below needs too; a `BindGroup` is a refcounted handle.
         let matte_ramp_bg = (!plan.mattes.is_empty())
             .then(|| self.matte_ramps.built_group().cloned())
             .flatten();
 
         // One uniform slot per merge and one per filter layer, all written before the
-        // single submit — see [`UniformSlots`] for why they cannot share one. The
+        // single submit — see `UniformSlots` for why they cannot share one. The
         // *order* is the plan's, and each step carries the index it binds, so a
         // filter and a blend group side by side cannot count each other's slots.
         //
-        // The filter uniforms are built here rather than in the plan for one lane's
-        // sake: the chromatic dispersion is stated in canvas terms by the document
-        // and sampled in accumulator texels by the pass, and this — with `view`
-        // already supersampled — is the moment the two meet (§21.10).
+        // The filter uniforms are built here rather than in the plan for one lane: the
+        // chromatic dispersion is stated in canvas terms by the document and sampled
+        // in accumulator texels by the pass, and `view` is supersampled by now
+        // (§21.10).
         let blend_moved = self.blend_uniforms.write(device, queue, &plan.blends);
         let filters: Vec<FilterUniform> = plan
             .filters
@@ -1110,13 +1056,12 @@ impl Streams {
             .map(|f| filter_uniform(f, view))
             .collect();
         let filter_moved = self.filter_uniforms.write(device, queue, &filters);
-        // A frame with more merges (or more filters) than any before it does not
-        // resize those buffers, it **replaces** them — so the bind groups the scratch
-        // is holding now name a buffer too small for the offsets they are about to be
-        // given (`ScratchLevel::blend_bg`). Reported rather than acted on, because
-        // the scratch is the other half's, and it covers both callers: the eyedropper
-        // shares these uniforms with the screen, so a pick with more merges than any
-        // render can stale the render path's cache too.
+        // A frame with more merges (or more filters) than any before it **replaces**
+        // those buffers rather than resizing them, so the bind groups the scratch is
+        // holding name a buffer too small for the offsets they are about to be given
+        // (`ScratchLevel::blend_bg`). Reported rather than acted on, because the
+        // scratch is the other half's — and the eyedropper shares these uniforms with
+        // the screen, so a pick can stale the render path's cache too.
         (
             PreparedStreams {
                 tile_bgs,
@@ -1132,9 +1077,6 @@ impl Streams {
     /// `target`. It may be `None` only when `plan.scratch` is empty — which
     /// [`ensure_scratch`] guarantees, having been given that very vector.
     ///
-    /// **No recursion, no cursors, no parity.** All three were decided in
-    /// [`Plan::build`] and are read back off the steps here; what is left is a
-    /// `match` that resolves three slot names against real targets.
     /// `view_slot` is which of the views the last
     /// [`ViewBindings::write`](view::ViewBindings::write) laid down this plan draws
     /// through — 0 for a frame, which has one, and the point's own index for the
@@ -1155,20 +1097,18 @@ impl Streams {
         view_slot: usize,
     ) {
         // The parity claim, checked where it is relied on: whatever the plan did, the
-        // accumulator ends in the caller's own targets. That is what lets the media
+        // accumulator ends in the caller's own targets — which is what lets the media
         // pass keep one bind group across every document and the eyedropper read back
-        // the buffers it supplied. `Plan`'s tests pin it for every shape they know;
-        // this catches one they do not.
+        // the buffers it supplied.
         debug_assert_eq!(
             plan.steps.last().map(Step::out),
             Some(Slot::Target),
             "the ping-pong must land the accumulator in the caller's targets (§14.7)",
         );
         let levels: &[ScratchLevel] = scratch.map_or(&[], |s| &s.levels);
-        // The one place a `Slot` becomes a texture. Both `expect`s are the plan's own
-        // invariant read back — `Plan`'s tests assert that no step names a level the
-        // scratch was not told to allocate — rather than a condition this file could
-        // get out of step with.
+        // The one place a `Slot` becomes a texture. Both `expect`s read back the
+        // plan's own invariant: its tests assert that no step names a level the
+        // scratch was not told to allocate.
         let at = |slot: Slot| match slot {
             Slot::Target => target,
             Slot::Swap(l) => levels
@@ -1180,9 +1120,8 @@ impl Streams {
                 .expect("an isolation at an unallocated level (Plan::scratch)")
                 .iso(),
         };
-        // One bouncing pass, resolved. The `expect` rests on the same invariant `at`
-        // does, and the plan's tests pin it: a step that bounces named a level the
-        // scratch was told to allocate.
+        // One bouncing pass, resolved; the `expect` rests on the same invariant `at`
+        // does.
         let bounce = |back, out, slot, phase: Phase| Bounce {
             back: at(back),
             out: at(out),
@@ -1253,10 +1192,9 @@ impl Streams {
 
 impl Compositor {
     /// The instance streams, uniforms and view bindings for one consumer, against the
-    /// shared `pipeline`. Cheap — everything expensive (the six passes' pipelines,
-    /// their layouts, the decoded pigment LUT) lives in the pipeline and is only
-    /// borrowed, and everything *sized* (the accumulator, the supersampled target,
-    /// the blend scratch) waits for the first render, which is the only thing that
+    /// shared `pipeline`. Cheap: everything expensive (the passes' pipelines, their
+    /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed,
+    /// and everything *sized* waits for the first render, which is the only thing that
     /// knows the zoom.
     pub fn new(pipeline: &CompositorPipeline) -> Self {
         Self {
@@ -1268,9 +1206,8 @@ impl Compositor {
     /// Lay down one view slot per patch, in `views`' order — what the patches of a
     /// [`prepare_pick`](Self::prepare_pick) trace bind against by index.
     ///
-    /// Separate from the recording because the whole point is that it happens *once*
-    /// for a trace: the slots have to be written before any of the passes that read
-    /// them are submitted, and there is one submit.
+    /// Separate from the recording because it happens *once* for a trace: every slot
+    /// has to be written before the single submit that reads them.
     pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
         self.streams.write_views(p, views);
     }
@@ -1278,14 +1215,10 @@ impl Compositor {
     /// Plan and upload one pick's draws — **once for a whole trace**, before any of
     /// its patches are recorded.
     ///
-    /// This is not merely an optimization, it is what makes a multi-patch trace
-    /// correct at all. What the streams write into — the instance buffer, the matte
-    /// instances and ramps, the blend and filter uniforms — are one buffer apiece on
-    /// this `Compositor`, and `write_buffer` is a queue operation: N uploads before one
-    /// submit leave every patch drawing the last one's records (`gpu::uniforms`).
-    /// Preparing once and recording N times is what stops that being a rule a caller
-    /// has to remember, and it spares a trace N plan builds and N gathers of the same
-    /// tile groups besides.
+    /// Not merely an optimization: the streams write into one buffer apiece on this
+    /// `Compositor`, and `write_buffer` is a queue operation, so N uploads before one
+    /// submit would leave every patch drawing the last one's records
+    /// (`gpu::uniforms`).
     ///
     /// `view` is any of the patches'. The only thing the streams read it for is the
     /// chromatic filter's dispersion (§21.10), which is `view.linear()` — zoom,
@@ -1309,21 +1242,20 @@ impl Compositor {
         // Its own scratch, and the trace's rather than the patch's. A pick viewport is
         // `2r+1` square, so this is a few kilobytes; sharing the render path's cache
         // would trade that for reallocating the *window* twice a frame (see
-        // [`ensure_scratch`]). Blend modes have to be honoured here or an eyedropper
+        // `ensure_scratch`). Blend modes have to be honoured here or an eyedropper
         // would report a color the screen never showed.
         //
-        // One for every patch is sound because the patches are recorded into one
+        // One set for every patch is sound because the patches are recorded into one
         // encoder and commands in an encoder run in order: each patch's bounces clear
-        // and rewrite the scratch before reading it, so patch `i + 1` finds nothing of
-        // patch `i` in it. What it must outlive is the *submit*, which is why it is
-        // here and not in the recording call — `Attachment`'s drop `destroy()`s the
-        // texture, and a recorded encoder is not in-flight work.
+        // and rewrite the scratch before reading it. What it must outlive is the
+        // *submit*, which is why it is here and not in the recording call —
+        // `Attachment`'s drop `destroy()`s the texture, and a recorded encoder is not
+        // in-flight work.
         let scratch = (!plan.scratch.is_empty())
             .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
-        // Its own blur scratch too, on the same argument — and it is kilobytes
-        // here, a patch being a handful of texels. Serially sound across patches
-        // exactly as the scratch above is: each patch's decode and round trip
-        // rewrite the planes before its resolve reads them.
+        // Its own blur scratch too, on the same argument, and serially sound across
+        // patches for the same reason: each patch's decode and round trip rewrite the
+        // planes before its resolve reads them.
         let mut blur = None;
         p.blur.prepare(
             &p.ctx,
@@ -1343,37 +1275,26 @@ impl Compositor {
     /// Record one patch of a prepared pick into the caller's encoder: pass A alone,
     /// into caller-supplied targets, with no media pass over it.
     ///
-    /// This is the eyedropper's sampling path (§18.0.2). What lands in `color` is the
-    /// paint's own channels in the document's working space, which is what a picker
-    /// has to read: the lit result has been through image-based lighting, a tonemap
-    /// and an sRGB encode, so picking *that* would hand back a color the palette never
-    /// mixed — and in a Mixbox document (§6.7) a pigment mixture that cannot be picked
-    /// back up, which is the point of mixing in pigment space at all.
+    /// The eyedropper's sampling path (§18.0.2). What lands in `color` is the paint's
+    /// own channels in the document's working space, which is what a picker has to
+    /// read: the lit result has been through image-based lighting, a tonemap and an
+    /// sRGB encode, so picking *that* would hand back a color the palette never mixed
+    /// — and in a Mixbox document (§6.7) a pigment mixture that cannot be picked back
+    /// up.
     ///
     /// `into` must carry the formats [`CompositorPipeline::channel_formats`] reports
     /// and be the patch view's viewport in size. It is the caller's, not this
-    /// compositor's: a sample is taken through the compositor that belongs to the
-    /// screen, so it must leave the screen's own attachments — a few hundred texels
-    /// wide against the window's millions — exactly where they were. That is why this
-    /// does not go through [`TargetSized::ensure_targets`].
-    ///
-    /// A [`Targets`] rather than three views, which is how the residual stops being a
-    /// caller's decision. A pigment document's pass A **writes three attachments**, so
-    /// a caller offering two is missing one — a validation error the Oklab half of the
-    /// suite cannot see, guarded here by a `debug_assert` that only debug builds ran.
-    /// `ChannelFormats` exists to make "all three or none of them" unsayable (§6.7);
-    /// taking the trio it produces is what lets this path inherit that instead of
-    /// re-checking it.
+    /// compositor's: a sample taken through the screen's compositor must leave the
+    /// screen's own attachments exactly where they were, which is why this does not go
+    /// through [`TargetSized::ensure_targets`]. A [`Targets`] rather than three views,
+    /// because a pigment document's pass A **writes three attachments** and
+    /// `ChannelFormats` is what makes "all three or none of them" unsayable (§6.7).
     ///
     /// **Nothing here submits.** A gradient capture samples up to
-    /// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points (§22.2) and every
-    /// one of them is a patch of this same document, so recording them together is the
-    /// difference between one round trip to the queue and a hundred. What used to
-    /// force a submit between patches was the view uniform: one buffer, rewritten per
-    /// patch. The views are slots now ([`ViewBindings`]), so
-    /// `slot` is which of them this patch draws through and the ordering is the offset
-    /// rather than the queue. The caller writes every view, records every patch, and
-    /// submits once — keeping `prepared` alive until it has.
+    /// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points (§22.2), all patches
+    /// of the same document: the caller writes every view, records every patch and
+    /// submits once, keeping `prepared` alive until it has. `slot` is which of the
+    /// views ([`ViewBindings`]) this patch draws through.
     pub(crate) fn composite_channels(
         &self,
         p: &CompositorPipeline,
@@ -1404,9 +1325,9 @@ impl Compositor {
     /// draws nothing, so an unmasked document costs one skipped iteration).
     ///
     /// A zoomed-out view runs the whole of that at `ss` samples per axis and boxes the
-    /// result down at the end (§6.4). Everything between here and the resolve
-    /// is written against `view` alone, so supersampling is one substitution at the
-    /// top and one pass at the bottom rather than a parameter every pass has to carry.
+    /// result down at the end (§6.4). Everything between here and the resolve is
+    /// written against `view` alone, so supersampling is one substitution at the top
+    /// and one pass at the bottom rather than a parameter every pass has to carry.
     ///
     /// The target's format picks the passes; the scene says what display it is for,
     /// and an 8-bit target is given no headroom whatever it was asked for (§6.5).
@@ -1434,22 +1355,20 @@ impl Compositor {
         } else {
             output
         };
-        // Everything this frame's pass A does, decided once (§14.7). It comes first
-        // because the sample count below is chosen from what it costs: the scratch
-        // is most of a zoomed-out frame's memory — two viewport-sized trios per
-        // isolating level — so the group tree has to be walked *before* the
-        // attachments are sized, not after (§6.4).
+        // Everything this frame's pass A does, decided once (§14.7). First, because
+        // the sample count below is chosen from what it costs: the scratch is most of
+        // a zoomed-out frame's memory — two viewport-sized trios per isolating level —
+        // so the group tree has to be walked *before* the attachments are sized (§6.4).
         //
-        // Deliberately free of the view, which is why it can be built here at all:
-        // the one view-dependent number in pass A is a filter's dispersion, and that
-        // is filled in at `Streams::upload` once `ss` has settled (§21.10).
+        // Deliberately free of the view, which is why it can be built here at all: the
+        // one view-dependent number in pass A is a filter's dispersion, filled in at
+        // `Streams::upload` once `ss` has settled (§21.10).
         let plan = Plan::build(groups);
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the substrate and the impasto relief
-        // aliasing (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op.
-        // The scratch is charged at this frame's needs; a deeper set the cache kept
-        // (`ensure_scratch` never shrinks within a size) is memory already resident,
-        // not memory this decision would add.
+        // aliasing (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op. The
+        // scratch is charged at this frame's needs; a deeper set the cache kept is
+        // memory already resident, not memory this decision would add.
         let ss = supersample(
             view.viewport,
             view.zoom,
@@ -1475,10 +1394,9 @@ impl Compositor {
         // waits for it.
         let kernels = blur::blur_kernels(&plan.filters, view);
         // This compositor's attachments, brought in line with what is about to be
-        // drawn. Nobody else's: a render into something other than this target — an
-        // export, the navigator's miniature — goes through a `Compositor` of its own,
-        // so the substrate's attachments (and the frame already presented from them)
-        // are never resized out from under it and rebuilt on the next frame.
+        // drawn. Nobody else's: a render into another target — an export, the
+        // navigator's miniature — goes through a `Compositor` of its own, so the
+        // substrate's attachments are never resized out from under it.
         let frame = self.sized.ensure_targets(
             p,
             target_size,
@@ -1491,8 +1409,7 @@ impl Compositor {
         // What the lit image, the outlines and the guides are drawn into: the
         // supersampled target when there is one, else the caller's directly. Chrome
         // goes through the same resolve as the paint, so the marching ants and the
-        // perspective grid come out antialiased rather than as the stairs a
-        // one-sample-per-pixel line draws at any angle but the axes.
+        // perspective grid come out antialiased.
         let draw_target = frame.ss_target.map_or(target, Supersampled::view);
 
         // One code of the target's encoding for both walks down to it — the

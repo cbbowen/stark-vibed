@@ -2,12 +2,10 @@
 //! live object built from it (§6.4, §6.6).
 //!
 //! The engine embeds no image bytes. The frontend fetches them at runtime and hands
-//! them over, which means every such resource has the same three-part shape — a map
-//! of registered bytes, the id currently in use, and the GPU object built for that
-//! id — and the same two operations: *register bytes* (rebuild if they are the ones
-//! in use) and *switch* (rebuild if it actually changed). Written twice, for the
-//! canvas substrate and the lighting environment, those were the same six lines with
-//! different nouns.
+//! them over, so every such resource has the same three-part shape — a map of
+//! registered bytes, the id currently in use, and the GPU object built for that id —
+//! and the same two operations: *register bytes* (rebuild if they are the ones in use)
+//! and *switch* (rebuild if it actually changed).
 //!
 //! Each resource keeps one **builtin** id that needs no bytes at all — `Flat` for
 //! substrates, the procedural `Neutral` for environments — which is also the fallback
@@ -17,35 +15,35 @@
 //!
 //! Usually the same one. The canvas substrate is why they are separate: a substrate is
 //! baked *per scale* (§6.4) — the rise a tip meets is measured over a reach in canvas
-//! px, so how large the substrate is laid changes the map that gets built from it — while
-//! the height map those bakes come from is one PNG whatever scale it is laid at. So
-//! bytes are filed under [`Resource::Content`] and built objects under the resource
-//! itself, and registering a substrate's bytes readies every scale of it at once.
+//! px, so how large the substrate is laid changes the map built from it — while the
+//! height map those bakes come from is one PNG whatever scale it is laid at. So bytes
+//! are filed under [`Resource::Content`] and built objects under the resource itself,
+//! and registering a substrate's bytes readies every scale of it at once.
 //!
 //! # The store is shared; the *choice* is not
 //!
 //! The bytes and the built objects live behind an `Arc`, and `Clone` hands out a
-//! sibling registry over the same store with its own current id. That is what lets a
-//! second engine on the same device ([`Engine::new_sharing`]) reuse every decode this
-//! one has paid for — a substrate's height map is a PNG decode plus two whole-image CPU
-//! passes, an environment is an HDR decode plus a full mip chain — while still being
-//! free to stand on a different substrate. Which id is *in use* is the one part of the
-//! shape that is genuinely per-engine: it mirrors that engine's document (§6.4) or
-//! its view (§6.3), and siblings agreeing on it would be a bug, not a feature.
+//! sibling registry over the same store with its own current id. That lets a second
+//! engine on the same device ([`Engine::new_sharing`]) reuse every decode this one has
+//! paid for — a substrate's height map is a PNG decode plus two whole-image CPU passes,
+//! an environment an HDR decode plus a full mip chain — while still being free to stand
+//! on a different substrate. Which id is *in use* is genuinely per-engine: it mirrors
+//! that engine's document (§6.4) or its view (§6.3), and siblings agreeing on it would
+//! be a bug, not a feature.
 //!
 //! # Builds run outside the lock, and the cache is bounded
 //!
 //! A substrate's build is `pack_substrate` — a separable blur plus sixteen projections
-//! per texel over up to 2048² — and an upload, and it is reached from the *apply* path
-//! whenever a replay crosses a `SetSubstrate`. Run under the store's lock, every
-//! sibling's `current()` waited behind it. So [`Registry::get`] takes the lock twice:
-//! once to miss and clone out the registration, once to insert what it built. Two
-//! callers missing the same id in the gap both build it; the second's is dropped at
-//! insert — wasted work, not a wrong answer, since both came from the same bytes.
+//! per texel over up to 2048² — plus an upload, and it is reached from the *apply* path
+//! whenever a replay crosses a `SetSubstrate`; under the store's lock, every sibling's
+//! `current()` would wait behind it. So [`Registry::get`] takes the lock twice: once to
+//! miss and clone out the registration, once to insert what it built. Two callers
+//! missing the same id in the gap both build it; the second's is dropped at insert —
+//! wasted work, not a wrong answer, since both came from the same bytes.
 //!
 //! Built objects are held to [`BUILT_BUDGET`] by evicting the least recently asked
 //! for, **except the ids registries stand on**, which are pinned for as long as one
-//! does. That is what keeps `current()`'s "always built" a structural fact rather than
+//! does. That is what makes `current()`'s "always built" a structural fact rather than
 //! a race against the trim.
 //!
 //! [`Engine::new_sharing`]: crate::Engine::new_sharing
@@ -60,9 +58,8 @@ use stark_model::DocError;
 
 /// How many bytes of built objects a store holds before it evicts the least recently
 /// used unpinned one — `gpu::scratch`'s `POOL_BUDGET` shape, and the same figure:
-/// sixteen 2048² substrate bakes, where `SubstrateScale` admits seventy-six rungs and
-/// the cache used to keep every one a document ever crossed for the registry's life.
-/// Only what [`Resource::resident_bytes`] reports is counted.
+/// sixteen 2048² substrate bakes, where `SubstrateScale` admits seventy-six rungs a
+/// document could cross. Only what [`Resource::resident_bytes`] reports is counted.
 const BUILT_BUDGET: u64 = 256 << 20;
 
 /// A resource the frontend supplies bytes for.
@@ -80,13 +77,12 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// **Whatever decoding the bytes once produces that every build from them can
     /// share**, kept beside them by `Registered`.
     ///
-    /// Which resources want one is decided by the ratio the module note sets up: the
-    /// canvas substrate registers one height map and bakes a `SubstrateMap` per scale
-    /// it is laid at (§6.4), so the decode is paid once and the bakes read it. The
-    /// lighting environment builds once per registration and its decode is a
-    /// multi-megabyte float image only the mip chain ever reads, so it keeps `()` and
-    /// decodes inside [`build`](Self::build) — the memory is the reason, and it is a
-    /// per-resource answer rather than one this trait should pick.
+    /// A per-resource answer, decided by the ratio the module note sets up: the canvas
+    /// substrate registers one height map and bakes a `SubstrateMap` per scale it is
+    /// laid at (§6.4), so the decode is paid once and the bakes read it. The lighting
+    /// environment builds once per registration and its decode is a multi-megabyte float
+    /// image only the mip chain ever reads, so it keeps `()` and decodes inside
+    /// [`build`](Self::build).
     type Decoded;
 
     /// Decode registered bytes, or say why not.
@@ -97,9 +93,8 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// the render path — an abort on the web with the painting unsaved (§5).
     ///
     /// A [`DocError`] rather than a string, so a resource whose decoder already has a
-    /// typed refusal keeps it: a substrate's is `AssetError`, the format's own
-    /// identity contract (§19), and flattening that to a sentence at the door only to
-    /// have the caller wrap it again lost the one arm anybody would match on.
+    /// typed refusal keeps it: a substrate's is `AssetError`, the format's own identity
+    /// contract (§19), and it is the one arm a caller would match on.
     fn decode(bytes: &[u8]) -> std::result::Result<Self::Decoded, DocError>;
 
     /// The registered bytes this id builds from.
@@ -124,10 +119,8 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
 }
 
 /// What a build is given for a registered id: the bytes, and the decode of them
-/// [`Registry::register`] already paid for.
-///
-/// Both, because which one a build reads is the resource's business — see
-/// [`Resource::Decoded`].
+/// [`Registry::register`] already paid for. Both, because which one a build reads is the
+/// resource's business — see [`Resource::Decoded`].
 pub struct Registered<'a, R: Resource> {
     pub bytes: &'a [u8],
     pub decoded: &'a R::Decoded,
@@ -158,12 +151,12 @@ struct Store<R: Resource> {
     /// Everything built, keyed by id; the id in use is always present.
     ///
     /// A **cache**, not a set of live resources, and it exists for the canvas
-    /// substrate's sake. Once the deposition tooth reads the substrate (§6.4), a stroke
+    /// substrate's sake: since the deposition tooth reads the substrate (§6.4), a stroke
     /// replayed from before a `SetSubstrate` has to deposit against the substrate it was
-    /// actually painted on rather than the one in use now — so [`Registry::get`]
-    /// can be asked for any id at any time, and re-decoding a multi-megabyte PNG
-    /// every time the log crosses that boundary is not a thing to do on an undo
-    /// step. Bounded by [`BUILT_BUDGET`] over what the objects report.
+    /// actually painted on rather than the one in use now. So [`Registry::get`] can be
+    /// asked for any id at any time, and re-decoding a multi-megabyte PNG every time the
+    /// log crosses that boundary is not a thing to do on an undo step. Bounded by
+    /// [`BUILT_BUDGET`] over what the objects report.
     built: HashMap<R, Built<R::Gpu>>,
     /// How many registries stand on each id. A pinned id is never evicted, so
     /// `current()` finds it built — the invariant, held structurally.
@@ -320,9 +313,8 @@ impl<R: Resource> Registry<R> {
 
     /// The one place this registry's lock is taken, poisoned or not ([`unpoisoned`]).
     ///
-    /// What it guards is a byte map and a build cache — derived state, rebuildable
-    /// from the bytes — so another thread's panic is a reason to serve a cold entry,
-    /// not to take the renderer down with it.
+    /// What it guards is derived state, rebuildable from the bytes, so another thread's
+    /// panic is a reason to serve a cold entry rather than to take the renderer down.
     fn store(&self) -> std::sync::MutexGuard<'_, Store<R>> {
         unpoisoned(self.store.lock())
     }
@@ -343,12 +335,10 @@ impl<R: Resource> Registry<R> {
     /// which one is in use.
     ///
     /// This is what a replay asks: the substrate a stroke deposits against is the one
-    /// the document was on *at that point in the log* (§6.4), which is a question
-    /// about the action being applied, not about what the compositor is showing.
-    /// Also how [`register`](Self::register) and [`set`](Self::set) rebuild the
-    /// object they have just invalidated: they call this and drop the result, rather
-    /// than reaching for a returnless `ensure` twin that nothing would keep in step
-    /// with this one.
+    /// the document was on *at that point in the log* (§6.4), which is a question about
+    /// the action being applied, not about what the compositor is showing. It is also
+    /// how [`register`](Self::register) and [`set`](Self::set) rebuild the object they
+    /// have just invalidated — they call this and drop the result.
     ///
     /// The build runs with the lock released (the module note).
     pub fn get(&self, gpu: &GpuContext, id: R) -> R::Gpu {
@@ -392,14 +382,12 @@ impl<R: Resource> Registry<R> {
     /// it is sampled.
     ///
     /// The decode is done before the store is touched so that a refusal changes
-    /// nothing: a half-registered content id whose bytes will not decode is the state
-    /// that turns a bad download into a fallback nobody asked for, silently, one
-    /// render later.
+    /// nothing: a half-registered content id whose bytes will not decode turns a bad
+    /// download into a fallback nobody asked for, silently, one render later.
     ///
     /// Every id standing on this content is rebuilt, siblings' included — they are
     /// pinned, and a pinned id is always built. A sibling still keeps its stale
-    /// *binding* until it next rebinds, exactly the exposure two independent
-    /// registries had, since neither saw the other's bytes arrive at all.
+    /// *binding* until it next rebinds.
     pub fn register(
         &self,
         gpu: &GpuContext,

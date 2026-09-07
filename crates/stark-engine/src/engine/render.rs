@@ -1,14 +1,12 @@
 //! Presenting the canvas: the compositor's draw list, the screen frame, and export
 //! (§6.3, §15.6).
 //!
-//! One path serves all three consumers, which is what keeps them from disagreeing
-//! about what the document looks like. [`Engine::render_view`] takes a view, a
-//! substrate and somewhere to put the pass-A attachments, and every caller differs only
-//! in those: the screen renders through the session's view with chrome, the
-//! navigator's miniature through a planned rect without it, and an export through
-//! the same planned rect into a texture it then reads back. "Export" was a
-//! screenshot of the viewport for exactly as long as `render` read `session.view`
-//! instead of taking one.
+//! **One path serves all three consumers**, which is what keeps them from
+//! disagreeing about what the document looks like. [`Engine::render_view`] takes a
+//! view, a substrate and somewhere to put the pass-A attachments, and every caller
+//! differs only in those: the screen renders through the session's view with chrome,
+//! the navigator's miniature through a planned rect without it, and an export through
+//! the same planned rect into a texture it then reads back.
 
 use super::Engine;
 use crate::Result;
@@ -33,9 +31,8 @@ pub enum Background {
     #[default]
     Substrate,
     /// Nothing: the paint's own visible alpha becomes the image's alpha, for a
-    /// cut-out PNG. A real branch in the media pass rather than an alpha tweak —
-    /// the substrate composite is skipped entirely, so bare canvas is genuinely
-    /// absent rather than white-and-invisible.
+    /// cut-out PNG. The substrate composite is skipped entirely, so bare canvas is
+    /// genuinely absent rather than white-and-invisible.
     Transparent,
 }
 
@@ -54,34 +51,29 @@ enum Chrome {
 /// Compositing runs through pass-A attachments the size of the target, so *whose*
 /// they are decides who pays for a resize. The substrate's are kept from frame to
 /// frame; anything rendered beside them is a different size and brings its own, so
-/// the screen's are never resized out from under it — and never rebuilt on the next
-/// frame to recover. That mattered as soon as something rendered off-screen
-/// *repeatedly*: the navigator's miniature is one render per edit, and sharing the
-/// substrate's attachments made it two rebuilds of window-sized textures and a full
-/// recomposite per edit.
+/// the screen's are never resized out from under it and rebuilt on the next frame to
+/// recover.
 enum Attachments<'a> {
     /// The screen's own, cached across frames ([`Engine::compositor`]).
     Screen,
     /// The caller's, for a second surface on the same screen — the navigator's
     /// miniature — presented as the screen is (§6.5). Whether they outlive the call
-    /// is decided by whoever knows whether the render repeats — see [`Offscreen`].
+    /// is the caller's choice, since only it knows whether the render repeats — see
+    /// [`Offscreen`].
     Surface(&'a mut Offscreen),
     /// The caller's, for a picture bound for a file or the CPU: an export, a
     /// thumbnail, a golden. Rendered [`Output::SDR`] whatever the screen is showing,
-    /// which is what keeps the screen's headroom and gamut out of a file (§6.5,
-    /// §15.6).
+    /// which keeps the screen's headroom and gamut out of a file (§6.5, §15.6).
     Export(&'a mut Offscreen),
 }
 
 /// Which document a render draws: the one being *shown*, or the committed one
 /// alone.
 ///
-/// The distinction only exists because a render can be asked for while a gesture
-/// is in flight. The screen wants [`Rendered::Live`] — that is what makes a stroke
-/// visible as it is drawn. A render that stands in for the *state of the work*
-/// wants [`Rendered::Committed`]: it is refreshed when the document changes, so
-/// following the in-flight stroke would mean re-rendering at pointer rate to show
-/// something that is already on screen at full size.
+/// The screen wants [`Rendered::Live`] — that is what makes a stroke visible as it
+/// is drawn. A render that stands in for the *state of the work* wants
+/// [`Rendered::Committed`], since it refreshes when the document changes and
+/// following an in-flight stroke would mean re-rendering at pointer rate.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Rendered {
     /// The committed document with every in-flight gesture — this client's and
@@ -105,11 +97,9 @@ pub enum ExportScale {
     /// The largest scale whose output fits inside a box of image px, both axes
     /// respected — what a *preview* of the whole piece asks for.
     ///
-    /// It exists so asking that question does not require answering a harder one
-    /// first. Asking for a 1× plan purely to learn the rect's size and then scaling
-    /// that oneself means a piece wider than [`max_export_dim`] fails the query for a
-    /// render it was never going to make, and the miniature quietly stops refreshing
-    /// at the size where an overview starts to matter most.
+    /// Distinct from a 1× plan the caller then scales itself, because a piece wider
+    /// than [`max_export_dim`] would fail *that* query for a render it was never
+    /// going to make.
     ///
     /// Scales *up* as happily as down: the overview's job is to show the whole of a
     /// piece at a glance, and a 60 px sketch shown at 60 px says less than the empty
@@ -134,18 +124,17 @@ impl ExportPlan {
     /// The view this plan renders through: centred on the rect, at `zoom` = its scale,
     /// with the plan's pixel size as the viewport.
     ///
-    /// The plan *is* the view, in other words, which is why both things that render a
-    /// planned rect — writing a file ([`Engine::export`]) and drawing the navigator's
-    /// miniature ([`Engine::render_into`]) — derive it here rather than each spelling
-    /// out the same three lines and drifting.
+    /// Both things that render a planned rect — writing a file ([`Engine::export`])
+    /// and drawing the navigator's miniature ([`Engine::render_into`]) — derive their
+    /// view here, so the two cannot disagree about the framing.
     pub fn view(&self) -> ViewTransform {
         ViewTransform {
             center: (self.min + self.max) * 0.5,
             zoom: self.zoom,
             // Upright and unmirrored, whatever angle the artist has the canvas at:
             // turning the easel is a way of *looking* at the piece, and a file — or
-            // the navigator's overview, which frames itself the same way — shows the
-            // piece rather than the easel (§18.1.2).
+            // the navigator's overview — shows the piece rather than the easel
+            // (§18.1.2).
             rotation: 0.0,
             flip_h: false,
             viewport: self.size,
@@ -157,19 +146,12 @@ impl ExportPlan {
 /// zero-ish frame or a huge scale is reported as an error rather than surfacing as a
 /// wgpu validation panic.
 ///
-/// Asked of the device rather than fixed at a number, because the number was wrong in
-/// the dangerous direction. The frontend requests `wgpu::Limits::default()` while the
-/// headless device ([`GpuContext::headless`]) asks only for the engine's own minimums
-/// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so a literal
-/// agreed with one of them by coincidence and not the other: written against the
-/// frontend's 8192, a 4096-px export passed the check on a headless device capped at
-/// 2048 and then asked for a texture it was never granted. A guard that has to be
-/// kept in step with a limit it does not read is a guard that is already out of step
-/// somewhere — and the two limits have since moved *again*, which is the point.
-///
-/// It also lets the ceiling *rise*: the adapters this runs on report far more than
-/// 8192 (32768 is common), so a frontend that requests more gets more, and this
-/// follows it with nothing to update.
+/// Asked of the device rather than fixed at a literal, because there is no one
+/// number: the frontend requests `wgpu::Limits::default()` while the headless device
+/// ([`GpuContext::headless`]) asks only for the engine's own minimums
+/// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so any literal
+/// agrees with one of them and not the other. It also lets the ceiling rise with
+/// whatever a frontend requests.
 ///
 /// [`GpuContext::headless`]: crate::gpu::GpuContext::headless
 fn max_export_dim(gpu: &GpuContext) -> u32 {
@@ -179,11 +161,9 @@ fn max_export_dim(gpu: &GpuContext) -> u32 {
 /// How much of the viewport [`Engine::show_piece`] leaves clear around the piece, as
 /// a fraction of each axis on each side.
 ///
-/// Not zero, unlike the fit an *export* makes: a file is the piece and nothing else,
-/// while a view of it is a thing on an easel, and a piece flush with all four window
-/// edges reads as one that carries on past them. Small enough that the margin is a
-/// breath rather than a mount — the picture is still what the window is mostly
-/// showing.
+/// Not zero, unlike the fit an *export* makes: a piece flush with all four window
+/// edges reads as one that carries on past them. Small enough that the picture is
+/// still what the window is mostly showing.
 const SHOW_PIECE_MARGIN: f32 = 0.04;
 
 impl Engine {
@@ -204,19 +184,17 @@ impl Engine {
     /// Render the document through `view` into a target that is **not** the engine's
     /// own substrate — a second substrate showing the same document (§11).
     ///
-    /// The navigator's miniature is the consumer: an overview of the whole piece is a
-    /// second view of the canvas, and once it has somewhere to draw there is no reason
-    /// for it to travel through the CPU. Reaching it through [`export`](Self::export)
-    /// instead — render, copy back, hand the browser a `<canvas>` full of bytes — is
-    /// this same render plus a frame of latency and a megabyte of pixels in transit.
+    /// The navigator's miniature is the consumer: reaching it through
+    /// [`export`](Self::export) instead is this same render plus a frame of latency
+    /// and a megabyte of pixels through the CPU.
     ///
     /// `into` holds the pass-A attachments (see [`Offscreen`]); a consumer drawing
     /// repeatedly keeps them, so a refresh allocates nothing at all. `target` must
     /// carry the format [`target_format`](Self::target_format) reports and be
-    /// `view.viewport` in size — a substrate texture configured to match.
+    /// `view.viewport` in size.
     ///
-    /// No chrome: a selection outline belongs to the substrate you are painting on, not
-    /// to a thumbnail of the piece.
+    /// No chrome: a selection outline belongs to the substrate you are painting on,
+    /// not to a thumbnail of the piece.
     pub fn render_into(
         &mut self,
         into: &mut Offscreen,
@@ -246,27 +224,24 @@ impl Engine {
     /// sits under the paint and whether on-canvas chrome is drawn (§6.4,
     /// §15.6).
     ///
-    /// This is the seam export needs: exporting a frame is rendering at
-    /// `frame.rect × scale`, centred on the frame, at `zoom = scale` — the same
-    /// path the screen takes, so what is written is what was seen. `render` reading
-    /// `session.view` instead of taking one is exactly what made "export" a
-    /// screenshot of the viewport.
+    /// The seam export needs: exporting a frame is rendering at `frame.rect × scale`,
+    /// centred on the frame, at `zoom = scale` — **the same path the screen takes**,
+    /// so what is written is what was seen.
     ///
     /// `only` names a single layer to draw **alone**, its blend mode, clip and opacity
-    /// dropped — see [`composite_groups`](Self::composite_groups), which decides what
-    /// that means and has done since the eyedropper needed it (§18.0.2). `None` is the
-    /// document, which is every render but a layer thumbnail's (§14.6).
+    /// dropped — see [`composite_groups`](Self::composite_groups), which settles what
+    /// that means (§18.0.2). `None` is the document, which is every render but a layer
+    /// thumbnail's (§14.6).
     ///
     /// Private, with [`Engine::export`] and [`Engine::render_into`] as the two
     /// consumers: what a caller may choose is a view, how much of the document, a
     /// substrate and where the attachments live, never whether chrome is drawn (it is,
-    /// for the screen alone) nor how the two are wired together.
+    /// for the screen alone).
     ///
     /// Over the arity lint by one, and left that way: **every parameter here is a
-    /// distinct type**, so the arrangement the lint guards against — two arguments of
-    /// one type, silently transposed — cannot be written. If a *second* `Option<LayerId>`
-    /// ever arrives (a frame and a layer are both one), these stop being independent
-    /// choices and become a "what to draw" value worth naming.
+    /// distinct type**, so the transposition the lint guards against cannot be
+    /// written. A *second* `Option<LayerId>` would end that, and these would become a
+    /// "what to draw" value worth naming.
     #[expect(
         clippy::too_many_arguments,
         reason = "every argument is a distinct type, so the transposition the lint guards cannot be written"
@@ -283,34 +258,31 @@ impl Engine {
     ) {
         // Everything a painted frame costs on the CPU, from the fold through to the
         // last command encoded. The frontend's own `frame` span sits outside it and
-        // adds the substrate acquire and the present, so the difference between the two
-        // rows is what the *page* costs on top of what the engine does.
+        // adds the substrate acquire and the present, so the difference between the
+        // two rows is what the *page* costs on top of what the engine does.
         crate::timing::span!("render.view");
-        // The fold is rebuilt lazily (`Engine::mark_live_stale`), and this is the
-        // read that services it: once per frame painted, whatever arrived since.
+        // The fold is rebuilt lazily (`Engine::mark_live_stale`), and this is the read
+        // that services it: once per frame painted, whatever arrived since.
         if matches!(content, Rendered::Live) {
             self.flush_live();
         }
-        // Cloned rather than borrowed — a handful of `Arc` bumps (§5.1) — because it
-        // buys back the borrow of `self`, and everything below wants that: the draw
-        // list is rebuilt through `&mut self`, and the compositor is borrowed mutably
-        // at the end. Owning the document once is cheaper than the two dances that
-        // paid for it piecemeal.
+        // Cloned rather than borrowed — a handful of `Arc` bumps (§5.1) — to release
+        // the borrow of `self`: the draw list is rebuilt through `&mut self` and the
+        // compositor is borrowed mutably at the end.
         let doc = match content {
             Rendered::Live => self.presented().clone(),
             Rendered::Committed => self.timeline.current().clone(),
         };
-        // Only what this view can show (§6.3). The draw list is otherwise every
-        // populated tile of every visible layer, whatever the viewport — and it is
-        // rebuilt only when something it is a function of has moved ([`DrawKey`]).
+        // Only what this view can show (§6.3); the list is otherwise every populated
+        // tile of every visible layer, whatever the viewport. Rebuilt only when
+        // something it is a function of has moved (`DrawKey`).
         //
         // Instrumented because the cache is the whole claim: this row's *count*
-        // against `render.view`'s says how often the key actually moved, and a live
-        // stroke moves it every frame by way of `Preview::fold`. A rebuild that
-        // stopped being rare would show up here long before it showed up as a
-        // dropped frame. Braced, because a timing span runs to the end of the block
-        // it is opened in and what is being timed is this call rather than the rest
-        // of the render (`timing::span!`).
+        // against `render.view`'s says how often the key actually moved, so a rebuild
+        // that stopped being rare shows up here before it shows up as a dropped
+        // frame. Braced because a timing span runs to the end of the block it is
+        // opened in, and what is being timed is the call rather than the rest of the
+        // render (`timing::span!`).
         let key = DrawKey {
             doc_revision: self.doc_revision,
             epoch: self.preview.epoch(),
@@ -319,32 +291,27 @@ impl Engine {
             only,
             visible: view.visible_tiles(),
         };
-        // Held as an owned handle rather than borrowed out of the memo, which is what
-        // lets the compositor be borrowed mutably at the end without the list having
-        // to be copied out of the way first — the same bargain the outlines and the
-        // guide scenes below strike, and the reason [`Engine::draw_list`] hands back
-        // a share instead of a reference.
+        // An owned handle rather than a borrow out of the memo, so the compositor can
+        // be borrowed mutably at the end without the list being copied out of the way
+        // first — why `Engine::draw_list` hands back a share.
         let groups = {
             crate::timing::span!("render.drawlist");
             self.draw_list(key, &doc)
         };
 
-        // The substrate is document state now (§15.5), so the substrate a
-        // piece was painted on travels with it instead of living in whichever
-        // frontend happened to render it.
+        // The substrate is document state (§15.5), so the one a piece was painted on
+        // travels with it rather than with whichever frontend renders it.
         let bg = self.shared.color_space.rgb_to_latent(doc.substrate_color);
         // The substrate is opaque paint under everything, so its per-unit opacity is
         // 1; the residual target carries the same number (§6.7).
         let bg_channels = [bg.lat[0], bg.lat[1], bg.lat[2], 1.0];
         let bg_resid = [bg.res[0], bg.res[1], bg.res[2], 0.0];
         // Chrome never reaches a file: an exported image gets no selection outline
-        // (§15.6). Keyed on `chrome`, deliberately *not* on the
-        // background — a substrate export is still an export, and tying the two
-        // together silently leaked the outline into every opaque PNG.
+        // (§15.6). Keyed on `chrome`, deliberately *not* on the background — a
+        // substrate export is still an export.
         //
-        // Read off the owned `doc` above rather than through `self`, which is what
-        // lets the compositor be borrowed mutably at the end without the list, the
-        // outlines and the guides each having to be copied out of the way first.
+        // Read off the owned `doc` rather than through `self`, so the compositor can
+        // be borrowed mutably at the end.
         let outlines: Vec<(crate::document::Selection, Option<[f32; 3]>)> = match chrome {
             Chrome::Hidden => Vec::new(),
             Chrome::Shown => self.visible_selections(&doc),
@@ -356,19 +323,16 @@ impl Engine {
                 tint: *tint,
             })
             .collect();
-        // Chrome, on the same argument as the outlines: a guide is a thing to
-        // draw *with*, so an export or a miniature never carries one (§20.4).
-        // Derived fresh per render — the camera math is a handful of products,
-        // and a cached copy would shadow the session's state.
+        // Chrome, on the outlines' argument: a guide is a thing to draw *with*, so an
+        // export or a miniature never carries one (§20.4). Derived fresh per render —
+        // the camera math is a handful of products, and a cached copy would shadow
+        // the session's state.
         let guide_scenes: Vec<GuideScene> = match chrome {
             Chrome::Hidden => Vec::new(),
-            // The document holds the guides and the session holds whose eye is
-            // shut (§20.5), so what is on screen is the two combined — one filter,
-            // written once, in `Session::shown_guides`.
-            //
-            // The pointer is the session's too, and for the same reason: it is
-            // per-client, so the rays it draws through every guide are handed in
-            // here rather than being a thing a camera knows (§20.9).
+            // The document holds the guides and the session holds whose eye is shut
+            // (§20.5), combined once in `Session::shown_guides`. The cursor is the
+            // session's too and for the same reason — per-client, so the rays drawn
+            // through every guide are handed in rather than known to a camera (§20.9).
             Chrome::Shown => {
                 let cursor = self.session.cursor();
                 self.session
@@ -377,13 +341,9 @@ impl Engine {
                     .collect()
             }
         };
-        // Read as a **field**, not through an accessor: a `&self` method borrows the
-        // whole engine, and the compositor is borrowed mutably three lines down.
-        // Rust splits disjoint fields and not method calls, which is the whole of why
-        // this is written out.
-
         // What display the picture is for (§6.5): the screen's own setting for the
-        // screen and a surface beside it, SDR for anything bound for a file.
+        // screen and a surface beside it, SDR for anything bound for a file — an
+        // export never reads the screen's.
         let output = match attachments {
             Attachments::Screen | Attachments::Surface(_) => self.compositor_pipeline.output(),
             Attachments::Export(_) => Output::SDR,
@@ -401,12 +361,10 @@ impl Engine {
             output,
         };
         // The three compositing passes and the draws inside them, encoded and
-        // submitted (§6.3). CPU time to *record* them, like every row here — WebGPU
+        // submitted (§6.3). CPU time to *record* them, like every row here: WebGPU
         // offers no timestamp query on the web, so nothing in this module can say
-        // what the GPU then spent executing them. The signal for that is the
-        // frontend's frame-skip counter (`Renderer::gpu_behind`), which is the
-        // honest place for it: a queue that will not drain is what being GPU-bound
-        // looks like from the CPU's side.
+        // what the GPU then spent executing them. The frontend's frame-skip counter
+        // (`Renderer::gpu_behind`) is the signal for that.
         crate::timing::span!("render.composite");
         match attachments {
             Attachments::Screen => {
@@ -426,12 +384,10 @@ impl Engine {
     /// layer that is not paint at all. Reads the *committed* document, so a caller
     /// mid-gesture is asking about the state before the live tail.
     ///
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    /// Every conservation, opacity and erase claim in the suite was a proxy
-    /// through tonemapping before this: the assertions read image darkness and said so
-    /// in a comment, because there was no way to ask a tile what it held. A proxy
-    /// through the media pass, the blend and the tonemap cannot separate "height was
-    /// not conserved" from "the light changed", and §6.1 is a claim about the first.
+    /// `pub` for the suite and nothing else, and hidden to say so (`testing`). A
+    /// conservation, opacity or erase claim read off the composited image cannot
+    /// separate "height was not conserved" from "the light changed", and §6.1 is a
+    /// claim about the first.
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn tile_channels(
@@ -594,55 +550,43 @@ impl Engine {
 
     /// Render a frame to a CPU-side image (§15.6).
     ///
-    /// This is the same path the screen takes — every visible layer composited
-    /// through the media pass — just with the view centred on the frame at
-    /// `zoom = scale`. Nothing is special-cased: a frame matte covers only
-    /// *outside* its rect, which is clipped away here, so it contributes nothing
-    /// to its own export, while a substrate matte is inside and contributes exactly
-    /// what it should.
-    /// Renders immediately and returns a future for the **readback**, which is the
-    /// only asynchronous part (§7 — on WebGPU `mapAsync` settles only
-    /// when the browser's event loop runs, so there is no way to block on it).
+    /// **The same path the screen takes** — every visible layer composited through
+    /// the media pass — with the view centred on the frame at `zoom = scale`. Nothing
+    /// is special-cased: a frame matte covers only *outside* its rect, which is
+    /// clipped away here, so it contributes nothing to its own export, while a
+    /// substrate matte is inside and contributes exactly what it should.
     ///
-    /// Deliberately *not* an `async fn`. An `async fn` would hold `&mut self` for
-    /// the whole readback, and a frontend must take that borrow from a shared cell
-    /// — so the engine would stay locked across an await during which the UI
-    /// re-renders and tries to read it, panicking with `AlreadyBorrowedMut`. This
-    /// shape ends the borrow when `export` returns: the returned future owns a
-    /// cloned [`GpuContext`] (cheap — the handles are reference-counted) and the
-    /// target texture, and touches the engine not at all.
+    /// Renders immediately and returns a future for the **readback**, which is the
+    /// only asynchronous part (§7 — on WebGPU `mapAsync` settles only when the
+    /// browser's event loop runs, so there is no way to block on it).
+    ///
+    /// Deliberately *not* an `async fn`: one would hold `&mut self` across the
+    /// readback, and a frontend taking that borrow from a shared cell would panic
+    /// with `AlreadyBorrowedMut` when the UI re-rendered mid-await. The borrow ends
+    /// when `export` returns — the future owns a cloned [`GpuContext`] and the target
+    /// texture, and touches the engine not at all.
     ///
     /// `content` chooses whether the in-flight gesture is in the picture: a file
     /// export takes [`Rendered::Live`], since that is what the artist is looking at.
-    /// (Anything refreshed per *committed* change wants [`Rendered::Committed`]
-    /// instead — see [`render_into`](Self::render_into), which is the shape that
-    /// suits a render repeated on a cadence rather than written to a file.)
+    /// Anything refreshed per *committed* change wants [`Rendered::Committed`] and
+    /// probably [`render_into`](Self::render_into).
     ///
     /// `into` is where the render's attachments live. It renders **beside** the
-    /// substrate rather than into it, so it never touches the screen's; whether its own
-    /// outlive the call is the caller's call, and the caller is the only one who knows
-    /// (see [`Offscreen`]) — a `&mut Offscreen::default()` for a one-shot, a held one
-    /// for a render that repeats.
+    /// substrate rather than into it, so it never touches the screen's; whether its
+    /// own outlive the call is the caller's choice (see [`Offscreen`]) — a
+    /// `&mut Offscreen::default()` for a one-shot, a held one for a repeat.
     ///
     /// **Two `Result`s, and they answer different questions.** The outer one is the
     /// request: a frame too small, a size past the device's limit — refused before
     /// anything is drawn, and answerable by asking for something else. The inner one
-    /// is the *readback*, which can only fail by the GPU failing underneath it
-    /// (§5), and is not answerable at all — but is reported rather than panicked on,
-    /// because the action log survives what the device does not and a caller told
-    /// this can still save the file.
+    /// is the *readback*, which can only fail by the GPU failing underneath it (§5).
+    /// That is reported rather than panicked on, because the action log survives what
+    /// the device does not and a caller told this can still save the file.
     ///
     /// ```text
     /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
     /// let image = readback.await?;
     /// ```
-    /// **This is [`export_view`](Self::export_view) through the plan's own view**,
-    /// which is the whole of what "export a frame" adds: [`ExportPlan::view`] already
-    /// exists so that the two things which render a planned rect derive it in one
-    /// place, and having said that, exporting one is not a second render path. The
-    /// tail — render off-screen, hand back a future that owns what it reads — is
-    /// otherwise written out twice, down to the borrow bargain the doc comment above
-    /// explains.
     pub fn export(
         &mut self,
         into: &mut Offscreen,
@@ -662,26 +606,22 @@ impl Engine {
     /// [`export`](Self::export) with the framing chosen by the caller instead of
     /// derived from the document.
     ///
-    /// `export` answers "the piece, at a scale": its rect comes from a frame or the
-    /// painted bounds, tile-aligned in the fallback. A preset thumbnail asks the
-    /// question the other way round — *this* rect, at *this* pixel size — and
-    /// deriving that from `export_rect` would crop to whichever tiles the test
-    /// stroke happened to land in. So this takes the view whole: `view.viewport` is
-    /// the output size, and the same borrow bargain as `export` applies — the
-    /// returned future owns what it reads, so the caller drops its engine borrow
-    /// before awaiting.
+    /// `export` answers "the piece, at a scale", framing itself off a frame or the
+    /// painted bounds. This takes the view whole instead — `view.viewport` is the
+    /// output size — for a caller that means *this* rect at *this* pixel size, such
+    /// as a preset thumbnail. The same borrow bargain as `export` applies: the
+    /// returned future owns what it reads, so drop the engine borrow before awaiting.
     ///
     /// No chrome, like every render that is not the screen's (§15.6).
     ///
     /// `only` names a layer to render **alone** — its own paint, with its blend mode,
-    /// clip and opacity dropped, which is what makes the result an identity card for
-    /// the layer rather than a picture of its contribution
-    /// ([`composite_groups`](Self::composite_groups) settles what that means, and
-    /// settled it for the eyedropper first). The layer panel's thumbnails are the
-    /// consumer (§14.6); `None` renders the document, which is what every other caller
-    /// wants. A layer that is hidden or fully transparent draws nothing at all, so a
-    /// caller that would rather show the last picture it had than a blank one should
-    /// ask before rendering rather than after.
+    /// clip and opacity dropped, making the result an identity card for the layer
+    /// rather than a picture of its contribution
+    /// ([`composite_groups`](Self::composite_groups) settles what that means). The
+    /// layer panel's thumbnails are the consumer (§14.6); `None` renders the
+    /// document. A layer that is hidden or fully transparent draws nothing at all, so
+    /// a caller that would rather keep its last picture than show a blank one should
+    /// ask before rendering.
     ///
     /// Errors mirror [`export_plan`](Self::export_plan)'s: a degenerate or
     /// non-finite view, or a viewport past the device's texture limit, is reported
@@ -695,9 +635,8 @@ impl Engine {
         content: Rendered,
     ) -> Result<impl std::future::Future<Output = Result<RgbaImage>> + use<>> {
         // The same question the view's own mutators ask before storing anything
-        // ([`ViewTransform::usable`]), rather than a second spelling of it here: a
-        // caller-supplied view has not passed through them, so it is asked once, at
-        // the door it comes in by.
+        // (`ViewTransform::usable`): a caller-supplied view has not passed through
+        // them, so it is asked at the door it comes in by.
         if !view.usable() {
             return Err(ExportError::UnusableView.into());
         }
@@ -711,13 +650,10 @@ impl Engine {
             }
             .into());
         }
-        // No chrome: a selection outline or any other on-canvas affordance is a
-        // thing to draw *with*, never a thing to ship. The hover mark (§18.1.10)
-        // is the same statement made of paint — a hypothesis about the *next*
-        // stroke, not work — and it may never reach a file. Dropped rather than
-        // excluded per-render, because the fold is one cached document; honestly
-        // so, since a moment worth exporting is not one the hand is painting in,
-        // and the next hover report re-seeds it.
+        // The hover mark is a hypothesis about the *next* stroke rather than work
+        // (§18.1.10), so like any other chrome it may never reach a file. Dropped
+        // from the fold rather than excluded per-render, because the fold is one
+        // cached document; the next hover report re-seeds it.
         if matches!(content, Rendered::Live) && self.session.clear_hover() {
             self.mark_live_stale();
         }
@@ -741,29 +677,22 @@ impl Engine {
     /// [`composite_groups`](Self::composite_groups), **memoized**: the draw list for
     /// `key`, built afresh or taken from [`Engine::draw_cache`] (C4).
     ///
-    /// **Why this is worth a cache at all.** Building the list clones a
-    /// `TilePairHandle` per visible tile, per layer — an atomic increment in and a
-    /// decrement out — plus a `Vec` per layer. The visible tile count scales as
-    /// 1/zoom², so a zoomed-out multi-layer document was paying ~10⁵ of those every
-    /// frame to produce a list identical to the last one. A canvas nobody is editing
-    /// or panning now pays nothing.
+    /// **Why the cache earns its place.** Building the list clones a
+    /// `TilePairHandle` per visible tile, per layer, plus a `Vec` per layer, and the
+    /// visible tile count scales as 1/zoom² — so a zoomed-out multi-layer document
+    /// pays ~10⁵ atomic bumps a frame to produce a list identical to the last one.
     ///
-    /// **A single-layer list is never cached.** The memo holds one list, and a
-    /// thumbnail pass renders one layer at a time with a sleep between rows while the
-    /// canvas keeps painting frames — so each thumbnail evicted the screen's list and
-    /// the next screen frame rebuilt it from nothing, N times over for N layers, which
-    /// is exactly the ~10⁵ handle clones the cache exists to stop paying. Such a key
-    /// can never be hit twice anyway: every row names a different `only`. Deliberately
-    /// *not* a second slot keyed on `only` either — the navigator refreshes per commit,
-    /// and at that instant `doc_revision` has already moved the screen's key, so the
-    /// eviction that slot would prevent costs nothing.
+    /// **A single-layer list is never cached.** The memo holds one list, so a
+    /// thumbnail pass (one layer per row, interleaved with screen frames) would evict
+    /// the screen's list N times over. Such a key can never be hit twice anyway: every
+    /// row names a different `only`. Not a second slot keyed on `only` either — the
+    /// navigator refreshes per commit, when `doc_revision` has already moved the
+    /// screen's key.
     ///
-    /// Takes the key rather than deriving it so the caller can compute it while it
-    /// still holds `doc` — and takes `doc` borrowed for the same reason. The list comes
-    /// back as an `Arc` rather than a reference into the memo so that holding it does
-    /// not hold a borrow of the engine: the compositor is borrowed mutably a few lines
-    /// after the call, and the whole of what the `RefCell` bought would go back out
-    /// through a `Ref` guard that had to be kept alive to read the slice.
+    /// Takes the key and a borrowed `doc` so the caller can compute one while it still
+    /// holds the other. The list comes back as an `Arc` rather than a reference into
+    /// the memo, so holding it does not hold a borrow of the engine — the compositor
+    /// is borrowed mutably a few lines after the call.
     pub(super) fn draw_list(&self, key: DrawKey, doc: &DocState) -> Arc<[CompositeGroup]> {
         if key.only.is_some() {
             return self.composite_groups(doc, key.only, key.visible).into();

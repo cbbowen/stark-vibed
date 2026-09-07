@@ -1,16 +1,9 @@
 //! The **owned** viewport-sized render targets: one attachment, and the channel trio
 //! made of three (§6.1, §6.7).
 //!
-//! `channels.rs` holds the trio for pooled tiles ([`Channels`](super::super::channels::Channels))
-//! and for borrows ([`Targets`]); this is the third
-//! ownership, the one whose members free their memory when they are replaced. Written
-//! per consumer it is `blend`'s trio and the first three fields of `media`'s
-//! `Offscreen`, each with its own `targets()`, and the second has to pass its three
-//! around behind a disabled lint. One shape, one name.
-//!
-//! Here rather than in `composite.rs` because neither is "the part no single pass
-//! owns", which is what that file says is left in it: four sibling passes reached
-//! *up* through `super::Attachment` to get at a general resource type.
+//! The third ownership beside `channels.rs`'s pooled
+//! [`Channels`](super::super::channels::Channels) and borrowed [`Targets`]: the one
+//! whose members free their memory when they are replaced.
 
 use crate::view::Extent2;
 
@@ -23,20 +16,13 @@ use super::super::channels::{ChannelFormats, Targets};
 ///
 /// These are the largest allocations the application makes: a whole set is rebuilt
 /// whenever the target changes size or the zoom crosses a supersampling threshold
-/// (`Compositor::ensure_targets`), budgeted by `resolve`'s
-/// `MAX_SUPERSAMPLED_BYTES` at up to 224 MiB a set. On the web, dropping the view
-/// frees none of it: it releases the JS handle and leaves the texture to a collector
-/// that cannot see the GPU memory behind it, so nothing reclaims it until that
-/// collector happens to run. Survivable at a zoom notch, and fatal at a *rate* — a
-/// window-resize drag reports a new size every animation frame, so a second of
-/// dragging strands a second's worth of whole sets at once and the GPU process dies
-/// with every device on it.
-///
-/// So the texture is kept beside its view and `destroy()`d here, which is safe for
-/// the reason `gpu::submit` gives: WebGPU defers the real free until the in-flight
-/// work naming it completes. Handing back both halves would have let each call site
-/// arrange this by hand; a target that cannot be built without it is what keeps the
-/// next one from being the attachment that forgets.
+/// (`Compositor::ensure_targets`), budgeted by `resolve`'s `MAX_SUPERSAMPLED_BYTES`
+/// at up to 224 MiB a set. On the web, dropping the view frees none of it — the
+/// texture is left to a collector that cannot see the GPU memory behind it — so a
+/// window-resize drag, which reports a new size every animation frame, strands whole
+/// sets at a rate and takes the GPU process down with every device on it. Hence the
+/// `destroy()` in `Drop`, safe because WebGPU defers the real free until in-flight
+/// work naming the texture completes (`gpu::submit`).
 pub(super) struct Attachment {
     tex: wgpu::Texture,
     view: wgpu::TextureView,

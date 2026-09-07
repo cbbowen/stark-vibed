@@ -1,35 +1,33 @@
 //! The focal blur's convolution, driven (§21.12).
 //!
 //! `blur.wesl` holds the arithmetic — the Stockham passes, the aperture, the
-//! frequency-domain multiply — and this module holds everything the arithmetic
-//! cannot say about itself: how large the padded transform is, which pass reads
-//! which half of the ping-pong, when the kernel's transform is stale, and where
-//! the round trip must land. All of that is decided in [`BlurPass::prepare`]
-//! as **plain data** ([`plan`]), for the compositor's own reason (§14.7's one
-//! walk): the encoder then replays a list, and the property everything rests on —
-//! the inverse transform lands in the pair the filter bind group names — is a
-//! fact about the list, testable without an adapter.
+//! frequency-domain multiply — and this module holds what the arithmetic cannot say
+//! about itself: how large the padded transform is, which pass reads which half of the
+//! ping-pong, when the kernel's transform is stale, and where the round trip must
+//! land. All of it is decided in [`BlurPass::prepare`] as **plain data** ([`plan`]),
+//! for the compositor's own reason (§14.7's one walk): the encoder replays a list, and
+//! the property everything rests on — the inverse transform lands in the pair the
+//! filter bind group names — is a fact about that list, testable without an adapter.
 //!
 //! # The shape of one frame's work
 //!
 //! Per focal-blur layer, in encoder order (which is execution order):
 //!
-//! 1. **The kernel**, only when what the kernel texture holds is not this
-//!    layer's aperture at this layer's radius and extent: `make_kernel`
-//!    rasterizes the shape into a scratch plane and `fft_one` walks it into the
-//!    dedicated kernel texture. Cached across frames — a settled bokeh costs
-//!    nothing here — and rebuilt mid-frame when two blur layers disagree.
+//! 1. **The kernel**, only when the kernel texture does not already hold this layer's
+//!    aperture at this radius and extent: `make_kernel` rasterizes the shape into a
+//!    scratch plane and `fft_one` walks it into the dedicated kernel texture. Cached
+//!    across frames, and rebuilt mid-frame when two blur layers disagree.
 //! 2. **The decode**: the space's own `fs_blur_decode` (`FilterPass::blur_decode`)
 //!    lays the accumulator into set **B** as premultiplied XYZ light, coverage,
-//!    height and the border weight, zeros in the padding. It binds the very
-//!    filter bind group the resolve pass will — which is what lets it read the
-//!    right accumulator half without machinery of its own — and set B is the
-//!    half that group does *not* name, so nothing is both bound and attached.
+//!    height and the border weight, zeros in the padding. It binds the very filter
+//!    bind group the resolve pass will — which is how it reads the right accumulator
+//!    half without machinery of its own — and set B is the half that group does *not*
+//!    name, so nothing is both bound and attached.
 //! 3. **The round trip**: forward FFT, multiply, inverse FFT — `2·(log₂W+log₂H)+1`
-//!    dispatches, each reading one half of the ping-pong and writing the other.
-//!    The count is odd *whatever the sizes*, so a chain that starts in B always
-//!    lands in **A** — the pair the filter bind group reads — with no copy and
-//!    no parity to get wrong.
+//!    dispatches, each reading one half of the ping-pong and writing the other. The
+//!    count is odd *whatever the sizes*, so a chain that starts in B always lands in
+//!    **A** — the pair the filter bind group reads — with no copy and no parity to
+//!    get wrong.
 //!
 //! The filter's own fullscreen pass then runs as every filter's does (§21.3),
 //! with its `FILTER_FOCAL_BLUR` arm reading set A.
@@ -37,26 +35,22 @@
 //! # Memory, and what bounds it
 //!
 //! The planes are `f32` complex — three planes across an `rgba32float` and an
-//! `rg32float`, two sets plus the kernel — at the padded power-of-two size, which
-//! is the largest scratch the application makes and the term
+//! `rg32float`, two sets plus the kernel — at the padded power-of-two size, the
+//! largest scratch the application makes and the term
 //! [`resolve::attachment_bytes`](super::resolve::attachment_bytes) charges the
-//! supersampling budget for. `f16` is not an option the precision argument loses
-//! narrowly: a transform's DC term is the *sum* of the image, which overflows
-//! half floats at any real size.
+//! supersampling budget for. `f16` is not an option: a transform's DC term is the
+//! *sum* of the image, which overflows half floats at any real size.
 //!
-//! A radius is a view-mapped quantity — the same document blurs by the same
-//! **canvas** distance at every zoom (§6.4) — which is exactly what once made
-//! zooming in fatal: the guard band grew with the zoom, and the planes grew
-//! past the device's memory and buffer limits with it. What bounds them now is
-//! [`scale`]: past [`MAX_CONV_RADIUS`] on-screen texels a layer **decimates**
-//! rather than growing, its transform running at a power-of-two fraction of the
-//! accumulator's resolution — the chromatic tap cap's own trade (§21.10),
-//! degrade the sampling and never the picture's geometry, and invisible where
-//! it is legal because an aperture that wide carries nothing near texel frequency.
-//! The decode averages down and the resolve interpolates back up
-//! (`filter_common.wesl`'s `blur_src` / `blur_read`); the transform between
-//! them is scale-blind. The device's texture limit stays as the last-resort
-//! clamp, and only there does the radius itself give way ([`layers`]).
+//! A radius is a view-mapped quantity — the same document blurs by the same **canvas**
+//! distance at every zoom (§6.4) — so what bounds the planes is [`scale`]: past
+//! [`MAX_CONV_RADIUS`] on-screen texels a layer **decimates** rather than growing, its
+//! transform running at a power-of-two fraction of the accumulator's resolution. That
+//! is the chromatic tap cap's own trade (§21.10) — degrade the sampling, never the
+//! picture's geometry — and invisible where it is legal, because an aperture that wide
+//! carries nothing near texel frequency. The decode averages down and the resolve
+//! interpolates back up (`filter_common.wesl`'s `blur_src` / `blur_read`); the
+//! transform between them is scale-blind. The device's texture limit stays as the
+//! last-resort clamp, and only there does the radius itself give way ([`layers`]).
 
 use std::ops::Range;
 
@@ -127,18 +121,17 @@ impl BlurPass {
         }
     }
 
-    /// Bring `frame` in line with what this render is about to blur: the planes
-    /// for an accumulator of `accum`, the dispatch plan for `kernels` (one
-    /// `(filter slot, radius in accumulator texels, aperture)` per focal-blur
-    /// layer, in slot order), and every per-dispatch uniform written. Empty
-    /// `kernels` drops the frame whole — the planes are the largest scratch there
-    /// is, and a document that stops blurring should stop paying for it.
+    /// Bring `frame` in line with what this render is about to blur: the planes for an
+    /// accumulator of `accum`, the dispatch plan for `kernels` — one
+    /// `(filter slot, radius in accumulator texels, aperture)` per focal-blur layer, in
+    /// slot order — and every per-dispatch uniform written. Empty `kernels` drops the
+    /// frame whole, since the planes are the largest scratch there is.
     ///
-    /// **Returns whether the planes the filter bind group names changed** —
-    /// created, resized, or dropped — because those groups are cached per scratch
-    /// level (`ScratchLevel::filter_bg`) and the caller must invalidate them.
-    /// A moved uniform buffer is *not* part of that answer: the only groups
-    /// naming it are this module's own, rebuilt here.
+    /// **Returns whether the planes the filter bind group names changed** — created,
+    /// resized or dropped — because those groups are cached per scratch level
+    /// (`ScratchLevel::filter_bg`) and the caller must invalidate them. A moved uniform
+    /// buffer is *not* part of that answer: the only groups naming it are this module's
+    /// own, rebuilt here.
     pub(crate) fn prepare(
         &self,
         ctx: &GpuContext,
@@ -194,16 +187,14 @@ pub(super) fn texel_radius(f: &FilterDraw, view: ViewTransform) -> f32 {
 /// The aperture's shape as `make_kernel` reads it (§21.12) — the shader's own
 /// `APERTURE_*` code, the shape's one number, and its turn.
 ///
-/// Three lanes rather than the document's [`Aperture`] enum for
-/// [`FilterDraw`]'s reason: by the time a filter reaches the compositor it is
-/// numbers, and which number means which shape is a fact about `blur.wesl`
-/// rather than about the document.
+/// Three lanes rather than the document's [`Aperture`] enum for [`FilterDraw`]'s
+/// reason: which number means which shape is a fact about `blur.wesl` rather than
+/// about the document.
 ///
-/// `shape` and `param` are **scale-free** — a code, a blade count, a fraction of
-/// the radius, a ratio — which is what lets a decimated layer (§21.12) rescale
-/// its radius and carry them through untouched. `angle` is not: it is the one
-/// lane that has already made a trip, from the canvas frame the document states
-/// it in into this one ([`aperture`]).
+/// `shape` and `param` are **scale-free** — a code, a blade count, a fraction of the
+/// radius, a ratio — which is what lets a decimated layer (§21.12) rescale its radius
+/// and carry them through untouched. `angle` is not: it has already been carried from
+/// the canvas frame the document states it in into this one ([`aperture`]).
 ///
 /// [`Aperture`]: stark_model::document::Aperture
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -219,17 +210,14 @@ pub(super) struct Aperture {
 /// The aperture a focal-blur draw carries, off the lanes `group::aperture_lanes`
 /// wrote — with its turn carried into the frame the convolution runs in.
 ///
-/// **The turn makes the same trip the radius does** (§21.10, §6.4), and for the
-/// same reason the chromatic filter's angle does (`plan::view_lanes`): the bokeh
-/// belongs to the artwork, so a six-bladed iris turns when the canvas is turned
-/// and flips when it is mirrored, and an export at a rotated view shows the
-/// picture the screen showed. Without it the polygon stays welded to the screen
-/// while the painting rotates under it.
+/// **The turn makes the same trip the radius does** (§21.10, §6.4), and for the same
+/// reason the chromatic filter's angle does (`plan::view_lanes`): the bokeh belongs to
+/// the artwork, so a six-bladed iris turns when the canvas turns and flips when it is
+/// mirrored, and an export at a rotated view shows the picture the screen showed.
 ///
-/// [`ViewTransform::orientation`] rather than the full `linear()` because the
-/// zoom is the *radius*' half of the map and cancels out of a direction anyway;
-/// the mirror is not optional, or a flipped view would leave a turned iris
-/// unflipped.
+/// [`ViewTransform::orientation`] rather than the full `linear()` because the zoom is
+/// the *radius*' half of the map and cancels out of a direction; the mirror is not
+/// optional, or a flipped view would leave a turned iris unflipped.
 fn aperture(f: &FilterDraw, view: ViewTransform) -> Aperture {
     let shape = f.params[1] as u32;
     let canvas = f.params[3];
@@ -238,11 +226,10 @@ fn aperture(f: &FilterDraw, view: ViewTransform) -> Aperture {
     Aperture {
         shape,
         param: f.params[2],
-        // Only a shape that *has* a direction takes the trip. A disc's lane is zero
-        // and has to stay zero — turning it would key a new kernel on every frame of
-        // a canvas rotation, for a shape that cannot tell one turn from another.
-        // Non-finite lands on zero for `layers`' reason: the view multiplies this,
-        // and the arithmetic has to hold whatever a hostile one does.
+        // A disc's lane has to stay zero: turning it would key a new kernel on every
+        // frame of a canvas rotation, for a shape that cannot tell one turn from
+        // another. Non-finite lands on zero for `layers`' reason — the view multiplies
+        // this lane, and the arithmetic has to hold whatever a hostile one does.
         angle: if shape == stark_shaders::mirror::blur::APERTURE_DISC || !angle.is_finite() {
             0.0
         } else {
@@ -268,19 +255,16 @@ pub(super) fn blur_kernels(
 /// The widest radius the convolution runs at full resolution, in convolution
 /// texels — past it the layer decimates instead (§21.12, [`scale`]).
 ///
-/// The document knob's own ceiling ([`FocalBlur::RADIUS`]), which makes the
-/// statement exact: **at any zoom up to 1:1 the convolution is never decimated**,
-/// and past 1:1 it decimates only once the on-screen radius has outgrown the
-/// widest blur the knob can ask for. An aperture this many texels wide carries
-/// nothing near texel frequency, so halving the resolution under it is invisible
-/// where it is legal — which is the same trade the chromatic filter's tap cap
-/// makes, chosen the same way round: degrade the *sampling*, never the picture's
-/// own geometry.
+/// The document knob's own ceiling ([`FocalBlur::RADIUS`]), which makes the statement
+/// exact: **at any zoom up to 1:1 the convolution is never decimated**, and past 1:1 it
+/// decimates only once the on-screen radius has outgrown the widest blur the knob can
+/// ask for. An aperture this many texels wide carries nothing near texel frequency, so
+/// halving the resolution under it is invisible where it is legal.
 ///
-/// "This many texels wide" is a claim about the *thinnest* part of a shape, not
-/// about its span, which is why [`Aperture::OBSTRUCTION`] has a ceiling: a ring's
-/// rim is a tenth of its radius at the widest obstruction the document will hold,
-/// so even that shape is a dozen texels thick where the bound bites.
+/// That claim is about the *thinnest* part of a shape, not about its span, which is
+/// why [`Aperture::OBSTRUCTION`] has a ceiling: a ring's rim is a tenth of its radius
+/// at the widest obstruction the document will hold, so even that shape is a dozen
+/// texels thick where the bound bites.
 ///
 /// [`Aperture::OBSTRUCTION`]: stark_model::document::Aperture::OBSTRUCTION
 /// [`FocalBlur::RADIUS`]: stark_model::document::FocalBlur::RADIUS
@@ -290,13 +274,12 @@ const MAX_CONV_RADIUS: f32 = stark_model::document::FocalBlur::RADIUS.1;
 /// power of two that brings the convolution-space radius inside
 /// [`MAX_CONV_RADIUS`]. 1 — no decimation — at every working zoom.
 ///
-/// This is what bounds the FFT (§21.12): without it, zooming into a blur grows
-/// the guard band with the zoom, and the padded planes balloon past the device's
-/// buffer and memory limits — the transform would be spending gigabytes to
-/// resolve texel-scale detail that an aperture hundreds of texels wide provably
-/// cannot contain. The floor keeps a hostile radius (a non-finite zoom, a log
-/// this engine did not write) from looping; past it the extent clamp in
-/// [`layers`] absorbs what is left.
+/// This is what bounds the FFT (§21.12): without it the guard band grows with the zoom
+/// and the padded planes balloon past the device's buffer and memory limits, spending
+/// gigabytes to resolve texel-scale detail an aperture hundreds of texels wide provably
+/// cannot contain. The loop's floor keeps a hostile radius (a non-finite zoom, a log
+/// this engine did not write) from spinning; past it the extent clamp in [`layers`]
+/// absorbs what is left.
 pub(super) fn scale(r_texels: f32) -> u32 {
     let mut s = 1u32;
     while s < (1 << 20) && r_texels / s as f32 > MAX_CONV_RADIUS {
@@ -364,11 +347,9 @@ enum Pipe {
     ApplyKernel,
 }
 
-/// Which cached bind group one dispatch reads through: the source set, and
-/// whether the destination is the other set or the kernel texture. Four groups
-/// per frame, however many dispatches — the ping-pong has two phases and the
-/// kernel chain two endings, exactly as the blend scratch keeps two per level
-/// (`ScratchLevel::blend_bg`).
+/// Which cached bind group one dispatch reads through: the source set, and whether the
+/// destination is the other set or the kernel texture. Four per frame however many
+/// dispatches — two ping-pong phases, two kernel-chain endings.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Binds {
     AToB,
@@ -442,13 +423,12 @@ impl BlurFrame {
         let device = &ctx.device;
         let light_format = bd::DST_LIGHT.storage_format();
         let aux_format = bd::DST_AUX.storage_format();
-        // The sets are decoded into (render), transformed through (storage), and
-        // resolved from (texture). The kernel is never rendered to, but it wears
-        // `RENDER_ATTACHMENT` anyway, and the flag is load-bearing: a texture
-        // without it can only be zero-initialized through a staging **buffer**
-        // of its full size, and Dawn refuses one past `maxBufferSize` — a
-        // validation failure at submit, on the frame's whole command buffer.
-        // Renderable, the lazy clear is a render pass and costs no buffer.
+        // The sets are decoded into (render), transformed through (storage) and
+        // resolved from (texture). The kernel is never rendered to, but
+        // `RENDER_ATTACHMENT` is load-bearing on it too: without the flag its lazy
+        // zero-init goes through a staging **buffer** of its full size, which Dawn
+        // refuses past `maxBufferSize` — a validation failure at submit, on the
+        // frame's whole command buffer. Renderable, the clear is a render pass.
         let usage = wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::RENDER_ATTACHMENT;
@@ -493,12 +473,11 @@ impl BlurFrame {
         };
         let a = (&self.a_light.view, &self.a_aux.view);
         let b = (&self.b_light.view, &self.b_aux.view);
-        // The kernel-destination groups stand in for the slots their dispatches
-        // never touch with planes that are only *read* in them: the kernel slot
-        // takes the source's own light plane (bound twice as a texture, which is
-        // two reads of one thing), and the light destination takes the other
-        // set's — written by nothing in a `fft_one` dispatch, and a storage
-        // binding an entry point does not store to is merely a binding.
+        // The kernel-destination groups fill the slots their dispatches never touch
+        // with planes that are only *read* in them: the kernel slot takes the source's
+        // own light plane (bound twice as a texture, which is two reads of one thing),
+        // and the light destination the other set's, which no `fft_one` dispatch
+        // stores to.
         self.binds = Some([
             make("stark blur a→b", a, &self.kern.view, b),
             make("stark blur b→a", b, &self.kern.view, a),
@@ -507,15 +486,15 @@ impl BlurFrame {
         ]);
     }
 
-    /// Encode the convolution for the focal blur at filter `slot`: the kernel
-    /// passes it still owes, the decode of the accumulator `bg` names, and the
-    /// FFT round trip — everything but the filter's own fullscreen pass, which
-    /// the caller encodes next and which reads set A.
+    /// Encode the convolution for the focal blur at filter `slot`: the kernel passes it
+    /// still owes, the decode of the accumulator `bg` names, and the FFT round trip —
+    /// everything but the filter's own fullscreen pass, which the caller encodes next
+    /// and which reads set A.
     ///
-    /// `bg` is the **filter bind group** of the bounce this blur is part of, and
-    /// `offset` its layer's dynamic-offset slot: the decode pass binds the very
-    /// group the resolve pass will, which is how it reads the right half of the
-    /// accumulator's ping-pong without a description of its own.
+    /// `bg` is the **filter bind group** of the bounce this blur is part of and
+    /// `offset` its layer's dynamic-offset slot: the decode binds the very group the
+    /// resolve pass will, which is how it reads the right half of the accumulator's
+    /// ping-pong without a description of its own.
     pub(super) fn encode(
         &self,
         pass: &BlurPass,
@@ -611,18 +590,17 @@ struct Layer {
     aperture: Aperture,
 }
 
-/// Decide every layer's transform: per layer, decimate by [`scale`], then take
-/// each axis to the next power of two past the decimated image plus a guard
-/// band of the radius on both sides — what keeps the circular convolution's
-/// wrap-around in zeroed padding.
+/// Decide every layer's transform: decimate by [`scale`], then take each axis to the
+/// next power of two past the decimated image plus a guard band of the radius on both
+/// sides — which is what keeps the circular convolution's wrap-around in zeroed
+/// padding.
 ///
-/// The scale is what bounds this: the guard is at most [`MAX_CONV_RADIUS`]
-/// convolution texels however hard the view zooms, so an extent never outgrows
-/// the accumulator's own power of two by more than a fixed band. The device's
-/// texture limit stays as the fallback of last resort — if it still binds
-/// (an accumulator near the limit on a device whose cap is not a power of two),
-/// the **radius** gives way to the guard the clamp left, a smaller blur rather
-/// than a wrapped one.
+/// The scale bounds this: the guard is at most [`MAX_CONV_RADIUS`] convolution texels
+/// however hard the view zooms, so an extent never outgrows the accumulator's own
+/// power of two by more than a fixed band. Where the device's texture limit still binds
+/// (an accumulator near the limit on a device whose cap is not a power of two), the
+/// **radius** gives way to the guard the clamp left — a smaller blur rather than a
+/// wrapped one.
 fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec<Layer> {
     // The largest power of two the device can hold. Every real adapter's limit
     // is itself one; the floor is for a hypothetical that is not.
@@ -670,16 +648,15 @@ fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec
         .collect()
 }
 
-/// Decide one frame's whole dispatch plan, as data: the per-dispatch uniforms
-/// (index `i` is slot `i`), the dispatches, the per-layer [`Job`]s, and what the
-/// kernel texture holds when the plan has run.
+/// Decide one frame's whole dispatch plan, as data: the per-dispatch uniforms (index
+/// `i` is slot `i`), the dispatches, the per-layer [`Job`]s, and what the kernel
+/// texture holds once the plan has run.
 ///
-/// `kern_holds` is what it holds *now* — a layer whose aperture, convolution
-/// radius and extent all match owes no kernel work, which is every settled frame;
-/// two layers that disagree in any of the three rebuild it between them, which is
-/// the cost of one kernel texture rather than one per layer. The extent is part of
-/// the key because it is part of the spectrum: one shape transformed at two sizes
-/// is two different tables of frequencies.
+/// `kern_holds` is what it holds *now*: a layer whose aperture, convolution radius and
+/// extent all match owes no kernel work, and two layers that disagree in any of the
+/// three rebuild it between them — the cost of one kernel texture rather than one per
+/// layer. The extent is part of the key because one shape transformed at two sizes is
+/// two different tables of frequencies.
 fn plan(
     layers: &[Layer],
     kern_holds: Option<KernelKey>,
@@ -851,8 +828,6 @@ mod tests {
         }
     }
 
-    /// The engine's reading of a focal-blur draw's lanes, through the encoder that
-    /// wrote them.
     /// The lanes a plain, unobstructed disc decodes to — what the assertions below
     /// compare against, and the value the shader's own `APERTURE_DISC` names.
     const DISC: Aperture = Aperture {
@@ -881,11 +856,9 @@ mod tests {
         )
     }
 
-    /// **The inverse transform lands in set A**, whatever the extent — the
-    /// parity fact the filter bind group's whole design rests on, checked as a
-    /// property of the plan rather than trusted to the comment that derives it.
-    /// And the chain alternates strictly: every dispatch reads what the one
-    /// before it wrote.
+    /// **The inverse transform lands in set A**, whatever the extent — the parity fact
+    /// the filter bind group's whole design rests on. And the chain alternates
+    /// strictly: every dispatch reads what the one before it wrote.
     #[test]
     fn every_image_chain_lands_in_the_planes_the_filter_reads() {
         for (w, h) in [(2u32, 2u32), (4, 2), (8, 8), (256, 64), (4096, 2048)] {
@@ -983,13 +956,13 @@ mod tests {
         assert!(!jobs[0].kernel.is_empty());
     }
 
-    /// **Every aperture the document can hold arrives here as its own lanes**, and
-    /// the shape codes are the shader's own — the round trip through
-    /// `group::aperture_lanes`, which is the only place a `Filter` becomes numbers.
+    /// **Every aperture the document can hold arrives here as its own lanes**, with the
+    /// shader's own shape codes — the round trip through `group::aperture_lanes`, the
+    /// only place a `Filter` becomes numbers.
     ///
-    /// Pinned as a set rather than arm by arm because what would actually break is
-    /// two shapes agreeing: a code copied from the arm above it renders one
-    /// aperture as another, and no assertion about a single arm can see that.
+    /// Pinned as a set rather than arm by arm because what breaks is two shapes
+    /// agreeing: a code copied from the arm above renders one aperture as another, and
+    /// no assertion about a single arm can see that.
     #[test]
     fn every_aperture_survives_the_trip_through_the_draw() {
         use stark_model::document::Aperture as Doc;
@@ -1032,19 +1005,15 @@ mod tests {
         assert_eq!(sorted.len(), codes.len(), "two apertures share one code");
     }
 
-    /// **The aperture turns with the canvas, not with the screen** (§21.10, §6.4) —
-    /// the trip the radius has always made, made by the angle too.
+    /// **The aperture turns with the canvas, not with the screen** (§21.10, §6.4) — the
+    /// trip the radius makes, made by the angle too. Welded to the screen instead, the
+    /// polygon looks correct in any still frame, and an export at a rotated view
+    /// disagrees with the display — a document whose pixels depend on view state.
     ///
-    /// The bug this pins had no symptom a still frame could show: the polygon was
-    /// correct at every setting, and only *rotating the canvas* revealed that it had
-    /// stayed welded to the screen while the painting turned under it — with an
-    /// export at a rotated view then disagreeing with the display, which is a
-    /// document whose pixels depend on view state.
-    ///
-    /// Also pinned here: the disc's lane stays zero however the view turns. It is
-    /// not that a turned disc would look wrong — it cannot — but that the angle keys
-    /// the kernel cache, so a disc that took the trip would rebuild its kernel on
-    /// every frame of a canvas rotation for no visible difference.
+    /// Also pinned here: the disc's lane stays zero however the view turns. Not that a
+    /// turned disc would look wrong — it cannot — but that the angle keys the kernel
+    /// cache, so a disc that took the trip would rebuild its kernel on every frame of a
+    /// canvas rotation for no visible difference.
     #[test]
     fn the_apertures_turn_is_carried_from_the_canvas_frame() {
         use stark_model::document::Aperture as Doc;
@@ -1115,11 +1084,10 @@ mod tests {
         assert!(scale(f32::INFINITY) <= 1 << 20);
     }
 
-    /// **Zooming into a blur cannot balloon the transform** — the regression the
-    /// decimation exists for. An on-screen radius in the thousands once pushed
-    /// the padded planes to the device's limits (gigabytes of `f32`, and a
-    /// kernel too large to zero-initialize); decimated, the same ask comes out
-    /// a few hundred texels square.
+    /// **Zooming into a blur cannot balloon the transform** — what the decimation
+    /// exists for. An on-screen radius in the thousands would otherwise push the padded
+    /// planes to the device's limits (gigabytes of `f32`, and a kernel too large to
+    /// zero-initialize); decimated, the same ask comes out a few hundred texels square.
     #[test]
     fn zooming_in_cannot_balloon_the_transform() {
         let accum = Extent2::new(2560, 1440);

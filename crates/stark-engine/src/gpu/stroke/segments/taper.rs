@@ -2,8 +2,9 @@
 //! finely a flattened edge inside a taper is cut so a straight radius ramp
 //! ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)) tracks the curve it stands for.
 //!
-//! Nothing here reads a rate or a sweep: [`generate_segments_in`](super::generate_segments_in)
-//! asks [`Taper`] for a factor and a piece count, and that is the whole interface.
+//! [`generate_segments_in`](super::generate_segments_in) asks [`Taper`] for a factor
+//! and a piece count, and that is the whole interface — nothing here reads a rate or a
+//! sweep.
 
 use stark_model::document::BrushParams;
 
@@ -14,20 +15,17 @@ use stark_model::document::BrushParams;
 /// monotone on `[0, 1]`, and within 2% of `sin(πt/2)` everywhere. Both end
 /// conditions are the point:
 ///
-/// * `f'(1) = 0` is what makes the taper *smooth*. The taper meets the stroke's
-///   full-width body there, and any profile with a slope left at the join (`√t`,
-///   plain `t`) puts a visible crease across the stroke where the two meet — the
-///   one artifact that would give the trick away.
-/// * `f'(0) = 3/2` is what makes it a **point** rather than a blunt cap or a
-///   hairline. The outline leaves the tip as a straight wedge, which is what an
-///   inked entry stroke looks like; `smoothstep`'s `f'(0) = 0` instead holds the
-///   width near zero for a tenth of the taper and reads as a whisker with a bulge
-///   behind it.
+/// * `f'(1) = 0` is what makes the taper *smooth*: any profile with a slope left where
+///   it joins the stroke's full-width body (`√t`, plain `t`) puts a visible crease
+///   across the stroke there.
+/// * `f'(0) = 3/2` is what makes it a **point** rather than a blunt cap or a hairline —
+///   the outline leaves the tip as a straight wedge, where `smoothstep`'s `f'(0) = 0`
+///   holds the width near zero for a tenth of the taper and reads as a whisker with a
+///   bulge behind it.
 ///
-/// A polynomial rather than the sine it approximates because it has to be
-/// bit-identical across platforms: the taper decides stored pixels, so replay,
-/// goldens and peers all have to agree on it (§12.1), and `sin` is not
-/// specified to the last bit.
+/// A polynomial rather than the sine it approximates because it has to be bit-identical
+/// across platforms: the taper decides stored pixels, so replay, goldens and peers all
+/// have to agree on it (§12.1), and `sin` is not specified to the last bit.
 fn taper_profile(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     0.5 * t * (3.0 - t * t)
@@ -46,20 +44,15 @@ const TAPER_MAX_CURVATURE: f32 = 3.0;
 /// How far the drawn outline may sit from the true cone, in **canvas px**, where the
 /// tip is too hard (or too thin) for its own falloff to hide anything.
 ///
-/// A segment's tip is a straight ramp ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)) across a profile that is
-/// cubic, so what a cut has to buy is the *sagitta* of that chord — a second-order
-/// quantity, where before the ramp existed it was the whole first-order step. The
-/// budget is the flattener's own [`position`](crate::path::FlattenTolerance::position):
-/// the taper's edge is as much drawn geometry as the centreline is, and gets the same
-/// sub-pixel promise.
+/// A segment's tip is a straight ramp
+/// ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)) across a profile that is cubic,
+/// so what a cut has to buy is the *sagitta* of that chord — a second-order quantity.
+/// The budget is the flattener's own
+/// [`position`](crate::path::FlattenTolerance::position): the taper's edge is as much
+/// drawn geometry as the centreline is, and gets the same sub-pixel promise.
 ///
-/// The history is the point of the constant. It was a step in the radius **factor**
-/// (2%), which is a px bound that scales with the brush: invisible at radius 20
-/// (0.4 px), a comb of ~5 px sawteeth at radius 500 (2026-08-14, the repro capture).
-/// Denominating it in px fixed the artifact but priced smoothness at
-/// `radius / 0.7` pieces — ~700 per zone on a hard 500 px tip, and it still bound
-/// nothing for the pen-driven half of the same problem. Carrying the variation as a
-/// ramp instead makes both first-order terms exact and leaves only this.
+/// **In px, not in the radius *factor***, which is a bound that scales with the brush:
+/// 2% is invisible at radius 20 (0.4 px) and a comb of ~5 px sawteeth at radius 500.
 const TAPER_OUTLINE_PX: f32 = crate::path::FLATTEN_TOLERANCE.position;
 
 /// Where the tip's own falloff is wider than the floor, the outline budget grows with
@@ -73,60 +66,44 @@ const TAPER_SHOULDER_SLACK: f32 = 0.25;
 // **Why there is no cap on `|ramp|` itself**, which is the first thing a reader will
 // look for beside the bound above.
 //
-// Because a large ramp is no longer the deposit's problem either. It used to be: the
-// sweep's travel axis was denominated in the segment's *reference* radius, so a tip
-// that is `1 ± ramp/2` of that over the segment's two halves booked its exposure
-// through a measure off by the same fraction — over-counting one half, under-counting
-// the other, cancelling only to first order. The shader now denominates the two ends of
-// the span against the tips actually in force at them (`stamp_common::Sweep::span`), so
-// adjacent segments agree at the knot they share exactly as their outlines do, and a
-// point's total exposure over a pass is the mask's row total whatever the cut.
+// A large ramp is not the deposit's problem: the shader denominates the two ends of a
+// segment's span against the tips actually in force at them
+// (`stamp_common::Sweep::span`), so adjacent segments agree at the knot they share
+// exactly as their outlines do, and a point's total exposure over a pass is the mask's
+// row total whatever the cut.
 //
-// That matters most exactly where no cut could have helped. Cut an edge whose tip
-// starts at the taper's point into `n` uniform pieces and piece `k` spans radius
-// `[kΔ/n, (k+1)Δ/n]`, so its ramp is `1/(k + ½)` — **independent of `n`**. The first
-// piece sits at the structural limit of 2 whatever it is subdivided to, the second at
-// 0.67, the fourth at 0.22. Subdividing an edge that reaches a point buys nothing but
-// segments, which is exactly the trap the px-denominated rule fell into: it charged
-// ~700 pieces per zone for a first-order term the ramp now carries exactly, and spent
-// most of them where the mark is a hairline.
+// Nor could a cut bound it where it is largest. Cut an edge whose tip starts at the
+// taper's point into `n` uniform pieces and piece `k` spans radius `[kΔ/n, (k+1)Δ/n]`,
+// so its ramp is `1/(k + ½)` — **independent of `n`**: the first piece sits at the
+// structural limit of 2 however finely it is subdivided.
 //
-// What is left is the *lateral* axis, which cannot be made cut-free at all: a point's
-// offset across the tip is measured against a tip that grows while the tip passes over
-// it, and a prefix row is one row. The shader freezes it at the moment the tip is
-// closest to the point, which is right where it matters — the outline is then exactly
-// the taper's own profile — and first-order in the segment length elsewhere. That term
-// *is* bought by subdivision, and it is what the sagitta bound above ends up paying
-// for as well.
+// What subdivision does buy is the *lateral* axis, which cannot be made cut-free at
+// all: a point's offset across the tip is measured against a tip that grows while the
+// tip passes over it, and a prefix row is one row. The shader freezes it at the moment
+// the tip is closest to the point, so the outline there is exactly the taper's own
+// profile and the error is first-order in the segment length elsewhere — which is what
+// the sagitta bound above ends up paying for.
 //
-// Away from the point the ramp is small without being asked: in the body of a taper
-// the outline bound above already puts the radius change per piece at a few percent of
-// the tip. So the ramp is bounded where it matters and unbounded where it cannot
-// matter, and the one guarantee that has to hold everywhere — `|ramp| < 2`, which is
-// what keeps the tip positive at both ends, and now also what keeps both span scales
-// `1 ∓ ramp/2` positive — is structural rather than enforced ([`Sweep::radius_ramp`]).
+// So the one guarantee that has to hold everywhere — `|ramp| < 2`, which keeps the tip
+// positive at both ends and both span scales `1 ∓ ramp/2` positive — is structural
+// rather than enforced ([`Sweep::radius_ramp`]).
 
 /// Cap on the pieces one flattened edge is cut into for the taper — a backstop on a
 /// pathological brush rather than a quality knob.
 ///
-/// The px step makes a whole taper's cost radius-dependent: a shoulderless tip pays
-/// up to `TAPER_MAX_SLOPE · radius / TAPER_STEP_PX` pieces (~1000 at the 500 px
-/// radius cap), spread over every edge in the zone, and a soft tip logarithmically
-/// less. One *edge* only ever needs a fraction of that (the flattener and the
-/// exchange cadence bound edge length well under a zone), so the cap binds on
-/// nothing real — but a degenerate brush (a taper shorter than the tip is wide, cut
-/// from a knot-starved polyline) is clamped here rather than allowed to name its own
-/// segment count.
+/// One edge only ever needs a fraction of this — the flattener and the exchange cadence
+/// bound edge length well under a taper zone — so it binds on nothing real. But a
+/// degenerate brush (a taper shorter than the tip is wide, cut from a knot-starved
+/// polyline) is clamped here rather than allowed to name its own segment count.
 const TAPER_MAX_PIECES: usize = 512;
 
 /// A stroke's taper, resolved for one span range (§6.2).
 ///
-/// Both lengths are in canvas px here, already scaled out of
-/// [`BrushParams::taper_px`] and — crucially — already **fitted to the stroke**: if
-/// the two zones together are longer than the stroke, both are scaled down in
-/// proportion so they exactly meet. The stroke then reaches full width at one point
-/// instead of never reaching it, which is what keeps a quick flick a small pointed
-/// mark rather than a sliver, continuously as the stroke grows.
+/// Both lengths are in canvas px, already scaled out of [`BrushParams::taper_px`] and
+/// already **fitted to the stroke**: if the two zones together are longer than the
+/// stroke, both are scaled down in proportion so they exactly meet. The stroke then
+/// reaches full width at one point instead of never reaching it, which keeps a quick
+/// flick a small pointed mark rather than a sliver, continuously as the stroke grows.
 #[derive(Copy, Clone, Debug)]
 pub(in crate::gpu::stroke) struct Taper {
     /// Leading taper length (canvas px); 0 = none.
@@ -136,9 +113,9 @@ pub(in crate::gpu::stroke) struct Taper {
     /// Arc length of the whole stroke, for measuring back from its end. Only read
     /// when `end > 0`.
     total: f32,
-    /// The brush's nominal radius (canvas px) — what a factor step scales by to
-    /// become the px step the subdivision is actually bounding. Nominal rather than
-    /// modulated is conservative: pressure only ever scales the tip *down*
+    /// The brush's nominal radius (canvas px) — what a factor step scales by to become
+    /// the px step the subdivision bounds. Nominal rather than modulated is
+    /// conservative: pressure only ever scales the tip *down*
     /// ([`Modulation`](stark_model::document::Modulation)), and the real step with it.
     radius: f32,
     /// The tip's shoulder width per unit radius
@@ -152,11 +129,11 @@ impl Taper {
     /// `None` if this range stops short of the stroke's end and so cannot know it.
     ///
     /// A range that does not reach the end gets the **leading taper alone,
-    /// uncompressed**. That is not a guess: the engine refuses to freeze any span
-    /// that is within the trailing taper's reach of the live end, or that could
-    /// still be compressed ([`safe_frozen`](crate::gpu::stroke::safe_frozen)), so a
-    /// partial range is one where both of those factors are exactly 1 — and the
-    /// commit, which sees the whole stroke, computes the same 1 for it.
+    /// uncompressed**. That is not a guess: the engine refuses to freeze any span within
+    /// the trailing taper's reach of the live end, or one that could still be compressed
+    /// ([`safe_frozen`](crate::gpu::stroke::safe_frozen)), so both factors are exactly 1
+    /// for a partial range — and the commit, which sees the whole stroke, computes the
+    /// same 1 for it.
     pub(super) fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
         let (start, end) = b.taper_px();
         let radius = b.size.max(0.5);
@@ -248,17 +225,15 @@ impl Taper {
     /// everywhere on an untapered brush, so this path is bit-identical to having no
     /// taper code.
     ///
-    /// **The first-order variation is not what is being bought here.** A segment
-    /// carries the taper's slope exactly, as its ramp ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)), and two
-    /// adjacent segments agree on the radius at the knot they share — so the outline
-    /// is continuous however coarse the cut. What is left is one second-order term:
-    /// the ramp is a **chord** across a cubic profile, and the outline bows off it by
-    /// the sagitta `|r''|·h²/8`.
+    /// **The first-order variation is not what is being bought here.** A segment carries
+    /// the taper's slope exactly, as its ramp
+    /// ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)), and two adjacent segments
+    /// agree on the radius at the knot they share, so the outline is continuous however
+    /// coarse the cut. What is left is one second-order term: the ramp is a **chord**
+    /// across a cubic profile, and the outline bows off it by the sagitta `|r''|·h²/8`.
     ///
-    /// That is the whole rule. See the note above [`TAPER_OUTLINE_PX`] for why there
-    /// is no companion bound on the ramp's own magnitude — near a taper's point it is
-    /// a constant no subdivision can move, and everywhere else this bound has already
-    /// made it small.
+    /// See the note above [`TAPER_OUTLINE_PX`] for why there is no companion bound on
+    /// the ramp's own magnitude.
     pub(super) fn pieces(&self, dist: f32, len: f32) -> usize {
         // Only the zones the interval reaches bend the radius at all, so an edge in
         // the stroke's body — and every edge of an untapered brush — is one segment,
@@ -289,10 +264,9 @@ mod tests {
     use crate::gpu::stroke::{StrokeSpans, safe_frozen};
     use stark_model::document::BrushShape;
 
-    /// The profile's two end conditions are the whole design (see [`taper_profile`]),
-    /// so they are asserted rather than left to the formula: pinned at both ends,
-    /// monotone in between, and *flat* where it meets the stroke's full-width body —
-    /// which is what makes the join invisible.
+    /// The profile's two end conditions are the whole design (see [`taper_profile`]), so
+    /// they are asserted rather than left to the formula: pinned at both ends, monotone
+    /// in between, and *flat* where it meets the stroke's full-width body.
     #[test]
     fn the_taper_profile_is_pinned_flat_at_the_join_and_monotone() {
         assert_eq!(taper_profile(0.0), 0.0, "the tip is a point");
@@ -319,10 +293,9 @@ mod tests {
     /// and no step in the outline between the two.
     ///
     /// Asked of the tip at the stroke's actual **ends** rather than of the first and
-    /// last segments' radii, which is a distinction the radius ramp makes real: a
-    /// segment's `radius` is its midpoint, and since the cut does not have to buy the
-    /// first order, the segment holding an end point can be long enough that its
-    /// midpoint is nowhere near one. What is at the point is `tip_at(0)`.
+    /// last segments' radii: a segment's `radius` is its midpoint, and the segment
+    /// holding an end point can be long enough that its midpoint is nowhere near one.
+    /// What is at the point is `tip_at(0)`.
     #[test]
     fn a_tapered_stroke_narrows_at_both_ends() {
         let radius = 20.0;
@@ -345,10 +318,10 @@ mod tests {
     }
 
     /// The one bound on the ramp that has to hold everywhere, and the reason
-    /// `stamp_common::radius_ramp_scale` needs no clamp: `|ramp| < 2`, so the tip is positive
-    /// at both ends of every segment. Structural rather than enforced — it follows
-    /// from flooring both ends at half a px — so this checks the algebra rather than a
-    /// rule that could be forgotten.
+    /// `stamp_common::radius_ramp_scale` needs no clamp: `|ramp| < 2`, so the tip is
+    /// positive at both ends of every segment. Structural rather than enforced — it
+    /// follows from flooring both ends at half a px — so this checks the algebra rather
+    /// than a rule that could be forgotten.
     fn assert_tips_stay_positive(segs: &[Sweep]) {
         for (i, s) in segs.iter().enumerate() {
             assert!(
@@ -363,15 +336,12 @@ mod tests {
         }
     }
 
-    /// The outline at the size that strains it: a radius-500 brush with long tapers.
-    /// Swept at one radius per segment, the cut can only make the step between segments
-    /// smaller and never zero, so the point draws as a comb of ~5 px sawteeth; the
-    /// radius ramp is what removes the step rather than shrinking it.
+    /// The outline at the size that strains it: a radius-500 brush with long tapers,
+    /// where one radius per segment would draw the point as a comb of ~5 px sawteeth.
     ///
-    /// It also pins what the ramp buys: the cut does not have to buy the first order,
-    /// so a taper costs a logarithmic handful of segments instead of one per `0.7 px`
-    /// of radius. The count is the scale-free one — see the sibling test that draws the
-    /// same stroke a hundredth the size.
+    /// It also pins what the ramp buys: the cut does not have to buy the first order, so
+    /// a taper costs a handful of segments rather than one per `0.7 px` of radius — see
+    /// the sibling test that draws the same stroke a hundredth the size.
     #[test]
     fn a_huge_brushs_taper_has_no_step_in_its_outline() {
         let mut rec = tapered_record(500.0, 5.0, 11.0, 7600.0);
@@ -386,13 +356,12 @@ mod tests {
         );
     }
 
-    /// …and the cut is **scale-free**: the same stroke at a hundredth the size costs
-    /// the same handful of segments, where the px-denominated rule it replaced charged
-    /// the large brush a hundred times the small one for the same picture.
+    /// …and the cut is **scale-free**: the same stroke at a hundredth the size costs the
+    /// same handful of segments.
     ///
-    /// Quoted as a ratio rather than two counts, because that is the claim — the
-    /// absolute numbers move with any retuning of the ramp's own bounds
-    /// (`BrushDynamics::radius_ramp`), the independence does not.
+    /// Quoted as a ratio rather than two counts, because that is the claim — the absolute
+    /// numbers move with any retuning of the ramp's own bounds, the independence does
+    /// not.
     #[test]
     fn a_tapers_cost_does_not_grow_with_the_brush() {
         let count = |radius: f32| {
@@ -439,11 +408,10 @@ mod tests {
     /// admits, rendering the stroke as *head + tail* produces the very same swept
     /// segments as rendering it in one pass.
     ///
-    /// That is what the live == committed invariant (§1.3) reduces to here. A frozen
-    /// head is never redrawn, so if the head's segments differed from the commit's by
-    /// even a radius the stroke would visibly change under the pointer at release —
-    /// and the taper is exactly the kind of parameter that invites it, being measured
-    /// from an end of the stroke that has not been drawn yet.
+    /// That is what the live == committed invariant (§1.3) reduces to here: a frozen head
+    /// is never redrawn, so a head segment differing from the commit's by even a radius
+    /// would visibly change the stroke under the pointer at release. The taper invites
+    /// it, being measured from an end of the stroke that has not been drawn yet.
     #[test]
     fn a_taper_safe_head_plus_tail_is_the_single_pass_stroke() {
         let rec = tapered_record(18.0, 5.0, 9.0, 1200.0);

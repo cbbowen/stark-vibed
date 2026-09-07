@@ -29,46 +29,36 @@ const MAX_SUPERSAMPLE: u32 = 4;
 /// Most GPU memory a render may hold in viewport-sized attachments, whatever the
 /// zoom asks for.
 ///
-/// The ceiling exists because *every* offscreen attachment scales with the sample
-/// count: pass A's color, aux and — in a pigment space — residual, the target the
-/// resolve reads, and **the blend scratch, two trios per level of nesting**, if the
-/// document has a mode or a filter in it. Only taken while the view is actually
-/// zoomed out, since [`supersample`] returns 1 at 1:1 and the attachments shrink
-/// back. Crossing a threshold reallocates all of them, so this is also a bound on the
-/// hitch a wheel-zoom can cost.
+/// *Every* offscreen attachment scales with the sample count — pass A's color, aux
+/// and (in a pigment space) residual, the target the resolve reads, and **two trios
+/// per level of nesting** if the document has a mode or a filter in it — so crossing
+/// a threshold reallocates all of them, and this is also a bound on the hitch a
+/// wheel-zoom can cost. Only taken while the view is zoomed out: [`supersample`]
+/// returns 1 at 1:1 and the attachments shrink back.
 ///
-/// **It is a byte budget, not a pixel count.** No pixel count can enumerate the
-/// scratch, whose size is a fact about the *document*, nor the residual, which is a
-/// fact about the color space. At 16 Mpx the real figures run 234 MB for a flat Oklab
-/// document, 571 MB with one blend group, 973 MB for the same in pigment, and ~1.6 GB
-/// at two levels of nesting — a spread of seven that a megapixel ceiling cannot see.
-/// So the number is bytes, and what varies is how many pixels of *this* document's
-/// attachments fit inside it.
+/// **It is a byte budget, not a pixel count**, because the scratch's size is a fact
+/// about the *document* and the residual one about the color space. At 16 Mpx the real
+/// figures run 234 MB for a flat Oklab document, 571 MB with one blend group, 973 MB
+/// for the same in pigment, and ~1.6 GB at two levels of nesting — a spread of seven
+/// no megapixel ceiling can see.
 ///
 /// The flat Oklab case is the calibration point: 14 bytes a texel (8 + 2 accumulator,
-/// 4 resolve target) into 224 MiB is 16 Mpx exactly.
-///
-/// It binds on the window and not on a miniature, which is the right way round: the
-/// navigator renders a whole piece into ~250 px, is the worst-aliased view in the
-/// application, and reaches [`MAX_SUPERSAMPLE`] for a few megapixels. What it costs
-/// is the common zoom-outs on a large window, where the picture is already most of
-/// the way back and the fourth sample buys least.
+/// 4 resolve target) into 224 MiB is 16 Mpx exactly. It binds on a window and not on a
+/// miniature, which is the right way round — the navigator is the worst-aliased view
+/// in the application and reaches [`MAX_SUPERSAMPLE`] for a few megapixels.
 const MAX_SUPERSAMPLED_BYTES: u64 = 224 << 20;
 
 /// How many samples per axis a render of `size` at `zoom` takes (§6.4).
 ///
-/// `1` at 1:1 and closer — a view that magnifies is already oversampling, so
-/// painting at 100% costs exactly what it always did and a golden blessed at
-/// `zoom = 1.0` never sees this pass. Below that it is the minification ratio, so each
-/// output pixel gets back roughly one sample per canvas pixel it covers, capped by
-/// [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by what the device will
-/// allocate.
+/// `1` at 1:1 and closer — a view that magnifies is already oversampling, so a golden
+/// blessed at `zoom = 1.0` never sees this pass. Below that it is the minification
+/// ratio, so each output pixel gets back roughly one sample per canvas pixel it
+/// covers, capped by [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by what
+/// the device will allocate.
 ///
 /// `bytes_per_px` is what *one supersampled texel of this frame* costs across every
-/// attachment that scales with the sample count — see [`attachment_bytes`]. It is the
-/// caller's to compute because only the caller knows the document: the color space
-/// decides whether there is a residual, and the group tree decides how many scratch
-/// levels there are.
+/// attachment that scales with the sample count ([`attachment_bytes`]) — the caller's
+/// to compute, because only it knows the color space and the group tree.
 pub(super) fn supersample(
     size: Extent2,
     zoom: f32,
@@ -109,10 +99,10 @@ pub(super) fn supersample(
 /// - the **focal blur's FFT planes** when the frame has one (§21.12), which dwarf
 ///   everything above.
 ///
-/// The last two are the terms a pixel count cannot express, and they dominate: a
-/// single blend group more than doubles the frame's memory footprint, and a focal
-/// blur is [`blur_bytes_per_px`] on its own — which is the mechanism that keeps a
-/// blurred frame from also being a heavily supersampled one.
+/// The last two are the terms a pixel count cannot express, and they dominate: one
+/// blend group more than doubles the frame, and a focal blur is
+/// [`blur_bytes_per_px`] on its own — which is what keeps a blurred frame from also
+/// being a heavily supersampled one.
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
     target_format: wgpu::TextureFormat,
@@ -125,14 +115,12 @@ pub(super) fn attachment_bytes(
     trio + resolve + scratch + if blur { blur_bytes_per_px() } else { 0 }
 }
 
-/// What one supersampled texel costs the focal blur (§21.12), as this budget
-/// counts it: the five `f32` planes — two ping-pong sets of the light and aux
-/// planes, and the kernel, which `blur.rs` allocates in the aux plane's format —
-/// per **padded** texel, and the power-of-two padding runs up to about double the
-/// accumulator's area before the guard band. An estimate rather than the exact
-/// figure, because the padding depends on the radius and the radius on the zoom
-/// this call is deciding — the pessimistic side of the round-up is the safe side
-/// of a memory budget.
+/// What one supersampled texel costs the focal blur (§21.12): the five `f32` planes —
+/// two ping-pong sets of the light and aux planes, plus the kernel, which `blur.rs`
+/// allocates in the aux plane's format — per **padded** texel, the power-of-two
+/// padding running to about double the accumulator's area before the guard band. An
+/// estimate, since the padding depends on a radius that depends on the zoom this call
+/// is deciding; the pessimistic round-up is the safe side of a memory budget.
 ///
 /// Read off the shader's own storage formats rather than summed by hand (§6.10):
 /// `block_copy_size` is not `const`, and a plane whose format moved in
@@ -160,11 +148,10 @@ pub(super) fn resolve_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     )
 }
 
-/// The resolve pass — the pipeline, compiled for one target format. The uniform it
-/// reads (`n`, the sample count) is the *rendering* consumer's: `n` is a function of
-/// that target's zoom, so the substrate and a miniature beside it disagree about it
-/// by construction. It rides in the [`Supersampled`] set, which is exactly the state
-/// that exists only while a view is zoomed out.
+/// The resolve pass, compiled for one target format. Its uniform — `n`, the sample
+/// count — is a function of the rendering consumer's own zoom, so it rides in the
+/// [`Supersampled`] set rather than here: the substrate and a miniature beside it
+/// disagree about `n` by construction.
 pub(super) struct ResolvePass {
     pipeline: wgpu::RenderPipeline,
 }
@@ -196,10 +183,8 @@ impl ResolvePass {
     }
 
     /// Encode pass E: everything the passes above drew, box-averaged in light down to
-    /// the caller's `target` (§6.4).
-    ///
-    /// The caller has already skipped this at 1:1, where there is no [`Supersampled`]
-    /// set at all and the passes above wrote `target` directly.
+    /// the caller's `target` (§6.4). The caller has already skipped this at 1:1, where
+    /// there is no [`Supersampled`] set and the passes above wrote `target` directly.
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
@@ -247,10 +232,9 @@ pub(super) struct ResolveScene {
 /// Where passes B–D write when the view is zoomed out, and what pass E reads it back
 /// through (§6.4).
 ///
-/// One value rather than three because they are built and dropped together and none
-/// of them means anything without the others: the bind group names the view, and the
-/// uniform holds the very `n` that decided the view's size. Absent entirely at 1:1,
-/// which is what returns the memory the moment the artist zooms back in to paint.
+/// One value because the three are meaningless apart: the bind group names the view,
+/// and the uniform holds the very `n` that decided the view's size. Absent at 1:1,
+/// which returns the memory the moment the artist zooms back in to paint.
 pub(super) struct Supersampled {
     /// What passes B–D draw into, `n` times the caller's target on each axis.
     target: super::Attachment,
@@ -378,11 +362,9 @@ mod tests {
         assert_eq!(supersample(wide, 0.1, &limits(), flat()), 1);
     }
 
-    /// The blur term joins the scratch as a byte cost a pixel count cannot see
-    /// (§21.12), and it is the largest single one: a frame with a focal blur in
-    /// it gives up supersampling long before a flat frame does, which is the
-    /// budget doing exactly what it is for — the FFT planes and a heavy sample
-    /// count are not affordable together.
+    /// The blur is the largest byte cost a pixel count cannot see (§21.12): a frame
+    /// with one gives up supersampling long before a flat frame does, because the FFT
+    /// planes and a heavy sample count are not affordable together.
     #[test]
     fn a_focal_blur_gives_up_samples_before_the_planes_overrun() {
         assert_eq!(
@@ -412,13 +394,11 @@ mod tests {
         assert_eq!(MAX_SUPERSAMPLED_BYTES / flat(), 16 << 20);
     }
 
-    /// The term a pixel count cannot express, and the reason the budget is in bytes:
-    /// **the scratch dominates**. One blend group more than doubles the frame — a
-    /// `swap` trio and an `iso` trio, each the size of the accumulator — and a pigment
-    /// document pays 18 bytes a texel for every one of them.
-    ///
-    /// A flat 16-Mpx ceiling would let all four of these render at that size, which is
-    /// 973 MB for the third and about 1.6 GB for the fourth.
+    /// Why the budget is in bytes: **the scratch dominates**. One blend group more than
+    /// doubles the frame — a `swap` trio and an `iso` trio, each the size of the
+    /// accumulator — and a pigment document pays 18 bytes a texel for each. A flat
+    /// 16-Mpx ceiling would let all four of these render at that size: 973 MB for the
+    /// third, about 1.6 GB for the fourth.
     #[test]
     fn the_blend_scratch_is_most_of_what_a_nested_frame_costs() {
         let cost = |f, s: &[bool]| attachment_bytes(f, TARGET, s, false);

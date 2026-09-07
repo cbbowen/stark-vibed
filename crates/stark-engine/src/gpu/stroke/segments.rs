@@ -2,12 +2,10 @@
 //! the [`Segment`] that is both, a [`BleedFire`]'s window — and the one funnel a
 //! record becomes those through (§6.2).
 //!
-//! Both render paths flatten through [`generate_segments_in`], so both see the same
-//! segments for the same record — which is what lets a live tail and the commit that
-//! replaces it agree pixel for pixel. Everything downstream of it reads these types
-//! and never the record: what the tiles a piece touches are measured from
-//! ([`region`](super::region)), what the dynamics loop dispatches over
-//! ([`dynamics`](super::dynamics)), and what the sweep shader is instanced with.
+//! Both render paths flatten through [`generate_segments_in`], so a live tail and the
+//! commit that replaces it see the same segments for the same record. Everything
+//! downstream — [`region`](super::region), [`dynamics`](super::dynamics), the sweep
+//! shader's instances — reads these types and never the record.
 
 use stark_model::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
 use stark_model::geom::Vec2;
@@ -15,14 +13,12 @@ use stark_model::geom::Vec2;
 use super::StrokeSpans;
 use super::budget::lambda;
 
-/// The fixtures every suite in [`stroke`](super) builds its sweeps with — here because
-/// this is the module that owns the type they build (see the module's own docs).
+/// The fixtures every suite in [`stroke`](super) builds its sweeps with.
 #[cfg(test)]
 pub(super) mod testing;
 
-// Two subjects a segment is *built from* and does not read back: the taper's
-// profile and its cut, and the stretch's map. Each is its own file with its own
-// tests; this one is the vocabulary and the funnel.
+// Two subjects a segment is *built from* and does not read back: the taper's profile
+// and its cut, and the stretch's map. This file is the vocabulary and the funnel.
 mod stretch;
 pub(super) mod taper;
 
@@ -34,16 +30,13 @@ use taper::Taper;
 ///
 /// The centreline is a **circular arc**, not a chord: `start` and `dir` give the
 /// frame it leaves in, `curvature` bends it, and `length` measures along it. A
-/// straight sweep is `curvature == 0` and is what every quantity below reduces to,
-/// exactly — see [`crate::path::fit_arc`].
+/// straight sweep is `curvature == 0`, which every quantity below reduces to exactly —
+/// see [`crate::path::fit_arc`].
 ///
-/// Split from the paint rates ([`Paint`]) because the module has two things that are
-/// swept and only one of them paints. A [`BleedFire`]'s window is a stretch of lateral
-/// diffusion at a standing tip: it has a start, a bend and a travel, and it has no
-/// `add`, no `lift` and no `deposit`. Built as a whole [`Segment`] instead, it would
-/// carry the crossing segment's rates for `dynamics_plan` to zero back out lane by
-/// lane. Every box and every rect in this module is a function of this half alone, so
-/// they take it alone and cannot read a rate that is not there.
+/// Separate from the paint rates ([`Paint`]) because a [`BleedFire`]'s window is swept
+/// without painting: it has a start, a bend and a travel, and no `add`, `lift` or
+/// `deposit`. Every box and every rect in this module is a function of this half alone
+/// and so cannot read a rate that is not there.
 #[derive(Copy, Clone)]
 pub(super) struct Sweep {
     pub(super) start: Vec2,
@@ -53,49 +46,39 @@ pub(super) struct Sweep {
     pub(super) dir: Vec2,
     /// Signed curvature of the centreline (1/canvas px), positive turning towards
     /// the left of `dir`. Exactly 0 for a straight sweep, which both render paths
-    /// branch on — so a stroke the arc fit declines to bend is bit-identical to one
-    /// drawn before arcs existed (§6.2).
+    /// branch on (§6.2).
     pub(super) curvature: f32,
     /// The tip's own radius in canvas px at the segment's **midpoint** — the mean of
     /// its two ends, and the reference every rate the host measures is denominated in
     /// (the bleed cadence, the stencil's diffusivity, the touch-down dab).
     ///
     /// The *reference*, because a segment does not have a radius: the tip is a
-    /// function of travel, and [`radius_ramp`](Self::radius_ramp) is the rest of that function.
+    /// function of travel, and [`radius_ramp`](Self::radius_ramp) is the rest of that
+    /// function.
     ///
     /// It is also **the frame the sweep is unrolled in** — region px per brush-local
-    /// unit, the units everything the shaders read out of a brush-local coordinate is
-    /// in. The two were separate quantities while a pen-oriented stamp's prefix-τ
-    /// volume was padded to keep a turned mask's corners; a canonical mask's content
-    /// lies inside the disc inscribed in its square (`stark_assetid::coverage`, §6.6),
-    /// a rotation maps that disc to itself, so every volume is baked unpadded and the
-    /// frame is the tip for every brush there is.
+    /// unit, the units everything read out of a brush-local coordinate is in. Every
+    /// volume is baked unpadded, since a canonical mask's content lies inside the disc
+    /// inscribed in its square (`stark_assetid::coverage`, §6.6) and a rotation maps
+    /// that disc to itself.
     pub(super) radius: f32,
     /// How much the tip grows across this segment, as a fraction of
     /// [`radius`](Self::radius): `(r_end − r_start) / radius`, so the tip in force a
     /// fraction `u` of the way through is `radius · (1 + ramp·(u − ½))`. **Zero for a
-    /// segment whose tip does not change**, which is every segment of an untapered
-    /// brush the pen is not driving — and the shaders branch on that zero, so those
-    /// strokes render exactly as they did before a ramp existed.
+    /// segment whose tip does not change**, and the shaders branch on that zero.
     ///
-    /// Why a segment carries one at all: the tip is scaled by the taper and by the
-    /// size modulation, both of which vary *with distance travelled*, and a sweep at
-    /// a single radius puts a C⁰ break in the stroke's outline at every segment
-    /// boundary. Subdividing shrinks the break but cannot remove it — and a step in
-    /// an edge is visible far below the pixel it is quantized to, which is what made
-    /// a 500 px tapered tip draw as a comb of ~5 px sawteeth (2026-08-14). Carried as
-    /// a ramp the outline is continuous *by construction*: adjacent segments agree on
-    /// the radius at the knot they share, because both compute it from the same pen
-    /// and the same taper at the same arc length.
+    /// Carried as a ramp rather than as one radius per segment so the outline is
+    /// continuous *by construction*: adjacent segments agree on the radius at the knot
+    /// they share, because both compute it from the same pen and the same taper at the
+    /// same arc length. A single radius puts a C⁰ break in the outline at every
+    /// boundary, which subdividing shrinks but cannot remove.
     ///
-    /// **The same agreement is what the deposit rests on**, one level down. The two
-    /// ends of a segment's swept span are denominated against `r_start` and `r_end`
-    /// rather than against the reference radius (`stamp_common::Sweep::span`), so one
-    /// segment's trailing coordinate and the next one's leading coordinate are the same
-    /// expression — and a point's exposure over a whole pass comes out the mask's row
-    /// total whatever the cut. Denominated both ends in the reference instead, the
-    /// exposure rippled at the flattener's own cadence, which is what printed a tapered
-    /// stamp brush as a fan of stepped streaks (2026-08-20).
+    /// **The same agreement is what the deposit rests on.** The two ends of a segment's
+    /// swept span are denominated against `r_start` and `r_end` rather than against the
+    /// reference radius (`stamp_common::Sweep::span`), so one segment's trailing
+    /// coordinate and the next one's leading coordinate are the same expression, and a
+    /// point's exposure over a whole pass comes out the mask's row total whatever the
+    /// cut.
     ///
     /// **`|ramp| < 2` structurally**, so the tip in force is positive everywhere
     /// without a clamp: the ends are floored at `0.5` by [`generate_segments_in`], and
@@ -108,16 +91,14 @@ pub(super) struct Sweep {
     ///
     /// Scaled by the segment's **widest** tip rather than its mean, since the ramp
     /// makes those different numbers and this one bounds a box: under-reporting it is
-    /// a stroke clipped at a tile boundary (see [`coverage_bounds`](super::region::coverage_bounds)).
+    /// a stroke clipped at a tile boundary (see
+    /// [`coverage_bounds`](super::region::coverage_bounds)).
     ///
-    /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1` — the whole domain of
-    /// the prefix-τ volume — but nothing any shape can paint lies outside the **disc**
-    /// inscribed in that square, at any orientation: the round tip by construction
-    /// (`tips::round_coverage`), an image stamp by its canonical form's reach
-    /// normalization (`stark_assetid::coverage`, §6.6). So the widest tip's radius,
-    /// drawn out by the stretch, is the exact bound — where this once carried a `√2`
-    /// for a mask that might fill its corners, and every stamp's boxes were that much
-    /// larger than what they held.
+    /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1`, but nothing any shape
+    /// can paint lies outside the **disc** inscribed in that square, at any
+    /// orientation: the round tip by construction (`tips::round_coverage`), an image
+    /// stamp by its canonical form's reach normalization (`stark_assetid::coverage`,
+    /// §6.6). So the widest tip's radius, drawn out by the stretch, is the exact bound.
     pub(super) reach: f32,
     /// Arc length of the centreline (canvas px) — the tip's own travel, which is the
     /// measure every rate in both paths is denominated in.
@@ -127,9 +108,9 @@ pub(super) struct Sweep {
     /// integrated along**, used to pick the prefix-τ orientation layer. 0 for
     /// follow-stroke (§6.6).
     ///
-    /// That direction is the travel for every unstretched tip, and
-    /// [`Stretch::turns`] round from it for a stretched one — which is the sense in
-    /// which a stretch is *another slice of the same volume* rather than another bake.
+    /// That direction is the travel for every unstretched tip; [`Stretch::turns`]
+    /// rounds from it for a stretched one, which is the sense in which a stretch is
+    /// another slice of the same volume rather than another bake.
     pub(super) orient: f32,
     /// How far this segment's tip is drawn out along its facing axis, as the map from
     /// the reference travel frame into the frame the prefix-τ volume is read in
@@ -146,12 +127,9 @@ impl Sweep {
     /// host's statement of the ramp `stamp_common::radius_ramp_scale` applies, so the two
     /// definitions can be read against each other.
     ///
-    /// `u` is clamped, like the shader's: past either end the tip has, as far as this
-    /// sweep is concerned, stopped at the end it reached.
-    ///
-    /// Only the tests ask — the renderer evaluates the ramp on the GPU, per fragment,
-    /// and the one thing the *host* needs from it (the widest tip, which sizes the
-    /// coverage box) is [`widest_tip`](Self::widest_tip).
+    /// `u` is clamped, like the shader's: past either end the tip has stopped at the
+    /// end it reached. Tests only — the renderer evaluates the ramp per fragment, and
+    /// the one thing the host needs from it is [`widest_tip`](Self::widest_tip).
     #[cfg(test)]
     pub(super) fn tip_at(&self, u: f32) -> f32 {
         self.radius * (1.0 + self.radius_ramp * (u.clamp(0.0, 1.0) - 0.5))
@@ -160,10 +138,10 @@ impl Sweep {
     /// The widest tip this sweep reaches, canvas px.
     ///
     /// Spelled as the shader spells it (`stamp_common::sweep_vertex`'s `hull`) rather
-    /// than as `max(r_start, r_end)`, which it equals algebraically. The two can differ
-    /// by an ulp in floats, and this one has to come out **no smaller** than the strip
-    /// the GPU rasterizes: it is what [`coverage_bounds`](super::region::coverage_bounds) grows the box by, and a box
-    /// narrower than its own geometry is a stroke clipped at a tile boundary.
+    /// than as the algebraically equal `max(r_start, r_end)`: the two can differ by an
+    /// ulp, and this has to come out **no smaller** than the strip the GPU rasterizes,
+    /// since [`coverage_bounds`](super::region::coverage_bounds) grows the box by it
+    /// and a box narrower than its own geometry clips the stroke at a tile boundary.
     fn widest_tip(&self) -> f32 {
         self.radius * (1.0 + 0.5 * self.radius_ramp.abs())
     }
@@ -175,51 +153,47 @@ impl Sweep {
 /// [`BrushModulations`](stark_model::document::BrushModulations) and its effect-side
 /// siblings map onto it, plus the tooth's depth.
 ///
-/// They live on the segment rather than on the stroke because that is now what they
-/// are — the pen attributes they follow are interpolated per segment, and the
-/// flattener already holds their step to
+/// Per segment rather than per stroke because the pen attributes they follow are
+/// interpolated per segment, stepped by
 /// [`FlattenTolerance::attribute`](crate::path::FlattenTolerance::attribute). Each is
 /// at most the brush's own value, never more, which is what lets every bound taken
-/// against `rec.brush` stay a bound (see [`Modulation`](stark_model::document::Modulation)).
+/// against `rec.brush` stay a bound (see
+/// [`Modulation`](stark_model::document::Modulation)).
 ///
 /// `charge` is absent on purpose: it is the tool's *initial* load, one number for the
-/// whole stroke, and there is no per-segment version of it to carry.
+/// whole stroke, with no per-segment version to carry.
 #[derive(Copy, Clone)]
 pub(super) struct Paint {
     pub(super) add: f32,
     /// The exchange rates as the shader runs them — `flow · λ(axis)` (§6.2), each
     /// vertical axis as the pen asked for it here through
-    /// [`lambda`](super::budget::lambda), then the wet effect's modulated flow on
-    /// the exponent. Folded here, where `add` and `bleed` already take the flow,
-    /// so that nothing downstream holds a factor it could apply twice: the axes
-    /// and the flow do not survive past this struct. Zero — no transfer — on
-    /// every effect but wet.
+    /// [`lambda`](super::budget::lambda), with the wet effect's modulated flow on the
+    /// exponent. Folded here so nothing downstream holds a factor it could apply
+    /// twice. Zero — no transfer — on every effect but wet.
     pub(super) lambda_lift: f32,
     pub(super) lambda_deposit: f32,
     pub(super) bleed: f32,
-    /// The liquify effect's follow fraction as the pen asked for it here
-    /// (§6.13) — [`LiquifyEffect::strength`](stark_model::document::LiquifyEffect)
-    /// modulated, and nonzero only on a liquify stroke: the fraction of its pass
-    /// the paint under the tip's core keeps up with.
+    /// The liquify effect's follow fraction as the pen asked for it here (§6.13) —
+    /// [`LiquifyEffect::strength`](stark_model::document::LiquifyEffect) modulated, and
+    /// nonzero only on a liquify stroke: the fraction of its pass the paint under the
+    /// tip's core keeps up with.
     pub(super) drag: f32,
     /// How much give this segment's tip has against the canvas substrate (§6.4) — the
     /// brush's `tooth_give`, likewise modulated. Not a paint rate: it gates `add` per
     /// *texel* from the substrate under it, in the shader.
     ///
-    /// The give alone. How wide the transition around it is is `tooth_softness`, and
-    /// that one is not modulated and not here — it rides `StrokeConstants` with the
-    /// other per-stroke numbers both paths read.
+    /// The give alone; the width of the transition around it is `tooth_softness`,
+    /// which is not modulated and rides `StrokeConstants` instead.
     ///
-    /// **A modulation scales this down towards the driest tip**, which is the whole
-    /// reason the knob is quoted as the give: it is what makes a pressure mapping the
-    /// charcoal rather than its opposite (`BrushModulations::tooth_give`).
+    /// **A modulation scales this down towards the driest tip**, which is why the knob
+    /// is quoted as the give: it is what makes a pressure mapping the charcoal rather
+    /// than its opposite (`BrushModulations::tooth_give`).
     pub(super) tooth_give: f32,
-    /// The ceiling's **modulation factor** as the pen asked for it here (§6.2):
-    /// what this segment's share of the stroke's coverage is capped at, as a
-    /// fraction of the effect's own dial. The dial itself — with the mask's
-    /// opacity folded in — stays a stroke constant (`StrokeConstants::opacity`);
-    /// only the pen's factor rides the segment, so a brush with the target
-    /// unmapped carries exactly 1 and the ceiling lane holds the plain coverage.
+    /// The ceiling's **modulation factor** as the pen asked for it here (§6.2): what
+    /// this segment's share of the stroke's coverage is capped at, as a fraction of the
+    /// effect's own dial. The dial itself — with the mask's opacity folded in — stays a
+    /// stroke constant (`StrokeConstants::opacity`), so a brush with the target unmapped
+    /// carries exactly 1 and the ceiling lane holds the plain coverage.
     ///
     /// The **mean of the segment's two ends**, like [`Sweep::radius`] and for its
     /// reason — see [`opacity_ramp`](Self::opacity_ramp).
@@ -230,17 +204,15 @@ pub(super) struct Paint {
     /// segment whose ceiling does not change**, which is every segment of every
     /// brush the pen does not drive that way, and the shaders branch on that zero.
     ///
-    /// Why a segment carries one at all is [`Sweep::radius_ramp`]'s argument, one target
-    /// over: read once per segment the ceiling is piecewise constant, and a stroke
-    /// drawn at a realistic report rate is a handful of segments wide — so the
-    /// mark came out in bands, stepping at every cut. Carried as a ramp the
-    /// ceiling is continuous *by construction*: adjacent segments agree at the
-    /// knot they share, because both read the pen there at the same arc length.
+    /// A ramp for [`Sweep::radius_ramp`]'s reason, one target over: read once per
+    /// segment the ceiling is piecewise constant, and a stroke drawn at a realistic
+    /// report rate is a handful of segments wide, so the mark comes out in bands.
+    /// Adjacent segments agree at the knot they share, because both read the pen there
+    /// at the same arc length.
     ///
-    /// **Absolute where the radius ramp is relative**, which is the one way the
-    /// two differ: a ceiling is a fraction rather than a scale, so the interpolant
-    /// stays inside `[min, max]` of two numbers already in `[0, 1]` and nothing
-    /// here has to defend a positive product.
+    /// **Absolute where the radius ramp is relative**: a ceiling is a fraction rather
+    /// than a scale, so the interpolant stays inside `[min, max]` of two numbers
+    /// already in `[0, 1]` and nothing here has to defend a positive product.
     pub(super) opacity_ramp: f32,
     /// How the `add` source rate changes across this segment — `end − start`, read
     /// at a texel's own travel by `stamp_common::add_of` and
@@ -248,11 +220,10 @@ pub(super) struct Paint {
     /// construction, and its argument: a rate held constant across a segment steps
     /// at every cut.
     ///
-    /// It costs the deposit nothing to be exact about: the deposit is `∫ add dτ`
-    /// over the segment, `add` is one function of arc length whichever side of a
-    /// knot reads it, and a definite integral cut in two is the sum of its pieces.
-    /// So this is as independent of the flattening as the constant it replaces, and
-    /// nearer the integral than a midpoint sample.
+    /// Exact rather than approximate, and as independent of the flattening as a
+    /// constant would be: the deposit is `∫ add dτ` over the segment, `add` is one
+    /// function of arc length whichever side of a knot reads it, and a definite
+    /// integral cut in two is the sum of its pieces.
     pub(super) add_ramp: f32,
     /// How the tooth's give changes across this segment (§6.4) — the same
     /// construction, on the one gate that is per *texel* rather than per parcel.
@@ -264,15 +235,13 @@ pub(super) struct Paint {
 }
 
 impl Default for Paint {
-    /// Every rate at zero — a tool doing nothing — the ceiling factor at its
-    /// **neutral 1** (a scale, so a zero would not be "none" but a ceiling that
-    /// admits nothing), and the tooth at **full give**, which is the same statement
-    /// about the substrate: a tip that follows every fall deposits exactly what
-    /// it would with no substrate under it at all.
+    /// Every rate at zero — a tool doing nothing — the ceiling factor at its **neutral
+    /// 1** (a scale, so a zero would admit nothing rather than mean "none"), and the
+    /// tooth at **full give**: a tip that follows every fall of the substrate deposits
+    /// exactly what it would with no substrate under it at all.
     ///
     /// Written out rather than derived, because the knob runs the other way
-    /// (`ToothParams::give`) and a derived zero here would be the *driest* tip
-    /// there is — a default that gates paint away rather than one that does nothing.
+    /// (`ToothParams::give`) and a derived zero would be the *driest* tip there is.
     fn default() -> Self {
         Self {
             add: 0.0,
@@ -300,11 +269,9 @@ pub(super) struct Segment {
 /// One crossing of the bleed cadence (§6.2): which segment it fires after, the stretch
 /// of path it relaxes over, and the one axis it uses.
 ///
-/// A named type rather than the `(usize, Segment)` it was, and a [`Sweep`] rather than
-/// a whole segment. A firing lays no paint — `dynamics_plan` zeroes every vertical rate
-/// on the slot it becomes — so carrying rates here meant copying five numbers in for
-/// the sole purpose of writing them back out, and left `radius_ramp: 0.0` as a field a window
-/// had to remember not to set. It cannot set one now.
+/// A [`Sweep`] rather than a whole segment, because a firing lays no paint —
+/// `dynamics_plan` zeroes every vertical rate on the slot it becomes — so a window has
+/// no rate to set and cannot set one.
 #[derive(Copy, Clone)]
 pub(super) struct BleedFire {
     /// Index into the segments this firing was derived from — the segment it follows.
@@ -315,8 +282,7 @@ pub(super) struct BleedFire {
 }
 
 // Per-segment instance data for the sweep shader, generated from `stamp.wesl`'s own
-// vertex parameters (§6.10) — including the prose on each lane, which now lives
-// beside the declaration that decides how it is read.
+// vertex parameters (§6.10) — including the prose on each lane.
 pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 
 // --- swept arcs ----------------------------------------------------------------
@@ -324,9 +290,8 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 // The arc a flattened edge stands for is [`crate::path::fit_arc`]'s, called here with
 // the very cap the flattener called it with (`FlattenTolerance::max_arc_curvature`,
 // set by [`flatten_budget`](super::budget::flatten_budget) from
-// [`MAX_TIP_TURN`](super::MAX_TIP_TURN)). One function, one rule, so the geometry the
-// flattener priced is the geometry that gets swept — and neither can spend the
-// positional budget on a primitive the other does not use.
+// [`MAX_TIP_TURN`](super::MAX_TIP_TURN)) — so the geometry the flattener priced is the
+// geometry that gets swept.
 
 /// Where the pen was, at the point a segment samples it.
 ///
@@ -335,25 +300,22 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 /// long, and start-sampling would lag every ramp by half a segment.
 ///
 /// Both axes are already clamped to what a pen can report, because the fitter clamps
-/// the *curve* and not just the control polygon (`PathFitter::path`), so the
-/// modulations below are honest without a second guard.
+/// the *curve* and not just the control polygon (`PathFitter::path`).
 struct At {
     pos: Vec2,
     pressure: f32,
     tilt: Vec2,
 }
 
-/// The arc one segment travels along, as [`generate_segments_in`]'s builder is handed
-/// it — the path half of a [`Sweep`], before the tip is measured onto it.
+/// The arc one segment travels along — the path half of a [`Sweep`], before the tip is
+/// measured onto it.
 ///
-/// `dir` is the tangent the sweep *starts* along — the frame's x axis — while
-/// `mid_dir` is the one at the midpoint, the same midpoint-sampling argument applied
-/// to the one attribute that reads a direction. They are the same vector on a
-/// straight segment.
+/// `dir` is the tangent the sweep *starts* along — the frame's x axis — and `mid_dir`
+/// the one at the midpoint, where the attributes are sampled. They are the same vector
+/// on a straight segment.
 ///
-/// `dist` is the exception to that rule: it is the arc length at the segment's
-/// **start**, because the shader adds the fragment's own offset along the travel to
-/// it (`stamp_common.wesl`).
+/// `dist` is the exception: the arc length at the segment's **start**, because the
+/// shader adds the fragment's own offset along the travel to it (`stamp_common.wesl`).
 struct Track {
     dir: Vec2,
     mid_dir: Vec2,
@@ -366,11 +328,9 @@ struct Track {
 /// than being sampled at its midpoint: the tip ([`Sweep::radius_ramp`]) and the pen the
 /// ceiling's factor is read from ([`Paint::opacity_ramp`]).
 ///
-/// One value because they are one question — what is in force at each end — and
-/// because both rest on the same property: each is a function of arc length
-/// alone, so the shared end of two adjacent segments resolves to the same number
-/// on both sides. Bundling them is what keeps a third such quantity from being
-/// threaded through as a fourth argument.
+/// One value because both rest on the same property: each is a function of arc length
+/// alone, so the shared end of two adjacent segments resolves to the same number on
+/// both sides.
 struct Ends {
     /// The tip in canvas px at the start and at the end, the taper's own factor
     /// at each already folded in — which only the caller knows.
@@ -379,10 +339,8 @@ struct Ends {
     pen: (PenState, PenState),
 }
 
-/// The effect's rates at one pen reading — what [`Paint`] carries, before the two
-/// ends are averaged and ramped. Named lanes, for the reason the plan's `Slot` is
-/// (`plan.rs`): a positional tuple of five `f32`s was destructured three times per
-/// segment with `_` placeholders, and nothing checked the positions agreed.
+/// The effect's rates at one pen reading — what [`Paint`] carries, before the two ends
+/// are averaged and ramped.
 #[derive(Clone, Copy)]
 struct Rates {
     add: f32,
@@ -402,52 +360,44 @@ impl Rates {
     };
 }
 
-/// Build swept segments from the fitted control points (§6.2): flatten
-/// the curve adaptively, then make each polyline edge a segment. This is where the
-/// brush's fixed numbers become the per-segment ones the shaders read: the radius
-/// follows the size mapping and the stroke's start/end tapers, and each paint rate
-/// follows whatever [`BrushModulations`](stark_model::document::BrushModulations) points at it
-/// (§6.2). **It is the only place a modulation is resolved** — both render paths
-/// flatten through here, so a live tail and the commit that replaces it cannot read
-/// the pen differently.
+/// Build swept segments from the fitted control points (§6.2): flatten the curve
+/// adaptively, then make each polyline edge a segment. This is where the brush's fixed
+/// numbers become the per-segment ones the shaders read — the radius follows the size
+/// mapping and the stroke's start/end tapers, each paint rate follows whatever
+/// [`BrushModulations`](stark_model::document::BrushModulations) points at it (§6.2).
+/// **It is the only place a modulation is resolved**, and both render paths flatten
+/// through here, so a live tail and the commit that replaces it cannot read the pen
+/// differently.
 ///
-/// **The `drain` falloff is deliberately not here.** It is a function of arc length
-/// alone, and every shader that reads a segment already knows the arc length of the
-/// fragment it is shading (`dist` plus the fragment's own offset along the travel), so
-/// it is evaluated there instead of being baked in per segment. That is not a
-/// micro-optimization: a per-segment factor makes the paint laid depend on where the
-/// segment boundaries happened to fall, which is the one thing §6.2 works to keep out
-/// of the deposit. Evaluated per fragment it drops out of the sum entirely — the
-/// stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut — so the
-/// flattener need not buy accuracy for it with segments
-/// (see [`flatten_budget`](super::budget::flatten_budget)).
+/// **The `drain` falloff is deliberately not here.** A per-segment factor makes the
+/// paint laid depend on where the segment boundaries happened to fall, which is the one
+/// thing §6.2 works to keep out of the deposit. It is a function of arc length alone
+/// and every shader knows the arc length of the fragment it is shading (`dist` plus the
+/// fragment's own offset along the travel), so evaluated there it drops out of the sum
+/// entirely — the stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut
+/// — and the flattener need not buy accuracy for it with segments (see
+/// [`flatten_budget`](super::budget::flatten_budget)).
 ///
 /// Returns the range's segments plus the arc length at its end — measured on the
 /// emitted polyline rather than recomputed, so the range that resumes from it starts
 /// on the exact accumulator these segments were built with.
 ///
-/// One thing here is measured against the stroke's **whole** length, which only a
-/// range that reaches its final span knows: the trailing taper (a range that stops
-/// short takes the leading taper alone, [`Taper::resolve`]). It is sound rather than
-/// approximate, and [`safe_frozen`](super::safe_frozen) is the one rule that makes
-/// it so.
+/// The trailing taper is the one thing measured against the stroke's **whole** length,
+/// which only a range reaching its final span knows; a range that stops short takes the
+/// leading taper alone ([`Taper::resolve`]), which is sound rather than approximate
+/// because of [`safe_frozen`](super::safe_frozen).
 ///
-/// A stroke deposits exactly its own travel — a swept deposit is a definite
-/// integral, so a press that has not moved lays nothing, and the tool says so
-/// honestly rather than padding a minimum (the retired `DAB_TRAVEL` dwell): the
-/// hover's mark previews what a press would lay before it is made (§18.1.10),
-/// and a release that cannot deposit commits nothing (`Session::end_stroke`).
+/// A stroke deposits exactly its own travel — a swept deposit is a definite integral,
+/// so a press that has not moved lays nothing and nothing pads a minimum: the hover's
+/// mark previews what a press would lay before it is made (§18.1.10), and a release
+/// that cannot deposit commits nothing (`Session::end_stroke`).
 ///
-/// And the stroke's own travel begins at the record's **marker**
-/// ([`StrokeRecord::start`]): the curve may extend back through the run-up —
-/// motion from before the press, fitted in so the entry's direction and
-/// curvature are measured rather than guessed (§6.2) — and the flattening
-/// leaves everything before the marker out
-/// ([`flatten_spans_from`](crate::path::flatten_spans_from)). Because the trim
-/// happens here, in the funnel both render paths share, the run-up is invisible
-/// to everything downstream: `dist` reads 0 at the marker, so the tapers, the
-/// `drain` falloff and the dynamics loop all measure the stroke from where the
-/// press happened, exactly as they measured it when the curve began there.
+/// Travel begins at the record's **marker** ([`StrokeRecord::start`]): the curve may
+/// extend back through the run-up — motion from before the press, fitted in so the
+/// entry's direction and curvature are measured rather than guessed (§6.2) — and
+/// [`flatten_spans_from`](crate::path::flatten_spans_from) leaves everything before the
+/// marker out. So `dist` reads 0 at the marker, and the tapers, the `drain` falloff and
+/// the dynamics loop all measure the stroke from where the press happened.
 pub(super) fn generate_segments_in(
     rec: &StrokeRecord,
     tol: crate::path::FlattenTolerance,
@@ -467,31 +417,25 @@ pub(super) fn generate_segments_in(
     }
     let taper = Taper::resolve(b, reaches_end.then_some(end_dist));
 
-    // The tip in force for one pen reading and one taper factor, in canvas px.
-    //
-    // The size mapping and the taper both scale the tip; the floor keeps a tapered tip
-    // a hairline at its very point rather than a degenerate zero-width sweep (which
-    // would also divide by zero in the dynamics loop's reservoir cadence, and would let
-    // a segment's ramp reach the `|ramp| = 2` its positivity rests on). With the
-    // default brush the mapping is pressure, linearly, so this is the product it has
-    // always been — to the bit (`Modulation::factor`).
+    // The tip in force for one pen reading and one taper factor, in canvas px. The
+    // floor keeps a tapered tip a hairline at its very point rather than a degenerate
+    // zero-width sweep — which would divide by zero in the dynamics loop's reservoir
+    // cadence, and would let a segment's ramp reach the `|ramp| = 2` its positivity
+    // rests on.
     //
     // `tap` is the taper's radius factor, which only the caller can know: it is
     // measured against the *whole* stroke and a partial range does not have one.
     let tip_at = |pen: PenState, tap: f32| (b.size * b.modulation.size(pen) * tap).max(0.5);
 
     // The ceiling's factor for one pen reading (§6.2). Read at the segment's two
-    // **ends** rather than at its midpoint, where every rate below is read: a rate
-    // is a per-segment quantity by nature — `add` scales what this segment lays —
-    // where a ceiling caps what the whole stroke shows, so a value held constant
-    // across a segment steps at every cut and the mark comes out in bands. The
-    // shaders interpolate it across the sweep the way they interpolate the tip
-    // ([`Paint::opacity_ramp`]).
+    // **ends** rather than at its midpoint, where every rate below is read: a rate is a
+    // per-segment quantity by nature — `add` scales what this segment lays — where a
+    // ceiling caps what the whole stroke shows, so held constant across a segment it
+    // steps at every cut and the mark comes out in bands ([`Paint::opacity_ramp`]).
     //
     // The effect is a fact about the *brush*, so it is resolved to its variant once
-    // here and once for `rates` below, not per pen sample. The arms' closures are
-    // temporaries the `let` extends to the end of the function; `move`, because a
-    // borrow of the arm's binding would not be.
+    // here and once for `rates` below, not per pen sample. `move`, because a borrow of
+    // the arm's binding would not outlive the match.
     let ceiling_at: &dyn Fn(PenState) -> f32 = match &b.effect {
         stark_model::document::BrushEffect::Paint(p) => {
             &move |pen: PenState| p.modulation.opacity(pen)
@@ -506,19 +450,17 @@ pub(super) fn generate_segments_in(
         stark_model::document::BrushEffect::Liquify(_) => &|_: PenState| 1.0,
     };
 
-    // The rates are the effect's own, at its own pen mappings. Paint and erase have
-    // one rate each — paint's `add` is its flow, an eraser's the rate its bite
-    // builds at (§6.12) — and only a wet brush carries fluxes; which is a statement
-    // about the *brush*, so every segment of every stroke answers it the same way
-    // (`dynamics_setup`'s purity argument).
+    // The rates are the effect's own, at its own pen mappings: paint's `add` is its
+    // flow, an eraser's the rate its bite builds at (§6.12), and only a wet brush
+    // carries fluxes — a fact about the *brush*, so every segment of every stroke
+    // answers it the same way (`dynamics_setup`'s purity argument).
     //
-    // A wet brush's flow scales everything the tool does (§6.2), and all of it is
-    // scaled here. What is linear in exposure takes the factor outright — the `add`
-    // mint, and the `bleed` diffusivity (which `bleed_stencil` still clamps at its
-    // own calibrated top, so a hot flow saturates the blur rather than out-reaching
-    // the stencil). The vertical fractions cannot be scaled before their `ln`, so
-    // they become λs first and the factor lands on the exponent — one pass at flow
-    // f trades exactly what f passes at flow 1 would.
+    // A wet brush's flow scales everything the tool does (§6.2). What is linear in
+    // exposure takes the factor outright — the `add` mint, and the `bleed` diffusivity
+    // that `bleed_stencil` still clamps at its own calibrated top, so a hot flow
+    // saturates the blur rather than out-reaching the stencil. The vertical fractions
+    // cannot be scaled before their `ln`, so they become λs first and the factor lands
+    // on the exponent: one pass at flow f trades exactly what f passes at flow 1 would.
     let rates: &dyn Fn(PenState) -> Rates = match &b.effect {
         stark_model::document::BrushEffect::Paint(p) => &move |pen: PenState| Rates {
             add: p.flow * p.modulation.flow(pen),
@@ -544,11 +486,10 @@ pub(super) fn generate_segments_in(
         },
     };
 
-    // `ends` is what is in force at the segment's two ends — the tip, where the radius
-    // *ramp* comes from ([`Sweep::radius_ramp`]), and the pen, where the ceiling's does
-    // ([`Paint::opacity_ramp`]). Everything else is sampled at the midpoint, `at`: the
-    // rates below are applied per segment and the midpoint is the reading whose error
-    // is second order where either end's would be first.
+    // `ends` is what is in force at the segment's two ends — the tip
+    // ([`Sweep::radius_ramp`]) and the pen the ceiling is read from
+    // ([`Paint::opacity_ramp`]). Everything else is sampled at the midpoint, `at`,
+    // whose error is second order where either end's would be first.
     let make = |at: At, track: Track, ends: Ends| {
         // The pen as the modulations read it, at this segment's own attributes
         // (§6.2). `Modulation::factor` clamps anyway.
@@ -559,15 +500,12 @@ pub(super) fn generate_segments_in(
         let m = &b.modulation;
         let (r0, r1) = ends.tip;
         let (o0, o1) = (ceiling_at(ends.pen.0), ceiling_at(ends.pen.1));
-        // The mean rather than the midpoint *sample*, and that is what makes the ramp
+        // The mean rather than the midpoint *sample*, which is what makes the ramp
         // exact at both ends: `radius·(1 ± ramp/2)` is then `r1` and `r0` themselves,
-        // so two adjacent segments — which computed the tip at their shared knot from
-        // the same pen and the same taper — agree on it to the bit, and the outline
-        // has no step to alias. A midpoint sample would miss both ends by the size
-        // mapping's own curvature, which is exactly the C⁰ break being removed.
-        //
-        // The two coincide, bit for bit, wherever the tip does not change — which is
-        // every segment of an untapered brush at constant pressure.
+        // so two adjacent segments agree on the tip at their shared knot to the bit and
+        // the outline has no step to alias. A midpoint sample would miss both ends by
+        // the size mapping's own curvature. The two coincide bit for bit wherever the
+        // tip does not change.
         let radius = (r0 + r1) * 0.5;
         // The facing axis this segment's stretch runs along is the one its orientation
         // already names, so the two are solved together and the volume slice the
@@ -593,8 +531,8 @@ pub(super) fn generate_segments_in(
         // **The tip's own disc, drawn out by the stretch.** `A` maps the disc every
         // shape's paint lies inside ([`Sweep::reach`]) into a region no point of which
         // is further out than `‖A‖ = elongation` times where it started, so one factor
-        // bounds every angle — which is what this has to be, since it grows an
-        // axis-aligned box (`coverage_bounds`).
+        // bounds every angle — which is what an axis-aligned box needs
+        // (`coverage_bounds`).
         //
         // Plus the antialiasing rim: the pixel footprint's box filter deposits up to
         // half a px past the disc (§6.2), and the strip the GPU rasterizes carries
@@ -602,15 +540,14 @@ pub(super) fn generate_segments_in(
         // must too, or the rim px of a tile another tile's apron rewrites would be
         // drawn by one and skipped by the other (§6.4).
         sweep.reach = sweep.widest_tip() * elong + stark_shaders::mirror::stamp_common::AA_RIM_PX;
-        // **Which of the rates ride the ends, and which the midpoint.** A rate the
-        // shaders apply per *texel* — `add`, the liquify follow, and the tooth's
-        // give below — is read at both ends and interpolated between them, for
-        // [`Paint::add_ramp`]'s reason. The three the *exchange* solves with are
-        // read at the midpoint and stay constant across the segment, because that
-        // solve is one problem per dispatch whose two halves are complements and
-        // whose tool half has no canvas position to vary along (`dynamics.wesl`).
-        // What holds their step down is the flattener, which already buys segments
-        // against [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
+        // **Which rates ride the ends, and which the midpoint.** A rate the shaders
+        // apply per *texel* — `add`, the liquify follow, the tooth's give — is read at
+        // both ends and interpolated between them, for [`Paint::add_ramp`]'s reason.
+        // The three the *exchange* solves with stay constant across the segment: that
+        // solve is one problem per dispatch whose tool half has no canvas position to
+        // vary along (`dynamics.wesl`), and what holds their step down is the
+        // flattener's budget against
+        // [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
         let mid = rates(pen);
         let rate0 = rates(ends.pen.0);
         let rate1 = rates(ends.pen.1);
@@ -619,10 +556,9 @@ pub(super) fn generate_segments_in(
         Segment {
             sweep,
             paint: Paint {
-                // The mean of the two ends, like the radius and the ceiling: it is
-                // what makes the ramp exact at both, so two adjacent segments —
-                // which read the pen at the knot they share from the same sample —
-                // agree there to the bit.
+                // The mean of the two ends, like the radius and the ceiling: it makes
+                // the ramp exact at both, so adjacent segments agree at their knot to
+                // the bit.
                 add: (rate0.add + rate1.add) * 0.5,
                 add_ramp: rate1.add - rate0.add,
                 lambda_lift: mid.lambda_lift,
@@ -645,24 +581,20 @@ pub(super) fn generate_segments_in(
         if chord < 1e-5 {
             continue;
         }
-        // The edge as an arc rather than a chord (see [`segment_arc`]): same
-        // endpoints, but leaving along the curve's own tangent, so the swept outline
-        // does not break its curvature at every joint. Curvature 0 comes back for a
-        // straight or barely-curved edge, and everything below reduces to the chord
-        // case exactly.
+        // The edge as an arc rather than a chord: same endpoints, but leaving along
+        // the curve's own tangent, so the swept outline does not break its curvature at
+        // every joint. Curvature 0 comes back for a straight or barely-curved edge, and
+        // everything below reduces to the chord case exactly.
         let crate::path::Arc {
             dir,
             curvature: kappa,
             length: len,
         } = crate::path::fit_arc(a.vel, v, tol.max_arc_curvature);
-        // One flattened edge is one segment wherever the taper is flat — which is
-        // everywhere on an untapered brush, so nothing below changes those strokes
-        // by a bit. Inside a taper it is cut into pieces fine enough that the radius
-        // steps smoothly, the same length bound `drain` and the reservoir cadence
-        // ask of the *fitter* (`flatten_tolerance`), except paid only near the ends
-        // instead of over the whole stroke. The pieces are sub-*arcs*: they inherit
-        // the edge's curvature and are stepped along it, so cutting an edge up still
-        // traces exactly the same centreline.
+        // One flattened edge is one segment wherever the taper is flat, which is
+        // everywhere on an untapered brush. Inside a taper it is cut into pieces fine
+        // enough that the radius steps smoothly. The pieces are sub-*arcs*: they
+        // inherit the edge's curvature and are stepped along it, so cutting an edge up
+        // still traces exactly the same centreline.
         let n = taper.pieces(a.dist, len);
         let step = len / n as f32;
         // The pen, linearly across the flattened edge — the interpolation the
@@ -689,12 +621,10 @@ pub(super) fn generate_segments_in(
             let (pos, tan) = crate::path::arc_at(a.pos, dir, kappa, along);
             let (_, mid_tan) = crate::path::arc_at(a.pos, dir, kappa, along + step * 0.5);
             // The tip at the piece's two ends, from the pen and the taper *there*.
-            // Both are functions of arc length alone, so the shared end of two
-            // adjacent pieces — and of two adjacent flattened edges, where `u1` of one
-            // is `u0` of the next at the same `dist` — resolves to the same number on
-            // both sides. That agreement is what makes the outline continuous
-            // ([`Sweep::radius_ramp`]); it is not approached, it is the same expression
-            // evaluated twice.
+            // Both are functions of arc length alone, so the shared end of two adjacent
+            // pieces — and of two adjacent flattened edges, where `u1` of one is `u0`
+            // of the next at the same `dist` — is the same expression evaluated twice,
+            // which is what makes the outline continuous ([`Sweep::radius_ramp`]).
             let (pen0, pen1) = (pen_state(pen_at(u0)), pen_state(pen_at(u1)));
             let ends = Ends {
                 tip: (
@@ -729,7 +659,7 @@ pub(super) fn generate_segments_in(
 /// picks the prefix-τ orientation layer (§6.6).
 ///
 /// - [`OrientationSource::FollowStroke`]: the shape tracks the tangent, so the relative
-///   angle is always 0 (the historical behaviour; for a round tip it is moot anyway).
+///   angle is always 0.
 /// - [`OrientationSource::Pen`]: the shape is pinned to the pen's azimuth (the tilt
 ///   direction) in canvas space, so relative to the travel direction it is `α − φ` — as
 ///   the stroke curves the extent angle stays fixed in the world, like a nib.
@@ -758,21 +688,15 @@ mod tests {
     /// **Every pen target the shaders read per texel is continuous at the knots
     /// two segments share** (§6.2).
     ///
-    /// This is the whole content of the ramps, stated where it can be checked
-    /// exactly rather than looked for in pixels. A value carried as one number per
-    /// segment steps at every cut, and a stroke at the rate a hand reports is a
-    /// handful of segments wide — which is how a modulated `opacity` came to draw
-    /// bands and a modulated radius a comb of sawteeth. Carried as a mean and a
-    /// difference, the value at a segment's end is the same expression as the value
-    /// at the next one's start: both read the pen at that knot, from the same
-    /// sample of the same fitted curve.
+    /// This is the whole content of the ramps, stated where it can be checked exactly
+    /// rather than looked for in pixels: carried as a mean and a difference, the value
+    /// at a segment's end is the same expression as the value at the next one's start,
+    /// both read from the same sample of the same fitted curve.
     ///
-    /// Held to a rounding rather than to the bit, and the gap is the *carrying*
-    /// rather than the values: a mean and a difference are each one rounding of the
-    /// pair, so reconstructing an end returns it to within an ulp instead of
-    /// exactly. What that leaves this free to catch is a **step**, which is the
-    /// pen's own change between two knots — five orders of magnitude above the
-    /// bound below, and what every one of these targets used to have.
+    /// Held to a rounding rather than to the bit, because a mean and a difference are
+    /// each one rounding of the pair. What that leaves free to catch is a **step** —
+    /// the pen's own change between two knots, five orders of magnitude above the bound
+    /// below.
     ///
     /// The three the exchange solves with are deliberately absent: `lift`,
     /// `deposit` and `bleed` are one rate per dispatch (see [`Paint`]), and what
@@ -886,16 +810,14 @@ mod tests {
         }
     }
 
-    /// **The taper was only half the problem.** `size` follows the pen, so a pressure
+    /// The taper is only half the problem: `size` follows the pen too, so a pressure
     /// ramp scales the tip with distance travelled exactly as a taper does — and the
-    /// flattener's `attribute` bound is a step in *pressure*, which on a big brush is
-    /// a large step in px: 0.91 px of radius at 46, 2.4 px at 120, 9.9 px at 500
-    /// (measured 2026-08-14). The corpus's own `pressure_ramp` case is radius 46, so
-    /// the suite could not see it.
+    /// flattener's `attribute` bound is a step in *pressure*, which on a big brush is a
+    /// large step in px (~10 px of radius at 500).
     ///
-    /// The ramp fixes both at once, and that is the point of fixing it *there*: it is
-    /// not a taper feature, it is the statement that a segment's tip is a function of
-    /// travel rather than a value. No second rule was added for the pen.
+    /// The ramp covers both, which is the point of it being a statement that a
+    /// segment's tip is a function of travel rather than a value: there is no second
+    /// rule for the pen.
     #[test]
     fn a_pressure_ramp_on_a_huge_brush_has_no_step_either() {
         let path: Vec<stark_model::path::ControlPoint> = (0..=24)
@@ -930,10 +852,9 @@ mod tests {
         );
     }
 
-    /// A tip that does not change carries **no** ramp, exactly — which is what makes
-    /// every stroke that came before this change render as it did, to the bit: the
-    /// shaders branch on that zero (`stamp_common::radius_ramp_scale`), and a zero that were
-    /// merely small would take the general path and round differently.
+    /// A tip that does not change carries **no** ramp, exactly: the shaders branch on
+    /// that zero (`stamp_common::radius_ramp_scale`), and a zero that were merely small
+    /// would take the general path and round differently.
     #[test]
     fn a_tip_that_holds_still_carries_no_ramp() {
         // No taper, no size modulation, full pressure throughout.
@@ -945,10 +866,9 @@ mod tests {
         }
     }
 
-    /// A stroke sweeps exactly its own travel, however short. The retired
-    /// `DAB_TRAVEL` dwell used to top every stroke up to 0.6 radii — a fabricated
-    /// minimum that overrode precisely the entry geometry the fit now carries
-    /// honestly (§6.2's run-up). A short flick is short; the deposit says so.
+    /// A stroke sweeps exactly its own travel, however short — no fabricated minimum
+    /// topping a flick up to some fraction of a radius, which would override the entry
+    /// geometry the fit carries (§6.2's run-up).
     #[test]
     fn a_short_stroke_sweeps_only_its_own_travel() {
         let radius = 20.0;
@@ -1061,20 +981,18 @@ mod tests {
         }
     }
 
-    /// The claim the change exists for: swept **arcs** track the fitted curve far
-    /// more closely than the chords they replace, at the same segment count.
+    /// Swept **arcs** track the fitted curve far more closely than chords do, at the
+    /// same segment count.
     ///
-    /// The chord's error is the flattener's positional budget by construction — that
-    /// is what the budget *is* — so this is really a statement about what a segment
-    /// can be asked to do without being made shorter. Measured on the curves below,
-    /// the arcs land ~4× closer; the residual is the fitted spline's own curvature
-    /// *variation* across a segment, which a single arc cannot follow and which the
-    /// flattener's `angle` bound is what actually limits.
+    /// The chord's error is the flattener's positional budget by construction — that is
+    /// what the budget *is* — so this is really a statement about what a segment can be
+    /// asked to do without being made shorter. The residual is the fitted spline's own
+    /// curvature *variation* across a segment, which a single arc cannot follow and
+    /// which the flattener's `angle` bound is what actually limits.
     ///
-    /// The ratio understates the visible gain, because the amplitude is not what the
-    /// eye is picking up: a chord sweep breaks the outline's curvature at every joint
-    /// and creases it on the inside of a turn, and an arc sweep does neither. That is
-    /// what facets are, and it is not something a distance metric sees.
+    /// The ratio understates the visible gain: a chord sweep breaks the outline's
+    /// curvature at every joint and creases it on the inside of a turn, which is what
+    /// facets are and is not something a distance metric sees.
     #[test]
     fn arcs_track_the_curve_far_closer_than_chords() {
         for curve_radius in [200.0f32, 600.0, 2000.0] {
@@ -1187,12 +1105,11 @@ mod tests {
     /// The flattener and the segment generator agree, edge for edge, on whether a
     /// piece of curve is swept as an arc or as a chord.
     ///
-    /// This is what makes the positional budget mean anything. `path::within` prices
-    /// an edge against whatever `fit_arc` returns for it, and the sweep is built from
-    /// whatever `fit_arc` returns for it — so if the two ever called it with different
-    /// caps, an edge could be *measured* as a well-tracked arc and then *drawn* as a
-    /// chord that misses the curve by several times the allowance. Routing both through
-    /// one function with one cap is what rules that out; this pins that they do.
+    /// This is what makes the positional budget mean anything: `path::within` prices an
+    /// edge against whatever `fit_arc` returns for it, and the sweep is built from
+    /// whatever `fit_arc` returns for it, so two different caps would let an edge be
+    /// *measured* as a well-tracked arc and then *drawn* as a chord that misses the
+    /// curve by several times the allowance.
     #[test]
     fn the_flattener_and_the_sweep_agree_on_which_edges_bend() {
         for radius in [2.0f32, 18.0, 50.0, 120.0] {
@@ -1260,15 +1177,13 @@ mod tests {
     /// A stamp's box holds its **disc** exactly — no more, at any angle.
     ///
     /// Nothing any canonical shape can paint lies outside the disc inscribed in its
-    /// mask square ([`Sweep::reach`]), so the disc's rim is the exact frontier the
-    /// box must contain, and the box that contains only it is the tight one: a `√2`
-    /// margin for a corner a canonical mask cannot occupy was every stamp stroke
-    /// paying up to double the region area for texels its prefix taps difference to
-    /// zero. Containment failing clips the stroke at a tile boundary;
-    /// tightness failing is the tax coming back.
+    /// mask square ([`Sweep::reach`]), so the disc's rim is the exact frontier the box
+    /// must contain and the box containing only it is the tight one. Containment
+    /// failing clips the stroke at a tile boundary; tightness failing is up to double
+    /// the region area spent on texels the prefix taps difference to zero.
     ///
     /// Swept at a range of angles because axis-aligned travel is where a wrong bound
-    /// and the right one agree, and those were the strokes that always looked right.
+    /// and the right one agree.
     #[test]
     fn a_stamps_box_is_its_disc_exactly() {
         let radius = 24.0f32;
@@ -1289,9 +1204,8 @@ mod tests {
                 let end = segment_end(s);
                 // Containment: the rim of the tip's disc at each end of the travel,
                 // every point of it a texel the deposit may reach. A tolerance well
-                // under a texel is what says "contains" here; nothing downstream can
-                // resolve less, and both consumers add their own margin
-                // (`TILE_APRON`, `RECT_MARGIN`) on top.
+                // under a texel is what says "contains" here; both consumers add their
+                // own margin (`TILE_APRON`, `RECT_MARGIN`) on top.
                 const SLACK: f32 = 1e-3;
                 for base in [s.start, end] {
                     for j in 0..16 {
@@ -1326,12 +1240,11 @@ mod tests {
 
     /// `sin` and `cos` from their Maclaurin series in plain f64 arithmetic.
     ///
-    /// Not for accuracy — the curves below only have to be representative shapes. The
-    /// library versions are not specified to the last bit and may differ between
-    /// platforms, and these decide *control points*, so a knot differing by an ulp
-    /// could flip a subdivision decision and fail this test on someone else's machine.
-    /// Basic IEEE arithmetic is exactly specified, which rules that out rather than
-    /// hoping — the same argument that makes `taper::taper_profile` a polynomial (§12.1).
+    /// Not for accuracy — the curves below only have to be representative shapes. These
+    /// decide *control points*, and the library versions are not specified to the last
+    /// bit, so a knot differing by an ulp could flip a subdivision decision and fail
+    /// this test on someone else's machine. Basic IEEE arithmetic is exactly specified
+    /// — the argument that makes `taper::taper_profile` a polynomial (§12.1).
     fn sin_series(x: f64) -> f64 {
         let (x2, mut term, mut acc) = (x * x, x, x);
         for k in 1..10 {
@@ -1370,20 +1283,12 @@ mod tests {
         pts
     }
 
-    /// **How many segments the flattener spends on a stroke — pinned, on purpose.**
-    ///
-    /// This is a change-detector test and it is meant to be one. **Updating these
-    /// numbers is a normal thing to do:** if a change moves them and you have decided
-    /// the new geometry is right, paste in the new counts and say why in the commit.
-    /// The test is not asserting that any particular number is correct — it is making
-    /// sure a number cannot move *silently*, because nothing else here would notice.
-    ///
-    /// **A wet brush's flow scales the whole of what a segment resolves** (§6.2):
-    /// what is linear in exposure — the mint and the bleed — takes the factor
-    /// outright, the vertical fractions ride untouched beside the factor the
-    /// plan puts on their λs, and every other effect resolves the neutral 1.
-    /// This is the seam the flow/add split lives on: get it wrong and the Flow
-    /// slider is back to being a paint knob on a blend brush.
+    /// **A wet brush's flow scales the whole of what a segment resolves** (§6.2): what
+    /// is linear in exposure — the mint and the bleed — takes the factor outright, the
+    /// vertical fractions ride untouched beside the factor the plan puts on their λs,
+    /// and every other effect resolves the neutral 1. This is the seam the flow/add
+    /// split lives on: get it wrong and the Flow slider is back to being a paint knob
+    /// on a blend brush.
     #[test]
     fn a_wet_flow_scales_the_rates_a_segment_resolves() {
         use stark_model::document::{BrushDynamics, BrushEffect};
@@ -1442,23 +1347,9 @@ mod tests {
         assert_eq!((p.add, p.lambda_lift, p.lambda_deposit), (0.6, 0.0, 0.0));
     }
 
-    /// Segment count is the loop's unit of cost. Every dispatch in the dynamics path
-    /// is charged per segment (`dynamics.wesl`), so the budgets below are the dial
-    /// between quality and time, and they are set from five different quantities that
-    /// have nothing to do with one another. A change to any one of them moves a stroke
-    /// nobody was thinking about: the cases are chosen so that each is dominated by a
-    /// *different* budget, and the one that moves tells you which.
-    ///
-    /// Every count is reported in one pass rather than failing at the first, so a
-    /// deliberate retuning gives you the whole new table to paste in from one run.
-    ///
-    /// These are CPU-side and float-deterministic (§12.1) — the same reason replay and
-    /// peers agree on geometry — so a count that differs *per machine* is a bug in that
-    /// determinism, not a tolerance to loosen.
     /// The exchange budget means the same thing to every brush
-    /// (`budget::flatten_budget`). These are properties of the rule, not
-    /// measured counts — unlike the table below, a failure here is a bug rather than a
-    /// retuning.
+    /// (`budget::flatten_budget`). These are properties of the rule rather than measured
+    /// counts — unlike the table below, a failure here is a bug and not a retuning.
     #[test]
     fn the_exchange_budget_scales_with_the_transfer_rate() {
         use stark_model::document::BrushDynamics;
@@ -1550,6 +1441,22 @@ mod tests {
         assert_eq!(at_flow(0.95, 0.95, 0.0), 100.0);
     }
 
+    /// **How many segments the flattener spends on a stroke — pinned, on purpose.**
+    ///
+    /// A change-detector test, and meant to be one. **Updating these numbers is a normal
+    /// thing to do:** if a change moves them and the new geometry is right, paste in the
+    /// new counts and say why in the commit. What it asserts is that a number cannot
+    /// move *silently*, because nothing else here would notice.
+    ///
+    /// Segment count is the loop's unit of cost — every dispatch in the dynamics path is
+    /// charged per segment (`dynamics.wesl`) — and the budgets are set from five
+    /// unrelated quantities, so the cases are chosen for each to be dominated by a
+    /// *different* one: the row that moves tells you which. Every count is reported in
+    /// one pass rather than failing at the first, so a deliberate retuning gives the
+    /// whole new table from one run.
+    ///
+    /// These are CPU-side and float-deterministic (§12.1), so a count that differs *per
+    /// machine* is a bug in that determinism and not a tolerance to loosen.
     #[test]
     fn the_segment_budget_is_what_it_was() {
         // Three curves, shared across brushes so that a difference between two rows on
@@ -1563,13 +1470,11 @@ mod tests {
         // outside what a radius-80 tip may, so the same curve is priced both ways.
         let arc = by_heading(24, 400.0, |s| 0.004 * s);
         // An Euler spiral **through its inflection**: curvature linear in arc length,
-        // running −0.006 → +0.006 with the zero at the middle. It is the one shape that
-        // exercises the whole of `fit_arc` in a single stroke — a sign change, the
-        // degenerate straight case exactly at the inflection, and the
-        // `max_arc_curvature` threshold crossed once on each side (at |κ| = 0.005 for a
-        // radius-20 tip), so the fitter alternates between arcs and chords along it.
-        // Heading is the integral of curvature: ∫(a·s + b) ds with the constant chosen
-        // to put the inflection at the halfway point.
+        // running −0.006 → +0.006 with the zero at the middle — the one shape that
+        // exercises the whole of `fit_arc` in a single stroke, crossing the
+        // `max_arc_curvature` threshold (|κ| = 0.005 for a radius-20 tip) once on each
+        // side of a sign change. Heading is the integral of curvature: ∫(a·s + b) ds,
+        // with the constant chosen to put the inflection at the halfway point.
         let spiral = by_heading(24, 400.0, |s| 0.5 * 0.00003 * s * s - 0.006 * s);
 
         let cases: &[(&str, usize, StrokeRecord)] = &[
@@ -1587,13 +1492,11 @@ mod tests {
                     &straight,
                 ),
             ),
-            // `max_len` from the exchange budget. `smearing()` trades at `lift = deposit = 0.8`,
-            // which the rate scaling prices at 0.233 · radius = 4.7px over 400px — not the
-            // 2.5px the 0.95 calibration point would cost.
-            // **This is the row a reservoir-cadence retuning moves**, and the reason
-            // the dynamics path costs what it does. Subdivision is by bisection, so a
-            // count sits at or above the length bound's own `400/4.7 = 86` rather than
-            // exactly on it.
+            // `max_len` from the exchange budget. `smearing()` trades at
+            // `lift = deposit = 0.8`, which the rate scaling prices at 0.233 · radius =
+            // 4.7px over 400px. **This is the row a reservoir-cadence retuning moves.**
+            // Subdivision is by bisection, so the count sits at or above the length
+            // bound's own `400/4.7 = 86` rather than exactly on it.
             (
                 "straight, smearing tip",
                 118,
@@ -1608,11 +1511,10 @@ mod tests {
                 30,
                 record(smearing(80.0), &straight),
             ),
-            // `drain` costs **nothing**, which is the point of this row: the falloff is
-            // evaluated per fragment from its own arc length, so it asks the flattener
-            // for no segments at all and this comes out identical to the smearing row
-            // above. Bought per segment it would bind at `0.02 / drain_px` = 4px, and
-            // for a quantity that is exact rather than merely finely sampled.
+            // `drain` costs **nothing**: the falloff is evaluated per fragment from its
+            // own arc length, so it asks the flattener for no segments at all and this
+            // row comes out identical to the smearing one above. Bought per segment it
+            // would bind at `0.02 / drain_px` = 4px.
             (
                 "straight, draining tip",
                 118,
@@ -1625,15 +1527,13 @@ mod tests {
                     &straight,
                 ),
             ),
-            // The taper, and **not the most expensive row in the table** — the point
-            // of carrying the radius as a ramp. A segment holds the taper's slope
-            // exactly, so the cut buys only the sagitta of a chord across the
-            // profile's own curvature: `len·√(|r''|/8E)` pieces, a second-order term
-            // where a per-segment constant radius buys a first-order one. Charging the
-            // first order instead costs 121 pieces here, and 211 if the step is
-            // denominated in the radius *factor* rather than in px. Nothing about the
-            // curve is driving this one — it is the same straight line as the
-            // 3-segment row above.
+            // The taper, and **not the most expensive row in the table** — the point of
+            // carrying the radius as a ramp. A segment holds the taper's slope exactly,
+            // so the cut buys only the sagitta of a chord across the profile's own
+            // curvature: `len·√(|r''|/8E)` pieces, a second-order term where a
+            // per-segment constant radius buys a first-order one (121 pieces here).
+            // Nothing about the curve is driving this row — it is the same straight line
+            // as the 3-segment one above.
             (
                 "straight, tapered tip",
                 15,
@@ -1664,8 +1564,8 @@ mod tests {
             // hands back chords instead. **It costs exactly the same**, and that is the
             // point of keeping both rows: at this curvature `angle` binds first, so the
             // arc/chord choice changes what a segment *is* without changing how many
-            // there are. If a change to `MAX_TIP_TURN` or to how a too-tight edge is
-            // priced ever makes these two diverge, that is worth knowing about.
+            // there are. A change to `MAX_TIP_TURN`, or to how a too-tight edge is
+            // priced, that made these two diverge is worth knowing about.
             (
                 "arc, fat tip",
                 31,

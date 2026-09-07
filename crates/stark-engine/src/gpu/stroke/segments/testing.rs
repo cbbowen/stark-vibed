@@ -1,20 +1,13 @@
 //! The [`Sweep`]/[`Segment`] fixtures the stroke modules' tests are written in (§6.2).
 //!
-//! Here rather than beside each suite because these build *this* module's central
-//! type, and what a fixture leaves neutral is an argument rather than a value: a ramp
-//! or a stretch set in a fixture is a second variable in whatever the test is actually
-//! measuring, and every caller holds the same ones still for the same reason. Written
-//! out once per suite, that argument was three copies to keep in step by hand — and a
-//! new field on [`Sweep`] was five edits the compiler could only report one at a time.
+//! Shared rather than written out per suite because what a fixture leaves neutral is an
+//! argument rather than a value: a ramp or a stretch set in a fixture is a second
+//! variable in whatever the test is measuring, and every caller holds the same ones
+//! still for the same reason.
 //!
 //! The rates are the one thing a fixture cannot leave neutral by omission: [`sweep`]
-//! hands back the geometry half, which has nowhere to put a rate that would imply one
-//! had been consulted, and [`seg`] adds [`Paint::default`]'s zeros — so a test that
-//! wants a rate has to set one.
-//!
-//! The record fixtures and the walks over a whole stroke's segments are here for the
-//! same reason, one level up: the taper's tests and the arc and budget tests are two
-//! files now, and both measure the very same straight tapered stroke.
+//! hands back the geometry half, which has nowhere to put a rate, and [`seg`] adds
+//! [`Paint::default`]'s zeros — so a test that wants a rate has to set one.
 
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
@@ -55,9 +48,8 @@ pub(in crate::gpu::stroke) fn sweep(
 /// The same sweep named by its **endpoints**, at the arc clock's origin.
 ///
 /// The frame is derived rather than given, so a caller whose subject is only where the
-/// tip went — the region measurements, which combine boxes — says that and nothing
-/// about direction or travel. Derived from [`sweep`] rather than written beside it,
-/// because a field added there has to reach this shape too.
+/// tip went — the region measurements, which combine boxes — says that and nothing about
+/// direction or travel.
 pub(in crate::gpu::stroke) fn sweep_between(start: Vec2, end: Vec2, radius: f32) -> Sweep {
     let v = end - start;
     let length = v.length();
@@ -167,10 +159,9 @@ pub(in crate::gpu::stroke) fn whole_segments(rec: &StrokeRecord) -> Vec<Segment>
 
 /// The same, as bare [`Sweep`]s.
 ///
-/// Almost everything below is a claim about *geometry* — where the tip went and how
-/// wide it was — so it is asked of the half that carries geometry. A test that
-/// wanted a paint rate would have to say so by using [`whole_segments`], which is
-/// the point of the split being visible here too.
+/// Almost every claim below is about *geometry* — where the tip went and how wide it
+/// was — so it is asked of the half that carries geometry. A test that wants a paint
+/// rate says so by using [`whole_segments`].
 pub(in crate::gpu::stroke) fn whole(rec: &StrokeRecord) -> Vec<Sweep> {
     sweeps(whole_segments(rec))
 }
@@ -184,16 +175,14 @@ pub(in crate::gpu::stroke) fn sweeps(segs: Vec<Segment>) -> Vec<Sweep> {
 /// no C⁰ break to alias — at any brush size, and however coarsely the taper is
 /// cut.
 ///
-/// Stated as an agreement between neighbours rather than as a bound on a step,
-/// because that is the difference between the two designs. A per-segment radius
-/// can only ever make the step *small*; a ramp makes it zero, since both sides
-/// evaluate the same pen and the same taper at the same arc length.
+/// Stated as an agreement between neighbours rather than as a bound on a step: a
+/// per-segment radius can only ever make the step *small*, where a ramp makes it zero,
+/// both sides evaluating the same pen and the same taper at the same arc length.
 ///
-/// The tolerance is not slack for the taper: within a flattened edge the two are
+/// The tolerance is not slack for the taper — within a flattened edge the two sides are
 /// the identical float expression and agree to the bit. It covers the edge
-/// *boundaries*, where the arc length a segment measures its taper at is
-/// accumulated along the polyline and the two sides can differ by an ulp or two of
-/// a large number.
+/// *boundaries*, where the arc length a segment measures its taper at is accumulated
+/// along the polyline and the two sides can differ by an ulp or two of a large number.
 pub(in crate::gpu::stroke) fn assert_outline_is_continuous(segs: &[Sweep]) {
     for (i, w) in segs.windows(2).enumerate() {
         let (before, after) = (w[0].tip_at(1.0), w[1].tip_at(0.0));

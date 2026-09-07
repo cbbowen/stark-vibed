@@ -1,26 +1,15 @@
 //! **Every `apply` touches only what its `Footprint` declares** (§12.6), checked on
 //! every fold — and every *unfold* — of every debug build.
 //!
-//! This is the first rule in CLAUDE.md's list of the ones that break silently, and
-//! until now nothing structural held it. Seven exhaustive matches over `ActionKind`
-//! say each action *has* a footprint; none of them says the footprint is the one its
-//! `apply` arm honours, and the compiler cannot tell — the two are a walk of a tree
-//! and a list of resources. What held the line was a test driving a hand-written
-//! vocabulary, which is a sample: the arm it never mints is the arm nothing checks,
-//! and the group removal that this module's first run would have caught sat wrong for
-//! as long as no row removed a group.
+//! `Materialize::audit` is called from `Logged::apply` behind
+//! `cfg(debug_assertions)`, so every action any test in the workspace folds is held
+//! to its own declaration — in shapes no hand-written vocabulary enumerates.
 //!
-//! So the check moved to where the folding happens. `Materialize::audit` is called
-//! from `Logged::apply` behind `cfg(debug_assertions)`, so every action every test in
-//! the workspace folds — hundreds of them, in shapes no vocabulary enumerates — is
-//! held to its own declaration.
-//!
-//! # What it costs, and why that is affordable
+//! # What it costs
 //!
 //! One `DocState` clone (a handful of `Arc` bumps, §5.1) and one walk of the layer
-//! tree comparing tile handles by pointer. Both are debug-only: a release fold is
-//! exactly what it was, and `Materialize::AUDITED` is what keeps a consumer that does
-//! not audit from paying even the clone.
+//! tree comparing tile handles by pointer, both debug-only. `Materialize::AUDITED`
+//! keeps a consumer that does not audit from paying even the clone.
 //!
 //! # The direction it is wrong in
 //!
@@ -70,15 +59,12 @@ impl std::fmt::Display for Diff {
 /// Every difference between two states that `footprint` does not declare, described
 /// for a human — empty when the fold was honest.
 ///
-/// **The one enumeration of "what can differ".** `tests/footprint.rs` kept a second
-/// copy so it could drive the vocabulary and check it, and two lists of a struct's
-/// fields is one list that goes stale: a `Layer` or `DocState` field added to one and
-/// not the other is invisible to whichever forgot it. It calls this now, and so does
-/// the debug fold below.
+/// **The one enumeration of "what can differ"** — `tests/footprint.rs` and the debug
+/// fold below both call it, so a `Layer` or `DocState` field added without a case
+/// here goes uncovered in one place rather than two.
 ///
-/// `#[doc(hidden)]`: this is a test hook on a public module, not part of what the
-/// crate offers. It is public because an integration test
-/// can reach nothing else, and narrow enough that saying so costs one line.
+/// `#[doc(hidden)]`: a test hook on a public module, public only because an
+/// integration test can reach nothing else.
 #[doc(hidden)]
 pub fn undeclared(before: &DocState, after: &DocState, footprint: &Footprint) -> Vec<String> {
     differences(before, after)
@@ -114,9 +100,8 @@ pub(super) fn audit(before: &DocState, after: &DocState, action: &Action, footpr
 /// Whether the declared writes account for one difference — through
 /// [`Resource::overlaps`], the *same* predicate the timeline commutes by.
 ///
-/// Asking it a second way here is how a coarse claim comes to look finer than it is:
-/// `Resource::Layer` stands for everything about one layer, and a check that only
-/// compared resources for equality would report every one of those as undeclared.
+/// Equality would not do: `Resource::Layer` stands for everything about one layer,
+/// so a coarse claim has to keep covering every fine difference under it.
 fn covered(diff: &Diff, writes: &[Resource]) -> bool {
     match diff {
         Diff::Tile(layer, coord) => writes.iter().any(|w| match w {
@@ -171,13 +156,8 @@ fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
 
 /// Whether `p` names something these two layers disagree about.
 ///
-/// **A `match`, which is the point.** This was seven `if a.x != b.x` statements, and
-/// seven statements are what a new [`Prop`] variant slips past: the function goes on
-/// compiling and the audit quietly stops covering the property, in the one checker
-/// that carries §12.6 on every fold. Every other reader of `Prop` is already held to
-/// the variant list by the compiler — `patch::capture_resource` matches, `Prop::ALL`
-/// is generated from the enum's own list, `patch`'s round-trip test matches — and
-/// this was the last one that did not.
+/// A `match` rather than a chain of comparisons, so a new [`Prop`] variant cannot
+/// slip past the one checker that carries §12.6 on every fold.
 ///
 /// Its order is [`Prop::ALL`]'s, which is why [`props`] can collect straight from it.
 fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {
@@ -204,9 +184,8 @@ fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {
 fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
     let mut out = Vec::new();
     // **The substrate and the scale together**, because `Resource::Substrate` is one
-    // resource for the two (§6.4). Comparing only the id left `SetSubstrateScale`
-    // with no difference to report, so its footprint was checked against nothing —
-    // and it is the very pair whose undo patch was found carrying only half of it.
+    // resource for the two (§6.4): comparing only the id would leave
+    // `SetSubstrateScale` with no difference to report, and so no footprint checked.
     if before.substrate != after.substrate || before.substrate_scale != after.substrate_scale {
         out.push(Diff::Named(Resource::Substrate));
     }

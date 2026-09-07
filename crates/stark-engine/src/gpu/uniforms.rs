@@ -6,33 +6,22 @@
 //!
 //! `write_buffer` is a *queue* operation, so N rewrites of one buffer before a single
 //! submit leave every pass reading the last value written. Anything that varies per
-//! draw therefore needs either a buffer per draw — a rate of small WebGPU
-//! allocations, which is what JS GC cannot keep up with — or one buffer of
-//! **dynamic-offset slots**, which is [`UniformSlots`].
+//! draw therefore needs either a buffer per draw — a rate of small WebGPU allocations
+//! JS GC cannot keep up with — or one buffer of **dynamic-offset slots**, which is
+//! [`UniformSlots`].
 //!
-//! It lived in `composite::blend` and was used only there, while three other call
-//! sites wrote a buffer *and* a bind group per draw for want of it: the transform's
-//! per-quad uniform, the fill's per-tile origin, the selection's per-tile params.
-//!
-//! **`gpu::stroke` takes the stride and not the buffer**, which is the one place a
-//! consumer departs from these types on purpose. Its two dynamic-offset uniforms —
-//! the sweep's per-tile `TileXform` and the stamp loop's per-dispatch `Stamp` — take
-//! their stride from [`UniformSlots::STRIDE`] like everyone else (`XFORM_STRIDE`,
-//! `STAMP_STRIDE`), so the law is stated once; what they do not take is the grow-only
-//! buffer, because that path has something stronger. A stroke's buffers are *leased*
-//! from its scratch pool (`gpu::scratch`), which recycles them across strokes
-//! rather than across the frames of one, and releases them only behind the submit of
-//! the commands that named them.
+//! **`gpu::stroke` takes the stride and not the buffer**, the one deliberate departure.
+//! Its two dynamic-offset uniforms take their stride from [`UniformSlots::STRIDE`]
+//! (`XFORM_STRIDE`, `STAMP_STRIDE`) so the law is stated once, but their buffers are
+//! *leased* from the stroke scratch pool (`gpu::scratch`), which recycles across strokes
+//! and releases only behind the submit of the commands that named them.
 //!
 //! # Why the vertex side lives here too
 //!
 //! An [`InstanceStream`] obeys no slot law — a vertex buffer is indexed by the draw's
 //! own instance range, not by an aligned offset — and shares the other half of what
-//! `UniformSlots` is: *allocate to the high-water mark, never shrink within a
-//! session, write the whole of this frame before the submit*. That policy was written
-//! out four times in `composite` (pass A's tiles and mattes, pass C's outlines, pass
-//! D's guides) as a `buf`/`cap` field pair and a grow-then-write block apiece. One
-//! policy, one place; the two types differ in stride and usage and in nothing else.
+//! `UniformSlots` is: *allocate to the high-water mark, never shrink within a session,
+//! write the whole of this frame before the submit*.
 
 /// The dynamic-offset alignment every backend accepts
 /// (`min_uniform_buffer_offset_alignment` is 256 on the strictest) — the quantum a
@@ -40,26 +29,20 @@
 /// single blend uniform buffer is one such slot wide.
 pub(crate) const UNIFORM_SLOT: u64 = 256;
 
-/// A grow-on-demand buffer of uniform slots, one per pass — the one mechanism
-/// behind the blend pass's per-merge uniforms and the filter pass's per-layer
-/// ones, so the slot law lives in one place rather than once per pass that
-/// needs it.
+/// A grow-on-demand buffer of uniform slots, one per pass — the blend pass's per-merge
+/// uniforms and the filter pass's per-layer ones.
 ///
-/// A slot per pass rather than one buffer rewritten between passes: `write_buffer`
-/// is a *queue* operation, so N rewrites before a single submit would leave every
-/// pass reading the last value written. Two blend groups — or two filters — in one
-/// document is not an edge case, so a buffer holds them all and each pass binds its
-/// own offset.
+/// A slot per pass rather than one buffer rewritten between passes: `write_buffer` is a
+/// *queue* operation, so N rewrites before a single submit would leave every pass
+/// reading the last value written. Two blend groups — or two filters — in one document
+/// is not an edge case, so a buffer holds them all and each pass binds its own offset.
 ///
-/// **Typed**, and the stride is the type's: [`Self::STRIDE`] is the uniform's own
-/// size rounded up to [`UNIFORM_SLOT`], so a uniform that outgrows one alignment
-/// quantum (the filter's did, when the gradient map's stop table landed — §21.11)
-/// widens its own buffer's slots and nobody else's, and a buffer can no more be
+/// **Typed**, and the stride is the type's: [`Self::STRIDE`] is the uniform's own size
+/// rounded up to [`UNIFORM_SLOT`] (§21.11), so a uniform that outgrows one alignment
+/// quantum widens its own buffer's slots and nobody else's, and a buffer can no more be
 /// written with the wrong shape than offset by the wrong stride.
 ///
-/// The buffers themselves stay separate per pass (the two uniforms are different
-/// shapes, and a document with three filters and no blend modes should not have to
-/// reason about which slots the other pass skipped); what is shared is the
+/// A buffer per pass, since the uniforms are different shapes; what is shared is the
 /// allocation, the growth policy, and the write-every-slot-before-the-submit rule.
 pub(crate) struct UniformSlots<T> {
     buf: wgpu::Buffer,
@@ -71,9 +54,7 @@ pub(crate) struct UniformSlots<T> {
     /// Here rather than beside each consumer because the invalidation is the whole of
     /// the difficulty: growing does not resize a buffer, it replaces one, and a group
     /// over the old allocation names a buffer too small for the offsets it is about to
-    /// be given. Two consumers answered that by rebuilding per frame and saying so in a
-    /// comment — correct, and a way to be wrong that no longer exists now the type
-    /// that *does* the replacing is the one that clears the cache.
+    /// be given. The type that *does* the replacing is the one that clears the cache.
     ///
     /// `None` for the consumers that keep no group: a bind group answers to a layout,
     /// and several of these are bound as part of a larger group somebody else builds.
@@ -84,9 +65,8 @@ pub(crate) struct UniformSlots<T> {
     _uniform: std::marker::PhantomData<T>,
 }
 
-/// Lay `uniforms` out one per [`UniformSlots::STRIDE`] into `into` — the bytes a
-/// single `write_buffer` uploads for a whole pass, where one call per slot was that
-/// many queue crossings of 16–48 bytes apiece. Padding is zeroed; nothing reads it.
+/// Lay `uniforms` out one per [`UniformSlots::STRIDE`] into `into` — the bytes a single
+/// `write_buffer` uploads for a whole pass. Padding is zeroed; nothing reads it.
 pub(crate) fn stage_slots<T: bytemuck::Pod>(uniforms: &[T], into: &mut Vec<u8>) {
     let stride = UniformSlots::<T>::STRIDE as usize;
     into.clear();
@@ -116,8 +96,8 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     ///
     /// `make` is handed the slot as a [`BindingResource`](wgpu::BindingResource) —
     /// offset 0, one uniform wide — which each draw then displaces by its own
-    /// [`offset`](Self::offset). It is not handed `self`, and that is the point: what
-    /// it may name is the thing whose replacement invalidates the group.
+    /// [`offset`](Self::offset). It is not handed `self`: what it may name is the thing
+    /// whose replacement invalidates the group.
     pub(crate) fn group(
         &mut self,
         make: impl FnOnce(wgpu::BindingResource<'_>) -> wgpu::BindGroup,
@@ -145,13 +125,11 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     /// of them than any before it. Every slot is written before the frame's single
     /// submit, which is the whole reason slots exist.
     ///
-    /// **Returns whether the buffer moved.** Growing does not resize a buffer, it
-    /// *replaces* one — so any bind group built over the old one is now naming a
-    /// buffer too small for the offsets it is about to be given, which is a
-    /// validation error rather than a wrong pixel. The group this type keeps
-    /// ([`Self::group`]) is dropped here; the answer is for a caller holding one of
-    /// its *own*, over a layout this type knows nothing about. Not `#[must_use]`,
-    /// because most callers now have nothing to do with it.
+    /// **Returns whether the buffer moved.** Growing *replaces* the buffer, so any bind
+    /// group built over the old one now names one too small for the offsets it is about
+    /// to be given — a validation error rather than a wrong pixel. The group this type
+    /// keeps ([`Self::group`]) is dropped here; the answer is for a caller holding one
+    /// of its *own*, over a layout this type knows nothing about.
     pub(crate) fn write(
         &mut self,
         device: &wgpu::Device,
@@ -165,8 +143,7 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         if moved {
             self.buf = Self::alloc(device, self.label, uniforms.len());
             self.slots = uniforms.len();
-            // The group named the buffer that is now gone. Dropped here rather than
-            // left to a caller to notice, which is what makes keeping one safe.
+            // The group named the buffer that is now gone.
             self.group = None;
         }
         stage_slots(uniforms, &mut self.staging);
@@ -203,18 +180,13 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
 /// sibling, with the slot law removed and the growth policy kept.
 ///
 /// Packed rather than padded: a vertex buffer is walked by the draw's own instance
-/// range against the stride the pipeline's `VertexBufferLayout` declares, so there is
-/// no alignment quantum to round up to and no offset for a caller to get wrong. What
-/// it shares with `UniformSlots` is everything else — allocate to the high-water
-/// mark, keep it, and write the whole of this frame's records in one go before the
-/// submit that draws them.
+/// range against the stride the pipeline's `VertexBufferLayout` declares, so there is no
+/// alignment quantum to round up to and no offset for a caller to get wrong. The rest is
+/// `UniformSlots`' policy — allocate to the high-water mark, keep it, and write the
+/// whole of this frame's records before the submit that draws them.
 ///
-/// The records past `items.len()` are left as whatever the last frame wrote. That is
-/// sound because a draw names its own instance range and never reaches them, and it
-/// is why this allocates with a bare `create_buffer`: two of the four hand-rolled
-/// buffers this replaces used `create_buffer_init` with a `vec![Default; count]`,
-/// building and uploading a CPU-side vector of placeholders that the very next
-/// `write_buffer` overwrote in full.
+/// The records past `items.len()` are left as whatever the last frame wrote, which is
+/// sound because a draw names its own instance range and never reaches them.
 pub(crate) struct InstanceStream<T> {
     buf: wgpu::Buffer,
     cap: usize,

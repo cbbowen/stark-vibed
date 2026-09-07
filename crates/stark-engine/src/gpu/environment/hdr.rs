@@ -1,10 +1,8 @@
 //! The Radiance RGBE (`.hdr`) decoder (§6.3).
 //!
-//! A file format and nothing else — no GPU, no lighting model. Split out because it
-//! is the one part of an environment that is about *bytes on disk* rather than about
-//! how a painting is lit, and because it is the part that has to be defensive: the
-//! bytes come from the frontend at runtime and a malformed file must be an error
-//! rather than a panic or a silent misread.
+//! A file format and nothing else — no GPU, no lighting model — and the part that has
+//! to be defensive: the bytes come from the frontend at runtime, so a malformed file
+//! must be an error rather than a panic or a silent misread.
 
 /// Decode a Radiance RGBE (`#?RADIANCE`, `FORMAT=32-bit_rle_rgbe`) file into a
 /// linear-RGB equirectangular image (row-major, top row first). Returns

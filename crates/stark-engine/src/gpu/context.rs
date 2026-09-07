@@ -99,12 +99,11 @@ impl GpuHealth {
 ///
 /// What it costs is device breadth, and 8192 is where WebGPU itself sits: it is
 /// `wgpu::Limits::default()`'s cap and the floor the WebGPU spec requires of a
-/// conformant implementation, so every device Stark can run on already meets it.
-/// The value was 2048 — the `downlevel_defaults()`/WebGL2 floor — which bought
-/// portability to a backend this workspace does not build: no crate enables wgpu's
-/// `webgl` feature, so a WebGL2 device was never going to be handed to the engine
-/// anyway. What that 2048 was actually costing was the reach of a brush, since the
-/// stamp loop's region is a texture (`gpu::stroke::budget::MAX_REGION_DIM`).
+/// conformant implementation, so every device Stark can run on already meets it. The
+/// `downlevel_defaults()`/WebGL2 floor of 2048 would buy portability to a backend this
+/// workspace does not build — no crate enables wgpu's `webgl` feature — at the price of
+/// a brush's reach, since the stamp loop's region is a texture
+/// (`gpu::stroke::budget::MAX_REGION_DIM`).
 ///
 /// **A fixed constant, never a device query**, which is load-bearing beyond texture
 /// allocation: the substrate downsample is part of the canonical form an asset id is
@@ -116,9 +115,8 @@ pub(crate) const MAX_TEXTURE_DIM_2D: u32 = 8192;
 // was asked for, and both are frozen one-way ratchets (§19) that a future raise could
 // walk into this ceiling.
 //
-// `MAX_PICTURE_DIM` is deliberately absent rather than overlooked: a placed picture is
-// built into tiles on the CPU and never bound as a texture at all, which is why it is
-// allowed to be larger (§23).
+// `MAX_PICTURE_DIM` is deliberately absent: a placed picture is built into tiles on the
+// CPU and never bound as a texture at all, which is why it may be larger (§23).
 const _: () = assert!(
     stark_assetid::MAX_SUBSTRATE_DIM <= MAX_TEXTURE_DIM_2D,
     "a substrate would not fit the texture limit the device was asked for",
@@ -135,13 +133,13 @@ const _: () = assert!(
 ///
 /// **The `Instance` and `Adapter` that produced them are deliberately not here.**
 /// The engine never reads either — what it draws with is the device and the queue —
-/// and wgpu says both "do not have to be kept alive". A frontend that needs them
-/// (to bind a second surface, say) already has them and keeps them on its own side;
-/// one whose UI toolkit owns the device outright never sees them at all, which is
-/// what the second frontend (`stark-wgpui-frontend`) found: `WgpuSurfaceHandle`
-/// hands out a device and a queue and nothing else. Holding a *stale* adapter here —
-/// one that did not produce this device — would be worse than holding none, since
-/// the next reader of `adapter.limits()` would believe it.
+/// and wgpu says both "do not have to be kept alive". A frontend that needs them (to
+/// bind a second surface, say) keeps them on its own side; one whose UI toolkit owns
+/// the device outright never sees them at all, which is the native frontend's case
+/// (`stark-wgpui-frontend`, §11): `WgpuSurfaceHandle` hands out a device and a queue
+/// and nothing else. Holding a *stale* adapter here — one that did not produce this
+/// device — would be worse than holding none, since the next reader of
+/// `adapter.limits()` would believe it.
 #[derive(Clone)]
 pub struct GpuContext {
     pub device: wgpu::Device,
@@ -150,25 +148,22 @@ pub struct GpuContext {
     ///
     /// Shared by every clone, which is what makes one cell enough: the context is
     /// cloned into the tile pool, every renderer, the `ApplyCtx` and each preview
-    /// engine, and all of them are talking to the same device.
+    /// engine, and all of them talk to the same device.
     health: GpuHealth,
 }
 
 impl GpuContext {
     /// Wrap wgpu handles supplied by the frontend (CLAUDE.md).
     ///
-    /// **Installs this crate's device callbacks**, which is not a courtesy — it is
-    /// the only way the engine can find out that its device has died.
-    /// `Action::Error` is `Infallible` on the stated substrates that "GPU work reports
-    /// failure via wgpu's device error callbacks". With nothing installed that sentence
-    /// describes a mechanism that does not exist, and the first anyone knows of a lost
-    /// device is an `expect` in the readback path — an abort, on the web, with the
-    /// painting unsaved.
+    /// **Installs this crate's device callbacks**, which is the only way the engine can
+    /// find out that its device has died: `Action::Error` is `Infallible` on the grounds
+    /// that GPU work reports failure via wgpu's device error callbacks, so with nothing
+    /// installed the first anyone knows of a lost device is an `expect` in the readback
+    /// path — an abort, on the web, with the painting unsaved.
     ///
-    /// A frontend that had installed its own handler will find it replaced. That is
-    /// the right way round: the engine is what has to stop issuing work, and it
-    /// publishes what it learns through
-    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) so the
+    /// A frontend that had installed its own handler will find it replaced. The engine
+    /// is what has to stop issuing work, and it publishes what it learns through
+    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure), so the
     /// frontend loses nothing by not owning the callback.
     pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let health = GpuHealth::default();
@@ -182,11 +177,10 @@ impl GpuContext {
 
     /// Whether this device is still usable, and what went wrong if not.
     ///
-    /// **The action log survives what the device does not**, which is the whole
-    /// reason this is worth reporting rather than panicking on: the document is a
-    /// list of actions held in ordinary memory (§1), so a frontend told the device
-    /// has gone can still save the file. Every path that would otherwise discover
-    /// this by dying — the readback, the next submit — leaves the log untouched.
+    /// **The action log survives what the device does not**, which is why this is worth
+    /// reporting rather than panicking on: the document is a list of actions held in
+    /// ordinary memory (§1), so a frontend told the device has gone can still save the
+    /// file.
     pub fn health(&self) -> &GpuHealth {
         &self.health
     }
@@ -195,41 +189,34 @@ impl GpuContext {
         // A conservative floor for everything the engine does not have an opinion
         // about; the two it does are set from that opinion below.
         let mut required_limits = wgpu::Limits::downlevel_defaults();
-        // **Assigned, not raised to meet.** [`MAX_TEXTURE_DIM_2D`] is the largest
-        // texture the engine will create, so it is also precisely what the device is
-        // asked for — one number, and no way for the size we allocate and the size we
-        // required to disagree. Written as `.max(…)` against a preset, the preset was
-        // silently the real limit whenever it was the larger, and the constant was
-        // documented as matching a `wgpu` default it had no way to keep matching.
+        // **Assigned, not raised to meet.** `MAX_TEXTURE_DIM_2D` is the largest texture
+        // the engine will create, so it is also precisely what the device is asked for:
+        // one number, and no way for the size we allocate and the size we required to
+        // disagree.
         required_limits.max_texture_dimension_2d = MAX_TEXTURE_DIM_2D;
         // **The stamp loop's `exchange` writes six storage textures where WebGPU
         // guarantees four.**
         //
-        // The four it always wrote — the extent snapshot's color and aux, and the
-        // reservoir's color and aux, since the segment's `snapshot` rides in the tail
-        // of that same dispatch (§6.2) — sit exactly on the downlevel limit, so the
-        // residual channel's two (§6.7) put it over. This is the one limit Stark asks
-        // for above the guaranteed floor for a *feature* rather than for canvas size,
-        // and it is worth saying what that buys and what it costs.
+        // The four that are always written — the extent snapshot's color and aux, and
+        // the reservoir's color and aux, since the segment's `snapshot` rides in the
+        // tail of that same dispatch (§6.2) — sit exactly on the downlevel limit, so
+        // the residual channel's two (§6.7) put it over. This is the one limit Stark
+        // asks for above the guaranteed floor for a *feature* rather than for canvas
+        // size.
         //
         // It is asked of every device, including one that will only ever open Oklab
         // documents, because limits are settled when the device is created and the
         // color space is a property of a document opened long after. Every adapter
         // Stark targets — D3D12, Vulkan, Metal, and WebGPU in Chrome — reports at
-        // least eight; a conformant device reporting exactly four would fail to start
-        // rather than fail to open a Mixbox file, which is the honest failure but not
-        // a graceful one.
+        // least eight; a conformant device reporting exactly four fails to start rather
+        // than failing to open a Mixbox file.
         //
-        // The way back to four, if such a device ever turns up, is packing rather than
-        // a second code path, and both halves of it are free: `brush_dst_aux_w` and
+        // Gated on `mixbox`, which is the way back under four: the residual belongs to a
+        // pigment space, so a build without one declares no residual textures anywhere
+        // and runs on WebGPU's guaranteed floor. The other way, if such a device turns
+        // up, is packing rather than a second code path — `brush_dst_aux_w` and
         // `under_aux_w` each carry height in `.x` and nothing in `.yzw`, so each one's
-        // residual fits beside the height it belongs to. That is the whole excess —
-        // no other entry point in the module declares more than three.
-        //
-        // Asked for only with the `mixbox` feature, which is the other way back under
-        // four and the one that already exists: the residual belongs to a pigment
-        // space, so a build without one declares no residual textures anywhere and
-        // runs on WebGPU's guaranteed floor.
+        // residual fits beside the height it belongs to, and that is the whole excess.
         #[cfg(feature = "mixbox")]
         {
             required_limits.max_storage_textures_per_shader_stage =
@@ -273,8 +260,7 @@ impl GpuContext {
 ///
 /// This is the whole of what the engine can do about a GPU failure synchronously —
 /// wgpu reports errors asynchronously and by callback, so there is no return value
-/// anywhere in the submit path to check. What it buys is that the failure is *known*
-/// rather than discovered by a later `expect`.
+/// anywhere in the submit path to check.
 fn install_callbacks(device: &wgpu::Device, health: &GpuHealth) {
     let lost = health.clone();
     device.set_device_lost_callback(move |reason, detail| {
@@ -310,21 +296,18 @@ mod tests {
 
     /// **A GPU error reaches the health cell instead of the default panic.**
     ///
-    /// This is the test that could not be written at all before: `Action::Error` is
-    /// `Infallible` on the grounds that "GPU work reports failure via wgpu's device
-    /// error callbacks", and nothing installed one — so the first anyone knew of a
-    /// failure was an `expect` in the readback path, which on the web is an abort that
-    /// takes the unsaved painting with it (§5).
+    /// Without a handler installed, the first anyone knows of a failure is an `expect`
+    /// in the readback path, which on the web is an abort that takes the unsaved
+    /// painting with it (§5).
     ///
     /// Provoked with a **validation** error — a texture past the device's own limit —
     /// rather than by losing the device, and the difference is not squeamishness.
     /// `Device::destroy()` on a real adapter is a driver-level device removal, and on
-    /// Windows the display compositor shares that adapter: an earlier version of this
-    /// test took `dwm.exe` down with it on the machine that ran it. A test suite may
-    /// not reach outside its own process, and nothing about the wiring under test
-    /// needs it to — `on_uncaptured_error` and `set_device_lost_callback` are
-    /// installed together by [`install_callbacks`], so proving one is delivered proves
-    /// the handler is attached. What kind of failure arrives is wgpu's business.
+    /// Windows the display compositor shares that adapter: doing it here takes
+    /// `dwm.exe` down with it. A test suite may not reach outside its own process, and
+    /// nothing about the wiring under test needs it to — `on_uncaptured_error` and
+    /// `set_device_lost_callback` are installed together by [`install_callbacks`], so
+    /// proving one is delivered proves the handler is attached.
     ///
     /// The device stays perfectly usable afterwards, which is the other half of
     /// choosing this error: a validation failure is a bug in the request, not a fact
@@ -386,9 +369,9 @@ mod tests {
 
     /// The cell's own rule, with no GPU in it: the **first** failure is the one kept.
     ///
-    /// Separate from the test above because it is the part that has to hold on every
-    /// machine, including one with no adapter at all — and because "which report
-    /// survives" is a decision this module made, not something wgpu tells us.
+    /// Separate from the test above because it has to hold on every machine, including
+    /// one with no adapter at all — and because "which report survives" is this
+    /// module's decision, not something wgpu tells us.
     #[test]
     fn the_first_failure_is_the_one_kept() {
         let health = GpuHealth::default();

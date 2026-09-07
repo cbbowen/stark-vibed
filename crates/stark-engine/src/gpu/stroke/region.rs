@@ -1,16 +1,13 @@
 //! The region a stroke piece needs: which tiles its sweeps touch, the box they span,
 //! and where the stamp loop cuts one stroke into pieces (§6.2, §6.4).
 //!
-//! Split out of [`segments`](super::segments) because this is where one invariant
-//! lives and it deserves to be local: **the rectangle the chunker measures a piece
-//! against is the rectangle the render then allocates.** One [`Coverage`] answers
-//! both, and [`Covered::rect`] takes its extent from the very
-//! [`dims`](Coverage::dims) the chunker checked — where separate derivations of a
-//! tile set, a bounding box and a rectangle can only be asked to agree.
+//! The invariant that lives here: **the rectangle the chunker measures a piece against
+//! is the rectangle the render then allocates.** One [`Coverage`] answers both, and
+//! [`Covered::rect`] takes its extent from the very [`dims`](Coverage::dims) the
+//! chunker checked.
 //!
-//! Nothing here touches the GPU. It is float arithmetic over [`Sweep`]s and tile
-//! coordinates, which is what lets the whole of it be pinned without an adapter
-//! (`tests`).
+//! Nothing here touches the GPU — float arithmetic over [`Sweep`]s and tile
+//! coordinates, so all of it is testable without an adapter.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -21,7 +18,7 @@ use super::budget::{MAX_REGION_DIM, MAX_STAMPS, REGION_BUDGET_DIM};
 use super::segments::{BleedFire, Segment, Sweep};
 
 /// Call `f(segment index, tile)` for every tile whose *texture* (interior + apron) a
-/// segment's swept capsule overlaps, in segment order.
+/// segment's swept capsule overlaps, in segment order, and return the box walked.
 ///
 /// The apron is included in the reach so a stroke landing within a tile's interior
 /// but inside a neighbour's apron band re-renders that neighbour too, keeping the
@@ -29,17 +26,10 @@ use super::segments::{BleedFire, Segment, Sweep};
 ///
 /// **A segment writes exactly zero outside the tiles this names**, which is what lets
 /// [`tiles_with_segments`] hand each tile a subset rather than the whole stroke. The
-/// rasterized geometry does reach further — the shaders sweep a generous angular
-/// margin so a round cap is never clipped — but out there a fragment differences two
-/// prefix-τ taps that are equal and writes nothing at all (see [`coverage_bounds`]).
-/// Zero through the `over` blend and zero through the additive one are both exact
-/// identities, so which segments a tile is handed cannot change what lands in it.
-///
-/// **Returns the box it walked**, which is what makes `cover`'s "single walk" one:
-/// each sweep's bounds decide the tiles it touches, so accumulating them here is free,
-/// where asking `Coverage::add` for them afterwards evaluated `segment_bounds` — and
-/// with it `arc_at`, trigonometric for a curved segment — a second time per sweep.
-/// Callers that only want the tiles ignore it.
+/// rasterized geometry does reach further at the caps, but out there a fragment
+/// differences two equal prefix-τ taps and writes nothing (see [`coverage_bounds`]) —
+/// and zero is an exact identity through both blends, so which segments a tile is
+/// handed cannot change what lands in it.
 fn for_each_touched<'a>(
     sweeps: impl Iterator<Item = &'a Sweep>,
     mut f: impl FnMut(usize, TileCoord),
@@ -66,12 +56,10 @@ fn for_each_touched<'a>(
 ///
 /// The windows belong in every accounting because they write: a firing's sweep is
 /// walked back along the crossing segment's own arc, up to one
-/// `dynamics::bleed::BLEED_TRAVEL_QUANTUM` before the segment it fires after (`plan::bleed_fires`) —
-/// and for the first segment of a piece or a live-tail range that stretch lies behind
-/// every segment box, with one apron texel of margin. Left out of an accounting, the
-/// flux written there is silently clipped by the region's bounds check, and a
-/// rewritten tile's apron can diverge from an unrewritten neighbour's interior — a
-/// §6.4 break in exactly the configuration `tests/seam.rs` does not draw.
+/// `dynamics::bleed::BLEED_TRAVEL_QUANTUM` before the segment it fires after
+/// (`plan::bleed_fires`), which for a piece's first segment lies behind every segment
+/// box. Left out, that flux is silently clipped by the region's bounds check and a
+/// rewritten tile's apron can diverge from an unrewritten neighbour's interior (§6.4).
 ///
 /// One function, so no caller can enumerate the segments and forget the windows.
 pub(super) fn piece_sweeps<'a>(
@@ -86,17 +74,14 @@ pub(super) fn piece_sweeps<'a>(
 
 /// The canvas box a set of sweeps covers, accumulated one sweep at a time.
 ///
-/// **The one definition of what a piece needs**, and the reason it is a type. The
-/// chunker's promise — "this piece fits a region" — and the region the loop
-/// actually allocates have to be the same rectangle, and they are because they are the
-/// same arithmetic: [`Covered::rect`] takes its extent from [`dims`](Self::dims),
-/// which is the very function the chunker checked. Derived separately — a bounding box
-/// turned into region dimensions here, a tile set turned back into a rectangle there —
-/// the two can only be asked to agree by a comment and watched by a test.
+/// **The one definition of what a piece needs.** The chunker's promise — "this piece
+/// fits a region" — and the region the loop actually allocates are the same rectangle
+/// because they are the same arithmetic: [`Covered::rect`] takes its extent from
+/// [`dims`](Self::dims), the very function the chunker checked.
 ///
-/// The tile set *is* still enumerated separately, because only the dynamics path wants
-/// it and a set insert per tile per segment is exactly the cost the incremental repaint
-/// exists to keep off a long stroke.
+/// The tile set is enumerated separately, because only the dynamics path wants it and a
+/// set insert per tile per segment is the cost the incremental repaint exists to keep
+/// off a long stroke.
 #[derive(Clone, Copy)]
 pub(super) struct Coverage {
     lo: Vec2,
@@ -140,9 +125,8 @@ impl Coverage {
     ///
     /// Measured by bounding box rather than by enumerating tiles, and the two agree
     /// exactly: `min` over segments of `floor(lo.x / tile)` *is* `floor(min lo.x /
-    /// tile)`, so the extreme tile origins of the set are the extreme tile origins of
-    /// the box. That identity is why [`Covered::rect`] can take its size from here
-    /// while taking its halo from the set.
+    /// tile)`. That identity is why [`Covered::rect`] can take its size from here while
+    /// taking its halo from the set.
     fn dims(&self) -> (u32, u32) {
         let tile = TILE_SIZE as f32;
         let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
@@ -154,11 +138,8 @@ impl Coverage {
 }
 
 /// What one piece's sweeps cover: the tiles they touch and the box they span, from a
-/// single walk.
-///
-/// Both in one pass because both callers want both — the write-back and the dirty set
-/// need the tiles, the region allocation needs the box — and because computing them
-/// apart is what let them disagree.
+/// single walk — the write-back and the dirty set need the tiles, the region allocation
+/// needs the box, and computing them apart is what lets them disagree.
 pub(super) struct Covered {
     pub(super) tiles: BTreeSet<TileCoord>,
     bounds: Coverage,
@@ -175,25 +156,15 @@ pub(super) fn cover(segments: &[Segment], fires: &[BleedFire]) -> Covered {
 
 /// The same walk, keeping **which** segments reach each tile.
 ///
-/// This is what the swept path draws from. Drawing every segment into every tile made
-/// a stroke cost `segments × tiles` vertex invocations, nearly all of them on quads
-/// that fall outside the tile being rendered and are discarded after being shaded —
-/// and a tapered brush spends ~211 segments on a straight line, so a long stroke
-/// crossing a document's worth of tiles paid for the product of two large numbers. Per
-/// tile the cost is now the segments that actually reach it, and over a stroke the
-/// total is `Σ tiles-per-segment`: the segment count times a small constant, since a
-/// segment is at most a tip wide.
+/// What the swept path draws from, so a tile shades the segments that reach it rather
+/// than the whole stroke: the total is `Σ tiles-per-segment`, the segment count times a
+/// small constant, since a segment is at most a tip wide.
 ///
 /// One `(tile, segment)` pair per reach, sorted, so a tile's segments are a
 /// contiguous run — `chunk_by` on the tile is the grouping — and within a run the
 /// indices ascend, which matters, since the color target's blend is `over` and
-/// therefore ordered. Each tile sees the stroke's own order over the subset that
-/// reaches it. The pairs are unique, so the whole tuple is the sort key and the
+/// therefore ordered. The pairs are unique, so the whole tuple is the sort key and the
 /// within-tile order is the key's rather than a sort algorithm's stability.
-///
-/// One flat `Vec` rather than a map of per-tile lists: this is rebuilt on every
-/// pointer move, and a map was a node and a heap list per touched tile that the
-/// consumer flattened straight back into one instance buffer.
 pub(super) fn tiles_with_segments(segments: &[Segment]) -> Vec<(TileCoord, u32)> {
     let mut pairs: Vec<(TileCoord, u32)> = Vec::new();
     // The box is `cover`'s business; this caller wants only the assignment.
@@ -212,19 +183,15 @@ pub(super) fn segment_end(s: &Sweep) -> Vec2 {
 /// The canvas box one sweep's coverage occupies — the arc, grown by the tip that rides
 /// along it.
 ///
-/// The rasterized geometry reaches further than this at the caps (the shaders sweep a
-/// generous angular margin so the round end is never clipped), but every fragment out
-/// there differences two prefix taps to exactly zero and writes nothing. What a box
+/// The rasterized geometry reaches further than this at the caps, but every fragment
+/// out there differences two prefix taps to exactly zero and writes nothing. What a box
 /// has to contain is where the deposit *lands*, which is within the tip's
 /// [`reach`](Sweep::reach) of the arc.
 ///
-/// **The tip's reach, not its radius.** The two are the same number only for a shape
-/// that stays inside the disc inscribed in its mask; a stamp that fills the corners
-/// reaches `√2` times as far, and swept along a diagonal that difference is a whole
-/// corner of the extent. Under-reporting it here is a stroke clipped at a tile
-/// boundary — `for_each_touched` leaves the tile out of the render (or leaves this
-/// segment out of a tile another segment brought in), and the dynamics loop dispatches
-/// a rect too small for its own extent.
+/// **The tip's reach, not its radius.** The two agree only for a shape that stays
+/// inside the disc inscribed in its mask; a stamp that fills the corners reaches `√2`
+/// times as far. Under-reporting it here clips a stroke at a tile boundary and makes
+/// the dynamics loop dispatch a rect too small for its own extent.
 pub(super) fn coverage_bounds(s: &Sweep) -> (Vec2, Vec2) {
     let end = segment_end(s);
     let reach = Vec2::splat(s.reach + crate::path::arc_sagitta(s.curvature, s.length));
@@ -243,33 +210,22 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 /// Split a stroke's segments into consecutive runs, each of which the stamp loop can
 /// evolve inside one [`MAX_REGION_DIM`]-bounded region (§6.2).
 ///
-/// The loop works on a 1:1 copy of the canvas under the stroke, so a stroke that
-/// crosses the document would want a region the size of the document. It does not
-/// have to have one: the loop is *sequential*, so running the first run of segments
-/// and then the second — each over its own region, the second compositing what the
-/// first wrote back — is the same computation as running them all over one region.
-/// The same segments in the same order, and the state that threads between them is
-/// the reservoir, which is brush-local and says nothing about where the stroke is.
-/// That is the identical argument that lets a live tail resume a frozen head
-/// ([`ToolState`](super::ToolState)); a piece is just a cut the renderer makes for
-/// itself rather than one the fitter made for it.
+/// Cutting is sound because the loop is *sequential*: running one run and then the
+/// next, each over its own region with the second compositing what the first wrote
+/// back, is the same computation as running them all over one region. The only state
+/// threading between segments is the reservoir, which is brush-local — the same
+/// argument that lets a live tail resume a frozen head ([`ToolState`](super::ToolState)).
 ///
 /// Greedy: extend the run until one more segment would push its region past
-/// [`REGION_BUDGET_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always
-/// holds at least one segment — one tip's own extent is the floor no subdivision
-/// gets under, which `budget::fit_len` prices (shortening segments until one fits)
-/// and `dynamics_setup` gates on instead.
-///
-/// So a piece may exceed the budget, and only in that one way: a brush whose single
-/// segment wants more gets a piece of exactly that segment. What it may never exceed
-/// is [`MAX_REGION_DIM`], the size a texture can be, and `fit_len` is what makes that
-/// true before the first segment is ever measured here.
+/// [`REGION_BUDGET_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
+/// at least one segment, so **a piece may exceed the budget**, and only in that one
+/// way: a brush whose single segment wants more gets a piece of exactly that segment.
+/// What it may never exceed is [`MAX_REGION_DIM`], the size a texture can be, which
+/// `budget::fit_len` establishes before the first segment is measured here.
 ///
 /// A segment is measured **with its own bleed firings** ([`piece_sweeps`]'s reason): a
 /// window can reach back a quantum before the segment it fires after, so a piece's
-/// region must hold everything the piece will write, windows included — the same
-/// rectangle [`Covered::rect`] then builds, through the same [`Coverage::dims`] this
-/// checks against.
+/// region must hold everything the piece will write, windows included.
 pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<Range<usize>> {
     chunk_segments_within(segments, fires, REGION_BUDGET_DIM, &[])
 }
@@ -279,11 +235,10 @@ pub(super) fn chunk_segments(segments: &[Segment], fires: &[BleedFire]) -> Vec<R
 ///
 /// The liquify path's chunker (§6.13): its region budget is the loop's less the base
 /// composite's growth ([`LIQUIFY_REGION_BUDGET_DIM`](super::budget::LIQUIFY_REGION_BUDGET_DIM)),
-/// and a run that re-bases does so *at a segment*, decided by the reach walk before
-/// any piece is drawn — so the re-base is a fact about the stroke's segments and not
-/// about where this render happened to cut it, which is what `preview == committed`
-/// asks of it (§1.3). The re-base itself changes the base a piece composites, so the
-/// piece has to start there.
+/// and a run re-bases *at a segment*, decided by the reach walk before any piece is
+/// drawn — so the re-base is a fact about the stroke's segments and not about where
+/// this render happened to cut it, which is what `preview == committed` asks of it
+/// (§1.3). The re-base changes the base a piece composites, so the piece starts there.
 pub(super) fn chunk_segments_within(
     segments: &[Segment],
     fires: &[BleedFire],
@@ -335,21 +290,16 @@ impl Covered {
     /// `TILE_TEX` blocks out of it — plus the *list* of tiles to composite into it,
     /// which is the touched set and the one-tile ring around it (§6.4).
     ///
-    /// **The extent comes from [`Coverage::dims`]**, which is the function
-    /// [`chunk_segments`] checked this piece against. That is the whole point of the
-    /// type: the promise "this piece fits a region" and the allocation the
-    /// promise is about are now one arithmetic rather than two that a comment asked to
-    /// agree. Only the halo comes from the tile set, and only because a diagonal stroke
-    /// touches fewer tiles than its bounding rectangle holds — compositing the
-    /// rectangle would be correct and slower.
+    /// **The extent comes from [`Coverage::dims`]**, the function [`chunk_segments`]
+    /// checked this piece against, so the promise "this piece fits a region" and the
+    /// allocation the promise is about are one arithmetic. Only the halo comes from the
+    /// tile set, and only because a diagonal stroke touches fewer tiles than its
+    /// bounding rectangle holds — compositing the rectangle would be correct and slower.
     ///
-    /// The ring is in the tile list but deliberately **not** in the rectangle. Its
-    /// whole job is to give a rewritten tile's apron the neighbour interior it
-    /// overlaps, and an apron is [`TILE_APRON`] texels — so extending the rectangle by
-    /// a whole *tile* on every side, as it once did, paid for roughly 4× the region to
-    /// fill a one-texel band. Ring tiles that fall outside the rectangle simply clip
-    /// when composited. On a live tail, which covers a handful of tiles and is redrawn
-    /// on every pointer move, that difference is most of the cost of the whole path.
+    /// The ring is in the tile list but deliberately **not** in the rectangle: its job
+    /// is to give a rewritten tile's apron the neighbour interior it overlaps, and an
+    /// apron is [`TILE_APRON`] texels, so ring tiles outside the rectangle simply clip
+    /// when composited.
     ///
     /// Returns `None` if nothing was covered.
     pub(super) fn rect(&self) -> Option<RegionRect> {
@@ -357,15 +307,12 @@ impl Covered {
             return None;
         }
         let (w, h) = self.bounds.dims();
-        // Stated where it is relied on, which is what it was missing: `chunk_segments`
-        // hands over pieces that fit by construction, and until this line nothing said
-        // so at the point the region is actually allocated. Debug-only because the
-        // failure is an oversized allocation rather than a wrong picture, and because a
-        // panic in the render path is its own defect (see `plan::dispatch_rect`).
-        // Against the **ceiling**, not the chunker's budget: a piece holding a
-        // single oversized segment is allowed to exceed the budget and does so by
-        // design (`chunk_segments`). What is never allowed is a region past the size
-        // a texture can be, which is what `budget::fit_len` guarantees upstream.
+        // Debug-only: the failure is an oversized allocation rather than a wrong
+        // picture, and a panic in the render path is its own defect (see
+        // `plan::dispatch_rect`). Against the **ceiling**, not the chunker's budget — a
+        // piece holding a single oversized segment is allowed to exceed the budget by
+        // design (`chunk_segments`); what is never allowed is a region past the size a
+        // texture can be, which `budget::fit_len` guarantees upstream.
         debug_assert!(
             w <= MAX_REGION_DIM && h <= MAX_REGION_DIM,
             "a {w}x{h} region overruns the {MAX_REGION_DIM} a texture can be",
@@ -412,14 +359,10 @@ pub(super) struct RegionRect {
     ///
     /// **Whole texels, by construction.** [`lo`](Self::lo) is a `min` over
     /// [`TileCoord::origin`] values, which are integral multiples of `TILE_SIZE`, and
-    /// the apron subtracted from it is an integer. That is what the cell grid's anchor
-    /// rests on — `plan::cell_geometry` takes `origin.rem_euclid(cell)` to place the
-    /// grid, so a fractional origin would put every cell boundary off the canvas texel
-    /// grid, which is a seam (§6.4) and not something a picture announces.
-    ///
-    /// `cell_geometry` carries a `debug_assert` for it. That assert is a restatement of
-    /// this sentence rather than the thing holding the line: the property is
-    /// established here, where the value is made.
+    /// the apron subtracted from it is an integer. The cell grid's anchor rests on that
+    /// — `plan::cell_geometry` takes `origin.rem_euclid(cell)` to place the grid, so a
+    /// fractional origin would put every cell boundary off the canvas texel grid, which
+    /// is a seam (§6.4).
     pub(super) origin: Vec2,
     /// The rectangle's extent in texels.
     pub(super) w: u32,
@@ -473,14 +416,10 @@ mod tests {
         })
     }
 
-    /// The per-tile segment lists cover exactly the tiles [`cover`] names, and
-    /// a tile's list holds exactly the segments whose bounds reach it — in stroke
-    /// order, which the `over` blend on the color target makes load-bearing.
-    ///
-    /// The swept path draws from these lists instead of drawing every segment into
-    /// every tile, so an omission here is missing paint and a re-ordering is a
-    /// different picture. Both are the kind of thing a golden would show as "the stroke
-    /// looks a bit wrong" without saying why.
+    /// The per-tile segment lists cover exactly the tiles [`cover`] names, and a tile's
+    /// list holds exactly the segments whose bounds reach it — in stroke order, which
+    /// the `over` blend on the color target makes load-bearing. An omission here is
+    /// missing paint and a re-ordering is a different picture.
     #[test]
     fn the_per_tile_lists_hold_exactly_the_segments_that_reach_each_tile() {
         let tile = TILE_SIZE as f32;
@@ -545,18 +484,12 @@ mod tests {
     /// **The identity [`Covered::rect`] rests on**: the extent of the bounding box a
     /// piece covers is the extent of the tile block its touched set spans.
     ///
-    /// The chunker decides where to cut by measuring a box ([`Coverage::dims`]) and the
-    /// render allocates the region the cut was about; those are one function now, so
-    /// that half is structural rather than tested. What is left is why it is allowed to
-    /// be: `rect` takes its **size** from the box and its **halo** from the set, and
-    /// that is only sound because `min` over segments of `floor(lo / tile)` is
-    /// `floor(min lo / tile)`. This checks the two against each other on shapes where a
-    /// disagreement would show — a fat tip reaching past its own endpoints, negative
-    /// tiles, extremes contributed by different segments.
-    ///
-    /// If the box ever under-reported, a piece would allocate past [`MAX_REGION_DIM`];
-    /// if it over-reported, strokes would be cut into more pieces than they need, each
-    /// paying for its own region composite.
+    /// `rect` takes its **size** from the box and its **halo** from the set, which is
+    /// only sound because `min` over segments of `floor(lo / tile)` is
+    /// `floor(min lo / tile)`. Checked on shapes where a disagreement would show — a
+    /// fat tip reaching past its own endpoints, negative tiles, extremes contributed by
+    /// different segments. Under-reporting allocates past [`MAX_REGION_DIM`];
+    /// over-reporting cuts strokes into more pieces than they need.
     #[test]
     fn the_box_and_the_tile_set_measure_the_same_rectangle() {
         let tile = TILE_SIZE as f32;
@@ -620,17 +553,13 @@ mod tests {
         assert_eq!(measured(&[], &[]), None, "no segments is not a region");
     }
 
-    /// **The accounting covers a firing window's reach back past the piece** — the
-    /// 2026-08-11 regression, pinned where it is exact. A window is walked back
-    /// along its crossing segment's own arc and can start up to a
-    /// [`BLEED_TRAVEL_QUANTUM`] before the piece's first segment
-    /// (`plan::bleed_fires`); the margin the segment boxes leave is one apron
-    /// texel, so a bleeding tip wider than a few px reaches substrate no segment box
-    /// names whenever its box falls within a quantum of a tile origin. Both halves
-    /// must take the windows: the tile walk (the region rectangle and the
-    /// write-back follow it — a tile it misses is flux silently clipped and an
-    /// apron/interior seam), and the chunker (a piece's region must hold everything
-    /// the piece writes).
+    /// **The accounting covers a firing window's reach back past the piece.** A window
+    /// is walked back along its crossing segment's own arc and can start up to a
+    /// [`BLEED_TRAVEL_QUANTUM`] before the piece's first segment (`plan::bleed_fires`),
+    /// while the margin the segment boxes leave is one apron texel. Both halves must
+    /// take the windows: the tile walk (a tile it misses is flux silently clipped and an
+    /// apron/interior seam) and the chunker (a piece's region must hold everything the
+    /// piece writes).
     #[test]
     fn a_windows_reach_back_is_in_the_tiles_and_the_region() {
         let tile = TILE_SIZE as f32;
@@ -699,14 +628,12 @@ mod tests {
     }
 
     /// What [`chunk_segments`] promises the loop: the pieces tile the stroke in order
-    /// (so the sequence of segments the loop walks is unchanged — the whole reason
-    /// cutting it is sound), and every piece actually fits the region bound the cut
-    /// exists to respect.
+    /// (so the sequence of segments the loop walks is unchanged — the reason cutting it
+    /// is sound), and every piece fits the region bound the cut exists to respect.
     ///
-    /// Measured against [`REGION_BUDGET_DIM`] rather than the ceiling, which is the
-    /// stronger claim and the one worth making: this tip is far inside what a single
-    /// segment may demand, so nothing here has any business exceeding the budget.
-    /// Checked against the ceiling it would also pass with the cut removed entirely.
+    /// Measured against [`REGION_BUDGET_DIM`] rather than the ceiling: this tip is far
+    /// inside what a single segment may demand, and against the ceiling the case would
+    /// pass with the cut removed entirely.
     #[test]
     fn the_chunks_tile_the_stroke_and_each_one_fits() {
         // A stroke far longer than one region in both axes, and a fat tip whose own

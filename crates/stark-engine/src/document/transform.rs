@@ -1,11 +1,9 @@
 //! Planning a transform (§16): which tiles are read, which are written, and how the
 //! source is cut into the units a pass resamples.
 //!
-//! The **maps** — the affine, the [`PerspectiveMap`](stark_model::document::PerspectiveMap)'s
-//! corners, the [`WarpMap`](stark_model::document::WarpMap)'s
-//! grid, and the [`Homography`] one solves for — are `stark-model`'s
-//! `document::transform`: a dozen floats each, and what the log carries. Everything
-//! here reads or writes a [`TileMap`], which is why it is on this side.
+//! The maps themselves — the affine, the perspective corners, the warp grid and the
+//! [`Homography`] solved from them — are the model's `document::transform`, since they
+//! are what the log carries. Everything here reads or writes a [`TileMap`].
 
 use std::collections::BTreeMap;
 
@@ -24,18 +22,12 @@ enum Class {
 }
 
 fn classify(selection: &Selection, coord: TileCoord) -> Class {
-    // The coverage a *gating* read sees out there — the mask's own number scaled by
-    // the whole mask's strength (§6.8). It has to be the scaled one: `Full` is what
-    // lets a source tile be **dropped** rather than rewritten, and a plane selected
-    // at a half moves half its paint, so calling it full would delete the half that
-    // stayed.
+    // Scaled by the whole mask's strength (§6.8), because `Full` is what licenses
+    // dropping a source tile outright: a plane selected at a half moves half its
+    // paint, and calling that full would delete the half that stayed.
     let outside = selection.outside() * selection.opacity();
     match selection.tile(coord) {
         Some(_) => Class::Partial,
-        // Thresholds on the value rather than either side of a half, now that a
-        // selection can be partial. For every selection built at full strength
-        // `outside` is still 0 or 1, so these two answer exactly as the old
-        // `> 0.5` did.
         None if outside >= 1.0 => Class::Full,
         None if outside > 0.0 => Class::Partial,
         None => Class::Untouched,
@@ -52,11 +44,9 @@ use stark_model::geom::{
 use super::selection::Selection;
 use crate::gpu::tile::TileMap;
 
-/// Ceiling on candidate destination tiles *examined* (before the exact
-/// quad-vs-tile test). A pathological affine — a huge scale, an extreme shear —
-/// can make a quad's bounding box cover astronomically many tiles that the quad
-/// itself never touches; planning must refuse such an action without first
-/// walking that box. Deterministic like every other bound here.
+/// Ceiling on candidate destination tiles *examined*, before the exact quad-vs-tile
+/// test: a pathological affine's bounding box can cover astronomically many tiles the
+/// quad never touches, and such an action must be refused without walking it.
 const CANDIDATE_BUDGET: usize = 16 * MAX_TRANSFORM_TILES;
 
 /// The tile-level consequence of one transform on a layer's paint.
@@ -203,13 +193,10 @@ pub(crate) fn plan_float(
     Some(FloatPlan { partial, full })
 }
 
-/// Every frame tile the mask's tiles can feed once the layer's frame is placed
-/// at `frame`, within `rect` — the destinations a scoped shift has to build
-/// ([`shifted_mask_sources`] read the other way round, and held to it by
-/// `a_cover_and_its_sources_agree` below). Bounded by the mask's own tile count
-/// times nine — the apron-inclusive rect is `TILE_TEX` against a `TILE_SIZE`
-/// stride, so a frame near the grid spans three tiles per axis — and a gate
-/// scoped to a stroke therefore stays the stroke's size.
+/// Every frame tile the mask's tiles can feed once the layer's frame is placed at
+/// `translation`, restricted to `rect` — [`shifted_mask_sources`] read the other way
+/// round. At most nine per mask tile: an apron-inclusive `TILE_TEX` rect against a
+/// `TILE_SIZE` stride spans three tiles per axis.
 pub(crate) fn shifted_mask_cover(
     selection: &Selection,
     translation: stark_model::geom::IVec2,
@@ -225,10 +212,9 @@ fn cover_of(
     translation: stark_model::geom::IVec2,
     rect: TileRect,
 ) -> Vec<TileCoord> {
-    // The zero frame is [`sources_in`]'s shortcut read from this end: the two
-    // grids coincide and a tile's gate is its own mask — per-tile granularity,
-    // exactly what `gate_for` binds — so the cover is the keys themselves, not
-    // their apron neighbourhoods.
+    // At a zero translation the two grids coincide and a tile's gate is its own mask
+    // — the granularity `gate_for` binds at — so the cover is the keys themselves,
+    // not their apron neighbourhoods.
     if translation == stark_model::geom::IVec2::ZERO {
         let mut out: Vec<TileCoord> = keys
             .filter(|c| {
@@ -268,12 +254,10 @@ fn cover_of(
     out
 }
 
-/// The selection mask tiles that feed local tile `coord`'s texture once the
-/// layer's frame is placed at `frame` (§14.12): the canvas tiles — up to nine,
-/// three per axis for a frame near the grid — whose interiors intersect the
-/// tile's apron-inclusive rect there. At a zero frame the two grids coincide
-/// and the answer is the tile's own mask, if any — the same granularity
-/// `gate_for` binds at, so presence and binding cannot part.
+/// The selection mask tiles feeding local tile `coord`'s texture once the layer's
+/// frame is placed at `translation` (§14.12): the canvas tiles whose interiors meet
+/// the tile's apron-inclusive rect there, up to nine. At a zero translation the two
+/// grids coincide and the answer is the tile's own mask, if any.
 pub(crate) fn shifted_mask_sources(
     selection: &Selection,
     coord: TileCoord,
@@ -544,11 +528,10 @@ pub(crate) fn plan_gated_paint(
     })
 }
 
-/// The mask's own move under a rect-scoped map: coverage inside the rect
-/// travels with the paint, coverage outside stays — per destination tile the
-/// GPU computes `max(old · (1 − box), moved)`, the soft union of the residue
-/// and what landed (§16.8). Unlike the affine's pure Replace, tiles the rect
-/// never touches keep their handles untouched.
+/// The mask's own move under a rect-scoped map: coverage inside the rect travels with
+/// the paint, coverage outside stays — per destination tile the GPU computes
+/// `max(old · (1 − box), moved)` (§16.8). Unlike the affine's pure Replace, tiles the
+/// rect never touches keep their handles.
 pub(crate) struct GatedMaskPlan {
     pub units: Vec<SourceUnit>,
     pub rewrites: Vec<(TileCoord, Vec<usize>)>,
@@ -574,10 +557,9 @@ pub(crate) fn plan_gated_mask(
     }
     let outside = selection.outside() > 0.0;
 
-    // The source region: where mask coverage inside the rect can be non-zero.
-    // With `outside = 1` that is the whole rect (coverage is 1 wherever no
-    // tile says otherwise), so the region is the rect's tile cover — counted
-    // before it is walked, so an absurd rect is refused, not enumerated.
+    // Where mask coverage inside the rect can be non-zero. With `outside = 1` that is
+    // the whole rect, so the region is its tile cover — counted before it is walked,
+    // so an absurd rect is refused rather than enumerated.
     let mut region: Vec<TileCoord> = if outside {
         // Padded by the half-pixel coverage ramp, like `rect_standing`.
         let ramp = Vec2::splat(0.5);
@@ -607,11 +589,10 @@ pub(crate) fn plan_gated_mask(
         if !overlaps {
             continue;
         }
-        // Its residue changes (old · (1 − box) is not old wherever box > 0),
-        // so every region tile is rewritten — except the wholly-inside ones
-        // with nothing incoming, which drop below when outside = 0. With
-        // outside = 1 a wholly-cut tile must still exist to say "0" against
-        // the 1 that reigns tile-lessly.
+        // The residue changes wherever box > 0, so every region tile is rewritten —
+        // except the wholly-inside ones with nothing incoming, which drop below when
+        // outside = 0. At outside = 1 a wholly-cut tile must still exist to say "0"
+        // against the 1 that reigns tile-lessly.
         if !inside || outside {
             rewrites.entry(*coord).or_default();
         }
@@ -644,18 +625,10 @@ pub(crate) fn plan_gated_mask(
     })
 }
 
-/// The corners of `coord`'s *interior* under `affine`, in canvas px — the quad
-/// the parcel pass draws. Corner order matches the shader's vertex indices
-/// (`corner = (vi & 1, vi >> 1 & 1)`).
-/// Record that `key`'s quad reaches `dest`, in the destination's own source list.
-///
-/// **The dedup, the cap and the candidate budget, once.** Four planners ran this same
-/// body — affine paint, affine mask, gated paint, gated mask — differing only in what
-/// a source is called (a `TileCoord` for the affine paths, an index into `units` for
-/// the gated ones) and in which cap bounds them. Each carried its own copy of the
-/// `list.last()` test and its own `rewrites.len()` check *inside* the inner loop; a
-/// fifth that dropped the check is an unbounded `BTreeMap` on a hostile map, which is
-/// what the cap is for.
+/// Record that `key`'s quad reaches each of `dests`, in the destination's own source
+/// list — the dedup, the cap and the candidate budget every planner shares. `cap`
+/// bounds the destination count, without which a hostile map grows an unbounded
+/// `BTreeMap`.
 ///
 /// `None` is the refusal every caller propagates: a plan too large to run is declined
 /// whole, deterministically, so peers and replays agree (§16).
@@ -679,6 +652,9 @@ fn accumulate<K: Copy + PartialEq>(
     Some(())
 }
 
+/// The corners of `coord`'s *interior* under `affine`, in canvas px — the quad the
+/// parcel pass draws. Corner order matches the shader's vertex indices
+/// (`corner = (vi & 1, vi >> 1 & 1)`).
 pub(crate) fn quad_corners(affine: Affine2, coord: TileCoord) -> [Vec2; 4] {
     let o = coord.origin();
     let s = TILE_SIZE as f32;
@@ -690,11 +666,10 @@ pub(crate) fn quad_corners(affine: Affine2, coord: TileCoord) -> [Vec2; 4] {
     ]
 }
 
-/// Destination tiles whose *texture* rect (interior + apron) the transformed
-/// interior quad of `coord` actually reaches, by exact convex intersection —
-/// a bounding-box test would mint tiles a rotated quad never touches, and every
-/// minted tile is a real allocation. `None` when the search itself would exceed
-/// [`CANDIDATE_BUDGET`].
+/// Destination tiles whose *texture* rect (interior + apron) the transformed interior
+/// quad of `coord` reaches, by exact convex intersection: a bounding-box test would
+/// mint tiles a rotated quad never touches, and every minted tile is an allocation.
+/// `None` when the search itself would exceed [`CANDIDATE_BUDGET`].
 fn reached_tiles(
     affine: Affine2,
     coord: TileCoord,
@@ -914,10 +889,9 @@ mod tests {
             corners: [base[0], base[1], base[0], base[1]],
         };
         assert!(!sliver.usable());
-        // Chrome asks `forward`, which is the same gate. It was not: the mirrored
-        // quad is a parallelogram, so the solve alone derives a clean matrix for it,
-        // and `w > 0` says nothing about orientation — the overlay drew a receding
-        // grid for a map `apply` refuses.
+        // Chrome asks `forward`, which has to be the same gate: a mirrored quad is a
+        // parallelogram, so the solve alone derives a clean matrix for it and `w > 0`
+        // says nothing about orientation.
         for p in [crossed, mirrored, sliver] {
             assert!(p.forward().is_none());
         }
@@ -1020,11 +994,10 @@ mod tests {
         assert!(mask.rewrites.is_empty());
     }
 
-    /// [`cover_of`] and [`sources_in`] are one overlap relation read from its
-    /// two ends (§14.12): every frame tile the cover names has sources, every
-    /// frame tile it omits has none — driven over frames on and off the tile
-    /// grid, both signs, and the zero frame, whose sources must be the tile's
-    /// own mask and nothing else (the granularity `gate_for` binds at).
+    /// [`cover_of`] and [`sources_in`] are one overlap relation read from its two ends
+    /// (§14.12): every frame tile the cover names has sources and every one it omits
+    /// has none — including at the zero frame, where a tile's sources are its own mask
+    /// alone.
     #[test]
     fn a_cover_and_its_sources_agree() {
         let keys = [

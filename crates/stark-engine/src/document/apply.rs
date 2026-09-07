@@ -1,14 +1,8 @@
 //! Applying an action: the fold that turns the log into tiles (§4, §5).
 //!
-//! [`Action`] itself — what the log carries, what a peer receives, what a file
-//! stores — is `stark-model`'s. This is the other half of the same sentence: what
-//! *happens* when one is applied, which needs the renderers, the tile pool and the
-//! canvas substrates, and so cannot live where the action does.
-//!
-//! The two are tied together by [`Materialize`]:
-//! the model owns *that* an action folds over some state and which actions commute,
-//! and [`DocState`] is this crate's answer to what the state is. The orphan rule
-//! forced that shape and it is the right one — see §2.
+//! [`Action`] is `stark-model`'s; what *happens* when one is applied needs the
+//! renderers, the tile pool and the canvas substrates, so it lives here. The two
+//! halves meet at [`Materialize`], with [`DocState`] as the state (§2).
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,16 +21,12 @@ use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
 use stark_model::document::LayerId;
 
-/// Side-channel passed through [`Materialize::fold`]: the GPU resources needed
-/// to render a stroke (§5). It owns cheap `Arc`-backed clones, so it
-/// has no borrow lifetime — which is what lets it be the `Action::Context`.
+/// Side-channel passed through [`Materialize::fold`]: the GPU resources needed to
+/// render a stroke (§5).
 ///
-/// `Clone` for the same reason it has no lifetime: every field is a handle, so a
-/// copy is a fistful of refcount bumps and shares the thing rather than doubling
-/// it. That is exactly what a *preview* engine wants (`Engine::new_sharing`,
-/// §11) — and cloning the context whole is what keeps a renderer added here from
-/// being shared by everything except the one constructor that listed its
-/// siblings by hand.
+/// Every field is a handle, so the type has no borrow lifetime — which is what lets
+/// it be the `Action::Context` — and a clone shares the resources rather than
+/// doubling them, as a preview engine wants (`Engine::new_sharing`, §11).
 pub struct ApplyCtx {
     pub(crate) pool: TilePool,
     pub(crate) stroke: StrokeRenderer,
@@ -56,27 +46,20 @@ pub struct ApplyCtx {
     pub(crate) gpu: crate::gpu::context::GpuContext,
     /// The canvas substrates and the bytes registered for them (§6.4).
     ///
-    /// It lives here, rather than beside the compositor it also feeds, because the
-    /// **deposit reads it**: the tooth gates the paint a stroke lays by the substrate
-    /// under it, so which substrate a stroke sees is part of applying that stroke.
-    /// Asked with [`DocState::substrate`](super::state::DocState) and its scale *as the
-    /// log stood at that action*, which is the whole reason `SetSubstrate` was made a
-    /// logged action rather than a view setting — a stroke from before a mid-document
-    /// switch deposits against the substrate it was actually painted on, at the size it
-    /// was laid at, on replay and on a peer alike.
+    /// Here rather than only beside the compositor, because the **deposit reads it**:
+    /// the tooth gates the paint a stroke lays by the substrate under it. Asked with
+    /// [`DocState::substrate`](super::state::DocState) and its scale *as the log stood
+    /// at that action*, so a stroke from before a mid-document `SetSubstrate` deposits
+    /// against the substrate it was painted on, at the size it was laid at, on replay
+    /// and on a peer alike.
     pub(crate) substrates: crate::gpu::registry::Registry<Substrate>,
     /// A stroke the live preview has already drawn, for the `CommitStroke` fold to
     /// take rather than render again — see [`PreparedStroke`].
     ///
-    /// Transient: the engine fills it immediately before the push that commits the
-    /// stroke and empties it immediately after, so at every other moment — and in
-    /// every clone handed to a sibling engine — it is `None`. The fold empties it
-    /// only by *taking* it, which is how the engine learns whether the offer was
-    /// accepted: a slot still full after the push was declined.
-    ///
-    /// Written through [`offer`](Self::offer) and [`reclaim`](Self::reclaim), and
-    /// emptied by the fold that takes it — those three, and the `None` an engine is
-    /// built with.
+    /// Transient: filled immediately before the push that commits the stroke and
+    /// `None` at every other moment, including in every clone. The fold empties it by
+    /// *taking* it, so a slot still full after the push means the offer was declined.
+    /// Written through [`offer`](Self::offer) and [`reclaim`](Self::reclaim).
     pub(crate) prepared: Option<PreparedStroke>,
 }
 
@@ -89,10 +72,7 @@ impl ApplyCtx {
     }
 
     /// Take back an offer the fold declined — `true` when there was one to take back,
-    /// which is exactly "the fold did not use it".
-    ///
-    /// The slot is emptied either way, so the transience the field's doc claims holds
-    /// whichever answer this gives.
+    /// which is exactly "the fold did not use it". The slot is emptied either way.
     pub(crate) fn reclaim(&mut self) -> bool {
         self.prepared.take().is_some()
     }
@@ -101,13 +81,11 @@ impl ApplyCtx {
 /// Every field is a handle, so a copy is a fistful of refcount bumps — **except
 /// [`prepared`](Self::prepared), which a clone always leaves empty.**
 ///
-/// Written out rather than derived because that exception is the whole point. The
-/// slot is a message to one fold, and a sibling preview engine (`Engine::new_sharing`,
-/// §11) will never take it; a derive taken while the slot was full would hand that
-/// engine a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its
-/// life. The field's doc says a clone's slot is `None`, and the engine's
-/// fill-push-empty around a single commit is what made that true. Here it is a
-/// property of the type instead (CLAUDE.md: rule out a class).
+/// Hand-written for that exception: the slot is a message to one fold, and a derive
+/// taken while it was full would hand a sibling preview engine (`Engine::new_sharing`,
+/// §11) a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its
+/// life. A property of the type rather than of the engine's call order (CLAUDE.md:
+/// rule out a class).
 impl Clone for ApplyCtx {
     fn clone(&self) -> Self {
         Self {
@@ -129,30 +107,18 @@ impl Clone for ApplyCtx {
 
 /// A stroke whose tiles the live preview has already rendered, offered to the fold
 /// so that its `CommitStroke` takes them instead of rendering the whole stroke again
-/// at pen-up (§6.2, §17.6).
+/// at pen-up (§6.2, §17.6). `preview == committed` (§1.3) is what makes the two the
+/// same picture, to the bit.
 ///
-/// The preview *is* the commit, drawn early: `preview == committed` (§1.3) is the
-/// claim that the fold's frozen head plus its live tail and one whole-stroke render
-/// are the same picture, and everything in `engine::live` exists to keep it so.
-/// Rendering the stroke a second time when the pointer lifts therefore buys nothing
-/// and costs the stroke's whole length in one hitch — at exactly the moment the
-/// incremental repaint was built to stop paying for it. What lands in the document
-/// is then the picture the artist watched being painted, to the bit.
+/// **What the fold checks, and what it cannot.** The fold verifies that the record is
+/// this action's (`rec`) and that the tiles were drawn over this state's own layer —
+/// `base`, compared by *identity*, which is exact for a persistent map. It cannot see
+/// the rest of the scene the render read — the author's selection and the canvas
+/// substrate — so the engine vouches for those: an offer is only made while nothing
+/// has replaced the document since the tiles were drawn (`Preview::invalidate`).
 ///
-/// **What the fold checks, and what it cannot.** Two things are verifiable from
-/// inside the fold and are verified there, so that no caller can hand it tiles for
-/// the wrong stroke: the record is this action's (`rec`), and the tiles were drawn
-/// over this state's own layer — `base`, compared by *identity*, which is exact for
-/// a persistent map (one is replaced, never edited, so the same root is the same
-/// tiles). What the fold cannot see is the rest of the scene the render read — the
-/// author's selection and the canvas substrate — and those are the engine's to
-/// vouch for: an offer is only made while nothing has replaced the document since
-/// the tiles were drawn, which is the same epoch rule the preview's own cached heads
-/// are trusted by (`Preview::invalidate`).
-///
-/// Kept for one push rather than cached: the tiles share structure with the
-/// committed document's and hold every fresh tile the stroke wrote, so a slot that
-/// outlived its commit would pin a stroke's worth of GPU memory for nothing.
+/// Kept for one push rather than cached: the tiles hold every fresh tile the stroke
+/// wrote, so a slot that outlived its commit would pin a stroke's worth of GPU memory.
 #[derive(Clone)]
 pub(crate) struct PreparedStroke {
     /// The record the tiles are a render of — compared whole, because the commit
@@ -189,9 +155,8 @@ impl PreparedStroke {
 impl ApplyCtx {
     /// The canvas substrate `substrate` names, built on demand ([`Registry::get`]).
     ///
-    /// Returns an owned handle rather than a borrow — `SubstrateMap` is a pair of
-    /// reference-counted wgpu objects, so the clone is two atomic bumps — because
-    /// the caller then borrows other fields of `self` to build the scene around it.
+    /// Returns an owned handle rather than a borrow — two atomic bumps — so the caller
+    /// can borrow other fields of `self` to build the scene around it.
     ///
     /// [`Registry::get`]: crate::gpu::registry::Registry::get
     pub(crate) fn substrate(&self, substrate: Substrate) -> crate::gpu::substrate::SubstrateMap {
@@ -199,26 +164,18 @@ impl ApplyCtx {
     }
 }
 
-/// The shared body of the three transform actions (§16): cut the author's
-/// selected paint, restack it under `map`, and carry the author's mask with it.
-/// Gated and keyed exactly as a stroke is — the mask comes off the state being
-/// folded over, the actor off the action's own id. A matte or absent layer
-/// refuses it, like a stroke; an unusable or oversized map is rejected
-/// deterministically, so peers and replays agree.
 /// **The gate every action that lays or moves paint passes through** — the layer's
 /// tiles, the author's mask, the renderer's answer, and the rewrite — in one place.
 ///
-/// Four actions lay or move paint (a stroke, a fill, a transform, a merge), and the
-/// three things this settles are the three each would otherwise get right on its
-/// own:
+/// Four actions lay or move paint (a stroke, a fill, a transform, a merge), and this
+/// settles the three things each would otherwise get right on its own:
 ///
 /// - a **matte or an absent layer refuses** the edit rather than swallowing it
 ///   ([`paint_base`], §15.7) — here, in the engine, so replay and peers agree about a
 ///   log that contains one;
 /// - the mask is the **author's**, keyed off `action.id.actor` and never off the
 ///   session (§17.3), so a collaborator's lasso cannot clip this edit;
-/// - a renderer that declines leaves the state alone, **deterministically**, and says
-///   so once.
+/// - a renderer that declines leaves the state alone, **deterministically**.
 ///
 /// `edit` answers `None` to decline, or the new tiles — with the liquify run a liquify
 /// stroke leaves behind them (§6.13), `None` from every other edit, which keeps the
@@ -250,13 +207,6 @@ fn paint_edit(
 /// [`paint_edit`] for the one family that also **moves the author's mask**: the three
 /// transforms, which cut the selected paint out and restack it under the map, and
 /// carry the mask with it (§16).
-///
-/// A second function rather than an `Option<Selection>` in the first's return. That
-/// sentinel was `Some` in exactly one of three callers and `None` hard-coded in the
-/// other two, and the `&DocState` beside it was bound by exactly one — the opposite
-/// one — so a reader had to check all three call sites to learn which half of the
-/// signature was live at each. Each helper's parameters are now what its callers
-/// actually use.
 fn paint_and_mask_edit(
     state: DocState,
     layer: LayerId,
@@ -307,13 +257,8 @@ fn transform_apply(
 }
 
 /// The body of [`ActionKind::MergeLayerDown`] (§14.11): fold `source` into the
-/// layer beneath it, which is the one action whose promise is about pixels that do
-/// **not** move.
-///
-/// Beside [`transform_apply`] and for its reason — an `apply` arm says *what* an
-/// action does, and reconciling a plan, a renderer and a state rewrite is a
-/// paragraph rather than a line. [`merge::plan`](super::merge::plan) stays where it
-/// is: it is pure CPU and its module says so, while this half holds a [`TilePool`].
+/// layer beneath it — the one action whose promise is about pixels that do **not**
+/// move.
 ///
 /// The plan is **re-derived from the state being folded over** rather than trusted
 /// from the log, so a replay and a peer decide from the same document — and a plan
@@ -329,15 +274,12 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         return state;
     }
     // Cloned out before the rewrite for the reason `paint_base` clones: a handful of
-    // `Arc` bumps, and it is what keeps the borrow of the state off the tree being
-    // rebuilt. `plan` has already said the destination is paint.
+    // `Arc` bumps, and it keeps the borrow of the state off the tree being rebuilt.
     let Some(lower) = paint_base(&state, dest) else {
         return state;
     };
     // What the survivor's tiles become, and what its params become — `None` for
-    // "its own, untouched", which is the whole content of a filter merge (see
-    // [`MergeKind`](super::merge::MergeKind)). Said once here rather than by two
-    // `return`ing branches that would each have to state it.
+    // "its own, untouched", which is the whole content of a filter merge.
     let (tiles, keeps) = match plan.kind {
         // A **filter** source is the other kind of merge (§14.11.7): nothing is
         // stacked, so the destination's channels are rewritten where they stand and
@@ -347,12 +289,10 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             filter,
             source_params,
         } => {
-            // A **neutral** filter is not run at all, and that is the honest answer
-            // rather than a shortcut: the draw list already leaves one out (§21.3), so
-            // what it contributes to the picture is nothing, and the merge that must
-            // not change the picture therefore has nothing to write. Rewriting the
-            // tiles anyway would spend a pass per tile to land the identity *plus* one
-            // round trip's rounding.
+            // A **neutral** filter contributes nothing to the picture — the draw list
+            // leaves one out (§21.3) — so the merge that must not change the picture
+            // has nothing to write. Running it would spend a pass per tile to land the
+            // identity *plus* one round trip's rounding.
             let merged = if filter.is_neutral() {
                 lower
             } else {
@@ -368,12 +308,10 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             };
             (merged, None)
         }
-        // Every number here is the plan's: what each side's tiles are worth on their
-        // own, how the upper meets the lower, and what the survivor carries
-        // afterwards. The two kinds differ by where the destination's slider belongs
-        // — folded into the tiles beside a sibling, left on the layer when the
-        // destination is a carrier and the slider is the group's (§14.7) — and that
-        // decision is made once, in `plan`, rather than twice here and there.
+        // Every number here is the plan's. The two kinds differ by where the
+        // destination's slider belongs — folded into the tiles beside a sibling, left
+        // on the layer when the destination is a carrier and the slider is the group's
+        // (§14.7) — and `plan` decides that once rather than twice.
         super::merge::MergeKind::Stack {
             source_params,
             dest_opacity,
@@ -384,13 +322,12 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             let Some(upper) = paint_base(&state, source) else {
                 return state;
             };
-            // The source restated in the destination's frame (§14.12): the two
-            // sides must share one tile space before they can be stacked, and the
-            // survivor keeps its own frame. A whole-pixel shift, run through the
-            // transform's own exactness invariant (§16.4) under a universal
-            // selection — so the merge that must not change the picture does not.
-            // Declined past the transform's tile caps, deterministically, like
-            // every refusal here.
+            // The source restated in the destination's frame (§14.12): the two sides
+            // must share one tile space before they can be stacked, and the survivor
+            // keeps its own frame. A whole-pixel shift under a universal selection, so
+            // the transform's exactness invariant (§16.4) holds and the merge that must
+            // not change the picture does not. Declined past the tile caps,
+            // deterministically, like every refusal here.
             let frame_of = |id: LayerId| {
                 state
                     .layer(id)
@@ -445,16 +382,13 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
 }
 
 /// The body of [`ActionKind::FloatSelection`] (§16.12): cut what the author's
-/// selection holds on `layer` into the minted `child`, carried at the foot of
-/// the source's stack, and consume the selection — the float *is* the selection
-/// now, and an outline left behind would sit over paint that is no longer there.
+/// selection holds on `layer` into the minted `child`, carried at the foot of the
+/// source's stack, and consume the selection — the float *is* the selection now.
 ///
-/// Every refusal is deterministic, so peers and replays agree: a matte, filter
-/// or absent source ([`paint_base`]); a child id the document already holds
-/// (two layers under one id is §17.9's failure, and half a float — the cut
-/// taken, nothing landed — would be worse than either); a universal selection
-/// (nothing is *selected*; moving everything is `TranslateLayers`); an empty or
-/// oversized cut (`plan_float`).
+/// Every refusal is deterministic, so peers and replays agree: a matte, filter or
+/// absent source ([`paint_base`]); a child id the document already holds (two layers
+/// under one id is §17.9's failure); a universal selection (nothing is *selected*;
+/// moving everything is `TranslateLayers`); an empty or oversized cut (`plan_float`).
 fn float_apply(
     state: DocState,
     ctx: &ApplyCtx,
@@ -495,28 +429,24 @@ fn float_apply(
         .with_selection(actor, super::selection::Selection::everything())
 }
 
-/// The tiles `layer` paints into, or `None` if it has none — the gate every
-/// action that lays or moves paint passes through first.
+/// The tiles `layer` paints into, or `None` if it has none — the gate every action
+/// that lays or moves paint passes through first.
 ///
-/// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or
-/// a transform aimed at one is turned away rather than swallowed or magically
+/// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or a
+/// transform aimed at one is turned away rather than swallowed or magically
 /// rasterized (§15.7) — and turned away *here*, in the engine, not only in the
-/// frontend, which is what keeps replay and peers agreeing about a log that
-/// happens to contain such an action. An absent layer reads the same way: there
-/// is nothing there to paint on.
+/// frontend, which is what keeps replay and peers agreeing about a log that happens
+/// to contain such an action. An absent layer reads the same way.
 ///
-/// Cloned out of the tree before anything is rebuilt: the map is persistent, so
-/// this is a handful of `Arc` bumps, and it is what keeps the borrow of the state
-/// from outliving the rewrite that follows.
+/// Cloned out of the tree before anything is rebuilt: the map is persistent, so this
+/// is a handful of `Arc` bumps, and it keeps the borrow of the state from outliving
+/// the rewrite that follows.
 fn paint_base(state: &DocState, layer: LayerId) -> Option<crate::gpu::tile::TileMap> {
     state.layer(layer).and_then(|l| l.tiles()).cloned()
 }
 
-/// [`DocState`] is what this crate folds a log into (§2, §5).
-///
-/// The model owns *that* a log folds and which actions commute; this is the answer
-/// to what it folds into — a persistent map of copy-on-write GPU tiles, which is
-/// precisely the thing the model cannot name.
+/// [`DocState`] is what this crate folds a log into (§2, §5): a persistent map of
+/// copy-on-write GPU tiles, which is precisely the thing the model cannot name.
 impl Materialize for DocState {
     type Ctx = ApplyCtx;
 
@@ -541,14 +471,10 @@ impl Materialize for DocState {
     /// applied after it survive. Tiles come back as the same shared handles
     /// (copy-on-write means identity is equality), so this re-renders nothing.
     ///
-    /// **Audited like the fold, and for a sharper reason.** The forward direction is
-    /// driven hundreds of times by every test in the workspace; this one runs only
-    /// where the history shifts an undone action past a commuting suffix, so its
-    /// coverage was the handful of scenarios in `tests/commute.rs`. It is also the
-    /// direction §12.6 is really about: what it writes becomes the replay base for
-    /// every later version, and a peer that patched differently diverges with no
-    /// pixel able to say so. Same checker, same `cfg`, same argument for the cost
-    /// (see [`super::audit`]).
+    /// **Audited like the fold**, and it is the direction §12.6 is really about: what
+    /// this writes becomes the replay base for every later version, and a peer that
+    /// patched differently diverges with no pixel able to say so. Same checker, same
+    /// `cfg` (see [`super::audit`]).
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
         #[cfg(debug_assertions)]
         let before = self.clone();
@@ -560,16 +486,12 @@ impl Materialize for DocState {
 
 /// Fold one action into the state — the whole of what applying means (§4).
 ///
-/// A free function taking the action rather than a method on it, because [`Action`]
-/// is `stark-model`'s now and this needs the renderers: the division the orphan rule
-/// forced is the one the split is about (§2).
-///
-/// **What is left here is the ten kinds that need a renderer** — a stroke, a placed
-/// image, the two selection ops, the three transforms, a merge, a float and a fill.
-/// Everything else folds without touching one and is [`apply_pure`]'s, which this
-/// match ends by handing over to. Both matches are exhaustive with no `_` arm, so a
-/// kind added later has to name itself on one side of the line rather than defaulting
-/// into either.
+/// **The ten kinds that need a renderer** — a stroke, a placed image, the two
+/// selection ops, the three transforms, a merge, a float and a fill. Everything else
+/// folds without touching one and is [`apply_pure`]'s, which this match ends by
+/// handing over to. Both matches are exhaustive with no `_` arm, so a kind added
+/// later has to name itself on one side of the line rather than defaulting into
+/// either.
 ///
 /// **Total.** An action that cannot be honoured — a stroke on a missing layer, a
 /// transform past the tile caps — returns the state unchanged rather than an error,
@@ -600,9 +522,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                     None => {
                         // The substrate this stroke was painted on, as the log stood
                         // here — not as it stands now (§6.4). The tooth gates the
-                        // deposit by it, so a mid-document `SetSubstrate` changes what
-                        // comes *after* it and nothing before, on replay exactly as it
-                        // did live.
+                        // deposit by it, so a mid-document `SetSubstrate` changes only
+                        // what comes *after* it, on replay exactly as it did live.
                         let substrate = ctx.substrate(state.substrate());
                         // The author's canvas mask, brought into the layer's frame
                         // the record was made in (§14.12) — scoped to the stroke's
@@ -633,13 +554,12 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             },
         ),
         // An image from outside the document, as a layer holding it (§23). The layer
-        // arrives first and by exactly the same call an `AddLayer` makes, so an unknown
-        // carrier declines it identically — and the tiles are only built once the layer
-        // is known to have landed, since building them for a layer that is not there is
-        // a photograph's worth of GPU memory for nothing.
-        //
-        // The tiles come from the CPU rather than from a pass, which is what makes them
-        // the same bytes on every adapter: see `gpu::place`.
+        // arrives first, by exactly the call an `AddLayer` makes, so an unknown carrier
+        // declines it identically — and the tiles are built only once the layer is
+        // known to have landed, since building them for a layer that is not there is a
+        // photograph's worth of GPU memory for nothing. They come from the CPU rather
+        // than from a pass, which is what makes them the same bytes on every adapter:
+        // see `gpu::place`.
         ActionKind::PlaceImage {
             id,
             carrier,
@@ -655,10 +575,9 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                 return state;
             }
             // The picture, by the id the log carries (§23). Absent means it has not
-            // arrived — which the loader and the transport both make sure cannot
-            // happen before this runs (`unresolved_content`, and the waitlist parking
-            // the action until its content lands), so reaching the `None` arm is a
-            // caller that skipped the bill rather than a state to design around.
+            // arrived, which the loader and the transport both make sure cannot happen
+            // before this runs (`unresolved_content`, and the waitlist parking the
+            // action until its content lands).
             let Some(picture) = ctx.pictures.get(*image) else {
                 tracing::warn!(?image, "placing an image this session does not hold");
                 return state;
@@ -667,21 +586,18 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
                 Some(tiles) => state.map_layer(*id, |l| l.with_tiles(tiles)),
                 None => {
                     // Off the tile grid an `i32` can address. The layer stays — it is
-                    // what the action minted, and withdrawing it here would make the
-                    // action half-applied — and it is simply empty, which is the honest
-                    // picture of an image placed where no tile exists.
+                    // what the action minted, and withdrawing it here would leave the
+                    // action half-applied — and is simply empty.
                     tracing::warn!("placed image is off the addressable canvas; no tiles written");
                     state
                 }
             }
         }
-        // The author's own selection, and only ever the author's: the key is
-        // taken from `action.id.actor`, never from the payload, so an action
-        // cannot address anyone else's mask (§17.3).
-        //
-        // An op too large to rasterize (see `MAX_SELECTION_TILES`) leaves the
-        // selection alone — deterministically, since the bound is a pure
-        // function of the op, so peers and replays agree.
+        // The author's own selection, and only ever the author's: the key is taken
+        // from `action.id.actor`, never from the payload, so an action cannot address
+        // anyone else's mask (§17.3). An op too large to rasterize (see
+        // `MAX_SELECTION_TILES`) leaves the selection alone — deterministically, since
+        // the bound is a pure function of the op, so peers and replays agree.
         ActionKind::Select(op) => {
             let prev = state.selection_of(action.id.actor);
             match ctx.selection.apply(&ctx.pool, &prev, op) {
@@ -697,12 +613,10 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let selection = ctx.selection.invert(&ctx.pool, &prev);
             state.with_selection(action.id.actor, selection)
         }
-        // Cut the author's selected paint, restack it under the affine, and
-        // carry the author's mask with it (§16). Gated and
-        // keyed exactly as a stroke is: the mask comes off the state being
-        // folded over, the actor off the action's own id. A matte or absent
-        // layer refuses it, like a stroke; an unusable or oversized transform
-        // is rejected deterministically, so peers and replays agree.
+        // Cut the author's selected paint, restack it under the affine, and carry the
+        // author's mask with it (§16). Gated and keyed exactly as a stroke is; an
+        // unusable or oversized transform is rejected deterministically, so peers and
+        // replays agree.
         ActionKind::Transform {
             layer,
             affine,
@@ -753,12 +667,10 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             child,
             translation: frame,
         } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame),
-        // Lay a parcel of paint through the region's coverage, gated by the
-        // author's selection — the same gate a stroke passes through, so a fill
-        // is clipped by a selection exactly as a brush is
-        // (§18.0.4). Refused on a matte or absent layer like a stroke; refused
-        // deterministically when unbounded or oversized, so peers and replays
-        // agree about a log that contains one.
+        // Lay a parcel of paint through the region's coverage, gated by the author's
+        // selection — the same gate a stroke passes through, so a fill is clipped by a
+        // selection exactly as a brush is (§18.0.4). Refused on a matte or absent
+        // layer, and deterministically when unbounded or oversized.
         ActionKind::Fill {
             layer,
             op,
@@ -768,9 +680,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             *layer,
             action.id.actor,
             "fill rejected (unbounded region or too many tiles); ignored",
-            // A fill lays paint through a mask and never moves it, which is now what
-            // taking `paint_edit` says rather than a `None` it has to pass. The mask
-            // is brought into the layer's frame first, as a stroke's is (§14.12).
+            // The mask is brought into the layer's frame first, as a stroke's is
+            // (§14.12).
             |_, target, selection| {
                 let base = target.tiles().expect("paint_edit hands over a paint layer");
                 let gate = ctx.transform.shifted_selection_in(
@@ -820,26 +731,18 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 }
 
 /// The arms of [`apply`] that are a [`DocState`] call and nothing else — two thirds
-/// of the fold, answered without a tile pool, a renderer or an adapter.
+/// of the fold, answered without a tile pool, a renderer or an adapter. Also what
+/// `patch.rs` folds with, so its round trip is checked against the real fold.
 ///
-/// [`Folded::NeedsRenderer`] for the ten kinds that do need one, so [`apply`] keeps
-/// those and hands everything else here. **The partition is the compiler's**: this
-/// function has no [`ApplyCtx`] to name, so an arm that reaches for a renderer does
-/// not compile — which is the whole point of the shape, and the reason nothing is
-/// threaded in here against the day one might.
+/// [`Folded::NeedsRenderer`] for the ten kinds that do need one. **The partition is
+/// the compiler's**: this function has no [`ApplyCtx`] to name, so an arm that
+/// reaches for a renderer does not compile.
 ///
 /// Both matches are exhaustive, so a new kind must name itself on each side of the
 /// line — but naming it on the *wrong* side of both compiles, and no match can say so.
 /// **That is why every answer here carries a document**: the mistake costs an ignored
 /// action rather than a panic on every remote peer's fold and on every action of a
 /// loaded file, in release as well as debug.
-///
-/// Split out because these arms were being *reconstructed* to be tested. `patch.rs`
-/// checks that folding an action and unapplying it puts the document back, and the
-/// fold it was checking against was a hand-written match in its own test module: a
-/// third statement of the same mutation, with nothing tying it to this one. A
-/// sanitize or a refusal added to an arm here would leave that round trip passing,
-/// having tested a fold nobody runs. It calls this now.
 ///
 /// Takes the actor rather than the [`Action`] because that is all any arm reads of
 /// it: the author's own mask is keyed by it (§17.3) and `SetSelectionOpacity` writes
@@ -854,10 +757,9 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
         // **Declined unless the subtree is what the action names** (§12.6). Every id
         // in it is a `Resource::Layer` write, so a group holding one the action does
-        // not name — a peer's concurrent add — would write state nothing declared,
-        // which is the divergence `ActionKind::RemoveLayer` describes. Asked of the
-        // state being folded, so peers and replays decline the same action;
-        // `duplicate_layer` refuses on the same terms.
+        // not name — a peer's concurrent add — would write state nothing declared.
+        // Asked of the state being folded, so peers and replays decline the same
+        // action; `duplicate_layer` refuses on the same terms.
         ActionKind::RemoveLayer { id, carried } => {
             match state.carried_ids(*id) {
                 // Absent: nothing to remove, and the arm below would say the same.
@@ -914,13 +816,12 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         } => state.insert_filter(*id, *carrier, *above, filter.clone()),
         ActionKind::SetFilter(id, filter) => state.set_filter(*id, filter.clone()),
 
-        // The drawing guides (§20.5). The one family of actions with no pixel on
-        // the other side of it: a guide is geometry to construct through, so
-        // applying one moves a roster and nothing else — which is also why none
-        // of these needed `ctx` even before there was somewhere to say so.
+        // The drawing guides (§20.5). The one family of actions with no pixel on the
+        // other side of it: a guide is geometry to construct through, so applying one
+        // moves a roster and nothing else.
         //
-        // **The id is the adding action's own** (`GuideId`), and the action carries
-        // it rather than the fold deriving it: an id derived here is not part of the
+        // **The id is the adding action's own** (`GuideId`), and the action carries it
+        // rather than the fold deriving it: an id derived here is not part of the
         // action, and `start_collaboration` rewrites solo-authored `ActionId`s
         // (§17.9). Everything else names one that was minted earlier and no-ops when
         // it is not there, the way every action naming an absent layer does.
@@ -982,26 +883,20 @@ impl Folded {
 /// preview half of every setter command (§21.6).
 ///
 /// A drag previews by folding the very action its release will commit: the same
-/// [`apply`] arm, behind the same [`ActionKind::sanitized`] funnel. That is the whole
-/// of it, and the reason it is one function rather than a line in each preview arm.
-/// Written per arm the sanitize is a habit, and two arms had already forgotten it.
-/// `SetMattePaint` reached [`DocState::set_matte_paint`] directly, so it previewed a
-/// gradient whose axis nobody can place — the first sample of an axis drag has
-/// `from == to`, which `Parcel::sanitized` collapses to the ramp's anchor.
-/// `SetLayerOpacity` went through `f32::clamp`, which passes a NaN straight out
-/// (both of NaN's comparisons are false) where the commit's `finite_in` lands it on
-/// 1.0. Both are reachable from a drag, and both showed the artist a document the
-/// release would then decline to store — a `preview == committed` break (§1.3) in the
-/// one class of action with no pixels of its own to give it away.
+/// [`apply`] arm, behind the same [`ActionKind::sanitized`] funnel. One function
+/// rather than a line in each preview arm, because a per-arm sanitize is a habit, and
+/// a preview that skips it shows the artist a document the release would then decline
+/// to store — a `preview == committed` break (§1.3) in the one class of action with
+/// no pixels of its own to give it away.
 ///
 /// **Only the kinds that move state and nothing else.** A preview mints no layer,
 /// folds no stroke and takes no prepared tiles. The two previews that *do* touch the
 /// GPU — the transform and the fill — keep their own entry points, because what they
 /// have to answer first is whether the parcel can be cut at all.
 ///
-/// The id is provisional. No kind that reaches here reads the Lamport clock, so
-/// nothing is spent by not advancing it; the actor is real, because the author's own
-/// selection is keyed by it (§17.3) and `SetSelectionOpacity` previews through here.
+/// The id is provisional: no kind that reaches here reads the Lamport clock. The
+/// actor is real, because the author's own selection is keyed by it (§17.3) and
+/// `SetSelectionOpacity` previews through here.
 pub(crate) fn preview_of(
     kind: ActionKind,
     state: &DocState,
@@ -1022,23 +917,15 @@ pub(crate) fn preview_of(
 /// Whether applying this to `state` would leave it exactly as it found it — so a
 /// command that would spend an undo step on nothing can decline to log one (§5.4).
 ///
-/// **Answered by folding, not by a mirror of the fold.** This was a match with an
-/// arm per setter, each comparing the payload against the value it read out of the
-/// state — a fourth statement of every action's effect, beside the footprint, the
-/// fold and the patch, and the one nothing tied to the other three. It drifted
-/// twice: a blend on a filter and a rect the matte refuses both answered "an edit"
-/// here while `apply` folded them to nothing, and each spent an undo step that does
-/// nothing when reached. Now the fold answers, through the one enumeration of what
-/// can differ between two states ([`audit::changes_nothing`](super::audit)), and the
-/// match is gone.
+/// **Answered by folding, not by a mirror of the fold**, through the one enumeration
+/// of what can differ between two states
+/// ([`audit::changes_nothing`](super::audit)).
 ///
 /// Three answers are given before folding, and they are the whole of what is
 /// stated here by hand:
 ///
 /// - **An `Undo` is `false`.** The timeline resolves it (§5.4); its fold is the
 ///   identity whatever it undoes, so the fold is the one witness that cannot say.
-///   Not asked today — `commit_with_id` is its door — but the answer has to be right
-///   for the day it is.
 /// - **A write to paint, to which layers exist, or to the tree's shape is `false`**,
 ///   read off the footprint. Finding out whether a stroke left a layer byte-identical
 ///   means rendering it, and a structural edit's refusals — a cycle, a subtree the
@@ -1050,7 +937,7 @@ pub(crate) fn preview_of(
 ///   back applies it, and a log that omitted it would be a different log on the two
 ///   clients (§12.1). The guide roster is one resource with no per-guide existence to
 ///   read ([`Resource::Guides`]), so a guide edit naming an absent guide takes the
-///   fold's answer instead — the roster it leaves is the roster it found.
+///   fold's answer instead.
 ///
 /// Everything else folds through [`apply_pure`] and is diffed. Asked of the action
 /// **as it will be logged**: the engine runs the sanitizing funnel (§21.6) first, so

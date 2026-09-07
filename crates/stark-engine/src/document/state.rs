@@ -45,10 +45,9 @@ impl CanvasBounds {
 
     /// Grow to contain `other` as well.
     ///
-    /// The **join** that makes a document's extent the union of its layers' own,
-    /// which is what lets a layer whose tiles did not change contribute the box
-    /// it already knows instead of being walked again ([`PaintTiles`]). A box is
-    /// a rectangle, so containing another's two corners contains all of it.
+    /// The **join** that makes a document's extent the union of its layers' own, so a
+    /// layer whose tiles did not change can contribute the box it already knows
+    /// ([`PaintTiles`]) rather than being walked again.
     ///
     /// [`PaintTiles`]: super::layer::PaintTiles
     pub(crate) fn union(&mut self, other: Self) {
@@ -72,10 +71,9 @@ impl CanvasBounds {
     /// `by` (§14.12) — tile-granular, rounded **outward**, since a pixel offset
     /// that is not a multiple of the tile size lands a tile range astride two.
     ///
-    /// Conservative in the direction bounds already are: the box is a cover, so a
-    /// tile of slack costs a slightly looser "frame to content" and nothing else.
-    /// Saturating, so a frame parked at the integer horizon clamps rather than
-    /// wraps the box to the other side of the canvas.
+    /// A tile of slack costs a slightly looser "frame to content" and nothing else.
+    /// Saturating, so a frame parked at the integer horizon clamps rather than wraps
+    /// the box to the other side of the canvas.
     pub(crate) fn shifted(self, by: IVec2) -> Self {
         use stark_model::geom::TILE_SIZE;
         let t = TILE_SIZE as i32;
@@ -101,11 +99,9 @@ impl CanvasBounds {
 /// Where a layer sits in the tree: whose stack it is in, and how far up that
 /// stack (§14.8).
 ///
-/// Enough to put a removed layer back exactly where it was, and no more. A full
-/// index path would say the same thing in a form that goes stale the moment
-/// anything below it moves; a carrier **id** does not, because ids are stable
-/// and a carrier that has itself been removed is a case the restore has to
-/// handle anyway.
+/// Enough to put a removed layer back exactly where it was. A carrier **id** rather
+/// than a full index path, because ids are stable and a path goes stale the moment
+/// anything below it moves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayerSite {
     /// The layer whose carried stack this one is in, or `None` for the root
@@ -119,28 +115,22 @@ pub struct LayerSite {
 /// a layer with a non-empty `carries`, §14.2), the explored
 /// bounds, and the selection masks that gate where tools may act.
 ///
+/// Cheap to clone: persistent collections of handles, never pixels (§5.1).
+///
 /// # Who may produce one
 ///
-/// **The readers are `pub`; every mutator is `pub(crate)`.** A `DocState` is supposed
-/// to be a fold of the action log and nothing else — that is the founding sentence of
-/// the whole design (§1) — and while the ~two dozen setters below were public the
-/// answer to "who can make one that is not" was "anything that links this crate".
-///
-/// Inside the crate they have exactly three callers, and each is the log: `apply`
-/// (the fold), `patch` (its inverse), and the unlogged drag previews in `engine`,
-/// which fold the very action their release will commit
-/// (`document::apply::preview_of`). Nothing outside names one — checked against
-/// `stark-dioxus-frontend`, the integration tests, the benches and `stark-net`, which
-/// between them use only the readers.
+/// **The readers are `pub`; every mutator is `pub(crate)`.** A `DocState` is a fold of
+/// the action log and nothing else (§1), and inside the crate the mutators have
+/// exactly three callers, each of them the log: `apply` (the fold), `patch` (its
+/// inverse), and the unlogged drag previews in `engine`, which fold the very action
+/// their release will commit (`document::apply::preview_of`).
 #[derive(Clone)]
 pub struct DocState {
     /// The root stack, bottom-to-top. The tree lives *inside* it: a layer's
     /// [`carries`](Layer::carries) is the group it is the base of.
     ///
-    /// Private, with [`root`](Self::root) to read it, because [`bounds`] is
-    /// derived from it: the two are one fact in two forms, and a struct literal
-    /// that set the first without the second would be a document whose extent
-    /// disagrees with its paint. Only this module can write either, and only
+    /// Private, with [`root`](Self::root) to read it, because [`bounds`] is derived
+    /// from it: the two are one fact in two forms, and only
     /// [`with_layers`](Self::with_layers) writes them together.
     ///
     /// [`bounds`]: Self::bounds
@@ -148,96 +138,76 @@ pub struct DocState {
     /// The explored extent of the infinite canvas — the union of every layer's
     /// own (§6), **derived** from `layers` and never set beside it.
     ///
-    /// Worth the privacy rather than trusted to convention: this is what "frame
-    /// to content" and export's no-frame fallback measure (§15.6), so a value out
-    /// of step with the paint is a wrongly-cropped export, and nothing about the
-    /// pixels would say so.
+    /// This is what "frame to content" and export's no-frame fallback measure
+    /// (§15.6), so a value out of step with the paint is a wrongly-cropped export and
+    /// no pixel would say so — hence private rather than trusted to convention.
     bounds: CanvasBounds,
     /// The active selection **of each actor** (§6.8, §17.3).
     ///
-    /// Document state, not session state: a stroke's pixels depend on the mask it
-    /// was drawn through, so replay has to be able to reconstruct it — which is why
-    /// selection edits are logged actions like any other. But *whose* mask is the
-    /// author's, not the document's: one collaborator's lasso must not clip
-    /// another's brush. So the mask is owned per actor, keyed by the very
-    /// [`ActorId`] that orders the log, which is what makes "only its owner may
-    /// change it" structural rather than a rule a call site could forget — the key
-    /// comes from `Action::id.actor` and there is no way to write anyone else's.
+    /// Document state, not session state: a stroke's pixels depend on the mask it was
+    /// drawn through, so replay has to reconstruct it, and selection edits are logged
+    /// actions like any other. Owned *per actor* so one collaborator's lasso cannot
+    /// clip another's brush, and keyed by the [`ActorId`] that orders the log — the key
+    /// comes from `Action::id.actor`, so "only its owner may change it" is structural
+    /// rather than a rule a call site could forget.
     ///
-    /// An absent entry is the unrestricted selection, so an actor who never selects
-    /// costs nothing and a solo document has at most one entry.
+    /// An absent entry is the unrestricted selection.
     selections: HashTrieMap<ActorId, Selection>,
-    /// The physical canvas substrate (§6.4). Document state: which canvas
-    /// a piece was painted on is part of what the document *is*, it is saved, and
-    /// reopening on a different substrate would be a different painting.
+    /// The physical canvas substrate (§6.4). Document state: which canvas a piece was
+    /// painted on is part of what the document *is*, and it is saved.
     ///
-    /// Read by the media pass (§6.3) *and* by the deposition tooth (§6.4) — which is
-    /// what having logged it bought. A switch is an ordinary action, so a stroke
-    /// deposits against the substrate the log stood on when it was made, on replay and
-    /// on a peer alike, and no history rule had to be invented to say so.
+    /// Read by the media pass (§6.3) *and* by the deposition tooth (§6.4). A switch is
+    /// an ordinary action, so a stroke deposits against the substrate the log stood on
+    /// when it was made, on replay and on a peer alike.
     pub substrate: SubstrateId,
     /// **How large that substrate is laid** (§6.4) — the other half of the same fact.
     ///
-    /// Document state on `substrate`'s own argument, and it is not a view setting for
-    /// the reason `substrate` is not: the tooth reads the substrate's rise over a reach in
-    /// canvas px, so the scale decides what a stroke *deposits*, and a deposit is
-    /// stored. A stroke replayed from before a change bites the substrate at the size it
-    /// was laid at when it was made.
+    /// Document state on `substrate`'s own argument rather than a view setting: the
+    /// tooth reads the substrate's rise over a reach in canvas px, so the scale decides
+    /// what a stroke *deposits*, and a deposit is stored. A stroke replayed from before
+    /// a change bites the substrate at the size it was laid at when it was made.
     pub substrate_scale: SubstrateScale,
     /// The canvas substrate color — the substrate the paint sits on — as straight
     /// sRGB (§15.5).
     ///
-    /// Document state on the same argument §6.4 makes for the substrate: which substrate a
-    /// piece was painted on is part of what it *is*, and it must be saved. A view
-    /// setting the frontend owned would leave the paper color of a painting stored
-    /// nowhere at all.
+    /// Document state on the argument §6.4 makes for the substrate: a view setting the
+    /// frontend owned would leave the paper color of a painting stored nowhere at all.
     ///
-    /// Distinct from a matte layer, which is a slab of opaque *paint*: the
-    /// substrate sits under everything, is lit, and the canvas substrate shows through
-    /// it (the media pass composites paint over it, §6.3).
+    /// Distinct from a matte layer, which is a slab of opaque *paint*: the substrate
+    /// sits under everything, is lit, and the paint composites over it (§6.3).
     pub substrate_color: Srgb,
     /// The **drawing guides** the artist has set up, in roster order (§20.5).
     ///
-    /// Document state on the argument the substrate above makes, and it took a
-    /// while to see it: a perspective built over a drawing is part of the
-    /// drawing's construction, not a preference about how it is being looked at.
-    /// Held as view state, it was lost on reload and invisible to collaborators —
-    /// work thrown away by the same reasoning that would have thrown away the
-    /// paper color.
+    /// Document state on the argument the substrate above makes: a perspective built
+    /// over a drawing is part of the drawing's construction, not a preference about
+    /// how it is being looked at.
     ///
-    /// Whether a guide is *drawn* is the half that genuinely is per-client, and it
-    /// is not here: it lives beside the pan and the zoom in `Session`, and the two
-    /// are combined into one reading of the roster by `Engine::observe` (§20.5).
+    /// Whether a guide is *drawn* is the half that genuinely is per-client, and it is
+    /// not here: it lives beside the pan and the zoom in `Session`, and the two are
+    /// combined into one reading of the roster by `Engine::observe` (§20.5).
     ///
-    /// Private where `substrate` and `background` are `pub`, for
-    /// [`bounds`](Self::bounds)' reason rather than theirs: those two are a value,
-    /// this is a **list with an invariant** — no two entries share an id — and the
-    /// insert that holds it is the only way in.
+    /// Private because the roster is a **list with an invariant** — no two entries
+    /// share an id — and the insert that holds it is the only way in.
     guides: Vector<Guide>,
 }
 
 /// One guide in the roster: the camera, and what the artist calls it (§20.5).
 ///
-/// The engine's half of the `GuideId`/`PerspectiveGuide` pair, and the whole of
-/// what it adds is the name — held as an `Arc<str>` for the reason
-/// [`Layer::name`](super::layer::Layer) is one, where the action carrying it
-/// holds a `String` because that is what goes on the wire.
-///
-/// A struct rather than the `(GuideId, Option<Arc<str>>, PerspectiveGuide)` it
-/// would otherwise be, on `Ellipse`'s argument: a tuple of three says nothing
-/// about which of them is which.
+/// The engine's half of the `GuideId`/`PerspectiveGuide` pair; all it adds is the
+/// name, held as an `Arc<str>` for the reason
+/// [`Layer::name`](super::layer::Layer) is one, where the action carrying it holds
+/// the `String` that goes on the wire.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Guide {
     pub id: GuideId,
-    /// What the artist calls this guide, or `None` for one never named — the
-    /// panel then shows its *place* in the roster ("Perspective 2"), which is a
-    /// description rather than a name and is why it is not stored as one (the
-    /// same distinction [`Layer::name`](super::layer::Layer) draws).
+    /// What the artist calls this guide, or `None` for one never named — the panel
+    /// then shows its *place* in the roster ("Perspective 2"), which is a description
+    /// rather than a name (the same distinction
+    /// [`Layer::name`](super::layer::Layer) draws).
     ///
-    /// Normalized on the way in by the engine's command handler, the same funnel
-    /// a layer's name passes through (`normalize_name`), so "either absent or
-    /// something you can read" is a property of the document rather than a habit
-    /// of whichever frontend collected it.
+    /// Normalized on the way in by the engine's command handler (`normalize_name`), so
+    /// "either absent or something you can read" is a property of the document rather
+    /// than a habit of whichever frontend collected it.
     pub name: Option<Arc<str>>,
     /// The camera, and how densely to dress it — everything §20 derives from.
     pub camera: PerspectiveGuide,
@@ -252,25 +222,19 @@ pub const DEFAULT_SUBSTRATE_COLOR: Srgb = Srgb::new([0.85, 0.85, 0.85]);
 /// The canvas a document starts on when nobody says otherwise (§6.4): `Flat`, the
 /// one substrate that is procedural.
 ///
-/// **Core cannot name a woven substrate here.** Substrates are content-addressed (§6.4) — a
-/// `SubstrateId` *is* a height map — and the engine embeds no image bytes, so a default
-/// of linen would be core naming an image it cannot produce. A fresh document would
-/// claim to be on linen while the registry rendered the flat stand-in until the
-/// frontend's fetch landed: the "named substrate, absent bytes" gap that diverges peers.
-///
-/// So the choice of opening substrate belongs to whoever holds the bytes: the frontend
-/// imports linen at startup and opens the document on it
-/// (`Engine::new_document`), and a document that never gets told starts smooth
-/// — which is at least *true*.
+/// **Core cannot name a woven substrate here.** A `SubstrateId` *is* a height map
+/// (§6.4) and the engine embeds no image bytes, so a default of linen would name an
+/// image it cannot produce — the "named substrate, absent bytes" gap that diverges
+/// peers. The choice of opening substrate belongs to whoever holds the bytes: the
+/// frontend imports linen at startup and opens the document on it
+/// (`Engine::new_document`).
 pub const DEFAULT_SUBSTRATE: SubstrateId = SubstrateId::Flat;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.
     ///
-    /// Built by *inserting* that layer rather than by naming the pair directly,
-    /// so [`with_layers`](Self::with_layers) stays the one place `bounds` is ever
-    /// written. The literal below is the only `DocState` with no layers at all,
-    /// and its empty extent is the one that needs no deriving.
+    /// Built by *inserting* that layer, so [`with_layers`](Self::with_layers) stays
+    /// the one place `bounds` is ever written.
     pub fn with_layer(id: LayerId) -> Self {
         Self {
             layers: Vector::new(),
@@ -313,9 +277,8 @@ impl DocState {
     /// size it is laid at, together.
     ///
     /// The two are one fact and are read as one everywhere downstream — the deposit,
-    /// the media pass, the registry's key — so putting them together happens here and
-    /// not at each of them. A `substrate` read without its scale beside it is the shape
-    /// of the bug this method exists to make hard to write.
+    /// the media pass, the registry's key — so a `substrate` read without its scale
+    /// beside it is the bug this method exists to make hard to write.
     pub fn substrate(&self) -> crate::gpu::substrate::Substrate {
         crate::gpu::substrate::Substrate {
             id: self.substrate,
@@ -343,11 +306,9 @@ impl DocState {
 
     /// The guides the artist has set up, in roster order.
     ///
-    /// Order changes no pixel — every guide a client draws is drawn, whichever
-    /// row it sits on — so this is a `Vector` for the arrangement's sake alone,
-    /// which is the artist's own and is kept for the reason a layer's name is.
-    /// Lookup is a scan, and deliberately: a roster is a handful of entries,
-    /// where a map would cost the order this exists to hold.
+    /// Order changes no pixel; it is the artist's arrangement, which is why this is a
+    /// `Vector`. Lookup is a scan, deliberately: a roster is a handful of entries, and
+    /// a map would cost the order.
     pub fn guides(&self) -> &Vector<Guide> {
         &self.guides
     }
@@ -371,11 +332,10 @@ impl DocState {
         after: Option<GuideId>,
         name: Option<Arc<str>>,
     ) -> Self {
-        // An id already in the roster is refused rather than doubled. It cannot
-        // arise — a `GuideId` *is* an action's id and an action is applied once —
-        // but the roster is a list rather than a map, so nothing about the
-        // representation says so, and a lookup answering the first of two would
-        // be the quiet kind of divergence.
+        // An id already in the roster is refused rather than doubled. It cannot arise
+        // — a `GuideId` *is* an action's id and an action is applied once — but the
+        // roster is a list rather than a map, and a lookup answering the first of two
+        // would be the quiet kind of divergence.
         if self.guide(id).is_some() {
             return self.clone();
         }
@@ -417,10 +377,9 @@ impl DocState {
 
     /// Move a guide so it sits directly after `after`, or at the roster's head.
     ///
-    /// Taken out and put back, **in that order**, which is the only reading under
-    /// which `after` is an anchor in the roster the drag was drawn against: the
-    /// slot is re-derived against the shortened list, so an anchor above the row
-    /// that left keeps the place it names rather than one past it.
+    /// Taken out and put back, **in that order**: the slot is re-derived against the
+    /// shortened list, so an anchor above the row that left keeps the place it names
+    /// rather than one past it.
     pub(crate) fn move_guide(&self, id: GuideId, after: Option<GuideId>) -> Self {
         let Some(from) = self.guides.iter().position(|g| g.id == id) else {
             return self.clone();
@@ -463,8 +422,7 @@ impl DocState {
     /// `actor`'s selection mask (§6.8, §17.3). An actor with
     /// no entry has selected nothing, which *is* the unrestricted selection.
     ///
-    /// Returned by value because that is what the callers want and it costs a
-    /// persistent-map clone — a handful of `Arc` bumps, the same price as cloning
+    /// By value: a persistent-map clone, the same handful of `Arc` bumps as cloning
     /// the `DocState` it came out of.
     pub fn selection_of(&self, actor: ActorId) -> Selection {
         self.selections
@@ -519,10 +477,8 @@ impl DocState {
     /// (§14.8).
     ///
     /// **The one search this module does.** [`layer`](Self::layer),
-    /// [`site_of`](Self::site_of) and [`carrier_of`](Self::carrier_of) are
-    /// projections of it, and the two halves genuinely travel together — a
-    /// duplicate needs the record to copy *and* the place to put the copy beside,
-    /// and asking separately is two walks of one tree to one layer.
+    /// [`site_of`](Self::site_of) and [`carrier_of`](Self::carrier_of) are projections
+    /// of it, and a duplicate needs both halves at once.
     fn locate(&self, id: LayerId) -> Option<(&Layer, LayerSite)> {
         fn walk(
             layers: &Vector<Layer>,
@@ -554,17 +510,13 @@ impl DocState {
     /// The single traversal every reader shares: the UI projection, the draw
     /// list, the bounds. Compare `Layer::visit`, which is this for one subtree.
     ///
-    /// The order is what answers **"does anything composite beneath this
-    /// layer?"** — the one predicate behind both relational properties, since a
-    /// layer's blend mode and its clip are live exactly when it holds and go
-    /// inert together where it fails (§14.4.3). It fails in exactly one place:
-    /// the first layer visited, the bottom of the root stack, where a mode is the
-    /// identity and a clip would erase the layer. Every other layer has either a
-    /// lower sibling or the content of the layer carrying it — a carrier's own
-    /// content is the bottom of its group, beneath everything it carries, which
-    /// is why a group's base can never be the layer without a backdrop however
-    /// the group itself sits. `Engine::observe` reads it off this walk for free;
-    /// a standalone predicate searched the tree per layer to say the same thing.
+    /// The order answers **"does anything composite beneath this layer?"** — the one
+    /// predicate behind both relational properties, since a layer's blend mode and its
+    /// clip are live exactly when it holds and go inert together where it fails
+    /// (§14.4.3). It fails in exactly one place: the first layer visited, the bottom of
+    /// the root stack. A carrier's own content is the bottom of its group, beneath
+    /// everything it carries, so a group's base always has a backdrop however the group
+    /// itself sits.
     pub fn visit<'a>(&'a self, f: &mut impl FnMut(&'a Layer, usize)) {
         for l in self.layers.iter() {
             l.visit(0, f);
@@ -591,13 +543,10 @@ impl DocState {
 
     /// Whether `carrier` names a layer that may not carry: a **filter** (§21.2).
     ///
-    /// A group's members composite *over* its base, and a filter rewrites only what
-    /// is *beneath* it in its own stack — so a filter that carried layers could
-    /// never reach them, and every consumer (the draw list, the projection, the
-    /// panel) would need a rule for an arrangement that means nothing. The rule is
-    /// ruled out as a class instead: the state refuses to hold it, here and in
-    /// [`Self::move_layer`], so no action can create it and nothing downstream has
-    /// to ask.
+    /// A group's members composite *over* its base, and a filter rewrites only what is
+    /// *beneath* it in its own stack, so a filter that carried layers could never reach
+    /// them. Ruled out as a class: the state refuses to hold it, here and in
+    /// [`Self::move_layer`], so nothing downstream has to ask.
     fn cannot_carry(&self, carrier: Option<LayerId>) -> bool {
         carrier.is_some_and(|c| self.layer(c).is_some_and(|l| l.filter().is_some()))
     }
@@ -620,12 +569,11 @@ impl DocState {
     /// other inserts keep the two-state anchor (§15.5).
     ///
     /// **Declined, deterministically, for a region nobody can measure**
-    /// ([`MatteRegion::usable`]) — the frame's half of the gate an unusable affine
-    /// already passes through (§16.1). A rect cannot be clamped into a repaired
-    /// rect without reframing the piece, so it is refused instead, and every peer
-    /// and every replay refuses the same one. The paint beside it *is* clamped, by
-    /// `ActionKind::sanitized` on the way in, because a color out of range does have
-    /// a nearest legal value.
+    /// ([`MatteRegion::usable`]) — the frame's half of §16.1's gate. A rect cannot be
+    /// clamped into a repaired rect without reframing the piece, so every peer and
+    /// every replay refuses the same one. The paint beside it *is* clamped, by
+    /// `ActionKind::sanitized` on the way in, because a color out of range has a
+    /// nearest legal value.
     pub(crate) fn insert_matte(
         &self,
         id: LayerId,
@@ -658,25 +606,21 @@ impl DocState {
         )
     }
 
-    /// Land a floated child at the **foot** of its source's carried stack
-    /// (§16.12) — directly over the paint it was cut from, which is what keeps
-    /// the picture unchanged (§14.1). The child arrives whole: tiles, frame and
-    /// identity params are the fold's to build, so this takes the record rather
-    /// than re-deriving it from an id.
+    /// Land a floated child at the **foot** of its source's carried stack (§16.12) —
+    /// directly over the paint it was cut from, which is what keeps the picture
+    /// unchanged (§14.1). Takes the whole record rather than an id: the child's tiles,
+    /// frame and identity params are the fold's to build.
     pub(crate) fn insert_float(&self, source: LayerId, child: Layer) -> Self {
         self.insert(child, Some(source), Place::Bottom)
     }
 
     fn insert(&self, layer: Layer, carrier: Option<LayerId>, above: Place) -> Self {
-        // **An id the document already holds is refused rather than doubled.** It
-        // cannot arise from an action this engine mints — a `LayerId` *is* an action's
-        // id and an action is applied once (§17.9) — but the tree is a `Vector` rather
-        // than a map, so nothing about the representation says so, and the ids arrive
-        // in the payload of an action that may have come off a file or a wire. Two
-        // layers under one id is the state §17.9 is about: `locate`, `map_in`,
-        // `remove_in` and `Layer::find` would each answer with whichever comes first,
-        // which is the quiet kind of divergence. The same refusal `insert_guide`
-        // makes, for the same reason and against the same shape.
+        // **An id the document already holds is refused rather than doubled.** No
+        // action this engine mints can say it — a `LayerId` *is* an action's id and an
+        // action is applied once (§17.9) — but the ids arrive in a payload that may
+        // have come off a file or a wire, and two layers under one id makes `locate`,
+        // `map_in`, `remove_in` and `Layer::find` each answer with whichever comes
+        // first. The same refusal `insert_guide` makes, against the same shape.
         if self.contains_layer(layer.id) {
             return self.clone();
         }
@@ -705,14 +649,11 @@ impl DocState {
     /// Copy a layer — and everything it carries — and splice the copy into the
     /// source's own stack, directly above it (§14.8).
     ///
-    /// `ids` pairs every layer of the subtree with the id its copy takes, root
-    /// first; see [`ActionKind::DuplicateLayer`] for why the map travels in the
-    /// action rather than being minted here. The copy is the source *record*, id
-    /// replaced — same tiles, same name, same opacity — because that is what a
-    /// duplicate is. The name comes along rather than being decorated into
-    /// "Sky copy": a name in the document is the author's own word, and inventing
-    /// one here would be the engine writing a name nobody typed (see
-    /// [`Layer::name`]).
+    /// `ids` pairs every layer of the subtree with the id its copy takes, root first;
+    /// see [`ActionKind::DuplicateLayer`] for why the map travels in the action rather
+    /// than being minted here. The copy is the source *record*, id replaced — same
+    /// tiles, same name, same opacity. The name comes along undecorated, because a name
+    /// in the document is the author's own word (see [`Layer::name`]).
     ///
     /// Nothing happens — deterministically, so peers and replays agree — when the
     /// source is absent, or when the subtree holds a layer `ids` does not name.
@@ -722,14 +663,12 @@ impl DocState {
         let Some((source, _)) = ids.first() else {
             return self.clone();
         };
-        // **Every copy id has to be new and distinct.** `copy_subtree` below looks
-        // each source up and takes the id it is paired with; it has no way to notice
-        // that two sources were paired with one id, or that a copy names a layer the
-        // document already holds. An action this engine mints cannot say either —
-        // `commit_minting` draws them from its own action id at distinct `k` — but
-        // this one arrived in a payload, off a file or a wire, and two layers under
-        // one id is exactly what §17.9 is about. Declined deterministically, so peers
-        // agree about the refusal, which is the bargain every other decline here makes.
+        // **Every copy id has to be new and distinct.** `copy_subtree` below takes the
+        // id each source is paired with; it cannot notice two sources paired with one
+        // id, or a copy naming a layer the document already holds (§17.9). An action
+        // this engine mints cannot say either — `commit_minting` draws them from its
+        // own action id at distinct `k` — but this one arrived in a payload. Declined
+        // deterministically, so peers agree about the refusal.
         //
         // One set answers both questions: seeded with every id the document holds,
         // it refuses a copy that is already there and a copy named twice alike.
@@ -758,16 +697,11 @@ impl DocState {
     /// root stack: the layer is restored rather than lost, which is the property
     /// undo needs, and the alternative — dropping it — would be unrecoverable.
     ///
-    /// **Already present is already restored.** The same refusal [`Self::insert`] and
-    /// [`Self::insert_guide`] make, against the same shape — and reachable here
-    /// rather than only from a crafted log: undoing a group's removal captures one
+    /// **Already present is already restored** — the same refusal [`Self::insert`] and
+    /// [`Self::insert_guide`] make, and reachable from an ordinary undo rather than
+    /// only from a crafted log: undoing a group's removal captures one
     /// `Resource::Layer` per layer in the subtree, and the group's own op puts the
-    /// whole subtree back before its children's ops are read (`patch::capture`). Each
-    /// of those would then insert a layer the ancestor had already returned. The
-    /// duplicate was collapsed downstream — `PatchOp::Structure`'s rebuild is keyed by
-    /// a map — so it never survived a whole patch; it existed in between, where
-    /// `map_in`, `remove_in` and `Layer::find` all answer with whichever copy comes
-    /// first. Declined here instead, so the arrangement cannot be built at all.
+    /// whole subtree back before its children's ops are read (`patch::capture`).
     pub(crate) fn restore_layer(&self, site: &LayerSite, layer: Layer) -> Self {
         if self.contains_layer(layer.id) {
             return self.clone();
@@ -792,17 +726,13 @@ impl DocState {
     /// Rewrite a layer's **content**, where `f` accepts it — the shape every content
     /// setter below takes.
     ///
-    /// `f` answers `None` for content this edit does not apply to, which is what
-    /// makes "which kinds accept this edit" a *parameter* rather than a pattern
-    /// repeated per setter. Four of them spelled out the same match arm, the same
-    /// `Layer { content, ..l.clone() }`, and the same "every other kind is left
-    /// alone" — so a new [`LayerContent`] variant had to be visited four times to
-    /// say the same nothing.
+    /// `f` answers `None` for content this edit does not apply to, which is what makes
+    /// "which kinds accept this edit" a *parameter* rather than a match arm repeated
+    /// per setter.
     ///
     /// Deliberately narrower than [`map_layer`](Self::map_layer): a setter that can
-    /// only change `content` cannot reach `composite`, `visible` or `name` by
-    /// accident. `set_layer_blend` and its neighbours are *not* written through this,
-    /// and that is the distinction rather than an omission — they write
+    /// only change `content` cannot reach `composite`, `visible` or `name` by accident.
+    /// `set_layer_blend` and its neighbours are *not* written through this — they write
     /// `composite`, and read `content` only to refuse (§21.4).
     fn map_content(
         &self,
@@ -868,18 +798,16 @@ impl DocState {
     /// absent id, like every other content setter here.
     ///
     /// The whole filter travels rather than one knob, on the argument
-    /// [`set_guide`](Self::set_guide) makes for a guide's whole camera (§20.5): the
-    /// frontend reads the current settings off the projection, moves one of them, and
-    /// sends the value back, so a filter that grows a parameter needs no command of
-    /// its own — and neither does the next filter kind.
+    /// [`set_guide`](Self::set_guide) makes for a guide's whole camera (§20.5): a
+    /// filter that grows a parameter needs no command of its own, and neither does the
+    /// next filter kind.
     ///
     /// **Sanitized here**, where every filter enters state — not only where a local
     /// command is minted (§21.5). A loaded file's replay and a remote peer's action
-    /// reach this through `ActionKind::apply` without ever passing
-    /// `Engine::process`, and a fullscreen pass has no coverage to hide behind: a
-    /// NaN smuggled in by a crafted or corrupted log would poison every texel of
-    /// the frame. Idempotent for any log this engine wrote, so replay still puts
-    /// back exactly what was applied.
+    /// reach this through `ActionKind::apply` without ever passing `Engine::process`,
+    /// and a NaN in a fullscreen pass has no coverage to hide behind: it would poison
+    /// every texel of the frame. Idempotent for any log this engine wrote, so replay
+    /// still puts back exactly what was applied.
     pub(crate) fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
         self.map_content(id, |c| match c {
             LayerContent::Filter(_) => Some(LayerContent::Filter(filter.sanitized())),
@@ -891,12 +819,11 @@ impl DocState {
     /// first — or `None` when there is no such layer.
     ///
     /// **The one derivation of "what a group is"**, and both of the actions that name
-    /// a whole subtree are minted from it. A removal takes
-    /// [`Self::carried_ids`] (this without the root) and `apply` checks the action
-    /// against the same walk before folding; a duplication takes this one, and
-    /// `duplicate_layer` declines unless `ids` names exactly the subtree *it* walks.
-    /// Either way two walks that had to agree would be the §12.6 hazard, one level
-    /// down — and the duplicate path had its own copy in `engine.rs` until now.
+    /// a whole subtree are minted from it: a removal takes [`Self::carried_ids`] (this
+    /// without the root) and `apply` checks the action against the same walk before
+    /// folding; a duplication takes this one, and `duplicate_layer` declines unless
+    /// `ids` names exactly the subtree *it* walks. Two walks that had to agree would be
+    /// the §12.6 hazard one level down.
     pub fn subtree_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
         let layer = self.layer(id)?;
         let mut out = Vec::new();
@@ -920,18 +847,13 @@ impl DocState {
     /// Remove the layer with the given id **and everything it carries** (no-op
     /// if absent).
     ///
-    /// The subtree goes as one because the subtree *is* the group
-    /// (§14.2): removing a base and leaving what stood on it would
-    /// leave layers whose blend modes and clips were written against a backdrop
-    /// that no longer exists. Promoting what it carries is a different
-    /// operation, and it has its own command — see [`Self::move_layer`], which
-    /// is what "release" is spelled with.
+    /// The subtree goes as one because the subtree *is* the group (§14.2): removing a
+    /// base and leaving what stood on it would leave layers whose blend modes and clips
+    /// were written against a backdrop that no longer exists. Promoting what it carries
+    /// is [`Self::move_layer`], which is what "release" is spelled with.
     ///
-    /// Unconditional, and it has three callers that want it that way: the undo
-    /// patch putting a layer back to absent, the merge folding a source away, and
-    /// `apply`'s arm — which asks [`carried_ids`](Self::carried_ids) *first*,
-    /// because whether the action may remove this subtree is a question about the
-    /// action's footprint rather than about the tree surgery.
+    /// Unconditional: whether an action *may* remove this subtree is a question about
+    /// its footprint, and `apply`'s arm asks [`carried_ids`](Self::carried_ids) first.
     pub(crate) fn remove_layer(&self, id: LayerId) -> Self {
         match remove_in(&self.layers, id) {
             Some((layers, _)) => self.with_layers(layers),
@@ -942,14 +864,12 @@ impl DocState {
     /// Set the blend mode of a layer (no-op if absent).
     ///
     /// A no-op on a **filter** too, like paint on a matte (§15.7): a filter has no
-    /// source to meet a backdrop, and — since a filter never carries (§21.2) — no
-    /// group whose merge the mode could describe either. Refusing here rather than
-    /// in a frontend rule is what keeps a stored-but-unreadable mode out of every
-    /// replayed and replicated document.
+    /// source to meet a backdrop, and — since a filter never carries (§21.2) — no group
+    /// whose merge the mode could describe either. Refused here rather than in a
+    /// frontend rule, so replayed and replicated documents agree with local ones.
     ///
-    /// **Not** the rule its neighbour [`Self::set_layer_clip`] follows, and the two
-    /// docs are worth reading together: a clip asks a question a filter can answer
-    /// (§21.4.1), so only the mode is turned away here.
+    /// **Not** the rule its neighbour [`Self::set_layer_clip`] follows: a clip asks a
+    /// question a filter can answer (§21.4.1), so only the mode is turned away here.
     ///
     /// The mode is **sanitized on the way in**, as a filter is (§21.5): a mode now
     /// carries numbers of its own, and a file or a peer reaches this without passing
@@ -971,15 +891,11 @@ impl DocState {
     /// Set whether a layer clips to the paint beneath it (no-op if absent) —
     /// §14.4.
     ///
-    /// **Live on a filter**, unlike [`Self::set_layer_blend`] beside it, and the
-    /// asymmetry is the point (§21.4). A mode says how a *source* meets a backdrop
-    /// and a filter has no source, so there is nothing for one to describe. A clip
-    /// says where the layer is allowed to land, and that question survives having no
-    /// source: a filter is confined to the coverage it read, so it may say what color
-    /// the paint already there should be and never where there is paint. For a point
-    /// filter that is what it does anyway — the flag is a bit-exact no-op — and for a
-    /// filter that *gathers* (§21.10) it is the difference between a fringe held
-    /// inside the silhouette and one spilling past it.
+    /// **Live on a filter**, unlike [`Self::set_layer_blend`] beside it (§21.4). A
+    /// mode says how a *source* meets a backdrop and a filter has no source; a clip
+    /// says where the layer may land, which survives having no source. For a point
+    /// filter the flag is a bit-exact no-op; for one that *gathers* (§21.10) it is the
+    /// difference between a fringe held inside the silhouette and one spilling past it.
     pub(crate) fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
         self.map_layer(id, |l| Layer {
             composite: CompositeParams {
@@ -1001,23 +917,18 @@ impl DocState {
         })
     }
 
-    /// Put each named layer's frame at a place on the canvas (§14.12) — absent
-    /// entries are skipped, like every property write on a layer that is not
-    /// there, and each entry stands alone: a concurrent removal of one member
+    /// Put each named layer's frame at a place on the canvas (§14.12) — absent entries
+    /// are skipped, and each entry stands alone: a concurrent removal of one member
     /// does not strand the rest of a group mid-move.
     ///
-    /// A no-op on a **filter**, like a stroke aimed at one (§21.4): it has
-    /// nothing that sits anywhere. A matte moves like paint — its rect and
-    /// gradient axis are stated in the layer's frame (§15.2), so the write
-    /// carries them with it. Refused here, in the fold
-    /// ([`Layer::is_translatable`]), so a log that contains one reads the same
-    /// on every peer.
+    /// A no-op on a **filter**, like a stroke aimed at one (§21.4): it has nothing that
+    /// sits anywhere. A matte moves like paint — its rect and gradient axis are stated
+    /// in the layer's frame (§15.2), so the write carries them with it. Refused in the
+    /// fold ([`Layer::is_translatable`]), so a log reads the same on every peer.
     ///
-    /// One pass over the tree for the whole list. A drag folds this on every
-    /// pointer sample (`apply::preview_of`) and a group's move names every
-    /// member, so a pass per move was the tree walked `moves × layers` times
-    /// per event. A later entry for the same id wins, as it did when they were
-    /// applied in turn.
+    /// One pass over the tree for the whole list, because a drag folds this on every
+    /// pointer sample (`apply::preview_of`) and a group's move names every member. A
+    /// later entry for the same id wins.
     pub(crate) fn translate_layers(&self, moves: &[(LayerId, IVec2)]) -> Self {
         let moves: BTreeMap<LayerId, IVec2> = moves.iter().copied().collect();
         match translate_in(&self.layers, &moves) {
@@ -1037,9 +948,9 @@ impl DocState {
     /// Set (or, with `None`, clear) a layer's name — no-op if absent.
     ///
     /// Takes whatever it is given: the name is normalized once where the action is
-    /// minted ([`Engine::process`](crate::Engine::process)), so a replay of the log
-    /// puts back exactly what was recorded rather than re-deriving it from rules
-    /// that may have changed since.
+    /// minted ([`Engine::process`](crate::Engine::process)), so replay puts back
+    /// exactly what was recorded rather than re-deriving it from rules that may have
+    /// changed since.
     pub(crate) fn set_layer_name(&self, id: LayerId, name: Option<Arc<str>>) -> Self {
         self.map_layer(id, |l| Layer {
             name: name.clone(),
@@ -1052,21 +963,18 @@ impl DocState {
     /// keeps its tiles **and everything it carries**, so a whole group travels as
     /// one.
     ///
-    /// This is the *only* structural move, and it is deliberately one operation
-    /// rather than three (§14.8): reordering within a stack is
-    /// `carrier` unchanged, **carrying** a layer onto another is `carrier` set,
-    /// and **releasing** it is `carrier` cleared. There is nothing a "group"
-    /// command would do that this does not already say.
+    /// This is the *only* structural move, deliberately one operation rather than
+    /// three (§14.8): reordering within a stack is `carrier` unchanged, **carrying** a
+    /// layer onto another is `carrier` set, and **releasing** it is `carrier` cleared.
     ///
     /// Two ways it declines, both silent and both deterministic — which is what
-    /// matters, since peers replay this from a log and must all decline
-    /// identically:
+    /// matters, since peers replay this from a log and must all decline identically:
     ///
-    /// - **A cycle.** Carrying a layer onto its own descendant (or onto itself)
-    ///   would detach the subtree from the document entirely. Two peers can
-    ///   concurrently ask for the two halves of one; the total order
-    ///   `(lamport, actor)` means the second to apply sees the first's result and
-    ///   refuses, so no tree-CRDT cycle machinery is needed (§17.9).
+    /// - **A cycle.** Carrying a layer onto its own descendant (or onto itself) would
+    ///   detach the subtree from the document entirely. Two peers can concurrently ask
+    ///   for the two halves of one; the total order `(lamport, actor)` means the second
+    ///   to apply sees the first's result and refuses, so no tree-CRDT cycle machinery
+    ///   is needed (§17.9).
     /// - **An unknown carrier**, for the reason [`Self::insert`] gives.
     pub(crate) fn move_layer(&self, id: LayerId, carrier: Option<LayerId>, at: Place) -> Self {
         // Declined before anything is taken apart: a filter never carries (§21.2)
@@ -1116,22 +1024,18 @@ impl DocState {
     /// orthogonal to the layer stack (a mask applies to whatever is painted
     /// through it, §6.8).
     ///
-    /// A union of boxes each layer already knows, not a walk of every populated
-    /// tile in the document — nor of the tree. This runs on *every* layer
-    /// mutation, including the property setters and structural moves that cannot
-    /// change a tile set at all, so re-deriving the extent from tiles made a
-    /// rename cost what a stroke costs, and re-walking the tree made it cost a
-    /// document of dozens of layers. Each layer's own box came with its tiles
-    /// ([`PaintTiles`]) and each subtree's with its children
-    /// ([`Layer::subtree_bounds`]), so this is `O(root width)`.
+    /// A union of boxes each layer already knows, not a walk of every populated tile
+    /// nor of the tree: this runs on *every* layer mutation, including the property
+    /// setters and structural moves that cannot change a tile set at all. Each layer's
+    /// own box comes with its tiles ([`PaintTiles`]) and each subtree's with its
+    /// children ([`Layer::subtree_bounds`]), so this is `O(root width)`.
     ///
-    /// Bounds are **paint-only**: a matte covers the infinite plane, so counting
-    /// it would make `bounds` unbounded and break both "frame to content" and
-    /// export's no-frame fallback (§15.6). A matte has no tiles and so no extent,
-    /// so this falls out rather than needing a branch.
+    /// Bounds are **paint-only**: a matte covers the infinite plane, so counting it
+    /// would make `bounds` unbounded and break both "frame to content" and export's
+    /// no-frame fallback (§15.6). A matte has no tiles, so that falls out rather than
+    /// needing a branch.
     ///
-    /// `pub(crate)` for the timeline's patch restore (§12.6), which
-    /// splices layer records back into the tree.
+    /// `pub(crate)` for the timeline's patch restore (§12.6).
     ///
     /// [`PaintTiles`]: super::layer::PaintTiles
     pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
@@ -1155,16 +1059,15 @@ impl DocState {
 //
 // Four operations over a `Vector<Layer>` and its nested stacks, each returning
 // `None` when the id it was given is not in the tree — which is what lets the
-// callers above turn "no such layer" into a clean no-op rather than a panic or
-// a half-applied edit. Free functions rather than methods because they recurse
-// into stacks that are not a `DocState`'s root.
+// callers above turn "no such layer" into a clean no-op rather than a panic or a
+// half-applied edit. Free functions rather than methods because they recurse into
+// stacks that are not a `DocState`'s root.
 //
-// `None` therefore means **exactly** "no such layer", and nothing else, which is
-// why `Vector::set`'s own `None` is `expect`ed rather than propagated: it reports
-// an out-of-range index, and every index here came from `position`/`enumerate`
-// over the very stack being written. Passing it through would spell an impossible
-// failure as the one case the callers act on — a removal or a rename that
-// silently did not happen, on a document that says it did.
+// `None` therefore means **exactly** "no such layer", which is why `Vector::set`'s own
+// `None` is `expect`ed rather than propagated: it reports an out-of-range index, and
+// every index here came from `position`/`enumerate` over the very stack being written.
+// Passing it through would spell an impossible failure as the one case the callers act
+// on — a removal that silently did not happen, on a document that says it did.
 //
 // `&mut dyn FnMut` rather than a generic closure: the recursion would otherwise
 // instantiate a fresh copy of the function per level and never terminate at
@@ -1220,9 +1123,9 @@ fn translate_in(layers: &Vector<Layer>, moves: &BTreeMap<LayerId, IVec2>) -> Opt
 /// if the map does not name every layer in the subtree, which is the one way a
 /// duplicate declines.
 ///
-/// All-or-nothing on purpose: a partially re-identified subtree would share ids
-/// with the layers it was copied from, and two layers under one id is the state
-/// [`LayerId`]'s shape exists to make impossible (§17.9).
+/// All-or-nothing: a partially re-identified subtree would share ids with the layers
+/// it was copied from, and two layers under one id is what [`LayerId`]'s shape exists
+/// to make impossible (§17.9).
 fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
     let id = ids
         .iter()
@@ -1269,9 +1172,9 @@ fn splice(stack: &Vector<Layer>, place: Place, layer: &Layer) -> Vector<Layer> {
 /// `v` with `item` at `index`, counting from the bottom. `rpds::Vector` has no
 /// insert-at, so this rebuilds.
 ///
-/// Generic because the argument is about the collection and not about what is in
-/// it: a layer stack and the guide roster (§20.5) are both ordered lists whose
-/// only structural edit is putting one entry somewhere.
+/// Generic because the argument is about the collection, not its contents: a layer
+/// stack and the guide roster (§20.5) are both ordered lists whose only structural
+/// edit is putting one entry somewhere.
 fn insert_at<T: Clone>(v: &Vector<T>, index: usize, item: &T) -> Vector<T> {
     let mut out = Vector::new();
     for (i, l) in v.iter().enumerate() {
@@ -1334,10 +1237,10 @@ mod tests {
         );
     }
 
-    /// `DocState::bounds` is the union of its layers' own extents, so the join
-    /// has to behave like one: identity on the empty box, and containing both
-    /// arguments however they are ordered. If this ever failed, a document's
-    /// bounds would depend on the order its layers happen to be visited in.
+    /// `DocState::bounds` is the union of its layers' own extents, so the join has to
+    /// behave like one: identity on the empty box, and containing both arguments
+    /// however they are ordered — otherwise a document's bounds would depend on the
+    /// order its layers happen to be visited in.
     #[test]
     fn the_union_is_a_join_with_the_empty_box_as_identity() {
         let empty = CanvasBounds::default();
@@ -1383,9 +1286,8 @@ mod tests {
     }
 
     /// A filter never carries (§21.2): every way a layer can be attached under a
-    /// carrier declines a filter carrier, deterministically, so no log can build
-    /// the arrangement — which is what lets the renderer and the projection treat
-    /// "filter" and "plain member of a stack" as the same thing.
+    /// carrier declines a filter carrier, deterministically, so no log can build the
+    /// arrangement.
     #[test]
     fn a_filter_refuses_to_carry() {
         let state = with_filter();
@@ -1424,14 +1326,12 @@ mod tests {
         );
     }
 
-    /// **A blend is refused on a filter and a clip is not**, and the two halves are
-    /// one test because the pair is where the difference is legible (§21.4.1). A
-    /// mode is structurally inert there — no source, and (per the test above) never
-    /// a group — so state refuses to store it, exactly as a matte refuses paint
-    /// (§15.7); refused in state so replayed and replicated documents agree with
-    /// local ones. A clip is not about a source at all: it bounds what the pass may
-    /// write, which a filter can answer, so the flag is stored and the compositor
-    /// reads it.
+    /// **A blend is refused on a filter and a clip is not** (§21.4.1). A mode is
+    /// structurally inert there — no source, and (per the test above) never a group —
+    /// so state refuses to store it, exactly as a matte refuses paint (§15.7), and
+    /// refuses it in state so replayed and replicated documents agree with local ones.
+    /// A clip bounds what the pass may write, which a filter can answer, so the flag is
+    /// stored and the compositor reads it.
     #[test]
     fn a_filter_refuses_a_blend_and_takes_a_clip() {
         let state = with_filter()
@@ -1464,9 +1364,9 @@ mod tests {
     }
 
     /// Every filter is sanitized where it **enters state**, not only where a local
-    /// command is minted — the path a crafted or corrupted file's replay and a
-    /// nonconforming peer's action take (§21.5). A NaN that got through would reach
-    /// every texel of the frame with nothing able to say why.
+    /// command is minted — the path a corrupted file's replay and a nonconforming
+    /// peer's action take (§21.5). A NaN that got through would reach every texel of
+    /// the frame with nothing able to say why.
     #[test]
     fn a_filter_is_sanitized_wherever_it_enters_state() {
         let wild = Filter::Color(ColorAdjust {
@@ -1494,10 +1394,9 @@ mod tests {
         );
     }
 
-    /// And so is a **blend mode**, now that one carries numbers of its own
-    /// (§18.0.4) — the same argument as the test above, down the same path: a
-    /// replayed file and a peer's action reach state without passing through
-    /// `Engine::process`, and a NaN bend reaches the blend pass, which is fullscreen.
+    /// And so is a **blend mode**, now that one carries numbers of its own (§18.0.4):
+    /// the same argument down the same path, and a NaN bend reaches the blend pass,
+    /// which is fullscreen.
     #[test]
     fn a_blend_mode_is_sanitized_wherever_it_enters_state() {
         let wild = BlendMode::Drago { k: f32::NAN };
@@ -1540,9 +1439,8 @@ mod tests {
         Vector::new().push_back(leaf(1, 0, 0)).push_back(outer)
     }
 
-    /// `Layer::subtree_bounds` is a cache, derived where children or tiles change,
-    /// and this holds it to the from-scratch answer through every constructor that
-    /// can move it — so no writer can leave it stale.
+    /// `Layer::subtree_bounds` is a cache, held here to the from-scratch answer
+    /// through every constructor that can move it, so no writer can leave it stale.
     #[test]
     fn a_subtree_box_is_what_recomputing_it_would_give() {
         let layers = tree();

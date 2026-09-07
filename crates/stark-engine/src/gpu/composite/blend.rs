@@ -31,10 +31,9 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 
 /// Which bindings the blend pass reads, in layout order (§6.10).
 ///
-/// **Three modules share this group**, and the list is where that shows: 0–4 are
-/// `blend_common.wesl`'s, 5–6 `mixbox_lut.wesl`'s, and 7–8 `blend_mixbox.wesl`'s. The
-/// slot list names the declarations rather than the partition being held by a comment
-/// in each file, so the host cannot disagree with any of the three about an index, and
+/// Three modules share this group: 0–4 are `blend_common.wesl`'s, 5–6
+/// `mixbox_lut.wesl`'s, 7–8 `blend_mixbox.wesl`'s. Naming the declarations rather than
+/// the indices is what keeps the host from disagreeing with any of the three, and
 /// `build.rs` checks the linked artifact for a collision between them.
 const BLEND_SLOTS: &[Slot] = &[
     // One slot per blend group in the frame; see [`UniformSlots`].
@@ -54,17 +53,12 @@ const BLEND_SLOTS: &[Slot] = &[
     Slot::at(bmd::SRC_RESID).only_with_resid(),
 ];
 
-/// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32`
-/// a mode is numbered is a fact about `blend_common.wesl`, not about the document.
+/// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32` a
+/// mode is numbered is a fact about `blend_common.wesl`, not about the document, and
+/// the codes are generated from its declaration (§6.10) rather than transcribed.
 ///
-/// And it is that shader's own number, generated from its declaration (§6.10). The
-/// four literals that stood here were the thing the mirror exists to prevent — a
-/// second declaration of the ABI, three files from the first, with a comment in
-/// `blend_common.wesl` claiming they were "mirrored" when they were transcribed.
-///
-/// `Normal` reaches the pass only when the group is **clipped** or carries an
-/// opacity of its own (§14.4); an ordinary normal layer is the
-/// absence of a pass.
+/// `Normal` reaches the pass only when the group is **clipped** or carries an opacity
+/// of its own (§14.4); an ordinary normal layer is the absence of a pass.
 pub(super) fn blend_code(mode: BlendMode) -> u32 {
     use stark_shaders::mirror::blend_common as bc;
     match mode {
@@ -80,10 +74,8 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
 ///
 /// **Shared, not owned.** A merge-down through a blend mode runs this very pipeline on
 /// tile-sized targets (§14.11, `gpu::merge`), so a merged layer cannot drift from the
-/// stack it stands in for — the same argument the eyedropper makes for sampling
-/// through the compositor rather than beside it. It is behind an `Arc` for a blunter reason too:
-/// building one decodes the Mixbox LUT, which is not a thing to do twice per
-/// document.
+/// stack it stands in for. Behind an `Arc` also because building one decodes the
+/// Mixbox LUT, which is not a thing to do twice per document.
 pub(crate) struct BlendPass {
     pub(crate) pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
@@ -118,11 +110,9 @@ impl BlendPass {
             ("vs_main", "fs_main"),
             &targets,
         );
-        // Decoded only where it is read from: an Oklab document gets a 1×1 stand-in
-        // so the one bind group layout still has something to bind. Without the
-        // `mixbox` feature no space asks for the real table, and there is none to
-        // decode — `needs_pigment_lut` is then false for every space in the build, so
-        // this is the stand-in unconditionally.
+        // An Oklab document gets a 1×1 stand-in, so the one bind group layout still
+        // has something to bind. Without the `mixbox` feature no space asks for the
+        // real table, so the stand-in is unconditional.
         #[cfg(feature = "mixbox")]
         let pigment = if color_space.needs_pigment_lut() {
             PigmentLut::load(ctx)
@@ -144,22 +134,14 @@ impl BlendPass {
         }
     }
 
-    /// Encode one merge: the isolated layer `src` into the accumulator `b.back`,
-    /// through blend slot `b.slot`, writing `b.out` (§18.0.4).
-    /// **The one description of `blend_common.wesl`'s group** — the screen's and the
-    /// merge's alike.
+    /// The bind group for one merge: the isolated `src` over the accumulator `back`
+    /// (§18.0.4). **The one description of `blend_common.wesl`'s group** — the
+    /// screen's and `gpu::merge`'s alike (§14.11), which is what keeps a merged layer
+    /// from drifting from the stack it stands in for.
     ///
-    /// `gpu::merge` runs this very pipeline on tile-sized targets to merge a layer
-    /// down through its mode (§14.11), which is the whole argument for merging through
-    /// the pass rather than restating its algebra. It had its own copy of this match,
-    /// arm for arm, and to allow it this type exposed its layout and its pigment LUT —
-    /// so the guarantee "the merge cannot drift from the screen" rested on two lists
-    /// staying identical, where the `unreachable!` arm would have caught a missing
-    /// binding only at run time, on an adapter, in the Mixbox half CI does not render.
-    ///
-    /// The uniform arrives as a resource because that is the one thing the two callers
-    /// genuinely differ in: the screen binds a slot of a buffer holding every merge in
-    /// the frame, the merge binds the first slot of a buffer holding one.
+    /// The uniform arrives as a resource because it is the one thing the two callers
+    /// differ in: the screen binds a slot of a buffer holding every merge in the
+    /// frame, the merge binds the first slot of a buffer holding one.
     pub(crate) fn bind_group(
         &self,
         device: &wgpu::Device,
@@ -225,9 +207,8 @@ impl BlendPass {
 ///
 /// The two are the same shape — read the accumulator, write the other half of the
 /// ping-pong, off a uniform slot of their own — and differ only in that a merge also
-/// binds an isolated source. Here rather than in `filter.rs` because the level it
-/// names is this module's, which is also why the filter pass borrows the scratch:
-/// they bounce through the same one.
+/// binds an isolated source. They bounce through the same scratch, which this module
+/// owns.
 pub(super) struct Bounce<'a> {
     /// The accumulator this pass reads.
     pub(super) back: Targets<'a>,
@@ -257,11 +238,9 @@ impl Bounce<'_> {
         let attachments = self.out.attachments(desc::CLEAR);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
-            // Covers every texel and reads nothing from `out` — including the aux,
+            // Covers every texel and reads nothing from `out` — the aux included,
             // which a filter copies across from `back` rather than leaving to a load
-            // op, since `out` is the other half of a ping-pong and holds a stale
-            // bounce. So the load is a don't-care, and clearing states that rather
-            // than implying the previous contents matter.
+            // op. The load is a don't-care, and clearing says so.
             color_attachments: &attachments[..self.out.count()],
             ..Default::default()
         });
@@ -271,15 +250,12 @@ impl Bounce<'_> {
     }
 }
 
-/// The extra viewport-sized targets **one level** of isolation needs
-/// (§18.0.4).
+/// The extra viewport-sized targets **one level** of isolation needs (§18.0.4).
 ///
-/// `swap` is the other half of a ping-pong, because a merge — and a filter pass —
-/// reads the accumulator and writes the result and a texture cannot be both; every
-/// level has one. `iso`, where a group composites alone, exists only on a level
-/// whose stack actually isolates something: a level that only ping-pongs (a stack
-/// whose sole non-direct members are filters, §21.3) never allocates the trio it
-/// provably cannot bind.
+/// `swap` is the other half of the ping-pong, and every level has one. `iso`, where a
+/// group composites alone, exists only on a level whose stack actually isolates
+/// something: a level that only ping-pongs (its sole non-direct members are filters,
+/// §21.3) allocates no trio it cannot bind.
 pub(super) struct ScratchLevel {
     swap: Trio,
     iso: Option<Trio>,
@@ -287,23 +263,19 @@ pub(super) struct ScratchLevel {
     /// **phase** of its ping-pong.
     ///
     /// A bind group over an accumulator is fully determined by which way round the
-    /// ping-pong currently is: a pass at level `l` reads either this level's `swap` or
-    /// the stack's own target (the caller's at level 0, level `l−1`'s `iso` below
-    /// that), and a merge's source is always this level's `iso`. Two phases, so two of
-    /// each — however many merges the document has, and however many frames it is
-    /// drawn for.
+    /// ping-pong is: a pass at level `l` reads either this level's `swap` or the
+    /// stack's own target (the caller's at level 0, level `l−1`'s `iso` below that),
+    /// and a merge's source is always this level's `iso`. Two phases, so two of each,
+    /// however many merges the document has.
     ///
-    /// **Two things can invalidate one, and the second is easy to miss.** The
-    /// *textures* are this level's own or the accumulator's, and `ensure_targets`
-    /// drops the whole scratch whenever the accumulator is rebuilt — so those are
-    /// covered by the scratch's own lifetime. But the group also names the pass's
-    /// **uniform buffer**, and a frame with more merges than any before it does not
-    /// resize that buffer, it *replaces* it ([`UniformSlots::write`]) — leaving a kept
-    /// bind group pointing at one too small for the offset it is about to be given.
-    /// That is a validation error, not a wrong pixel, and no single-render test can
-    /// reach it: a fresh compositor sizes its buffer before it builds anything over
-    /// it. [`Compositor::upload_streams`] calls [`ScratchTargets::invalidate_bind_groups`]
-    /// when the buffer moves, which is the whole of the second half.
+    /// **Two things invalidate one.** The textures are covered by the scratch's own
+    /// lifetime — `ensure_targets` drops the whole scratch when the accumulator is
+    /// rebuilt. The pass's **uniform buffer** is not: a frame with more merges than any
+    /// before it *replaces* that buffer ([`UniformSlots::write`]), leaving a kept group
+    /// pointing at one too small for the offset it is about to be given — a validation
+    /// error no single-render test can reach, since a fresh compositor sizes its buffer
+    /// before it builds anything over it. [`Compositor::upload_streams`] calls
+    /// [`ScratchTargets::invalidate_bind_groups`] when the buffer moves.
     ///
     /// [`Compositor::upload_streams`]: super::Compositor
     blend_bg: [OnceLock<wgpu::BindGroup>; 2],
@@ -379,12 +351,11 @@ impl ScratchLevel {
 /// One [`ScratchLevel`] per level of group nesting the document actually reaches
 /// (§14.7).
 ///
-/// A group's members isolate into *its* level's `iso`, which is the target the
-/// next level down composites into — so nesting costs one of these per level and
-/// not one per group. Allocated only when a document contains something that has
-/// to be isolated at all — an ordinary painting never pays the ~40 MB — and each
-/// level allocates only the half its stack uses (`needs`, from
-/// [`Plan::scratch`](super::plan::Plan::scratch)): a document whose only
+/// A group's members isolate into *its* level's `iso`, which is what the next level
+/// down composites into — so nesting costs one of these per level, not one per group.
+/// Allocated only when something has to be isolated at all (an ordinary painting never
+/// pays the ~40 MB), and each level allocates only the half its stack uses (`needs`,
+/// from [`Plan::scratch`](super::plan::Plan::scratch)): a document whose only
 /// non-`Normal` thing is a filter pays for the ping-pong pair alone.
 pub(super) struct ScratchTargets {
     pub(super) size: Extent2,

@@ -1,19 +1,13 @@
 //! GPU → CPU texture readback (§9). Used for export and golden tests.
 //!
-//! Readback is **inherently asynchronous** — it is the one GPU operation that is
-//! (§7), and the one place where native and web genuinely differ:
+//! Readback is the one **inherently asynchronous** GPU operation (§7), and the one
+//! place native and web genuinely differ: `Device::poll(Wait)` blocks until the queue
+//! drains, while WebGPU has no blocking poll at all — `mapAsync` settles only when the
+//! browser's event loop runs.
 //!
-//! - Natively, `Device::poll(Wait)` blocks until the queue drains, so the map
-//!   callback has already fired by the time it returns.
-//! - On WebGPU there is no blocking poll. `mapAsync` returns a JS promise that
-//!   only settles when the browser's event loop runs, so `poll` is a no-op and
-//!   `getMappedRange` on the next line fails with `OperationError` — the buffer
-//!   is simply not mapped yet.
-//!
-//! So the real entry point is [`read_rgba8`], which is `async` and correct on
-//! both. The blocking [`read_rgba8_blocking`] is kept for the golden tests, which
-//! are native by construction, and is **compiled out on wasm** so that the
-//! failure above cannot be reintroduced by calling it from the frontend.
+//! [`read_rgba8`] is the entry point and is correct on both. The blocking
+//! [`read_rgba8_blocking`] is for the golden tests, which are native by construction,
+//! and is compiled out on wasm.
 
 use crate::error::{EngineError, Result};
 use crate::gpu::context::GpuContext;
@@ -22,10 +16,8 @@ use crate::view::Extent2;
 
 /// A texel of `texture`, in bytes.
 ///
-/// Asked of the texture rather than of the caller. As a parameter it would make every
-/// reader restate a fact the texture already carries — and a mismatch would not fail,
-/// it would hand back rows shifted by the difference, which reads as a picture skewing
-/// progressively sideways rather than as an error.
+/// Asked of the texture rather than of the caller: a mismatch would not fail, it would
+/// hand back rows shifted by the difference — a picture skewing progressively sideways.
 fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
     texture
         .format()
@@ -33,15 +25,13 @@ fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
         .expect("readback of an uncompressed texture")
 }
 
-/// **The whole of a staging buffer's layout**: how wide a row really is, how wide the
-/// copy had to make it, how many rows a texture has, and how many textures are in
-/// there.
+/// **The whole of a staging buffer's layout**: a row's real width, its padded width,
+/// the rows per texture, and how many textures are in there.
 ///
-/// One value rather than numbers threaded separately, because a mismatch between any
-/// two of them does not fail — it hands back rows shifted by the difference, which
-/// reads as a picture skewing progressively sideways. [`begin_read`] returns this and
-/// [`take_rows`] takes nothing else, so the layout that was written and the layout
-/// that is read are the same value and cannot be given different arguments.
+/// One value rather than numbers threaded separately: a mismatch between any two of
+/// them does not fail, it hands back rows shifted by the difference. [`begin_read`]
+/// returns this and [`take_rows`] takes nothing else, so the layout written and the
+/// layout read cannot be given different arguments.
 pub(super) struct Rows {
     /// A row's real bytes.
     unpadded: u32,
@@ -74,12 +64,11 @@ impl Rows {
 /// Copy `textures` into **one** mappable buffer, one slot each, and submit. Returns
 /// the buffer and the geometry [`take_rows`] undoes.
 ///
-/// One buffer however many textures, which is what a batched read *is*: a map is a
-/// round trip to the queue and a gradient capture reads up to
-/// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches (§22.2), so a map
-/// apiece would be a map per texel of latency. Every texture must carry `COPY_SRC`,
-/// share `size`, and share a format — the slot stride is taken from the first, and a
-/// second texture of a different texel size would be copied at the wrong pitch.
+/// One buffer however many textures: a map is a round trip to the queue, and a gradient
+/// capture reads up to [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) patches
+/// (§22.2). Every texture must carry `COPY_SRC`, share `size`, and share a format — the
+/// slot stride is taken from the first, and a different texel size would be copied at
+/// the wrong pitch.
 pub(super) fn begin_read(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
@@ -126,11 +115,9 @@ pub(super) fn begin_read(
 /// byte string per texture. Consumes the buffer: unmaps it, then **destroys** it.
 ///
 /// Destroyed rather than dropped, for `ScopedResources`' reason (§6.2): on the web a
-/// dropped buffer only releases its JS handle and waits for GC. A readback buffer is
-/// the largest single allocation in the subsystem — an 8192² export is 268 MB — and
-/// leaving that to a collector is how the tab OOMs. Safe here for the same reason it
-/// is there: the copy that filled it has already been submitted *and* waited on, so
-/// nothing is in flight against it.
+/// dropped buffer only releases its JS handle and waits for GC, and this is the largest
+/// single allocation in the subsystem — an 8192² export is 268 MB. Sound because the
+/// copy that filled it has already been submitted *and* waited on.
 pub(super) fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
     let data = buffer
         .slice(..)
@@ -155,24 +142,18 @@ pub(super) fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
 
 /// Await the map of `buffer`, driving it the way this target needs.
 ///
-/// How the map callback actually gets driven is the one thing that genuinely differs
-/// between the two targets, and getting it wrong deadlocks rather than failing loudly:
+/// Getting the drive wrong deadlocks rather than failing loudly:
 ///
 ///  · Native — nothing polls the device on its own, and the executor awaiting this
 ///    future is very likely blocking the only thread (`pollster`). So block *here*,
-///    before awaiting: `Wait` drains the queue and fires the callback, and the await
-///    below then resolves immediately. A non-blocking `Poll` hangs forever — the
-///    thread parks and no one ever polls again.
-///  · Web — there is no blocking poll; `mapAsync` is a promise that the browser's
-///    event loop settles while this future is suspended. Calling poll would do
-///    nothing, so awaiting *is* the wait.
+///    before awaiting; a non-blocking `Poll` hangs forever.
+///  · Web — there is no blocking poll; `mapAsync` is a promise the browser's event loop
+///    settles while this future is suspended, so awaiting *is* the wait.
 ///
 /// **Reports rather than panics**, unlike the blocking sibling below, because this is
-/// the path a *shipping* build takes: a failed map here is a lost device or an
-/// exhausted one, and turning that into an `expect` was an abort — on the web, with
-/// the painting unsaved (§5). The action log is untouched by any of it, so a caller
-/// told the readback failed can still save the document; that is the whole point of
-/// there being an error to tell it with.
+/// the path a *shipping* build takes: a failed map is a lost or exhausted device, and
+/// an `expect` would be an abort with the painting unsaved (§5). The action log is
+/// untouched, so a caller told the readback failed can still save the document.
 async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
     /// The wait itself, so the caller below can destroy on either outcome without
     /// writing the destruction twice.
@@ -195,12 +176,10 @@ async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
 
     let waited = poll_and_await(ctx, buffer).await;
     if waited.is_err() {
-        // **Destroyed on the failing path too**, which is the path that most wants
-        // it: the argument in [`take_rows`] is that a dropped readback buffer only
-        // releases its JS handle and waits for a collector, and this is a lost or
-        // exhausted device — the moment a tab can least afford 268 MB left to GC.
-        // Sound for the same reason: the copy that filled it was submitted, and a
-        // map that failed has nothing in flight against it either.
+        // Destroyed on the failing path too, which is the path that most wants it:
+        // a lost or exhausted device is the moment a tab can least afford 268 MB
+        // left to a collector. Sound for `take_rows`' reason — the copy that filled
+        // it was submitted, and a map that failed has nothing in flight against it.
         buffer.destroy();
     }
     waited
@@ -210,8 +189,7 @@ async fn wait_mapped(ctx: &GpuContext, buffer: &wgpu::Buffer) -> Result<()> {
 /// what the map said.
 ///
 /// A lost device fails the map too, so the map's own message is a symptom and the
-/// device-lost callback holds the cause (`GpuHealth`). Reporting the cause where
-/// there is one is what makes the message name a driver reset rather than a buffer.
+/// device-lost callback holds the cause (`GpuHealth`).
 fn readback_failed(ctx: &GpuContext, detail: String) -> EngineError {
     ctx.health()
         .failure()
@@ -232,12 +210,12 @@ pub async fn read_rgba8(
         .expect("one texture in, one string out"))
 }
 
-/// Blocking readback, for native callers only — the golden tests, which are
-/// native by construction (`STARK_ALLOW_NO_GPU`, adapter-specific goldens).
+/// Blocking readback, for native callers only — the golden tests, which are native by
+/// construction (adapter-specific goldens).
 ///
-/// Compiled out on wasm on purpose: WebGPU has no blocking poll, so this shape
-/// cannot work there, and a `cfg` is the only guard that makes calling it from
-/// the frontend a compile error rather than a runtime `OperationError`.
+/// Compiled out on wasm: WebGPU has no blocking poll, and a `cfg` is the only guard
+/// that makes calling it from the frontend a compile error rather than a runtime
+/// `OperationError`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
     let (buffer, rows) = begin_read(ctx, &[texture], size);
@@ -267,10 +245,9 @@ pub fn read_rgba16f_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Ex
 
 /// Map `buffer` and block until it is, panicking on either failure.
 ///
-/// The native half of [`wait_mapped`] with the async machinery taken off, and
-/// `expect` rather than `Result` for the same reason its caller has: this path is
-/// reached only from tests and goldens, where a device that cannot be read is the
-/// finding and not something to route around.
+/// `expect` rather than `Result` for its caller's reason: this path is reached only
+/// from tests and goldens, where a device that cannot be read is the finding and not
+/// something to route around.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn map_blocking(ctx: &GpuContext, buffer: &wgpu::Buffer) {
     buffer
@@ -296,15 +273,12 @@ pub(super) fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 /// carry `COPY_SRC` and share `size`; results come back in argument order, 4 `f32`
 /// per texel.
 ///
-/// **The format is checked here rather than by the caller**, and unconditionally.
-/// The decode is four halves a texel, which is a claim about the texture and not
-/// about the reader — so the reader is where it belongs, rather than a
-/// `debug_assert` per caller, which is one fact copied twice and held in no release
-/// build at all. A color space whose `color_format` is something else
-/// (§6.7 leaves that open) would otherwise hand back a picture decoded at the wrong
-/// stride: not an error, a wrong colour. The formats come from this build's own
-/// pipeline, never from a file or a peer, so an assert is the right shape — there is
-/// no outside input to refuse (§5).
+/// **The format is checked here rather than by the caller**, and unconditionally: the
+/// decode is four halves a texel, which is a claim about the texture and not about the
+/// reader. A color space whose `color_format` is something else (§6.7 leaves that open)
+/// would otherwise hand back a picture decoded at the wrong stride — not an error, a
+/// wrong colour. The formats come from this build's own pipeline, never from a file or
+/// a peer, so an assert is the right shape (§5).
 pub async fn read_many_rgba16f(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],

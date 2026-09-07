@@ -6,11 +6,11 @@
 //! kernels of its own (`liquify.wesl`): a snapshot of the field under each
 //! segment's square, the composition of that segment's step into the field, and
 //! one resample of the whole piece through the composed field from the run's
-//! pristine base. What the picture pays for a stroke of any length, and for any
-//! number of strokes in a run, is one clamped Catmull-Rom generation. The step
-//! itself reads the tip's own coverage, through the **coverage prefix** the tip
-//! resolves for a liquify brush ([`ResolvedTip::warp`](super::super::tips::ResolvedTip))
-//! bound where every other kernel binds its prefix-τ.
+//! pristine base. A stroke of any length, and any number of strokes in a run, cost
+//! the picture one clamped Catmull-Rom generation. The step reads the tip's own
+//! coverage, through the **coverage prefix** the tip resolves for a liquify brush
+//! ([`ResolvedTip::warp`](super::super::tips::ResolvedTip)) bound where every other
+//! kernel binds its prefix-τ.
 //!
 //! Three things are decided on the CPU before a piece is drawn, and all three are
 //! pure functions of the record and the run the stroke found — which is what lets a
@@ -20,9 +20,9 @@
 //!   stroke's declared reach are what the run expects, or the stroke starts a run
 //!   afresh from the picture;
 //! - **the reach walk** ([`ReachWalk`]): per segment, a bound on how far the field
-//!   under it may point after the step, from the run's per-tile bounds and the
-//!   travel since; and, where that bound would pass the cap, the segment before
-//!   which the run **re-bases** — decided at a segment, never at a piece cut;
+//!   under it may point after the step, and — where that bound would pass the cap —
+//!   the segment before which the run **re-bases**, decided at a segment, never at
+//!   a piece cut;
 //! - **the pieces** ([`chunk_segments_within`]): the loop's chunker at the liquify
 //!   budget, cut wherever the walk re-bases.
 
@@ -66,13 +66,12 @@ impl StrokeRenderer {
     /// region-sized piece at a time, and hand back the tiles with the run they
     /// are composed through.
     ///
-    /// The range machinery is [`render_dynamic`](Self::render_dynamic)'s, and it
-    /// carries nothing across ranges of its own: the field *is* the state, and it
-    /// rides the layer's run rather than a [`ToolState`](super::super::ToolState).
-    /// A frozen head leaves its run on the state it hands the tail, and the tail
-    /// composes into it — which is the same run a whole-stroke render composes
-    /// into, because every decision here is a function of the record and the run
-    /// the range found.
+    /// The range machinery is [`render_dynamic`](Self::render_dynamic)'s, but nothing
+    /// is carried across ranges: the field *is* the state, and it rides the layer's
+    /// run rather than a [`ToolState`](super::super::ToolState). A frozen head leaves
+    /// its run on the state it hands the tail, and the tail composes into the same run
+    /// a whole-stroke render would, because every decision here is a function of the
+    /// record and the run the range found.
     pub(in crate::gpu::stroke) fn render_liquify(
         &self,
         scene: StrokeScene<'_>,
@@ -97,12 +96,11 @@ impl StrokeRenderer {
             Some(run) if kept && run.is_fresh(scene.base, within) => (**run).clone(),
             _ => LiquifyRun::fresh(),
         };
-        // What the run reads, recorded for **every** tile of the declared reach
-        // rather than for the tiles this range's pieces happen to composite: the
-        // domain of the base is then a function of the record alone, so a head and
-        // its tail, a whole-stroke render and a peer all build the same run — and a
-        // later paint inside the reach is caught by the same identities on every
-        // one of them (§12.6).
+        // Recorded for **every** tile of the declared reach rather than for the tiles
+        // this range's pieces happen to composite: the base's domain is then a function
+        // of the record alone, so a head and its tail, a whole-stroke render and a peer
+        // build the same run, and a later paint inside the reach is caught by the same
+        // identities on all of them (§12.6).
         if kept {
             record_base(&mut run, scene.base, within);
         }

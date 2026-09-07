@@ -2,33 +2,26 @@
 //! reads, in layout order (§6.2, §6.13, §6.10).
 //!
 //! **One list per entry point, read by both sides.** [`kit`](super::kit) builds the
-//! bind group *layout* from it and [`run`](super::run) builds the bind *group* from it,
-//! so the two cannot disagree about which slots are present, in what order, or of what
-//! type. What that replaced was two hand-kept arrays per entry point — seven pairs of
-//! them — joined by nothing but the order they happened to be written in and a magic
-//! element count per layout (`[..12 + 4 * usize::from(resid)]`).
+//! bind group *layout* from it and [`run`](super::run) builds the bind *group* from
+//! it, so the two cannot disagree about which slots are present, in what order, or of
+//! what type.
 //!
-//! **Everything a list does not say comes from the shader**, and it comes *in* the
-//! list rather than being looked up beside it: `d::REGION_COLOR` is the generated
-//! declaration itself (`stark_shaders::mirror::dynamics::decl`), carrying the slot's
-//! group, its index, its kind, its storage format, its uniform's `min_binding_size`
-//! and whether it is `@if(resid)`-gated. A list here is therefore *only* a membership
-//! statement, plus the two things a declaration cannot decide: whether **this** entry
-//! point reads a texture through a sampler ([`Slot::sampled`]) or with `textureLoad`
-//! ([`Slot::at`]), and whether a uniform is bound whole or as one dynamic-offset slot
-//! ([`Slot::dynamic`]). The first really is per pair — `region_color` is loaded by
-//! `snapshot` and sampled by `exchange`.
+//! **Everything a list does not say comes from the shader** (§6.10), and it comes
+//! *in* the list: `d::REGION_COLOR` is the generated declaration itself
+//! (`stark_shaders::mirror::dynamics::decl`), carrying the slot's group, index, kind,
+//! storage format, `min_binding_size` and whether it is `@if(resid)`-gated. A list is
+//! therefore *only* a membership statement, plus the two things a declaration cannot
+//! decide: whether **this** entry point reads a texture through a sampler
+//! ([`Slot::sampled`]) or with `textureLoad` ([`Slot::at`]), and whether a uniform is
+//! bound whole or as one dynamic-offset slot ([`Slot::dynamic`]). The first really is
+//! per pair — `region_color` is loaded by `snapshot` and sampled by `exchange`.
 //!
 //! Naming the declaration rather than the index is also what makes the group
-//! unambiguous. `@binding(0)` means a different slot in each of a module's groups, and
-//! the `Binding::lookup(table, index)` this replaces answered with whichever came
-//! first — correct for `dynamics`, which declares one group, and silently wrong for
-//! any of the dozen modules that declare two or three.
+//! unambiguous: `@binding(0)` means a different slot in each of a module's groups.
 //!
-//! The residual entries are listed inline, beside the color binding each rides with,
-//! rather than heaped at the end of the array: the gate is on the declaration now, so
-//! there is no reason to keep them in a countable tail. See the block at the head of
-//! `dynamics.wesl` for what each carries (§6.7).
+//! A residual entry is listed beside the color binding it rides with; the gate is on
+//! the declaration. See the block at the head of `dynamics.wesl` for what each
+//! carries (§6.7).
 
 use crate::gpu::desc::Slot;
 use stark_shaders::mirror::dynamics::decl as d;
@@ -220,18 +213,13 @@ mod tests {
     // from whichever of the three modules declares them.
     use stark_shaders::mirror::{dynamics, dynamics_common, liquify};
 
-    /// Every list names slots the shader actually declares, and names none of them
-    /// twice.
+    /// No list names a slot twice.
     ///
-    /// The lists are the one thing on this boundary still written by hand, so this is
-    /// what stands behind them. A duplicate is a wgpu validation failure at bind-group
-    /// creation — loud, but on a GPU, which is the half of the suite CI does not run
-    /// against pixels. Here it is arithmetic.
-    ///
-    /// "Names a *real* binding" needs no assertion any more: a slot carries the
-    /// declaration itself (`decl::REGION_COLOR`), so an index the shader does not
-    /// declare cannot be written down. That is the class the `Binding::lookup` this
-    /// replaces could only check one instance of at a time.
+    /// The lists are the one thing on this boundary still written by hand. A
+    /// duplicate is a wgpu validation failure at bind-group creation — loud, but only
+    /// on a GPU, which is the half of the suite CI does not run against pixels. Here
+    /// it is arithmetic. That a slot names a *real* binding needs no assertion: it
+    /// carries the declaration itself (`decl::REGION_COLOR`).
     #[test]
     fn every_slot_list_names_real_bindings_once() {
         for (what, list) in LISTS {
@@ -284,13 +272,9 @@ mod tests {
         ("warp_apply", WARP_APPLY),
     ];
 
-    /// A residual binding is listed **beside** the color binding it rides with, and a
-    /// list that takes one takes all of them — the all-or-nothing the shader's
-    /// `@if(resid)` block expresses on the other side (§6.7).
-    ///
-    /// Stated as a count rather than as an ordering, because the ordering is now free:
-    /// the gate is on the declaration, so a residual entry can sit wherever it reads
-    /// best. What would still be a bug is a list that takes *some* of a pair.
+    /// A list takes a residual binding exactly when it takes the color binding that
+    /// rides with it — the all-or-nothing the shader's `@if(resid)` block expresses
+    /// on the other side (§6.7). Ordering is free; taking *some* of a pair is the bug.
     ///
     /// By **name** rather than by index: the lists span three modules whose group 0
     /// is partitioned between them, so an index names a slot only with its module,

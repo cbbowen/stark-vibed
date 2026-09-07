@@ -1,18 +1,15 @@
-//! The brush-dynamics path (§6.2): a serial swept-exchange loop that lets
-//! a stroke pick paint up off the canvas and put it back down.
+//! The brush-dynamics path (§6.2): a serial swept-exchange loop that lets a stroke
+//! pick paint up off the canvas and put it back down.
 //!
-//! Where the swept path composes by summing optical depth — and so can draw its
-//! segments in any order — this one is *sequential* by nature: what the tip carries
-//! into a segment is what the previous segment left on it. The loop runs on the GPU
-//! (no CPU readback, so it works on WebGPU) with a per-segment x per-lateral-band
-//! reservoir texture standing in for the tip's load.
+//! Sequential, unlike the swept path: what the tip carries into a segment is what the
+//! previous segment left on it. It runs entirely on the GPU (no CPU readback, so it
+//! works on WebGPU), a per-segment × per-lateral-band reservoir texture standing in
+//! for the tip's load.
 //!
-//! The path is three modules, split by what a maintainer is holding in their head:
-//! [`plan`] works out what to dispatch and touches no GPU at all, [`kit`] builds the
-//! objects it is dispatched with, and [`run`] records it — checking its working
-//! textures out of the stroke-level [`scratch`](crate::gpu::scratch) pool through the
-//! submit scope that owns their release. What is left here is the one question
-//! asked before any of them — which path a stroke takes at all.
+//! [`plan`] decides what to dispatch and touches no GPU, [`kit`] builds the objects
+//! it is dispatched with, and [`run`] records it — checking its working textures out
+//! of the stroke-level [`scratch`](crate::gpu::scratch) pool. What is left here is
+//! the question asked before any of them: which path a stroke takes at all.
 
 use stark_model::document::{BrushEffect, BrushParams};
 
@@ -30,45 +27,37 @@ pub(super) use kit::{DynamicsKit, build_dynamics_kit};
 
 /// Which path a stroke takes, as [`dynamics_setup`] decides it.
 ///
-/// The two swept answers are kept apart because they are not the same event: one is
-/// the fast path doing its job, the other is the renderer failing to draw the brush
-/// it was given. Only the caller knows how loudly to say so, so the distinction is
-/// carried out rather than resolved here.
+/// `Swept` and `TipTooLarge` are kept apart because they are not the same event —
+/// the fast path doing its job versus the renderer failing to draw the brush it was
+/// given — and only the caller knows how loudly to say so.
 pub(super) enum StrokePath {
-    /// Run the sequential stamp loop, with the axes that sent it here.
-    ///
-    /// The variant carries what it proved. `dynamics_setup` reads the axes off the
-    /// `Paint` effect to decide this arm at all, so a stroke on this path is a paint
-    /// stroke by construction — which the run then re-derived twice through a helper
-    /// whose `expect` said "the stamp loop draws paint brushes". A value that is in
-    /// hand at the decision does not need an assertion at the use.
+    /// Run the sequential stamp loop, carrying the dynamics axes that sent it here —
+    /// so a stroke on this path is a wet stroke by construction, with nothing left
+    /// for the run to re-derive.
     Loop {
         dynamics: stark_model::document::BrushDynamics,
     },
-    /// Run the same region machinery with the **liquify field's** kernels (§6.13):
-    /// a liquify stroke composes a displacement field over the canvas under it and
-    /// resamples the run's base through it, so like the loop it needs the region
-    /// — and like the loop, a tip whose extent overflows one cannot run. No
-    /// payload: the follow rides the segments, modulated per segment as every rate
-    /// does, and the run rides the layer.
+    /// Run the same region machinery with the liquify field's kernels (§6.13): a
+    /// displacement field composed over the canvas under the stroke, the base
+    /// resampled through it. It needs a region too, so — like the loop — a tip whose
+    /// extent alone overflows one cannot run. No payload; the follow rides the
+    /// segments.
     Liquify,
     /// The brush manipulates no paint already on the canvas, so the swept deposit
     /// *is* the whole stroke — one pass, no region, nothing given up.
     Swept,
-    /// The brush erases (§6.12): the same swept extent, accumulated across the
-    /// whole stroke and turned on the base's *visible* opacity instead of laid as
-    /// paint. Its own arm because the effect is its own variant
-    /// (`BrushEffect::Erase`) — an eraser has no dynamics axes to gate on, and no
-    /// region is ever needed, so no tip is too large for it.
+    /// The brush erases (§6.12): the same swept extent, accumulated across the whole
+    /// stroke and turned on the base's *visible* opacity instead of laid as paint.
+    /// Needs no region, so no tip is too large for it.
     Erase,
     /// The brush manipulates paint, but its tip alone — before any travel is priced
-    /// in — wants more than one region, and the region is the one thing pieces
-    /// cannot subdivide. The swept deposit draws what it can, which is the brush's
-    /// own `add` paint and none of the manipulation.
+    /// in — wants more than one region, and a region is the one thing pieces cannot
+    /// subdivide. The swept deposit draws what it can: the brush's own `add` paint
+    /// and none of the manipulation.
     ///
-    /// Unreachable from a brush this app built: the frontier is published as
-    /// [`max_tip_reach`](super::budget::max_tip_reach) and the frontend clamps to
-    /// it. What is left is a record from a peer or another build.
+    /// Unreachable from a brush this app built — the frontier is published as
+    /// [`max_tip_reach`](super::budget::max_tip_reach) and the frontend clamps to it
+    /// — so what arrives here is a record from a peer or another build.
     TipTooLarge,
 }
 
@@ -78,45 +67,34 @@ pub(super) struct StrokePlan {
     pub(super) path: StrokePath,
     pub(super) tol: crate::path::FlattenTolerance,
     /// How far the region floor shortened the segments the brush's own budget
-    /// wanted — `None` when the fit cost nothing, which is every brush whose
-    /// full-length segment already fits. Carried out so the renderer can say so
-    /// once per stroke: the cap is silent geometry, but its price is real — the
-    /// loop exchanges once per segment, so the stroke's stamp count multiplies by
-    /// `wanted / got`.
+    /// wanted; `None` when the brush's full-length segment already fits. Carried out
+    /// so the renderer can report it once per stroke: the loop exchanges once per
+    /// segment, so the stamp count multiplies by `wanted / got`.
     pub(super) shortened: Option<Shortened>,
 }
 
 /// Which path a brush's strokes take, and the flattening budget if it is the stamp
 /// loop.
 ///
-/// **A pure function of the brush**, structurally: this answer has to agree across
-/// every render of every piece of the stroke and with the commit that eventually
-/// replaces them — a live tail that took the stamp loop while the commit degraded
-/// to the swept deposit would redraw the stroke the moment the pointer came up.
-/// Taking only the brush is the strongest form of that guarantee — there is nothing
-/// about the piece in hand, or the stroke's length, for it to disagree over — and
-/// it is what lets `render_range` re-ask on every pointer move for free. The one
-/// thing beside the brush is `rise`, the tip's (`tips::ResolvedTip::rise`): a
-/// number of the mask the brush *names*, content-addressed and so as fixed as the
-/// brush is, which only a liquify brush's budget reads (§6.13).
+/// **A pure function of the brush**, and must stay one: the answer has to agree
+/// across every render of every piece of a stroke and with the commit that replaces
+/// them, or a live tail takes the stamp loop while its commit degrades to the swept
+/// deposit and the stroke redraws the moment the pointer comes up. Nothing about the
+/// piece in hand or the stroke's length may enter. `rise` is the tip's
+/// (`tips::ResolvedTip::rise`), content-addressed and so as fixed as the brush is;
+/// only a liquify brush's budget reads it (§6.13).
 ///
-/// It can read that way because the stroke's *size* decides nothing: an oversized
-/// stroke is drawn one region-sized piece at a time (`chunk_segments`) rather than
-/// degraded, and an oversized *segment* is shortened until it fits
-/// ([`fit_len`]). All that is left is the floor no shortening gets under — the
-/// tip's own extent plus a minimal segment — and only a brush past that degrades.
+/// Size decides nothing: an oversized stroke is drawn one region-sized piece at a
+/// time (`chunk_segments`) and an oversized *segment* is shortened until it fits
+/// ([`fit_len`]). Only a brush past the floor those cannot get under — the tip's own
+/// extent plus a minimal segment — degrades.
 pub(super) fn dynamics_setup(b: &BrushParams, rise: f32) -> StrokePlan {
     // The same flattened segments whichever path runs, at the same budget: a long
-    // stroke costs more pieces, not coarser geometry — and the swept fallback below
-    // draws the very segments the loop would have. The price of the region floor
-    // comes with it (`None` on every brush the floor does not touch, which is every
-    // brush off the region paths), so nothing here re-derives the min it took.
+    // stroke costs more pieces, not coarser geometry, and the swept fallback below
+    // draws the very segments the loop would have.
     let (tol, shortened) = flatten_budget(b, rise);
-    // The path is the effect's **variant**, structurally (§6.2): a wet brush runs
-    // the loop, a paint brush the swept deposit, an eraser its own pass — no rate
-    // predicate at all, so there is no number for a piece and its commit to read
-    // differently. The predicate this replaces was sound but one NaN-shaped trap
-    // away from not being (`budget.rs`' history at the old `manipulates_paint`).
+    // The path is the effect's variant (§6.2), never a rate predicate: there is then
+    // no number for a piece and its commit to read differently.
     let path = match &b.effect {
         BrushEffect::Erase(_) => StrokePath::Erase,
         BrushEffect::Paint(_) => StrokePath::Swept,
@@ -234,12 +212,10 @@ mod tests {
         ));
     }
 
-    /// The 2026-08-23 repro: a gentle full-size stamp earned the relaxed
-    /// full-radius segment, overflowed the region by one tile row through the
-    /// `√2` corner bound, and lost its dynamics entirely. A canonical mask's
-    /// content lies inside its inscribed disc (`Sweep::reach`), so a stamp now
-    /// prices exactly as the round tip the 500/2048 calibration was built for:
-    /// the loop runs at the brush's own full budget, nothing shortened at all.
+    /// A canonical mask's content lies inside its inscribed disc (`Sweep::reach`),
+    /// so a stamp prices exactly as the round tip the 500/2048 calibration was built
+    /// for: a gentle full-size stamp runs the loop at the brush's own full budget
+    /// rather than overflowing the region through a `√2` corner bound.
     #[test]
     fn a_full_size_stamp_prices_as_the_round_tip_does() {
         let mut b = brush(500.0, 0.05);
@@ -276,9 +252,7 @@ mod tests {
     /// The price the plan quotes is the price the budget paid: `shortened` is `Some`
     /// exactly when the region floor bound the segment length, `wanted` is the
     /// brush's own length, `got` is the floor, and the budget spent is whichever
-    /// bound. One function decides both (`budget::flatten_budget`), so the min and
-    /// its reason cannot drift apart the way two derivations of the same comparison
-    /// could.
+    /// bound.
     #[test]
     fn the_shortening_quoted_is_the_shortening_paid() {
         let mut big = brush(500.0, 0.5);
@@ -318,12 +292,10 @@ mod tests {
         );
     }
 
-    /// **[`max_tip_reach`] is exactly the frontier this gate refuses at**, which is
-    /// the whole of what makes it a limit an editor can clamp against: a brush built
-    /// at the cap draws, and the arithmetic that says so is the same arithmetic
-    /// inverted rather than a second copy of it. Drift either way and the editor
-    /// either offers a brush that silently loses its dynamics (the 2026-08-23 bug,
-    /// one knob over) or withholds one that would have drawn.
+    /// **[`max_tip_reach`] is exactly the frontier this gate refuses at** — what
+    /// makes it a limit an editor can clamp against. Drift either way and the editor
+    /// offers a brush that silently loses its dynamics, or withholds one that would
+    /// have drawn.
     ///
     /// Swept over both knobs and over the bleed, because the reach is a *product*
     /// and the cap has to say the same thing wherever the two put it — including
@@ -362,27 +334,17 @@ mod tests {
         );
     }
 
-    /// **What the editor offers is always drawable**, at every size and for every
-    /// other setting that moves the cap.
+    /// **What the editor offers is always drawable**: the engine's half of the
+    /// bargain `stark-dioxus-frontend` keeps by clamping to [`max_stretch`]
+    /// (`state::update_brush`). Take the largest knob this says is available and the
+    /// loop runs, which is what makes `TipTooLarge` unreachable from the UI
+    /// structurally rather than by a number kept in step by hand.
     ///
-    /// This is the engine's half of the bargain `stark-dioxus-frontend` keeps by
-    /// clamping to [`max_stretch`] (`state::update_brush`, and the stretch slider's
-    /// own top): take the largest knob this says is available and the loop runs. So
-    /// the degradation is unreachable from the UI *structurally* rather than by a
-    /// number kept in step by hand, and what is left for `TipTooLarge` is a record
-    /// from somewhere else — a peer, or a file built by another build.
-    ///
-    /// It also pins that the cap is not vacuous: a non-bleeding tip up to 400 px
-    /// keeps the *whole* slider, because the knob tops out at an elongation of 8 and
-    /// such a tip cannot spend its way past the region however far it is drawn out.
-    /// A cap that quietly became "no stretch for anybody" would pass the frontier
-    /// test above and fail here.
-    ///
-    /// 400 is a checked bound rather than the true one, which sits near 492 — the
-    /// region holds a reach of ~3936 and the knob can ask for eight times the size.
-    /// Stated loosely on purpose: the exact figure moves with `MAX_TEXTURE_DIM_2D`
-    /// and the tile arithmetic, and a test that pinned it would fail on every
-    /// retune while claiming to be about the slider.
+    /// Also that the cap is not vacuous: a non-bleeding tip up to 400 px keeps the
+    /// *whole* slider. A cap that quietly became "no stretch for anybody" would pass
+    /// the frontier test above and fail here. 400 is a loose checked bound — the true
+    /// one sits near 492 and moves with `MAX_TEXTURE_DIM_2D` and the tile arithmetic,
+    /// so pinning it would fail on every retune.
     #[test]
     fn the_offered_stretch_is_always_drawable() {
         for size in [1.0f32, 30.0, 110.0, 250.0, 400.0, 492.0, 500.0] {

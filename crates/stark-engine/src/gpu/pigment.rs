@@ -1,18 +1,15 @@
 //! Mixbox's pigment LUT on the GPU — the inverse of the mixing polynomial
 //! (§18.0.4, §6.7).
 //!
-//! One caller: the blend pass, which combines *light* and then has to say which
-//! mixture of pigments would have produced it. Every other GPU path in the engine
-//! runs Mixbox one way — `mixbox_poly.wesl` evaluates concentrations → color — and
-//! the CPU handles the rare reverse with the vendored `mixbox` crate. A per-texel
-//! inverse is what forces the table onto the GPU.
+//! One caller: the blend pass, which combines *light* and then has to say which mixture
+//! of pigments would have produced it. Every other GPU path runs Mixbox forwards
+//! (`mixbox_poly.wesl`) and the CPU handles the rare reverse; a per-texel inverse is
+//! what forces the table onto the GPU.
 //!
-//! The bytes come from the vendored submodule's own `mixbox_lut.png`, which is the
-//! layout Mixbox's shaders expect: the 64³ cube unrolled into an 8×8 grid of 64×64
-//! slices, 512×512 RGBA8. It is embedded rather than fetched by the frontend, on the
-//! same footing as the polynomial `build.rs` transpiles out of the same submodule:
-//! this is part of what the color space *is*, not content a document supplies. It
-//! is also loaded only in a Mixbox document — an Oklab one never decodes it.
+//! The bytes are the vendored submodule's own `mixbox_lut.png` — the 64³ cube unrolled
+//! into an 8×8 grid of 64×64 slices, 512×512 RGBA8, the layout Mixbox's shaders expect.
+//! Embedded rather than fetched: this is part of what the color space *is*, not content
+//! a document supplies. Only a Mixbox document decodes it.
 //!
 //! Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska.
 //! Licensed CC BY-NC 4.0; see `vendor/mixbox/LICENSE`.
@@ -21,11 +18,11 @@ use crate::gpu::context::GpuContext;
 
 /// The vendored LUT image (git submodule; CC BY-NC 4.0).
 ///
-/// Behind the `mixbox` feature because `include_bytes!` is resolved at *compile*
-/// time: an unconditional one would keep the submodule a hard build requirement even
-/// in a build that can never decode it, which is precisely what the feature exists to
-/// avoid. [`PigmentLut::placeholder`] stays unconditional — the blend pass has one
-/// bind group layout in either space, so something must always be bindable there.
+/// Behind the `mixbox` feature because `include_bytes!` is resolved at *compile* time:
+/// an unconditional one would keep the submodule a hard build requirement even in a
+/// build that can never decode it. [`PigmentLut::placeholder`] stays unconditional — the
+/// blend pass has one bind group layout in either space, so something must always be
+/// bindable there.
 #[cfg(feature = "mixbox")]
 const LUT_PNG: &[u8] = include_bytes!("../../../../vendor/mixbox/shaders/mixbox_lut.png");
 

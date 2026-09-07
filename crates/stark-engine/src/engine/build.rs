@@ -68,12 +68,10 @@ impl Engine {
     ) -> Result<Self> {
         let color_space = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
-        // The registry starts on the builtin flat substrate — it is all that can be
+        // The registry starts on the builtin flat substrate: it is all that can be
         // built before any bytes exist, and it is also what a fresh document is on
-        // (`DEFAULT_SUBSTRATE`), so there is nothing to reconcile between the two. A
-        // substrate is named by the hash of its height map (§6.4), so an engine with no
-        // bytes has exactly one substrate it can truthfully name, and a frontend that
-        // wants another opens a document on it.
+        // (`DEFAULT_SUBSTRATE`). A substrate is named by the hash of its height map
+        // (§6.4), so an engine with no bytes has exactly one it can truthfully name.
         let substrates = Registry::<Substrate>::new(&gpu, Substrate::default());
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
@@ -120,21 +118,19 @@ impl Engine {
     ///
     /// This is what a *preview* engine is (§11): the brush editor's test canvas and
     /// a preset thumbnail both paint strokes that must render exactly as the main
-    /// canvas would, which is an argument for sharing the machinery, not just an
-    /// economy. Sharing keeps the cost to a document, a compositor's attachments and a
-    /// fistful of `Arc` bumps, where building one standalone means recompiling ~19
-    /// shaders and ~30 pipelines and re-decoding every image the app has already
-    /// decoded once.
+    /// canvas would, so sharing the machinery is a correctness argument as much as an
+    /// economy. The cost is a document, a compositor's attachments and a fistful of
+    /// `Arc` bumps, where building one standalone recompiles ~19 shaders and ~30
+    /// pipelines and re-decodes every image the app has already decoded.
     ///
-    /// What is shared is exactly what cannot disagree: the shared pieces are either
-    /// immutable (pipelines), content-addressed (assets, the substrate/environment
-    /// byte-and-build caches), or an allocator (the tile pool). Everything an engine
-    /// can *set* stays per-engine — the document, the session view, and the three
-    /// compositor view settings, which start mirroring the donor's current look
-    /// (substrate, lighting, media parameters) and move independently from there.
+    /// What is shared is exactly what cannot disagree: immutable (pipelines),
+    /// content-addressed (assets, the substrate/environment caches), or an allocator
+    /// (the tile pool). Everything an engine can *set* stays per-engine — the
+    /// document, the session view, and the three compositor view settings, which start
+    /// mirroring the donor's current look and move independently from there.
     ///
     /// The document opens on the donor's current substrate, so a preview needs no
-    /// `SetSubstrate` step — and no substrate bytes handed across, which is the point.
+    /// `SetSubstrate` step — and no substrate bytes handed across.
     ///
     /// Divergence after construction is safe but not tracked: a
     /// [`new_document`](Self::new_document) that changes *this* engine's color
@@ -148,13 +144,12 @@ impl Engine {
     /// [`new_sharing`](Self::new_sharing), for a caller that holds the shared half
     /// without holding an engine.
     ///
-    /// That is the difference worth having: a preset thumbnail wants the device and
-    /// the pipelines, and requiring a *donor engine* would mean borrowing whichever
-    /// live one happens to exist — with its substrate, its document and its in-flight
-    /// gesture — for the length of the call.
+    /// A preset thumbnail wants the device and the pipelines; requiring a *donor
+    /// engine* would mean borrowing whichever live one happens to exist — with its
+    /// substrate, its document and its in-flight gesture — for the length of the call.
     ///
     /// The document opens on `shared`'s current substrate, so a preview needs no
-    /// `SetSubstrate` step — and no substrate bytes handed across, which is the point.
+    /// `SetSubstrate` step — and no substrate bytes handed across.
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
         let substrate = shared.apply.substrates.id();
         let initial_substrate = substrate.id;
@@ -164,8 +159,8 @@ impl Engine {
                 .with_substrate_scale(substrate.scale),
         ));
         // Its own three view settings over the shared passes — the whole of what a
-        // sibling's compositor costs ([`CompositorPipeline::sharing`]), seeded from
-        // `shared` so it opens mirroring the canvas it came from.
+        // sibling's compositor costs — seeded from `shared` so it opens mirroring the
+        // canvas it came from.
         let compositor_pipeline = CompositorPipeline::sharing(
             shared.passes.clone(),
             shared.apply.substrates.current(),
@@ -188,16 +183,14 @@ impl Engine {
     /// and the [`apply_document_substrate`](Self::apply_document_substrate) both
     /// constructors owe once they are set.
     ///
-    /// **[`EngineShared`]'s argument, one level up.** Two struct literals naming
-    /// fourteen identical fields are the same shape waiting to go wrong: a field given
-    /// a value in one and forgotten in the other is invisible on the main canvas and
-    /// shows up only on a preview or a thumbnail, the hardest surface in the app to
-    /// notice on. A field added to [`Engine`] has one place to be given a value, and
-    /// the compiler asks for it there.
+    /// One place for a field added to [`Engine`] to be given a value: two struct
+    /// literals naming fourteen identical fields go wrong invisibly on the main canvas
+    /// and show up only on a preview or a thumbnail, the hardest surface in the app to
+    /// notice on.
     ///
     /// Every parameter is a distinct type, so a transposed argument list is a compile
     /// error rather than a silently wrong engine — which is what makes six positional
-    /// values safe here, where a parameter struct would only move the literal.
+    /// values safe here.
     fn assemble(
         shared: EngineShared,
         compositor: Compositor,
@@ -212,9 +205,8 @@ impl Engine {
             compositor_pipeline,
             initial_substrate,
             timeline,
-            // Built here rather than handed in, because both constructors built the
-            // same one: an engine opens on its viewport, aimed at the root layer its
-            // timeline was seeded with.
+            // An engine opens on its viewport, aimed at the root layer its timeline
+            // was seeded with.
             session: crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER),
             peers: Peers::new(),
             now: 0.0,

@@ -1,32 +1,22 @@
 //! The erase pass (§6.12): the swept extent every brush rasterizes, turned on
 //! the layer's **visible** opacity instead of laid as paint.
 //!
-//! Two pieces, mirroring the fast path's shape. The *sweep* is the very pipeline
-//! geometry `swept.rs` draws — the same segments, the same prefix-τ lookups, the
-//! same drain/tooth/jitter gates — with `stamp.wesl::fs_erase` as the fragment,
-//! accumulating the stroke's transparency mass into one `R16Float` tile-sized
-//! accumulator per touched tile. The *integrate* (`erase.wesl`) then rewrites each
-//! tile from its **pristine** base — the paint the stroke found, not the previous
-//! piece's output — scaling what the eye sees by `1 − opacity·w` and inverting
-//! the slab law into a height (§6.1).
+//! Two pieces. The *sweep* is `swept.rs`'s own pipeline geometry — the same
+//! segments, the same prefix-τ lookups, the same drain/tooth/jitter gates — with
+//! `stamp.wesl::fs_erase` as the fragment, accumulating the stroke's transparency
+//! mass into one `R16Float` tile-sized accumulator per touched tile. The
+//! *integrate* (`erase.wesl`) rewrites each tile from its **pristine** base — the
+//! paint the stroke found, not the previous piece's output — scaling what the eye
+//! sees by `1 − opacity·w` and inverting the slab law into a height (§6.1).
 //!
-//! **The accumulator spans the stroke, not the piece**, and that is the design.
-//! `1 − opacity·w` is not exponential in swept depth, so applying it per piece
-//! would compound at every cut a live stroke makes (§6.2's two composable forms).
-//! Instead the mass keeps summing — additively, so re-cutting the path changes
-//! nothing — and every piece re-derives its tiles from pristine paint under the
-//! total. The accumulators and the pristine handles ride the stroke's carry, the
-//! way the stamp loop's reservoir does; a piece copies the accumulator it resumes
-//! rather than writing it, which is what lets the live tail re-render every frame
-//! from the same frozen head.
-//!
-//! That last paragraph is not this pass's alone — it is the law any effect outside
-//! §6.2's two composable forms obeys, and the swept deposit obeys it too below full
-//! opacity. So the bookkeeping it describes lives in
-//! [`accum`](super::accum) and is run from here rather than written here: what
-//! stays in this file is `erase.wesl`'s own slots, its pipelines, and the one
-//! decision that is genuinely this pass's — a tile the layer does not have is
-//! nothing to erase ([`BareCanvas::Skip`]).
+//! **The accumulator spans the stroke, not the piece.** `1 − opacity·w` is not
+//! exponential in swept depth, so applying it per piece would compound at every cut
+//! a live stroke makes (§6.2's two composable forms). The mass sums additively — so
+//! re-cutting the path changes nothing — and every piece re-derives its tiles from
+//! pristine paint under the total. That bookkeeping is any such effect's, so it
+//! lives in [`accum`](super::accum); what stays here is `erase.wesl`'s own slots,
+//! its pipelines, and the one decision that is this pass's — a tile the layer does
+//! not have is nothing to erase ([`BareCanvas::Skip`]).
 
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
@@ -58,19 +48,16 @@ const ERASE_SLOTS: &[Slot] = &[
     Slot::at(ed::MOMENT),
 ];
 
-/// The accumulator's format: one channel — the transparency mass — additive, like
-/// the persistent aux it sits beside in size and precision. f16 is enough for the
-/// same reason it is enough there: the interesting range is a few times
-/// `OPAQUE_MASS`, and by the time accumulation outruns f16's mantissa the survival
-/// `exp(−m)` has long since reached zero.
+/// The accumulator's format: one channel — the transparency mass — additive. f16
+/// is enough because the interesting range is a few times `OPAQUE_MASS`, and by the
+/// time accumulation outruns its mantissa the survival `exp(−m)` has reached zero.
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 
-/// The accumulator is the parcel's first lane: this pass rasterizes one number per
-/// texel, where the deposit rasterizes the channel trio. Under a pen-driven
-/// opacity the ceiling lane rides beside it (§6.2) — the coverage the stroke has
-/// claimed, each segment's share at its own ceiling. [`parcel_keys`] fills the
-/// lanes by these names, which is what keeps the attach order and the bind order
-/// one list ([`Parcel`](super::accum::Parcel)).
+/// The parcel's lanes: this pass rasterizes one number per texel where the deposit
+/// rasterizes the channel trio, with the ceiling lane — the coverage the stroke has
+/// claimed, each segment's share at its own ceiling — beside it under a pen-driven
+/// opacity (§6.2). [`parcel_keys`] fills them by these names, which keeps the attach
+/// order and the bind order one list ([`Parcel`](super::accum::Parcel)).
 const MASS: usize = 0;
 const CEILING: usize = 1;
 /// The moment of the whole mass over the pen's factor — the lane's companion,
@@ -242,16 +229,12 @@ impl StrokeRenderer {
         // nothing gates an eraser today (`budget::supersample_scale`).
         let draws = sweep_draws(self, &mut scope, rec, k, segments, 1);
 
-        // The stroke's ceiling, once per *call* — `StrokeConstants` resolved it with
-        // the color, the mask's opacity folded in, so this path cannot disagree
+        // The stroke's ceiling, once per *call*: `StrokeConstants` resolved it with
+        // the color and the mask's opacity folded in, so this path cannot disagree
         // with the others about what the dial said (`BrushEffect::opacity`, §6.8).
         //
-        // Run tier, like the two `sweep_draws` builds above it and like the swept
-        // path's identical uniform: every tile of `accum::run` binds this one buffer,
-        // so its lifetime is the whole call and not the tile being recorded.
-        // `accum::run` does not flush today, which would make the piece tier correct —
-        // and that is exactly the argument `swept.rs` writes out as the reason the ring
-        // had to leave it. Correct because a loop happens not to flush is not correct.
+        // Run tier, not piece: every tile of `accum::run` binds this one buffer, so
+        // the lease has to outlive the call rather than the tile being recorded.
         let opacity = stark_shaders::mirror::erase::Erase {
             params: [k.opacity, f32::from(u8::from(k.ceiling_lane)), 0.0, 0.0],
         };
@@ -264,12 +247,11 @@ impl StrokeRenderer {
 
         let keys = parcel_keys(k.ceiling_lane);
 
-        // The shared procedure (§6.12, `accum`): resume everything the pieces
-        // before this one accumulated, extend it over this piece's tiles, and turn
-        // the total on the pristine paint. A tile the layer does not have is
-        // nothing to erase — no output, no accumulator, no entry in the carry — so
-        // a stroke over bare canvas mints no tiles at all, which is the whole of
-        // what this pass says about the shape.
+        // The shared procedure (§6.12, `accum`): resume what the pieces before this
+        // one accumulated, extend it over this piece's tiles, and turn the total on
+        // the pristine paint. A tile the layer does not have is nothing to erase —
+        // no output, no accumulator, no entry in the carry — so a stroke over bare
+        // canvas mints no tiles at all.
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
             scene,
