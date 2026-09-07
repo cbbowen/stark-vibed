@@ -36,7 +36,7 @@ fn fs_path(input: PathVarying) -> @location(0) vec4<f32> {
     // linear swapchain gets it un-premultiplied, decoded and re-premultiplied.
     if globals.linear_output != 0u {
         let a = max(c.a, 1e-6);
-        return vec4<f32>(stark_to_linear(c.rgb / a) * a, c.a);
+        return vec4<f32>(stark_to_linear(c.rgb / a) * globals.sdr_white_scale * a, c.a);
     }
     return c;
 }

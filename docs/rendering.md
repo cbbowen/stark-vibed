@@ -752,7 +752,9 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
     mapping *and* the display is HDR right now (the first alone is every fp16
     browser, tone-mapping or not); the native frontend reads the swapchain wgpui
     configured — linear scRGB on an HDR display, with wgpui's own shaders decoding
-    their output for it (`vendor/wgpui/VENDORING.md`, patch 6). Both ask whether
+    their output for it and scaling both it and the canvas composited into it to the
+    display's SDR white, which scRGB puts at 80 nits where Windows shows every other
+    window at 200 or more (`vendor/wgpui/VENDORING.md`, patch 6). Both ask whether
     the display is HDR *now*, not whether the format is offered: DXGI advertises
     scRGB on every Windows surface, and the web's `dynamic-range: high` means a
     panel *can* show HDR — a capable panel running in an SDR mode clips what an

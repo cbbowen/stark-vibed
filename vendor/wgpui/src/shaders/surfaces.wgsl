@@ -1,9 +1,13 @@
 struct Globals {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
-    // STARK PATCH: 1 when the swapchain is linear (scRGB), and every fragment
-    // shader decodes its sRGB-encoded output on the way out (see `blend_color`).
+    // STARK PATCH: 1 when the swapchain is linear (scRGB). An embedder's surface
+    // needs no decode — its texels are linear already — only the reference white.
     linear_output: u32,
+    // STARK PATCH: scRGB units per SDR white, which is not 1 — see
+    // `WgpuRenderer::sdr_white_scale`. What puts this surface on the same white as
+    // the chrome around it.
+    sdr_white_scale: f32,
 }
 
 struct Bounds {
@@ -58,5 +62,9 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
     let color = textureSample(t_surface, s_surface, input.tex_coord);
     let alpha = color.a;
     let multiplier = select(1.0, alpha, globals.premultiplied_alpha != 0u);
-    return vec4<f32>(color.rgb * multiplier, alpha);
+    // STARK PATCH: an embedder writes linear light with 1.0 at SDR white (that is
+    // what `Window::surface_color_space` asks of it), and scRGB puts SDR white at
+    // `sdr_white_scale`. Scaled, not decoded: these texels are not sRGB-encoded.
+    let scale = select(1.0, globals.sdr_white_scale, globals.linear_output != 0u);
+    return vec4<f32>(color.rgb * multiplier * scale, alpha);
 }

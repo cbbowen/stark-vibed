@@ -212,18 +212,28 @@ verbatim" that would otherwise be worth keeping for the clean update diff.
 advertises it — an HDR display on Windows (DXGI) or macOS (EDR) — else the 8-bit
 non-sRGB format as before. `WGPUI_HDR=0` in the environment keeps the 8-bit path.
 The `GlobalParams` padding lane becomes `linear_output`, set to 1 on the scRGB
-swapchain; `WgpuRenderer::surface_color_space` and `display_headroom` report the
-choice and the display's headroom. `src/platform.rs`, `src/platform/window.rs`,
-`src/window.rs`: `surface_color_space()` and `display_headroom()` on
-`PlatformWindow` (defaulting to `None`) and on the public `Window`.
+swapchain, and a `sdr_white_scale` lane joins it — the display's SDR white in scRGB
+units, read through `wgpu::DisplayLuminance::sdr_white_nits` and re-read on a 500 ms
+throttle, since it moves with the brightness slider and with the display the window
+was dragged onto. `src/platform/render_context.rs`: the globals buffer is
+`size_of::<GlobalParams>()` where it was the literal `16` the struct used to be — a
+uniform in WGSL rounds up to a multiple of 16, so the fifth lane took it to 32.
+`WgpuRenderer::surface_color_space` and `display_headroom` report the choice and the
+display's headroom. `src/platform.rs`, `src/platform/window.rs`, `src/window.rs`:
+`surface_color_space()` and `display_headroom()` on `PlatformWindow` (defaulting to
+`None`) and on the public `Window`.
 
 `src/shaders/*.wgsl`: the `Globals` struct's `pad` lane is `linear_output`, and
 every fragment shader that writes the swapchain decodes its sRGB-encoded output to
-linear when it is set — `blend_color` in each of `mono_sprites`, `path_common`,
-`poly_sprites`, `quads`, `shadows` and `underlines` (a `stark_to_linear` helper
-beside each), and `fs_path` in `paths.wgsl`, whose intermediate is premultiplied
-and so is un-premultiplied, decoded and re-premultiplied. `surfaces.wgsl` is
-untouched: an embedder's surface is composited in as written, which is the point.
+linear when it is set and scales it by `sdr_white_scale` — `blend_color` in each of
+`mono_sprites`, `path_common`, `poly_sprites`, `quads`, `shadows` and `underlines`
+(a `stark_to_linear` helper beside each), and `fs_path` in `paths.wgsl`, whose
+intermediate is premultiplied and so is un-premultiplied, decoded and
+re-premultiplied. `surfaces.wgsl` takes the scale and nothing else: an embedder's
+texels are linear already, so there is no decode to do — but they are linear with
+`1.0` at SDR white, and putting the canvas on the same reference white as the chrome
+around it is the whole point of the lane being in `Globals` rather than in the
+chrome's own helper.
 
 ### Why
 
@@ -236,6 +246,31 @@ step. Blending then happens in linear light, which reads a shade thinner at
 antialiased text edges — the physically right answer, and a small difference. An
 `*Srgb` swapchain was not an option: its hardware encode would fight the shaders'
 own.
+
+### The reference white
+
+**An scRGB swapchain is not dark by 80 nits' worth on its own — it is dark because
+nothing else on the display is.** scRGB fixes `1.0` at 80 nits: that is what
+`DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709` means, and wgpu passes the color space
+down to `SetColorSpace1` without a scale of its own. Windows meanwhile composites
+every *SDR* window at the brightness slider's white level — 200 nits or more out of
+the box — so the first version of this patch drew a correct picture at 40% of the
+luminance of every window beside it. The report was that the whole app, chrome and
+canvas alike, went dark and flat the moment the display turned HDR on, **and that a
+screenshot of it looked right**: the capture path reads the buffer and calls `1.0`
+white, which is exactly the assumption that fails on the glass.
+
+So the scale is the swapchain's, and lives with the swapchain. wgpu documents
+`ExtendedSrgbLinear` as "`1.0` is SDR reference white", which is the contract
+`surface_color_space()` hands an embedder and the one `stark-engine`'s
+`Transfer::Linear` is written to (§6.5) — the engine says "SDR white" and this says
+how many scRGB units that is here. Doing it the other way, by folding the ratio into
+what the frontend hands the engine, would put a Windows display convention inside a
+model that is meant to name light and not nits.
+
+`1.0` where the level is unknown, which is every platform but Windows: macOS's
+`extendedLinearSRGB` already puts SDR white at `1.0`, and Apple reports no absolute
+nits to scale by.
 
 Not upstreamable as is — upstream would want the color space to be a
 `WindowOptions` choice rather than "HDR when the display has it" — but the shader

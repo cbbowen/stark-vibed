@@ -119,12 +119,20 @@ impl color::Background {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GlobalParams {
+pub(super) struct GlobalParams {
     viewport_size: [f32; 2],
     premultimated_alpha: u32,
     /// STARK PATCH: 1 on a linear (scRGB) swapchain, when every shader decodes its
     /// sRGB-encoded output to linear on the way out. Was the padding lane.
     linear_output: u32,
+    /// STARK PATCH: scRGB units per SDR white — see
+    /// [`WgpuRenderer::sdr_white_scale`]. `1.0` off the scRGB path.
+    sdr_white_scale: f32,
+    /// Pads to 32. WGSL rounds a **uniform** struct's size up to a multiple of 16,
+    /// so the shader's `Globals` is 32 bytes the moment a fifth lane is added to it
+    /// — where this struct is 20 — and a uniform buffer smaller than the struct
+    /// bound to it is a validation error at the draw call.
+    _pad: [f32; 3],
 }
 
 impl GlobalParams {
@@ -1287,6 +1295,33 @@ impl RenderingParameters {
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// STARK PATCH: the luminance scRGB fixes `1.0` at, in nits. Not a display
+/// setting and not negotiable — it is what `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
+/// *means*, and macOS's `extendedLinearSRGB` is defined the same way.
+const SCRGB_WHITE_NITS: f32 = 80.0;
+
+/// STARK PATCH: how stale the reference white may get — see
+/// [`WgpuRenderer::sdr_white_scale`], which is on a throttle rather than per frame.
+const SDR_WHITE_REFRESH: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// STARK PATCH: scRGB units per SDR white, from what the display reports.
+///
+/// **This is why an HDR window is not dark.** scRGB puts `1.0` at 80 nits, always,
+/// while Windows composites every *other* (SDR) window at the brightness slider's
+/// white level — 200 nits or so out of the box. So a swapchain writing `1.0` for
+/// white is dimmer than every window beside it by exactly that ratio, and the whole
+/// app reads dark and flat the moment the display turns HDR on. A screenshot looks
+/// right, because the capture path reads the buffer and calls `1.0` white.
+///
+/// `1.0` where the level is unknown: only Windows reports absolute nits, and macOS
+/// does not need to — its EDR compositor already puts SDR white at `1.0`.
+fn sdr_white_scale_from(info: &wgpu::DisplayHdrInfo) -> f32 {
+    info.luminance
+        .and_then(|l| l.sdr_white_nits)
+        .filter(|nits| nits.is_finite() && *nits > 0.0)
+        .map_or(1.0, |nits| nits / SCRGB_WHITE_NITS)
+}
+
 pub struct WgpuRenderer {
     context: Arc<WgpuContext>,
     surface: wgpu::Surface<'static>,
@@ -1311,6 +1346,10 @@ pub struct WgpuRenderer {
     surface_bind_groups: Mutex<
         HashMap<crate::platform::surface_registry::SurfaceId, (u64, [wgpu::BindGroup; 2])>,
     >,
+
+    /// STARK PATCH: the last-read scRGB reference white and when it was read — see
+    /// [`WgpuRenderer::sdr_white_scale`], which is the only thing that touches it.
+    sdr_white: Mutex<(std::time::Instant, f32)>,
 }
 
 impl WgpuRenderer {
@@ -1460,6 +1499,9 @@ impl WgpuRenderer {
             path_intermediate_texture: None,
             path_intermediate_view: None,
             surface_bind_groups: Mutex::new(HashMap::new()),
+            // STARK PATCH: primed from the query already made above, so the first
+            // frame is the right brightness rather than the refresh after it.
+            sdr_white: Mutex::new((std::time::Instant::now(), sdr_white_scale_from(&display))),
         };
         renderer.ensure_path_intermediate();
         Ok(renderer)
@@ -1467,7 +1509,9 @@ impl WgpuRenderer {
 
     /// STARK PATCH: the color space the swapchain is presented in — `Auto` on the
     /// 8-bit path, `ExtendedSrgbLinear` on the HDR one. What an embedder rendering
-    /// into a `WgpuSurface` has to write for.
+    /// into a `WgpuSurface` has to write for: linear light with `1.0` at SDR white,
+    /// which is what wgpu documents the color space to mean. Not scRGB's own `1.0`
+    /// — the compositor scales for that ([`sdr_white_scale_from`]).
     pub fn surface_color_space(&self) -> wgpu::SurfaceColorSpace {
         self.surface_configuration.color_space
     }
@@ -1476,6 +1520,25 @@ impl WgpuRenderer {
     /// — true exactly on the scRGB swapchain.
     fn linear_output(&self) -> bool {
         self.surface_configuration.color_space == wgpu::SurfaceColorSpace::ExtendedSrgbLinear
+    }
+
+    /// STARK PATCH: the scale every fragment bound for a linear swapchain is
+    /// multiplied by ([`sdr_white_scale_from`]); `1.0` off that path.
+    ///
+    /// Re-read on a throttle rather than per frame or once: the level moves with the
+    /// Windows brightness slider and with the display the window was dragged onto,
+    /// and the query walks DXGI's adapter/output topology to answer.
+    fn sdr_white_scale(&self) -> f32 {
+        if !self.linear_output() {
+            return 1.0;
+        }
+        let mut cached = self.sdr_white.lock().unwrap();
+        let now = std::time::Instant::now();
+        if now.duration_since(cached.0) >= SDR_WHITE_REFRESH {
+            let info = self.surface.display_hdr_info(&self.context.adapter);
+            *cached = (now, sdr_white_scale_from(&info));
+        }
+        cached.1
     }
 
     /// STARK PATCH: how far above SDR white the display behind this window can go,
@@ -1519,8 +1582,10 @@ impl WgpuRenderer {
                 wgpu::CompositeAlphaMode::PreMultiplied => 1,
                 _ => 0,
             },
-            // STARK PATCH: see `linear_output`.
+            // STARK PATCH: see `linear_output` and `sdr_white_scale`.
             linear_output: u32::from(self.linear_output()),
+            sdr_white_scale: self.sdr_white_scale(),
+            _pad: [0.0; 3],
         };
 
         self.context.queue.write_buffer(

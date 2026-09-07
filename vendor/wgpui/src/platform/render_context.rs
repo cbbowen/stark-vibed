@@ -36,8 +36,11 @@ impl WgpuContext {
 
         let globals_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Globals Buffer"),
-            // FIXME(mdeand): Hack
-            size: 16_u64,
+            // STARK PATCH: the struct's own size, where it used to be the literal 16
+            // that `GlobalParams` happened to be. It is 32 now, and a buffer smaller
+            // than the uniform bound to it is a validation error at the draw call
+            // rather than at the edit that caused it.
+            size: std::mem::size_of::<super::renderer::GlobalParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

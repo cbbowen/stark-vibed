@@ -6,6 +6,9 @@ struct Globals {
     // STARK PATCH: 1 when the swapchain is linear (scRGB), and every fragment
     // shader decodes its sRGB-encoded output on the way out (see `blend_color`).
     linear_output: u32,
+    // STARK PATCH: scRGB units per SDR white, which is not 1 — see
+    // `WgpuRenderer::sdr_white_scale`. Every decoded fragment is scaled by it.
+    sdr_white_scale: f32,
 }
 
 struct Bounds {
@@ -106,7 +109,11 @@ fn stark_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn blend_color(color: vec4<f32>, alpha_factor: f32) -> vec4<f32> {
     let alpha = color.a * alpha_factor;
     let multiplier = select(1.0, alpha, globals.premultiplied_alpha != 0u);
-    let rgb = select(color.rgb, stark_to_linear(color.rgb), globals.linear_output != 0u);
+    let rgb = select(
+        color.rgb,
+        stark_to_linear(color.rgb) * globals.sdr_white_scale,
+        globals.linear_output != 0u,
+    );
     return vec4<f32>(rgb * multiplier, alpha);
 }
 
