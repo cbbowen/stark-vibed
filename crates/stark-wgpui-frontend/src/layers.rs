@@ -18,42 +18,21 @@
 //! both — `carry_onto` and `release_to` — so a row's two buttons are a `Some` each
 //! rather than a rule written here.
 
-use std::collections::HashSet;
-
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{LayerId, Place};
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::layer_tree::{self, Row};
-use stark_ui::panels::PanelId;
 use wgpui::{
     App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
     prelude::*, px, rgb,
 };
 
 use wgpui_component::select::Select;
-use wgpui_component::slider::Slider;
 
 use crate::controls::Controls;
 use crate::style::{self, StyleExt};
-
-/// The panel's width in logical px — wider than the brush's, because a row carries a
-/// name, a depth indent and four controls.
-pub const WIDTH: f32 = 268.0;
-
-/// The roster's width, given what is hidden: [`WIDTH`] while it is up and nothing at
-/// all when the Window menu has put it away (`crate::panel::width`, on the other edge).
-pub fn width(hidden: &HashSet<PanelId>) -> f32 {
-    if crate::visibility::ROSTER
-        .iter()
-        .any(|id| !hidden.contains(id))
-    {
-        WIDTH
-    } else {
-        0.0
-    }
-}
 
 /// What a press on the layers panel landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,7 +126,7 @@ impl RenderOnce for Chip {
 ///
 /// `rows` is `layer_tree::rows`' answer, unmodified: which rows exist and which are
 /// folded away is the tree's, and drawing them is this module's.
-pub fn layers_panel(
+pub fn layers_body(
     obs: Option<&ObservableState>,
     rows: &[Row],
     bindings: &Bindings,
@@ -159,29 +138,30 @@ pub fn layers_panel(
     let opacity = selected.map_or(1.0, |r| r.info.opacity);
 
     div()
-        .panel_column(WIDTH)
-        .border_l_1()
-        .border_color(rgb(style::EDGE))
-        .child(div().heading().child("Layers"))
+        .flex()
+        .flex_col()
+        .gap_1()
         // The selected layer's two continuous knobs, on the widget layer's controls
         // (`crate::controls`): the blend mode is a drop-down, which §25.9 asks for
-        // once the answers stop fitting on one line, and the opacity a track.
-        .child(
+        // once the answers stop fitting on one line, and the opacity a track. Both
+        // wear their mark rather than their word (`crate::panel`), so each sits on one
+        // line where the labelled pair took two.
+        .child(style::tip(
             div()
+                .id("layer-blend")
                 .flex()
-                .flex_col()
-                .gap_1()
-                .pt_2()
-                .child(div().readout_row().child("Blend"))
-                .child(Select::new(&controls.blend).w_full())
-                .child(
-                    div()
-                        .readout_row()
-                        .child("Opacity")
-                        .child(format!("{opacity:.2}")),
-                )
-                .child(Slider::new(&controls.opacity).w_full()),
-        )
+                .items_center()
+                .gap_2()
+                .child(crate::icons::icon(stark_ui::icons::BLEND, style::INK_MARK))
+                .child(div().flex_1().child(Select::new(&controls.blend).w_full())),
+            "Blend \u{2014} how this layer meets what is under it",
+        ))
+        .child(crate::panel::Slider::new(
+            stark_ui::icons::OPACITY,
+            "Opacity \u{2014} how much of this layer shows",
+            format!("{opacity:.2}"),
+            &controls.opacity,
+        ))
         // The acts on the whole stack, above the roster they act on.
         .child(
             div().flex().gap_1().children(

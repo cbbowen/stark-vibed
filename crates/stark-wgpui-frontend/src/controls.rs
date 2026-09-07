@@ -13,7 +13,8 @@
 //! fitting on a chip, in place of the cycle that stood in for it.
 
 use stark_engine::ObservableState;
-use stark_model::document::BlendMode;
+use stark_model::document::{BlendMode, PerspectiveGuide};
+use stark_ui::prefs::Hdr;
 use wgpui::{Context, Entity, Focusable, SharedString, Subscription, Window, prelude::*};
 use wgpui_component::IndexPath;
 use wgpui_component::input::{InputEvent, InputState};
@@ -22,6 +23,8 @@ use wgpui_component::slider::{SliderEvent, SliderState};
 
 use crate::brush::Brush;
 use crate::canvas::Canvas;
+use crate::guides;
+use crate::lighting;
 use crate::panel::KNOBS;
 use crate::select::Dial;
 
@@ -39,6 +42,13 @@ pub struct Controls {
     pub opacity: Entity<SliderState>,
     /// The selected layer's blend mode, over [`BlendMode::ALL`]'s labels.
     pub blend: Entity<SelectState<Vec<SharedString>>>,
+    /// The Lighting shelf's five, in `lighting::DIALS`' order — see
+    /// [`Controls::light`].
+    lights: [Entity<SliderState>; lighting::DIALS.len()],
+    /// The Guides shelf's two, in `guides::DIALS`' order.
+    guide_dials: [Entity<SliderState>; guides::DIALS.len()],
+    /// Which room the canvas is lit in, over `lighting::ENVIRONMENTS`' names.
+    pub environment: Entity<SelectState<Vec<SharedString>>>,
     /// The color panel's notation field: what the picker stands on, as text a
     /// person can read, copy, or type over (`stark_ui::color::parse_color`).
     pub hex: Entity<InputState>,
@@ -98,6 +108,55 @@ impl Controls {
                 }
             },
         ));
+        // The Lighting shelf's tracks. Three are a view setting, one is document
+        // state and one is this client's own preference — a split the view answers
+        // (`Canvas::turn_light`) rather than the track, which knows only its range.
+        let lights = lighting::DIALS.map(|dial| {
+            let (lo, hi) = dial.range();
+            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
+            subs.push(cx.subscribe(
+                &state,
+                move |this, _, event: &SliderEvent, cx| match event {
+                    SliderEvent::Change(v) => this.turn_light(dial, v.start(), cx),
+                    // One dial is a stored preference rather than engine state, so it
+                    // is shown per sample and written down once (`Canvas::settle_light`).
+                    SliderEvent::Release(v) => this.settle_light(dial, v.start(), cx),
+                },
+            ));
+            state
+        });
+        let guide_dials = guides::DIALS.map(|dial| {
+            let (lo, hi) = dial.range();
+            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
+            subs.push(
+                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+                    if let SliderEvent::Change(v) = event {
+                        this.turn_guide(dial, v.start(), cx);
+                    }
+                }),
+            );
+            state
+        });
+        let lights_labels: Vec<SharedString> = lighting::ENVIRONMENTS
+            .iter()
+            .map(|(_, name)| SharedString::from(*name))
+            .collect();
+        let environment =
+            cx.new(|cx| SelectState::new(lights_labels, Some(IndexPath::default()), window, cx));
+        subs.push(cx.subscribe(
+            &environment,
+            |this, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                let SelectEvent::Confirm(Some(label)) = event else {
+                    return;
+                };
+                if let Some((id, _)) = lighting::ENVIRONMENTS
+                    .iter()
+                    .find(|(_, name)| *name == label.as_ref())
+                {
+                    this.set_environment(*id, cx);
+                }
+            },
+        ));
         let hex = cx.new(|cx| InputState::new(window, cx));
         subs.push(cx.subscribe_in(
             &hex,
@@ -135,10 +194,31 @@ impl Controls {
             dials,
             opacity,
             blend,
+            lights,
+            guide_dials,
+            environment,
             hex,
             search,
             _subscriptions: subs,
         }
+    }
+
+    /// The state behind one of the Lighting shelf's tracks.
+    pub fn light(&self, dial: lighting::Dial) -> &Entity<SliderState> {
+        let i = lighting::DIALS
+            .iter()
+            .position(|d| *d == dial)
+            .expect("every lighting dial has a state");
+        &self.lights[i]
+    }
+
+    /// The state behind one of the Guides shelf's tracks.
+    pub fn guide(&self, dial: guides::Dial) -> &Entity<SliderState> {
+        let i = guides::DIALS
+            .iter()
+            .position(|d| *d == dial)
+            .expect("every guide dial has a state");
+        &self.guide_dials[i]
     }
 
     /// The state behind one of the Select section's dials.
@@ -154,15 +234,15 @@ impl Controls {
     ///
     /// A state that already agrees is left alone, so a drag in progress — whose
     /// last value the model has just taken — is not written back under the hand.
-    pub fn sync(
-        &self,
-        brush: &Brush,
-        obs: Option<&ObservableState>,
-        opacity: f32,
-        blend: BlendMode,
-        window: &mut Window,
-        cx: &mut Context<'_, Canvas>,
-    ) {
+    pub fn sync(&self, what: Sync<'_>, window: &mut Window, cx: &mut Context<'_, Canvas>) {
+        let Sync {
+            brush,
+            obs,
+            opacity,
+            blend,
+            hdr,
+            guide,
+        } = what;
         for (knob, state) in KNOBS.iter().zip(&self.knobs) {
             settle(state, knob.read(brush), window, cx);
         }
@@ -171,7 +251,26 @@ impl Controls {
                 settle(state, dial.read(o), window, cx);
             }
         }
+        for (dial, state) in lighting::DIALS.iter().zip(&self.lights) {
+            settle(state, dial.read(obs, hdr), window, cx);
+        }
+        // Only where there is a guide in hand: with none the tracks are not drawn at
+        // all (`crate::guides`), and writing them would be settling a control nobody
+        // can see onto a camera that does not exist.
+        if let Some(g) = guide {
+            for (dial, state) in guides::DIALS.iter().zip(&self.guide_dials) {
+                settle(state, dial.read(&g), window, cx);
+            }
+        }
         settle(&self.opacity, opacity, window, cx);
+        let want = obs
+            .map(|o| o.environment)
+            .and_then(|env| lighting::ENVIRONMENTS.iter().position(|(id, _)| *id == env))
+            .map(IndexPath::new);
+        if self.environment.read(cx).selected_index(cx) != want {
+            self.environment
+                .update(cx, |s, cx| s.set_selected_index(want, window, cx));
+        }
         let want = BlendMode::ALL
             .iter()
             .position(|m| m.same_mode(blend))
@@ -190,6 +289,24 @@ impl Controls {
             }
         }
     }
+}
+
+/// What one frame's worth of model state is, for [`Controls::sync`].
+///
+/// A struct rather than six more arguments, for `panel::Sections`' reason: they are
+/// mostly numbers, and a caller that shuffled two of them would settle the layer's
+/// opacity onto the brush's flow with nothing for the compiler to say.
+pub struct Sync<'a> {
+    pub brush: &'a Brush,
+    pub obs: Option<&'a ObservableState>,
+    /// The selected layer's opacity and blend mode.
+    pub opacity: f32,
+    pub blend: BlendMode,
+    /// This client's HDR choice — the one dial on the Lighting shelf that is neither
+    /// the document's nor the engine's (§6.5).
+    pub hdr: Hdr,
+    /// The camera the Guides shelf's tracks are about, where one is in hand.
+    pub guide: Option<PerspectiveGuide>,
 }
 
 /// Where `v` stands in `lo..=hi`, which is what the view's handlers speak.

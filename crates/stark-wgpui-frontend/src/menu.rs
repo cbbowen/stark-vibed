@@ -28,6 +28,8 @@
 //! `crate::collab`).
 
 use stark_engine::ObservableState;
+#[cfg(test)]
+use stark_ui::commands::VisibilityToggle;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::panels::PanelId;
 use wgpui::{
@@ -113,16 +115,19 @@ pub const MENUS: &[Menu] = &[
         // draws one. Its rows carry a state where every other row here is an act, so
         // they are the reason a row can wear a tick at all ([`item`]).
         //
-        // The four panels this frontend has, and no more — a row offering to show a
-        // Guides panel it does not draw would be exactly the dead act the rule above
-        // forbids. The list is `crate::visibility`'s, so what the menu offers and what
-        // the record can hold cannot come apart; the rule between the runs is where
-        // the window's two columns divide.
+        // The seven shelves this frontend has, and no more — a row offering to show a
+        // quick-brush rack it does not draw would be exactly the dead act the rule
+        // above forbids. The list is `crate::visibility`'s, so what the menu offers
+        // and what the record can hold cannot come apart; the rule between the runs is
+        // where the window's two columns divide.
         rows: &[
-            Some(Command::TogglePanel(PanelId::Color)),
             Some(Command::TogglePanel(PanelId::Brush)),
             Some(Command::TogglePanel(PanelId::Select)),
+            Some(Command::TogglePanel(PanelId::Lighting)),
+            Some(Command::TogglePanel(PanelId::Guides)),
             None,
+            Some(Command::ToggleNavigator),
+            Some(Command::TogglePanel(PanelId::Color)),
             Some(Command::TogglePanel(PanelId::Layers)),
         ],
     },
@@ -393,14 +398,14 @@ mod tests {
         }
     }
 
-    /// The Window menu is the panels this frontend draws — all of them, once each.
+    /// The Window menu is the shelves this frontend draws — all of them, once each.
     ///
     /// Both lists are written out by hand and each is edited for its own reason: a
-    /// panel arrives in `visibility::PANELS` because the window now has one, and in
+    /// shelf arrives in `visibility::SHELVES` because the window now has one, and in
     /// the menu because somebody remembered. This is the remembering.
     #[test]
-    fn the_window_menu_is_every_panel_this_frontend_has() {
-        let listed: Vec<PanelId> = MENUS
+    fn the_window_menu_is_every_shelf_this_frontend_has() {
+        let listed: Vec<VisibilityToggle> = MENUS
             .iter()
             .find(|m| m.title == "Window")
             .expect("there is a Window menu")
@@ -408,11 +413,12 @@ mod tests {
             .iter()
             .flatten()
             .map(|command| match command {
-                Command::TogglePanel(id) => *id,
-                other => panic!("the Window menu offers {other:?}, which shows no panel"),
+                Command::TogglePanel(id) => VisibilityToggle::Panel(*id),
+                Command::ToggleNavigator => VisibilityToggle::Navigator,
+                other => panic!("the Window menu offers {other:?}, which shows nothing"),
             })
             .collect();
-        assert_eq!(listed, crate::visibility::PANELS.to_vec());
+        assert_eq!(listed, crate::visibility::SHELVES.to_vec());
     }
 
     /// A row's name comes off the registry, so a menu entry and the palette row the

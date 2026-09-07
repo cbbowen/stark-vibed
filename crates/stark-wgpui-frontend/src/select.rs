@@ -18,10 +18,7 @@ use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
-use wgpui::{
-    Bounds, Entity, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb,
-};
-use wgpui_component::slider::SliderState;
+use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*};
 
 use crate::controls::Controls;
 use crate::style::{self, StyleExt};
@@ -56,11 +53,29 @@ pub enum Dial {
 }
 
 impl Dial {
-    fn label(self) -> &'static str {
+    /// The mark the track wears (`stark_ui::icons`).
+    ///
+    /// The fill's dial takes the bucket its own action chip wears, and the adjacency
+    /// is the point: the dial is mounted only while Fill is the armed action, so it
+    /// appears directly under the lit chip whose strength it sets.
+    fn glyph(self) -> Icon {
         match self {
-            Dial::Feather => "Feather",
-            Dial::FillOpacity => "Fill opacity",
-            Dial::MaskOpacity => "Selection",
+            Dial::Feather => stark_ui::icons::FEATHER,
+            Dial::FillOpacity => stark_ui::icons::PAINT_BUCKET,
+            Dial::MaskOpacity => stark_ui::icons::OPACITY,
+        }
+    }
+
+    /// What the hover says the mark means.
+    fn tip(self) -> &'static str {
+        match self {
+            Dial::Feather => {
+                "Feather \u{2014} how far the next shape's edge is softened, in canvas px"
+            }
+            Dial::FillOpacity => "Fill opacity \u{2014} how strongly a fill gesture's paint lands",
+            Dial::MaskOpacity => {
+                "Selection strength \u{2014} how hard the mask gates what every tool does"
+            }
         }
     }
 
@@ -157,7 +172,7 @@ pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
 ///
 /// Takes the projection rather than reading one, for `crate::panel`'s reason: the
 /// section has no state of its own, and everything it does is the view's.
-pub fn select_panel(
+pub fn select_body(
     o: Option<&ObservableState>,
     bindings: &Bindings,
     controls: &Controls,
@@ -185,9 +200,9 @@ pub fn select_panel(
                         format!("tool-{}", command.word()).into(),
                         probe(regions, Region::Tool(i)),
                         command.icon(),
-                        command.word(),
                         *t == tool,
-                        Some(command.tooltip(bindings)),
+                        true,
+                        command.tooltip(bindings),
                     )
                 })),
         )
@@ -202,35 +217,65 @@ pub fn select_panel(
                         format!("shape-{}", action_word(*a)).into(),
                         probe(regions, Region::Action(i)),
                         action_mark(*a),
-                        action_word(*a),
                         *a == action,
-                        None,
+                        true,
+                        action_tip(*a).to_string(),
                     )
                 })),
         )
         .children(dials.into_iter().map(|dial| {
             let v = o.map_or(0.0, |o| dial.read(o));
-            track(dial, v, controls.dial(dial))
+            crate::panel::Slider::new(
+                dial.glyph(),
+                dial.tip(),
+                match dial {
+                    Dial::Feather => format!("{v:.0}"),
+                    _ => format!("{v:.2}"),
+                },
+                controls.dial(dial),
+            )
         }))
-        .child(div().flex().flex_wrap().gap_1().pt_1().children(
-            SELECT_ACTS.iter().enumerate().map(|(i, command)| {
-                // Dim rather than absent when there is nothing to act on, so the
-                // row keeps its shape and a person can see what the selection
-                // would buy them.
-                let live = command.enabled(o);
-                let chip = div()
-                    .id(SharedString::from(format!("act-{}", command.word())))
-                    .chip()
-                    .flex_1()
-                    .py_1()
-                    .text_center()
-                    .resting()
-                    .when(!live, |el| el.text_color(rgb(style::INK_DEAD)))
-                    .child(probe(regions, Region::Act(i)))
-                    .child(command.word());
-                style::tip(chip, command.tooltip(bindings))
-            }),
-        ))
+        .child(
+            div()
+                .flex()
+                .gap_1()
+                .pt_1()
+                .children(SELECT_ACTS.iter().enumerate().map(|(i, command)| {
+                    // Dim rather than absent when there is nothing to act on, so the
+                    // row keeps its shape and a person can see what the selection
+                    // would buy them.
+                    let live = command.enabled(o);
+                    marked(
+                        format!("act-{}", command.word()).into(),
+                        probe(regions, Region::Act(i)),
+                        command.icon(),
+                        false,
+                        live,
+                        command.tooltip(bindings),
+                    )
+                })),
+        )
+}
+
+/// What the hover says one of the five shape actions does.
+///
+/// The word alone was what the chip wore; a hover has room to say what the word never
+/// could, which is the whole bargain a marked chip makes (`crate::panel`).
+fn action_tip(action: ShapeAction) -> &'static str {
+    use stark_model::document::SelectionMode;
+    match action {
+        ShapeAction::Select(SelectionMode::Replace) => {
+            "New \u{2014} the shape becomes the selection"
+        }
+        ShapeAction::Select(SelectionMode::Union) => "Add \u{2014} take in what the shape covers",
+        ShapeAction::Select(SelectionMode::Subtract) => {
+            "Subtract \u{2014} cut what the shape covers out"
+        }
+        ShapeAction::Select(SelectionMode::Intersect) => {
+            "Intersect \u{2014} keep only what both cover"
+        }
+        ShapeAction::Fill => "Fill \u{2014} lay the paint in hand inside the shape",
+    }
 }
 
 /// The command that arms `tool` — the registry's row for it, so the chip wears the
@@ -262,57 +307,39 @@ fn action_mark(action: ShapeAction) -> Icon {
     }
 }
 
-/// One chip in a segmented run, wearing its mark over its word.
+/// One chip in a segmented run: its mark, and its word in the hover.
 ///
-/// Stacked rather than side by side: five chips of glyph-plus-word do not fit the
-/// panel's column, and the word is the half that is unambiguous — so it is not the
-/// half to drop. The same arrangement the web panel's action row settled on.
+/// The word was stacked under the glyph until the column stopped carrying words at
+/// all (`crate::panel`). Dropping it is what lets five chips share one row rather
+/// than wrapping onto two — and the hover says more than the word ever fit.
 ///
-/// `tip` is what the hover says — the chord, for a chip that has one. `None` for
-/// the action row, whose word already says the whole of it.
+/// `live` is whether the chip has anything to act on: dim rather than absent, so the
+/// row keeps its shape and a person can see what a selection would buy them.
 fn marked(
     id: SharedString,
     probe: impl IntoElement,
     mark: Icon,
-    word: &'static str,
     lit: bool,
-    tip: Option<String>,
+    live: bool,
+    tip: String,
 ) -> impl IntoElement {
+    let ink = match (lit, live) {
+        (true, _) => style::INK_LIT,
+        (false, true) => style::INK_MARK,
+        (false, false) => style::INK_DEAD,
+    };
     let chip = div()
         .id(id)
         .chip()
         .flex_1()
         .flex()
-        .flex_col()
         .items_center()
-        .gap_0p5()
-        .py_1()
+        .justify_center()
+        .py_1p5()
         .lit(lit)
         .child(probe)
-        .child(crate::icons::icon(
-            mark,
-            if lit { style::INK_LIT } else { style::INK },
-        ))
-        .child(word);
-    match tip {
-        Some(text) => style::tip(chip, text),
-        None => chip,
-    }
-}
-
-/// One labelled dial: the brush panel's line-over-a-track, on the widget layer's
-/// track (`crate::controls`).
-fn track(dial: Dial, value: f32, state: &Entity<SliderState>) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .py_1()
-        .child(div().readout_row().child(dial.label()).child(match dial {
-            Dial::Feather => format!("{value:.0}"),
-            _ => format!("{value:.2}"),
-        }))
-        .child(wgpui_component::slider::Slider::new(state).w_full())
+        .child(crate::icons::icon(mark, ink));
+    style::tip(chip, tip)
 }
 
 #[cfg(test)]

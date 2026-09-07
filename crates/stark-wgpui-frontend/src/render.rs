@@ -35,6 +35,23 @@ pub struct Renderer {
     viewport: (u32, u32),
     /// How the window reads the surface's texels (§6.5), fixed with the format.
     transfer: Transfer,
+    /// The navigator's miniature, once something has asked for one (`crate::navigator`).
+    ///
+    /// A **second surface**, not a picture: the engine renders the committed document
+    /// straight into it and the swap is a pointer swap, exactly as the canvas's is —
+    /// one document seen twice. So nothing here holds pixels, and a refresh costs a
+    /// render rather than a render plus a readback.
+    overview: Option<Overview>,
+}
+
+/// The miniature's surface and the pass-A attachments it renders through.
+///
+/// Its own [`Offscreen`](stark_engine::Offscreen) rather than the screen's, because
+/// those are the size of the *target*: sharing them would have the miniature resize
+/// the canvas's attachments away on every frame and back again on the next.
+struct Overview {
+    surface: WgpuSurfaceHandle,
+    targets: stark_engine::Offscreen,
 }
 
 impl Renderer {
@@ -62,6 +79,7 @@ impl Renderer {
             engine,
             viewport: (width, height),
             transfer,
+            overview: None,
         })
     }
 
@@ -312,6 +330,114 @@ impl Renderer {
     /// drawn the old picture stretched to the new size.
     pub fn resized(&self) -> bool {
         self.surface.size() != self.viewport
+    }
+
+    // --- the navigator's miniature (§11) --------------------------------------
+
+    /// What a miniature of the whole piece would be, at the largest size that fits
+    /// `into` — **exactly what an export would write** (§15.6), because it is the same
+    /// call: [`Engine::export_plan`] answers the rect, and the plan it returns *is*
+    /// the view the miniature renders through. So the overview cannot come to
+    /// disagree with the picture a file would hold.
+    ///
+    /// `None` on an unpainted, unframed canvas, where the rect the engine would fall
+    /// back to is the *viewport* — a picture of the window presented as the piece.
+    /// An unbounded canvas with nothing on it has no overview, and saying so is the
+    /// honest answer.
+    pub fn overview_plan(
+        &self,
+        frame: Option<stark_model::document::LayerId>,
+        into: Extent2,
+    ) -> Option<stark_engine::ExportPlan> {
+        self.engine
+            .export_plan(frame, stark_engine::ExportScale::Fit(into))
+            .ok()
+    }
+
+    /// Draw the miniature `plan` describes into the overview surface and swap it.
+    ///
+    /// The surface is made on the first call, at the plan's own size; from then on the
+    /// element resizes it from its own bounds, one frame behind — so the view is given
+    /// the surface's *actual* size as its viewport rather than the plan's. The two
+    /// differ by a pixel of rounding in the steady state and by a whole aspect on the
+    /// frame after the piece is reshaped, and taking the target's word for it is what
+    /// keeps that frame a slightly wider crop rather than a stretched picture.
+    ///
+    /// The **committed** document, over the substrate: an overview is a picture of the
+    /// piece as it stands, and following the stroke in hand would mean compositing
+    /// every tile in the document at pointer rate to show what the canvas beside it is
+    /// already showing full size.
+    pub fn paint_overview(&mut self, window: &Window, plan: &stark_engine::ExportPlan) -> bool {
+        if self.overview.is_none() {
+            // `None` where wgpui is not on its wgpu renderer, which is the same
+            // answer the canvas's own surface gives and is reported the same way:
+            // nothing to draw the miniature with, so it is simply not drawn.
+            let Some(surface) =
+                window.create_wgpu_surface(plan.size.width, plan.size.height, self.format())
+            else {
+                return false;
+            };
+            self.overview = Some(Overview {
+                surface,
+                targets: stark_engine::Offscreen::default(),
+            });
+        }
+        let Some(ov) = self.overview.as_mut() else {
+            return false;
+        };
+        let Some((target, size)) = ov.surface.back_view_with_size() else {
+            return false;
+        };
+        let mut view = plan.view();
+        view.viewport = Extent2::new(size.0, size.1);
+        self.engine.render_into(
+            &mut ov.targets,
+            &target,
+            view,
+            stark_engine::Background::Substrate,
+            stark_engine::Rendered::Committed,
+        );
+        ov.surface.swap_buffers();
+        true
+    }
+
+    /// The miniature's handle, for the element that composites it — `None` until
+    /// something has painted one.
+    pub fn overview_surface(&self) -> Option<WgpuSurfaceHandle> {
+        self.overview.as_ref().map(|ov| ov.surface.clone())
+    }
+
+    /// Let the miniature go: its surface leaves the registry with the last handle
+    /// (`WgpuSurfaceHandle`), so putting the navigator away really does give the
+    /// textures back rather than keeping a second copy of the piece on the GPU.
+    pub fn drop_overview(&mut self) {
+        self.overview = None;
+    }
+
+    /// The format both surfaces are configured in — the engine's own, since its texels
+    /// are composited unconverted (§6.5).
+    fn format(&self) -> wgpu::TextureFormat {
+        self.surface.format()
+    }
+
+    // --- lighting (§6.3) ------------------------------------------------------
+
+    /// Whether `id`'s bytes have already been decoded and prefiltered, so a switch to
+    /// it costs nothing.
+    pub fn environment_loaded(&self, id: stark_engine::EnvironmentId) -> bool {
+        self.engine.environment_loaded(id)
+    }
+
+    /// Hand an environment's HDR bytes over, readying it *without* switching to it —
+    /// the switch is a command, and this is not (§4).
+    pub fn register_environment(
+        &mut self,
+        id: stark_engine::EnvironmentId,
+        hdr: Vec<u8>,
+    ) -> Result<(), String> {
+        self.engine
+            .register_environment(id, hdr)
+            .map_err(|e| e.to_string())
     }
 
     /// Render the canvas into the back buffer and swap it to the front.

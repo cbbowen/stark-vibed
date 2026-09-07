@@ -66,7 +66,27 @@ pub fn stored_showing(what: VisibilityToggle) -> bool {
 /// So the native frontend asks this and keeps its own default for the absent case
 /// (`stark-wgpui-frontend`'s `visibility`).
 pub fn stored_open() -> Option<HashSet<PanelId>> {
-    Some(panels(storage::load_list()?).map(|(id, _)| id).collect())
+    Some(
+        stored_screen()?
+            .into_iter()
+            .filter_map(|what| match what {
+                VisibilityToggle::Panel(id) => Some(id),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Everything this client left on screen, or `None` where it has never said —
+/// [`stored_open`]'s whole-vocabulary twin.
+///
+/// The reader a **docked** chrome wants, and for the same reason it wants
+/// [`stored_folded`]: its columns stack the navigator beside the panels, so "what was
+/// up last time" is a question about the menu's whole list rather than about the panel
+/// stack alone. One load rather than a [`stored_showing`] per entry.
+pub fn stored_screen() -> Option<HashSet<VisibilityToggle>> {
+    let rows: Vec<StoredVisible> = storage::load_list()?;
+    Some(rows.into_iter().map(|row| row.what).collect())
 }
 
 /// The panels this browser did **not** leave open, as `PanelLayout::hidden` — every
@@ -79,24 +99,33 @@ pub fn stored_hidden() -> HashSet<PanelId> {
         .collect()
 }
 
-/// The panels this browser left **folded** (`PanelLayout::collapsed`).
+/// Everything this client left **folded to its title bar**.
 ///
 /// Read from the same rows as [`stored_hidden`], since it is the same fact about the
-/// same panel; a panel that is not open cannot appear here at all.
-pub fn stored_collapsed() -> HashSet<PanelId> {
-    panels(stored())
-        .filter(|(_, collapsed)| *collapsed)
-        .map(|(id, _)| id)
+/// same entry; one that is not showing cannot appear here at all.
+///
+/// Keyed by the menu entry rather than by [`PanelId`] because a **docked** chrome
+/// folds things that are not panels: the native frontend stacks the navigator in a
+/// column with them, and a title bar it can fold is the only way one comes back
+/// (`stark-wgpui-frontend`'s `panel`). A floating stack has no such entry and asks
+/// [`stored_collapsed`] instead.
+pub fn stored_folded() -> HashSet<VisibilityToggle> {
+    stored()
+        .into_iter()
+        .filter(|row| row.collapsed)
+        .map(|row| row.what)
         .collect()
 }
 
-/// The panel rows of a stored screen, as `(id, folded)` — the other three entries
-/// dropped, since neither reader above has anything to say about them.
-fn panels(rows: Vec<StoredVisible>) -> impl Iterator<Item = (PanelId, bool)> {
-    rows.into_iter().filter_map(|row| match row.what {
-        VisibilityToggle::Panel(id) => Some((id, row.collapsed)),
-        _ => None,
-    })
+/// The panels this browser left **folded** (`PanelLayout::collapsed`).
+pub fn stored_collapsed() -> HashSet<PanelId> {
+    stored_folded()
+        .into_iter()
+        .filter_map(|what| match what {
+            VisibilityToggle::Panel(id) => Some(id),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Write what is on screen. **The one writer**, called by everything that shows or
@@ -113,22 +142,31 @@ fn panels(rows: Vec<StoredVisible>) -> impl Iterator<Item = (PanelId, bool)> {
 /// signal read ends up live across a write of itself.
 /// Write this client's on-screen state back.
 ///
-/// `showing` answers for one menu entry at a time and `collapsed` says which panels
-/// are folded to their title bar. Both halves stay with the caller because only a
-/// frontend knows where each bit is kept — a `Signal` on one side, a field on the
-/// other — and that is exactly why the closure is exhaustive over
-/// [`VisibilityToggle`] at *its* call site: a tenth entry in the menu stops the build
-/// there until somebody says where its bit lives.
+/// `showing` answers for one menu entry at a time and `folded` says which of them are
+/// down to a title bar. Both halves stay with the caller because only a frontend knows
+/// where each bit is kept — a `Signal` on one side, a field on the other — and that is
+/// exactly why the first closure is exhaustive over [`VisibilityToggle`] at *its* call
+/// site: a tenth entry in the menu stops the build there until somebody says where its
+/// bit lives.
+///
+/// `folded` is a predicate rather than a set for the same reason `showing` is, and it
+/// is keyed by the whole vocabulary rather than by [`PanelId`]: a docked column folds
+/// things that are not panels ([`stored_folded`]). A frontend whose stack folds only
+/// panels answers `false` for everything else, which is what the row shape already
+/// said — the field is meaningless on an entry that has no title bar.
 ///
 /// What is here is the row shape and the write, which is the half that must not
 /// differ: two clients writing one record two ways is a record neither can read.
-pub fn persist(showing: impl Fn(VisibilityToggle) -> bool, collapsed: &HashSet<PanelId>) {
+pub fn persist(
+    showing: impl Fn(VisibilityToggle) -> bool,
+    folded: impl Fn(VisibilityToggle) -> bool,
+) {
     let rows: Vec<StoredVisible> = VisibilityToggle::ALL
         .into_iter()
         .filter(|what| showing(*what))
         .map(|what| StoredVisible {
             what,
-            collapsed: matches!(what, VisibilityToggle::Panel(id) if collapsed.contains(&id)),
+            collapsed: folded(what),
         })
         .collect();
     storage::save_list(&rows);
@@ -245,7 +283,13 @@ mod tests {
 
     /// [`stored_hidden`]'s reading, without the store — the half worth testing.
     fn stored_hidden_from(rows: Vec<StoredVisible>) -> HashSet<PanelId> {
-        let open: HashSet<PanelId> = panels(rows).map(|(id, _)| id).collect();
+        let open: HashSet<PanelId> = rows
+            .into_iter()
+            .filter_map(|row| match row.what {
+                VisibilityToggle::Panel(id) => Some(id),
+                _ => None,
+            })
+            .collect();
         PanelId::ALL
             .into_iter()
             .filter(|id| !open.contains(id))

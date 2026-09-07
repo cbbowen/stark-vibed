@@ -26,6 +26,8 @@ pub fn persist(state: AppState) {
             VisibilityToggle::QuickBrushes => quick_brushes,
             VisibilityToggle::Timeline => timeline,
         },
-        &collapsed,
+        // A floating stack folds panels and nothing else: the three entries below
+        // the panels have no title bar to fold to (`stark_ui::visibility::persist`).
+        |what| matches!(what, VisibilityToggle::Panel(id) if collapsed.contains(&id)),
     );
 }

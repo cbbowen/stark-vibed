@@ -735,7 +735,7 @@ pub const BASIC: &[Command] = &[
 /// Serde, because an entry is named in the record of what this browser last had on
 /// screen (`crate::visibility`) — and the derive spells a variant exactly as `Debug`
 /// does, so the stored word and the enum's are one by construction.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum VisibilityToggle {
     /// One of the floating tool panels (§11).
     Panel(PanelId),

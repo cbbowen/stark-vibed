@@ -1159,7 +1159,8 @@ the exit criterion is an act, not a diff.
   draw, and it wears its name alone.
 - **N8 — the long tail.** Guides (§20), gradients (§22), filters (§21), frames and
   export (§15), the navigator, timeline mode. One panel at a time; each is a Tier
-  B move plus native markup. **Started**: the stack that holds panels, and Color.
+  B move plus native markup. **Started**: the two stacks that hold panels, Color,
+  Lighting, Guides and the navigator.
 
   Two things had to come before any of the six, and the first was not on this list
   at all.
@@ -1246,8 +1247,9 @@ the exit criterion is an act, not a diff.
 
   **A Window menu came next**, which is the visibility menu (§25.5) as a menu bar
   draws one: a row per panel, each wearing its own title-bar mark and a tick saying
-  whether it is up. Only the four panels this frontend has, by the rule above — a row
-  offering a Guides panel it does not draw is exactly the dead act that rule forbids.
+  whether it is up. Only the shelves this frontend has, by the rule above — a row
+  offering a quick-brush rack it does not draw is exactly the dead act that rule
+  forbids.
   A menu reserves the tick column when *any* of its rows carries a state and gives it
   to no row otherwise, so a menu of switches aligns and a menu of acts is not indented
   for a column it never fills. "Am I in it?" is the one thing about a row the registry
@@ -1303,9 +1305,84 @@ the exit criterion is an act, not a diff.
   three ask, and a frontend can no longer think space is down while the table thinks
   it is a chord.
 
-  **Still to do**: guides (§20), gradients (§22), filters (§21), frames and export
-  (§15), the navigator and timeline mode. Each is a large panel with an overlay of
-  its own, which is why they sequence after the stack that will hold them.
+  **Then the chrome stopped carrying words.** Every control in the columns wears a
+  mark from the shared catalog and says what it is in a *tooltip*, which is the web
+  app's minimal mode (§11) arrived at from the other side: over there the words are
+  hidden by a class on a chrome that has room for them, and here a docked column
+  never had the room to begin with. Two kinds of text survive, on the web app's own
+  carve-outs — a shelf's **title**, whose row is spent on the fold control either
+  way, and any **name the artist chose** (a preset, a layer, a guide), which no mark
+  can stand in for.
+
+  The saving is vertical and it is what paid for everything below. A labelled track
+  is two lines — a caption row over the trough — and a marked one is a single line
+  of glyph, trough and figure; a run of chips that carried a word under each mark
+  wrapped onto two rows and now fits one. The `tip` helper was already there for the
+  layer chips; what changed is that it is now load-bearing, and a control that hangs
+  no tooltip is a square nothing on screen explains.
+
+  **And a second column.** Color moved to the right-hand edge, above Layers, which
+  splits the chrome by what a hand is doing rather than by what happened to be built
+  first: a **tool** column down one side (Brush, Select, Lighting, Guides) and a
+  **reading** column down the other (Navigator, Color, Layers). The machinery
+  generalized with it — `panel::column` builds either side, `panel::width` takes a
+  `Side`, and `Canvas::origin` and the stylus's capture rectangle read both.
+
+  The stack's key generalized too, from `PanelId` to **`VisibilityToggle`**, and the
+  navigator is why. It is not a panel in either app — the web app's is a miniature in
+  the corner of the canvas with no title to wear — but in a docked chrome it is a box
+  in a column beside the panels, foldable and hideable exactly as they are. That
+  vocabulary already existed for exactly this ("the map of what is on screen"), so it
+  is the column's key and the record's; `visibility::persist` took a *predicate* for
+  the folded half to match, and `stored_screen` and `stored_folded` are the
+  whole-vocabulary twins of the two readers a floating stack asks.
+
+  **Three shelves landed on top of that**, and each is mostly a Tier B move:
+
+  - **Lighting** (§6.3, §6.4, §6.5) is five tracks, a well, a drop-down and a
+    switch. The substrate gallery moved here from the Brush shelf, where it had
+    been only because there was one column: what a substrate does is *catch the
+    light*, and the scale dial under it is meaningless without one. The canvas
+    colour is **taken rather than picked** — the web app flies an Oklab picker out
+    beside its panel because its Color panel is a column away and may be shut, and
+    this window's is three inches away in the other column, so the well lays the
+    colour in hand and there is no second picker onto the same wheel. The four
+    environment HDRs ride in the binary on N7's argument, and are registered on
+    first use rather than at start: 5 MB of decode nobody has asked for.
+  - **Drawing Guides** (§20.5) is the roster shaped like the Layers shelf beside
+    it — an eye that says whether *this client* draws the guide, a trash, and a
+    press that takes one up — plus the dressing of whichever is in hand: the plane
+    chips, the lens toggle, the cell ladder and the opacity. What is **not** here is
+    the canvas gesture that shapes a camera, which is a composing mode with a
+    catcher of its own and is a stage rather than a panel. A guide added here is
+    `PerspectiveGuide::default` placed where the artist is looking — two-point,
+    turned 30° — which draws immediately, so the shelf is useful before the gesture
+    exists rather than after.
+  - **The Navigator** is a **second `WgpuSurface`**, and that is the whole of what
+    makes it cheap: the engine renders the committed document straight into it and
+    the swap is a pointer swap, exactly as the canvas's is — one document seen
+    twice, no readback, no pixels held here. What it *is* a picture of is the same
+    call an export makes (`Engine::export_plan`), so the overview cannot come to
+    disagree with the picture a file would hold. The refresh policy is three
+    clauses and each earns its place: due when the committed revision moves, never
+    under a live gesture, and at most once a settle so a held undo collapses into
+    one render. The viewport marker is a **painted path** rather than a positioned
+    box, because the rectangle is *turned*: a box could say where the view is and
+    not which way up it is, and which way up is half of what an overview answers
+    once the easel can be turned (§18.1.2). Putting the navigator away drops the
+    surface, which is what hiding it actually gives back.
+
+  One thing the guides shelf had to answer that the layers shelf did not: **which
+  row the dressing is about**. The web app's answer is the edit mode — the guide in
+  hand is the one being shaped — and with no mode here the shelf keeps its own
+  choice, resolved against the roster every frame rather than kept in step with it.
+  A guide can go away under a peer's edit or an undo, and a held id that no longer
+  names one would leave four tracks pointed at nothing; falling back to the newest
+  is the same bargain the Layers shelf's active row makes.
+
+  **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
+  mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
+  overlay of its own, which is why they sequence after the stack that holds them.
 - **N9 — collaboration.** `collab`'s two pumps move down; the ticket is pasted
   rather than linked. *Exit:* the two frontends paint on one document. **Done**,
   and the half of the plan that was wrong is the more useful half.

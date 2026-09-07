@@ -16,13 +16,13 @@ use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
 use stark_model::AssetNeed;
-use stark_model::document::{BrushShape, FillOp, SelectionOp, ShapeAction};
+use stark_model::document::{BrushShape, FillOp, GuideId, SelectionOp, ShapeAction};
 use stark_model::geom::Vec2;
 use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::{Bindings, Command};
+use stark_ui::commands::{Bindings, Command, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton, DragChord};
 use stark_ui::input as chrome_input;
 use stark_ui::keys::Mods;
@@ -47,10 +47,13 @@ use crate::color;
 use crate::controls::Controls;
 use crate::files::{self, Done};
 use crate::gallery;
+use crate::guides;
 use crate::layers::{self, Act};
+use crate::lighting;
 use crate::menu;
+use crate::navigator;
 use crate::palette;
-use crate::panel::{self, Knob, Region, Regions};
+use crate::panel::{self, Knob, Region, Regions, Side};
 use crate::render::Renderer;
 use crate::select;
 use crate::transform;
@@ -136,6 +139,10 @@ enum Held {
     /// 4×4 mesh and its solved basis, which would otherwise be the size of every
     /// other thing a press can hold.
     Transform(Box<Grab>),
+    /// A drag on the navigator's miniature: the view follows the pointer around the
+    /// piece. Carries nothing — where the view goes is a pure function of where the
+    /// pointer is over the picture (`crate::navigator`), so there is no start to hold.
+    Overview,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
     /// flow up and down, from where the press landed.
     Tune {
@@ -177,17 +184,21 @@ pub struct Canvas {
     wheel: color::Wheel,
     /// Its two pictures, kept between frames: a wheel is `FIELD_N²` gamut lookups.
     pictures: color::Pictures,
-    /// Which panels this client has folded away, remembered across sessions
-    /// (`stark_ui::visibility`).
-    folded: std::collections::HashSet<PanelId>,
+    /// Which shelves this client has folded to their title bar, remembered across
+    /// sessions (`stark_ui::visibility`).
+    ///
+    /// Keyed by [`VisibilityToggle`] rather than by `PanelId` because the columns
+    /// stack the navigator beside the panels and it folds like one — see
+    /// `crate::visibility`.
+    folded: std::collections::HashSet<VisibilityToggle>,
     /// Which it has put away entirely — the Window menu's answer (`crate::menu`),
     /// kept across sessions beside the fold above (`crate::visibility`).
     ///
     /// The one piece of chrome state the *canvas geometry* depends on. A column that
     /// is not built is room the surface takes, so where a press lands in the picture
     /// is a function of this set ([`Canvas::origin`]) — which is the difference
-    /// between hiding a docked panel and hiding a floating one.
-    hidden: std::collections::HashSet<PanelId>,
+    /// between hiding a docked shelf and hiding a floating panel.
+    hidden: std::collections::HashSet<VisibilityToggle>,
     /// Whether space is down — the modifier that turns a left drag into a pan
     /// (§18.1.7).
     ///
@@ -201,11 +212,28 @@ pub struct Canvas {
     /// menu is open for the length of one decision.
     menu_open: Option<usize>,
     menu_regions: menu::Regions,
-    /// The same, for the Select section, the transform bar and the two galleries.
+    /// The same, for the Select section, the transform bar, the two galleries and
+    /// the three shelves that came after them.
     select_regions: select::Regions,
     color_regions: color::Regions,
     bar_regions: transform::Regions,
     gallery_regions: gallery::Regions,
+    lighting_regions: lighting::Regions,
+    guide_regions: guides::Regions,
+    nav_regions: navigator::Regions,
+    /// The guide the Guides shelf's dressing acts on, if this client has taken one up.
+    /// Resolved against the roster every frame (`guides::chosen`), so a guide removed
+    /// under an undo leaves the tracks pointed at the newest rather than at nothing.
+    guide: Option<GuideId>,
+    /// Where the navigator's miniature sits in canvas space, and how large it is
+    /// drawn — four numbers, because the picture itself is a surface on the GPU
+    /// (`crate::navigator`).
+    overview: Option<navigator::Overview>,
+    /// The committed revision that miniature is a picture of, and when it was drawn.
+    /// Together they are the whole of the refresh policy: draw when the document has
+    /// moved, never under a live gesture, and at most once a settle.
+    overview_at: u64,
+    overview_when: f64,
     /// The two asset libraries this client keeps (§25.6) — the stamps and the
     /// substrates a person brought in, read from the store at start.
     shapes: Vec<assets::Entry>,
@@ -349,7 +377,7 @@ impl Canvas {
             layer_regions: layers::Regions::default(),
             wheel,
             pictures: color::Pictures::default(),
-            folded: stark_ui::visibility::stored_collapsed(),
+            folded: crate::visibility::stored_folded(),
             hidden: crate::visibility::stored(),
             space: false,
             menu_open: None,
@@ -358,6 +386,15 @@ impl Canvas {
             color_regions: color::Regions::default(),
             bar_regions: transform::Regions::default(),
             gallery_regions: gallery::Regions::default(),
+            lighting_regions: lighting::Regions::default(),
+            guide_regions: guides::Regions::default(),
+            nav_regions: navigator::Regions::default(),
+            guide: None,
+            overview: None,
+            overview_at: 0,
+            // Behind the first settle, so the opening frame draws a miniature rather
+            // than waiting a fifth of a second to admit there is a document.
+            overview_when: f64::NEG_INFINITY,
             shapes,
             substrates,
             substrate: SubstrateId::Flat,
@@ -438,8 +475,7 @@ impl Canvas {
                 self.bar_act(ui, region, cx);
                 return;
             }
-            if !panel::within(ev.position, panel::width(&self.hidden))
-                && !self.over_layers(window, ev.position)
+            if !self.over_chrome(window, ev.position)
                 && let Some(view) = self.view()
             {
                 let at = canvas_at(view, ev.position, self.origin(), window.scale_factor());
@@ -448,13 +484,25 @@ impl Canvas {
             }
         }
 
-        // The layers panel is on the right, so it is asked first for the same reason
-        // the brush panel is: a press is paint only where neither column claims it.
+        // Every shelf of both columns, then the columns themselves. Order between the
+        // hit tests is immaterial — the region lists are disjoint — but *all* of them
+        // come before the catch-all below, which is what turns a press on a column
+        // into nothing rather than into paint.
         if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
             self.act(region, cx);
             return;
         }
-        if self.over_layers(window, ev.position) {
+        if let Some(region) = guides::hit(&self.guide_regions, ev.position) {
+            self.guide_act(region, cx);
+            return;
+        }
+        if let Some(region) = lighting::hit(&self.lighting_regions, ev.position) {
+            self.light_act(region, window, cx);
+            return;
+        }
+        if navigator::hit(&self.nav_regions, ev.position).is_some() {
+            self.held = Some(Held::Overview);
+            self.overview_to(ev.position, cx);
             return;
         }
 
@@ -520,8 +568,8 @@ impl Canvas {
                 }
                 return;
             }
-            Some(Region::Fold(id)) => {
-                self.fold(id, cx);
+            Some(Region::Fold(what)) => {
+                self.fold(what, cx);
                 return;
             }
             Some(Region::Preset(i)) => {
@@ -531,8 +579,8 @@ impl Canvas {
                 }
                 return;
             }
-            None if panel::within(ev.position, panel::width(&self.hidden)) => {
-                // Somewhere on the panel that is not a control. Not paint either.
+            None if self.over_chrome(window, ev.position) => {
+                // Somewhere on a column that is not a control. Not paint either.
                 return;
             }
             None => {}
@@ -726,6 +774,10 @@ impl Canvas {
                     self.pick(region, grab, f, cx);
                 }
             }
+            // Held-and-dragged is one continuous request — "show me here" — which is
+            // what makes the view follow the pointer instead of jumping to wherever it
+            // is let go.
+            Some(Held::Overview) => self.overview_to(at, cx),
             Some(Held::Tune { from, size, flow }) => {
                 // Both knobs from the press rather than from the last move, so a long
                 // drag is one map and rounding cannot walk over its length.
@@ -809,15 +861,18 @@ impl Canvas {
         }
     }
 
-    /// Whether a position is over the layers panel's column at all.
+    /// Whether a position is over either column at all.
     ///
-    /// The canvas ends where this begins, so a press it does not want is still not
-    /// paint — the same bargain `panel::within` makes on the other side, measured
-    /// from the right because that is the edge this column is pinned to.
-    fn over_layers(&self, window: &Window, at: Point<Pixels>) -> bool {
-        let width = layers::width(&self.hidden);
-        let right = f32::from(window.viewport_size().width);
-        width > 0.0 && f32::from(at.x) >= right - width
+    /// The canvas is what is *between* them, so a press neither column's controls
+    /// wanted is still not paint. The widths are this module's own (`panel::width`)
+    /// rather than measured, for the reason [`Canvas::origin`] gives.
+    fn over_chrome(&self, window: &Window, at: Point<Pixels>) -> bool {
+        panel::within(
+            at,
+            panel::width(Side::Left, &self.hidden),
+            panel::width(Side::Right, &self.hidden),
+            f32::from(window.viewport_size().width),
+        )
     }
 
     /// Do what a press on the layers panel means.
@@ -864,6 +919,246 @@ impl Canvas {
             return;
         };
         self.send(DocCommand::SetLayerBlend(id, mode), cx);
+    }
+
+    // --- the Lighting shelf (§6.3, §6.4, §6.5) --------------------------------
+
+    /// Move one of the Lighting shelf's tracks.
+    ///
+    /// The one place its three kinds of state are told apart (§4): the media
+    /// parameters are a *view* setting, the substrate's scale is the **document's**,
+    /// and the headroom is this client's own preference and reaches the engine only
+    /// through the window's own capability (`Renderer::apply_hdr`).
+    pub(crate) fn turn_light(&mut self, dial: lighting::Dial, v: f32, cx: &mut Context<'_, Self>) {
+        match dial {
+            lighting::Dial::Impasto | lighting::Dial::Texture | lighting::Dial::Gloss => {
+                let mut media = self
+                    .obs
+                    .as_ref()
+                    .map_or_else(stark_engine::MediaParams::default, |o| o.media);
+                match dial {
+                    lighting::Dial::Impasto => media.height_strength = v,
+                    lighting::Dial::Texture => media.substrate_strength = v,
+                    _ => media.specular = v,
+                }
+                self.send(ViewCommand::SetMediaParams(media), cx);
+            }
+            // Document state, and sent per sample: the engine coalesces nothing, so a
+            // drag is a run of history entries. Honest but coarse, exactly as the
+            // layer opacity above is, and the preview pair is the same stage of its
+            // own for both.
+            lighting::Dial::Scale => {
+                let scale = stark_model::SubstrateScale::new(v.round().max(0.0) as u16);
+                self.send(DocCommand::SetSubstrateScale(scale), cx);
+            }
+            // Shown but not kept: a headroom is written down when the hand comes off
+            // it ([`settle_light`]), so one drag is one write rather than one a frame.
+            lighting::Dial::Headroom => {
+                self.hdr.headroom = v;
+                self.apply_hdr(cx);
+            }
+        }
+    }
+
+    /// The end of a track's drag, for the one dial that has anything to do there.
+    pub(crate) fn settle_light(
+        &mut self,
+        dial: lighting::Dial,
+        _v: f32,
+        _cx: &mut Context<'_, Self>,
+    ) {
+        if dial == lighting::Dial::Headroom {
+            let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
+            prefs.hdr = self.hdr;
+            stark_ui::storage::save(&prefs);
+        }
+    }
+
+    /// Tell the engine what the window is (§6.5) and show it — the read-modify half of
+    /// the HDR switch, shared by the switch and by the headroom track.
+    fn apply_hdr(&mut self, cx: &mut Context<'_, Self>) {
+        // The display's own figure is a *window* question and this is not one; the
+        // switch below re-asks it whenever the window can answer, and a track is only
+        // ever mounted where it cannot (`lighting::dials`).
+        let hdr = self.hdr;
+        if let Some(r) = self.renderer.as_mut() {
+            r.apply_hdr(hdr, None);
+            self.obs = Some(r.observe());
+        }
+        self.repaint(cx);
+    }
+
+    /// Re-light the canvas (§6.3). A view setting: no stored pixel moves, only how the
+    /// relief catches the light.
+    ///
+    /// The bytes go in first where this build has them and the engine has not — which
+    /// is a decode and a prefilter, done once per light per session and never on the
+    /// switch that follows. It is *not* a command (§4), which is why it is a call and
+    /// the switch beside it is not.
+    pub(crate) fn set_environment(
+        &mut self,
+        id: stark_engine::EnvironmentId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let needed = self
+            .renderer
+            .as_ref()
+            .is_some_and(|r| !r.environment_loaded(id));
+        if needed
+            && let Some(bytes) = lighting::environment_hdr(id)
+            && let Some(r) = self.renderer.as_mut()
+            && let Err(e) = r.register_environment(id, bytes.to_vec())
+        {
+            // The canvas keeps the light it has rather than switching to one that
+            // will not decode — and says so, which is what this window has that the
+            // web app's `tracing::warn` does not.
+            return self.report(format!("that light will not load: {e}"));
+        }
+        self.send(ViewCommand::SetEnvironment(id), cx);
+    }
+
+    /// Do what a press on the Lighting shelf means.
+    fn light_act(
+        &mut self,
+        region: lighting::Region,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match region {
+            // The colour in hand, laid under the painting (§15.5) — see
+            // `crate::lighting` for why the well takes rather than picks.
+            lighting::Region::SubstrateColor => {
+                let color = lighting::take_color(self.brush.tune.color);
+                self.send(DocCommand::SetSubstrateColor(color), cx);
+            }
+            lighting::Region::Hdr => self.toggle_hdr(window, cx),
+        }
+    }
+
+    // --- the Guides shelf (§20.5) ---------------------------------------------
+
+    /// Move one of the Guides shelf's tracks: a whole edit of the camera in hand,
+    /// because that is the shape `DocCommand::SetGuide` takes.
+    pub(crate) fn turn_guide(&mut self, dial: guides::Dial, v: f32, cx: &mut Context<'_, Self>) {
+        let Some((id, camera)) = self.held_guide() else {
+            return;
+        };
+        self.send(DocCommand::SetGuide(id, dial.write(camera, v)), cx);
+    }
+
+    /// The guide this client has taken up, and its camera as the engine holds it now.
+    ///
+    /// Read back per edit rather than kept beside the choice, which is worth saying:
+    /// the roster is the engine's projection, so this reports what the canvas is
+    /// showing rather than what a copy here last recorded (§4).
+    fn held_guide(&self) -> Option<(GuideId, stark_model::document::PerspectiveGuide)> {
+        let o = self.obs.as_ref()?;
+        let id = guides::chosen(Some(o), self.guide)?;
+        o.guides.iter().find(|g| g.id == id).map(|g| (id, g.guide))
+    }
+
+    /// Do what a press on the Guides shelf means.
+    ///
+    /// The *meaning* is `guides::act`, a function over the roster so that it can be
+    /// tested; what is here is the two things it cannot do — send the command, and
+    /// take a guide up, which is this shelf's own state rather than the document's.
+    fn guide_act(&mut self, region: guides::Region, cx: &mut Context<'_, Self>) {
+        let guides: Vec<stark_engine::GuideInfo> = self
+            .obs
+            .as_ref()
+            .map(|o| o.guides.to_vec())
+            .unwrap_or_default();
+        let taken = guides::chosen(self.obs.as_ref(), self.guide);
+        // Where the artist is looking, which is where a new perspective is centred.
+        let center = self.obs.as_ref().map_or(Vec2::ZERO, |o| o.view.center);
+        let adding = region == guides::Region::Add;
+        match guides::act(region, &guides, taken, center) {
+            Some(guides::Act::Doc(command)) => {
+                self.send(command, cx);
+                // The engine mints no id for a guide — its identity is the id of the
+                // action that added it (§20.5) — so a new one is *found* rather than
+                // returned. It was appended, so it is the tail, and `send` has already
+                // refreshed the projection.
+                if adding && let Some(o) = self.obs.as_ref() {
+                    self.guide = o.guides.last().map(|g| g.id);
+                    // Drawn straight away: adding a guide is asking to see it, and an
+                    // eye that had to be opened afterwards would make the act look
+                    // like it had done nothing.
+                    if let Some(id) = self.guide {
+                        self.send(ViewCommand::SetGuideVisible(id, true), cx);
+                    }
+                }
+            }
+            Some(guides::Act::View(command)) => self.send(command, cx),
+            Some(guides::Act::Take(id)) => {
+                self.guide = Some(id);
+                self.repaint(cx);
+            }
+            None => {}
+        }
+    }
+
+    // --- the Navigator (§11) ---------------------------------------------------
+
+    /// Point the view at what a press on the miniature landed on.
+    fn overview_to(&mut self, at: Point<Pixels>, cx: &mut Context<'_, Self>) {
+        let (Some(over), Some((fx, fy))) =
+            (self.overview, navigator::fraction_at(&self.nav_regions, at))
+        else {
+            return;
+        };
+        self.send(ViewCommand::CenterOn(over.target(fx, fy)), cx);
+    }
+
+    /// Bring the miniature up to date, if it is on screen and owes a frame.
+    ///
+    /// The whole of the refresh policy, and every clause of it earns its place: the
+    /// picture is of the **committed** document, so it is due when that revision
+    /// moves; it is never drawn under a live gesture, because one refresh composites
+    /// every tile in the document and mid-stroke is exactly where that is least
+    /// affordable; and it is drawn at most once a settle, so a held undo collapses
+    /// into one render rather than one a frame.
+    fn refresh_overview(&mut self, window: &Window) {
+        let Some(o) = self.obs.as_ref() else { return };
+        // The **topmost** frame rather than the selected one: this is a permanent
+        // readout of where you are in the piece, and "the piece" is what the frame on
+        // top says it is (`stark_ui::bounds::piece_frame`).
+        let frame = stark_ui::bounds::piece_frame(o);
+        // Nothing painted and no frame: the rect the engine would fall back to is the
+        // *viewport*, which for an overview would be a picture of the window
+        // presented as the piece — and, since panning is not a change to the
+        // document, one that then froze where it was rendered. An unbounded canvas
+        // with nothing on it has no overview, and saying so is the honest answer.
+        if frame.is_none() && o.bounds.tile_range().is_none() {
+            self.overview = None;
+            return;
+        }
+        let revision = o.doc_revision;
+        let quiet = self.held.is_none() && !o.is_stroking;
+        let scale = window.scale_factor();
+        let now = self.elapsed();
+        let plan = self
+            .renderer
+            .as_ref()
+            .and_then(|r| r.overview_plan(frame, navigator::Overview::box_for(scale)));
+        let Some(plan) = plan else {
+            self.overview = None;
+            return;
+        };
+        // The box the shelf lays out is the plan's whether or not this frame draws
+        // into it — so the miniature keeps the piece's aspect from the first frame,
+        // and the column does not change shape under a refresh.
+        self.overview = Some(navigator::Overview::of(&plan, scale));
+        let due = revision != self.overview_at || self.overview_when.is_infinite();
+        if due
+            && quiet
+            && now - self.overview_when >= navigator::SETTLE
+            && let Some(r) = self.renderer.as_mut()
+            && r.paint_overview(window, &plan)
+        {
+            self.overview_at = revision;
+            self.overview_when = now;
+        }
     }
 
     /// The rows the layers panel draws, worked out by the tree.
@@ -1156,12 +1451,31 @@ impl Canvas {
     /// Written on the press rather than at shutdown, for `crate::window`'s reason
     /// inverted: a fold is one act a person performs deliberately, where a resize is
     /// a hundred frames of a drag. There is nothing here worth batching.
-    fn fold(&mut self, id: PanelId, cx: &mut Context<'_, Self>) {
-        if !self.folded.insert(id) {
-            self.folded.remove(&id);
+    fn fold(&mut self, what: VisibilityToggle, cx: &mut Context<'_, Self>) {
+        if !self.folded.insert(what) {
+            self.folded.remove(&what);
         }
         crate::visibility::persist(&self.hidden, &self.folded);
         self.repaint(cx);
+    }
+
+    /// Whether a shelf is on screen at all.
+    fn shown(&self, what: VisibilityToggle) -> bool {
+        !self.hidden.contains(&what)
+    }
+
+    /// Whether its **body** is drawn — on screen, and not folded to its title bar.
+    ///
+    /// The one the view asks before building anything: a body that is not drawn is a
+    /// body that is not built, which for the color wheel is `FIELD_N²` gamut lookups
+    /// and for the navigator a composite of every tile in the document.
+    fn drawn(&self, what: VisibilityToggle) -> bool {
+        self.shown(what) && !self.folded.contains(&what)
+    }
+
+    /// The same, for a panel — which is most of them.
+    fn panel_drawn(&self, id: PanelId) -> bool {
+        self.drawn(VisibilityToggle::Panel(id))
     }
 
     /// Show a panel, or put it away — the Window menu's act (§25.5).
@@ -1174,16 +1488,16 @@ impl Canvas {
     /// build, and everything downstream of that — the room the canvas takes, where a
     /// press lands in the picture, where the stylus is captured — reads this same set
     /// ([`Canvas::origin`]) rather than being told.
-    fn toggle_panel(&mut self, id: PanelId, cx: &mut Context<'_, Self>) {
-        // A chord could name a panel this frontend has not got, since the table is
-        // the registry's and the registry knows six (`stark_ui::panels`). Showing one
-        // is not something this window can do, so it does nothing rather than
-        // remembering a panel it will never draw.
-        if !crate::visibility::PANELS.contains(&id) {
+    fn toggle_shelf(&mut self, what: VisibilityToggle, cx: &mut Context<'_, Self>) {
+        // A chord could name something this frontend has not got, since the table is
+        // the registry's and the registry knows nine (`stark_ui::commands`). Showing
+        // one is not something this window can do, so it does nothing rather than
+        // remembering a shelf it will never draw.
+        if !crate::visibility::SHELVES.contains(&what) {
             return;
         }
-        if !self.hidden.insert(id) {
-            self.hidden.remove(&id);
+        if !self.hidden.insert(what) {
+            self.hidden.remove(&what);
         }
         crate::visibility::persist(&self.hidden, &self.folded);
         self.repaint(cx);
@@ -1657,7 +1971,8 @@ impl Canvas {
     /// the tick moving with it.
     fn active(&self, command: Command) -> Option<bool> {
         match command {
-            Command::TogglePanel(id) => Some(!self.hidden.contains(&id)),
+            Command::TogglePanel(id) => Some(self.shown(VisibilityToggle::Panel(id))),
+            Command::ToggleNavigator => Some(self.shown(VisibilityToggle::Navigator)),
             Command::ToggleHdr => Some(self.hdr.on),
             _ => None,
         }
@@ -1673,7 +1988,7 @@ impl Canvas {
     /// column's width are what the tree is told, so reading them back would be asking
     /// taffy to confirm an arithmetic this module did.
     fn origin(&self) -> Point<Pixels> {
-        point(px(panel::width(&self.hidden)), px(menu::HEIGHT))
+        point(px(panel::width(Side::Left, &self.hidden)), px(menu::HEIGHT))
     }
 
     /// A middle-button press: the pan for a hand already on the mouse, whatever else
@@ -1705,12 +2020,10 @@ impl Canvas {
     /// raster editor shares — and the rate is the crate's, so a notch is worth the
     /// same in both apps.
     fn wheel(&mut self, ev: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
-        // A press on a panel scrolls it; only the canvas zooms. Asked the way every
-        // other press is (`panel::within`, `over_layers`), so the three columns agree
+        // A wheel over a column scrolls it; only the canvas zooms. Asked the way
+        // every press is (`over_chrome`), so the two columns and the surface agree
         // about where each begins.
-        if panel::within(ev.position, panel::width(&self.hidden))
-            || self.over_layers(window, ev.position)
-        {
+        if self.over_chrome(window, ev.position) {
             return;
         }
         let notches = match ev.delta {
@@ -2300,7 +2613,9 @@ impl Canvas {
             Command::CancelMode => self.cancel_mode(cx),
             Command::FinishMode => self.finish_mode(cx),
             Command::ToggleHdr => self.toggle_hdr(window, cx),
-            Command::TogglePanel(id) => self.toggle_panel(id, cx),
+            Command::TogglePanel(id) => self.toggle_shelf(VisibilityToggle::Panel(id), cx),
+            Command::ToggleNavigator => self.toggle_shelf(VisibilityToggle::Navigator, cx),
+            Command::AddPerspective => self.guide_act(guides::Region::Add, cx),
             _ => {}
         }
         if let Some(doc) = doc {
@@ -2381,7 +2696,7 @@ impl Canvas {
             rect: stark_pen::Rect {
                 left: f32::from(origin.x) * scale,
                 top: f32::from(origin.y) * scale,
-                right: (f32::from(size.width) - layers::width(&self.hidden)) * scale,
+                right: (f32::from(size.width) - panel::width(Side::Right, &self.hidden)) * scale,
                 bottom: f32::from(size.height) * scale,
             },
             enabled: self.mode.is_none() && self.menu_open.is_none(),
@@ -2492,6 +2807,23 @@ impl Render for Canvas {
         self.gallery_regions.borrow_mut().clear();
         self.layer_regions.borrow_mut().clear();
         self.bar_regions.borrow_mut().clear();
+        self.lighting_regions.borrow_mut().clear();
+        self.guide_regions.borrow_mut().clear();
+        self.nav_regions.borrow_mut().clear();
+        // The miniature, before anything is built: it is a *second render* rather
+        // than an element, and what it produces — the box it fills — is what the
+        // shelf below is laid out to. Put away, its surface goes with it, which is
+        // the whole of what hiding the navigator gives back (`Renderer::drop_overview`).
+        if self.drawn(VisibilityToggle::Navigator) {
+            self.refresh_overview(window);
+        } else if let Some(r) = self.renderer.as_mut() {
+            r.drop_overview();
+            self.overview = None;
+            // Back to "never drawn", so showing the navigator again renders rather
+            // than deciding the document has not moved since the surface it was
+            // holding was let go.
+            self.overview_when = f64::NEG_INFINITY;
+        }
         let shape_rows = Self::shipped(assets::SHIPPED_SHAPES);
         let substrate_rows = Self::shipped(assets::SHIPPED_SUBSTRATES);
         let held_shape = match self.brush.config.shape {
@@ -2511,34 +2843,49 @@ impl Render for Canvas {
                 .and_then(|r| r.asset_bytes(id))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
-        let shapes = gallery::gallery::<assets::Shapes>(
-            gallery::Which::Shapes,
-            "Shapes",
-            gallery::Shown {
-                rows: &shape_rows,
-                own: &self.shapes,
-                current: held_shape,
-            },
-            engine_bytes,
-            &self.gallery_regions,
-        );
+        // Built only for a shelf that is drawing, like every other body below — and
+        // worth the test here rather than there, because a card's bytes are asked of
+        // the engine per row per frame.
+        let shapes = self.panel_drawn(PanelId::Brush).then(|| {
+            gallery::gallery::<assets::Shapes>(
+                gallery::Which::Shapes,
+                "Shapes",
+                gallery::Shown {
+                    rows: &shape_rows,
+                    own: &self.shapes,
+                    current: held_shape,
+                },
+                engine_bytes,
+                &self.gallery_regions,
+            )
+        });
         let substrate_bytes = |id| {
             self.renderer
                 .as_ref()
                 .and_then(|r| r.substrate_bytes(SubstrateId::Image(id)))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
-        let substrates = gallery::gallery::<assets::Substrates>(
-            gallery::Which::Substrates,
-            "Substrates",
-            gallery::Shown {
-                rows: &substrate_rows,
-                own: &self.substrates,
-                current: held_substrate,
-            },
-            substrate_bytes,
-            &self.gallery_regions,
-        );
+        // Headed by what it *is* rather than by what it holds: the shelf around it is
+        // the light, and this is the surface being lit (`stark_ui::icons::SURFACE`).
+        let substrates = self.panel_drawn(PanelId::Lighting).then(|| {
+            gallery::gallery::<assets::Substrates>(
+                gallery::Which::Substrates,
+                "Surface",
+                gallery::Shown {
+                    rows: &substrate_rows,
+                    own: &self.substrates,
+                    current: held_substrate,
+                },
+                substrate_bytes,
+                &self.gallery_regions,
+            )
+        });
+        // What the *window* can say about the display (§6.5), read before anything
+        // borrows the renderer: the Lighting shelf shows the HDR switch only where
+        // there is more than white to show, and stands a headroom track in only where
+        // the platform will not state its own.
+        let hdr_capable = self.renderer.as_ref().is_some_and(Renderer::hdr_capable);
+        let display_headroom = window.display_headroom();
         // Built before the panels so its regions are recorded first — which does not
         // matter for the hit test (the lists are separate) but keeps the bar's own
         // drop-down measured on the frame it opens.
@@ -2572,58 +2919,143 @@ impl Render for Canvas {
             &self.menu_regions,
             search,
         );
-        let picker = color::color_panel(
-            self.wheel,
-            &mut self.pictures,
-            &self.controls.hex,
-            &self.color_regions,
-        );
-        // The widget layer's dials are told what the model says before the panels
+        // The widget layer's dials are told what the model says before the shelves
         // that show them are built (`crate::controls`).
         let rows = self.rows();
         let active = self.obs.as_ref().map(|o| o.active_layer);
         let chosen = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
         self.controls.sync(
-            &self.brush,
-            self.obs.as_ref(),
-            chosen.map_or(1.0, |r| r.info.opacity),
-            chosen.map_or(stark_model::document::BlendMode::Normal, |r| r.info.blend),
+            crate::controls::Sync {
+                brush: &self.brush,
+                obs: self.obs.as_ref(),
+                opacity: chosen.map_or(1.0, |r| r.info.opacity),
+                blend: chosen.map_or(stark_model::document::BlendMode::Normal, |r| r.info.blend),
+                hdr: self.hdr,
+                guide: self.held_guide().map(|(_, camera)| camera),
+            },
             window,
             cx,
         );
-        // Built only where there is a column to put it in: with every panel in it
-        // hidden the tree has no left-hand child at all, and the surface beside it
-        // flexes into the room — which is the same fact `Canvas::origin` states.
-        let column = (panel::width(&self.hidden) > 0.0).then(|| {
-            panel::brush_panel(
-                &self.brush,
-                &self.controls,
-                EFFECTS,
-                &self.regions,
-                &self.hidden,
-                &self.folded,
-                panel::Sections {
-                    color: picker,
-                    select: select::select_panel(
-                        self.obs.as_ref(),
-                        &self.bindings,
-                        &self.controls,
-                        &self.select_regions,
-                    ),
-                    shapes,
-                    substrates,
-                },
-            )
-        });
-        let roster = (layers::width(&self.hidden) > 0.0).then(|| {
-            layers::layers_panel(
-                self.obs.as_ref(),
-                &rows,
-                &self.bindings,
-                &self.controls,
-                &self.layer_regions,
-            )
-        });
+
+        // **A body is built only where it is drawn.** A shelf the Window menu has put
+        // away, or one folded to its title bar, gets a `None` here and costs nothing —
+        // which for the color wheel is `FIELD_N²` gamut lookups a frame and for the
+        // layers panel a walk of the roster.
+        //
+        // The two galleries are already `Option`s — built above, where the bytes for
+        // their cards are asked for — and are `take`n below because an element is not
+        // `Clone` and the loop cannot prove to the compiler that each is taken once.
+        let (mut shapes, mut substrates) = (shapes, substrates);
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for what in crate::visibility::SHELVES {
+            if !self.shown(what) {
+                continue;
+            }
+            let body: Option<AnyElement> = match what {
+                VisibilityToggle::Panel(PanelId::Brush) => {
+                    self.panel_drawn(PanelId::Brush).then(|| {
+                        panel::brush_body(
+                            &self.brush,
+                            &self.controls,
+                            EFFECTS,
+                            &self.regions,
+                            shapes.take(),
+                        )
+                        .into_any_element()
+                    })
+                }
+                VisibilityToggle::Panel(PanelId::Select) => {
+                    self.panel_drawn(PanelId::Select).then(|| {
+                        select::select_body(
+                            self.obs.as_ref(),
+                            &self.bindings,
+                            &self.controls,
+                            &self.select_regions,
+                        )
+                        .into_any_element()
+                    })
+                }
+                VisibilityToggle::Panel(PanelId::Lighting) => {
+                    self.panel_drawn(PanelId::Lighting).then(|| {
+                        lighting::lighting_body(
+                            lighting::Shown {
+                                obs: self.obs.as_ref(),
+                                hdr: self.hdr,
+                                hdr_capable,
+                                display_headroom,
+                                substrates: substrates.take(),
+                            },
+                            &self.controls,
+                            &self.lighting_regions,
+                        )
+                        .into_any_element()
+                    })
+                }
+                VisibilityToggle::Panel(PanelId::Guides) => {
+                    self.panel_drawn(PanelId::Guides).then(|| {
+                        guides::guides_body(
+                            self.obs.as_ref(),
+                            self.guide,
+                            &self.bindings,
+                            &self.controls,
+                            &self.guide_regions,
+                        )
+                        .into_any_element()
+                    })
+                }
+                VisibilityToggle::Navigator => self.drawn(VisibilityToggle::Navigator).then(|| {
+                    navigator::navigator_body(
+                        self.overview,
+                        self.renderer.as_ref().and_then(Renderer::overview_surface),
+                        self.obs.as_ref().map(|o| o.view),
+                        &self.nav_regions,
+                    )
+                    .into_any_element()
+                }),
+                VisibilityToggle::Panel(PanelId::Color) => {
+                    self.panel_drawn(PanelId::Color).then(|| {
+                        color::color_panel(
+                            self.wheel,
+                            &mut self.pictures,
+                            &self.controls.hex,
+                            &self.color_regions,
+                        )
+                        .into_any_element()
+                    })
+                }
+                VisibilityToggle::Panel(PanelId::Layers) => {
+                    self.panel_drawn(PanelId::Layers).then(|| {
+                        layers::layers_body(
+                            self.obs.as_ref(),
+                            &rows,
+                            &self.bindings,
+                            &self.controls,
+                            &self.layer_regions,
+                        )
+                        .into_any_element()
+                    })
+                }
+                // Every other entry of the vocabulary is one this frontend does not
+                // draw, and `visibility::SHELVES` is what says so — this arm is
+                // unreachable through that list, and is a `continue` rather than a
+                // panic because a stored record is not a place to assert from.
+                _ => continue,
+            };
+            let shelf = panel::Shelf { what, body };
+            if crate::visibility::LEFT.contains(&what) {
+                left.push(shelf);
+            } else {
+                right.push(shelf);
+            }
+        }
+        // Built only where there is a column to put them in: with every shelf on one
+        // side hidden the tree has no child there at all, and the surface flexes into
+        // the room — which is the same fact `Canvas::origin` states.
+        let column = (!left.is_empty())
+            .then(|| panel::column(Side::Left, &self.hidden, &self.regions, left));
+        let roster = (!right.is_empty())
+            .then(|| panel::column(Side::Right, &self.hidden, &self.regions, right));
         // The mode's two pieces are built here, where `self` is still borrowable —
         // the surface below takes a mutable borrow of the renderer that outlives the
         // rest of the tree.

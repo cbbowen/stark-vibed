@@ -64,6 +64,31 @@ pub fn inflate(rect: (Vec2, Vec2), min: f32) -> (Vec2, Vec2) {
     (lo, hi)
 }
 
+/// **The frame that says where the piece ends**: the topmost matte layer with a
+/// rect, or `None` in a document with none (§15.6).
+///
+/// Only a matte *with a rect* frames anything — a backing (§15.5) is under the piece,
+/// not a statement of where it stops — and the topmost of them wins, on the same
+/// reading that puts the newest work on top.
+///
+/// One rule with several askers, because they are all asking the same question and an
+/// answer that differed between them would put a file, its miniature and the view onto
+/// three different rects: the export dialog when nothing framing is selected, either
+/// navigator's overview, and the framing a document load does. Each still supplies its
+/// own *policy* around it — the dialog prefers whatever frame the artist has selected,
+/// since that is the one being composed.
+///
+/// Here rather than in a frontend because the second one needed it and neither owns
+/// it: this is a reading of the layer roster, which is the engine's projection, and
+/// what it answers is a fact about the document rather than about a screen.
+pub fn piece_frame(o: &ObservableState) -> Option<stark_model::document::LayerId> {
+    o.layers
+        .iter()
+        .rev()
+        .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
+        .map(|l| l.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

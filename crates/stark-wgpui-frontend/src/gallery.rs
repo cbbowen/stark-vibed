@@ -165,15 +165,30 @@ pub fn gallery<K: Kind>(
                 .items_center()
                 .pt_2()
                 .child(div().heading().child(heading))
-                .child(
+                .child(style::tip(
                     div()
+                        .id(match which {
+                            Which::Shapes => "import-shape",
+                            Which::Substrates => "import-substrate",
+                        })
                         .chip()
-                        .py_1()
-                        .px_2()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(22.))
+                        .h(px(20.))
                         .resting()
                         .child(probe(regions, Region::Import(which)))
-                        .child("Import\u{2026}"),
-                ),
+                        .child(crate::icons::icon(stark_ui::icons::ADD, style::INK_MARK)),
+                    match which {
+                        Which::Shapes => {
+                            "Import a brush shape \u{2014} a grayscale image becomes a stamp"
+                        }
+                        Which::Substrates => {
+                            "Import a canvas surface \u{2014} a grayscale image becomes a height map"
+                        }
+                    },
+                )),
         )
         .child(
             div()

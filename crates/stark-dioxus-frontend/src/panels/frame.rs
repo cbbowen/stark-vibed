@@ -37,7 +37,6 @@ use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
-use stark_model::document::LayerId;
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
@@ -134,26 +133,14 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
     stark_ui::bounds::content(o).unwrap_or_else(|| stark_ui::bounds::view(o))
 }
 
-/// **The frame that says where the piece ends**: the topmost matte layer with a
-/// rect, or `None` in a document with none (§15.6).
+/// **The frame that says where the piece ends** — `stark_ui::bounds::piece_frame`,
+/// re-exported under the name three modules in this crate already reach it by.
 ///
-/// Only a matte *with a rect* frames anything — a backing (§15.5) is under the
-/// piece, not a statement of where it stops — and the topmost of them wins, on the
-/// same reading that puts the newest work on top.
-///
-/// One rule with three askers, because they are all asking the same question and an
-/// answer that differed between them would put a file, its miniature and the view
-/// onto three different rects: the export dialog when nothing framing is selected
-/// (`crate::files`), the navigator's overview, and the framing a document load does.
-/// Each still supplies its own *policy* around it — the dialog prefers whatever
-/// frame the artist has selected, since that is the one being composed.
-pub(crate) fn piece_frame(o: &stark_engine::ObservableState) -> Option<LayerId> {
-    o.layers
-        .iter()
-        .rev()
-        .find(|l| l.matte.as_ref().is_some_and(|m| m.rect.is_some()))
-        .map(|l| l.id)
-}
+/// The rule went down to the shared crate when the native frontend's navigator
+/// needed the same answer (§11.2): what it reads is the engine's layer roster, and
+/// two frontends disagreeing about which rect *is* the piece would put a file and its
+/// miniature onto two different pictures.
+pub(crate) use stark_ui::bounds::piece_frame;
 
 /// Reshape `rect` to `aspect` about its centre, preserving its area so switching
 /// presets neither grows nor shrinks the piece.

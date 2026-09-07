@@ -18,6 +18,11 @@
 //! `INK_LIT`, `INK_CHORD` beside `INK_LABEL`, each one call site in the menu. Naming
 //! them rather than collapsing them is what makes the choice visible to whoever
 //! restyles this.
+//!
+//! [`tip`] is the other half of what the columns are built on. Once a control wears a
+//! mark and no word (`crate::panel`), the hover is where its name went — so every
+//! chip, track and row in the chrome hangs one, and a control that hangs none is a
+//! square nothing on screen explains.
 
 use wgpui::{SharedString, StatefulInteractiveElement, Styled, px, rgb};
 use wgpui_component::tooltip::Tooltip;
@@ -104,11 +109,6 @@ pub trait StyleExt: Styled {
     /// Small text that names something rather than saying it.
     fn caption(self) -> Self {
         self.text_xs().text_color(rgb(INK_LABEL))
-    }
-
-    /// The line above a track: what the dial is, and where it stands.
-    fn readout_row(self) -> Self {
-        self.flex().justify_between().caption()
     }
 
     /// A small pressable thing. Padding is the caller's — these run from a full-width
