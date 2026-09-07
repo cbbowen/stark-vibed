@@ -101,6 +101,15 @@ pub struct LayerInfo {
     ///
     /// [`Layer::name`]: crate::document::Layer::name
     pub name: Option<std::sync::Arc<str>>,
+    /// The **n in "Layer n"** for a row nobody has named — [`Layer::number`],
+    /// projected. `None` for a matte or a filter, which are labelled by what they
+    /// are (§14.6).
+    ///
+    /// Minted into the action that created the layer and never recomputed, so nothing
+    /// an artist does to another row moves it.
+    ///
+    /// [`Layer::number`]: crate::document::Layer::number
+    pub number: Option<u32>,
     /// Set when this layer is a **matte** (§15.2) — a frame rather than paint;
     /// `None` for an ordinary paint layer. Enough for the frontend to label it, draw
     /// its handles, and show that the brush has nowhere to go while it is selected.
@@ -401,6 +410,7 @@ impl Engine {
                     // carrying it. So "has a backdrop" is "is not the first row".
                     has_backdrop: !layers.is_empty(),
                     name: l.name.clone(),
+                    number: l.number,
                     matte: match &l.content {
                         // Placed onto the canvas, where the chrome lives: region and
                         // paint are stated in the layer's frame (§15.2), and the mint

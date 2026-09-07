@@ -396,6 +396,7 @@ fn float_apply(
     layer: LayerId,
     child: LayerId,
     translation: stark_model::geom::IVec2,
+    number: Option<u32>,
 ) -> DocState {
     let Some(base) = paint_base(&state, layer) else {
         return state;
@@ -416,12 +417,14 @@ fn float_apply(
         tracing::warn!("float rejected (empty cut or too many tiles); ignored");
         return state;
     };
-    // Unnamed, identity params, shown — and standing at the frame the cut was
-    // made in, which is the action's own field rather than the state's, so a
-    // replay mints what the recording run minted (§16.12).
+    // Unnamed but numbered — a float is new content rather than a copy, so it is
+    // described the way a fresh layer is (§14.6) — at identity params, shown, and
+    // standing at the frame the cut was made in. Both the frame and the number are
+    // the action's own fields rather than the state's, so a replay mints what the
+    // recording run minted (§16.12).
     let lifted = Layer {
         translation,
-        ..Layer::new(child).with_tiles(lifted)
+        ..state.numbered(child, number).with_tiles(lifted)
     };
     state
         .map_layer(layer, |l| l.with_tiles(remaining))
@@ -567,9 +570,10 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             at,
             name,
             image,
+            number,
         } => {
             let state = state
-                .insert_layer(*id, *carrier, *above)
+                .insert_layer(*id, *carrier, *above, *number)
                 .set_layer_name(*id, name.as_deref().map(Into::into));
             if !state.contains_layer(*id) {
                 return state;
@@ -666,7 +670,8 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             layer,
             child,
             translation: frame,
-        } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame),
+            number,
+        } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame, *number),
         // Lay a parcel of paint through the region's coverage, gated by the author's
         // selection — the same gate a stroke passes through, so a fill is clipped by a
         // selection exactly as a brush is (§18.0.4). Refused on a matte or absent
@@ -749,12 +754,17 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// through it. Nothing here reads the Lamport clock.
 pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Folded {
     Folded::Done(match kind {
-        ActionKind::AddLayer { id, carrier, above } => state.insert_layer(*id, *carrier, *above),
+        ActionKind::AddLayer {
+            id,
+            carrier,
+            above,
+            number,
+        } => state.insert_layer(*id, *carrier, *above, *number),
         // The copy's tiles are the shared handles the source already holds, so
         // duplicating a layer costs no GPU memory until one of the two is
         // painted on — copy-on-write is what makes this a cheap action rather
         // than a re-render of everything under it (§5.2).
-        ActionKind::DuplicateLayer { ids } => state.duplicate_layer(ids),
+        ActionKind::DuplicateLayer { ids, number } => state.duplicate_layer(ids, *number),
         // **Declined unless the subtree is what the action names** (§12.6). Every id
         // in it is a `Resource::Layer` write, so a group holding one the action does
         // not name — a peer's concurrent add — would write state nothing declared.
@@ -1102,6 +1112,7 @@ mod tests {
                 id: A,
                 carrier: None,
                 above: None,
+                number: None,
             },
             &state
         ));

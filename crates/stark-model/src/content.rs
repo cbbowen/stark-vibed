@@ -238,6 +238,7 @@ mod tests {
                     above: None,
                     at: crate::geom::IVec2::ZERO,
                     name: None,
+                    number: Some(2),
                     image: id,
                 }),
             ])

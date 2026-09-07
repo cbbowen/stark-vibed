@@ -494,8 +494,8 @@ mod tests {
     /// Three layers in the root stack, bottom to top: A, B, C.
     fn flat() -> DocState {
         DocState::with_layer(A)
-            .insert_layer(B, None, Some(A))
-            .insert_layer(C, None, Some(B))
+            .insert_layer(B, None, Some(A), None)
+            .insert_layer(C, None, Some(B), None)
     }
 
     /// Every property an action can write, put back by the patch that declared it.
@@ -604,12 +604,13 @@ mod tests {
     #[test]
     fn existence_round_trips_in_both_directions() {
         let before = flat();
-        let added = before.insert_layer(LayerId::solo(9), None, Some(A));
+        let added = before.insert_layer(LayerId::solo(9), None, Some(A), None);
         let back = undo(
             &act(ActionKind::AddLayer {
                 id: LayerId::solo(9),
                 carrier: None,
                 above: Some(A),
+                number: None,
             }),
             &before,
             &added,
@@ -814,6 +815,7 @@ mod tests {
                 layer: B,
                 child: FRESH,
                 translation: IVec2::ZERO,
+                number: Some(9),
             },
             ActionTag::PlaceImage => ActionKind::PlaceImage {
                 id: FRESH,
@@ -822,6 +824,7 @@ mod tests {
                 at: IVec2::ZERO,
                 name: None,
                 image: AssetId([4; 32]),
+                number: Some(9),
             },
             ActionTag::Select => {
                 ActionKind::Select(SelectionOp::at(SelectionMode::Subtract, box_(), 0.0, 1.0))
@@ -864,6 +867,7 @@ mod tests {
                 id: FRESH,
                 carrier: None,
                 above: Some(A),
+                number: Some(9),
             },
             // `B` is a leaf, so it carries nothing and the action's subtree is the
             // empty one the state agrees with (§12.6).
@@ -873,6 +877,7 @@ mod tests {
             },
             ActionTag::DuplicateLayer => ActionKind::DuplicateLayer {
                 ids: vec![(B, COPY)],
+                number: Some(9),
             },
             ActionTag::MoveLayer => ActionKind::MoveLayer {
                 id: C,

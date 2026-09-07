@@ -359,7 +359,9 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // §12.6 hazard `fill_bounds` exists to remove. Here there is nothing to keep
         // in step: the layer did not exist before this action, so all of its paint is
         // this action's by construction, whatever box the image covers.
-        ActionKind::AddLayer { id, carrier, above }
+        ActionKind::AddLayer {
+            id, carrier, above, ..
+        }
         | ActionKind::AddFilter {
             id, carrier, above, ..
         }
@@ -377,7 +379,7 @@ pub fn compute_footprint(action: &Action) -> Footprint {
         // duplicate commute with a stroke inside the group it copied, and the two
         // orders give different paint. The tree's shape is read too, and the
         // `StackOrder` write covers that read.
-        ActionKind::DuplicateLayer { ids } => Footprint {
+        ActionKind::DuplicateLayer { ids, .. } => Footprint {
             reads: ids.iter().map(|(src, _)| Resource::Layer(*src)).collect(),
             writes: ids
                 .iter()
@@ -802,6 +804,7 @@ mod tests {
                     (LayerId::solo(2), LayerId::solo(20)),
                     (inner, LayerId::solo(30)),
                 ],
+                number: Some(20),
             },
         );
         let edits = [
@@ -1006,6 +1009,7 @@ mod tests {
                 id: LayerId::solo(7),
                 carrier: None,
                 above: None,
+                number: Some(7),
             },
         );
         let mv = act(
@@ -1091,6 +1095,7 @@ mod tests {
                 layer: LayerId::ROOT,
                 child,
                 translation: IVec2::ZERO,
+                number: Some(2),
             },
         );
         let on_source = stroke(2, LayerId::ROOT, Vec2::ZERO, Vec2::splat(50.0), 8.0);

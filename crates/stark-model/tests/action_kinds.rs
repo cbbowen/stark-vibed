@@ -106,6 +106,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             id,
             carrier: None,
             above: None,
+            number: Some(4),
         },
         ActionKind::RemoveLayer {
             id,
@@ -196,6 +197,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
         },
         ActionKind::DuplicateLayer {
             ids: vec![(id, LayerId::solo(9))],
+            number: Some(9),
         },
         ActionKind::AddFilter {
             id,
@@ -215,6 +217,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             at: IVec2::new(-3, 9),
             name: Some("sunset.png".into()),
             image: AssetId([4; 32]),
+            number: Some(5),
         },
         ActionKind::AddGuide {
             id: guide,
@@ -238,6 +241,7 @@ fn kinds(n: f32) -> [ActionKind; KINDS] {
             layer: id,
             child: LayerId::solo(11),
             translation: IVec2::new(2, -5),
+            number: Some(11),
         },
     ]
 }

@@ -278,6 +278,7 @@ mod tests {
                 id: LayerId::solo(2),
                 carrier: None,
                 above: None,
+                number: Some(2),
             },
         }])
     }
@@ -441,6 +442,7 @@ mod tests {
                     id: LayerId::solo(2),
                     carrier: None,
                     above: None,
+                    number: Some(2),
                 },
             }]);
             let bytes = doc.to_bytes().expect("encode");

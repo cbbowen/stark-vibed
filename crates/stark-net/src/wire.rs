@@ -140,14 +140,20 @@ use iroh::EndpointId;
 /// coverage rather than a profile of the hardness (§6.13) — a field added to a
 /// struct every stroke gossips, which a file fills from its default and the wire
 /// cannot, and the meaning rule beside it: every liquify stroke already in a log
-/// renders differently.
-pub(crate) const ALPN: &[u8] = b"stark/collab/27";
+/// renders differently;
+/// 28: the four actions that mint a paint layer gained `number`, the n in
+/// "Layer n" for a row nobody has named (§14.6). Fields added to structs gossip
+/// carries, which a file fills from its default and the wire cannot — and the
+/// default is load-bearing here: a peer on 27 would send actions carrying none, and
+/// the receiver would number them off its *own* state while the sender numbered them
+/// off the sender's, which is two documents that disagree about a label.
+pub(crate) const ALPN: &[u8] = b"stark/collab/28";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 27;
+pub(crate) const PROTO: u32 = 28;
 
 /// Upper bound on an encoded request, over any transport.
 ///

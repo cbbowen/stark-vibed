@@ -157,6 +157,26 @@ pub enum ActionKind {
         /// (§14.8).
         carrier: Option<LayerId>,
         above: Option<LayerId>,
+        /// The **n in "Layer n"** for a row nobody has named: one past the highest
+        /// any living layer wears, read off the document by the author and frozen
+        /// here (§14.6).
+        ///
+        /// In the action rather than worked out while folding, because the fold has
+        /// two paths. A remote action that commutes with the local suffix is applied
+        /// *without* replaying it (§12.2), so a number handed out during the fold
+        /// would differ from the one a canonical replay assigns — a `DocState`
+        /// divergence, and pixels cannot show which path ran. A constant the action
+        /// carries commutes with everything.
+        ///
+        /// Frozen is also what makes it a description that stays put: nothing an
+        /// artist does to another layer renumbers this one.
+        ///
+        /// `None` in a log written before this field existed. Those are numbered on
+        /// the way through the fold instead, by the same rule — safe there because a
+        /// whole log is replayed in order, and the ALPN keeps a peer that would send
+        /// one out of a live session.
+        #[serde(default)]
+        number: Option<u32>,
     },
     /// Remove a layer **and everything it carries**: the subtree is the group
     /// (§14.2). Promoting what it carried instead is a
@@ -386,6 +406,16 @@ pub enum ActionKind {
     /// group looks like from here.
     DuplicateLayer {
         ids: Vec<(LayerId, LayerId)>,
+        /// The **first** of the run of numbers this mints: the kth copy takes
+        /// `number + k`, in `ids`' own order. See [`AddLayer`](Self::AddLayer)'s
+        /// field of the same name for what a number is and why it travels.
+        ///
+        /// One field rather than a number per pair, which leaves `ids` the shape the
+        /// fold and the footprint read. A copy takes a number of its own even where
+        /// it takes the source's *name* verbatim: the name may be cleared later, and
+        /// what is left underneath must not be two rows reading alike.
+        #[serde(default)]
+        number: Option<u32>,
     },
 
     /// Add a **filter** layer — a function of everything composited beneath it in
@@ -465,9 +495,14 @@ pub enum ActionKind {
         /// Canvas position of the image's top-left texel, in whole canvas pixels.
         at: crate::geom::IVec2,
         /// What to call the layer — the file it came from, so the layers panel says
-        /// "sunset.jpg" rather than a number. `None` leaves it described by its place
-        /// in the stack, which is what a clipboard image with no name has.
+        /// "sunset.jpg" rather than a number. `None` leaves it described by its
+        /// number, which is what a clipboard image with no name has.
         name: Option<String>,
+        /// The number underneath that name — see [`AddLayer`](Self::AddLayer)'s field
+        /// of the same name. Minted even where `name` is `Some`, because a rename can
+        /// clear the name and something has to be left.
+        #[serde(default)]
+        number: Option<u32>,
         /// The picture, by **content id** — named here and carried beside the log,
         /// exactly as a stamp brush's shape is (§6.6, §23).
         image: crate::AssetId,
@@ -588,6 +623,11 @@ pub enum ActionKind {
         /// every layer id is (`Engine::commit_minting`, §17.9).
         child: LayerId,
         translation: crate::geom::IVec2,
+        /// The child's number — see [`AddLayer`](Self::AddLayer)'s field of the same
+        /// name. A float is new content rather than a copy, so it takes a fresh one
+        /// and arrives with no name at all.
+        #[serde(default)]
+        number: Option<u32>,
     },
 }
 
@@ -620,7 +660,7 @@ impl ActionKind {
             ActionKind::FloatSelection { child, .. } => (Some(*child), &[]),
             // A duplicate mints one per layer of the subtree it copied, which is
             // why the map travels in the action (§14.8).
-            ActionKind::DuplicateLayer { ids } => (None, ids),
+            ActionKind::DuplicateLayer { ids, .. } => (None, ids),
             ActionKind::CommitStroke(_)
             | ActionKind::RemoveLayer { .. }
             | ActionKind::SetLayerBlend(..)
@@ -840,10 +880,12 @@ impl ActionKind {
                 layer,
                 child,
                 translation: frame,
+                number,
             } => ActionKind::FloatSelection {
                 layer,
                 child,
                 translation: clamp_frame(frame),
+                number,
             },
         }
     }

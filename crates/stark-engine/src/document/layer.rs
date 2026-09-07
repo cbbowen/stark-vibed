@@ -257,13 +257,24 @@ pub struct Layer {
     /// What the author called this layer, or `None` for one that has never been
     /// named.
     ///
-    /// Absent rather than pre-filled with "Layer 3": an unnamed layer is *described*
-    /// by its position in the stack, and storing the generated text would freeze one
-    /// moment's description into the document and make it look deliberate.
+    /// The generated "Layer 3" is deliberately *not* stored here, even though the
+    /// layer now carries the 3 (see [`number`](Self::number)). `None` is the bit that
+    /// says the author never chose this, and `duplicate_layer` reads it: a copy takes
+    /// the source's name verbatim but a number of its own, so duplicating an unnamed
+    /// layer gives two distinguishable rows where storing the text would give two
+    /// reading alike.
     ///
     /// `Arc<str>` because every `observe()` projects the name and nothing edits it in
     /// place.
     pub name: Option<Arc<str>>,
+    /// The **n in "Layer n"** for a row nobody has named (§14.6), or `None` for a
+    /// layer that is never described by one — a matte or a filter, which are labelled
+    /// by what they are.
+    ///
+    /// Read off the minting action rather than handed out here, which is what makes it
+    /// permanent: see `ActionKind::AddLayer`'s field of the same name for why the fold
+    /// is the wrong place to choose it.
+    pub number: Option<u32>,
     pub content: LayerContent,
     /// The layers carried on this one, **bottom-to-top** — the group this layer
     /// is the base of (§14.2). Empty for a layer that carries nothing.
@@ -328,6 +339,7 @@ impl Layer {
             composite: CompositeParams::IDENTITY,
             visible: true,
             name: None,
+            number: None,
             content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new(), None)),
             carries: Vector::new(),
             carried: CarriedBounds(CanvasBounds::default()),

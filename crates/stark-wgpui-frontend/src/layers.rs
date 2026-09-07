@@ -414,6 +414,7 @@ mod tests {
             is_group,
             has_backdrop: false,
             name: None,
+            number: Some(1),
             matte: None,
             filter: None,
             has_underlay: false,

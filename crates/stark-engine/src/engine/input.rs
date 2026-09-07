@@ -362,10 +362,12 @@ impl Engine {
                         && crate::document::transform::plan_float(t, &selection, frame).is_some()
                 });
                 if offered {
+                    let number = Some(doc.next_layer_number());
                     let action = self.commit_minting(|a| ActionKind::FloatSelection {
                         layer,
                         child: LayerId::new(a, 0),
                         translation: frame,
+                        number,
                     });
                     // The float is what the hand is about to move — and it is
                     // paint, so the next stroke has somewhere to go (`AddLayer`'s
@@ -392,10 +394,12 @@ impl Engine {
                 // A freshly added layer becomes the active painting target — but only
                 // if it landed and can take a stroke, which is `arm_active`'s whole
                 // question.
+                let number = Some(self.document().next_layer_number());
                 let action = self.commit_minting(|a| ActionKind::AddLayer {
                     id: LayerId::new(a, 0),
                     carrier,
                     above,
+                    number,
                 });
                 self.arm_active(LayerId::new(action, 0));
             }
@@ -408,6 +412,7 @@ impl Engine {
             } => {
                 // The active layer, exactly as an `AddLayer` is and for its reason:
                 // it is paint, so the next stroke has somewhere to go.
+                let number = Some(self.document().next_layer_number());
                 let action = self.commit_minting(|a| ActionKind::PlaceImage {
                     id: LayerId::new(a, 0),
                     carrier,
@@ -415,6 +420,7 @@ impl Engine {
                     at,
                     name,
                     image,
+                    number,
                 });
                 self.arm_active(LayerId::new(action, 0));
             }
@@ -473,12 +479,16 @@ impl Engine {
                 // `duplicate_layer` walks, so a copy of the traversal here would be two
                 // walks that must agree — on this client and on every peer.
                 if let Some(sources) = self.document().subtree_ids(source) {
+                    // The first of the run the copies wear, `ids`' own order deciding
+                    // the rest — see `ActionKind::DuplicateLayer`'s `number`.
+                    let number = Some(self.document().next_layer_number());
                     let action = self.commit_minting(|a| ActionKind::DuplicateLayer {
                         ids: sources
                             .iter()
                             .enumerate()
                             .map(|(k, &src)| (src, LayerId::new(a, k as u32)))
                             .collect(),
+                        number,
                     });
                     // The copy is what you go on to work on.
                     self.arm_active(LayerId::new(action, 0));

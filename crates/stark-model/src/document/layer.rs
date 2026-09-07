@@ -87,15 +87,6 @@ impl LayerId {
             0,
         )
     }
-
-    /// When this layer was minted, on the author's Lamport clock — what an unnamed
-    /// layer is labelled by (§11).
-    ///
-    /// A *display* number only: monotone within one author's layers, but neither
-    /// dense nor unique across authors.
-    pub fn minted_at(self) -> u64 {
-        self.action.lamport
-    }
 }
 
 impl std::fmt::Display for LayerId {

@@ -341,13 +341,12 @@ fn remove_guide(state: AppState, id: GuideId) {
 
 /// What to call a guide that has never been named: its place in the roster.
 ///
-/// The Layers panel's counterpart numbers by [`LayerId::minted_at`], which is stable
-/// for the layer's whole life; this numbers by *position*, so the labels below a
-/// removed guide shift up. That is the honest reading either way — an unnamed row
-/// is being described, not named, and the description of the second row is "the
-/// second one". Naming it is how you stop it moving.
-///
-/// [`LayerId::minted_at`]: stark_model::document::LayerId::minted_at
+/// The Layers panel's counterpart numbers by *mint* order
+/// ([`layer_label`](stark_ui::layer_tree::layer_label)), which survives a reorder;
+/// this numbers by *position*, which does not. Both shift when a row above is
+/// removed, and that is the honest reading either way — an unnamed row is being
+/// described, not named, and the description of the second row is "the second one".
+/// Naming it is how you stop it moving.
 fn guide_label(index: usize, guide: &GuideInfo) -> String {
     match &guide.name {
         Some(name) => name.to_string(),

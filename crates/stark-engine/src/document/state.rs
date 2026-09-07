@@ -245,7 +245,7 @@ impl DocState {
             substrate_color: DEFAULT_SUBSTRATE_COLOR,
             guides: Vector::new(),
         }
-        .insert_layer(id, None, None)
+        .insert_layer(id, None, None, None)
     }
 
     /// The root stack, bottom-to-top — the tree's top level, each layer carrying
@@ -523,6 +523,22 @@ impl DocState {
         }
     }
 
+    /// The number the next paint layer takes: one past the highest any living layer
+    /// wears (§14.6), and 1 for a document holding none.
+    ///
+    /// Read by the author when it mints the action, and by the fold only for a log
+    /// written before actions carried one — see `ActionKind::AddLayer`'s `number`.
+    ///
+    /// Highest **living**, not highest ever, so there is nothing to store: two rows on
+    /// screen can never share a number, and one is reused only after the layer wearing
+    /// it is gone. Deleting the top layer and adding another therefore gets the same
+    /// number back, which is the reading that leaves no gap to explain.
+    pub(crate) fn next_layer_number(&self) -> u32 {
+        let mut top = 0;
+        self.visit(&mut |l: &Layer, _| top = top.max(l.number.unwrap_or(0)));
+        top + 1
+    }
+
     /// What the layer with the given id is called, or `None` if it is unnamed —
     /// or absent, which reads the same way here: neither has a name to give.
     pub fn layer_name(&self, id: LayerId) -> Option<&str> {
@@ -559,8 +575,23 @@ impl DocState {
         id: LayerId,
         carrier: Option<LayerId>,
         above: Option<LayerId>,
+        number: Option<u32>,
     ) -> Self {
-        self.insert(Layer::new(id), carrier, Place::from(above))
+        self.insert(self.numbered(id, number), carrier, Place::from(above))
+    }
+
+    /// An empty paint layer wearing `number`, or the next one going when the action
+    /// carried none — which is what a log written before actions did looks like.
+    ///
+    /// The fallback is safe *here* and nowhere else: an old log is replayed whole and
+    /// in order, so every peer and every load walks the same states and assigns the
+    /// same numbers. A freshly minted action must carry its own, or the commutation
+    /// fast path and a canonical replay would disagree (§12.2).
+    pub(crate) fn numbered(&self, id: LayerId, number: Option<u32>) -> Layer {
+        Layer {
+            number: Some(number.unwrap_or_else(|| self.next_layer_number())),
+            ..Layer::new(id)
+        }
     }
 
     /// Insert a matte layer the same way — §15.2. A frame is one of
@@ -659,7 +690,7 @@ impl DocState {
     /// source is absent, or when the subtree holds a layer `ids` does not name.
     ///
     /// [`ActionKind::DuplicateLayer`]: stark_model::document::ActionKind::DuplicateLayer
-    pub(crate) fn duplicate_layer(&self, ids: &[(LayerId, LayerId)]) -> Self {
+    pub(crate) fn duplicate_layer(&self, ids: &[(LayerId, LayerId)], number: Option<u32>) -> Self {
         let Some((source, _)) = ids.first() else {
             return self.clone();
         };
@@ -683,7 +714,10 @@ impl DocState {
         let Some((layer, site)) = self.locate(*source) else {
             return self.clone();
         };
-        let Some(copy) = copy_subtree(layer, ids) else {
+        // The first of the run the copies take, the kth of `ids` wearing `base + k`
+        // — see `ActionKind::DuplicateLayer`'s `number` for why it is one field.
+        let base = number.unwrap_or_else(|| self.next_layer_number());
+        let Some(copy) = copy_subtree(layer, ids, base) else {
             return self.clone();
         };
         self.insert(copy, site.carrier, Place::Above(*source))
@@ -1126,16 +1160,20 @@ fn translate_in(layers: &Vector<Layer>, moves: &BTreeMap<LayerId, IVec2>) -> Opt
 /// All-or-nothing: a partially re-identified subtree would share ids with the layers
 /// it was copied from, and two layers under one id is what [`LayerId`]'s shape exists
 /// to make impossible (§17.9).
-fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)]) -> Option<Layer> {
-    let id = ids
-        .iter()
-        .find_map(|(src, copy)| (*src == layer.id).then_some(*copy))?;
+fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)], base: u32) -> Option<Layer> {
+    let k = ids.iter().position(|(src, _)| *src == layer.id)?;
+    let id = ids[k].1;
     let mut carries = Vector::new();
     for l in layer.carries.iter() {
-        carries = carries.push_back(copy_subtree(l, ids)?);
+        carries = carries.push_back(copy_subtree(l, ids, base)?);
     }
     Some(Layer {
         id,
+        // A copy takes the source's *name* verbatim (§14.8) and a number of its own,
+        // which is what keeps a duplicate of an unnamed layer two readable rows. The
+        // `map` is what leaves a matte or a filter copy unnumbered, as its source is:
+        // the run simply skips those positions.
+        number: layer.number.map(|_| base + k as u32),
         ..layer.with_carries(carries)
     })
 }
@@ -1292,7 +1330,7 @@ mod tests {
     fn a_filter_refuses_to_carry() {
         let state = with_filter();
 
-        let inserted = state.insert_layer(OTHER, Some(FILTER), None);
+        let inserted = state.insert_layer(OTHER, Some(FILTER), None, None);
         assert!(
             inserted
                 .layer(FILTER)
@@ -1501,5 +1539,92 @@ mod tests {
             );
         });
         assert_eq!(n, seen.len(), "the two trees name the same layers");
+    }
+
+    /// The number a fresh layer takes, and what it survives. Every assertion here is
+    /// about the *rule* (`next_layer_number`); that the number then never moves is
+    /// what putting it in the action buys, and is asserted by there being nowhere
+    /// left that recomputes one.
+    #[test]
+    fn a_layer_is_numbered_one_past_the_highest_living_one() {
+        // The document's first layer is Layer 1, not Layer 0: `with_layer` mints
+        // through the same door every later add does.
+        let doc = DocState::with_layer(BASE);
+        assert_eq!(doc.layer(BASE).expect("root").number, Some(1));
+
+        let doc = doc.insert_layer(OTHER, None, None, None).insert_layer(
+            LayerId::solo(3),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(doc.layer(OTHER).expect("second").number, Some(2));
+        assert_eq!(doc.layer(LayerId::solo(3)).expect("third").number, Some(3));
+
+        // Removing from the middle renumbers nothing — the complaint the frozen
+        // number exists to answer — and the next add still clears the highest.
+        let gapped = doc.remove_layer(OTHER);
+        assert_eq!(gapped.layer(BASE).expect("root").number, Some(1));
+        assert_eq!(
+            gapped.layer(LayerId::solo(3)).expect("third").number,
+            Some(3)
+        );
+        assert_eq!(gapped.next_layer_number(), 4);
+
+        // Removing the *top* one hands its number back, which is the one case a
+        // number is reused: nothing on screen wears it any more.
+        assert_eq!(doc.remove_layer(LayerId::solo(3)).next_layer_number(), 3);
+    }
+
+    /// A matte and a filter are labelled by what they are (§14.6), so neither takes a
+    /// number — and neither spends one, which is what keeps the paint layer after a
+    /// frame from reading "Layer 3" in a document holding two.
+    #[test]
+    fn a_matte_and_a_filter_take_no_number() {
+        let doc = with_filter();
+        assert_eq!(doc.layer(FILTER).expect("filter").number, None);
+        assert_eq!(
+            doc.next_layer_number(),
+            2,
+            "the filter above Layer 1 spent nothing"
+        );
+
+        let matted = doc.insert_matte(
+            OTHER,
+            None,
+            Place::Top,
+            MatteRegion::Everything,
+            Parcel::Solid(stark_model::Srgb::BLACK),
+        );
+        assert_eq!(matted.layer(OTHER).expect("matte").number, None);
+        assert_eq!(matted.next_layer_number(), 2);
+    }
+
+    /// A duplicate takes a **run** of numbers, one per copy in `ids`' order, so a
+    /// copied group is as readable as the group it came from. The source's *name*
+    /// travels verbatim and its number does not: that is the whole of why the
+    /// generated text is not stored as a name.
+    #[test]
+    fn a_duplicate_takes_a_run_of_fresh_numbers() {
+        let group = DocState::with_layer(BASE)
+            .insert_layer(OTHER, None, None, None)
+            .insert_layer(LayerId::solo(3), Some(OTHER), None, None)
+            .set_layer_name(OTHER, Some("Sky".into()));
+
+        let ids = [
+            (OTHER, LayerId::solo(10)),
+            (LayerId::solo(3), LayerId::solo(11)),
+        ];
+        let copied = group.duplicate_layer(&ids, Some(group.next_layer_number()));
+
+        let base = copied.layer(LayerId::solo(10)).expect("the copied base");
+        let carried = copied.layer(LayerId::solo(11)).expect("the copied member");
+        assert_eq!(base.number, Some(4), "one past the highest of 1, 2, 3");
+        assert_eq!(carried.number, Some(5));
+        assert_eq!(
+            base.name.as_deref(),
+            Some("Sky"),
+            "the name is the one thing a copy takes verbatim"
+        );
     }
 }

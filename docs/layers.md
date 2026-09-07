@@ -295,6 +295,53 @@ no inapplicable state: Release is simply absent on a layer that is in no group,
 Remove on the row whose removal would empty the document, and Duplicate on neither,
 because every layer can be copied.
 
+#### What a row is called
+
+A layer the author has named shows that name. Everything else is *described*, and the
+description depends on what the row is: a matte reads "Frame" or "Background" (§15.5),
+a filter reads the filter's own name (§21.6) — there is only ever one frame, so
+numbering it would say nothing — and a paint layer reads **"Layer n"**.
+
+The `n` is minted into the action that created the layer and never recomputed. Three
+things follow, and the third is why it is a document fact rather than a reading of the
+panel:
+
+- **It is one past the highest number any *living* layer wears.** No two rows on
+  screen can share one; a number comes back only once the layer wearing it is gone,
+  which is what deleting the top layer and adding another does. There is nothing to
+  store — the rule is a scan of the tree the author does once, at commit
+  (`DocState::next_layer_number`).
+- **Nothing an artist does to another layer moves it.** Not a reorder, not a rename,
+  not a removal from the middle of the stack. A number derived from the roster would
+  shift under all three, and a description that moves when you touch something else is
+  not a description of anything.
+- **A number handed out during the fold would not converge.** A remote action that
+  commutes with the local suffix is applied *without* replaying it (§12.2), so the
+  number it would be assigned there differs from the one a canonical replay assigns —
+  a `DocState` divergence, and no pixel could show which path ran. A constant the
+  action carries commutes with everything. This is the whole argument; the two
+  properties above are what it happens to buy.
+
+So `AddLayer`, `FloatSelection`, `PlaceImage` and `DuplicateLayer` each carry a
+`number` — the first of the run they mint, the kth layer taking `number + k`, which
+leaves `DuplicateLayer`'s `ids` the shape the fold and the footprint read. `AddMatte`
+and `AddFilter` carry none, and spend none: a frame between two paint layers does not
+make the second of them "Layer 3".
+
+The generated text is **not** stored as the layer's name, and `Layer::name` stays
+`Option`. `None` is the bit that says the author never chose this, and the duplicate
+rule below reads it: a copy takes the source's name verbatim and a number of its own,
+so duplicating an unnamed layer gives two readable rows where storing the text would
+give two reading alike. It is also what lets the rename field open *empty*, with the
+label as its placeholder, rather than seeding a description the user would have to
+clear before typing.
+
+A log written before the field existed carries no numbers, and those layers are
+numbered on the way through the fold by the same rule. Safe there and nowhere else: an
+old log is replayed whole and in order, so every load and every peer walks the same
+states and assigns the same numbers — and the ALPN keeps a peer that would *send* one
+out of a live session, which is the case the fold-time path could not survive.
+
 #### The kind slot: what this layer *is*
 
 Every row ends in one box, flush with the row's right edge and as tall as the row, and

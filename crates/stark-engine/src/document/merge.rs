@@ -311,8 +311,8 @@ mod tests {
     /// Three paint layers in the root stack, bottom-to-top: A, B, C.
     fn flat() -> DocState {
         DocState::with_layer(A)
-            .insert_layer(B, None, Some(A))
-            .insert_layer(C, None, Some(B))
+            .insert_layer(B, None, Some(A), None)
+            .insert_layer(C, None, Some(B), None)
     }
 
     /// The layer `source` would merge down onto, if any.
@@ -552,13 +552,13 @@ mod tests {
                 region,
                 stark_model::document::Parcel::Solid(Srgb::new([1.0; 3])),
             )
-            .insert_layer(C, None, Some(B));
+            .insert_layer(C, None, Some(B), None);
         assert_eq!(dest(&over_matte, C), None, "a matte destination");
         assert_eq!(dest(&over_matte, B), None, "a matte source");
 
         let over_filter = DocState::with_layer(A)
             .insert_filter(B, None, Some(A), GREY)
-            .insert_layer(C, None, Some(B));
+            .insert_layer(C, None, Some(B), None);
         assert_eq!(dest(&over_filter, C), None, "a filter destination");
     }
 
@@ -601,7 +601,7 @@ mod tests {
         // Root [A, G[X], F]: the destination is a group, so what the filter read is
         // the group's composite and rewriting the base is not rewriting that.
         let over_group = DocState::with_layer(A)
-            .insert_layer(C, Some(A), None)
+            .insert_layer(C, Some(A), None, None)
             .insert_filter(B, None, Some(A), GREY);
         assert_eq!(dest(&over_group, B), None, "a group as the destination");
     }

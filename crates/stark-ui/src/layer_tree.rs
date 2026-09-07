@@ -9,7 +9,7 @@
 //! buried in.
 //!
 //! It is a file of its own for [`transform`](crate::transform)'s reason: this is the part of the
-//! panel that can be *tested*, and ten of the crate's tests are here — the ones
+//! panel that can be *tested*, and a dozen of the crate's tests are here — the ones
 //! that can say a drop between two rows means one place in the tree rather than
 //! another. Inside 1500 lines of markup they were the tests hardest to find and
 //! the code most likely to be skimmed as layout.
@@ -57,9 +57,17 @@ pub struct Row {
     pub removable: bool,
 }
 
-/// What to call a layer that has never been named: its place in the stack, or what
+/// What to call a layer that has never been named: which one it was, or what
 /// it *is* when that says more (§15.7 — there is only ever one frame,
 /// so numbering it would be noise).
+///
+/// The number is [`LayerInfo::number`] — minted into the action that created the
+/// layer and frozen there, so it counts from 1 and nothing an artist does to another
+/// row moves it. It was the layer id's own Lamport clock, which is unique across peers
+/// for free and reads as "Layer 108" by the time a session has painted, since every
+/// action moves that clock. Two peers adding a layer at once can now land on the same
+/// number, and it costs nothing: nothing is looked up by a label (a row is keyed by
+/// its id), and the pair is one rename apart.
 ///
 /// Here rather than in the engine because it is a way of *presenting* a stack,
 /// not a fact about the document — which is exactly why an unnamed layer stores no
@@ -83,7 +91,13 @@ pub fn layer_label(info: &LayerInfo) -> String {
         // first thing to know about the row — and a stack of three rows all reading
         // "Filter" would say nothing at all.
         (None, _, Some(f)) => f.label().to_string(),
-        (None, None, None) => format!("Layer {}", info.id.minted_at()),
+        // Every paint layer is minted with a number, so the second arm is dead —
+        // written out rather than a panic, because a row's label is not worth taking
+        // the panel down over.
+        (None, None, None) => match info.number {
+            Some(n) => format!("Layer {n}"),
+            None => "Layer".to_string(),
+        },
     }
 }
 
@@ -316,6 +330,8 @@ mod tests {
             is_group,
             has_backdrop: true,
             name: None,
+            // Its own id, so a label in a failure message says which row it came from.
+            number: Some(id as u32),
             matte: None,
             filter: None,
             has_underlay: true,
@@ -576,5 +592,46 @@ mod tests {
         let rows = flat();
         let d = drag_of(boxes(&rows, Some(2)), &rows, 1, 0.0, STEP);
         assert!(landing(&rows, &d).is_none());
+    }
+
+    /// The four things a row can be called, and the order they win in. What the
+    /// *number* is is the engine's question (`DocState::next_layer_number`); what is
+    /// here is that a row wears the one it was minted with, and that a kind speaks
+    /// over it while a name speaks over everything.
+    #[test]
+    fn a_row_is_called_its_name_then_its_kind_then_its_number() {
+        use stark_engine::MatteInfo;
+        use stark_model::color::Srgb;
+        use stark_model::document::{ColorAdjust, Filter, Parcel};
+        use stark_model::geom::Vec2;
+
+        let plain = info(7, 0, None, false);
+        assert_eq!(layer_label(&plain), "Layer 7");
+
+        let named = LayerInfo {
+            name: Some("Sky".into()),
+            ..plain.clone()
+        };
+        assert_eq!(layer_label(&named), "Sky", "a name speaks over the number");
+
+        let frame = LayerInfo {
+            matte: Some(MatteInfo {
+                rect: Some((Vec2::ZERO, Vec2::new(64.0, 64.0))),
+                paint: Parcel::Solid(Srgb::BLACK),
+            }),
+            number: None,
+            ..plain.clone()
+        };
+        assert_eq!(layer_label(&frame), "Frame");
+
+        let filter = LayerInfo {
+            filter: Some(Filter::Color(ColorAdjust::NEUTRAL)),
+            number: None,
+            ..plain
+        };
+        assert_eq!(
+            layer_label(&filter),
+            Filter::Color(ColorAdjust::NEUTRAL).label()
+        );
     }
 }

@@ -365,6 +365,7 @@ mod tests {
             is_group: false,
             has_backdrop: true,
             name: None,
+            number: Some(1),
             matte: None,
             filter: None,
             has_underlay: true,
