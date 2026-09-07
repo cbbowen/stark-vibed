@@ -154,6 +154,29 @@ pub(crate) trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+
+    /// Sets the application identity used by platform services such as system notifications.
+    fn set_app_identity(&self, identifier: &str, name: &str) {
+        _ = (identifier, name);
+    }
+
+    /// Posts a notification to the operating system's notification center.
+    fn show_system_notification(&self, notification: SystemNotification) {
+        _ = notification;
+    }
+
+    /// Removes the delivered or pending notification with this tag.
+    fn dismiss_system_notification(&self, tag: &str) {
+        _ = tag;
+    }
+
+    /// Registers the callback invoked when the user activates a system notification.
+    fn on_system_notification_response(
+        &self,
+        callback: Box<dyn FnMut(SystemNotificationResponse)>,
+    ) {
+        _ = callback;
+    }
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
@@ -185,6 +208,38 @@ pub trait PlatformDisplay: Send + Sync + Debug {
         let origin = point(center.x - offset.width, center.y - offset.height);
         Bounds::new(origin, clipped_window_size)
     }
+}
+
+/// A notification posted to the operating system's notification center,
+/// rather than rendered as in-app UI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemNotification {
+    /// Stable identity for the notification.
+    pub tag: SharedString,
+    /// The notification's headline.
+    pub title: SharedString,
+    /// Additional text displayed below the title.
+    pub body: SharedString,
+    /// Buttons offered on the notification.
+    pub actions: Vec<SystemNotificationAction>,
+}
+
+/// A button offered on a [`SystemNotification`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SystemNotificationAction {
+    /// Identifies the action in [`SystemNotificationResponse::action_id`].
+    pub id: SharedString,
+    /// The button's user-visible label.
+    pub label: SharedString,
+}
+
+/// The user's activation of a [`SystemNotification`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemNotificationResponse {
+    /// The [`SystemNotification::tag`] of the activated notification.
+    pub tag: SharedString,
+    /// The pressed action button's id, or `None` when the body was activated.
+    pub action_id: Option<SharedString>,
 }
 
 /// Metadata for a given `ScreenCaptureSource`.
@@ -661,9 +716,7 @@ pub(crate) enum AtlasKey {
 
 impl AtlasKey {
     #[cfg_attr(
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-        ),
+        all(any(target_os = "linux", target_os = "freebsd"),),
         allow(dead_code)
     )]
     pub(crate) fn texture_kind(&self) -> AtlasTextureKind {
@@ -763,9 +816,7 @@ pub(crate) struct AtlasTextureId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
 #[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-    ),
+    all(any(target_os = "linux", target_os = "freebsd"),),
     allow(dead_code)
 )]
 pub(crate) enum AtlasTextureKind {
@@ -800,7 +851,10 @@ impl PlatformInputHandler {
         Self { cx, handler }
     }
 
-    pub(crate) fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<UTF16Selection> {
+    pub(crate) fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+    ) -> Option<UTF16Selection> {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -831,7 +885,11 @@ impl PlatformInputHandler {
             .flatten()
     }
 
-    pub(crate) fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+    pub(crate) fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -1069,6 +1127,9 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// Whether the application owns titlebar drag behavior (macOS).
+    pub app_owns_titlebar_drag: bool,
 }
 
 /// The variables that can be configured when creating a new window
@@ -1162,6 +1223,7 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            app_owns_titlebar_drag: false,
         }
     }
 }
@@ -1575,6 +1637,8 @@ pub enum ImageFormat {
     Bmp,
     /// .tif or .tiff
     Tiff,
+    /// .pnm
+    Pnm,
     /// .ico
     Ico,
 }
@@ -1590,6 +1654,7 @@ impl ImageFormat {
             ImageFormat::Svg => "image/svg+xml",
             ImageFormat::Bmp => "image/bmp",
             ImageFormat::Tiff => "image/tiff",
+            ImageFormat::Pnm => "image/x-portable-anymap",
             ImageFormat::Ico => "image/ico",
         }
     }
@@ -1604,6 +1669,8 @@ impl ImageFormat {
             "image/svg+xml" => Some(Self::Svg),
             "image/bmp" => Some(Self::Bmp),
             "image/tiff" | "image/tif" => Some(Self::Tiff),
+            "image/x-portable-anymap" | "image/x-portable-pixmap" | "image/x-portable-graymap"
+            | "image/x-portable-bitmap" => Some(Self::Pnm),
             "image/ico" => Some(Self::Ico),
             _ => None,
         }
@@ -1705,6 +1772,7 @@ impl Image {
             ImageFormat::Webp => frames_for_image(&self.bytes, image::ImageFormat::WebP)?,
             ImageFormat::Bmp => frames_for_image(&self.bytes, image::ImageFormat::Bmp)?,
             ImageFormat::Tiff => frames_for_image(&self.bytes, image::ImageFormat::Tiff)?,
+            ImageFormat::Pnm => frames_for_image(&self.bytes, image::ImageFormat::Pnm)?,
             ImageFormat::Ico => frames_for_image(&self.bytes, image::ImageFormat::Ico)?,
             ImageFormat::Svg => {
                 return svg_renderer

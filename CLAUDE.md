@@ -128,7 +128,9 @@ crates/
                    turns "frontend-agnostic" from a claim into a tested one. On its
                    way to parity a stage at a time (§11.2), and every stage's real
                    product is what it pushed down into `stark-ui`. It does NOT
-                   own the device, which is what it found first — see `GpuContext`
+                   own the device, which is what it found first — see `GpuContext`.
+                   Its widgets are `wgpui-component`'s (§11.1): the gpui-component
+                   library adapted onto wgpui upstream, not a port kept here
 vendor/            third-party, EXCLUDED from the workspace
 ```
 

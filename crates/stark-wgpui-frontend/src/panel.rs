@@ -5,13 +5,13 @@
 //! dark column with no rounded cards and no fade: what a native tool panel looks like
 //! rather than what a floating web one does.
 //!
-//! wgpui ships no widgets, so [`Slider`] and [`PresetRow`] are built here. Both are
-//! `RenderOnce` components rather than views: they hold no state between frames, the
-//! value they show is the brush's, and the drag that moves one belongs to the view
-//! (`crate::canvas`) because a slider that owned its own drag would lose it the
-//! moment the pointer left its bounds.
+//! The tracks are the widget layer's (§11.1, `wgpui_component::slider`): each holds
+//! its drag and its thumb, and the view hears it through `crate::controls`. What is
+//! built here is the line above a track — which knob, and where it stands — and the
+//! chips, which are `RenderOnce` components rather than views: they hold no state
+//! between frames and the value they show is the brush's.
 //!
-//! Where each control *is* is measured rather than derived — see [`Regions`], and the
+//! Where each chip *is* is measured rather than derived — see [`Regions`], and the
 //! bug that taught it.
 
 use std::collections::HashSet;
@@ -20,11 +20,13 @@ use stark_model::document::BrushShape;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::panels::PanelId;
 use wgpui::{
-    App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
+    App, Bounds, Entity, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
     prelude::*, rgb,
 };
+use wgpui_component::slider::SliderState;
 
 use crate::brush::Brush;
+use crate::controls::Controls;
 use crate::style::{self, StyleExt};
 
 /// The panel's own padding (`p_3`), in logical px.
@@ -42,9 +44,8 @@ pub const WIDTH: f32 = 232.0;
 /// The knobs the panel offers, in the order it draws them.
 pub const KNOBS: [Knob; 4] = [Knob::Size, Knob::Flow, Knob::Hardness, Knob::Opacity];
 
-/// Which knob a drag is moving. A panel-level fact, not a slider's: a drag that
-/// leaves the track keeps moving the knob it started on, which is what makes a
-/// slider usable at the ends of its range.
+/// One of the brush's four dials — what a track stands for, and how its value is
+/// read off the brush and written back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
     Size,
@@ -66,7 +67,7 @@ impl Knob {
     /// The knob's range. Size and flow are the app's own bounds — the ones a tuning
     /// drag clamps against too, which is why they live beside the brush rather than
     /// on a panel (`stark_ui::brush_config`).
-    fn range(self) -> (f32, f32) {
+    pub fn range(self) -> (f32, f32) {
         match self {
             Knob::Size => (MIN_RADIUS, MAX_RADIUS),
             Knob::Flow => (0.0, MAX_FLOW),
@@ -75,7 +76,15 @@ impl Knob {
     }
 
     /// Where the knob currently stands.
-    fn read(self, brush: &Brush) -> f32 {
+    /// The step a track moves in: whole px for a size, a hundredth for a strength.
+    pub fn step(self) -> f32 {
+        match self {
+            Knob::Size => 1.0,
+            Knob::Flow | Knob::Hardness | Knob::Opacity => 0.01,
+        }
+    }
+
+    pub fn read(self, brush: &Brush) -> f32 {
         match self {
             Knob::Size => brush.tune.size,
             Knob::Flow => brush.tune.flow,
@@ -120,19 +129,15 @@ impl Knob {
 #[derive(IntoElement)]
 pub struct Slider {
     knob: Knob,
-    /// Where the fill stops, `0..=1` — the knob's position in its range rather than
-    /// its value, because a track knows about neither.
-    fraction: f32,
     /// The value as the panel prints it. A `SharedString` so the component can be
     /// built once per frame without a copy.
     readout: SharedString,
-    active: bool,
-    regions: Regions,
+    /// The track's own state, the view's to keep (`crate::controls`).
+    state: Entity<SliderState>,
 }
 
 impl RenderOnce for Slider {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let fill = (self.fraction.clamp(0.0, 1.0) * 100.0).round();
         div()
             .flex()
             .flex_col()
@@ -144,22 +149,7 @@ impl RenderOnce for Slider {
                     .child(self.knob.label())
                     .child(self.readout),
             )
-            .child(
-                // The track carries the knob's identity: the panel reads it back off
-                // the press to know which one a drag is moving.
-                div()
-                    .id(SharedString::from(self.knob.label()))
-                    .trough(18.)
-                    .child(probe(&self.regions, Region::Knob(self.knob)))
-                    .child(div().trough_fill(
-                        fill / 100.0,
-                        if self.active {
-                            style::ACCENT
-                        } else {
-                            style::FILL
-                        },
-                    )),
-            )
+            .child(wgpui_component::slider::Slider::new(&self.state).w_full())
     }
 }
 
@@ -220,7 +210,7 @@ pub struct Sections<C, S, G, U> {
 
 pub fn brush_panel(
     brush: &Brush,
-    dragging: Option<Knob>,
+    controls: &Controls,
     effects: &[(BrushEffectType, &'static str)],
     regions: &Regions,
     hidden: &HashSet<PanelId>,
@@ -238,17 +228,16 @@ pub fn brush_panel(
         .flex()
         .flex_col()
         .gap_1()
-        .children(KNOBS.map(|knob| {
-            let (lo, hi) = knob.range();
-            let v = knob.read(brush);
-            Slider {
-                knob,
-                fraction: (v - lo) / (hi - lo),
-                readout: readout(knob, v).into(),
-                active: dragging == Some(knob),
-                regions: regions.clone(),
-            }
-        }))
+        .children(
+            KNOBS
+                .iter()
+                .zip(&controls.knobs)
+                .map(|(knob, state)| Slider {
+                    knob: *knob,
+                    readout: readout(*knob, knob.read(brush)).into(),
+                    state: state.clone(),
+                }),
+        )
         .child(
             div()
                 .flex()
@@ -386,7 +375,6 @@ fn title(regions: &Regions, folded: &HashSet<PanelId>, id: PanelId) -> impl Into
 /// Which control a measured rectangle belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    Knob(Knob),
     Effect(usize),
     Preset(usize),
     /// A section's title bar — pressing it folds the section away.
@@ -422,22 +410,6 @@ pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
         .iter()
         .find(|(_, bounds)| bounds.contains(&at))
         .map(|(region, _)| *region)
-}
-
-/// How far along a knob's own track a position is, `0..=1`.
-///
-/// Read from the x alone and clamped, which is what lets a drag wander off the track
-/// vertically and still move the knob it took hold of. `None` when that knob has not
-/// been laid out — there is nothing to be a fraction *of*.
-pub fn fraction_at(regions: &Regions, knob: Knob, at: Point<Pixels>) -> Option<f32> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(r, _)| *r == Region::Knob(knob))
-        .map(|(_, b)| *b)?;
-    let left = f32::from(bounds.origin.x);
-    let width = f32::from(bounds.size.width);
-    (width > 0.0).then(|| ((f32::from(at.x) - left) / width).clamp(0.0, 1.0))
 }
 
 /// Whether a position is over the panel's column at all — the canvas begins where
@@ -515,10 +487,6 @@ mod tests {
     fn nothing_is_hit_before_a_frame_has_been_laid_out() {
         let regions = Regions::default();
         assert_eq!(hit(&regions, at(WIDTH / 2.0, 100.0)), None);
-        assert_eq!(
-            fraction_at(&regions, Knob::Size, at(WIDTH / 2.0, 100.0)),
-            None
-        );
     }
 
     /// A press finds the control whose measured rectangle it is inside, and nothing
@@ -526,35 +494,18 @@ mod tests {
     #[test]
     fn a_press_finds_the_control_it_is_inside() {
         let regions = measured(&[
-            (Region::Knob(Knob::Size), 60.0, 18.0),
-            (Region::Knob(Knob::Flow), 110.0, 18.0),
+            (Region::Effect(0), 60.0, 18.0),
+            (Region::Effect(1), 110.0, 18.0),
             (Region::Preset(3), 300.0, 26.0),
         ]);
         let x = WIDTH / 2.0;
-        assert_eq!(hit(&regions, at(x, 66.0)), Some(Region::Knob(Knob::Size)));
-        assert_eq!(hit(&regions, at(x, 118.0)), Some(Region::Knob(Knob::Flow)));
+        assert_eq!(hit(&regions, at(x, 66.0)), Some(Region::Effect(0)));
+        assert_eq!(hit(&regions, at(x, 118.0)), Some(Region::Effect(1)));
         assert_eq!(hit(&regions, at(x, 310.0)), Some(Region::Preset(3)));
         assert_eq!(
             hit(&regions, at(x, 95.0)),
             None,
             "the gap belongs to nobody"
-        );
-    }
-
-    /// A track reads left to right across its own measured width, and clamps rather
-    /// than extrapolating — which is what lets a drag leave the track and keep going.
-    #[test]
-    fn a_track_reads_left_to_right_and_clamps() {
-        let regions = measured(&[(Region::Knob(Knob::Size), 60.0, 18.0)]);
-        let f = |x: f32| fraction_at(&regions, Knob::Size, at(x, 66.0)).expect("measured");
-        assert!(f(PADDING) < 0.01);
-        assert!(f(WIDTH - PADDING) > 0.99);
-        assert_eq!(f(-500.0), 0.0);
-        assert_eq!(f(WIDTH + 500.0), 1.0);
-        // Vertically anywhere: the drag has left the track and still moves the knob.
-        assert_eq!(
-            f(PADDING),
-            fraction_at(&regions, Knob::Size, at(PADDING, 900.0)).unwrap()
         );
     }
 

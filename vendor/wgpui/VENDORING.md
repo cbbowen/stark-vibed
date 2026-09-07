@@ -1,41 +1,23 @@
 # Vendoring notes: wgpui (patched)
 
-wgpui `0.3.4` from the crates.io source (`registry/src/.../wgpui-0.3.4`,
-upstream commit `5e94b544ff` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus five local patches. Substituted for the crates.io crate via
-`[patch.crates-io]` in the root workspace manifest. License: Apache-2.0
-(`LICENSE.md`, kept).
+wgpui `0.3.5` from the crates.io source (`registry/src/.../wgpui-0.3.5`,
+upstream commit `cc6706e62b` in `.cargo_vcs_info.json`), **less its `examples/`
+tree**, plus four local patches. Substituted for the crates.io crate via
+`[patch.crates-io]` in the root workspace manifest, which also redirects what
+`wgpui-component` (§11.1) asks for, so the widget layer draws with the device the
+first patch describes. License: Apache-2.0 (`LICENSE.md`, kept).
 
 Consumed by `crates/stark-wgpui-frontend` (§11).
 
-## Patch 1 — `flume` on Windows (sites marked `STARK PATCH`)
+Two patches carried against 0.3.4 landed upstream in 0.3.5 in their own form and
+are gone from here: the `flume` declaration without which the crate did not
+compile on Windows at all (0.3.5 declares it on every platform), and the
+compositor's surface bind groups going stale across a resize (0.3.5 keys the
+cache by a `revision` the registry bumps, where the patch had keyed it by a
+`generation` — same fix, its name). They are kept below the line for the
+record, since the second is the shape of bug this fork produces.
 
-`Cargo.toml`: declare `flume = "0.12"` for `cfg(target_os = "windows")`.
-`Cargo.toml.orig` gets the same line — cargo does not read that file, but a
-packaged copy contradicting the manifest beside it is exactly the drift this
-tree does not keep.
-
-### Why
-
-`Executor::spawn_realtime` (`src/scheduler/executor.rs`) calls
-`flume::bounded` unconditionally, while the manifest declares `flume` only
-under `cfg(target_os = "macos")` and `cfg(any(target_os = "linux", target_os
-= "freebsd"))`. So **wgpui 0.3.4 does not compile on Windows at all**:
-
-```
-error[E0433]: cannot find module or crate `flume` in this scope
-   --> src/scheduler/executor.rs:173:24
-```
-
-Upstream `root` HEAD has the same omission. Nothing else about the crate is
-Windows-specific — the platform layer is winit throughout, with only a handful
-of macOS files beside it — so this one line is the whole of the fix, and with
-it the frontend builds, opens a window and paints.
-
-Straightforwardly upstreamable: the fix is the missing declaration, not a
-change of behaviour.
-
-## Patch 2 — the caller states the `DeviceDescriptor`
+## Patch 1 — the caller states the `DeviceDescriptor`
 
 `Application::new` takes a `&wgpu::DeviceDescriptor` and threads it through
 `platform::current_platform` → `CrossPlatform::new` → `WgpuContext::new`, which
@@ -74,7 +56,7 @@ about both — is where it belongs. `main::device_descriptor` starts from
 `Limits::default()` (what wgpui's renderer was written against) and raises only
 the fields the engine needs, with `or_better_values_from`.
 
-## Patch 3 — `WindowBounds` is honoured whole
+## Patch 2 — `WindowBounds` is honoured whole
 
 `WindowParams` carried `bounds: Bounds<Pixels>` — `WindowBounds::get_bounds()`, the
 rect with the variant thrown away — so the platform never learned whether a window
@@ -113,7 +95,7 @@ is changed in `WM_CREATE`, the restored size will be stored in that size".
 Upstreamable, and worth it — `zoom()` being a toggle used as a setter is a bug
 independent of anything Stark wants.
 
-## Patch 4 — `RenderImage` is RGBA, like the atlas it goes into
+## Patch 3 — `RenderImage` is RGBA, like the atlas it goes into
 
 Every producer of a `RenderImage` swapped red and blue on the way in — the two image
 decoders in `elements/img.rs`, the two in `platform.rs` (the clipboard's), the SVG
@@ -158,54 +140,7 @@ independent of anything Stark wants. Colour emoji are still garbled here for a
 separate reason (they draw as stripes, which is a stride fault rather than a channel
 one); that is untouched and unfixed.
 
-## Patch 5 — a resized surface gets new bind groups
-
-`WgpuRenderer::surface_bind_groups` caches, per `SurfaceId`, the two bind groups
-that name the surface's two textures. It was keyed on the id alone, and
-`SurfaceRegistry::resize` replaces both textures — so after a resize the
-compositor went on sampling the pair from before it. `DoubleBuffer` carries a
-`generation` now, bumped by `resize`; the cache holds the generation it was built
-at and rebuilds when the two differ.
-
-### Why
-
-**It froze the canvas on the last frame before any window resize, and made the
-app look dead.** The engine kept painting: it rendered into the new back buffer
-and swapped, correctly, at the correct new size — a probe on `Renderer::paint`
-showed every frame going where it should, with no wgpu error raised. But the
-compositor's bind groups still named the *old* textures, so nothing drawn after
-the resize was ever read. And because `swap_buffers` goes on alternating
-`db.front`, the cached pair was sampled 0, 1, 0, 1 — the window flickering
-between the last two frames drawn *before* the resize, for as long as anything
-asked for a repaint.
-
-That is the shape of the symptom worth remembering: every stroke, pan and zoom
-after a resize did land in the document, and none of them could be seen. The
-report read as "resizing breaks all the canvas functionality", and the fault was
-one stale cache in the compositor rather than anything in the frontend's own
-resize path — which is why reproducing it took screenshots. Logs said it worked.
-
-There is no identity on a `wgpu::TextureView` to compare — no `global_id` in
-wgpu 30 — so the pair carries a number instead. Bumping is `wrapping_add`, which
-is a formality at one bump per resize.
-
-Upstreamable, and worth it: any wgpui app with a `wgpu_surface` in a resizable
-window hits this on the first resize.
-
-## The deletion
-
-`examples/` is gone, and with it the thirty `[[example]]` blocks that named its
-files in both manifests — cargo refuses a declared target whose path is missing,
-so the two go together.
-
-It was 4.9 MB of the 8.8 MB this directory weighed, and 4.5 MB of *that* was one
-demo GIF. Nothing builds it: `vendor/wgpui` is excluded from the workspace, so
-`--all-targets` does not reach these, and no example here is a reference the
-frontend is written against — the crate's rustdoc is, and `docs/` is kept. A
-blob that size is in git history for good, which is what tips a "copied
-verbatim" that would otherwise be worth keeping for the clean update diff.
-
-## Patch 6 — an HDR swapchain, and the shaders decode for it (sites marked `STARK PATCH`)
+## Patch 4 — an HDR swapchain, and the shaders decode for it (sites marked `STARK PATCH`)
 
 `src/platform/renderer.rs`: where the window's surface is configured, prefer
 `Rgba16Float` in `SurfaceColorSpace::ExtendedSrgbLinear` (scRGB) when the surface
@@ -276,6 +211,36 @@ Not upstreamable as is — upstream would want the color space to be a
 `WindowOptions` choice rather than "HDR when the display has it" — but the shader
 half is what any such option would need.
 
+## The deletion
+
+`examples/` is gone, and with it the thirty `[[example]]` blocks that named its
+files in both manifests — cargo refuses a declared target whose path is missing,
+so the two go together.
+
+It was 4.9 MB of the 8.8 MB this directory weighed, and 4.5 MB of *that* was one
+demo GIF. Nothing builds it: `vendor/wgpui` is excluded from the workspace, so
+`--all-targets` does not reach these, and no example here is a reference the
+frontend is written against — the crate's rustdoc is, and `docs/` is kept. A
+blob that size is in git history for good, which is what tips a "copied
+verbatim" that would otherwise be worth keeping for the clean update diff.
+
+## Landed upstream in 0.3.5
+
+**`flume` on Windows.** `Executor::spawn_realtime` called `flume::bounded`
+unconditionally while the manifest declared `flume` only for macOS, Linux and
+FreeBSD, so 0.3.4 did not compile on Windows at all. 0.3.5 declares it on every
+platform, which was the whole of the patch.
+
+**A resized surface gets new bind groups.** `WgpuRenderer::surface_bind_groups`
+caches, per surface, the two bind groups that name the surface's two textures;
+`SurfaceRegistry::resize` replaces both textures; and the cache was keyed on the
+id alone. So after any resize the compositor went on sampling the pair from before
+it, and because `swap_buffers` kept alternating, the window flickered between the
+last two frames drawn before the resize while every stroke, pan and zoom since
+landed in textures nobody read. Logs said it worked; it took screenshots. 0.3.5
+keys the cache by `(SurfaceId, revision)` and drops entries not seen in a frame,
+where the patch had carried a `generation` on the pair — the same fix.
+
 ## Notes
 
 - `.cargo/config.toml` came with the published crate and is inert here: cargo
@@ -293,16 +258,21 @@ half is what any such option would need.
   platforms differ). `stark-wgpui-frontend`'s `window::remember` handles it where
   it costs nothing: a maximized window keeps the rect already on file, which is by
   construction the last size it was not maximized at.
+- **`wgpui_derive` is not vendored.** This manifest asks the registry for
+  `wgpui_derive = "0.3.5"`, and the derive's output has to match the structs here
+  (0.3.5's derive emits a `BoxShadow.inset` that 0.3.4 lacked, which is how a
+  `cargo update` once broke this tree). The lockfile is the guard; a bump of one
+  is a bump of both.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply all seven changes: the
-`flume` line in each manifest, the `DeviceDescriptor` threading, the
-`WindowBounds` plumbing, the RGBA `RenderImage`, the surface bind-group
-generation, the HDR swapchain with its shader decode, and the deletion —
+Unpack the new version over this directory, then re-apply the five changes: the
+`DeviceDescriptor` threading, the `WindowBounds` plumbing, the RGBA
+`RenderImage`, the HDR swapchain with its shader decode, and the deletion —
 `rm -rf examples/` and strip the `[[example]]` blocks the new manifests bring
-back.
+back. The 0.3.4 → 0.3.5 move was done as a `diff -ruN` of this tree against the
+pristine registry copy, applied with `patch -p1` onto the new tarball; 22 files,
+two rejected, both the resize patch upstream had already made.
 
-Dropping this directory takes more than the `flume` fix landing upstream now:
-patch 2 has to land too, in some form, or the frontend goes back to a device it
-cannot ask anything of.
+Dropping this directory takes patch 1 landing upstream in some form, or the
+frontend goes back to a device it cannot ask anything of.

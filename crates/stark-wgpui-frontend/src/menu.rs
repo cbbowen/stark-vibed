@@ -30,7 +30,9 @@
 use stark_engine::ObservableState;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::panels::PanelId;
-use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb};
+use wgpui::{
+    AnyElement, Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb,
+};
 
 use crate::style::{self, StyleExt};
 
@@ -186,12 +188,16 @@ pub fn command(menu: usize, row: usize) -> Option<Command> {
 /// that does not — the web frontend's `commands::active`, asked of this window
 /// (`Canvas::active`). A `dyn` rather than an `impl Fn` because there is one call
 /// site and the return type deliberately captures nothing.
+///
+/// `search` is the command field at the bar's right end (`crate::palette`), built by
+/// the caller because it is a view's: which answers it shows is the view's state.
 pub fn bar(
     open: Option<usize>,
     obs: Option<&ObservableState>,
     bindings: &Bindings,
     state: &dyn Fn(Command) -> Option<bool>,
     regions: &Regions,
+    search: AnyElement,
 ) -> impl IntoElement + use<> {
     div()
         .relative()
@@ -213,6 +219,8 @@ pub fn bar(
                 .child(probe(regions, Region::Title(i)))
                 .child(menu.title)
         }))
+        .child(div().flex_1())
+        .child(search)
         .children(
             open.and_then(|i| MENUS.get(i).map(|menu| (i, menu)))
                 .map(|(i, menu)| {

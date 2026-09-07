@@ -19,7 +19,8 @@
 //! them rather than collapsing them is what makes the choice visible to whoever
 //! restyles this.
 
-use wgpui::{Styled, px, rgb};
+use wgpui::{SharedString, StatefulInteractiveElement, Styled, px, rgb};
+use wgpui_component::tooltip::Tooltip;
 
 // --- grounds, darkest first -----------------------------------------------
 
@@ -32,13 +33,13 @@ pub const BAR: u32 = 0x1a1c1f;
 pub const PANEL: u32 = 0x1e2124;
 /// A drop-down, which floats over the bar and so must be lighter than it.
 pub const MENU: u32 = 0x24272b;
-/// A resting control: a chip nobody has chosen, a slider's trough.
+/// A resting control: a chip nobody has chosen.
 pub const CONTROL: u32 = 0x2a2d31;
 /// A row under the pointer.
 pub const HOVER: u32 = 0x2f3337;
 /// The chosen one — an armed tool, an open menu, the active layer.
 pub const LIT: u32 = 0x35496b;
-/// How far a dial has been turned.
+/// How far a dial has been turned — the widget layer's slider bar (`crate::theme`).
 pub const FILL: u32 = 0x40474e;
 /// The same, on the dial a drag is holding. The one saturated colour in the chrome,
 /// spent on the single thing the hand is doing.
@@ -141,26 +142,17 @@ pub trait StyleExt: Styled {
             self.text_color(rgb(INK))
         }
     }
-
-    /// A slider's trough. `height` because a panel's dials and a section's are not
-    /// the same size, and that is the only way they differ.
-    fn trough(self, height: f32) -> Self {
-        self.relative()
-            .h(px(height))
-            .w_full()
-            .rounded_sm()
-            .bg(rgb(CONTROL))
-    }
-
-    /// How far it has been turned, `0..=1`. Clamped here rather than at each call
-    /// site: a fraction out of range is a layout wider than its parent, which taffy
-    /// will not complain about.
-    fn trough_fill(self, fraction: f32, ink: u32) -> Self {
-        self.h_full()
-            .w(wgpui::relative(fraction.clamp(0.0, 1.0)))
-            .rounded_sm()
-            .bg(rgb(ink))
-    }
 }
 
 impl<T: Styled> StyleExt for T {}
+
+/// Hang a tooltip on a control: the word for a mark, the chord for a word.
+///
+/// The widget layer's `Tooltip` (§11.1) on wgpui's own hover, so the chips this
+/// reaches carry an id where they did not before — a hover has to belong to
+/// something. This is where a chord went once the labels stopped carrying one:
+/// the same information in less space, which is what §11.2 said native gets.
+pub fn tip<E: StatefulInteractiveElement>(el: E, text: impl Into<SharedString>) -> E {
+    let text: SharedString = text.into();
+    el.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+}

@@ -220,6 +220,16 @@ impl TestAppContext {
 
     /// Adds a new window. The Window will always be backed by a `TestWindow` which
     /// can be retrieved with `self.test_window(handle)`
+    pub fn open_window<F, V>(&mut self, size: Size<Pixels>, build_window: F) -> WindowHandle<V>
+    where F: FnOnce(&mut Window, &mut Context<V>) -> V, V: 'static + Render {
+        let mut cx = self.app.borrow_mut();
+        cx.open_window(WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds { origin: Point::default(), size })),
+            ..Default::default()
+        }, |window, cx| cx.new(|cx| build_window(window, cx))).expect("test window")
+    }
+
+    /// Adds a test-backed window using the test display bounds.
     pub fn add_window<F, V>(&mut self, build_window: F) -> WindowHandle<V>
     where
         F: FnOnce(&mut Window, &mut Context<V>) -> V,
@@ -317,6 +327,30 @@ impl TestAppContext {
     #[track_caller]
     pub fn simulate_prompt_answer(&self, button: &str) {
         self.test_platform.simulate_prompt_answer(button);
+    }
+
+    /// Returns system notifications shown during the test.
+    pub fn shown_system_notifications(&self) -> Vec<crate::SystemNotification> {
+        self.test_platform.shown_system_notifications()
+    }
+
+    /// Returns system notifications currently delivered during the test.
+    pub fn delivered_system_notifications(&self) -> Vec<crate::SystemNotification> {
+        self.test_platform.delivered_system_notifications()
+    }
+
+    /// Returns tags of system notifications dismissed during the test.
+    pub fn dismissed_system_notifications(&self) -> Vec<crate::SharedString> {
+        self.test_platform.dismissed_system_notifications()
+    }
+
+    /// Simulates the user activating a system notification.
+    pub fn simulate_system_notification_response(
+        &self,
+        response: crate::SystemNotificationResponse,
+    ) {
+        self.test_platform
+            .simulate_system_notification_response(response);
     }
 
     /// Returns true if there's an alert dialog open.
@@ -1037,7 +1071,7 @@ impl VisualContext for VisualTestContext {
     fn focus<V: crate::Focusable>(&mut self, view: &Entity<V>) -> Self::Result<()> {
         self.window
             .update(&mut self.cx, |_, window, cx| {
-                view.read(cx).focus_handle(cx).focus(window)
+                view.read(cx).focus_handle(cx).focus(window, cx)
             })
             .unwrap()
     }

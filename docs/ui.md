@@ -683,35 +683,60 @@ dressed itself at first — sixty-odd hex literals across seven modules, and the
 same six-call chain wherever a chip could be lit — which is the web app's reason
 for having a stylesheet, one scale down. `style.rs` is the answer: a palette of
 `u32` colours named by role, and an extension trait blanket-implemented over
-`wgpui::Styled` whose default methods are the classes (`.lit(on)`, `.trough(h)`,
+`wgpui::Styled` whose default methods are the classes (`.lit(on)`, `.chip()`,
 `.heading()`, `.panel_column(w)`). A class can take an argument, which a CSS class
 cannot, so `.lit(on)` is the whole selected/resting fork rather than two rules and
 a predicate at every call site. It cannot live in `stark-ui` — that crate names no
 `wgpui::` type and a test says so (§11.2) — and it should not: what a colour *is*
 here is native chrome, and §11.2's parity is of acts, not of appearance.
 
-wgpui is **vendored** (`vendor/wgpui`) for five patches. The first is one line:
-upstream 0.3.4 calls `flume::bounded` in `Executor::spawn_realtime` but declares
-`flume` only for macOS, Linux and FreeBSD, so the published crate does not
-compile on Windows at all. The second is the `DeviceDescriptor` above. The third
-makes `WindowBounds` reach the platform whole, so a window can be reopened where
-it was (§11.2, N1). The fourth makes `RenderImage` RGBA: every producer swapped
-red and blue on the way in, which is right on Metal and wrong on the
-`Rgba8Unorm` atlas this fork uploads to — so every image wgpui loaded was drawn
-with the two exchanged (§11.2, N8). The fifth rebuilds the compositor's cached
-bind groups when a surface is resized: they name the surface's two textures and
-`resize` replaces both, so after any resize the window went on sampling the pair
-from before it — and since the swap keeps alternating, it flickered between the
-last two frames drawn while every stroke since went into textures nobody read.
-See `vendor/wgpui/VENDORING.md`, which also records what the second one
-*removed* — `Application::headless`, whose flag the new signature displaced and
-which upstream had never honoured.
+**wgpui ships no widgets either, and the chrome does not build them.** It takes
+them from `wgpui-component`: Longbridge's gpui-component, the library Zed's own
+ecosystem grew, adapted onto wgpui by wgpui's maintainer and published beside it
+(0.6.0 against wgpui 0.3.5, Apache-2.0). Before it, every control here was
+hand-rolled or absent — three sliders that were deliberately not one type, a
+blend-mode *cycle* standing in for a drop-down, a chord printed on every button
+because there were no tooltips, the window title as the only place a failure could
+be reported, and no text field anywhere, so a session link went through the
+clipboard because there was nothing to paste it into. The alternative was to port
+the library by hand — 150k lines against a GPUI nine months newer than wgpui's
+fork point — and re-port it at every release; the adaptor exists, so the question
+answered itself.
 
-The fourth and fifth are the two this frontend has found by *being* the second
-consumer, and they are the same shape: a fork that moved GPUI's compositor onto
-wgpu, with one thing left behind. Neither is reachable from the web frontend at
-all, and neither was caught by a test — one needed a coloured picture, the other
-needed a screenshot after a resize.
+What it costs and what it settles. Every window's root view is wrapped in the
+library's `Root`, which is the layer dialogs, notifications and tooltips are drawn
+on (`main`). Its theme is one global of semantic slots, written from `style.rs`'s
+palette role for role (`theme.rs`), so the two consumers of a colour stay one
+palette — and the library's own dark theme is what fills the slots the chrome has
+no word for. A library control owns its value between frames where a measured
+trough owned nothing, so the view keeps a state per control and writes it from the
+model each frame (`controls.rs`); what a drag *means* is unchanged and still the
+view's. The measured-regions hit test (N2 below) is retired wherever a library
+control replaced one and kept for the chips, which are still `div`s. And a text
+field takes the keyboard whole: `Canvas::key` yields when the window says a field
+has focus, so a letter typed into the command search is not a chord. The library
+carries more than is used — a code editor, a dock, tables — which is compile time
+rather than a decision, and a `[patch]` in the root manifest points its `wgpui`
+at the vendored copy, so the widgets draw with the device patch 1 describes.
+
+wgpui is **vendored** (`vendor/wgpui`, at 0.3.5) for four patches. The first is
+the `DeviceDescriptor` above. The second makes `WindowBounds` reach the platform
+whole, so a window can be reopened where it was (§11.2, N1). The third makes
+`RenderImage` RGBA: every producer swapped red and blue on the way in, which is
+right on Metal and wrong on the `Rgba8Unorm` atlas this fork uploads to — so
+every image wgpui loaded was drawn with the two exchanged (§11.2, N8). The
+fourth is the HDR swapchain (§6.5): a float scRGB surface where the display has
+one, with the chrome's shaders decoding for it. See `vendor/wgpui/VENDORING.md`,
+which also records what the first one *removed* — `Application::headless`,
+whose flag the new signature displaced and which upstream had never honoured.
+
+Two more were carried against 0.3.4 and landed upstream in 0.3.5 in their own
+form: the `flume` declaration without which the crate did not compile on Windows
+at all, and the compositor's bind groups going stale across a surface resize,
+which 0.3.5 keys by a revision where the patch had keyed by a generation. Both
+were found by *being* the second consumer, and the resize one is the shape worth
+remembering: a fork that moved GPUI's compositor onto wgpu, with one thing left
+behind, caught by a screenshot and by nothing else.
 
 [wgpui]: https://github.com/muktidaya/wgpui
 
@@ -920,7 +945,9 @@ the exit criterion is an act, not a diff.
   Two descriptions of one layout is the drift this whole stage exists to delete, one
   scale down. So the panel **measures**: each control carries a `canvas` element
   whose prepaint writes its laid-out bounds into a shared list, and the hit test
-  reads that. No geometry constant survives outside the tests.
+  reads that. No geometry constant survives outside the tests. The sliders have
+  since moved to the widget layer (§11.1), which measures its own; the chips still
+  measure, and the rule stands wherever a `div` is a control.
 
   A colour picker did not land. The transient's third knob is there and the engine
   takes it; what is missing is a control, and a colour well is its own design
@@ -965,14 +992,14 @@ the exit criterion is an act, not a diff.
   joined it: the web copy already said it was "a way of *presenting* a stack, not
   a fact about the document", which is the definition of this crate's contents.
 
-  Two things the native panel does that the web one does not, and both are
-  admissions. The blend picker is a **cycle** through four modes rather than a
-  pop-out, because a pop-out is §25.7's own design; it walks `BlendMode::ALL` and
-  asks `same_mode`, the same list and the same question the web picker's rows are
-  built from, so the two offer the modes in one order and a Radiance layer at its
-  own `k` is still on Radiance rather than being skipped. And the opacity drag
-  sends a document command per pointer move where the web app previews and commits
-  once (§14.6) — honest but coarse, one history entry per sample. The preview
+  Two things the native panel did that the web one does not, and both were
+  admissions. The blend picker was a **cycle** through four modes rather than a
+  pop-out, because a pop-out was §25.7's own design; it is the widget layer's
+  drop-down now (§11.1), still over `BlendMode::ALL` and still asking `same_mode`,
+  so a Radiance layer at its own `k` shows as Radiance rather than as nothing. And
+  the opacity drag sends a document command per pointer move where the web app
+  previews and commits once (§14.6) — honest but coarse, one history entry per
+  sample, and true of the library's slider as it was of the trough. The preview
   pair is a stage of its own.
 - **N5 — documents on disk.** `files` splits; save, open and export through the
   native dialogs. *Exit:* a `.stark` file round-trips between the two frontends,
@@ -993,9 +1020,10 @@ the exit criterion is an act, not a diff.
   **A real path is what the browser cannot have**, and it buys two things: *save
   over the file you opened*, and a window title that says which file that is. The
   web app has no Save/Save-As distinction because a download has nowhere to go
-  back to. The title is also this frontend's only message surface — a failed save
-  says so there, for want of anywhere better, which is an admission rather than a
-  design (§25.7).
+  back to. The title was also this frontend's only message surface for a while — a
+  failed save said so there, for want of anywhere better — until the widget layer
+  gave it notifications (§11.1); `Canvas::report` and `say` queue one and the next
+  frame raises it, since a notice comes from places that hold no window.
 
   **The saves diverge, deliberately.** The web app saves *lean*, naming content it
   knows the opener ships (§8's version 6); the native one passes an empty

@@ -11,13 +11,11 @@ struct DoubleBuffer {
     textures: [wgpu::Texture; 2],
     views: [wgpu::TextureView; 2],
     front: usize,
+    /// Changes whenever resize replaces the textures while preserving the surface id.
+    revision: u64,
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
-    // STARK PATCH: which pair of textures these are. Bumped by `resize`, which
-    // replaces both — so a consumer that caches anything derived from a view (the
-    // renderer's bind groups) can tell that what it cached is of the previous pair.
-    generation: u64,
     // true when a present event has been fired but not yet consumed by
     // the renderer.  We coalesce multiple calls to `present()` so the
     // application doesn't flood the event loop at thousands of FPS.
@@ -67,10 +65,9 @@ impl SurfaceRegistry {
             if db.width == width && db.height == height {
                 return;
             }
-            // STARK PATCH: the new pair is a generation on from the one it replaces.
-            let generation = db.generation.wrapping_add(1);
-            let new_db = Self::create_double_buffer(device, width, height, db.format);
-            *db = DoubleBuffer { generation, ..new_db };
+            let mut new_db = Self::create_double_buffer(device, width, height, db.format);
+            new_db.revision = db.revision.wrapping_add(1);
+            *db = new_db;
         }
     }
 
@@ -113,27 +110,20 @@ impl SurfaceRegistry {
         })
     }
 
-    /// STARK PATCH: which generation of textures this surface is on.
+    /// Atomically snapshot the texture views needed to bind a surface.
     ///
-    /// Every `resize` replaces both textures, so anything a consumer built from a
-    /// view — a bind group above all — refers to a texture that is gone. There is no
-    /// identity on a `wgpu::TextureView` to compare, so the pair carries a number
-    /// instead, and a cache that holds the number it was built at can tell.
-    pub fn generation(&self, id: SurfaceId) -> Option<u64> {
+    /// A surface keeps the same id when it is resized, but both texture views are
+    /// replaced. The revision lets renderer-side caches distinguish those texture
+    /// generations and rebuild bind groups instead of sampling stale views.
+    pub fn binding_snapshot(&self, id: SurfaceId) -> Option<(usize, u64, [wgpu::TextureView; 2])> {
         let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|db| db.generation)
-    }
-
-    /// Get the current front buffer index (0 or 1).
-    pub fn front_index(&self, id: SurfaceId) -> Option<usize> {
-        let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|db| db.front)
-    }
-
-    /// Access the view at the given index (0 or 1).
-    pub fn view_at(&self, id: SurfaceId, idx: usize) -> Option<wgpu::TextureView> {
-        let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).and_then(|db| db.views.get(idx).cloned())
+        surfaces.get(&id).map(|db| {
+            (
+                db.front,
+                db.revision,
+                [db.views[0].clone(), db.views[1].clone()],
+            )
+        })
     }
 
     /// Get the current size of a surface.
@@ -222,11 +212,11 @@ impl SurfaceRegistry {
             textures: [tex0, tex1],
             views: [view0, view1],
             front: 0,
+            revision: 0,
             width: w,
             height: h,
             format,
             present_pending: std::sync::atomic::AtomicBool::new(false),
-            generation: 0,
         }
     }
 }

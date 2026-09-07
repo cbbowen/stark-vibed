@@ -343,8 +343,8 @@ impl FocusHandle {
     }
 
     /// Moves the focus to the element associated with this handle.
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(self)
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        window.focus(self, cx)
     }
 
     /// Obtains whether the element associated with this handle is currently focused.
@@ -498,6 +498,10 @@ pub enum WindowControlArea {
 pub struct HitboxId(u64);
 
 impl HitboxId {
+    #[cfg(any(test, feature = "test-support"))]
+    /// Returns an inert hitbox identity for synthetic test geometry.
+    pub fn placeholder() -> Self { Self(u64::MAX) }
+
     /// Checks if the hitbox with this ID is currently hovered. Except when handling
     /// `ScrollWheelEvent`, this is typically what you want when determining whether to handle mouse
     /// events or paint hover styles.
@@ -757,6 +761,8 @@ impl Frame {
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
+        #[cfg(any(test, feature = "test-support"))]
+        self.debug_bounds.clear();
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         {
@@ -1003,6 +1009,7 @@ impl Window {
             window_min_size,
             window_decorations,
             tabbing_identifier,
+            app_owns_titlebar_drag: _,
         } = options;
 
         let window_bounds = window_bounds.unwrap_or_else(|| default_bounds(display_id, cx));
@@ -1320,9 +1327,12 @@ impl Window {
     }
 }
 
+/// Result of dispatching an input event through the window hierarchy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DispatchEventResult {
+pub struct DispatchEventResult {
+    /// Whether the event should continue propagating to parent elements.
     pub propagate: bool,
+    /// Whether the default platform behavior was prevented.
     pub default_prevented: bool,
 }
 
@@ -1432,7 +1442,7 @@ impl Window {
     }
 
     /// Move focus to the element associated with the given [`FocusHandle`].
-    pub fn focus(&mut self, handle: &FocusHandle) {
+    pub fn focus(&mut self, handle: &FocusHandle, _cx: &mut App) {
         if !self.focus_enabled || self.focus == Some(handle.id) {
             return;
         }
@@ -1459,25 +1469,30 @@ impl Window {
     }
 
     /// Move focus to next tab stop.
-    pub fn focus_next(&mut self) {
+    pub fn focus_next(&mut self, cx: &mut App) {
         if !self.focus_enabled {
             return;
         }
 
         if let Some(handle) = self.rendered_frame.tab_stops.next(self.focus.as_ref()) {
-            self.focus(&handle)
+            self.focus(&handle, cx)
         }
     }
 
     /// Move focus to previous tab stop.
-    pub fn focus_prev(&mut self) {
+    pub fn focus_prev(&mut self, cx: &mut App) {
         if !self.focus_enabled {
             return;
         }
 
         if let Some(handle) = self.rendered_frame.tab_stops.prev(self.focus.as_ref()) {
-            self.focus(&handle)
+            self.focus(&handle, cx)
         }
+    }
+
+    /// Returns whether accessibility features are currently active for this window.
+    pub fn is_a11y_active(&self) -> bool {
+        false
     }
 
     /// Accessor for the text system.
@@ -1690,7 +1705,16 @@ impl Window {
         AsyncWindowContext::new_context(cx.to_async(), self.handle)
     }
 
-    /// Schedule the given closure to be run directly after the current frame is rendered.
+    /// Dispatch queued animation callbacks without reentering the current view update.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn simulate_next_frame(&mut self, cx: &mut App) -> usize {
+        let callbacks = self.next_frame_callbacks.take();
+        let count = callbacks.len();
+        for callback in callbacks { callback(self, cx); }
+        count
+    }
+
+    /// Schedules a callback for the next requested frame.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
     }

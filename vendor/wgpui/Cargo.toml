@@ -11,13 +11,23 @@
 
 [package]
 edition = "2024"
+rust-version = "1.94"
 name = "wgpui"
-version = "0.3.4"
+version = "0.3.5"
 authors = [
     "Muktidaya <muktidaya@icloud.com>",
     "Nathan Sobo <nathan@zed.dev>",
 ]
 build = "build.rs"
+exclude = [
+    ".cargo/",
+    ".github/",
+    "AGENTS.md",
+    "STATUS.md",
+    "flake.lock",
+    "flake.nix",
+    "scripts/",
+]
 publish = true
 autolib = false
 autobins = false
@@ -25,7 +35,8 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Independent wgpu + winit UI framework (community fork of GPUI / GPUI-CE 0.3.3)"
-homepage = "https://github.com/muktidaya/wgpui"
+homepage = "https://github.com/Muktidaya/wgpui"
+documentation = "https://docs.rs/wgpui"
 readme = "README.md"
 keywords = [
     "desktop",
@@ -34,7 +45,15 @@ keywords = [
 ]
 categories = ["gui"]
 license = "Apache-2.0"
-repository = "https://github.com/muktidaya/wgpui"
+repository = "https://github.com/Muktidaya/wgpui"
+
+[package.metadata.docs.rs]
+features = ["inspector"]
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = [
@@ -52,15 +71,19 @@ test-support = [
 ]
 windows-manifest = []
 
+[lib]
+name = "wgpui"
+path = "src/wgpui.rs"
+doctest = false
+
 # STARK PATCH: the `examples/` tree is deleted in this vendored copy (4.9 MB, half
 # of it one demo GIF, for targets the workspace never builds — vendor/wgpui is
 # excluded from it). Their `[[example]]` blocks go with them: cargo refuses a
 # declared target whose path is missing.
 
-[lib]
-name = "wgpui"
-path = "src/wgpui.rs"
-doctest = false
+[dependencies.accesskit]
+version = "0.24"
+features = ["enumn"]
 
 [dependencies.anyhow]
 version = "1.0.86"
@@ -104,6 +127,9 @@ features = ["full"]
 
 [dependencies.etagere]
 version = "0.2"
+
+[dependencies.flume]
+version = "0.12"
 
 [dependencies.futures]
 version = "0.3"
@@ -270,7 +296,7 @@ version = "1"
 version = "30"
 
 [dependencies.wgpui_derive]
-version = "0.3.4"
+version = "0.3.5"
 features = ["inspector"]
 
 [dependencies.winit]
@@ -311,9 +337,6 @@ version = "0.2.2"
 features = ["test-support"]
 package = "gpui_util"
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.flume]
-version = "0.12"
-
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
 version = "0.6"
 features = [
@@ -346,9 +369,6 @@ version = "0.24"
 [target.'cfg(target_os = "macos")'.dependencies.dispatch2]
 version = "0.3.1"
 
-[target.'cfg(target_os = "macos")'.dependencies.flume]
-version = "0.12"
-
 [target.'cfg(target_os = "macos")'.dependencies.foreign-types]
 version = "0.5"
 
@@ -378,11 +398,6 @@ features = [
     "NSString",
     "NSObject",
 ]
-
-# STARK PATCH: upstream uses `flume` in `Executor::spawn_realtime` unconditionally
-# but declares it only for macOS/Linux/FreeBSD, so wgpui does not build on Windows.
-[target.'cfg(target_os = "windows")'.dependencies.flume]
-version = "0.12"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-core]
 version = "0.62"

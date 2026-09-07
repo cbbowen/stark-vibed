@@ -17,8 +17,8 @@ exclude = [
     # iroh 1.0.3 + the custom-transport path-opening patch (see its
     # VENDORING.md); substituted for the crates.io version via [patch] below.
     "vendor/iroh",
-    # wgpui 0.3.4 + the one-line manifest fix that lets it build on Windows at
-    # all (see its VENDORING.md); substituted via [patch] below.
+    # wgpui 0.3.5 + four local patches, the device descriptor above all (see its
+    # VENDORING.md); substituted via [patch] below.
     "vendor/wgpui",
     # wintab_lite 1.0.1, less the two lines that made it uncompilable as a
     # dependency (see its VENDORING.md); substituted via [patch] below.
@@ -151,9 +151,11 @@ opt-level = 3
 # transport (WebRTC). See vendor/iroh/VENDORING.md.
 [patch.crates-io]
 iroh = { path = "vendor/iroh" }
-# Vendored wgpui with `flume` declared on Windows: upstream 0.3.4 uses it in
-# `Executor::spawn_realtime` but declares it only for macOS/Linux/FreeBSD, so the
-# published crate does not compile on Windows at all. See vendor/wgpui/VENDORING.md.
+# Vendored wgpui: the caller states the `DeviceDescriptor` (the engine needs
+# limits the published crate does not ask for), `WindowBounds` reaches the
+# platform whole, `RenderImage` is RGBA, and the swapchain goes HDR where the
+# display allows. See vendor/wgpui/VENDORING.md. The patch also redirects what
+# `wgpui-component` asks for, so the widget layer draws with the same device.
 wgpui = { path = "vendor/wgpui" }
 # Vendored wintab_lite with its `windows` dependency removed: upstream needs that
 # crate for one imported type, declares it with no features, and so does not compile

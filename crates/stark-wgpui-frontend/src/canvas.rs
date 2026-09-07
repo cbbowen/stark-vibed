@@ -35,14 +35,21 @@ use wgpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window,
     div, point, prelude::*, px, rgb, wgpu_surface,
 };
+use wgpui_component::button::{Button, ButtonVariants};
+use wgpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
+use wgpui_component::input::{Input, InputState};
+use wgpui_component::notification::Notification;
+use wgpui_component::{Root, WindowExt};
 
 use crate::brush::Brush;
 use crate::collab::{self, Collab};
 use crate::color;
+use crate::controls::Controls;
 use crate::files::{self, Done};
 use crate::gallery;
 use crate::layers::{self, Act};
 use crate::menu;
+use crate::palette;
 use crate::panel::{self, Knob, Region, Regions};
 use crate::render::Renderer;
 use crate::select;
@@ -78,6 +85,24 @@ const TUNE_SIZE_PER_PX: f32 = 0.007;
 /// shorter because there is far less of it to cross.
 const TUNE_FLOW_PER_PX: f32 = 0.01;
 
+/// Something the window has to say about the last act — a failure, or the one kind
+/// of success that leaves nothing on screen. Queued by [`Canvas::report`] and
+/// [`Canvas::say`] and handed to the widget layer's notifications on the next frame
+/// ([`Canvas::render`]), since a notice is raised from places that hold no window.
+enum Notice {
+    Failed(String),
+    Said(String),
+}
+
+impl From<Notice> for Notification {
+    fn from(notice: Notice) -> Self {
+        match notice {
+            Notice::Failed(why) => Notification::error(why),
+            Notice::Said(what) => Notification::info(what),
+        }
+    }
+}
+
 /// What a press took hold of.
 enum Held {
     /// A stroke on the canvas.
@@ -92,21 +117,12 @@ enum Held {
     /// (§6.8). `restore` is the action a held modifier borrowed for this one gesture,
     /// to be put back when it ends.
     Shape { restore: Option<ShapeAction> },
-    /// A knob on the panel, kept for the whole drag — see the module note.
-    Knob(Knob),
     /// One of the color picker's two controls, with what the press meant — see
     /// `stark_ui::color::Grab`, which decides that once and holds it.
     Pick {
         region: color::Region,
         grab: stark_ui::color::Grab,
     },
-    /// One of the Select section's dials, with where the drag has moved it.
-    ///
-    /// The fraction is kept rather than read back at the release, because the mask's
-    /// dial *previews*: what the engine reports is still the committed value, so a
-    /// release that asked it would spend an action putting the dial back where it
-    /// started.
-    Dial { dial: select::Dial, fraction: f32 },
     /// A view drag — a pan or the scrubby zoom (§18.1.7). What it *is* was decided
     /// at the press and is held for the gesture, so letting go of the accelerator
     /// halfway through a zoom does not hand the canvas to the pan under a moving
@@ -120,8 +136,6 @@ enum Held {
     /// 4×4 mesh and its solved basis, which would otherwise be the size of every
     /// other thing a press can hold.
     Transform(Box<Grab>),
-    /// The layers panel's opacity track.
-    Opacity,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
     /// flow up and down, from where the press landed.
     Tune {
@@ -142,6 +156,9 @@ pub struct Canvas {
     brush: Brush,
     /// What the pointer is holding, if anything.
     held: Option<Held>,
+    /// The widget layer's dials and picker for the panels (§11.1), and the
+    /// subscriptions that make them heard.
+    controls: Controls,
     /// This browser's chord table, and the drag table beside it — both shipped
     /// defaults for now: rebinding needs a settings surface, which is N8's.
     bindings: Bindings,
@@ -228,10 +245,12 @@ pub struct Canvas {
     /// *changes* rather than every frame: a title is a platform call, and the frame
     /// loop runs whether or not the document moved.
     title: String,
-    /// What this window has to say about the last act, if anything — a failure, or
-    /// the one kind of success that leaves nothing on screen. Shown on the title bar
-    /// for want of anywhere better; see [`Canvas::report`] and [`Canvas::say`].
-    notice: Option<String>,
+    /// What this window has to say about the last act, if anything, waiting for the
+    /// frame that will show it — see [`Notice`].
+    notice: Option<Notice>,
+    /// Whether the command field has focus, which is exactly when its drop-down
+    /// shows (`crate::palette`).
+    searching: bool,
     /// The file act in flight, if any. **Held rather than detached**: a wgpui `Task`
     /// cancels when it is dropped, and a save dropped mid-dialog is a file the user
     /// asked for and did not get.
@@ -315,10 +334,12 @@ impl Canvas {
         let tablet = Tablet::attach(&*window);
         let focus = cx.focus_handle();
         let obs = renderer.as_ref().map(Renderer::observe);
+        let controls = Controls::new(window, cx);
         Self {
             renderer,
             brush,
             held: None,
+            controls,
             bindings: Bindings::default(),
             drags: DragBindings::default(),
             focus,
@@ -347,7 +368,8 @@ impl Canvas {
             path: None,
             written: 0,
             title: String::new(),
-            notice: failure,
+            notice: failure.map(Notice::Failed),
+            searching: false,
             file_task: None,
             collapsed: std::collections::HashSet::new(),
             clock,
@@ -429,14 +451,7 @@ impl Canvas {
         // The layers panel is on the right, so it is asked first for the same reason
         // the brush panel is: a press is paint only where neither column claims it.
         if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
-            if region == layers::Region::Opacity {
-                self.held = Some(Held::Opacity);
-                if let Some(f) = layers::opacity_at(&self.layer_regions, ev.position) {
-                    self.set_opacity(f, cx);
-                }
-            } else {
-                self.act(region, cx);
-            }
+            self.act(region, cx);
             return;
         }
         if self.over_layers(window, ev.position) {
@@ -486,13 +501,6 @@ impl Canvas {
                 }
                 return;
             }
-            Some(select::Region::Dial(dial)) => {
-                let fraction =
-                    select::fraction_at(&self.select_regions, dial, ev.position).unwrap_or(0.0);
-                self.held = Some(Held::Dial { dial, fraction });
-                self.turn_dial(dial, fraction, cx);
-                return;
-            }
             Some(select::Region::Act(i)) => {
                 if let Some(command) = select::SELECT_ACTS.get(i) {
                     self.run(*command, window, cx);
@@ -504,13 +512,6 @@ impl Canvas {
 
         // Then the brush panel: its column is where a press stops being paint.
         match panel::hit(&self.regions, ev.position) {
-            Some(Region::Knob(knob)) => {
-                self.held = Some(Held::Knob(knob));
-                if let Some(f) = panel::fraction_at(&self.regions, knob, ev.position) {
-                    self.turn(knob, f, cx);
-                }
-                return;
-            }
             Some(Region::Effect(i)) => {
                 if let Some((effect, _)) = EFFECTS.get(i) {
                     self.brush.config.effect = *effect;
@@ -725,24 +726,6 @@ impl Canvas {
                     self.pick(region, grab, f, cx);
                 }
             }
-            Some(Held::Dial { dial, .. }) => {
-                if let Some(fraction) = select::fraction_at(&self.select_regions, dial, at) {
-                    self.held = Some(Held::Dial { dial, fraction });
-                    self.turn_dial(dial, fraction, cx);
-                }
-            }
-            Some(Held::Knob(knob)) => {
-                // Recomputed from the pointer's x alone, so a drag that has wandered
-                // off the track vertically still moves the knob it took hold of.
-                if let Some(f) = panel::fraction_at(&self.regions, knob, at) {
-                    self.turn(knob, f, cx);
-                }
-            }
-            Some(Held::Opacity) => {
-                if let Some(f) = layers::opacity_at(&self.layer_regions, at) {
-                    self.set_opacity(f, cx);
-                }
-            }
             Some(Held::Tune { from, size, flow }) => {
                 // Both knobs from the press rather than from the last move, so a long
                 // drag is one map and rounding cannot walk over its length.
@@ -819,15 +802,6 @@ impl Canvas {
                     self.send(ViewCommand::SetShapeAction(action), cx);
                 }
             }
-            // The mask's strength was previewed for the length of the drag; the
-            // release is what spends an action on it (§6.8).
-            Some(Held::Dial {
-                dial: dial @ select::Dial::MaskOpacity,
-                fraction,
-            }) => {
-                self.send(ViewCommand::PreviewSelectionOpacity(None), cx);
-                self.send(DocCommand::SetSelectionOpacity(dial.value_at(fraction)), cx);
-            }
             // A transform is *not* committed on release: the gesture goes on being
             // composed until Done, which is what makes it one undo step however many
             // drags built it (§16.6).
@@ -873,11 +847,23 @@ impl Canvas {
     /// `preview` buys the web app (§14.6); this sends the document command each time,
     /// which is honest but coarse — the engine coalesces nothing, so a drag is a run
     /// of history entries. The preview pair is a stage of its own.
-    fn set_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn set_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
         let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
             return;
         };
         self.send(DocCommand::SetLayerOpacity(id, opacity), cx);
+    }
+
+    /// Set the selected layer's blend mode — the panel's drop-down (`crate::controls`).
+    pub(crate) fn set_blend(
+        &mut self,
+        mode: stark_model::document::BlendMode,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+            return;
+        };
+        self.send(DocCommand::SetLayerBlend(id, mode), cx);
     }
 
     /// The rows the layers panel draws, worked out by the tree.
@@ -899,11 +885,6 @@ impl Canvas {
         command: impl Into<stark_engine::command::InputCommand>,
         cx: &mut Context<'_, Self>,
     ) {
-        // Whatever the title was last saying has been read by now, or was never going
-        // to be: the artist is doing something else. So the title goes back to saying
-        // which file this is — which matters most for the thing that has no other way
-        // out, the note that a link went to the clipboard (`say`).
-        self.notice = None;
         if let Some(r) = self.renderer.as_mut() {
             r.process(command);
             self.obs = Some(r.observe());
@@ -1043,7 +1024,6 @@ impl Canvas {
     /// a known path and the three that wait on a dialog all end here, so what a
     /// success does to the title and the clean/dirty mark is written once.
     fn settle(&mut self, done: Done, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.notice = None;
         match done {
             Done::Saved { path, revision } => {
                 self.path = Some(path);
@@ -1117,34 +1097,27 @@ impl Canvas {
         true
     }
 
-    /// Say what went wrong, where a person will see it.
-    ///
-    /// The window title, for want of anywhere better: this frontend has no message
-    /// surface, and a failure that reached only a log nobody is tailing is a failure
-    /// nobody is told about. A proper report is a surface of its own (§25.7).
+    /// Say what went wrong, where a person will see it: a notification, raised on
+    /// the next frame. A failure that reached only a log nobody is tailing is a
+    /// failure nobody is told about.
     fn report(&mut self, why: String) {
-        self.notice = Some(why);
+        self.notice = Some(Notice::Failed(why));
     }
 
-    /// Say something that went *right*, in the same place and by the same means.
-    ///
-    /// The title carries both because there is nowhere else, and it has to carry the
-    /// good news too: Share's whole product is a string on the clipboard, which leaves
+    /// Say something that went *right*, by the same means. The good news has to be
+    /// said too: Share's whole product is a string on the clipboard, which leaves
     /// nothing at all on screen to say it worked (§12.4).
     fn say(&mut self, what: String) {
-        self.notice = Some(what);
+        self.notice = Some(Notice::Said(what));
     }
 
-    /// Put the file's name — or the last thing said — on the window, if it changed.
+    /// Put the file's name on the window, if it changed.
     fn retitle(&mut self, window: &mut Window) {
-        let title = match &self.notice {
-            Some(what) => format!("{what} — Stark"),
-            None => files::window_title(
-                self.path.as_deref(),
-                self.unsaved(),
-                self.collab.phase == collab::Phase::Shared,
-            ),
-        };
+        let title = files::window_title(
+            self.path.as_deref(),
+            self.unsaved(),
+            self.collab.phase == collab::Phase::Shared,
+        );
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
@@ -1269,13 +1242,15 @@ impl Canvas {
         self.repaint(cx);
     }
 
-    /// Join the session whose link is on the clipboard.
+    /// Ask for the link to a session, and join it.
     ///
-    /// The paste is read here rather than on the task, so that "there is nothing to
-    /// join" is answered before anything binds — and because reading a clipboard is a
-    /// platform call, which is the view's side of the seam. What is *in* the paste is
-    /// `stark_ui::collab`'s: a whole URL and a bare ticket are both links, and deciding
-    /// that twice is how the two frontends would come to accept different things.
+    /// A dialog with one field, as the web app has (§12.4), so the link can be pasted
+    /// or typed. The clipboard is read first and offered as the field's value when
+    /// what it holds is a link — the common case, and one keystroke fewer — but not
+    /// acted on unasked: a paste is a thing a person does, not a thing a menu row
+    /// reads over their shoulder. What *is* a link is `stark_ui::collab`'s to say —
+    /// a whole URL and a bare ticket both are — and deciding that twice is how the
+    /// two frontends would come to accept different things.
     fn join(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         match self.collab.phase {
             collab::Phase::Connecting => return,
@@ -1287,10 +1262,47 @@ impl Canvas {
             }
             collab::Phase::Solo => {}
         }
-        let Some(link) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            self.report("copy a session link first — Join reads one off the clipboard".to_string());
+        let pasted = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .filter(|text| stark_ui::collab::ticket_in(text).is_some());
+        let field = cx.new(|cx| InputState::new(window, cx).placeholder("Paste a session link"));
+        if let Some(link) = pasted {
+            field.update(cx, |f, cx| f.set_value(link, window, cx));
+        }
+        let this = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (this, field) = (this.clone(), field.clone());
+            dialog
+                .title("Join a session")
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child("The link the other painter shared. Anyone in the session can make one.")
+                        .child(Input::new(&field)),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().child(Button::new("cancel").label("Cancel")))
+                        .child(DialogAction::new().child(Button::new("join").label("Join").primary())),
+                )
+                .on_ok(move |_, window, cx| {
+                    let link = field.read(cx).value().to_string();
+                    let _ = this.update(cx, |this, cx| this.join_link(link, window, cx));
+                    true
+                })
+        });
+    }
+
+    /// Join the session a link names — the dialog's answer (`join`).
+    fn join_link(&mut self, link: String, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.take_focus(window, cx);
+        if stark_ui::collab::ticket_in(&link).is_none() {
+            self.report("that is not a session link".to_string());
             return self.repaint(cx);
-        };
+        }
         self.collab.phase = collab::Phase::Connecting;
         self.say("joining\u{2026}".to_string());
         self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -1316,7 +1328,7 @@ impl Canvas {
                 link,
             } => {
                 self.install_session(*session, events, window, cx);
-                self.hand_over(link, cx);
+                self.hand_over(link, window, cx);
             }
             collab::Done::Arrived {
                 session,
@@ -1343,7 +1355,7 @@ impl Canvas {
                 // Share makes when it is asked.
                 self.say("joined — Share hands the link on".to_string());
             }
-            collab::Done::Link(link) => self.hand_over(link, cx),
+            collab::Done::Link(link) => self.hand_over(link, window, cx),
             collab::Done::Failed(why) => {
                 // A share converts the engine *before* it binds, so a bind that failed
                 // leaves a document queueing broadcasts for a session that never
@@ -1434,11 +1446,100 @@ impl Canvas {
         }));
     }
 
-    /// Put the invitation where a person can paste it, and say that it is there.
-    fn hand_over(&mut self, link: String, cx: &mut Context<'_, Self>) {
-        cx.write_to_clipboard(wgpui::ClipboardItem::new_string(link));
+    /// Put the invitation where a person can paste it, and show it.
+    ///
+    /// On the clipboard at once, since that is where it is going; and in a dialog,
+    /// which is the surface the clipboard never was — the link can be read, copied
+    /// again after something else has taken the clipboard, or shown to whoever is at
+    /// the next desk. Its one button copies it again and closes.
+    fn hand_over(&mut self, link: String, window: &mut Window, cx: &mut Context<'_, Self>) {
+        cx.write_to_clipboard(wgpui::ClipboardItem::new_string(link.clone()));
+        let field = cx.new(|cx| InputState::new(window, cx));
+        field.update(cx, |f, cx| f.set_value(link.clone(), window, cx));
+        let this = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (this, field, link) = (this.clone(), field.clone(), link.clone());
+            dialog
+                .title("Share this canvas")
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child("Anyone who opens this link paints here with you. It is on the clipboard already.")
+                        .child(Input::new(&field).readonly(true)),
+                )
+                .footer(DialogFooter::new().child(
+                    DialogAction::new().child(Button::new("copy").label("Copy link").primary()),
+                ))
+                .on_ok(move |_, window, cx| {
+                    cx.write_to_clipboard(wgpui::ClipboardItem::new_string(link.clone()));
+                    let _ = this.update(cx, |this, cx| {
+                        this.say("link copied".to_string());
+                        this.take_focus(window, cx);
+                        this.repaint(cx);
+                    });
+                    true
+                })
+        });
         self.say("link copied — anyone who opens it paints here with you".to_string());
         self.repaint(cx);
+    }
+
+    /// Give the keyboard back to the canvas — after a field or a dialog has had it.
+    pub(crate) fn take_focus(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.focus.focus(window, cx);
+    }
+
+    /// Take a color typed into the notation field (`crate::controls`). Anything the
+    /// field cannot read is left where it was; the next frame puts the brush's own
+    /// notation back in it.
+    pub(crate) fn take_hex(&mut self, text: &str, cx: &mut Context<'_, Self>) {
+        let Some(rgb) = stark_ui::color::parse_color(text) else {
+            return self.repaint(cx);
+        };
+        // Through the wheel, so the picker and the brush agree about what was typed
+        // — and the hue survives a grey, which is why the wheel keeps one.
+        self.wheel = color::Wheel::of(rgb, self.wheel.hue);
+        self.brush.tune.color = self.wheel.rgb();
+        self.send_brush(cx);
+    }
+
+    /// The command field gained or lost focus (`crate::palette`).
+    pub(crate) fn set_searching(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        self.searching = on;
+        self.repaint(cx);
+    }
+
+    /// Enter in the command field: the first of the registry's answers that has
+    /// something to act on, if any (`crate::palette`).
+    pub(crate) fn pick_first(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let first = stark_ui::commands::search(query)
+            .into_iter()
+            .find(|c| c.enabled(self.obs.as_ref()));
+        if let Some(command) = first {
+            self.pick_result(command, window, cx);
+        }
+    }
+
+    /// Run what the command field settled on, and put the field away.
+    pub(crate) fn pick_result(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.controls
+            .search
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.searching = false;
+        self.take_focus(window, cx);
+        self.run(command, window, cx);
     }
 
     /// Feed one remote event into the engine and pay what it owes the screen.
@@ -1756,7 +1857,12 @@ impl Canvas {
     }
 
     /// Move one of the Select section's dials.
-    fn turn_dial(&mut self, dial: select::Dial, fraction: f32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn turn_dial(
+        &mut self,
+        dial: select::Dial,
+        fraction: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
         let v = dial.value_at(fraction);
         match dial {
             select::Dial::Feather => self.send(ViewCommand::SetSelectionFeather(v), cx),
@@ -1767,6 +1873,21 @@ impl Canvas {
             select::Dial::MaskOpacity => {
                 self.send(ViewCommand::PreviewSelectionOpacity(Some(v)), cx)
             }
+        }
+    }
+
+    /// The end of a drag on a dial. The mask's strength was previewed for the length
+    /// of it, and the release is what spends an action on it (§6.8); the other two
+    /// were set as they moved, so there is nothing left to do for them.
+    pub(crate) fn settle_dial(
+        &mut self,
+        dial: select::Dial,
+        fraction: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if dial == select::Dial::MaskOpacity {
+            self.send(ViewCommand::PreviewSelectionOpacity(None), cx);
+            self.send(DocCommand::SetSelectionOpacity(dial.value_at(fraction)), cx);
         }
     }
 
@@ -2092,6 +2213,11 @@ impl Canvas {
     /// shared: what Ctrl+Z means was settled once (§25) and this frontend only has to
     /// say what a keystroke *is* (`crate::keys`) and what an act *does* below.
     fn key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // A field that has the keyboard has all of it: a letter typed into the
+        // command search is not a chord, whatever the table says about that letter.
+        if window.has_focused_input(cx) {
+            return;
+        }
         let stroke = crate::keys::stroke(&ev.keystroke);
         // Space is nobody's chord — the registry says so and claims it before the
         // table — because a frontend arms the pan off the key itself. Asked through
@@ -2213,7 +2339,7 @@ impl Canvas {
     }
 
     /// Move a knob and put the changed brush in the engine's hand.
-    fn turn(&mut self, knob: Knob, fraction: f32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn turn(&mut self, knob: Knob, fraction: f32, cx: &mut Context<'_, Self>) {
         if panel::drag_knob(&mut self.brush, knob, fraction) {
             self.brush.tuned_off_preset();
         }
@@ -2311,7 +2437,7 @@ impl Canvas {
 
     /// Note that the frame has changed. `notify` schedules it; `dirty` is what that
     /// frame reads to decide whether the *engine* has to render at all.
-    fn repaint(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn repaint(&mut self, cx: &mut Context<'_, Self>) {
         self.dirty = true;
         cx.notify();
     }
@@ -2340,11 +2466,15 @@ impl Render for Canvas {
         // title is refreshed with the frame — cheaply, since `retitle` only calls the
         // platform when the words changed.
         self.retitle(window);
+        // What the last act had to say, handed to the widget layer's notifications
+        // *after* this frame: they hang off the `Root` that is drawing this view,
+        // and a layer cannot be pushed onto it mid-draw.
+        if let Some(notice) = self.notice.take() {
+            cx.defer_in(window, move |_, window, cx| {
+                window.push_notification(notice, cx);
+            });
+        }
 
-        let dragging = match self.held {
-            Some(Held::Knob(k)) => Some(k),
-            _ => None,
-        };
         // **Every region list is cleared by the frame, not by the control that fills
         // it.** A panel the Window menu has put away is not built at all, so a builder
         // that cleared its own list would leave the last frame's rectangles standing —
@@ -2412,21 +2542,62 @@ impl Render for Canvas {
         // Built before the panels so its regions are recorded first — which does not
         // matter for the hit test (the lists are separate) but keeps the bar's own
         // drop-down measured on the frame it opens.
+        let query = self.controls.search.read(cx).value();
+        let results: Vec<Command> = if self.searching && !query.trim().is_empty() {
+            stark_ui::commands::search(&query)
+                .into_iter()
+                .take(palette::SHOWN)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let this = cx.weak_entity();
+        let run: palette::Run = std::rc::Rc::new(move |command, window, cx| {
+            let _ = this.update(cx, |this, cx| this.pick_result(command, window, cx));
+        });
+        let search = palette::field(palette::Search {
+            field: &self.controls.search,
+            open: self.searching,
+            results: &results,
+            obs: self.obs.as_ref(),
+            bindings: &self.bindings,
+            run,
+        })
+        .into_any_element();
         let menubar = menu::bar(
             self.menu_open,
             self.obs.as_ref(),
             &self.bindings,
             &|command| self.active(command),
             &self.menu_regions,
+            search,
         );
-        let picker = color::color_panel(self.wheel, &mut self.pictures, &self.color_regions);
+        let picker = color::color_panel(
+            self.wheel,
+            &mut self.pictures,
+            &self.controls.hex,
+            &self.color_regions,
+        );
+        // The widget layer's dials are told what the model says before the panels
+        // that show them are built (`crate::controls`).
+        let rows = self.rows();
+        let active = self.obs.as_ref().map(|o| o.active_layer);
+        let chosen = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
+        self.controls.sync(
+            &self.brush,
+            self.obs.as_ref(),
+            chosen.map_or(1.0, |r| r.info.opacity),
+            chosen.map_or(stark_model::document::BlendMode::Normal, |r| r.info.blend),
+            window,
+            cx,
+        );
         // Built only where there is a column to put it in: with every panel in it
         // hidden the tree has no left-hand child at all, and the surface beside it
         // flexes into the room — which is the same fact `Canvas::origin` states.
         let column = (panel::width(&self.hidden) > 0.0).then(|| {
             panel::brush_panel(
                 &self.brush,
-                dragging,
+                &self.controls,
                 EFFECTS,
                 &self.regions,
                 &self.hidden,
@@ -2436,6 +2607,7 @@ impl Render for Canvas {
                     select: select::select_panel(
                         self.obs.as_ref(),
                         &self.bindings,
+                        &self.controls,
                         &self.select_regions,
                     ),
                     shapes,
@@ -2443,9 +2615,15 @@ impl Render for Canvas {
                 },
             )
         });
-        let rows = self.rows();
-        let roster = (layers::width(&self.hidden) > 0.0)
-            .then(|| layers::layers_panel(self.obs.as_ref(), &rows, &self.layer_regions));
+        let roster = (layers::width(&self.hidden) > 0.0).then(|| {
+            layers::layers_panel(
+                self.obs.as_ref(),
+                &rows,
+                &self.bindings,
+                &self.controls,
+                &self.layer_regions,
+            )
+        });
         // The mode's two pieces are built here, where `self` is still borrowable —
         // the surface below takes a mutable borrow of the renderer that outlives the
         // rest of the tree.
@@ -2496,6 +2674,14 @@ impl Render for Canvas {
                     )
                     .children(roster),
             )
+            // The widget layer's own layers — sheets, dialogs, notifications — over
+            // everything this view draws. `Root` holds them but leaves their place
+            // in the tree to the view it wraps, which is the one thing that knows
+            // where "over everything" is. Each occludes what it covers, so a press
+            // on a dialog is not also a press on the canvas under it.
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::press_middle))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::release))

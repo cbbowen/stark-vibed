@@ -25,8 +25,8 @@ use stark_model::geom::Vec2;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::transform::{Family, Hint, TransformUi, WARP_GRID};
 use wgpui::{
-    Bounds, HitboxBehavior, IntoElement, PathBuilder, Pixels, Point, canvas, div, prelude::*, px,
-    rgb, rgba,
+    Bounds, HitboxBehavior, IntoElement, PathBuilder, Pixels, Point, SharedString, canvas, div,
+    prelude::*, px, rgb, rgba,
 };
 
 use crate::style::{self, StyleExt};
@@ -122,17 +122,16 @@ pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl Into
                 .map(|(i, word)| chip(probe(regions, Region::Flip(i)), word, false)),
         )
         .children(BAR_ACTS.iter().enumerate().map(|(i, command)| {
-            let word = match command.shortcut(bindings) {
-                Some(chord) => format!("{}  {chord}", command.word()),
-                None => command.word().to_string(),
-            };
-            div()
+            // The word alone; the chord is the hover's (`style::tip`).
+            let chip = div()
+                .id(SharedString::from(command.word()))
                 .chip()
                 .py_1()
                 .px_2()
                 .resting()
                 .child(probe(regions, Region::Act(i)))
-                .child(word)
+                .child(command.word());
+            style::tip(chip, command.tooltip(bindings))
         }))
 }
 

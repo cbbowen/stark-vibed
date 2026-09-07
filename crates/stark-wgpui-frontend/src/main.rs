@@ -33,6 +33,7 @@ mod brush;
 mod canvas;
 mod collab;
 mod color;
+mod controls;
 mod files;
 mod gallery;
 mod icons;
@@ -40,17 +41,20 @@ mod identity;
 mod keys;
 mod layers;
 mod menu;
+mod palette;
 mod panel;
 mod render;
 mod select;
 mod store;
 mod style;
+mod theme;
 mod transform;
 mod visibility;
 mod window;
 
 use stark_engine::GpuContext;
 use wgpui::{App, Application, TitlebarOptions, WindowOptions, prelude::*};
+use wgpui_component::Root;
 
 use crate::canvas::Canvas;
 
@@ -121,7 +125,13 @@ fn main() {
                         window::remember(window.window_bounds());
                         true
                     });
-                    cx.new(|cx| Canvas::new(window, cx))
+                    // The widget layer's root wraps the view (§11.1): dialogs,
+                    // notifications and sheets are layers it renders over whatever
+                    // it holds, so a window has one of these at the top or none of
+                    // those anywhere.
+                    let canvas = cx.new(|cx| Canvas::new(window, cx));
+                    theme::install(window, cx);
+                    cx.new(|cx| Root::new(canvas, window, cx))
                 },
             )
             .expect("open the painting window");

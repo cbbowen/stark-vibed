@@ -20,7 +20,11 @@ use wgpui::{
     rgb,
 };
 
-use crate::style::{self, StyleExt};
+use wgpui::Entity;
+use wgpui_component::Sizable;
+use wgpui_component::input::{Input, InputState};
+
+use crate::style;
 
 /// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
 /// window's**. The window's swapchain may be scRGB and the engine paints in any
@@ -240,6 +244,7 @@ fn inside_the_rim(x: usize, y: usize) -> u8 {
 pub fn color_panel(
     wheel: Wheel,
     pictures: &mut Pictures,
+    hex: &Entity<InputState>,
     regions: &Regions,
 ) -> impl IntoElement + use<> {
     let (mx, my) = color::wheel_xy(wheel.hue, wheel.sat);
@@ -297,7 +302,10 @@ pub fn color_panel(
                         .border_color(rgb(style::EDGE))
                         .bg(rgb(swatch)),
                 )
-                .child(div().caption().child(color::notation_of(rgb_now))),
+                // The notation, as a field rather than a readout: what the picker
+                // stands on can be copied out, and a color can be brought in by
+                // typing it (`crate::controls` hears the field).
+                .child(Input::new(hex).xsmall().flex_1()),
         )
 }
 

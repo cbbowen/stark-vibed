@@ -22,14 +22,20 @@ use std::collections::HashSet;
 
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_model::document::{BlendMode, LayerId, Place};
+use stark_model::document::{LayerId, Place};
+use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::layer_tree::{self, Row};
 use stark_ui::panels::PanelId;
 use wgpui::{
-    App, Bounds, IntoElement, Pixels, Point, RenderOnce, Window, canvas, div, prelude::*, px, rgb,
+    App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
+    prelude::*, px, rgb,
 };
 
+use wgpui_component::select::Select;
+use wgpui_component::slider::Slider;
+
+use crate::controls::Controls;
 use crate::style::{self, StyleExt};
 
 /// The panel's width in logical px — wider than the brush's, because a row carries a
@@ -68,10 +74,6 @@ pub enum Region {
     Add,
     Duplicate,
     Remove,
-    /// The blend-mode cycle on the selected layer.
-    Blend,
-    /// The opacity track.
-    Opacity,
 }
 
 /// Where each control was laid out, as of the last painted frame.
@@ -96,33 +98,6 @@ pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
         .map(|(region, _)| *region)
 }
 
-/// How far along the opacity track a position is, `0..=1`.
-pub fn opacity_at(regions: &Regions, at: Point<Pixels>) -> Option<f32> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(r, _)| *r == Region::Opacity)
-        .map(|(_, b)| *b)?;
-    let left = f32::from(bounds.origin.x);
-    let width = f32::from(bounds.size.width);
-    (width > 0.0).then(|| ((f32::from(at.x) - left) / width).clamp(0.0, 1.0))
-}
-
-/// The blend mode after `mode` in [`BlendMode::ALL`], wrapping.
-///
-/// A cycle rather than a picker, because a pop-out is its own design (§25.7) and the
-/// list is short enough to walk. `same_mode`, not `==`, so a layer already on
-/// Radiance at a `k` of its own is not skipped; `ALL` starts Radiance where the model
-/// does ([`DRAGO_K`](stark_model::document::DRAGO_K)) and leaves dialling it to a
-/// surface with a slider, which this panel is not yet.
-pub fn next_blend(mode: BlendMode) -> BlendMode {
-    let i = BlendMode::ALL
-        .iter()
-        .position(|m| m.same_mode(mode))
-        .unwrap_or(0);
-    BlendMode::ALL[(i + 1) % BlendMode::ALL.len()]
-}
-
 /// A small square control — an eye, a carry, a clip mark.
 ///
 /// The mark is `stark_ui::icons`' rather than a character: which glyph a control
@@ -134,11 +109,15 @@ struct Chip {
     on: bool,
     region: Region,
     regions: Regions,
+    /// What the hover says a mark means — the word the web app prints beside it.
+    tip: SharedString,
 }
 
 impl RenderOnce for Chip {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        div()
+        let chip = div()
+            // The region is the chip's identity already; a hover needs it as an id.
+            .id(SharedString::from(format!("{:?}", self.region)))
             .relative()
             .w(px(20.))
             .h(px(18.))
@@ -159,7 +138,8 @@ impl RenderOnce for Chip {
                 } else {
                     style::INK_MARK
                 },
-            ))
+            ));
+        style::tip(chip, self.tip)
     }
 }
 
@@ -170,47 +150,37 @@ impl RenderOnce for Chip {
 pub fn layers_panel(
     obs: Option<&ObservableState>,
     rows: &[Row],
+    bindings: &Bindings,
+    controls: &Controls,
     regions: &Regions,
 ) -> impl IntoElement {
     let active = obs.map(|o| o.active_layer);
     let selected = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
     let opacity = selected.map_or(1.0, |r| r.info.opacity);
-    let blend = selected.map_or(BlendMode::Normal, |r| r.info.blend);
 
     div()
         .panel_column(WIDTH)
         .border_l_1()
         .border_color(rgb(style::EDGE))
         .child(div().heading().child("Layers"))
-        // The selected layer's two continuous knobs.
+        // The selected layer's two continuous knobs, on the widget layer's controls
+        // (`crate::controls`): the blend mode is a drop-down, which §25.9 asks for
+        // once the answers stop fitting on one line, and the opacity a track.
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .pt_2()
-                .child(
-                    div()
-                        .chip()
-                        .mt_1()
-                        .px_2()
-                        .py_1()
-                        .resting()
-                        .child(probe(regions, Region::Blend))
-                        .child(format!("Blend: {}", blend.label())),
-                )
+                .child(div().readout_row().child("Blend"))
+                .child(Select::new(&controls.blend).w_full())
                 .child(
                     div()
                         .readout_row()
                         .child("Opacity")
                         .child(format!("{opacity:.2}")),
                 )
-                .child(
-                    div()
-                        .trough(18.)
-                        .child(probe(regions, Region::Opacity))
-                        .child(div().trough_fill(opacity, style::FILL)),
-                ),
+                .child(Slider::new(&controls.opacity).w_full()),
         )
         // The acts on the whole stack, above the roster they act on.
         .child(
@@ -221,15 +191,28 @@ pub fn layers_panel(
                 // member, a copy of one, and the destructive one — which is what a
                 // trash says everywhere.
                 [
-                    (Region::Add, stark_ui::icons::ADD_LAYER),
-                    (Region::Duplicate, stark_ui::icons::DUPLICATE),
-                    (Region::Remove, stark_ui::icons::REMOVE),
+                    (
+                        Region::Add,
+                        stark_ui::icons::ADD_LAYER,
+                        Command::AddLayer.tooltip(bindings),
+                    ),
+                    (
+                        Region::Duplicate,
+                        stark_ui::icons::DUPLICATE,
+                        "Duplicate the layer".to_string(),
+                    ),
+                    (
+                        Region::Remove,
+                        stark_ui::icons::REMOVE,
+                        "Remove the layer".to_string(),
+                    ),
                 ]
-                .map(|(region, glyph)| Chip {
+                .map(|(region, glyph, tip)| Chip {
                     glyph,
                     on: false,
                     region,
                     regions: regions.clone(),
+                    tip: tip.into(),
                 }),
             ),
         )
@@ -262,6 +245,7 @@ pub fn layers_panel(
                                 on: row.info.visible,
                                 region: Region::Visible(i),
                                 regions: regions.clone(),
+                                tip: if row.info.visible { "Hide" } else { "Show" }.into(),
                             })
                             // The fold slot is drawn whatever the row is, empty for
                             // a layer that carries nothing: a triangle only some rows
@@ -278,6 +262,7 @@ pub fn layers_panel(
                                     on: false,
                                     region: Region::Fold(i),
                                     regions: regions.clone(),
+                                    tip: if row.collapsed { "Unfold" } else { "Fold" }.into(),
                                 }
                                 .into_any_element()
                             } else {
@@ -308,6 +293,7 @@ pub fn layers_panel(
                                     on: false,
                                     region: Region::Carry(i),
                                     regions: regions.clone(),
+                                    tip: "Carry on the layer below".into(),
                                 })
                             })
                             .when(row.release_to.is_some(), |el| {
@@ -316,6 +302,7 @@ pub fn layers_panel(
                                     on: false,
                                     region: Region::Release(i),
                                     regions: regions.clone(),
+                                    tip: "Release from its group".into(),
                                 })
                             })
                             .child(Chip {
@@ -323,6 +310,12 @@ pub fn layers_panel(
                                 on: row.info.clip,
                                 region: Region::Clip(i),
                                 regions: regions.clone(),
+                                tip: if row.info.clip {
+                                    "Unclip"
+                                } else {
+                                    "Clip to the layer below"
+                                }
+                                .into(),
                             })
                     }),
             ),
@@ -380,13 +373,6 @@ pub fn act(region: Region, rows: &[Row], active: Option<LayerId>) -> Option<Act>
             let removable = rows.iter().any(|r| r.info.id == id && r.removable);
             removable.then_some(Act::Doc(DocCommand::RemoveLayer(id)))?
         }
-        Region::Blend => {
-            let id = active?;
-            let info = &rows.iter().find(|r| r.info.id == id)?.info;
-            Act::Doc(DocCommand::SetLayerBlend(id, next_blend(info.blend)))
-        }
-        // A drag, not a click: the caller reads the fraction and previews.
-        Region::Opacity => return None,
     })
 }
 
@@ -405,7 +391,7 @@ pub enum Act {
 mod tests {
     use super::*;
     use stark_engine::LayerInfo;
-    use stark_model::document::{ActionId, ActorId, DRAGO_K};
+    use stark_model::document::{ActionId, ActorId, BlendMode};
     use std::collections::HashSet;
 
     /// A stand-in layer, spelled out because `LayerInfo` is the engine's projection
@@ -447,35 +433,6 @@ mod tests {
     fn stack() -> Vec<Row> {
         let layers = vec![info(1, 0, true), info(2, 0, false)];
         layer_tree::rows(&layers, &HashSet::new())
-    }
-
-    /// The blend cycle visits every mode and comes back — a cycle with a hole in it
-    /// would leave one mode unreachable from the panel.
-    #[test]
-    fn the_blend_cycle_closes() {
-        let mut m = BlendMode::Normal;
-        let mut seen = vec![m.label()];
-        for _ in 1..BlendMode::ALL.len() {
-            m = next_blend(m);
-            seen.push(m.label());
-        }
-        seen.sort_unstable();
-        seen.dedup();
-        assert_eq!(
-            seen.len(),
-            BlendMode::ALL.len(),
-            "every mode is on the cycle"
-        );
-        assert!(
-            next_blend(m).same_mode(BlendMode::Normal),
-            "and the cycle returns"
-        );
-
-        // A layer already on Radiance at its own `k` is still on Radiance — the
-        // cycle must not skip a mode, nor land elsewhere, because `k` was dialled.
-        let dialled = BlendMode::Drago { k: 3.0 };
-        assert_eq!(dialled.label(), "Radiance");
-        assert!(next_blend(dialled).same_mode(next_blend(BlendMode::Drago { k: DRAGO_K })));
     }
 
     /// The eye and the clip mark toggle what they show, rather than setting a fixed
@@ -529,7 +486,6 @@ mod tests {
         let rows = stack();
         assert!(act(Region::Duplicate, &rows, None).is_none());
         assert!(act(Region::Remove, &rows, None).is_none());
-        assert!(act(Region::Blend, &rows, None).is_none());
         // Add is the exception: with nothing selected it goes on top.
         assert!(matches!(
             act(Region::Add, &rows, None),

@@ -18,8 +18,12 @@ use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
-use wgpui::{Bounds, IntoElement, Pixels, Point, canvas, div, prelude::*, rgb};
+use wgpui::{
+    Bounds, Entity, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb,
+};
+use wgpui_component::slider::SliderState;
 
+use crate::controls::Controls;
 use crate::style::{self, StyleExt};
 
 /// The acts a selection can be put through, in the order the row draws them.
@@ -61,14 +65,22 @@ impl Dial {
     }
 
     /// The dial's range. Feather is a canvas-px length; the other two are strengths.
-    fn range(self) -> (f32, f32) {
+    pub fn range(self) -> (f32, f32) {
         match self {
             Dial::Feather => (0.0, MAX_FEATHER),
             Dial::FillOpacity | Dial::MaskOpacity => (0.0, 1.0),
         }
     }
 
-    fn read(self, o: &ObservableState) -> f32 {
+    /// The step a track moves in: whole px for a length, a hundredth for a strength.
+    pub fn step(self) -> f32 {
+        match self {
+            Dial::Feather => 1.0,
+            Dial::FillOpacity | Dial::MaskOpacity => 0.01,
+        }
+    }
+
+    pub fn read(self, o: &ObservableState) -> f32 {
         match self {
             Dial::Feather => o.selection_feather,
             Dial::FillOpacity => o.shape_opacity,
@@ -114,7 +126,6 @@ pub enum Region {
     Tool(usize),
     /// One of [`SHAPE_ACTIONS`], by index.
     Action(usize),
-    Dial(Dial),
     /// One of [`SELECT_ACTS`], by index.
     Act(usize),
 }
@@ -142,19 +153,6 @@ pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
         .map(|(region, _)| *region)
 }
 
-/// How far along a dial's own track a position is, `0..=1` — read from the x alone,
-/// so a drag that wanders off the track keeps moving the dial it took hold of.
-pub fn fraction_at(regions: &Regions, dial: Dial, at: Point<Pixels>) -> Option<f32> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(r, _)| *r == Region::Dial(dial))
-        .map(|(_, b)| *b)?;
-    let left = f32::from(bounds.origin.x);
-    let width = f32::from(bounds.size.width);
-    (width > 0.0).then(|| ((f32::from(at.x) - left) / width).clamp(0.0, 1.0))
-}
-
 /// Build the section.
 ///
 /// Takes the projection rather than reading one, for `crate::panel`'s reason: the
@@ -162,6 +160,7 @@ pub fn fraction_at(regions: &Regions, dial: Dial, at: Point<Pixels>) -> Option<f
 pub fn select_panel(
     o: Option<&ObservableState>,
     bindings: &Bindings,
+    controls: &Controls,
     regions: &Regions,
 ) -> impl IntoElement {
     let tool = o.map_or(Tool::Brush, |o| o.tool);
@@ -183,10 +182,12 @@ pub fn select_panel(
                 .children(SHAPE_TOOLS.iter().enumerate().map(|(i, t)| {
                     let command = tool_command(*t);
                     marked(
+                        format!("tool-{}", command.word()).into(),
                         probe(regions, Region::Tool(i)),
                         command.icon(),
                         command.word(),
                         *t == tool,
+                        Some(command.tooltip(bindings)),
                     )
                 })),
         )
@@ -198,17 +199,18 @@ pub fn select_panel(
                 .gap_1()
                 .children(SHAPE_ACTIONS.iter().enumerate().map(|(i, a)| {
                     marked(
+                        format!("shape-{}", action_word(*a)).into(),
                         probe(regions, Region::Action(i)),
                         action_mark(*a),
                         action_word(*a),
                         *a == action,
+                        None,
                     )
                 })),
         )
         .children(dials.into_iter().map(|dial| {
-            let (lo, hi) = dial.range();
             let v = o.map_or(0.0, |o| dial.read(o));
-            track(regions, dial, (v - lo) / (hi - lo), v)
+            track(dial, v, controls.dial(dial))
         }))
         .child(div().flex().flex_wrap().gap_1().pt_1().children(
             SELECT_ACTS.iter().enumerate().map(|(i, command)| {
@@ -216,7 +218,8 @@ pub fn select_panel(
                 // row keeps its shape and a person can see what the selection
                 // would buy them.
                 let live = command.enabled(o);
-                div()
+                let chip = div()
+                    .id(SharedString::from(format!("act-{}", command.word())))
                     .chip()
                     .flex_1()
                     .py_1()
@@ -224,7 +227,8 @@ pub fn select_panel(
                     .resting()
                     .when(!live, |el| el.text_color(rgb(style::INK_DEAD)))
                     .child(probe(regions, Region::Act(i)))
-                    .child(shortened(*command, bindings))
+                    .child(command.word());
+                style::tip(chip, command.tooltip(bindings))
             }),
         ))
 }
@@ -238,16 +242,6 @@ pub fn tool_command(tool: Tool) -> Command {
         // The rectangle is the marquee anything else would mean, and the brush has no
         // chip here at all — see the tool row above.
         Tool::SelectRect | Tool::Brush => Command::SelectRect,
-    }
-}
-
-/// What an act's button says. The registry's terse word, with the chord that also
-/// reaches it when there is one — this frontend has no tooltips, so the key has
-/// nowhere else to be advertised.
-fn shortened(command: Command, bindings: &Bindings) -> String {
-    match command.shortcut(bindings) {
-        Some(chord) => format!("{}  {chord}", command.word()),
-        None => command.word().to_string(),
     }
 }
 
@@ -273,8 +267,19 @@ fn action_mark(action: ShapeAction) -> Icon {
 /// Stacked rather than side by side: five chips of glyph-plus-word do not fit the
 /// panel's column, and the word is the half that is unambiguous — so it is not the
 /// half to drop. The same arrangement the web panel's action row settled on.
-fn marked(probe: impl IntoElement, mark: Icon, word: &'static str, lit: bool) -> impl IntoElement {
-    div()
+///
+/// `tip` is what the hover says — the chord, for a chip that has one. `None` for
+/// the action row, whose word already says the whole of it.
+fn marked(
+    id: SharedString,
+    probe: impl IntoElement,
+    mark: Icon,
+    word: &'static str,
+    lit: bool,
+    tip: Option<String>,
+) -> impl IntoElement {
+    let chip = div()
+        .id(id)
         .chip()
         .flex_1()
         .flex()
@@ -288,14 +293,16 @@ fn marked(probe: impl IntoElement, mark: Icon, word: &'static str, lit: bool) ->
             mark,
             if lit { style::INK_LIT } else { style::INK },
         ))
-        .child(word)
+        .child(word);
+    match tip {
+        Some(text) => style::tip(chip, text),
+        None => chip,
+    }
 }
 
-/// One labelled dial. The brush panel's slider in miniature, and deliberately not the
-/// same type: that one is keyed by [`crate::panel::Knob`], and a shared widget would
-/// have to be keyed by neither.
-fn track(regions: &Regions, dial: Dial, fraction: f32, value: f32) -> impl IntoElement {
-    let fill = fraction.clamp(0.0, 1.0);
+/// One labelled dial: the brush panel's line-over-a-track, on the widget layer's
+/// track (`crate::controls`).
+fn track(dial: Dial, value: f32, state: &Entity<SliderState>) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -305,12 +312,7 @@ fn track(regions: &Regions, dial: Dial, fraction: f32, value: f32) -> impl IntoE
             Dial::Feather => format!("{value:.0}"),
             _ => format!("{value:.2}"),
         }))
-        .child(
-            div()
-                .trough(14.)
-                .child(probe(regions, Region::Dial(dial)))
-                .child(div().trough_fill(fill, style::FILL)),
-        )
+        .child(wgpui_component::slider::Slider::new(state).w_full())
 }
 
 #[cfg(test)]
