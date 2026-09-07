@@ -1,11 +1,10 @@
 //! Presence, as a receiver holds it (§17.4): the roster of who is here and what
 //! each of them is doing.
 //!
-//! The **frames** these are built from are `stark-model`'s `peer` — that is the
-//! wire, and `stark-net` speaks it without ever naming this module. What is here is
-//! the state a client accumulates from them: a [`Peer`] per participant, the
-//! [`Peers`] roster that ages them out, and the gesture receiver that turns a
-//! stream of frames back into a stroke in progress.
+//! The **frames** these are built from are `stark-model`'s `peer` — the wire, which
+//! `stark-net` speaks without ever naming this module. Here is the state a client
+//! accumulates from them: a [`Peer`] per participant, the [`Peers`] roster that ages
+//! them out, and the gesture receiver that reassembles a stroke in progress.
 
 use std::collections::BTreeMap;
 
@@ -17,13 +16,13 @@ use crate::presence::GestureRx;
 
 /// Who this client is on the wire.
 ///
-/// `actor` is meant to be **durable**: derived from a key the frontend persists, so
-/// the same person reloading is the same author. That matters beyond presence —
-/// undo targets *your* actions, and `DocState` keeps a selection per actor forever
-/// because replay needs it, so minting a fresh id per session orphaned your own
-/// history and left a dead entry in the log for every session anyone ever opened.
+/// `actor` must be **durable** — derived from a key the frontend persists, so the
+/// same person reloading is the same author. It reaches past presence: undo targets
+/// *your* actions, and `DocState` keeps a selection per actor forever because replay
+/// needs it, so a fresh id per session orphans your own history and leaves a dead
+/// entry in the log.
 ///
-/// `boot` distinguishes *runs* of that identity, and is what makes durability safe:
+/// `boot` distinguishes *runs* of that identity, which is what makes durability safe:
 /// [`PeerFrame::seq`] restarts at zero every process, so a peer that reloads within
 /// [`PEER_TIMEOUT`] would otherwise have every frame rejected as stale until it
 /// out-numbered its previous run. It need only increase, not mean anything.
@@ -50,10 +49,9 @@ impl From<ActorId> for Identity {
 
 /// What a peer is doing right now — the preview of the action it will become.
 ///
-/// [`Stroke`](Self::Stroke) carries a [`StrokeRecord`]: literally the type the
-/// commit will carry, rendered through the same entry point. There is no second
-/// stroke representation to keep in step, and therefore no second way for live and
-/// committed pixels to disagree.
+/// [`Stroke`](Self::Stroke) carries a [`StrokeRecord`] — the very type the commit will
+/// carry, rendered through the same entry point, so there is no second representation
+/// for live and committed pixels to disagree over.
 #[derive(Clone, Debug)]
 pub enum LiveGesture {
     Stroke(StrokeRecord),
@@ -73,14 +71,11 @@ pub enum LiveGesture {
 /// One gesture in flight, from whoever is making it — the shape the preview fold
 /// consumes, and the only place the local client and a peer are interchangeable.
 ///
-/// They are deliberately *not* stored alike. The local gesture is derived from the
-/// session's live [`PathFitter`](crate::path::PathFitter), which stays the single
-/// source of truth for the one thing `preview == committed` rests on; a peer's is
-/// reassembled from frames. Copying the local one into the roster to make them
-/// uniform would make two sources of truth for exactly that. So they meet here
-/// instead, at the point of use — which is all the fold ever needed, and gives it one
-/// shape to reason about with every field present, rather than a tuple whose ordinal
-/// had to be defaulted.
+/// They are deliberately *not* stored alike: the local gesture is derived from the
+/// session's live [`PathFitter`](crate::path::PathFitter), the single source of truth
+/// `preview == committed` rests on, while a peer's is reassembled from frames. Copying
+/// the local one into the roster would make two sources of truth for exactly that, so
+/// the two meet here, at the point of use.
 #[derive(Clone, Debug)]
 pub struct GestureView {
     pub actor: ActorId,
@@ -143,9 +138,8 @@ impl Peer {
         Some(GestureView {
             actor: self.actor,
             gesture: self.rx.drawn()?.clone(),
-            // Set and cleared with `drawn`, so this is never the fallback the tuple
-            // form needed — where `unwrap_or(0)` quietly gave every peer's selection
-            // the same ordinal.
+            // Set and cleared with `drawn`, so an ordinal is present exactly when
+            // there is a gesture to number and never needs a default.
             ordinal: self.rx.id()?,
             frozen_spans: self.rx.frozen_spans(),
         })
@@ -210,15 +204,13 @@ impl Peer {
 /// What integrating presence actually moved.
 ///
 /// Presence arrives at pointer rate, but very little of it reaches the *canvas*: a
-/// cursor is DOM chrome drawn over the artwork, and a peer's selected layer is a fact
-/// about them. Only a live gesture makes the composited picture stale — plus a peer
-/// arriving or leaving, which changes the set of actors whose selection outline may be
-/// drawn.
+/// cursor is chrome drawn over the artwork, and a peer's selected layer is a fact about
+/// them. Only a live gesture makes the composited picture stale — plus a peer arriving
+/// or leaving, which changes the set of actors whose selection outline may be drawn.
 ///
-/// Reporting one undifferentiated "changed" made every remote cursor move cost a
-/// rebuild of the live fold — a `DocState` clone and a re-render of every stroke in
-/// flight — thirty times a second per peer, and worst of all *while* someone was
-/// painting, which is exactly when the frame budget is already spoken for.
+/// Distinguishing the two is what keeps a remote cursor move from costing a rebuild of
+/// the live fold — a `DocState` clone and a re-render of every stroke in flight —
+/// thirty times a second per peer, while someone is painting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PresenceChange {
     /// Anything at all moved, so a cached projection of the roster is stale.
@@ -251,20 +243,15 @@ impl PresenceChange {
 
 /// Everyone else in the session (§17.4).
 ///
-/// The **local** client is deliberately not in here. It would make the fold read
-/// more uniformly, but the local live gesture is *derived* from
+/// The **local** client is deliberately not in here: its live gesture is derived from
 /// [`Session`](crate::session::Session)'s in-flight fitter, and copying it into the
-/// roster would make two sources of truth for the one thing the
-/// `preview == committed` invariant depends on. The engine merges the two at the
-/// point of use instead (`Engine::live_strokes`), which keeps the ordering uniform
-/// without duplicating the state.
+/// roster would make two sources of truth for the one thing `preview == committed`
+/// depends on. The engine merges the two at the point of use instead.
 #[derive(Default)]
 pub struct Peers {
     map: BTreeMap<ActorId, Peer>,
-    /// Bumped on every change. Lets a caller notice that the roster moved without
-    /// rebuilding and comparing a projection of it — which, on a pump that wakes
-    /// thirty times a second, is the difference between an allocation per tick and
-    /// none.
+    /// Bumped on every change, so a caller notices the roster moved without rebuilding
+    /// and comparing a projection of it once per pump tick.
     revision: u64,
 }
 
@@ -280,14 +267,12 @@ impl Peers {
 
     /// Integrate a frame published by `actor`, reporting what it moved.
     ///
-    /// `actor` comes from the transport's authenticated origin, never from the
-    /// frame: a peer can publish its own presence and nobody else's, which is the
-    /// same guarantee `Action` gets from its id (§17.7).
+    /// `actor` comes from the transport's authenticated origin, never from the frame:
+    /// a peer can publish its own presence and nobody else's, structurally, which is
+    /// the same guarantee `Action` gets from its id (§17.7).
     ///
-    /// **The door.** This is the one way a frame becomes state anyone reads, so it is
-    /// where [`PeerFrame::sanitized`] is held: every arm below reads a filtered value,
-    /// including the one that builds a peer from the frame and the restart that begins
-    /// a run again.
+    /// **The door.** The one way a frame becomes state anyone reads, and so where
+    /// [`PeerFrame::sanitized`] is held — every arm below reads a filtered value.
     pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         let change = self.merge_inner(actor, frame, now);
         self.revision += u64::from(change.roster);
@@ -335,14 +320,13 @@ impl Peers {
         }
     }
 
-    /// Drop peers that have gone quiet and live gestures that have stalled. Called
-    /// on the frontend's publish cadence, which is the only clock `stark-engine` has —
-    /// the engine deliberately owns none, so it runs on wasm and native alike.
+    /// Drop peers that have gone quiet ([`PEER_TIMEOUT`]) and gestures that have
+    /// stalled ([`GESTURE_TIMEOUT`]). `now` is the frontend's publish cadence, the only
+    /// clock `stark-engine` has — it owns none, so it runs on wasm and native alike.
     ///
-    /// Reports what it moved, so the caller knows whether to redraw. A stalled
-    /// *gesture* changes what is on the canvas without changing the roster's size, so
-    /// counting peers is not enough to notice it. Everything expiry does reaches the
-    /// canvas: a departure takes the peer's selection outline with it.
+    /// Everything expiry does reaches the canvas, and a stalled *gesture* changes it
+    /// without changing the roster's size, so counting peers cannot substitute for the
+    /// reported change.
     pub fn tick(&mut self, now: f64) -> PresenceChange {
         let mut change = PresenceChange::NONE;
         self.map.retain(|_, p| {
@@ -416,10 +400,9 @@ impl Peers {
 /// The hue is a mixing hash of the id, which *decorrelates* ids that are numerically
 /// close or share bytes (as endpoint-derived ones do — [`ActorId`] takes its bytes
 /// verbatim from a public key). It does not *space* them: two peers can land on
-/// neighbouring hues, and with no coordination there is no way to prevent that
-/// without an allocation protocol, which is a worse trade than an occasional
-/// similar pair. Saturation and value are fixed high enough to read as a
-/// person-marker over paint of any value.
+/// neighbouring hues, and preventing that would need the allocation protocol this
+/// avoids. Saturation and value are fixed high enough to read as a person-marker over
+/// paint of any value.
 pub fn peer_color(actor: ActorId) -> [f32; 3] {
     // splitmix64 finalizer: cheap, and it decorrelates the low bits that
     // `actor_from_endpoint_id` happens to take from a public key.
@@ -500,10 +483,9 @@ mod tests {
         assert!(peers.merge(a, frame(6, None), 2.0).roster);
     }
 
-    /// A client that reloads keeps its `ActorId` — that is what persisting the key
-    /// buys — but restarts `seq` at zero. Ordered on `seq` alone, every frame of the
-    /// new run is an "overtaken duplicate" until it out-numbers the old one, which
-    /// for a long session is minutes of silence from someone who is right there.
+    /// A client that reloads keeps its `ActorId` but restarts `seq` at zero. Ordered on
+    /// `seq` alone, every frame of the new run is an "overtaken duplicate" until it
+    /// out-numbers the old one — minutes of silence from someone who is right there.
     #[test]
     fn a_reloaded_peer_is_not_mistaken_for_a_stale_one() {
         let mut peers = Peers::new();
@@ -760,14 +742,10 @@ mod tests {
         );
     }
 
-    /// A lost frame that leaves **no hole** is the dangerous one.
-    ///
-    /// Deltas splice with `truncate(from); extend(points)`, keeping everything below
-    /// `from` — which is only sound if the sender had frozen those points, and it
-    /// announces that through the `from` of the frames in between. Lose one and a
-    /// still-provisional control point is retained, then promoted to "frozen" by the
-    /// next frame's `from`. The result has the right length and no gap, and is wrong
-    /// in the middle. Only frame continuity catches it.
+    /// A lost frame that leaves **no hole** is the dangerous one: a still-provisional
+    /// control point is retained by the splice, then promoted to "frozen" by the next
+    /// frame's `from`, giving a path of the right length with no gap and a wrong
+    /// middle. Only frame continuity catches it.
     #[test]
     fn a_lost_frame_that_leaves_no_hole_is_still_a_gap() {
         let mut peers = Peers::new();
@@ -816,11 +794,9 @@ mod tests {
         );
     }
 
-    /// A resync frame restarts the *assembly*, not the gesture: the frozen
-    /// watermark must survive it. Reset to zero, every resync discarded the
-    /// renderer's cached head (`Engine::render_live_stroke` keys on it) and the
-    /// whole stroke was redrawn from scratch — once a second per stroking peer,
-    /// which is the multi-client slowdown.
+    /// A resync frame restarts the *assembly*, not the gesture: the frozen watermark
+    /// must survive it, or the renderer's cached head is discarded and the whole stroke
+    /// redrawn once per resync per stroking peer.
     #[test]
     fn a_resync_does_not_walk_the_frozen_watermark_back() {
         let mut peers = Peers::new();

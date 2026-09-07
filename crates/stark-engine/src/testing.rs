@@ -2,18 +2,15 @@
 //! frontend does not (§9).
 //!
 //! **`#[doc(hidden)]`, and the module is the point.** An integration test is a
-//! separate crate, so anything it reaches has to be `pub` — and the diagnostic methods
-//! on [`Engine`](crate::Engine) that only tests call are `pub` for exactly that reason
-//! and no other. Marking them says so — each carries one line pointing back here
-//! rather than its own copy of this paragraph — and gathering the harness's own shared
-//! piece here stops the alternative: one decision written out in three files that
-//! cannot see each other.
+//! separate crate, so anything it reaches has to be `pub`; the diagnostic methods on
+//! [`Engine`](crate::Engine) that only tests call are `pub` for that reason and no
+//! other, and marking them says so. The harness's own shared pieces live here so the
+//! decision is written once rather than in files that cannot see each other.
 //!
-//! Not behind a cargo feature, deliberately. A feature would have to be enabled by
-//! every command in CLAUDE.md's list and by a self-referential dev-dependency, which
-//! is a second build of the crate to hide a handful of methods a reader is already
-//! told to ignore. What the hidden module buys is honesty about the API's surface;
-//! what a feature would buy on top of that is not worth a doubled compile.
+//! Not behind a cargo feature, deliberately: a feature would have to be enabled by
+//! every command in CLAUDE.md's list and by a self-referential dev-dependency — a
+//! second build of the crate to hide a handful of methods a reader is already told
+//! to ignore.
 
 /// The recycling tile pool (§6.1), for the one test that drives it directly
 /// (`tests/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
@@ -39,11 +36,9 @@ pub fn allowed_to_skip() -> bool {
 /// skipped, for the message.
 ///
 /// The *blocking* and the caching stay with each caller — `pollster` is a
-/// dev-dependency and has no business in the shipped crate — so what is shared here is
-/// the judgement and not the plumbing. It was written out three times: the engine
-/// harness, the tile pool's own test and the benchmark, each with its own copy of the
-/// variable's name and its own wording of the refusal, which is three places for one
-/// of them to grow a silent skip.
+/// dev-dependency and has no business in the shipped crate — so what is shared here
+/// is the judgement and not the plumbing. Every harness must route through it, or one
+/// of them grows a silent skip.
 pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: &str) -> Option<T> {
     match built {
         Ok(t) => Some(t),
@@ -58,9 +53,8 @@ pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: 
 /// The stroke the two benchmarks time (§7.1), stated once.
 ///
 /// `benches/stroke.rs` is the regression gate and `examples/stroke_bench.rs` the quick
-/// look, and each carried a byte-identical copy of this scenario — the brush, the path,
-/// the viewport, the drain, the subscriber. A criterion baseline is only comparable to
-/// a run of the *same* scenario, so **the values here are the ones the saved baselines
+/// look, and both run this one scenario. A criterion baseline is only comparable to a
+/// run of the *same* scenario, so **the values here are the ones the saved baselines
 /// were measured on** and are not to be tuned in passing.
 ///
 /// Native only: nothing in a browser runs a benchmark, and `poll(wait)` has no meaning
@@ -161,9 +155,9 @@ pub mod bench {
     /// tile work is not bounded by what happens to be on screen.
     ///
     /// Synthetic rather than recorded on purpose: the GPU cost keys off segment count
-    /// and swept area, and those want to be *fixed* across runs so that a change in the
-    /// timing is a change in the renderer. `benches/path.rs` is where recorded input
-    /// matters, because that is where report spacing drives the work.
+    /// and swept area, which must be *fixed* across runs so a change in the timing is
+    /// a change in the renderer. Recorded input matters in `benches/path.rs`, where
+    /// report spacing drives the work.
     pub fn samples(n: usize) -> Vec<InputSample> {
         (0..n)
             .map(|i| {

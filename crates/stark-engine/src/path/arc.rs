@@ -1,25 +1,22 @@
 //! **Arcs**: what a flattened edge actually stands for (§6.2).
 //!
-//! [`super::flatten`](fn@super::flatten) replaces a piece of curve with one edge, and the renderer sweeps
-//! that edge as a **circular arc** rather than a chord (§6.2). So this is where the arc
-//! is defined, and [`FlattenTolerance`](super::FlattenTolerance) is measured against it
-//! — the two have to be the same primitive, or the budget is describing geometry
-//! nobody draws.
+//! [`super::flatten`](fn@super::flatten) replaces a piece of curve with one edge, and
+//! the renderer sweeps that edge as a **circular arc** rather than a chord (§6.2). The
+//! arc is defined here and [`FlattenTolerance`](super::FlattenTolerance) is measured
+//! against it — the two have to be the same primitive, or the budget is describing
+//! geometry nobody draws.
 //!
-//! Which matters twice over. A chord's error is first order in the turn and its outline
-//! carries a curvature *impulse* at every joint — a round join of radius `r` spliced
-//! between two straight runs — and periodic curvature impulses along a silhouette are
-//! what the eye reads as facets. An arc's error is second order and its joints only
-//! step the curvature slightly, so the artifact is gone whatever the segment length.
-//! Measuring against the arc is therefore what lets segments grow: the same declared
-//! error now buys a much longer edge, and buys it without the facets back.
+//! A chord's error is first order in the turn and its outline carries a curvature
+//! *impulse* at every joint — a round join of radius `r` spliced between two straight
+//! runs — and periodic curvature impulses along a silhouette are what the eye reads as
+//! facets. An arc's error is second order and its joints only step the curvature, so
+//! the same declared error buys a much longer edge without the facets.
 
 use stark_model::geom::Vec2;
 
 /// The least sagitta (canvas px) an arc has to buy before an edge is bent at all.
-/// Under this the arc is indistinguishable from its chord, so it is reported straight
-/// — which keeps a straight or barely-curved stroke on exactly the floats it had
-/// before arcs existed.
+/// Under this the arc is indistinguishable from its chord and is reported straight,
+/// which keeps a straight or barely-curved stroke on the chord's own arithmetic.
 const MIN_SAGITTA: f32 = 0.01;
 
 /// Cap on `sin(θ/2)` for the turn `θ` one edge may bend through — ~23°, far past the
@@ -49,9 +46,7 @@ pub struct Arc {
 /// to. Each is a truncated Maclaurin series, accurate **to within an f32 ulp** over the
 /// range its caller is guarded to ([`MAX_HALF_TURN_SIN`]): measured against an f64
 /// reference, worst relative error 8.1e-8 for `sin`, 1.2e-7 for `versin` and 1.3e-7 for
-/// `asin/u`, against an `f32::EPSILON` of 1.19e-7. (This said "better than 1e-7" until
-/// the test below measured it; two of the three are a shade past that, and an ulp is
-/// both the true bound and the one that means something.)
+/// `asin/u`, against an `f32::EPSILON` of 1.19e-7.
 ///
 /// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction, and that
 /// is not a nicety: over this same range the subtraction's relative error reaches
@@ -76,22 +71,22 @@ fn asin_over_x(u: f32) -> f32 {
 /// chord `v`: the arc that leaves along the **curve's own tangent** and passes through
 /// the far end.
 ///
-/// `max_curvature` is the tightest arc the *caller* can actually sweep
-/// ([`FlattenTolerance::max_arc_curvature`](super::FlattenTolerance::max_arc_curvature)); anything tighter comes back straight.
-/// That cap is a parameter rather than a constant because it depends on the brush, and
-/// it is what keeps `flatten::within` honest: the flattener prices an edge as whatever this
-/// returns, and the renderer sweeps whatever this returns, so the two cannot disagree
-/// about which primitive the budget was spent on.
+/// `max_curvature` is the tightest arc the *caller* can sweep
+/// ([`FlattenTolerance::max_arc_curvature`](super::FlattenTolerance::max_arc_curvature));
+/// anything tighter comes back straight. A parameter rather than a constant because it
+/// depends on the brush, and it is what keeps `flatten::within` honest: the flattener
+/// prices an edge as whatever this returns and the renderer sweeps whatever this
+/// returns, so the two cannot disagree about which primitive the budget was spent on.
 ///
-/// Fitting from the start tangent rather than from both is what makes it cheap: with
-/// `t̂` the unit tangent and `n̂` its left normal, an arc leaving along `t̂` reaches
-/// chord `v` iff `κ = 2 (v·n̂)/|v|²`, and `sin(θ/2) = κ|v|/2` falls straight out of the
-/// same identity. No angle is ever formed, so nothing here needs a transcendental
-/// beyond the series above.
+/// Fitting from the start tangent alone is what makes it cheap: with `t̂` the unit
+/// tangent and `n̂` its left normal, an arc leaving along `t̂` reaches chord `v` iff
+/// `κ = 2 (v·n̂)/|v|²`, and `sin(θ/2) = κ|v|/2` falls out of the same identity. No
+/// angle is ever formed, so nothing here needs a transcendental beyond the series
+/// above.
 ///
-/// The end tangent is then *not* pinned to the curve's tangent there, so consecutive
-/// arcs still meet with a small kink — but it is second order in the turn where the
-/// chord's was first order, which is the whole point.
+/// The end tangent is *not* pinned to the curve's tangent there, so consecutive arcs
+/// still meet with a small kink — second order in the turn, where the chord's was
+/// first order.
 pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
     let chord = v.length();
     if chord < 1e-5 {
@@ -193,16 +188,8 @@ mod tests {
     /// The three series against an **f64** reference, over the whole range their
     /// callers are guarded to.
     ///
-    /// **This file had no test of its own** until it became a file: everything here was
-    /// reached only through `flatten`, so what these polynomials are *for* — being
-    /// bit-reproducible where `f32::sin` is not specified to be — was covered only by
-    /// whichever pixels happened to move. The claim above is a numerical one and this is
-    /// where it is checked; writing it is what corrected the claim, which said 1e-7
-    /// where two of the three are a shade past it.
-    ///
-    /// The reference is f64 deliberately. Held against the *f32* library functions this
-    /// test would be measuring their error and not the series' — which is the whole
-    /// point of [`versin_small`], and is what the test below states outright.
+    /// The reference is f64 deliberately: held against the *f32* library functions this
+    /// would measure their error and not the series'.
     #[test]
     fn the_series_stay_within_an_f32_ulp() {
         // A shade over `f32::EPSILON` (1.19e-7), which is what the measurements sit at.

@@ -15,42 +15,16 @@ use std::cell::RefCell;
 /// Control points solved for at the live end of the stroke. Everything behind them
 /// is frozen; the pinned endpoint sits inside the window on top of these.
 ///
-/// This is *the* accuracy/stability trade, and small is the point. A short window
-/// means the settled stroke cannot move under the pointer — which is what stops a
-/// live stroke wobbling along its whole length — and it caps the solve at a handful
-/// of unknowns however long the stroke gets. Too short and the curve cannot round a
+/// The accuracy/stability trade, and small is the point: a short window keeps the
+/// settled stroke from moving under the pointer, and caps the solve at a handful of
+/// unknowns however long the stroke gets. Too short and the curve cannot round a
 /// corner before the corner is committed.
 const FREE_CONTROL_POINTS: usize = 3;
 
-/// What a control point has to earn, in **mean** squared error over the samples in
-/// the window, before the fit will take one on — measured in units of the caller's
-/// input tolerance, so the price in canvas px² is `KNOT_COST × tolerance²`.
-///
-/// Every sample is fitted both ways — as the polygon stands, and with one more
-/// control point — and the larger fit is adopted only if it buys at least this much.
-/// Adopting it is also what *freezes* one, since the window is a fixed size, so this
-/// single number decides both how detailed the curve is and how promptly the stroke
-/// settles behind the pointer.
-/// Measured on the six recorded strokes at `DEFAULT_TOLERANCE`, worst *live* error
-/// and control-point count, once the parameterization was corrected (see
-/// `arc_profile`):
-///
-/// | price | C        | hairpin  | loop     | spiral   | big-C    | fast     |
-/// |-------|----------|----------|----------|----------|----------|----------|
-/// | 0.03  | 0.9px 37 | 1.4px 27 | 1.4px 34 | 2.4px 91 | 1.4px 68 | 0.7px 28 |
-/// | 0.06  | 1.2px 25 | 1.5px 23 | 2.3px 25 | 2.2px 56 | 2.2px 52 | 0.8px 18 |
-/// | 0.12  | 2.5px 19 | 1.5px 18 | 2.8px 18 | 4.2px 23 | 3.0px 18 | 1.2px 16 |
-///
-/// The floor is set by the input's own quantization rather than by taste: priced
-/// below the jitter, the fit buys control points to *trace* a pixel staircase
-/// instead of smoothing through it. That is why the price is denominated in the
-/// tolerance and why it scales as its **square** — input landing on a grid of
-/// `tolerance` leaves a residual whose *mean square* goes as `tolerance²`, so a
-/// price fixed in canvas px² would sit above the jitter at one zoom level and
-/// below it at another.
-/// Below this, a report is the same place as the one before it: no arc accrues and
-/// no sample is recorded. Also the floor under [`PathFitter::arc_total`], so the
-/// distance a fit divides by is never smaller than the step it refuses to measure.
+/// Below this step (canvas px), a report is the same place as the one before it: no
+/// arc accrues and no sample is recorded. Also the floor under
+/// [`PathFitter::arc_total`], so the distance a fit divides by is never smaller than
+/// the step it refuses to measure.
 const MIN_STEP_PX: f32 = 1e-6;
 
 /// Control points held at their values for a polygon of `m`: everything but the free
@@ -59,13 +33,38 @@ const MIN_STEP_PX: f32 = 1e-6;
 /// The one statement of the rule. `PathFitter::frozen` asks it of the polygon as it
 /// stands and publishes the answer — `frozen_points` goes on the wire (§17.5) and
 /// `frozen_spans` drives the renderer's cached head; `solve` asks it of a *candidate*
-/// polygon, which is `m` or `m + 1`. The two drifting means published control points
-/// the solve is still moving.
+/// polygon of `m` or `m + 1`. The two drifting would publish control points the solve
+/// is still moving.
 fn frozen_at(m: usize) -> usize {
     m.saturating_sub(FREE_CONTROL_POINTS + 1)
         .max(usize::from(m > 0))
 }
 
+/// What a control point has to earn, in **mean** squared error over the samples in
+/// the window, before the fit will take one on — in units of the caller's input
+/// tolerance, so the price in canvas px² is `KNOT_COST × tolerance²`.
+///
+/// Every sample is fitted both ways — as the polygon stands, and with one more control
+/// point — and the larger fit is adopted only if it buys at least this much. Adopting
+/// it is also what *freezes* one, since the window is a fixed size, so this single
+/// number decides both how detailed the curve is and how promptly the stroke settles
+/// behind the pointer.
+///
+/// Measured on the six recorded strokes at [`DEFAULT_TOLERANCE`] — worst *live* error
+/// and control-point count:
+///
+/// | price | C        | hairpin  | loop     | spiral   | big-C    | fast     |
+/// |-------|----------|----------|----------|----------|----------|----------|
+/// | 0.03  | 0.9px 37 | 1.4px 27 | 1.4px 34 | 2.4px 91 | 1.4px 68 | 0.7px 28 |
+/// | 0.06  | 1.2px 25 | 1.5px 23 | 2.3px 25 | 2.2px 56 | 2.2px 52 | 0.8px 18 |
+/// | 0.12  | 2.5px 19 | 1.5px 18 | 2.8px 18 | 4.2px 23 | 3.0px 18 | 1.2px 16 |
+///
+/// The floor is set by the input's own quantization rather than by taste: priced below
+/// the jitter, the fit buys control points to *trace* a pixel staircase instead of
+/// smoothing through it. That is why the price is denominated in the tolerance and why
+/// it scales as its **square** — input landing on a grid of `tolerance` leaves a
+/// residual whose *mean square* goes as `tolerance²`, so a price fixed in canvas px²
+/// would sit above the jitter at one zoom level and below it at another.
 pub const KNOT_COST: f32 = 0.06;
 
 /// Distance after which the polygon gains a control point regardless of error, in
@@ -75,10 +74,10 @@ pub const KNOT_COST: f32 = 0.06;
 /// control points however long it runs, so on error alone it would never gain one,
 /// never freeze one, and never let the renderer retire any of it.
 ///
-/// Scaled by the tolerance for the same reason the price is. What it bounds is how
+/// Scaled by the tolerance for the same reason the price is: what it bounds is how
 /// long the free window may go without advancing, and the window's job is to average
-/// over a certain number of *input reports* — canvas px say nothing about how many
-/// of those a stretch of stroke holds.
+/// over a certain number of *input reports* — canvas px say nothing about how many of
+/// those a stretch of stroke holds.
 pub const KNOT_SPACING: f32 = 64.0;
 
 /// The input tolerance assumed when a caller does not supply one: one canvas px,
@@ -93,10 +92,9 @@ pub const DEFAULT_TOLERANCE: f32 = 1.0;
 /// [`ViewTransform`](crate::view::ViewTransform) allows — and is what keeps the
 /// window advancing, and so the per-sample work bounded, rather than letting a
 /// stroke never grow a control point at all.
-/// `pub` so the benchmark can name the bound rather than restate it: the tolerance
-/// sweep in `benches/path.rs` exists to hold the fit's cost flat *to the top of this
-/// range*, and a hard-coded 64.0 there would be a second copy of the number that
-/// decides what the range is.
+///
+/// `pub` so the tolerance sweep in `benches/path.rs`, which holds the fit's cost flat
+/// *to the top of this range*, can name the bound rather than restate it.
 pub const MIN_TOLERANCE: f32 = 1.0 / 64.0;
 
 /// See [`MIN_TOLERANCE`].
@@ -106,12 +104,11 @@ pub const MAX_TOLERANCE: f32 = 64.0;
 /// [`DEFAULT_TOLERANCE`] for a non-finite one — **the** statement of what a
 /// tolerance may be.
 ///
-/// One function rather than a clamp at each door, because the tolerance is read by two
-/// stages of the input path and they have to agree about it: the fit prices its two
-/// thresholds in it ([`PathFitter::with_tolerance`]), and the towed tip measures
-/// against it how far its own bend is still worth sampling (§6.11). Two copies of
-/// the bounds would let a rope be measured against a tolerance the fitter had already
-/// clamped away.
+/// One function rather than a clamp at each door, because two stages of the input path
+/// read the tolerance and have to agree about it: the fit prices its two thresholds in
+/// it ([`PathFitter::with_tolerance`]), and the towed tip measures against it how far
+/// its own bend is still worth sampling (§6.11). Two copies of the bounds would let a
+/// rope be measured against a tolerance the fitter had already clamped away.
 pub fn clamp_tolerance(tolerance: f32) -> f32 {
     if tolerance.is_finite() {
         tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
@@ -124,24 +121,21 @@ pub fn clamp_tolerance(tolerance: f32) -> f32 {
 /// (see [`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)).
 ///
 /// Least squares charges the curve for being far from a *point*, never for where it
-/// goes when no point is near — so a stretch the data does not constrain is free to
-/// wander. With the correspondence declared rather than searched this is a much
-/// milder problem than it was, but a control point at the very end of the window
-/// still has little holding it, and this is what settles it onto its neighbours'
-/// continuation.
+/// goes when no point is near, so a stretch the data does not constrain is free to
+/// wander. A control point at the very end of the window has little holding it, and
+/// this is what settles it onto its neighbours' continuation.
 const SMOOTHING: f32 = 0.05;
 
 /// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
 ///
-/// **The order is the layout**, and `[0]`/`[1]`/`[2]`/`[3]` are written out at a
-/// dozen sites here and in `assist::realize`, which fits the same four the same way.
-/// Reordering the array is therefore a change that mis-maps pressure onto tilt in
-/// whichever module was not edited, with nothing failing to compile and the fit still
-/// converging — so the two ends of it, the only places the indices actually mean
-/// anything, is [`control_point_from`] below — the one direction that is genuinely
-/// shared. The *reading* direction is not: the fitter reads an `InputSample` with the
-/// clock re-based onto the stroke, and `assist::realize` reads a flattened sample with
-/// the path's own, so those are two sources rather than one function written twice.
+/// **The order is the layout**, and `[0]`/`[1]`/`[2]`/`[3]` are written out at a dozen
+/// sites here and in `assist::realize`, which fits the same four the same way.
+/// Reordering the array mis-maps pressure onto tilt in whichever module was not
+/// edited, with nothing failing to compile and the fit still converging. The one
+/// shared statement of the layout is [`control_point_from`] below; the *reading*
+/// direction is genuinely two sources, since the fitter reads an `InputSample` with
+/// the clock re-based onto the stroke and `assist::realize` reads a flattened sample
+/// with the path's own.
 pub(crate) const CHANNELS: usize = 4;
 
 /// Which of [`CHANNELS`] is the clock. The odd one out: the other three are pen state,
@@ -165,47 +159,39 @@ type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
 /// The fit is a **least-squares clamped cubic B-spline** solved over a *fixed-size
 /// window* at the live end: exactly `FREE_CONTROL_POINTS` of them are solved for,
 /// everything behind is frozen, and the polygon grows only when the data proves it
-/// needs to. There is no assignment search — a sample's place on the curve is
-/// declared from how far along the stroke it sits — so the solve is one small linear
-/// system and cannot land in a bad local optimum.
+/// needs to. There is no assignment search — a sample's place on the curve is declared
+/// from how far along the stroke it sits — so the solve is one small linear system and
+/// cannot land in a bad local optimum.
 ///
-/// **Growth is the same decision as freezing**, which is what makes the two agree.
-/// Each sample is fitted twice: once with the polygon as it stands, and once with
-/// one more control point. If the extra one earns its keep ([`KNOT_COST`]) it is
-/// adopted — and because the window is a fixed size, adopting it *pushes one out the
-/// back*, freezing it. So a control point is committed at exactly the moment the
-/// stroke has moved on far enough to justify a new one behind it, rather than on a
-/// lag guessed in advance.
+/// **Growth is the same decision as freezing.** Each sample is fitted twice: with the
+/// polygon as it stands, and with one more control point. If the extra one earns its
+/// keep ([`KNOT_COST`]) it is adopted, and because the window is a fixed size adopting
+/// it *pushes one out the back*, freezing it. So a control point is committed exactly
+/// when the stroke has moved far enough to justify a new one behind it, rather than on
+/// a lag guessed in advance. Two properties follow:
 ///
-/// Two properties follow, and both were hard to get any other way:
+/// * **The stroke stops wobbling.** Only the last few control points can move at all,
+///   so the settled part of a live stroke is pixel-stable.
+/// * **The system being solved is a constant size** — `FREE_CONTROL_POINTS × 2`
+///   unknowns however long the stroke is, with only the samples that can reach those
+///   rows taking part.
 ///
-/// * **The stroke stops wobbling.** Only the last few control points can move at
-///   all, so the settled part of a live stroke is pixel-stable rather than
-///   re-solving under the pointer on every report.
-/// * **The system being solved is a constant size.** It is
-///   `FREE_CONTROL_POINTS × 2` unknowns however long the stroke is, and only the
-///   samples that can reach those rows take part. `spline::solve_window` assembles the
-///   normal equations over that window too, so the *arithmetic* per report does not
-///   grow with the stroke.
-///
-///   The **work** per report is not quite constant, and saying so is worth more than
-///   the tidier claim that used to stand here. Each report solves two candidate
-///   polygons and scores both, and a candidate is a whole `m`-row matrix: growing one
-///   ([`grow_rows`]) is an `O(m)` copy around an `O(1)` solve, and the two per
-///   candidate are the reason a long stroke's last report still costs more than its
-///   first. Everything else a report touches is bounded by the window: the arc
-///   profile walks only past the settled prefix, and the observation buffers are
-///   kept and refilled rather than allocated ([`Scratch`]).
+///   The **work** per report is not quite constant: each report solves and scores two
+///   candidate polygons, and growing one ([`grow_rows`]) is an `O(m)` copy around an
+///   `O(1)` solve, so a long stroke's last report costs more than its first.
+///   Everything else is bounded by the window — the arc profile walks only past the
+///   settled prefix, and the observation buffers are refilled rather than allocated
+///   ([`Scratch`]).
 ///
 /// Both ends are pinned to the samples they belong to — the clamped end condition
 /// makes the first and last control points the curve's endpoints, and least squares
 /// does not otherwise hold them there. They are pinned as *constraints* of the solve
 /// (held rows), not written over its result, so the rest solves around them.
 ///
-/// Both thresholds in that growth rule are quoted in the caller's **input tolerance**
-/// rather than in canvas px (see [`Self::with_tolerance`]) — what counts as jitter to
+/// Both thresholds in the growth rule are quoted in the caller's **input tolerance**
+/// rather than in canvas px (see [`Self::with_tolerance`]): what counts as jitter to
 /// smooth through, as against detail to keep, is a fact about the device and the zoom
-/// level, and only the caller knows it. Flattening is untouched by this: its budget
+/// level, and only the caller knows it. Flattening is untouched by this — its budget
 /// is an error against the *curve*, in the canvas px it will be drawn in
 /// ([`FlattenTolerance`](super::FlattenTolerance)).
 pub struct PathFitter {
@@ -258,7 +244,6 @@ pub struct PathFitter {
 }
 
 /// One accepted report: where it is, what the pen said, and how far along it sits.
-///
 #[derive(Copy, Clone, Debug)]
 struct Accepted {
     pos: Vec2,
@@ -268,10 +253,10 @@ struct Accepted {
 
 /// What [`PathFitter::as_finished`] answered, and from which state.
 ///
-/// Every mutation the fitter has goes through `push` or `finish`, and `finish` takes
-/// `as_finished` off this path altogether. A `push` that changes anything either
-/// appends to `pts` or — for a press the spacing gate dropped — sets `start_arc`,
-/// so the pair is the whole of what the answer can differ by.
+/// The key is the whole of what the answer can differ by: every mutation goes through
+/// `push` or `finish`, `finish` takes `as_finished` off this path altogether, and a
+/// `push` that changes anything either appends to `pts` or — for a press the spacing
+/// gate dropped — sets `start_arc`.
 struct Memo {
     key: (usize, Option<f32>),
     path: Vec<ControlPoint>,
@@ -282,9 +267,8 @@ struct Memo {
 /// them — a pure function of the accepted reports and the candidate's polygon, so
 /// the scoring of *both* candidates reads the as-is one rather than rebuilding it.
 ///
-/// A report's worth of these is a few hundred numbers, refilled in place: at up to a
-/// thousand reports a second, allocating them afresh was most of a `push`'s heap
-/// traffic.
+/// Refilled in place: at up to a thousand reports a second, allocating a few hundred
+/// numbers afresh per report was most of a `push`'s heap traffic.
 #[derive(Default)]
 struct Window {
     /// First accepted report that can still reach a row being solved for.
@@ -338,13 +322,12 @@ impl PathFitter {
 
     /// A fitter for input whose positional resolution is `tolerance` **canvas px**.
     ///
-    /// This is the one thing about the input the fit cannot work out for itself: how
-    /// far apart two reports have to be before the difference means anything. Canvas
-    /// px are the wrong unit for it — the same hand movement covers 64× as many of
-    /// them zoomed in as zoomed out, and a pen digitizer resolves far finer than a
-    /// mouse does at either — so the caller that owns the view transform and knows
-    /// what device is reporting states it, and the fit's two prices ([`KNOT_COST`],
-    /// [`KNOT_SPACING`]) are denominated in it.
+    /// The one thing about the input the fit cannot work out for itself: how far apart
+    /// two reports have to be before the difference means anything. Canvas px are the
+    /// wrong unit for it — the same hand movement covers 64× as many of them zoomed in
+    /// as zoomed out, and a pen digitizer resolves far finer than a mouse at either —
+    /// so the caller that owns the view transform states it, and the fit's two prices
+    /// ([`KNOT_COST`], [`KNOT_SPACING`]) are denominated in it.
     ///
     /// Clamped to `[1/64, 64]`; a non-finite tolerance falls back to
     /// [`DEFAULT_TOLERANCE`].
@@ -372,8 +355,8 @@ impl PathFitter {
     /// Seed the stroke's **run-up**: reports from before its first sample — the
     /// hover trail the engine was already watching (§18.1.10) — adopted as real
     /// leading samples, so the fitted curve *extends back through them* and the
-    /// entry's direction and curvature are measured from motion the fit could
-    /// otherwise only guess at from its first, tolerance-quantized steps (§6.2).
+    /// entry's direction and curvature are measured from motion rather than from
+    /// the first tolerance-quantized steps (§6.2).
     ///
     /// **The curve extends; the stroke does not.** Where on the extended curve
     /// the stroke itself begins is recorded — the arc of the first pushed
@@ -383,16 +366,15 @@ impl PathFitter {
     /// where the one flattening funnel begins the deposit. The press is then an
     /// *interior* sample: the curve is pinned to the run-up's first report and
     /// to the live tip, and the entry is smoothed **through** the press exactly
-    /// as every later report is — which is the point, since a start pinned to
-    /// one tolerance-quantized report was the last unsmoothed place on the stroke.
-    /// A fitter seeded with nothing is bit-identical to one that never had this
-    /// called, and its marker is 0.
+    /// as every later report is.
     ///
     /// Call before the first [`push`](Self::push); afterwards it is ignored, as
-    /// are non-finite reports. The reports' pressures are replaced with the
-    /// first pushed sample's at adoption: pressure begins at the press — a
-    /// hovering pen reports none — and geometry is what the run-up is evidence
-    /// of. Tilt and time are kept; both are continuous through a press.
+    /// are non-finite reports. A fitter seeded with nothing is bit-identical to
+    /// one that never had this called, and its marker is 0. The reports'
+    /// pressures are replaced with the first pushed sample's at adoption:
+    /// pressure begins at the press — a hovering pen reports none — and geometry
+    /// is what the run-up is evidence of. Tilt and time are kept; both are
+    /// continuous through a press.
     pub fn seed_runup(&mut self, samples: &[InputSample]) {
         if !self.pts.is_empty() || self.finished {
             return;
@@ -428,17 +410,15 @@ impl PathFitter {
     }
 
     /// Feed one pointer report. Ignored once the stroke is [`finish`](Self::finish)ed,
-    /// and ignored if it is not [admissible](InputSample::is_admissible) — the same
-    /// "this report carries nothing" answer the zero-length step below gives, for a
-    /// report that carries nothing usable.
+    /// and ignored if it is not [admissible](InputSample::is_admissible).
     ///
     /// **Dropping it is the only total answer.** A NaN position spreads into `arc`,
     /// out of `arc` into every sample's curve parameter, and from there into the
     /// normal equations, which are then singular at every ridge — a state
     /// [`spline`](crate::spline)'s solve reports by panicking, because for admissible
     /// input it cannot arise. Repairing the sample instead would mean inventing a
-    /// position the hand never visited; refusing it means the stroke is exactly the
-    /// stroke the admissible reports describe.
+    /// position the hand never visited; refusing it leaves exactly the stroke the
+    /// admissible reports describe.
     ///
     /// [`InputSample::is_admissible`]: crate::command::InputSample::is_admissible
     pub fn push(&mut self, s: InputSample) {
@@ -460,9 +440,9 @@ impl PathFitter {
             let step = (s.pos - prev.pos).length();
             // A report that did not move carries no geometry, and a run of them
             // would put several samples at one parameter. Its attributes are no
-            // loss: they apply to a zero-length piece of path. A press that
-            // coincides with the run-up's newest report still marks the start —
-            // the marker is a place on the curve, and the place exists.
+            // loss: they apply to a zero-length piece of path. A press coinciding
+            // with the run-up's newest report still marks the start — the marker
+            // is a place on the curve, and the place exists.
             if step < MIN_STEP_PX {
                 if pressed {
                     self.start_arc = Some(self.arc);
@@ -500,13 +480,9 @@ impl PathFitter {
         // Both candidates are scored over the **as-is** window — see `mean_error`.
         let err_as_is = self.mean_error(&as_is, as_is_w, scored);
         let err_grown = self.mean_error(&grown, as_is_w, scored);
-        // The arc-length term is not about accuracy: a dead-straight stroke is fitted
-        // perfectly by a handful of control points forever, so nothing would ever
-        // freeze and the renderer could never retire any of it.
-        //
         // Both prices are quoted in the input's own units rather than in canvas px —
         // the error one squared, since it is compared against a mean square. See
-        // `KNOT_COST`.
+        // `KNOT_COST` and `KNOT_SPACING`.
         let price = KNOT_COST * self.tolerance * self.tolerance;
         let spacing = KNOT_SPACING * self.tolerance;
         let earns_it = err_as_is - err_grown > price || self.arc - self.grown_at > spacing;
@@ -522,15 +498,12 @@ impl PathFitter {
     /// Every accepted report's position **from the stroke's own first sample
     /// on**, in order — the **raw trace**, which the drawing assist recognizes
     /// a shape from (§6.9). The run-up is left out: it is evidence about the
-    /// entry, not part of the gesture, and a circle drawn after a watched
-    /// approach has to read as the circle rather than as the approach with a
-    /// circle appended.
+    /// entry, not part of the gesture, so a circle drawn after a watched
+    /// approach reads as the circle.
     ///
     /// Deliberately the reports rather than [`path`](Self::path): the fit is a curve
     /// pulled *towards* its control points, so those sit off the stroke by design and
-    /// asking whether they lie on a circle is asking the wrong question. Nothing
-    /// downstream stores these — they are already held here only because the window
-    /// solve reads its own tail, and a few hundred `Vec2`s is nothing.
+    /// asking whether they lie on a circle is asking the wrong question.
     pub fn trace(&self) -> Vec<Vec2> {
         let from = self.start_arc.unwrap_or(0.0);
         self.pts
@@ -587,16 +560,15 @@ impl PathFitter {
     /// a place on the very curve beside it.
     ///
     /// This is what a live preview must render (§1.3): the stroke that would be
-    /// committed if the pen lifted now. The free window's control points sit
-    /// elsewhere under a mid-stroke solve — they are still braced for data that a
-    /// finished stroke never receives — and that gap is a real change of geometry at
-    /// pen-up, sub-pixel but fatal to `preview == committed` wherever a discontinuous
-    /// lookup (the tooth's nearest-sampled substrate, §6.4) turns position into a step.
-    /// Rendering the as-finished path instead makes `End` a no-op on the record by
-    /// construction: nothing is pushed between the last preview and the commit, so
-    /// [`finish`](Self::finish) adopts this very solve, bit for bit. The marker
-    /// rides the same argument: it is a function of the solve's own arc profile
-    /// ([`Self::start_on`]), so preview and commit place it identically.
+    /// committed if the pen lifted now. Under a mid-stroke solve the free window's
+    /// control points are still braced for data a finished stroke never receives, and
+    /// that gap is a real change of geometry at pen-up — sub-pixel, but fatal to
+    /// `preview == committed` wherever a discontinuous lookup (the tooth's
+    /// nearest-sampled substrate, §6.4) turns position into a step. Rendering the
+    /// as-finished path makes `End` a no-op on the record by construction: nothing is
+    /// pushed between the last preview and the commit, so [`finish`](Self::finish)
+    /// adopts this very solve, bit for bit. The marker rides the same argument — it is
+    /// a function of the solve's own arc profile ([`Self::start_on`]).
     ///
     /// Memoized ([`Memo`]): the fold and the presence frame both ask, per frame,
     /// from the same state, and the second answer is a clone of the first.
@@ -677,11 +649,10 @@ impl PathFitter {
 
     /// The total arc the fit parameterizes against, floored off zero.
     ///
-    /// The floor is what keeps `a / total` finite for the first report of a stroke,
-    /// where no distance has accumulated yet. Written three times before this, and it
-    /// is the denominator every sample's curve parameter goes through — so the three
-    /// disagreeing is the one way a sample could be assigned to a different place on
-    /// the curve depending on which of them asked.
+    /// The floor keeps `a / total` finite for the first report of a stroke, where no
+    /// distance has accumulated yet. One function because it is the denominator every
+    /// sample's curve parameter goes through: two spellings of it disagreeing would
+    /// assign a sample to a different place on the curve depending on which asked.
     fn arc_total(&self) -> f32 {
         self.arc.max(MIN_STEP_PX)
     }
@@ -695,11 +666,10 @@ impl PathFitter {
         self.observation_window(&fit, w);
         let frozen = frozen_at(m);
         let index = SplineIndex::new(m).expect("at least two control points");
-        // Solved **into** the candidate polygon rather than into a fresh one: the
-        // prior and the result are the same buffer, which is sound because the solve
-        // reads every row it uses as a prior before it writes any
-        // ([`SplineIndex::fit_into`]). Returning an owned matrix instead meant a copy
-        // of the whole polygon per fit, four fits per pointer report.
+        // Solved **into** the candidate polygon: the prior and the result are one
+        // buffer, which is sound because the solve reads every row it uses as a prior
+        // before it writes any (`SplineIndex::fit_into`). An owned result would be a
+        // copy of the whole polygon per fit, four fits per pointer report.
         index.fit_into(
             Observations {
                 ts: &w.ts,
@@ -748,27 +718,25 @@ impl PathFitter {
         // **The attribute end is held at its neighbour, not pinned to the last report.**
         //
         // The geometry's endpoint has to be the last report — the mark must end where
-        // the hand did, and the eye sees that directly. The channels have no such claim
-        // on it: nobody can see where a pressure "ends", only the width it produces over
-        // the last stretch of stroke. And the last control point is the least-constrained
-        // row in the whole polygon, supported on the final span alone, so whatever sits
-        // in the last sliver of the domain decides it outright — which is the pen coming
-        // off the tablet, the least trustworthy report on the stroke (see
-        // [`arc_weights`], which lightens that report's vote everywhere but here, where
-        // it is the only vote there is).
+        // the hand did. The channels have no such claim: nobody can see where a
+        // pressure "ends", only the width it produces over the last stretch. And the
+        // last control point is the least-constrained row in the polygon, supported on
+        // the final span alone, so the last sliver of the domain decides it outright —
+        // which is the pen coming off the tablet, the least trustworthy report on the
+        // stroke (`arc_weights` lightens that report's vote everywhere but here, where
+        // it is the only vote there is). So the attribute curve leaves the stroke flat
+        // rather than diving for a pressure the hand reported while no longer painting.
         //
-        // So the attribute curve leaves the stroke flat: the end continues its
-        // neighbour rather than diving for a pressure the hand reported while no longer
-        // painting. The neighbour is read from the prior, so it lags the solve by one
-        // report and catches up on the next — including at [`Self::finish`], whose last
-        // solve is the one [`Self::as_finished`] mirrors, so preview and commit see
-        // the same lag and agree to the bit (§1.3).
+        // The neighbour is read from the prior, so it lags the solve by one report and
+        // catches up on the next — including at `finish`, whose last solve is the one
+        // `as_finished` mirrors, so preview and commit see the same lag and agree to
+        // the bit (§1.3).
         let held: [f32; CHANNELS] = std::array::from_fn(|d| attr[(m - 2, d)]);
         set_row(&mut attr, m - 1, held);
-        // …except the clock, which is not a pen attribute at all. `time` is what the
-        // report was stamped with, and the release genuinely happened then; carrying the
-        // neighbour's instead would shorten every stroke's recorded duration by a span
-        // and quietly skew the timelapse (§8).
+        // …except the clock, which is not a pen attribute at all: the release genuinely
+        // happened when its report says, and carrying the neighbour's time instead
+        // would shorten every stroke's recorded duration by a span and skew the
+        // timelapse (§8).
         attr[(m - 1, TIME_CHANNEL)] = last.channels[TIME_CHANNEL];
         Fit { geom, attr }
     }
@@ -797,9 +765,7 @@ impl PathFitter {
         let param = |a: f32| param_at(profile, spans, a / total);
 
         // A cubic B-spline's basis is local, so a sample sitting under the frozen
-        // prefix cannot influence any row still being solved. `m` is already `>= 2`
-        // here, which is why this and `Self::frozen` are one rule despite one of them
-        // having clamped to 1 and the other to 0 for the empty polygon.
+        // prefix cannot influence any row still being solved.
         let frozen = frozen_at(m);
         // How far back a frozen row's support reaches, in control points: a cubic's
         // basis touches `ORDER` of them, and the row itself is one of those.
@@ -809,8 +775,8 @@ impl PathFitter {
             *lo += 1;
         }
         // …and of the reports that *do* reach a free row, at most a bounded number are
-        // minimized over — see [`window_indices`], which is the whole of why this
-        // costs what it costs rather than what the digitizer charges for it.
+        // minimized over ([`window_indices`]), so the cost is the fit's and not the
+        // digitizer's.
         window_indices(&self.pts, *lo, idx);
         pos.clear();
         pos.extend(idx.iter().map(|&i| self.pts[i].pos.to_array()));
@@ -818,16 +784,13 @@ impl PathFitter {
         // Distance along the stroke is only a *first guess* at where a sample sits on
         // the curve, because a clamped B-spline is not parameterized by arc: the
         // triple knots at each end squash the first and last spans into a fraction of
-        // the leg they cover. Fitted against the raw guess even a dead-straight
-        // stroke reads as several px of error, and the growth rule then buys control
-        // points to explain it away — 399 of them for a straight line.
+        // the leg they cover. Fitted against the raw guess even a dead-straight stroke
+        // reads as several px of error, and the growth rule then buys control points
+        // to explain it away — 399 of them for a straight line.
         //
-        // So the guess is *corrected*: solve, project each sample back onto the curve
-        // it just produced, solve again. The projection is a local search around the
-        // sample's current parameter, and it is clamped to keep the sequence
-        // non-decreasing, so a sample can slide a little along the curve but can
-        // never overtake its neighbours — the reordering that makes a searched
-        // correspondence dangerous is ruled out by construction.
+        // So the guess goes through the curve's own arc profile (`param_at`): one
+        // global, monotone map applied to every sample alike, so samples keep their
+        // order and cannot overtake one another or bunch up on the input's jitter.
         ts.clear();
         ts.extend(idx.iter().map(|&i| param(self.pts[i].arc)));
         // What each report stands for, so the solve minimizes over the *stroke* rather
@@ -842,47 +805,41 @@ impl PathFitter {
     ///
     /// Both candidates must be scored over the **same** samples — the as-is
     /// candidate's window. Each solve drops the ones its own frozen prefix has
-    /// swallowed, and the larger polygon freezes one more — so scoring each on its own
-    /// slice compares a sum over fewer points against a sum over more, which the
-    /// larger one wins every time regardless of whether it fits better. That made a
-    /// dead-straight stroke take a control point per sample. Per-sample rather than
-    /// total for the same reason in miniature: a total grows with the window, so a
-    /// fixed price would mean something different at every length.
+    /// swallowed and the larger polygon freezes one more, so scoring each on its own
+    /// slice compares a sum over fewer points against a sum over more, which the larger
+    /// one wins whether or not it fits better. Per-sample rather than total for the
+    /// same reason in miniature: a total grows with the window, so a fixed price would
+    /// mean something different at every length.
     ///
-    /// `w` is the solve's own window, not one rebuilt here: **the same reports the
-    /// solve minimized over**, decimated by the same rule and weighted exactly as the
-    /// solve weighted them ([`window_indices`], [`arc_weights`]). The two have to
-    /// agree about which samples matter as well as about where they sit, or the price
-    /// is charged for an error the solve was never trying to remove — and a dwell
-    /// would buy control points to trace itself.
+    /// `w` must be the solve's own window, not one rebuilt here: the same reports,
+    /// decimated by the same rule and weighted exactly as the solve weighted them
+    /// ([`window_indices`], [`arc_weights`]). Otherwise the price is charged for an
+    /// error the solve was never trying to remove, and a dwell buys control points to
+    /// trace itself.
     fn mean_error(&self, fit: &Fit, w: &Window, profile: &mut Vec<f32>) -> f32 {
-        // Borrowed, not copied: scoring a candidate reads its control points and never
-        // moves them, so a copy here would be a whole polygon per candidate per report
-        // to answer one number.
+        // Borrowed, not copied: scoring reads the candidate's control points and never
+        // moves them, so a copy would be a whole polygon per candidate per report to
+        // answer one number.
         let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc_total();
         if w.idx.is_empty() {
             return 0.0;
         }
-        // The same *rule* as the solve's parameters, off a later curve — and the gap is
-        // real, so it is written down rather than claimed away. The solve reads its
-        // parameters off the polygon as *seeded*, before `fit_into` writes back
-        // (`w.profile`), where this builds a profile from the spline that came out. Both
-        // are `arc_profile` over the same settled prefix, so they agree about what a
-        // parameter means and disagree only about which curve it is measured on — a
-        // difference of one solve's movement, which is small precisely where the growth
-        // rule is deciding not to fire.
+        // The same *map* as the solve's parameters, off a later curve. The solve reads
+        // its parameters off the polygon as *seeded* (`w.profile`), before `fit_into`
+        // writes back; this builds a profile from the spline that came out. Both are
+        // `arc_profile` over the same settled prefix, so they agree about what a
+        // parameter means and differ only by one solve's movement — small precisely
+        // where the growth rule is deciding not to fire.
         //
-        // What the two must not do is use different *maps*: then the growth rule reads
-        // one quantity while the solve improves another, and it stops firing where the
-        // fit is actually poor — measured at 4-15px on recorded strokes against
-        // 0.6-1.6px when they agree. Consistency matters more than accuracy in either.
+        // What the two must not do is use different maps: then the growth rule reads
+        // one quantity while the solve improves another, and stops firing where the fit
+        // is poor — 4-15px on recorded strokes, against 0.6-1.6px when they agree.
         //
-        // Taking `w.profile` instead would close the gap outright and drop two of the
-        // four curve walks a report costs. It is not done here because `KNOT_COST` was
-        // tuned against what this does today, so the change is a re-tune and wants a
-        // sitting of its own.
+        // Taking `w.profile` here would close the gap and drop two of the four curve
+        // walks a report costs, but `KNOT_COST` is tuned against what this does today,
+        // so that change is a re-tune.
         arc_profile_into(&spline, &self.settled_profile, profile);
         let sum: f32 = w
             .idx
@@ -946,13 +903,13 @@ impl PathFitter {
     ///
     /// Resolved through the same [`param_at`] map the solve places samples
     /// with, so the marker is exactly where the press's report was fitted. It
-    /// refines while the entry is still being solved, and settles the moment
-    /// the frozen prefix's arc covers it: [`param_at`] reads only profile
-    /// entries up to the marker's own arc, and those are carried over verbatim
-    /// once frozen ([`arc_profile_into`](super::arclen::arc_profile_into)). Which is what lets a renderer bake spans
-    /// behind the marker into a cached head (§6.2): whether the marker lies
-    /// behind a frozen boundary is settled *by* that boundary freezing, so it
-    /// can never move across one afterwards.
+    /// refines while the entry is still being solved and settles the moment the
+    /// frozen prefix's arc covers it — [`param_at`] reads only profile entries
+    /// up to the marker's own arc, and those are carried over verbatim once
+    /// frozen ([`arc_profile_into`](super::arclen::arc_profile_into)). So
+    /// whether the marker lies behind a frozen boundary is settled *by* that
+    /// boundary freezing and can never change afterwards, which is what lets a
+    /// renderer bake the spans behind it into a cached head (§6.2).
     fn start_on(&self, profile: &[f32]) -> f32 {
         let Some(a) = self.start_arc.filter(|a| *a > 0.0) else {
             return 0.0;
@@ -975,53 +932,36 @@ impl PathFitter {
 /// **How much stroke each report speaks for**: the arc from halfway back to its
 /// predecessor to halfway on to its successor, normalized so the weights average one.
 ///
-/// A pointer reports on a clock, not on a ruler. The same stretch of curve therefore
-/// carries as many reports as the hand took time over it, and a least-squares sum over
-/// reports is not a fit to the *stroke* — it is a fit to the hand's dwell, which wins
-/// wherever the two disagree by sheer count.
+/// A pointer reports on a clock, not on a ruler, so the same stretch of curve carries
+/// as many reports as the hand took time over it: an unweighted least-squares sum over
+/// reports fits the hand's dwell rather than the *stroke*. The weight is the trapezoid
+/// rule's, which turns `Σ residual²` over reports into `∫ residual² ds` over the
+/// stroke — a quantity a report standing on no path cannot shout down however many of
+/// it arrive.
 ///
-/// That has a name: **the pen leaving the tablet**. A tablet keeps sampling through the
-/// release, so a stroke ends with a run of reports carrying the pressure to zero across
-/// a fraction of a pixel of tip drift. They land at the very end of the parameter
-/// domain, and unweighted they outvote the whole last span of real curve — measured
-/// before this weight existed, the fitted pressure came down over 88 px of a 563 px
-/// `LOOP_STROKE` and 134 px of an 838 px `FAST_STROKE`, reaching the tip at 0.80 and
-/// 0.52 instead of the 1.0 the hand actually drew. §6.2 says a piece of path with no
-/// length deposits nothing, and the renderer honours that to the bit; this is where the
-/// claim was being lost. The same effect in miniature is every mid-stroke pause pulling
-/// the curve into the jitter it sat in.
+/// The case that forces it is **the pen leaving the tablet**: a tablet keeps sampling
+/// through the release, so a stroke ends with a run of reports carrying the pressure to
+/// zero across a fraction of a pixel of tip drift, landing at the very end of the
+/// parameter domain. Unweighted they outvote the whole last span of real curve — the
+/// fitted pressure came down over 88 px of a 563 px `LOOP_STROKE`, reaching the tip at
+/// 0.80 instead of the 1.0 the hand drew, against §6.2's rule that a piece of path with
+/// no length deposits nothing. Every mid-stroke pause is the same effect in miniature.
 ///
-/// The weight is the trapezoid rule's, which is exactly what turns `Σ residual²` over
-/// reports into `∫ residual² ds` over the stroke — the quantity that was meant all
-/// along, and one that cannot be shouted down, because a report standing on no path
-/// carries no weight however many of it arrive.
+/// Rejecting such reports on a threshold does not work instead: a release drifts, so
+/// its reports accumulate past any fixed bar and the bar only decides *which* release
+/// report contaminates the fit. Nor is weighting the whole cure, since at the extreme
+/// end of the domain the release is the only evidence there is — what closes that is
+/// holding the attribute endpoint ([`PathFitter::solve`]).
 ///
-/// **Rejecting such reports instead does not work, and not for want of a threshold.**
-/// A release drifts, so its reports accumulate past any fixed bar and the one that gets
-/// through arrives part-decayed; the bar decides *which* release report contaminates
-/// the fit, not whether one does. Swept over ×0…×1 of the input tolerance the reach was
-/// non-monotone — `C_STROKE` was worse at half a tolerance (19.6 px) than at a quarter
-/// (3.3 px) — and at ×1 it also decimated real input, taking `HAIRPIN_STROKE` from 22
-/// knots to 15.
-///
-/// Weighting is not the whole cure by itself either, because at the extreme end of the
-/// domain the release is the *only* evidence and a local fit follows the only evidence
-/// it has, however light. What closes that is holding the attribute endpoint — see
-/// [`PathFitter::solve`].
-///
-/// Normalized to average one so that the two knobs `solve_window` scales by the weight sum —
-/// the smoothing's data pull and the ridge's floor — keep the meanings they were tuned
-/// with. Input with no arc at all comes back all ones, which is the unweighted fit
-/// exactly.
+/// Normalized to average one, so the two knobs `solve_window` scales by the weight sum
+/// — the smoothing's data pull and the ridge's floor — keep the meanings they were
+/// tuned with. Input with no arc at all comes back all ones: the unweighted fit exactly.
 ///
 /// Writes the weights for the reports `idx` names — the solve's window — into `out`,
-/// emptied first, but measures every one of them against its **true** neighbours,
-/// which is why it takes the whole run rather than a slice. Only the stroke's own first
-/// and last reports get a half-interval; the window's leading report has a predecessor
-/// and is entitled to it. Reading the slice instead put a half-interval wherever the
-/// window happened to begin, which is a fact about the solve's bookkeeping and not
-/// about the stroke — enough, on its own, to move `fit_collapses_pixel_staircase` by a
-/// control point.
+/// emptied first, but measures each against its **true** neighbours, which is why it
+/// takes the whole run rather than a slice. Only the stroke's own first and last
+/// reports get a half-interval; the window's leading report has a real predecessor and
+/// is entitled to it.
 fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
     let k = idx.len();
     out.clear();
@@ -1030,10 +970,10 @@ fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
         return;
     }
     out.extend((0..k).map(|j| {
-        // Measured against the neighbouring **survivors**, which is what makes the
-        // sum a trapezoid rule over the reports actually being fitted rather than
-        // over the ones that happened to arrive. Where nothing was decimated the
-        // survivors *are* the neighbours and this is the plain rule it always was.
+        // Measured against the neighbouring **survivors**, so the sum is a trapezoid
+        // rule over the reports actually being fitted rather than over the ones that
+        // happened to arrive. Where nothing was decimated the survivors are the
+        // neighbours and this is the plain rule.
         let hi = if j + 1 < k {
             pts[idx[j + 1]].arc
         } else {
@@ -1066,48 +1006,30 @@ fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
 
 /// How many reports the solve will minimize over at once, however many arrive.
 ///
-/// **The bound the window did not have.** `solve`'s window is delimited in *span
-/// parameter* — three spans at the live end — and a span is `KNOT_SPACING ×
-/// tolerance` canvas px wide, so the count of reports inside it is the product of two
-/// things the fitter does not control: how densely the digitizer reports per canvas
-/// px, and how far out the view is zoomed. Each scaled the work linearly and the
-/// stroke quadratically. Measured on `LOOP_STROKE` before this existed
-/// (`benches/path.rs`): per-report throughput fell 19× across a 32× range of report
-/// density, so the densest row cost 612× the total of the sparsest for the same mark;
-/// and 6.4× across the tolerance range, in the direction nobody would guess — a
-/// coarser tolerance produces *fewer* knots and used to cost far more per report.
+/// Without a bound, `solve`'s window is delimited in *span parameter* — three spans at
+/// the live end, each `KNOT_SPACING × tolerance` canvas px wide — so the count of
+/// reports inside it is the product of two things the fitter does not control: how
+/// densely the digitizer reports per canvas px, and how far out the view is zoomed.
+/// Each scales the work linearly and the stroke quadratically: measured on
+/// `LOOP_STROKE` unbounded (`benches/path.rs`), the densest of a 32× range of report
+/// densities cost 612× the total of the sparsest for the same mark.
 ///
 /// **Decimating is sound because of what the weights already are.** [`arc_weights`]
-/// exists to turn `Σ residual²` over reports into `∫ residual² ds` over the stroke,
-/// so that a hand's dwell cannot outvote geometry by sheer count. That is exactly the
-/// property that makes a subset with the trapezoid weights recomputed for it
-/// approximate the *same* integral: what is dropped is sampling rate, and the
-/// objective was never a function of sampling rate. Rejecting reports would be a
-/// different operation and `arc_weights`' own header rules it out — but that argument
-/// is about discarding evidence from the integral, not about evaluating it at fewer
-/// points.
+/// turns `Σ residual²` over reports into `∫ residual² ds` over the stroke, and an
+/// objective that is not a function of sampling rate is approximated by a subset with
+/// the trapezoid weights recomputed for it. (Rejecting reports is a different
+/// operation, which `arc_weights` rules out: that discards evidence from the integral
+/// rather than evaluating it at fewer points.)
 ///
 /// **64 is 16 observations per free control point** — the window solves for four —
-/// which is ample for least squares over input whose whole problem is jitter. It is
-/// set from what the fit needs, and deliberately not from what leaves the goldens
-/// alone.
+/// which is ample for least squares over input whose whole problem is jitter. Set from
+/// what the fit needs, not from what leaves the goldens alone: the accuracy it trades
+/// is under 0.1% (`thinning_the_window_does_not_cost_the_fit_its_accuracy`), and the
+/// cost of a report is linear in this number, so a larger budget gives back most of the
+/// win on exactly the dense strokes that were quadratic.
 ///
-/// That distinction has a bill attached, so it is stated rather than implied.
 /// [`window_indices`] is the identity under budget and `arc_weights` then reduces to
-/// the rule it always was, so a stroke whose window fits is bit-identical to what it
-/// was. `LOOP_STROKE` at [`DEFAULT_TOLERANCE`] does **not** fit — the corpus's `taper`
-/// case is drawn from it, and re-blessing moved 1.66% of its texels by more than 6
-/// levels of 255, against the 12 the corpus itself calls visible. The two renders are
-/// indistinguishable; what moved is where a few antialiased edges land, because the
-/// fitted curve moved a fraction of a pixel.
-///
-/// Raising the budget until that golden stopped moving was the obvious alternative and
-/// is the wrong shape: it would be a constant chosen to preserve an old output rather
-/// than to serve the fit, and it would weaken the bound precisely where the bound is
-/// the point — the cost of a report is linear in this number, so a budget of 256 gives
-/// back most of the win on the dense strokes that were quadratic. The accuracy this
-/// trades is measured rather than argued and it is under 0.1%
-/// (`thinning_the_window_does_not_cost_the_fit_its_accuracy`).
+/// the plain rule, so a stroke whose window fits is bit-identical to an unbounded fit.
 const MAX_WINDOW_SAMPLES: usize = 64;
 
 /// The reports `solve` minimizes over, into `out` (emptied first): `pts[lo..]`, thinned
@@ -1120,8 +1042,7 @@ const MAX_WINDOW_SAMPLES: usize = 64;
 /// which is the report the curve is pinned to.
 ///
 /// Deterministic, and a pure function of the accepted reports — so a replay, a peer
-/// and a golden all decimate identically, which is what keeps this a performance
-/// change rather than a wire-format one (§1).
+/// and a golden all decimate identically (§1).
 fn window_indices(pts: &[Accepted], lo: usize, out: &mut Vec<usize>) {
     out.clear();
     let n = pts.len();
@@ -1185,10 +1106,8 @@ fn grow_rows<const E: usize>(
     seed: impl Fn(usize, usize) -> f32,
 ) -> OMatrix<f32, Dyn, Const<E>> {
     let have = rows.nrows();
-    // The name says "grow", and every caller means it: `solve` is called with the
-    // polygon's own row count or one more. Worth stating, because the early return
-    // hands back *more* rows than `m` if it is ever called with fewer — and `solve`
-    // then writes its pinned endpoint to `m - 1`, which would be the wrong row.
+    // Never called to shrink: the early return would hand back *more* rows than `m`,
+    // and `solve` then writes its pinned endpoint to `m - 1`, the wrong row.
     debug_assert!(
         have <= m,
         "grow_rows shrinks nothing: asked for {m} rows from {have}",
@@ -1246,9 +1165,7 @@ mod tests {
             .fold(0.0, f32::max)
     }
 
-    /// One pointer report at a position, with everything else at rest. The root's test
-    /// module has a copy, and so does `flatten`'s: two lines each against making a test
-    /// builder visible across three module boundaries.
+    /// One pointer report at a position, with everything else at rest.
     fn sample(x: f32, y: f32) -> InputSample {
         InputSample::at(Vec2::new(x, y))
     }
@@ -1277,11 +1194,10 @@ mod tests {
         (f, snaps)
     }
 
-    /// **Under budget the selection is the identity**, which is what makes this a
-    /// change to the pathological cases only. Ordinary painting keeps every report the
-    /// window admitted, `arc_weights` reduces to the rule it always was, and the fitted
-    /// curve is therefore bit-identical to what it was before the bound existed — so
-    /// no golden moves and no recorded stroke re-fits.
+    /// **Under budget the selection is the identity**: ordinary painting keeps every
+    /// report the window admitted, `arc_weights` reduces to the plain rule, and the
+    /// fitted curve is bit-identical to an unbounded fit — so the bound touches the
+    /// pathological cases only.
     #[test]
     fn a_window_under_budget_keeps_every_report() {
         let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
@@ -1347,21 +1263,17 @@ mod tests {
     /// is the one its finite reports describe, exactly as if the bad report had never
     /// arrived.
     ///
-    /// Both halves matter and the second is the sharper claim. Merely not panicking
-    /// would be satisfied by a fitter that swallowed the whole stroke; what has to
-    /// hold is that one bad report costs one report.
+    /// The second half is the sharper claim: merely not panicking would be satisfied by
+    /// a fitter that swallowed the whole stroke, and what has to hold is that one bad
+    /// report costs one report. The panic it rules out is three subsystems downstream —
+    /// `arc` accumulates the step to the bad sample, every curve parameter derives from
+    /// `arc`, so `solve_window`'s normal equations go NaN and are singular at every
+    /// ridge, which its solve reports with `unreachable!`.
     ///
-    /// The panic this rules out was real and three subsystems downstream: `arc`
-    /// accumulates the step to the bad sample, every curve parameter is derived from
-    /// `arc`, so `solve_window`'s normal equations go NaN — and they are then singular at
-    /// every ridge, which its solve reports with `unreachable!` because for
-    /// *admissible* input it genuinely cannot happen.
-    ///
-    /// **Finite is not admissible**, which is why the last two rows are finite. A
-    /// position a whole `f32` range from its neighbour makes `arc` accumulate an
-    /// infinite step and every parameter after it a NaN, by subtraction rather than
-    /// by anything the report itself carries — so a gate that asked only
-    /// `is_finite` let the same panic through the same door.
+    /// **Finite is not admissible**, which is why two of the poisons below are finite:
+    /// a position a whole `f32` range from its neighbour makes `arc` accumulate an
+    /// infinite step and every parameter after it a NaN, by subtraction rather than by
+    /// anything the report itself carries.
     #[test]
     fn an_inadmissible_report_is_dropped_rather_than_fitted() {
         let clean: Vec<InputSample> = (0..24)
@@ -1453,12 +1365,11 @@ mod tests {
 
     /// The fit may never ask for more control points than the samples can hold down.
     ///
-    /// A fast pen reports tens of pixels apart, and a density policy that reads the
-    /// input's curvature will happily ask for detail the data cannot support;
-    /// granting it leaves the polygon under-determined and the curve wanders between
-    /// the samples it passes through. The bound is structural rather than an explicit
-    /// cap: a control point is only taken on if it *measurably* reduces the error, and
-    /// one the data cannot see does not.
+    /// A fast pen reports tens of pixels apart, and detail the data cannot support
+    /// leaves the polygon under-determined and the curve wandering between the samples
+    /// it passes through. The bound is structural rather than an explicit cap: a
+    /// control point is taken on only if it *measurably* reduces the error, and one the
+    /// data cannot see does not.
     #[test]
     fn the_fit_never_outruns_its_data() {
         for step in [4.0f32, 20.0, 50.0] {
@@ -1484,9 +1395,8 @@ mod tests {
     ///
     /// Both halves matter. Freezing that outruns the pointer leaves nothing able to
     /// respond to what is drawn next, so the stroke stops following the pen; freezing
-    /// that never happens leaves the whole polygon re-solving on every report, which
-    /// is what makes a live stroke wobble along its length. A fixed-size window is
-    /// both at once, which is why growth and freezing are the same decision here.
+    /// that never happens leaves the whole polygon re-solving on every report, which is
+    /// what makes a live stroke wobble along its length.
     #[test]
     fn a_live_stroke_keeps_a_fixed_solvable_window() {
         for (name, src) in [
@@ -1522,11 +1432,9 @@ mod tests {
             stair.push(sample(i as f32 + 1.0, i as f32));
         }
         let fitted = fit(&stair);
-        // The staircase hugs the diagonal within ~1px, so it collapses sharply.
-        // The substantive claim is the error bound below — that the curve splits the
-        // steps rather than following them. The count is a proxy and a loose one: six
-        // control points over 10px is denser than the shape needs, but they all sit
-        // on the diagonal.
+        // The substantive claim is the error bound below — the curve splits the steps
+        // rather than following them. The count is a loose proxy: six control points
+        // over 10px is denser than the shape needs, but they all sit on the diagonal.
         assert!(
             fitted.len() <= 8,
             "staircase should collapse, got {} points",
@@ -1538,12 +1446,12 @@ mod tests {
     /// The point of letting the caller state the tolerance: one gesture, drawn at
     /// different zoom levels, fits to one curve.
     ///
-    /// Zoom scales canvas coordinates and the input's resolution *in* them by the
-    /// same factor, so a declared tolerance makes the fit scale-invariant — the error
-    /// price goes as its square and the spacing floor as its first power, which is
-    /// exactly how a uniform scaling moves the two quantities they are each compared
-    /// against. Priced in canvas px instead, the same stroke bought control points to
-    /// trace its own jitter zoomed in and lost real detail zoomed out.
+    /// Zoom scales canvas coordinates and the input's resolution *in* them by the same
+    /// factor, so a declared tolerance makes the fit scale-invariant: the error price
+    /// goes as its square and the spacing floor as its first power, which is exactly
+    /// how a uniform scaling moves the two quantities they are compared against. Priced
+    /// in canvas px instead, the same stroke traces its own jitter zoomed in and loses
+    /// real detail zoomed out.
     #[test]
     fn a_declared_tolerance_makes_the_fit_zoom_invariant() {
         let screen: Vec<InputSample> = stark_testdata::BIG_C_STROKE
@@ -1578,11 +1486,11 @@ mod tests {
     }
 
     /// The tolerance arrives from a frontend, so it is guarded rather than trusted.
-    /// Zero or negative would make a control point free of charge and the spacing
-    /// floor zero; huge would leave a stroke never growing the polygon, never
-    /// freezing, and re-solving against every sample it ever took. Held to the usable
-    /// range, each of these still fits a well-formed polygon bounded by its data (one
-    /// growth per report, from a polygon that starts at two).
+    /// Zero or negative would make a control point free of charge and the spacing floor
+    /// zero; huge would leave a stroke never growing the polygon, never freezing, and
+    /// re-solving against every sample it ever took. Held to the usable range, each
+    /// still fits a well-formed polygon bounded by its data (one growth per report,
+    /// from a polygon that starts at two).
     #[test]
     fn a_degenerate_tolerance_is_held_to_the_usable_range() {
         let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
@@ -1607,12 +1515,11 @@ mod tests {
         // the floor's rate, not the refinement's.
         let long: Vec<InputSample> = (0..400).map(|i| sample(i as f32 * 7.5, 0.0)).collect();
         let fitted = fit(&long);
-        // **Known weakness**, and the clearest statement of it: a dead-straight
-        // stroke should cost a handful of control points and costs ~400, one per
-        // sample. The growth rule is answering honestly — the arc-length guess is not
-        // how a clamped B-spline is parameterized, so even exact input leaves a
-        // residual, and a control point does reduce it. The fix is a correct
-        // arc-to-parameter map, not a different price.
+        // **Known weakness**: a dead-straight stroke should cost a handful of control
+        // points and costs ~400, one per sample. The growth rule is answering honestly
+        // — the arc-length guess is not how a clamped B-spline is parameterized, so
+        // even exact input leaves a residual a control point does reduce. The fix is a
+        // correct arc-to-parameter map, not a different price.
         assert!(
             fitted.len() <= long.len(),
             "more control points than samples"

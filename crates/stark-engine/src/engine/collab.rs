@@ -1,15 +1,14 @@
 //! Collaboration and presence: the two channels a shared session runs on (§12, §17).
 //!
-//! They are deliberately separate, and the rule that separates them is the one §4
-//! runs on — *does replay need it to reproduce a pixel?* The **action** channel is
-//! the document: ordered, replicated, and the thing convergence is a property of.
-//! The **presence** channel is everything else a collaborator can see — a cursor, a
-//! selected layer, a gesture that has not committed — and nothing in the action log
-//! ever references it, which is exactly what lets the transport drop, coalesce or
-//! delay a presence frame without touching convergence.
+//! They are separate, and the rule that separates them is the one §4 runs on — *does
+//! replay need it to reproduce a pixel?* The **action** channel is the document:
+//! ordered, replicated, and the thing convergence is a property of. The **presence**
+//! channel is everything else a collaborator can see — a cursor, a selected layer, an
+//! uncommitted gesture — and nothing in the action log ever references it, which is
+//! what lets the transport drop, coalesce or delay a presence frame without touching
+//! convergence.
 //!
-//! The engine stays network-agnostic either way: it owns the merge semantics and
-//! these hooks, and `stark-net` owns the wire.
+//! The engine owns the merge semantics and these hooks; `stark-net` owns the wire.
 
 use super::{Engine, ROOT_LAYER};
 use crate::Result;
@@ -41,11 +40,10 @@ impl Engine {
     /// Whether this engine is **broadcasting**: authoring into a shared session,
     /// with an outbox for the transport to drain (§12.4).
     ///
-    /// The same question as "is this document's history a shared log", and kept
-    /// that way deliberately: [`end_collaboration`](Self::end_collaboration) gives
-    /// the history back in the same breath as it drops the outbox, so there is no
-    /// state in which this and [`scrub_range`](Self::scrub_range) disagree about
-    /// whose the document is.
+    /// The same question as "is this document's history a shared log":
+    /// [`end_collaboration`](Self::end_collaboration) gives the history back in the
+    /// same breath as it drops the outbox, so there is no state in which this and
+    /// [`scrub_range`](Self::scrub_range) disagree about whose the document is.
     pub fn is_shared(&self) -> bool {
         self.authoring.outbox.is_some()
     }
@@ -62,17 +60,16 @@ impl Engine {
     /// undo their pre-share strokes (undo targets *my* actions, §12.3).
     ///
     /// **A scrubbed-away future does not survive the share**, and cannot: what is
-    /// shared is [`clone_actions`](Timeline::clone_actions), which is the log up to
-    /// the playhead, and the withheld suffix a `LinearTimeline` is holding for redo
-    /// is not part of it. That is the same document `save_bytes` would write and the
-    /// same one a joiner will see, so it is consistent rather than lossy in any sense
-    /// the log knows about — but it is the moment the redo stack stops existing, and
+    /// shared is [`clone_actions`](Timeline::clone_actions), the log up to the
+    /// playhead, and the withheld suffix a `LinearTimeline` holds for redo is not part
+    /// of it. That is the same document `save_bytes` would write and the same one a
+    /// joiner will see — but it is the moment the redo stack stops existing, and
     /// `can_redo` goes false straight after with nothing else said. A frontend that
     /// wants to warn has to ask before calling.
+    ///
     /// **Answers whether it took effect**, which is what §4 asks of anything that
     /// mutates and is not a command: `false` is "already sharing", the one case this
-    /// declines. It returned nothing and declined silently, so a caller could not tell
-    /// a conversion from a no-op without asking `is_shared` on both sides of the call.
+    /// declines.
     pub fn start_collaboration(&mut self, identity: impl Into<Identity>) -> bool {
         if self.is_shared() {
             return false;
@@ -88,15 +85,12 @@ impl Engine {
         // **The layer ids inside those actions still say `SOLO`, and stay that way.**
         // A `LayerId` names the action that minted it, so rewriting the log's actor
         // above did not rewrite them — and must not: every reference to a layer, in
-        // every later stroke, move and merge, would have to move with it, which is a
-        // rewrite of the whole log to change nothing that can be observed. What an id
-        // has to be is unique, and it still is: `SOLO` authors no action in a shared
-        // session, so nothing this actor mints from here on can land on one of these.
+        // every later stroke, move and merge, would have to move with it, to change
+        // nothing that can be observed. What an id has to be is unique, and it still
+        // is: `SOLO` authors no action in a shared session, so nothing this actor mints
+        // from here on can land on one of these — and there is no per-actor counter to
+        // recover (§17.9).
         //
-        // There is no counter to resume. That is the whole of what the id's shape
-        // bought here — this was the second of the two doors §17.9's per-actor counter
-        // had to be recovered at, and getting it wrong minted an id the document
-        // already held.
         // Replay from the substrate this document's log *starts* from, not from the
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.
@@ -118,13 +112,12 @@ impl Engine {
     /// timeline resolves — and author future actions as `actor`.
     ///
     /// **Fails, and changes nothing, on a document whose color space this build
-    /// lacks** ([`DocError::UnsupportedColorSpace`](stark_model::DocError)) — the same refusal
-    /// [`Engine::load_bytes`] makes about a file, for the same reason and now through
-    /// the same door ([`ValidatedFile`]). It is a `Result` because of that: a session
-    /// arrives over a transport, so this is the one adoption path whose input nobody in
-    /// this process has ever looked at, and an unchecked one would reach `adopt`'s
-    /// `expect` with the painting unsaved. A frontend shows the refusal and stays where
-    /// it is.
+    /// lacks** ([`DocError::UnsupportedColorSpace`](stark_model::DocError)) — the same
+    /// refusal [`Engine::load_bytes`] makes about a file, through the same door
+    /// ([`ValidatedFile`]). It is a `Result` because a session arrives over a transport:
+    /// this is the one adoption path whose input nobody in this process has ever looked
+    /// at, and an unchecked one would reach `adopt`'s `expect` with the painting
+    /// unsaved. A frontend shows the refusal and stays where it is.
     ///
     /// [`ValidatedFile`]: super::file::ValidatedFile
     pub fn join_collaboration(
@@ -137,10 +130,8 @@ impl Engine {
         let validated = super::file::ValidatedFile::new(file)?;
         let identity = identity.into();
         let actor = identity.actor;
-        // Everything the shared log needs before it can be replayed, in the order
-        // that makes it a replay rather than an approximation ([`Self::adopt`]). A
-        // joiner replays the whole painting, so this is where getting it wrong costs
-        // the most.
+        // Everything the shared log needs before it can be replayed, in the order that
+        // makes it a replay rather than an approximation.
         self.adopt(validated);
         let ctx = &mut self.shared.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
@@ -169,14 +160,11 @@ impl Engine {
     /// The peers' *selections* stay in the document, because replay still needs them
     /// to reproduce their strokes; they simply stop being drawn, since the roster is
     /// what decides that (§17.3).
-    /// **Answers whether a shared session was ended**, and declines when there was
-    /// none — §4's rule, and the reason the frontend no longer has to hold the line.
     ///
-    /// Ending an unshared session ran the whole body, including `committed_changed`,
-    /// which bumps the document revision, drops the preview and forces a full
-    /// re-projection for nothing. The only thing stopping that was a guard in
-    /// `stark-dioxus-frontend`'s collaboration panel: a rule a call site could forget,
-    /// in another crate, which is exactly the shape CLAUDE.md says to make structural.
+    /// **Answers whether a shared session was ended**, and declines when there was
+    /// none — §4's rule, and what keeps the guard structural rather than a line a
+    /// frontend has to hold. Running the body regardless would bump the document
+    /// revision, drop the preview and force a full re-projection for nothing.
     pub fn end_collaboration(&mut self) -> bool {
         if !self.is_shared() {
             return false;
@@ -186,23 +174,19 @@ impl Engine {
         // it, since there is no longer anyone owed it.
         self.authoring.outbox = None;
         self.peers.clear();
-        // A [`ReplicatedTimeline`] refuses to seek, to undo by navigation and to fold
-        // its oldest actions away, and every one of those refusals is made on behalf
-        // of peers who are still appending to the log (§12.2, §18.2.4). None of them
-        // is, once this returns — so the timeline stops being one that refuses,
-        // rather than the refusals outliving the session that justified them.
+        // A `ReplicatedTimeline` refuses to seek, to undo by navigation and to fold its
+        // oldest actions away, on behalf of peers who are still appending to the log
+        // (§12.2, §18.2.4). None of them is, once this returns, so the refusals must
+        // not outlive the session that justified them.
         //
         // `unshare` consumes, which is what leaves nothing behind still claiming a
-        // shared log; the swap therefore needs somewhere to park, and an empty
-        // timeline is the cheapest valid thing there is (a `DocState` is persistent
-        // maps, §5.1).
+        // shared log; the swap therefore needs somewhere to park, and an empty timeline
+        // is the cheapest valid thing there is (a `DocState` is persistent maps, §5.1).
         let parked = Timeline::Linear(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
         self.timeline = std::mem::replace(&mut self.timeline, parked).unshare();
-        // What the document's history *offers* moved with it: a peer's stroke is
-        // this document's to undo now, and the scrubber comes back. Published for
-        // the reason [`Self::start_collaboration`] publishes the conversion it makes
-        // in the other direction — the pixels are untouched either way, and nothing
-        // else in the projection would say so.
+        // What the document's history *offers* moved with it: a peer's stroke is this
+        // document's to undo now, and the scrubber comes back. The pixels are untouched,
+        // so nothing else in the projection would say so.
         self.committed_changed();
         self.mark_live_stale();
         true
@@ -218,12 +202,11 @@ impl Engine {
         let merged = self.timeline.merge(action, ctx);
         if merged {
             // Replaces the document every frozen head was composited onto — and
-            // repoints the brush if the arriving action took the layer this client
-            // was painting on. Asked of the document rather than of the action's
-            // *variant*, which is how a peer's `MergeLayerDown` came to strand it:
-            // `merge_apply` ends in `remove_layer(source)`, so keying on
-            // `RemoveLayer` answered a question about deletion by naming one of the
-            // two actions that delete (§17.9).
+            // repoints the brush if the arriving action took the layer this client was
+            // painting on. Asked of the document rather than of the action's *variant*:
+            // `merge_apply` ends in `remove_layer(source)`, so keying on `RemoveLayer`
+            // would answer a question about deletion by naming one of the two actions
+            // that delete (§17.9).
             self.committed_changed();
             // A gesture is a thing that becomes an action, so the action's arrival is
             // the end-of-gesture signal — no id to correlate, and no window in which
@@ -260,14 +243,14 @@ impl Engine {
     /// How many in-flight strokes the preview fold is caching a settled head for
     /// (§17.6) — at most one per actor who is *currently* drawing one.
     ///
-    /// For tests and diagnostics, beside [`timeline_stats`](Self::timeline_stats) and
-    /// for the same reason: a head is a cache, so pixels cannot show whether one is
-    /// held. What they also cannot show is a head held for a gesture that has *ended*,
-    /// which is not a wrong picture but a `DocState`'s worth of tile handles the pool
-    /// cannot reclaim — invisible until the GPU runs out. Countable here instead.
-    /// `&mut`, because the fold it counts within is rebuilt lazily: the count is
-    /// only meaningful of a serviced fold, so this flushes first — the same
-    /// picture the next paint would build.
+    /// For tests and diagnostics, beside [`timeline_stats`](Self::timeline_stats): a
+    /// head is a cache, so pixels cannot show whether one is held — least of all one
+    /// held for a gesture that has *ended*, which is not a wrong picture but a
+    /// `DocState`'s worth of tile handles the pool cannot reclaim, invisible until the
+    /// GPU runs out.
+    ///
+    /// `&mut` because the count is only meaningful of a serviced fold, so this flushes
+    /// first — the same picture the next paint would build.
     /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
     #[doc(hidden)]
     pub fn live_head_count(&mut self) -> usize {
@@ -278,11 +261,10 @@ impl Engine {
     /// How many of this client's stroke commits have taken the preview's tiles
     /// rather than rendering the stroke again at pen-up (`PreparedStroke`, §6.2).
     ///
-    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count)
-    /// and for its reason: the two ways a commit can land are the same pixels by
-    /// design, so only a count can say which one ran — and a commit that quietly
-    /// fell back to the whole render is the hitch this path exists to remove,
-    /// reported by nothing else.
+    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count):
+    /// the two ways a commit can land are the same pixels by design, so only a count
+    /// can say which one ran — and a commit that quietly fell back to the whole render
+    /// is the hitch this path exists to remove, reported by nothing else.
     /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
     #[doc(hidden)]
     pub fn strokes_reused(&self) -> u64 {
@@ -294,12 +276,10 @@ impl Engine {
     /// an undo, a remote merge, a load, or an unlogged drag preview being installed or
     /// dropped. A cached head stamped with an older value is discarded.
     ///
-    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count).
-    /// Pixels cannot stand in for it: a drag preview that changes no *tiles* — the
-    /// substrate color, say — leaves a stale head drawing exactly the right paint, so
-    /// the picture is right while the rule that keeps it right has been broken. It only
-    /// becomes visible for a preview that does move tiles, by which point the cause is
-    /// several commands behind.
+    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count),
+    /// because pixels cannot stand in for it: a drag preview that changes no *tiles* —
+    /// the substrate color, say — leaves a stale head drawing exactly the right paint,
+    /// so the picture is right while the rule that keeps it right has been broken.
     /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
     #[doc(hidden)]
     pub fn preview_epoch(&self) -> u64 {
@@ -308,22 +288,22 @@ impl Engine {
 
     // --- the presence channel (§17.4) -----------------------------------
     //
-    // Symmetric with the action hooks above, and separate for the reason the module
-    // doc gives: nothing in the action log ever references presence.
+    // Separate for the reason the module doc gives: nothing in the action log ever
+    // references presence.
 
     /// Whether [`take_presence`](Self::take_presence) would do anything at `now` —
     /// a `&self` test a pump can run without borrowing the engine mutably.
     ///
-    /// This is what keeps an idle shared session free. The pump has to wake on a
-    /// fixed cadence (that is what makes the latch coalesce, §5.1, and it is the
-    /// engine's only clock), but *waking* need not mean working: a tick where
-    /// nothing has moved and no peer is due to expire should cost this comparison
-    /// and nothing else — no mutable borrow, no roster rebuild, and above all no
-    /// write to the signal the engine lives in, which would mark it dirty and
-    /// re-render every component that reads it.
+    /// This is what keeps an idle shared session free. The pump has to wake on a fixed
+    /// cadence (that is what makes the latch coalesce, §5.1, and it is the engine's
+    /// only clock), but *waking* need not mean working: a tick where nothing has moved
+    /// and no peer is due to expire should cost this comparison and nothing else — no
+    /// mutable borrow, no roster rebuild, and above all no write to the signal the
+    /// engine lives in, which would re-render every component that reads it.
     ///
-    /// Conservative in the same direction as [`Session::publish_due`](crate::session::Session::publish_due): it may say
-    /// yes where the drain then finds nothing, never the reverse.
+    /// Conservative in the same direction as
+    /// [`Session::publish_due`](crate::session::Session::publish_due): it may say yes
+    /// where the drain then finds nothing, never the reverse.
     pub fn presence_due(&self, now: f64) -> bool {
         self.peers.expiry_due(now) || (self.is_shared() && self.session.publish_due(now))
     }
@@ -340,9 +320,8 @@ impl Engine {
     /// `stark-engine` has, because it deliberately owns none.
     ///
     /// `frame` is `None` when solo: presence with nobody to read it is pure cost.
-    /// `repaint` reports whether the expiry changed the canvas — a stalled gesture
-    /// or a departed peer takes paint off it, and a caller that drops that bit
-    /// leaves the stale stroke on screen until something else forces a paint.
+    /// `repaint` reports whether the expiry changed the canvas — a caller that drops
+    /// that bit leaves a stale stroke on screen until something else forces a paint.
     pub fn take_presence(&mut self, now: f64) -> PresenceTick {
         self.now = now.max(self.now);
         let repaint = self.peers.tick(self.now).canvas;
@@ -367,21 +346,21 @@ impl Engine {
     /// transport's authenticated origin and never from the frame body — a peer can
     /// publish its own presence and nobody else's (§17.7).
     ///
-    /// Returns whether the **canvas** changed, i.e. whether a repaint is owed. A
-    /// frame that only moved a cursor or a selected layer returns `false`: those are
-    /// chrome, drawn from the roster projection, which a caller notices moved through
+    /// Returns whether the **canvas** changed, i.e. whether a repaint is owed. A frame
+    /// that only moved a cursor or a selected layer returns `false`: those are chrome,
+    /// drawn from the roster projection, which a caller notices moved through
     /// [`peers_revision`](Self::peers_revision) instead. Presence arrives at pointer
-    /// rate from every peer at once, so the difference between the two questions is
-    /// the difference between a compositor pass per remote pointer move and none.
+    /// rate from every peer at once, so the two questions differ by a compositor pass
+    /// per remote pointer move.
     ///
     /// Dated by `now`, the **caller's** clock — the same one it hands
     /// [`take_presence`](Self::take_presence) — folded into [`Self::now`] so the
-    /// engine's clock stays monotonic. Dating by `self.now` alone would assume the
-    /// pump advances it every tick, and the pump skips `take_presence` on a tick with
-    /// nothing to publish: on a client that is only *watching*, the clock would
-    /// advance per [`HEARTBEAT`](stark_model::peer::HEARTBEAT), and every frame merged in
-    /// between would age a whole heartbeat at once when the expiry finally ran —
-    /// taking down live gestures whose frames arrive thirty times a second.
+    /// engine's clock stays monotonic. Dating by `self.now` alone would assume the pump
+    /// advances it every tick, and the pump skips `take_presence` on a tick with nothing
+    /// to publish: on a client that is only *watching*, every frame merged in between
+    /// would age a whole [`HEARTBEAT`](stark_model::peer::HEARTBEAT) at once when the
+    /// expiry finally ran, taking down live gestures whose frames arrive thirty times a
+    /// second.
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
         self.now = now.max(self.now);
         let now = self.now;

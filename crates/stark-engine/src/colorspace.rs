@@ -16,17 +16,14 @@ use stark_model::{ColorSpaceId, color};
 /// build does not carry it.
 ///
 /// `None` is reachable only for [`ColorSpaceId::Mixbox`] without the `mixbox`
-/// feature. It is deliberately not a fallback to Oklab: the two spaces read the
+/// feature, and is deliberately not a fallback to Oklab: the two spaces read the
 /// same tile bytes as different colors, so opening a pigment document through a
-/// colorimetric space would render every pixel wrong while looking like it
-/// worked. Failing is the honest answer, and
-/// [`DocError::UnsupportedColorSpace`](stark_model::DocError::UnsupportedColorSpace)
-/// is where it lands.
+/// colorimetric space would render every pixel wrong while looking like it worked.
+/// Callers turn it into
+/// [`DocError::UnsupportedColorSpace`](stark_model::DocError::UnsupportedColorSpace).
 ///
 /// A free function rather than a method on the id, because the id is
-/// `stark-model`'s and an inherent impl may only be written where the type is
-/// (§2). The division it forces is the right one: naming a space is a fact about
-/// the document, building one is the engine's business.
+/// `stark-model`'s and an inherent impl may only be written where the type is (§2).
 pub fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
     match id {
         ColorSpaceId::Oklab => Some(Arc::new(OkLabColorSpace)),
@@ -40,11 +37,8 @@ pub fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
 /// Whether this build can open a document in `id`'s space — [`make`] without
 /// building anything. What a frontend asks to decide which spaces to offer.
 ///
-/// Literally without building anything: it was `make(id).is_some()`, which allocates
-/// an `Arc` for a `ColorSpace` that is a ZST either way and drops it to return a
-/// `bool`. `all_available` did that twice per call. The `#[cfg]` is the whole answer,
-/// and stating it here keeps the two in step by construction — a space `make` cannot
-/// build is a space this reports unavailable, because both read the same feature.
+/// The feature gate is the whole answer, and both read it, so a space [`make`]
+/// cannot build is a space this reports unavailable.
 pub fn available(id: ColorSpaceId) -> bool {
     match id {
         ColorSpaceId::Oklab => true,
@@ -63,11 +57,9 @@ pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
 /// A color as the working space stores it: the channels a tile's color target holds,
 /// and the residual a pigment space's third target holds beside them (§6.7).
 ///
-/// Three and three, not four and four. The channels' fourth lane is per-unit opacity
-/// — a property of the *paint*, not of the color (§6.1) — and the residual's is the
-/// same opacity duplicated so the fixed-function "over" reads it on that target too.
-/// Both were constants at every call site and are written there, where what they mean
-/// is legible, rather than returned from a conversion that has no opinion about them.
+/// Three and three, not four and four: the fourth lane of each target is per-unit
+/// opacity — a property of the *paint*, not of the color (§6.1) — and call sites
+/// write it themselves rather than take it from a conversion with no opinion on it.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Latent {
     /// The space's three color channels, pre-coverage: Oklab's `L, a, b`, or the
@@ -87,11 +79,9 @@ pub trait ColorSpace {
     /// Tile color channel texture format.
     ///
     /// Defaulted, along with [`aux_format`](Self::aux_format),
-    /// [`color_blend`](Self::color_blend) and [`aux_blend`](Self::aux_blend), because
-    /// both spaces answered all four identically and a third would have four more
-    /// chances to pick a format the tile pool was never sized for. What actually
-    /// distinguishes a space is [`resid_format`](Self::resid_format) — which already
-    /// had a default, and which is the one the rest of the engine branches on.
+    /// [`color_blend`](Self::color_blend) and [`aux_blend`](Self::aux_blend): an
+    /// override here is a format the tile pool was never sized for. What actually
+    /// distinguishes a space is [`resid_format`](Self::resid_format).
     fn color_format(&self) -> wgpu::TextureFormat {
         wgpu::TextureFormat::Rgba16Float
     }
@@ -110,8 +100,8 @@ pub trait ColorSpace {
     /// pigments do not span sRGB.
     ///
     /// `Some` costs eight bytes a texel and a third render target through every pass
-    /// that writes a tile. `None` is not an optimization but a statement — that this
-    /// space's channels are the whole color.
+    /// that writes a tile. `None` is a statement, not an optimization: this space's
+    /// channels are the whole color.
     fn resid_format(&self) -> Option<wgpu::TextureFormat> {
         None
     }
@@ -134,18 +124,14 @@ pub trait ColorSpace {
     /// Straight display RGB → the space's color channels **and** the residual they
     /// leave behind (§6.7), in one conversion.
     ///
-    /// The parameter says "straight display RGB" in the type rather than in this
-    /// line: an [`Srgb`] is finite and bounded by construction, so neither
-    /// implementation has to wonder whether it was handed a `NaN`. It may well be
-    /// **outside the sRGB cube** — extended sRGB is what a document carries (§6.5) —
-    /// which is a colorimetric space's to represent and a pigment space's to hold.
+    /// An [`Srgb`] is finite and bounded by construction, so an implementation never
+    /// has to wonder whether it was handed a `NaN`. It may well be **outside the sRGB
+    /// cube** — extended sRGB is what a document carries (§6.5) — which is a
+    /// colorimetric space's to represent and a pigment space's to hold.
     ///
-    /// **One method because it is one evaluation.** These were two, and every caller
-    /// in the crate asked both back to back — which in Mixbox ran the pigment
-    /// polynomial twice over the same color, once for the concentrations and once for
-    /// the remainder it leaves. On a placed image that is per *texel*
-    /// (`gpu::place`), so a 4096² import evaluated it 33 million times to produce 16
-    /// million answers.
+    /// **One method because it is one evaluation**: in Mixbox the concentrations and
+    /// the remainder come out of a single run of the pigment polynomial, and the
+    /// conversion is per *texel* on a placed image (`gpu::place`).
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent;
     /// The space's color channels **and residual** → straight display RGB (picker
     /// readout/export). The inverse of the two functions above, taken together.
@@ -253,18 +239,17 @@ impl ColorSpace for OkLabColorSpace {
 /// **Mixbox** pigment-mixing space (§6.7). Colors are stored as Mixbox
 /// latent pigment *concentrations* `(c0, c1, c2)` — the fourth, `c3 = 1 −
 /// (c0+c1+c2)`, is derived — **plus the latent's residual in a third tile texture**.
-/// Because the latent mixes linearly, the ordinary premultiplied-"over" deposit *is*
-/// Mixbox mixing (blue over yellow → green), so the blends and the stamp law are the
-/// same as Oklab's; what differs is the third channel and the media pass, which
-/// evaluates Mixbox's pigment polynomial and adds the residual back.
+/// The latent mixes linearly, so the ordinary premultiplied-"over" deposit *is*
+/// Mixbox mixing (blue over yellow → green) and the blends and stamp law match
+/// Oklab's; what differs is the third channel and the media pass, which evaluates
+/// Mixbox's pigment polynomial and adds the residual back.
 ///
 /// **The residual is not optional.** Four trained pigments do not span sRGB, so the
 /// polynomial alone reaches neither black — whose concentrations render as `#383838`
 /// — nor the saturated corners, where it is off by up to 0.39 (mean 0.05 over the
-/// cube). This engine dropped it for as long as a tile held only three concentrations
-/// plus coverage, and no cheaper recovery exists: `rgb → c` is many-to-one, with up
-/// to 70 sRGB colors sharing one quantized triple across 0.38 of the cube, so the
-/// residual is not a function of the channels stored beside it.
+/// cube). No cheaper recovery exists: `rgb → c` is many-to-one, with up to 70 sRGB
+/// colors sharing one quantized triple across 0.38 of the cube, so the residual is
+/// not a function of the channels stored beside it.
 ///
 /// Conversions use the vendored `mixbox` crate (CC BY-NC 4.0; `vendor/mixbox`),
 /// which is why this whole space is behind the `mixbox` cargo feature: the licence is

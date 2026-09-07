@@ -157,8 +157,8 @@ pub(crate) struct FloatPlan {
 }
 
 /// Plan a float of `tiles` under `selection`, whose canvas coverage meets the
-/// layer's frame at `frame`. `None` rejects the action — nothing selected over
-/// the layer, or more boundary tiles than the cap allows — deterministically.
+/// layer's frame at `translation`. `None` rejects the action — nothing selected
+/// over the layer, or more boundary tiles than the cap allows — deterministically.
 pub(crate) fn plan_float(
     tiles: &TileMap,
     selection: &Selection,
@@ -626,9 +626,8 @@ pub(crate) fn plan_gated_mask(
 }
 
 /// Record that `key`'s quad reaches each of `dests`, in the destination's own source
-/// list — the dedup, the cap and the candidate budget every planner shares. `cap`
-/// bounds the destination count, without which a hostile map grows an unbounded
-/// `BTreeMap`.
+/// list — the dedup and the cap every planner shares. `cap` bounds the destination
+/// count, without which a hostile map grows an unbounded `BTreeMap`.
 ///
 /// `None` is the refusal every caller propagates: a plan too large to run is declined
 /// whole, deterministically, so peers and replays agree (§16).

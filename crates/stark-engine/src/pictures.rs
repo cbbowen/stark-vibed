@@ -1,20 +1,18 @@
 //! Content-addressed **pictures**: images placed into the document as paint (§23).
 //!
 //! [`AssetStore`](crate::assets::AssetStore)'s sibling, and deliberately a separate
-//! store rather than a second map inside it. The two share a sentence — content
-//! addressed by the hash of a decoded canonical form, so the log references 32 bytes
-//! and the pixels ride beside it — and share nothing else: a brush shape is baked
-//! into a prefix-τ volume and a coverage texture the moment it lands, where a picture
-//! has **no GPU residency at all**. The tiles it becomes are built on the CPU
-//! (`gpu::place`) and it is never bound as a texture, which is what leaves its size
-//! bounded by the document (`MAX_PICTURE_DIM`) rather than by
-//! `max_texture_dimension_2d`.
+//! store. The two share one sentence — content addressed by the hash of a decoded
+//! canonical form, so the log references 32 bytes and the pixels ride beside it — and
+//! nothing else: a brush shape is baked into a prefix-τ volume and a coverage texture
+//! the moment it lands, where a picture has **no GPU residency at all**. The tiles it
+//! becomes are built on the CPU (`gpu::place`) and it is never bound as a texture,
+//! which is what leaves its size bounded by the document (`MAX_PICTURE_DIM`) rather
+//! than by `max_texture_dimension_2d`.
 //!
-//! So what is kept is the decoded picture and the bytes it was canonicalized to —
-//! the first because replay needs it and the second because the save file and a peer
-//! do. Behind an [`Arc`] in both directions: a placement is re-applied on every
-//! replay and every history splice that crosses it, and a photograph is not a thing
-//! to clone per lookup.
+//! What is kept is the decoded picture, because replay needs it, and the bytes it was
+//! canonicalized to, because the save file and a peer do — both behind an [`Arc`],
+//! since a placement is re-applied on every replay and every history splice that
+//! crosses it.
 
 use std::collections::hash_map::{Entry, HashMap};
 use std::sync::{Arc, Mutex};

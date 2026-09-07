@@ -1,20 +1,16 @@
 //! Content-addressed brush/image assets (§6.6).
 //!
-//! A brush *shape* is a grayscale coverage mask. Imported images are identified by
-//! the BLAKE3 hash of their **decoded, capped coverage** — not of the bytes they
-//! arrived in — so a `StrokeRecord` references a 32-byte [`AssetId`] rather than
-//! embedding pixels, keeping the action log tiny and giving deterministic,
-//! deduplicated, collaboration-friendly resolution.
+//! A brush *shape* is a grayscale coverage mask, identified by the BLAKE3 hash of
+//! its **decoded, capped coverage** — not of the bytes it arrived in — so a
+//! `StrokeRecord` references a 32-byte [`AssetId`] rather than embedding pixels,
+//! and two encodings of one picture are the same asset. That is the identity
+//! contract §19 freezes: the decode and the cap are part of what an id *means*,
+//! which is why they live in `stark-assetid`, where a build script can compute one
+//! without a GPU. See [`AssetStore::import`].
 //!
-//! Hashing the canonical form rather than the file is what makes two encodings of one
-//! picture the same asset, and it is the identity contract §19 freezes: the cap and
-//! the decode are part of what an id *means*, which is why they live in
-//! `stark-assetid` where a build script can compute one without a GPU. See
-//! [`AssetStore::import`].
-//!
-//! The store decodes an image to a single-channel `R8` coverage texture and
-//! caches it on the GPU. It is `Clone` (`Arc`-backed) so it can ride inside the
-//! `Action::Context` alongside the tile pool and stroke renderer.
+//! The store caches each mask on the GPU as a single-channel `R8` coverage texture.
+//! It is `Clone` (`Arc`-backed) so it can ride inside the `Action::Context`
+//! alongside the tile pool and stroke renderer.
 
 use std::collections::hash_map::{Entry, HashMap};
 use std::sync::{Arc, Mutex};
@@ -28,9 +24,8 @@ use stark_model::AssetId;
 /// A loaded brush shape: its source bytes and the textures the stroke path reads it
 /// through.
 ///
-/// The **views** alone, with no texture beside them. A `wgpu::TextureView` holds its
-/// own reference to the texture it was made from, so the texture outlives the view by
-/// construction. `StrokeRenderer` drops both textures at the same call and renders.
+/// The **views** alone, with no texture beside them: a `wgpu::TextureView` holds its
+/// own reference to the texture it was made from, so the texture outlives it.
 struct Mask {
     /// Source bytes, retained so the asset can be bundled into the save file.
     bytes: Vec<u8>,
@@ -47,21 +42,20 @@ struct Mask {
     /// The pen-oriented prefix-τ (§6.6): one layer per relative angle, built on
     /// first use rather than at import.
     ///
-    /// Lazy for the asymmetry between the two: the identity above is one layer and a
-    /// linear pass, while this is a rotation per layer over a volume `layers` times
-    /// the size — and the orientation source is a brush setting the store cannot see at
-    /// import, so eagerly baking it would charge every follow-stroke brush in the
-    /// library for a mode it never enters.
+    /// Lazy because it is a rotation per layer over a volume `layers` times the size,
+    /// and the orientation source is a brush setting the store cannot see at import —
+    /// baking it eagerly would charge every follow-stroke brush in the library for a
+    /// mode it never enters.
     pen: Option<wgpu::TextureView>,
     /// The plain (unrotated) coverage mask, for per-stamp footprint sampling in the
-    /// brush-dynamics stamp loop (§6.2) — orientation is applied by rotating the sample
-    /// coordinates, so one texture serves both sources (unlike the prefix-τ, whose
-    /// integration axis is baked in).
+    /// brush-dynamics stamp loop (§6.2). Orientation rotates the sample coordinates,
+    /// so one texture serves both sources — unlike the prefix-τ, whose integration
+    /// axis is baked in.
     coverage_view: wgpu::TextureView,
-    /// The **coverage prefix** a liquify follow reads (§6.13): the prefix-τ's
-    /// shape with the coverage integrated linearly — one identity layer for the
-    /// follow-stroke source, a rotated stack for the pen — each built on the first
-    /// liquify stroke that asks, since nothing but that effect reads either.
+    /// The **coverage prefix** a liquify follow reads (§6.13): the prefix-τ's shape
+    /// with the coverage integrated linearly — one identity layer for the
+    /// follow-stroke source, a rotated stack for the pen. Built on the first liquify
+    /// stroke that asks, since nothing else reads either.
     warp_follow: Option<wgpu::TextureView>,
     warp_pen: Option<wgpu::TextureView>,
     /// The mask's **rise** (§6.13), radii — [`mask_rise`], measured once at import.
@@ -70,15 +64,12 @@ struct Mask {
 
 impl Mask {
     /// The prefix-τ volume this orientation source reads, baking the pen one on first
-    /// ask (§6.6). The one place that bake happens, so it is also the one place it is
-    /// measured.
+    /// ask (§6.6).
     ///
-    /// **`asset.pen_bake` is the row to read it by.** The bake rotates the mask into
-    /// `orientation_layers` slices and integrates each — up to
-    /// [`PREFIX_BUDGET_BYTES`] of `f32` and a `ln` per texel of it — inside the store
-    /// lock, on whichever stroke first asks. It is the largest single piece of work
-    /// the store does and it happens mid-gesture, so a Timing Stats table that could
-    /// not see it was a table that could not explain the hitch it causes.
+    /// That bake is the largest single piece of work the store does — up to
+    /// [`PREFIX_BUDGET_BYTES`] of `f32` and a `ln` per texel of it — and it runs
+    /// inside the store lock, mid-gesture, on whichever stroke first asks.
+    /// `asset.pen_bake` is its timing row.
     fn prefix(
         &mut self,
         ctx: &GpuContext,
@@ -225,12 +216,6 @@ impl AssetStore {
     /// needs both for the dynamics path, and asking twice could find the prefix hot
     /// and the coverage cold.
     ///
-    /// It replaced a `prefix_view`/`coverage_view` pair, which is where the argument
-    /// below arrived; both outlived their last caller and are gone. The plain coverage
-    /// is one texture for both orientation sources, unlike the prefix-τ volume: the
-    /// loop samples it in the **shape's own frame**, rotating the lookup rather than
-    /// the mask, so nothing there is ever turned and there is no corner to lose.
-    ///
     /// **The two orientation sources read different volumes**, because they ask
     /// different questions of the same mask (§6.6). `FollowStroke` keeps the shape's
     /// axis on the tangent, so the relative angle is always 0 and one identity layer
@@ -238,18 +223,13 @@ impl AssetStore {
     /// mask inside the frame the sweep integrates along — safe in the mask's own
     /// square, because a canonical mask's content lies inside the disc inscribed in
     /// it (`stark_assetid::coverage`) and a rotation maps that disc to itself. The
-    /// volume was padded by `√2` while a mask could occupy its corners, and every
-    /// pen-oriented brush paid double the texels — or, at the memory budget, half
-    /// the orientation resolution — for padding that held nothing.
+    /// plain coverage is one texture for both sources: the loop samples it in the
+    /// **shape's own frame**, rotating the lookup rather than the mask.
     ///
-    /// The pen volume is built here on first ask and kept. `&self` throughout: the
-    /// store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the cache
-    /// grows after import.
-    ///
-    /// The pen volume is built here on first ask and kept — and the coverage prefix
-    /// a liquify follow reads (§6.13), when `warp` asks for it, the same way.
-    /// `&self` throughout: the store is `Arc<Mutex<_>>` behind a `Clone`, and this
-    /// is the one place the cache grows after import.
+    /// The pen volume — and the coverage prefix a liquify follow reads (§6.13), when
+    /// `warp` asks for it — is built here on first ask and kept. `&self` throughout:
+    /// the store is `Arc<Mutex<_>>` behind a `Clone`, and this is the one place the
+    /// cache grows after import.
     pub(crate) fn mask_views(
         &self,
         id: AssetId,
@@ -295,11 +275,11 @@ impl AssetStore {
 /// — smooth for any practical pen rotation.
 const MAX_ORIENTATION_LAYERS: u32 = 64;
 
-/// Memory budget (bytes) for one brush's pen-oriented prefix-τ volume. The layer count
-/// is chosen so `width × height × layers × 8 (Rg32Float)` stays under this — so a large
-/// detailed stamp keeps its full resolution and trades orientation granularity for
-/// memory instead. Only the pen volume is measured against it: the follow-stroke bake
-/// is a single layer and has nothing to trade.
+/// Memory budget (bytes) for one brush's pen-oriented prefix-τ volume: the layer count
+/// is chosen so `width × height × layers × 8 (Rg32Float)` stays under it, so a large
+/// detailed stamp keeps its full resolution and trades orientation granularity
+/// instead. Only the pen volume is measured against it — the follow-stroke bake is a
+/// single layer and has nothing to trade.
 const PREFIX_BUDGET_BYTES: u32 = 64 << 20; // 64 MiB
 
 /// How many orientation slices to build for a `width × height` volume: as many as
@@ -320,9 +300,8 @@ fn orientation_layers(width: u32, height: u32) -> u32 {
 /// the source. Returns a `layers × height × width` buffer.
 ///
 /// Slice 0 is *not* the identity — it is the mask resampled through the rotation
-/// arithmetic at θ = 0. Nothing needs it to be: `FollowStroke`, the one caller that
-/// would read layer 0 as the shape's native orientation, has its own single-layer
-/// bake and never reads this at all.
+/// arithmetic at θ = 0. `FollowStroke`, the only caller that would read it as the
+/// shape's native orientation, has its own single-layer bake instead.
 fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<f32> {
     let w = width as usize;
     let plane = w * height as usize;
@@ -368,12 +347,10 @@ fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<
 /// the liquify step budget prices a stamp at.
 ///
 /// Bounded from the steepest texel-to-texel step along either axis rather than
-/// searched for as the round tip's is (`tips::round_rise`): a stamp is any picture,
-/// its rows are not monotone, and the bound is the honest one — a coverage climbing
-/// at that rate needs at least this much travel to climb that far. A step of a
-/// whole texel — a hard mask — gives a rise of half a texel, which the budget's
-/// own floor then rounds up to the canvas texel; a mask with no steps at all has
-/// no rise, and prices as none.
+/// searched for as the round tip's is (`tips::round_rise`): a stamp is any picture
+/// and its rows are not monotone. A hard mask — a whole-texel step — gives a rise of
+/// half a texel, which the budget's own floor rounds up to the canvas texel; a mask
+/// that never climbs has no rise, and prices as none.
 fn mask_rise(coverage: &[u8], width: u32, height: u32) -> f32 {
     let (w, h) = (width as usize, height as usize);
     let at = |x: usize, y: usize| coverage[y * w + x] as f32 / 255.0;
@@ -400,12 +377,10 @@ fn mask_rise(coverage: &[u8], width: u32, height: u32) -> f32 {
 /// A coverage sample's **optical depth**, `κ = −ln(1 − coverage)` — the currency the
 /// deposit sums (§6.1), and the one conversion between the two.
 ///
-/// The clamp is what keeps `κ` finite where a mask reaches 1: full coverage is
-/// infinite depth, and a mask that says so would carry `+∞` into every prefix sum
-/// downstream of it. Capping the *coverage* rather than the depth puts the ceiling
-/// somewhere a reader of the mask can see it. `dynamics.wesl`'s own `tau_of` mirrors
-/// this, clamp included, so the tool side — which has no prefix to difference — agrees
-/// with the volume built here.
+/// The clamp keeps `κ` finite where a mask reaches 1: full coverage is infinite
+/// depth, and would carry `+∞` into every prefix sum downstream of it.
+/// `dynamics.wesl`'s own `tau_of` mirrors this clamp, so the tool side — which has
+/// no prefix to difference — agrees with the volume built here.
 pub(crate) fn tau_of(coverage: f32) -> f32 {
     -(1.0 - coverage.clamp(0.0, 0.999)).ln()
 }
@@ -418,10 +393,9 @@ pub(crate) enum Integrand {
     Tau,
     /// The **coverage prefix**: the coverage itself, so a difference across a
     /// stretch of travel is the mask's mean over it times the travel — what the
-    /// liquify follow is a fraction of (§6.13). Linear where τ is not: a texel's
-    /// follow is then how *long* the tip covered it, and a full pass over the
-    /// tip's core is exactly the travel, where τ would have made it seven times
-    /// that and a shoulder next to nothing.
+    /// liquify follow is a fraction of (§6.13). Linear where τ is not, so a texel's
+    /// follow is how *long* the tip covered it and a full pass over the tip's core
+    /// is exactly the travel.
     Coverage,
 }
 
@@ -434,31 +408,26 @@ impl Integrand {
     }
 }
 
-/// Build a brush's **prefix** volume (§6.2, §6.6): for each orientation `layer`
-/// and each row, the running integral of the [`Integrand`] — optical depth
-/// `κ = −ln(1−coverage)` for the deposits, the coverage itself for the liquify
-/// follow (§6.13) — along the travel axis (x), normalized to brush-local units (x
-/// spans `[-1, 1]`, width 2). Stored as an `Rg32Float` **2D-array** texture (the
-/// array axis is orientation, sampled with wrapping) and read via `textureLoad` +
-/// manual trilinear by the sweep shader: a segment's swept depth at a point is
-/// `prefix(u) − prefix(u−d)` on its layer. (A 2D array rather than a true 3D
-/// texture so the mask keeps its full width/height — 3D textures are capped far
-/// smaller, e.g. 256px, by `maxTextureDimension3D`.)
+/// Build a brush's **prefix** volume (§6.2, §6.6): for each orientation `layer` and
+/// each row, the running integral of the [`Integrand`] along the travel axis (x), in
+/// brush-local units (x spans `[-1, 1]`, width 2). Stored as an `Rg32Float`
+/// **2D-array** texture — the array axis is orientation, sampled with wrapping — and
+/// read via `textureLoad` + manual trilinear by the sweep shader, so a segment's
+/// swept depth at a point is `prefix(u) − prefix(u−d)` on its layer. A 2D array
+/// rather than a true 3D texture so the mask keeps its full width/height: 3D textures
+/// are capped far smaller, e.g. 256px, by `maxTextureDimension3D`.
 ///
 /// `g` carries the **lateral prefix of `r`** — `∫₋₁^y prefix(x, ·)`, brush units on
 /// both axes — so the sweep can read the deposit's exact box average over the pixel's
 /// own footprint as one more difference (`stamp_common::prefix_span_box`, §6.2).
-/// Baked at the midpoint rule: the value at a row's centre is the integral *to* that
-/// centre, which is what makes the shader's bilinear tap exact there rather than half
-/// a texel off — a filtered stroke would otherwise sit shifted against its own
-/// unfiltered taper.
+/// Baked at the midpoint rule: a row's value is the integral *to* its centre, which
+/// is what makes the shader's bilinear tap exact there rather than half a texel off.
 ///
 /// Shared by [`AssetStore`] (image brushes — one identity layer for follow-stroke, a
 /// rotated stack for pen) and the stroke renderer (the round tip, regenerated per
 /// `hardness` — rotation-invariant, 1 layer). `coverage` is `layers × height × width`
 /// row-major in `[0, 1]`. Every volume is baked on the mask's own grid, so one
-/// column's brush-local width is `2/width` for all of them — it was a parameter while
-/// the pen stack was padded and its columns stood for a wider span than they measured.
+/// column's brush-local width is `2/width` throughout.
 ///
 /// Returns the view alone: it holds its own reference to the texture, so there is
 /// nothing for a caller to keep beside it.
@@ -593,13 +562,11 @@ mod tests {
 
     /// **Turning a canonical shape must not change how much of it there is.**
     ///
-    /// This is what the whole unpadded bake rests on: a canonical mask's content lies
-    /// inside the disc inscribed in its square (`stark_assetid::coverage`), a rotation
-    /// maps that disc to itself, and so no angle carries any of the mask off the edge
-    /// of its own volume. The mask here reaches the disc's rim — the most a canonical
-    /// mask can occupy, with structure on both axes so a loss would register — and
-    /// every layer's total has to match the unrotated one's. While a mask could fill
-    /// its corners, this exact property is what forced the `√2` padding.
+    /// The unpadded bake rests on this: a canonical mask's content lies inside the
+    /// disc inscribed in its square (`stark_assetid::coverage`), a rotation maps that
+    /// disc to itself, so no angle carries any of the mask off the edge of its own
+    /// volume. The mask here reaches the disc's rim — the most a canonical mask can
+    /// occupy — with structure on both axes so a loss would register.
     #[test]
     fn rotating_a_canonical_mask_loses_nothing() {
         const LAYERS: u32 = 8; // so layer 1 is the worst case, 45°
@@ -635,11 +602,9 @@ mod tests {
     /// The `g` channel is the lateral integral of `r` — checked per layer with an
     /// asymmetric two-layer mask, so a plane- or stride-indexing slip cannot cancel.
     ///
-    /// Two readings of the claim, both against independent summation of `r`:
-    /// the last row's `g` reaches the column total less its own half-row (the
-    /// midpoint rule's rim), and every row's `g` is the rows before it plus half
-    /// itself — which is what makes a bilinear tap at a row centre the exact
-    /// integral to that centre (`stamp_common::prefix2_edge` relies on it).
+    /// Against independent summation of `r`: every row's `g` is the rows before it
+    /// plus half of itself, which is what makes a bilinear tap at a row centre the
+    /// exact integral to that centre (`stamp_common::prefix2_edge` relies on it).
     #[test]
     fn the_lateral_prefix_integrates_the_travel_prefix() {
         let (w, h, layers) = (16u32, 12u32, 2u32);

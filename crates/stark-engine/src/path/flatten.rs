@@ -12,10 +12,9 @@ use std::ops::Range;
 /// A point sampled *from* the curve: where it is, where it is heading, and the pen
 /// attributes there.
 ///
-/// `vel` is the derivative of position with respect to the span parameter — its
-/// *direction* is the curve tangent, which is what [`flatten`] bounds and what
-/// makes corners survive; its magnitude is an artifact of the parameterization and
-/// means nothing to consumers.
+/// `vel` is the derivative of position with respect to the span parameter: only its
+/// *direction* — the curve tangent, which is what [`flatten`] bounds — is meaningful.
+/// The magnitude is an artifact of the parameterization.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct IntermediateSample {
     pub pos: Vec2,
@@ -24,14 +23,13 @@ pub struct IntermediateSample {
     pub tilt: Vec2,
     pub time: f32,
     /// Arc length from the stroke start (canvas px), measured along the **arcs** the
-    /// emitted edges stand for ([`fit_arc`]) — the distance axis that the load drain,
-    /// the color-dynamics noise, and the tool reservoir are parameterized by (§6.2).
+    /// emitted edges stand for ([`fit_arc`]) — the distance axis the load drain, the
+    /// color-dynamics noise and the tool reservoir are parameterized by (§6.2).
     ///
-    /// Along the arcs and not along the chords between them, because the arc is what
-    /// gets swept: the segment builder steps a piece of one out to `dist + length`
-    /// and the next edge has to pick up exactly there, or the taper's radius has a
-    /// step at every curved joint and a bleed firing's window is scanned twice
-    /// (§6.2).
+    /// Along the arcs and not the chords under them: the segment builder steps an arc
+    /// out to `dist + length` and the next edge must pick up exactly there, or the
+    /// taper's radius steps at every curved joint and a bleed firing's window is
+    /// scanned twice (§6.2).
     pub dist: f32,
 }
 
@@ -45,11 +43,10 @@ pub struct FlattenTolerance {
     pub position: f32,
     /// Max turn (radians) of the curve tangent across one segment.
     ///
-    /// This is the bound that makes adaptive sampling *safe*: positional flatness
-    /// alone is fooled by a symmetric wiggle whose midpoint happens to sit on the
-    /// chord, and it says nothing about the direction the brush is swept along
-    /// (which orients the footprint, §6.6). It is also what preserves corners —
-    /// the tangent turns fastest exactly there, so that is where samples go.
+    /// What makes adaptive sampling *safe*: positional flatness alone is fooled by a
+    /// symmetric wiggle whose midpoint sits on the chord, and says nothing about the
+    /// direction the brush is swept along (which orients the footprint, §6.6). It is
+    /// also what preserves corners — the tangent turns fastest exactly there.
     pub angle: f32,
     /// Max change in a pen attribute — pressure, or the length of the tilt delta —
     /// across one segment. Attributes are constant *within* a swept segment, so
@@ -60,23 +57,19 @@ pub struct FlattenTolerance {
     /// applied per segment rather than per fragment — the `drain` falloff, the dynamics
     /// loop's reservoir cadence (see `gpu::stroke::flatten_tolerance`).
     ///
-    /// The arc rather than the chord under it, for the same reason the positional
-    /// budget is spent on the arc: that is the primitive the caller will sweep, and a
-    /// cap on the chord under-prices the travel the renderer then has to fit in a
-    /// region. Unlike the error bounds this is a hard requirement, so it is met by
-    /// construction and not merely aimed at — [`flatten`] cuts each span into enough
-    /// pieces that the error-driven subdivision inside one can always reach it.
+    /// The arc rather than the chord under it: that is the primitive the caller will
+    /// sweep, and a cap on the chord under-prices the travel. Unlike the error bounds
+    /// this is a hard requirement, met by construction — [`flatten`] cuts each span
+    /// into enough pieces that the error-driven subdivision inside one can reach it.
     pub max_len: f32,
     /// Tightest arc the caller can actually sweep (1/canvas px); `INFINITY` for "no
-    /// opinion". Also a renderer-supplied cap rather than an error bound: the shaders
-    /// sweep a curved segment by unrolling the annulus about its centre of curvature
-    /// into the straight travel frame, and that stops being accurate once the tip is
-    /// an appreciable fraction of the curve's own radius
-    /// (see `gpu::stroke::MAX_TIP_TURN`).
+    /// opinion". A renderer-supplied cap rather than an error bound: the shaders sweep
+    /// a curved segment by unrolling the annulus about its centre of curvature into
+    /// the straight travel frame, which stops being accurate once the tip is an
+    /// appreciable fraction of the curve's own radius (see `gpu::stroke::MAX_TIP_TURN`).
     ///
-    /// [`fit_arc`] enforces it, so an edge too tight to sweep is *priced* as a chord
-    /// as well as drawn as one — which is what stops the budget being spent on a
-    /// primitive that never gets used.
+    /// [`fit_arc`] enforces it, so an edge too tight to sweep is *priced* as a chord as
+    /// well as drawn as one.
     pub max_arc_curvature: f32,
 }
 
@@ -116,14 +109,12 @@ impl Default for FlattenTolerance {
 /// Max bisections of a single span piece: 2^10 edges, the ceiling on what any one
 /// piece can cost however pathological its knots.
 ///
-/// **A backstop on the *error* bounds, which is what it was for.** `position`, `angle`
-/// and `attribute` are allowances a pathological span can ask unboundedly much of, so
-/// their pursuit has to stop somewhere and a picture drawn a shade off budget is the
-/// right thing to hand back. [`FlattenTolerance::max_len`] is not one of those: it is a
-/// requirement the caller states, and would be silently overridden here whenever a
-/// span wanted more than 1,024 edges of it. [`span_pieces`] is what keeps the two
-/// apart — the requirement decides how many pieces a span is cut into, this decides
-/// how hard the error bounds are chased inside one.
+/// **A backstop on the *error* bounds only.** `position`, `angle` and `attribute` are
+/// allowances a pathological span can ask unboundedly much of, so their pursuit has to
+/// stop somewhere. [`FlattenTolerance::max_len`] is not one of those — it is a
+/// requirement, and [`span_pieces`] is what keeps the two apart: the requirement
+/// decides how many pieces a span is cut into, this decides how hard the error bounds
+/// are chased inside one.
 const MAX_SUBDIVISION_DEPTH: u32 = 10;
 
 /// Edges one exhausted piece costs — what [`MAX_SUBDIVISION_DEPTH`] affords.
@@ -132,27 +123,21 @@ const EDGES_PER_PIECE: f32 = (1u32 << MAX_SUBDIVISION_DEPTH) as f32;
 /// Ceiling on the pre-split of one span, so a `max_len` no renderer budget can produce
 /// cannot ask for an unbounded polyline. 64 pieces is 65,536 edges, which at the
 /// renderer's own floor (`gpu::stroke::MIN_SEGMENT_LEN`, 0.5 px) is a 32,768 px span —
-/// past anything a fitted stroke holds, and the only reason it is a number at all is
-/// that [`flatten`] is reachable with a tolerance nobody's budget built.
+/// past anything a fitted stroke holds.
 const MAX_SPAN_PIECES: u32 = 64;
 
 /// How many uniform parametric pieces a span is cut into *before* the error-driven
 /// subdivision runs inside each — the depth floor [`FlattenTolerance::max_len`]'s hard
-/// requirement needs, priced so that it costs nothing where there is no requirement.
+/// requirement needs. **1 whenever [`MAX_SUBDIVISION_DEPTH`] can already reach the cap
+/// unaided**, so a span with no requirement to meet keeps the arithmetic the error
+/// bounds alone give it.
 ///
-/// **1 whenever [`MAX_SUBDIVISION_DEPTH`] can already reach the cap unaided**, so every
-/// stroke the flattener was already cutting correctly comes out bit for bit: the
-/// pre-split engages in exactly the regime that was quietly missing the cap and nowhere
-/// else.
-///
-/// The count is taken from a bound on the span's *speed* rather than from its chord,
-/// which is what makes the cap met rather than aimed at. The Bernstein weights of a
-/// cubic's derivative sum to 1, so `|B′| ≤ 3·max leg` everywhere on the span; a piece
-/// of parametric width `h` therefore travels at most `3·max leg·h`, and
+/// The count comes from a bound on the span's *speed* rather than from its chord, which
+/// is what makes the cap met rather than aimed at. The Bernstein weights of a cubic's
+/// derivative sum to 1, so `|B′| ≤ 3·max leg` everywhere on the span; a piece of
+/// parametric width `h` therefore travels at most `3·max leg·h`, and
 /// [`MAX_SUBDIVISION_DEPTH`] halvings inside it leave every edge under `max_len`
-/// whatever the parameterization does with the arc length. The subdivision still stops
-/// the moment an edge is within budget, so a piece that did not need the depth does not
-/// spend it.
+/// whatever the parameterization does with the arc length.
 fn span_pieces(sp: &Span, max_len: f32) -> u32 {
     let speed = 3.0
         * sp.b
@@ -163,10 +148,9 @@ fn span_pieces(sp: &Span, max_len: f32) -> u32 {
     if speed > afforded {
         ((speed / afforded).ceil() as u32).clamp(1, MAX_SPAN_PIECES)
     } else {
-        // `INFINITY` (no opinion), a non-positive cap, and a NaN in either term all
-        // land here, which is why the comparison is spelled the way round that lets
-        // them: there is no requirement to build a floor under, and the span keeps the
-        // arithmetic the error bounds alone give it.
+        // The comparison is spelled this way round so that `INFINITY` (no opinion), a
+        // non-positive cap and a NaN in either term all land here: no requirement to
+        // build a floor under.
         1
     }
 }
@@ -174,9 +158,9 @@ fn span_pieces(sp: &Span, max_len: f32) -> u32 {
 /// The curve point at the **end** of span `k` — where span `k + 1` picks up. `k`
 /// past the last span gives the stroke's own end point.
 ///
-/// One Bézier conversion and one evaluation, with no subdivision at all, which is
-/// what lets a caller walk spans back from the live end of a stroke measuring chords
-/// without paying for the polyline (see `gpu::stroke::safe_frozen`).
+/// One Bézier conversion and one evaluation, no subdivision — so a caller may walk
+/// spans back from the live end of a stroke measuring chords without paying for the
+/// polyline (see `gpu::stroke::safe_frozen`).
 pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
     // Fewer than two control points is not a curve: one is a click, zero nothing.
     let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
@@ -187,11 +171,10 @@ pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
 }
 
 /// The curve point at parameter `t`, in span units, clamped to the domain — the
-/// general position [`span_end`] answers at whole spans. What a caller
-/// measuring against a stroke's marker uses
-/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)): the
-/// marker names a place mid-span, where the deposit begins. A non-finite `t`
-/// reads the curve's own start — records arrive from files and peers.
+/// general position [`span_end`] answers at whole spans. Reach for it to measure
+/// against a stroke's marker
+/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)), which names
+/// a place mid-span. A non-finite `t` reads the curve's own start.
 pub fn point_at(knots: &[ControlPoint], t: f32) -> Vec2 {
     let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
         return knots.first().map_or(Vec2::ZERO, |k| k.pos);
@@ -217,10 +200,10 @@ pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<Intermediat
 /// [`flatten`] restricted to `spans`, with the arc-length accumulator starting at
 /// `dist0`.
 ///
-/// The polyline starts at the first span's own start knot, so adjacent ranges
-/// share exactly one point and their segments (consecutive pairs) tile the stroke
-/// with no gap and no overlap — the shape an incremental renderer wants, together
-/// with [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans).
+/// The polyline starts at the first span's own start knot, so adjacent ranges share
+/// exactly one point and their segments tile the stroke with no gap and no overlap —
+/// what an incremental renderer wants, with
+/// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans).
 pub fn flatten_spans(
     knots: &[ControlPoint],
     spans: Range<usize>,
@@ -230,28 +213,23 @@ pub fn flatten_spans(
     flatten_spans_from(knots, 0.0, spans, dist0, tol)
 }
 
-/// [`flatten_spans`] with everything before curve parameter `from` left out —
-/// the stroke's marker
-/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)),
-/// honoured here, in the one place both render paths flatten through, so a live
-/// tail, a commit, a replay and a peer all trim identically (§6.2).
+/// [`flatten_spans`] with everything before curve parameter `from` left out — the
+/// stroke's marker
+/// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)), honoured in
+/// the one place both render paths flatten through, so a live tail, a commit, a replay
+/// and a peer all trim identically (§6.2).
 ///
-/// `from` at or before the range's start is the identity — bit for bit, since
-/// it then takes the very code path the untrimmed call takes — which is what
-/// keeps every record with `start == 0`, including every record from before the
-/// marker existed, on exactly the floats it always flattened to. A range
-/// entirely behind the marker comes back **empty**: its spans are real spans of
-/// the record's curve, but no travel of the *stroke*, and the segment builder
-/// treats an empty polyline as exactly that.
+/// `from` at or before the range's start is the identity, bit for bit. A range entirely
+/// behind the marker comes back **empty**: its spans are real spans of the record's
+/// curve, but no travel of the *stroke*.
 ///
-/// The accumulator therefore reads `dist0` — 0, for a whole-stroke render — at
-/// the marker itself, which re-bases every distance-parameterized quantity (the
-/// tapers, the `drain` falloff, the color-dynamics noise, the reservoir
-/// cadence) onto the stroke's own travel: the run-up is not painted, and it is
-/// not aged over either.
+/// The accumulator reads `dist0` — 0, for a whole-stroke render — at the marker itself,
+/// which re-bases every distance-parameterized quantity (the tapers, the `drain`
+/// falloff, the color-dynamics noise, the reservoir cadence) onto the stroke's own
+/// travel: the run-up is neither painted nor aged over.
 ///
-/// `from` is clamped to the domain and a non-finite `from` reads 0 — records
-/// arrive from files and peers, and flattening one must not panic.
+/// `from` is clamped to the domain and a non-finite `from` reads 0 — records arrive
+/// from files and peers, and flattening one must not panic.
 pub fn flatten_spans_from(
     knots: &[ControlPoint],
     from: f32,
@@ -263,11 +241,10 @@ pub fn flatten_spans_from(
         return Vec::new();
     }
     // Fewer than two control points is not a curve: a lone knot is a click, and the
-    // path is that one point with no direction. Asked *before* the range is looked at,
-    // because it is a fact about the polygon and the branch below is a fact about the
-    // request — conflated, `flatten_spans(knots, 3..3, ..)` on a real curve came back
-    // as a stray point at `knots[3]` instead of nothing, which is not a tiling of the
-    // stroke (see this function's contract).
+    // path is that one point with no direction. Asked *before* the range, because this
+    // is a fact about the polygon where the branch below is one about the request —
+    // conflated, an empty range on a real curve would yield a stray point rather than
+    // nothing, which is not a tiling of the stroke.
     let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
         let k = knots[0];
         return vec![IntermediateSample {
@@ -287,10 +264,8 @@ pub fn flatten_spans_from(
         0.0
     };
     if spans.is_empty() {
-        // No spans of a real curve were asked for. Adjacent ranges share exactly one
-        // point and their segments tile the stroke, so an empty range contributes
-        // none of it — the same answer the "entirely behind the marker" branch below
-        // gives, for the same reason.
+        // Adjacent ranges tile the stroke, so a range holding no spans of a real
+        // curve contributes none of it.
         return Vec::new();
     }
     if from >= spans.end as f32 {
@@ -322,9 +297,7 @@ pub fn flatten_spans_from(
         let pieces = span_pieces(&sp, tol.max_len);
         let mut lo = End { u, s: a };
         for p in 1..=pieces {
-            // The last piece ends at `1.0` exactly — and a single piece *is* the span,
-            // so a span with no requirement to build a floor under takes the very
-            // arithmetic it always took, ends and all.
+            // The last piece ends at `1.0` exactly, so a single piece *is* the span.
             let hu = if p == pieces {
                 1.0
             } else {
@@ -378,14 +351,11 @@ fn subdivide(
 
 /// Append `s`, giving it the arc length accumulated along the edges emitted so far.
 ///
-/// The edge's length is [`fit_arc`]'s, from the **same call** the segment builder
-/// makes for that edge — the previous sample's own derivative, this sample's position,
-/// the caller's curvature cap. Not a second expression that ought to agree with it:
-/// `dist` is what the renderer steps *along* the arc from, so the two would be
-/// measuring the same edge with different rulers, and the disagreement — the arc over
-/// the chord, up to 0.7% — lands as a step in the taper's radius at every curved joint
-/// and as a sliver of path two consecutive segments both scan for bleed firings
-/// (§6.2).
+/// The edge's length is [`fit_arc`]'s, from the **same call** the segment builder makes
+/// for that edge, not a second expression that ought to agree with it: `dist` is what
+/// the renderer steps *along* the arc from, and a disagreement — the arc over the chord,
+/// up to 0.7% — lands as a step in the taper's radius at every curved joint and as a
+/// sliver of path two consecutive segments both scan for bleed firings (§6.2).
 fn emit(out: &mut Vec<IntermediateSample>, mut s: IntermediateSample, tol: FlattenTolerance) {
     let prev = *out.last().expect("the start sample is emitted first");
     let arc = fit_arc(prev.vel, s.pos - prev.pos, tol.max_arc_curvature);
@@ -397,24 +367,18 @@ fn emit(out: &mut Vec<IntermediateSample>, mut s: IntermediateSample, tol: Flatt
 /// the curve at the parametric midpoint.
 ///
 /// The positional test is against the **arc** that edge will be swept as
-/// ([`fit_arc`]), not against the chord between the ends. That is not a relaxation of
-/// the budget — the number is unchanged, and it is still "max distance between a
-/// segment and the curve it replaces". It is the budget finally being spent on the
-/// geometry that gets drawn: an arc's error is second order in the turn where a
-/// chord's is first order, so the same allowance buys a substantially longer edge.
+/// ([`fit_arc`]), not against the chord between the ends: an arc's error is second
+/// order in the turn where a chord's is first order, so the same allowance buys a
+/// substantially longer edge. The **length** cap is priced on that same arc because it
+/// is the travel the renderer makes, and every consumer of the cap — the reservoir
+/// cadence, the region fit — is asking about the travel and not the shortcut across it
+/// (§6.2).
 ///
-/// The **length** cap is priced on that same arc, for the plainer reason that it is
-/// the length the renderer will travel: a chord under the cap can carry an arc over
-/// it, and every consumer of the cap — the reservoir cadence, the region fit — is
-/// asking about the travel and not about the shortcut across it (§6.2).
-///
-/// The `angle` bound is deliberately left where it was, and with the positional test
-/// no longer binding on gentle curves it is usually what does bind now. It earns that:
-/// it is the bound that keeps a single midpoint sample honest (a symmetric wiggle can
-/// sit on any one sample, but it cannot hide from the end tangents), and it is what
-/// holds the *footprint's* orientation still enough — the shape angle is one value per
-/// segment on both paths, and the dynamics loop bakes its reservoir in one frame per
-/// segment (§6.6).
+/// The `angle` bound is usually what binds. It is what keeps a single midpoint sample
+/// honest (a symmetric wiggle can sit on any one sample, but not hide from the end
+/// tangents), and what holds the *footprint's* orientation still enough — the shape
+/// angle is one value per segment on both paths, and the dynamics loop bakes its
+/// reservoir in one frame per segment (§6.6).
 fn within(
     s0: &IntermediateSample,
     sm: &IntermediateSample,
@@ -491,26 +455,19 @@ impl Span {
 /// ```
 ///
 /// The clamp at the two ends is not a special case here but a consequence of the
-/// control sequence [`CubicBSpline`](crate::spline::CubicBSpline) fits against, in which each end control point
-/// appears `degree` times ([`SplineIndex`](crate::spline::SplineIndex)'s knot view).
-/// Repeating `Q0` collapses `b0`, `b1` and
-/// `b2` onto it, which is exactly what pins the curve to the first control point
-/// and starts it heading down the first leg.
+/// control sequence [`CubicBSpline`](crate::spline::CubicBSpline) fits against, in
+/// which each end control point appears `degree` times
+/// ([`SplineIndex`](crate::spline::SplineIndex)'s knot view): repeating `Q0` collapses
+/// `b0`, `b1` and `b2` onto it, pinning the curve to the first control point and
+/// starting it down the first leg.
 ///
 /// The attribute channels are B-splines over the same polygon and the same
-/// parameterization ([`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)), so the identical conversion
-/// carries them: one `blend` per Bézier point does position and attributes at once.
+/// parameterization
+/// ([`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)), so the
+/// identical conversion carries them.
 fn span(view: crate::spline::SplineIndex, knots: &[ControlPoint], k: usize) -> Span {
-    // The clamped knot view is the caller's, built once. It is `crate::spline`'s and
-    // not a copy of it: this file evaluates a *stored* path without the fitter that
-    // produced it, which is a reason to have the evaluator here and never was a reason
-    // to spell the degree twice.
-    //
-    // Taken as a parameter rather than rebuilt here, which is what removes the `expect`
-    // this carried. "Fewer than two control points is not a curve" is the `Option` the
-    // three callers already branch on before asking for a span at all — so the index's
-    // existence *is* that branch, rather than a claim about it restated per span. It
-    // was rebuilt `1 + spans` times per flatten.
+    // The clamped knot view is the caller's, built once: its existence *is* the
+    // "fewer than two control points is not a curve" branch, so no `expect` here.
     let q: [ControlPoint; 4] = std::array::from_fn(|a| knots[view.knot_row(k + a)]);
     const SIXTH: f32 = 1.0 / 6.0;
     const THIRD: f32 = 1.0 / 3.0;
@@ -576,12 +533,9 @@ mod tests {
                 });
             let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
 
-            // Not a second spelling of the count any more — `span_count` asks
-            // `SplineIndex` — so this line is a tautology kept for one thing it still
-            // says: that `reference`, built from a matrix rather than from `m`, has the
-            // `m` this loop thinks it has. What the loop below checks is the part that
-            // was never arithmetic: that the Bézier conversion evaluates to the same
-            // curve.
+            // That `reference`, built from a matrix rather than from `m`, has the `m`
+            // this loop thinks it has. The loop below is the real claim: the Bézier
+            // conversion evaluates to the same curve.
             assert_eq!(
                 span_count(m),
                 reference.num_spans(),
@@ -689,14 +643,11 @@ mod tests {
     }
 
     /// The length cap is a **requirement**, and one span's error-driven subdivision
-    /// ceiling ([`MAX_SUBDIVISION_DEPTH`]) is not allowed to quietly override it
-    /// (§6.2).
+    /// ceiling ([`MAX_SUBDIVISION_DEPTH`]) may not quietly override it (§6.2).
     ///
     /// Two knots is a ~1000 px middle span; at 0.05 px that is ~13,000 edges of a span
     /// halving alone can afford 1,024. The regime is not exotic — the renderer's own
-    /// floor is `MIN_SEGMENT_LEN` = 0.5 px, which the same span overruns at 512 px —
-    /// so the cap has to be met by construction rather than aimed at, which is what
-    /// the pre-split in [`flatten_spans_from`] is for.
+    /// floor is `MIN_SEGMENT_LEN` = 0.5 px, which the same span overruns at 512 px.
     #[test]
     fn flatten_honours_a_cap_finer_than_one_spans_subdivision_ceiling() {
         let knots = [knot(0.0, 0.0), knot(1000.0, 0.0)];
@@ -737,11 +688,9 @@ mod tests {
         }
     }
 
-    /// The marker trim (§6.2): [`flatten_spans_from`] starts the polyline at
-    /// exactly the asked parameter with the accumulator at `dist0`, leaves
-    /// everything behind it out, and still tiles with later ranges — while a
-    /// marker at or before the range is the untrimmed call, so every
-    /// `start == 0` record keeps the floats it always flattened to.
+    /// The marker trim (§6.2): [`flatten_spans_from`] starts the polyline at exactly
+    /// the asked parameter with the accumulator at `dist0`, leaves everything behind
+    /// it out, and still tiles with later ranges.
     #[test]
     fn flattening_from_a_marker_trims_and_only_trims() {
         let knots = [
@@ -801,14 +750,13 @@ mod tests {
     /// backwards.
     ///
     /// Stated over a family and not on one curve, because a *chord* accumulator
-    /// satisfies every check a straight stroke can pose and most of what a gentle one
-    /// can. What separates the two is a curved edge, so the family varies the bend, the
-    /// pen ramp and both caps — including a curvature cap tight enough to send edges
-    /// back to being chords, where the two agree again and have to.
+    /// satisfies every check a straight stroke can pose. What separates the two is a
+    /// curved edge, so the family varies the bend, the pen ramp and both caps —
+    /// including a curvature cap tight enough to send edges back to being chords, where
+    /// the two agree again and have to.
     ///
-    /// Equality is exact rather than toleranced, and that is the claim: this is not two
-    /// derivations of one number that ought to land near each other, it is the same
-    /// expression evaluated in the same order.
+    /// Equality is exact rather than toleranced, and that is the claim: the same
+    /// expression evaluated in the same order, not two derivations of one number.
     #[test]
     fn dist_accumulates_the_arcs_the_edges_stand_for() {
         let mut bent = 0usize;

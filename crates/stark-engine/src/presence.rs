@@ -1,10 +1,8 @@
 //! The presence gesture protocol — **both ends, adjacent** (§17.5).
 //!
 //! [`GestureTx`] encodes the gesture a client has in flight into [`GestureFrame`]s;
-//! [`GestureRx`] reassembles them. That is one protocol, not two: a sent-path
-//! watermark, a head/delta split, gap detection, and a periodic resync that repairs
-//! any receiver which missed a delta. The rules that make it work are properties of
-//! the *pair* —
+//! [`GestureRx`] reassembles them. The rules that make it work are properties of the
+//! *pair*, checkable from neither end alone, which is why both ends live here:
 //!
 //! - a `head` rides exactly the frames that start from index 0;
 //! - only **frozen** control points may be counted as sent, because the provisional
@@ -16,22 +14,13 @@
 //!   because the retained prefix is trusted on the strength of `from` values the
 //!   receiver may never have seen.
 //!
-//! — and none of them is checkable from one side alone. Split across the sender's
-//! module and the receiver's, each half was individually defensible and they
-//! disagreed about states the other could produce; that seam is where both of the
-//! bugs fixed in `77f0f69` lived, and the last rule above is a third that only
-//! surfaced once the two ends could be driven against each other. Here the state
-//! machines sit side by side, the rules are `debug_assert`ed where they are cheap,
-//! and `tests::round_trip_survives_a_lossy_channel` drives one through a dropping,
-//! duplicating, delaying channel into the other.
-//!
 //! [`PresenceTx`] is the frame around the gesture: the name, the cursor, and the
 //! latch that decides when a [`PeerFrame`] goes out at all (§17.4, §17.5). It holds
 //! the [`GestureTx`], so the whole sending half is one value a session owns; the
 //! receiving half of the *frame* is [`Peers::merge`](crate::peer::Peers::merge).
 //!
-//! The wire *types* stay in [`crate::peer`], which is the public substrate. What lives
-//! here is the state that interprets them.
+//! The wire *types* stay in [`crate::peer`]. What lives here is the state that
+//! interprets them.
 
 use crate::path::frozen_spans_for;
 use crate::peer::{Identity, LiveGesture, default_name};
@@ -42,26 +31,21 @@ use stark_model::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, Stro
 
 /// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
 ///
-/// Built by the caller from whatever it actually holds — for
-/// [`Session`](crate::session::Session) that is the live [`PathFitter`](crate::path::PathFitter),
-/// which stays the single source of truth for the local stroke. This type is the
-/// narrow window the encoder sees it through, not a second copy of it.
+/// A narrow window onto what the caller already holds — for
+/// [`Session`](crate::session::Session) the live [`PathFitter`](crate::path::PathFitter),
+/// which stays the single source of truth for the local stroke — never a second copy
+/// of it.
 pub(crate) enum GestureSource {
     Stroke {
-        /// Boxed, because it is most of this enum: a `StrokeHead` carries the whole
-        /// `BrushParams` and a `LayerId`, which together are three times the next
-        /// variant. Unboxed, every `Option<GestureSource>` a frame passes around — and
-        /// `publish` builds one per frame whether or not a gesture is in flight —
-        /// carried that width for a selection drag or nothing at all. One allocation
-        /// per published *stroke* frame buys it back.
+        /// Boxed: a `StrokeHead` is three times the next variant, and `publish` builds
+        /// an `Option<GestureSource>` every frame whether or not a stroke is in flight.
         head: Box<StrokeHead>,
         path: Vec<ControlPoint>,
         /// How many leading control points are final (§6.2).
         frozen: usize,
         /// Where on `path`'s curve the stroke begins
-        /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)).
-        /// Read fresh per frame, like the provisional tail and for its reason:
-        /// it can refine until the entry spans freeze.
+        /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)). Read
+        /// fresh per frame: it refines until the entry spans freeze.
         start: f32,
     },
     Selection(SelectionOp),
@@ -116,9 +100,9 @@ impl GestureTx {
     /// Encode `source` for the wire, advancing the watermarks.
     ///
     /// **Call this only for a frame that is actually going out.** The watermarks
-    /// record what the receiver has been *told*; advancing them for a frame the
-    /// caller then drops would skip control points nobody ever saw, and the gap would
-    /// not be repaired until the next resync.
+    /// record what the receiver has been *told*; advancing them for a frame the caller
+    /// then drops skips control points nobody saw, and the gap stands until the next
+    /// resync.
     pub(crate) fn encode(
         &mut self,
         id: u64,
@@ -190,9 +174,8 @@ impl GestureTx {
 /// [`PresenceTx::publish`]). Compared rather than dirty-flagged: a comparison cannot
 /// be forgotten at a call site, and these are three cheap fields.
 ///
-/// The gesture is *not* here: what the wire has been told about it is
-/// [`GestureTx`]'s business, and asking it ([`GestureTx::in_flight`]) beats keeping a
-/// second copy in step.
+/// The gesture is deliberately absent — what the wire has been told about it is
+/// [`GestureTx::in_flight`]'s answer, not a second copy to keep in step.
 #[derive(Clone, PartialEq)]
 struct Published {
     active_layer: LayerId,
@@ -202,16 +185,12 @@ struct Published {
 
 impl Published {
     /// Whether what was last published still describes the client — **the one place
-    /// the published field list lives**.
+    /// the published field list lives**, because [`PresenceTx::publish_due`] asks the
+    /// same question and must never answer `false` where `publish` would produce a
+    /// frame.
     ///
-    /// It was written twice: once as this struct's `PartialEq`, and once by hand
-    /// inside [`PresenceTx::publish_due`]. A fourth field added here and forgotten
-    /// there makes `publish_due` answer `false` where `publish` would have produced a
-    /// frame, which is the fatal direction — that method's own doc says a pump
-    /// trusting it "would then drop that frame on the floor".
-    ///
-    /// Borrows the name rather than taking one, which is what lets the caller ask
-    /// before deciding to allocate.
+    /// Borrows the name rather than taking one, so a caller can ask before deciding to
+    /// allocate.
     fn matches(&self, active_layer: LayerId, cursor: Option<Vec2>, name: &str) -> bool {
         self.active_layer == active_layer && self.cursor == cursor && self.name == name
     }
@@ -222,8 +201,7 @@ impl Published {
 /// a [`PeerFrame`] goes out.
 ///
 /// The active layer and the gesture in flight ride every frame too, but they are the
-/// session's own facts, read on that side as well, so they arrive as arguments
-/// rather than being kept here in a second copy that could fall out of step.
+/// session's own facts and arrive as arguments rather than as a second copy here.
 pub(crate) struct PresenceTx {
     /// This client's display name; empty until it is set, in which case peers fall
     /// back to [`default_name`]. Private because it has an invariant `name_chosen`
@@ -234,13 +212,10 @@ pub(crate) struct PresenceTx {
     /// actor id and wants to refresh that default, but must not overwrite a name
     /// somebody typed.
     name_chosen: bool,
-    /// Where this client's pointer is, canvas space; `None` when it is off the
-    /// canvas.
+    /// Where this client's pointer is, canvas space; `None` when it is off the canvas.
     ///
-    /// Sent to peers, and read on *this* side as well: a guide draws its rays
-    /// through the hand (§20.9), so what a collaborator watches and what this
-    /// client's own overlay is hung on are one fact rather than two that could
-    /// disagree about where the pointer is.
+    /// Sent to peers and read on *this* side too — a guide draws its rays through the
+    /// hand (§20.9) — so both are hung on one fact rather than two that could disagree.
     cursor: Option<Vec2>,
     // The latch, not a queue (§17.5).
     published: Option<Published>,
@@ -274,11 +249,10 @@ impl PresenceTx {
         &self.name
     }
 
-    /// Set the display name the user chose. **Sticky**: hosting or joining a session
-    /// mints this client a new actor id, and
-    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
-    /// here. Setting it empty gives the choice back, and peers resume showing the
-    /// id-derived default.
+    /// Set the display name the user chose. **Sticky**: hosting or joining mints this
+    /// client a new actor id, and [`adopt_identity`](Self::adopt_identity) will not
+    /// overwrite a name set here. Setting it empty gives the choice back, and peers
+    /// resume showing the id-derived default.
     pub(crate) fn set_name(&mut self, name: &str) {
         let name = name.trim();
         self.name_chosen = !name.is_empty();
@@ -288,11 +262,9 @@ impl PresenceTx {
 
     /// Where this client's pointer is, or `None` when it is off the canvas.
     ///
-    /// **Filtered, because this one goes on the wire.** A canvas position is
-    /// `screen_to_canvas`'s output and can be non-finite (`command`'s own note), and
-    /// nothing gated it between the command and the frame every peer reads. It is
-    /// also what the guide rays are drawn through (§20.9), where a non-finite one
-    /// would be three traces of `NaN`.
+    /// **Non-finite positions are refused here**, since `screen_to_canvas` can produce
+    /// one and this is the last gate before both the wire and the guide rays drawn
+    /// through the cursor (§20.9).
     pub(crate) fn set_cursor(&mut self, at: Option<Vec2>) {
         self.cursor = at.filter(|p| p.is_finite());
     }
@@ -304,10 +276,8 @@ impl PresenceTx {
 
     /// Adopt the identity a session has given this client.
     ///
-    /// Records the run counter every published frame carries, and takes the
-    /// id-derived name as a default — unless the user has chosen one. That used to
-    /// assign unconditionally, which meant pressing *Share* replaced a name someone
-    /// had typed with a hex id.
+    /// Records the run counter every published frame carries, and takes the id-derived
+    /// name as a default — unless the user has chosen one, which stands.
     pub(crate) fn adopt_identity(&mut self, identity: Identity) {
         self.boot = identity.boot;
         if !self.name_chosen {
@@ -318,17 +288,15 @@ impl PresenceTx {
     /// The frame to send, if anything a peer would care about has changed since the
     /// last call — otherwise `None` (§17.5).
     ///
-    /// This is a **latch, not a queue**: it reports the *current* state, and the
-    /// path delta is computed here, at drain time, against what has actually been
-    /// sent. A pen reporting at 240 Hz against a 30 Hz publish tick therefore
-    /// coalesces losslessly — eight moves produce one frame carrying all eight
-    /// control points — which is exactly why presence is allowed to be lossy where
-    /// the action log is not.
+    /// A **latch, not a queue**: it reports the *current* state, and the path delta is
+    /// computed here against what has actually been sent. A pen reporting at 240 Hz
+    /// against a 30 Hz publish tick therefore coalesces losslessly — eight moves
+    /// produce one frame carrying all eight control points.
     ///
-    /// A frame goes out when something changed, when a gesture is in flight (its
-    /// path just grew), or every [`HEARTBEAT`] regardless, so a silent peer still
-    /// proves it is here. `ordinal` and `source` are the session's gesture in
-    /// flight, as [`GestureTx::encode`] takes them.
+    /// A frame goes out when something changed, when a gesture is in flight (its path
+    /// just grew), or every [`HEARTBEAT`] regardless, so a silent peer still proves it
+    /// is here. `ordinal` and `source` are the session's gesture in flight, as
+    /// [`GestureTx::encode`] takes them.
     pub(crate) fn publish(
         &mut self,
         now: f64,
@@ -336,15 +304,13 @@ impl PresenceTx {
         ordinal: u64,
         source: Option<GestureSource>,
     ) -> Option<PeerFrame> {
-        // Every `GESTURE_RESYNC`, re-send the gesture's invariant head and its whole
-        // path. That repairs any receiver that missed a delta and primes any client
-        // that arrived mid-stroke — without either of them having to ask, which is
-        // what keeps the wire one-way and the sender stateless about its audience.
+        // Repairs any receiver that missed a delta and primes any that arrived
+        // mid-stroke, without either having to ask — which is what keeps the wire
+        // one-way and the sender stateless about its audience.
         let resync = self.gesture.resync_due(now);
 
-        // Asked before anything is built: run against a fresh `Published`, the
-        // comparison clones the name on every tick of the pump — including the
-        // overwhelming majority that return `None` two lines later.
+        // Asked before anything is built, so the overwhelming majority of ticks — the
+        // ones returning `None` two lines below — allocate nothing.
         let changed = self
             .published
             .as_ref()
@@ -365,8 +331,6 @@ impl PresenceTx {
 
         // Everything below this line commits to sending, which is the only point at
         // which the watermarks may move: they record what the receiver has been told.
-        // Encoding *before* the early return above worked only because a gesture
-        // always forced `changed` — a coupling nothing stated and nothing checked.
         let gesture = self.gesture.encode(ordinal, source, resync);
         if resync {
             self.gesture.stamp_resync(now);
@@ -393,14 +357,11 @@ impl PresenceTx {
     /// whether the session has a gesture in flight — a stroke or a shape drag.
     ///
     /// Deliberately **conservative**: it may say yes where `publish` then returns
-    /// `None`, but it must never say no where `publish` would have produced a frame,
-    /// because a pump that trusts it would then drop that frame on the floor. So it
-    /// tests the cheap fields directly and treats "a gesture exists" as "something
-    /// changed" without building the gesture frame to find out.
+    /// `None`, but it must never say no where `publish` would have produced a frame —
+    /// a pump that trusts it would drop that frame on the floor.
     ///
-    /// It exists so an idle session costs nothing: without it the pump has to take a
-    /// mutable borrow of the engine thirty times a second to discover there was
-    /// nothing to send.
+    /// Exists so an idle session costs nothing: without it the pump takes a mutable
+    /// borrow of the engine thirty times a second to learn there was nothing to send.
     pub(crate) fn publish_due(&self, now: f64, active_layer: LayerId, gesturing: bool) -> bool {
         now - self.sent_at >= HEARTBEAT
             || gesturing
@@ -433,10 +394,10 @@ impl PresenceTx {
 /// The receiving half: one peer's gesture, reassembled from the frames that arrived.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GestureRx {
-    /// The ordinal being tracked. Held separately from both `drawn` and `stroke`
-    /// because neither is present in every state this can be in: a selection leaves
-    /// no `stroke`, and a stroke whose head has not arrived leaves nothing `drawn`.
-    /// It is the only thing that reliably tells this gesture from the one before it.
+    /// The ordinal being tracked — the only thing that reliably tells this gesture from
+    /// the one before it. Held apart from `drawn` and `stroke` because neither is
+    /// present in every state: a selection leaves no `stroke`, and a stroke whose head
+    /// has not arrived leaves nothing `drawn`.
     id: Option<u64>,
     /// The stroke being reassembled, and the path so far. Kept apart from `drawn`
     /// because a stroke that has lost frames stops *growing* while still being
@@ -460,9 +421,8 @@ struct StrokeAssembly {
     /// exactly what the incremental repaint needs to know (§17.6).
     frozen: usize,
     /// The stroke's start marker as of the newest spliced frame
-    /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)) —
-    /// overwritten per frame, since it refines until the sender freezes the
-    /// entry spans, and final by the time any of them could be baked (§6.2).
+    /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)):
+    /// overwritten per frame, and final by the time an entry span could be baked (§6.2).
     start: f32,
 }
 
@@ -479,11 +439,9 @@ impl GestureRx {
     }
 
     /// How many leading control points the sender has declared final. Conservative:
-    /// it is learned from a delta's `from`, which is the sender's frozen count as of
-    /// the *previous* frame, so it always lags the truth rather than outrunning it.
-    ///
-    /// Exists for the round-trip test, which needs the exact prefix the protocol
-    /// promises; a renderer wants [`frozen_spans`](Self::frozen_spans) instead.
+    /// learned from a delta's `from`, the sender's frozen count as of the *previous*
+    /// frame, so it lags the truth rather than outrunning it. A renderer wants
+    /// [`frozen_spans`](Self::frozen_spans) instead.
     #[cfg(test)]
     pub(crate) fn frozen(&self) -> usize {
         self.stroke.as_ref().map_or(0, |s| s.frozen)
@@ -511,12 +469,9 @@ impl GestureRx {
     /// it arrived under. Returns whether what is *drawn* changed.
     pub(crate) fn apply(&mut self, frame: GestureFrame, seq: u64, active_layer: LayerId) -> bool {
         // A new ordinal is a different gesture: drop whatever was being drawn or
-        // assembled rather than splicing two of them together.
-        //
-        // Keyed on the ordinal rather than on the stroke assembly, because a
-        // *selection* leaves no assembly. Keyed on the assembly, a stroke delta whose
-        // head had been lost found nothing to clear, took the early return below, and
-        // left the peer's last marquee sitting on the canvas.
+        // assembled rather than splicing two of them together. Keyed on the ordinal
+        // rather than on the stroke assembly, because a *selection* leaves no assembly
+        // and its marquee would then outlive the gesture that drew it.
         let changed = if self.id == Some(frame.id()) {
             false
         } else {
@@ -563,24 +518,18 @@ impl GestureRx {
                 if let Some(head) = head
                     && (self.stroke.as_ref().is_none_or(|s| s.id != id) || from == 0)
                 {
-                    // A resync restarts the *assembly*, not the gesture: for the same
-                    // ordinal the frozen watermark carries over, because the resent
-                    // path's prefix is exactly the frozen points already held — a
-                    // frozen control point never moves, and a resync says nothing new
-                    // about freezing. Reset to zero here, every resync frame
-                    // discarded the renderer's cached head (`Engine::flush_live`
-                    // keys on `frozen_spans`) and redrew the whole stroke from
-                    // scratch — once a second, per stroking peer.
+                    // A resync restarts the *assembly*, not the gesture: within one
+                    // ordinal the frozen watermark carries over, because a frozen
+                    // control point never moves and a resync says nothing new about
+                    // freezing. Reset to zero it would discard the renderer's cached
+                    // head, which keys on `frozen_spans`, once per resync per peer.
                     let frozen = match self.stroke.as_ref() {
                         Some(s) if s.id == id => s.frozen,
                         _ => 0,
                     };
-                    // The head arrives sanitized. `PeerFrame::sanitized` holds a
-                    // frame's brush to the bounds `ActionKind::sanitized` holds a
-                    // committed one to (§21.5), and `Peers::merge` calls it on the
-                    // door every frame comes through. Done here instead it would gate
-                    // one of the frame's three free-form payloads — the one a *stroke*
-                    // carries — and leave the name and the cursor as they arrived.
+                    // The head arrives already sanitized: `Peers::merge` is the one
+                    // door, and gating here would cover a stroke's brush while leaving
+                    // the frame's other two free-form payloads as they arrived (§21.5).
                     self.stroke = Some(StrokeAssembly {
                         id,
                         head: *head,
@@ -597,27 +546,20 @@ impl GestureRx {
                     return changed;
                 };
                 // **A delta is only safe to splice if nothing was lost before it.**
-                //
-                // `truncate(from); extend(points)` keeps indices below `from` and the
-                // sender only guarantees those are final *because* it froze them —
-                // which it announced by the `from` of the frames in between. Miss one
-                // of those and the retained prefix can hold a value that was still
-                // provisional when it was last written, then get promoted to "frozen"
-                // by a later frame's `from`. The path then has no hole and the right
-                // length, and is quietly wrong in its middle — which is why testing
-                // `from > path.len()` alone never caught it, and why the round-trip
-                // test below does.
+                // `truncate(from); extend(points)` keeps everything below `from`, which
+                // is sound only because the sender froze those points — a fact it
+                // announced through the `from` of the frames in between. Miss one and a
+                // still-provisional control point is retained, then promoted to "frozen"
+                // by a later frame's `from`: right length, no hole, wrong in the middle.
                 //
                 // Frames from one client are numbered without gaps and `Peers::merge`
                 // only ever hands over strictly newer ones, so "nothing was lost" is
                 // exactly "this seq follows the last one spliced".
                 if !whole && self.last_seq.is_none_or(|last| last + 1 != seq) {
-                    // What we already hold is a true prefix of the stroke, every
-                    // control point of it final and sent by the author for this
-                    // gesture. So it stays on the canvas and simply stops growing,
-                    // rather than blinking out for up to a `GESTURE_RESYNC`. Short is
-                    // provisional, which a live preview always is; absent is a
-                    // flicker. The resync frame repairs it.
+                    // What is held is still a true prefix of the stroke, so it stays on
+                    // the canvas and stops growing until the next resync repairs it.
+                    // Short is provisional, which a live preview always is; absent is a
+                    // flicker.
                     return changed;
                 }
                 if from > assembly.path.len() {
@@ -659,27 +601,13 @@ impl GestureRx {
 mod tests {
     use super::*;
 
-    /// **Everything free-form in a frame passes the same funnel a committed
-    /// action's payloads do.**
-    ///
-    /// An `ActionKind` is sanitized on its way into any state — local, replayed or
-    /// merged. A presence frame never becomes an action, and it carries three things
-    /// that are neither an id nor a counter: a name, a cursor, and the brush on a
-    /// stroke head. The brush was gated, one branch inside this module; the other two
-    /// went into the roster exactly as they arrived.
-    ///
-    /// What each is worth is small enough to say plainly. A non-finite cursor reaches
-    /// the frontend as `left: NaNpx`, which CSS ignores, so the marker parks at the
-    /// container's origin; an uncapped name is bounded by gossip's message ceiling
-    /// rather than by anything Stark says. The brush is the one with teeth — a radius
-    /// sizes a dispatch and the pickup rates reach the dynamics loop, at the peer's
-    /// numbers rather than the author's. The argument is none of those, though: it is
-    /// that a door with a gate on one of its three payloads claims a property it does
-    /// not have.
+    /// **Everything free-form in a frame passes the same funnel a committed action's
+    /// payloads do**: a name, a cursor, and the brush on a stroke head. A door that
+    /// gates one of its three payloads claims a property it does not have.
     ///
     /// Driven through [`Peers::merge`] rather than [`GestureRx::apply`], because the
     /// door is what is under test — the restart arm included, since a frame filtered
-    /// at the entry is filtered for every arm rather than for the one that remembered.
+    /// at the entry is filtered for every arm.
     #[test]
     fn every_free_payload_in_a_frame_is_gated_at_the_one_door() {
         let hostile = BrushParams {
@@ -750,12 +678,10 @@ mod tests {
                 stark_model::document::ToothParams::DEFAULT_SOFTNESS,
                 "a contact transition of minus infinity is no width the shader can divide by",
             );
-            // An *infinite* lift falls back to the field's own default rather than to
-            // the clamp's ceiling — `finite_or` runs before `clamp01`, on the argument
-            // that a value which is not a number says nothing about which end was meant
-            // (`stark_model`'s `sanitize` module). The give above is clamped because −3.0 is
-            // a number, just not one in range — and it is poisoned at *that* end because
-            // the knob's other end is its default, where a clamp would prove nothing.
+            // An *infinite* lift falls back to the field's default rather than to the
+            // clamp's ceiling: `finite_or` runs before `clamp01`, since a value that is
+            // not a number says nothing about which end was meant. The give above is
+            // clamped instead because −3.0 is a number, just not one in range.
             assert_eq!(
                 brush.wet().expect("a wet brush").dynamics.lift,
                 stark_model::document::BrushDynamics::default().lift,
@@ -842,26 +768,19 @@ mod tests {
 
     /// The invariant that binds the two halves, exercised across a lossy channel.
     ///
-    /// Drives a real [`Session`] with pointer samples, publishes on a tick, and
-    /// pushes the frames through a channel that drops, duplicates and delays them
-    /// into a real [`Peers`]. Three things must hold at every step, whatever the
-    /// channel did:
+    /// Drives a real [`Session`] with pointer samples, publishes on a tick, and pushes
+    /// the frames through a channel that drops, duplicates and delays them into a real
+    /// [`Peers`]. Whatever the channel did:
     ///
-    /// 1. the receiver agrees with the sender **exactly** on the frozen prefix — the
-    ///    part the protocol promises never moves — and never holds more control
-    ///    points than the sender ever had. Only the frozen part: the provisional tail
-    ///    legitimately differs, because the fit is still refining it and the receiver
-    ///    holds an older snapshot of it. (Asserting agreement on the whole path is
-    ///    what this test rejected first, which is the distinction the watermark
-    ///    exists to draw.)
+    /// 1. the receiver agrees with the sender **exactly** on the frozen prefix, and
+    ///    never holds more control points than the sender ever had. Only the frozen
+    ///    part: the provisional tail legitimately differs, since the fit is still
+    ///    refining it while the receiver holds an older snapshot;
     /// 2. its frozen watermark never outruns the path it indexes;
-    /// 3. once a resync frame is delivered, the receiver's path matches the sender's
-    ///    entirely — the protocol's whole promise, that loss costs latency and not
-    ///    correctness;
-    /// 4. within one gesture the watermark never walks back — the module-level rule a
-    ///    resync frame is most likely to break, by resetting the assembly's frozen
-    ///    count: that discards the renderer's cached head and redraws the whole stroke
-    ///    from scratch once a second.
+    /// 3. once a resync frame is delivered the receiver's path matches the sender's
+    ///    entirely — loss costs latency, not correctness;
+    /// 4. within one gesture the watermark never walks back, which a resync frame is
+    ///    the most likely to break.
     #[test]
     fn round_trip_survives_a_lossy_channel() {
         for seed in 0..64u64 {
@@ -1021,9 +940,8 @@ mod tests {
         assert_eq!(bye.cursor, None);
     }
 
-    /// [`PresenceTx::adopt_identity`] takes the id-derived name as a default and
-    /// leaves a chosen one alone — pressing *Share* used to replace a typed name with
-    /// a hex id. Emptying the name gives the choice back.
+    /// [`PresenceTx::adopt_identity`] takes the id-derived name as a default and leaves
+    /// a chosen one alone; emptying the name gives the choice back.
     #[test]
     fn adopting_an_identity_does_not_overwrite_a_chosen_name() {
         let mut presence = PresenceTx::new();
@@ -1044,15 +962,10 @@ mod tests {
     /// correctness.
     ///
     /// Driven through the two halves directly rather than through [`Session::publish`],
-    /// which decides *when* to resync by consulting [`GESTURE_RESYNC`]. That constant
-    /// is currently `None`, so a body wrapped in `if let Some(interval) =
-    /// GESTURE_RESYNC` would check nothing at all and report `ok` — the failure mode
-    /// CLAUDE.md names for a skipped GPU test.
-    ///
-    /// The cadence and the mechanism are separate questions, and only the cadence is
-    /// deferred: `encode` already takes `resync` as a parameter, so the repair can be
-    /// exercised whatever the shipping interval is set to. Turning the constant on must
-    /// not be the thing that first tells us whether this works.
+    /// which decides *when* to resync from [`GESTURE_RESYNC`]. That constant is
+    /// currently `None`, so a body gated on it would check nothing and still report
+    /// `ok`. The mechanism is testable whatever the cadence is, because `encode` takes
+    /// `resync` as a parameter.
     #[test]
     fn a_resync_repairs_a_receiver_that_missed_everything() {
         let mut tx = GestureTx::new();

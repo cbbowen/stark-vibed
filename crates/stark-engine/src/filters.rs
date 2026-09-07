@@ -2,37 +2,29 @@
 //!
 //! What the host needs in order to *predict* or *draw* what a filter pass will do,
 //! taken through the generated shader mirror (§6.10) rather than transcribed. Both
-//! of the two things here would sit naturally beside the filter they belong to in
-//! `stark-model`'s `document::filter` — and cannot, because reading the mirror means
-//! depending on the shaders, which is what this side of the split is for (§2).
+//! items here would sit naturally beside the filter they belong to in `stark-model`'s
+//! `document::filter` — and cannot, because reading the mirror means depending on the
+//! shaders, and `stark-model` compiles without them at all (§2). What the `.wesl`
+//! file says belongs on the side that has the `.wesl` file.
 //!
 //! # The dispersion spectrum (§21.10)
 //!
-//! The chromatic filter's own color science, on the host: which wavelength lands
-//! where along a fringe, and what the eye makes of it. The **pass** is the copy that
-//! runs (`filter_common.wesl`'s `ca_lambda` / `ca_weight`); this one exists so the
-//! frontend can *draw* the fringe it is about to ask for — the spectrum bar in the
-//! filter bar's dispersion pad (§21.6) is painted with these very colors, which is
-//! what makes it a statement about the render rather than a rainbow.
+//! Which wavelength lands where along a chromatic fringe, and what the eye makes of
+//! it. The **pass** is the copy that runs (`filter_common.wesl`'s `ca_lambda` /
+//! `ca_weight`); this one exists so the frontend can *draw* the fringe it is about to
+//! ask for — the dispersion pad's spectrum bar (§21.6) is painted with these very
+//! colors, which makes it a statement about the render rather than a rainbow.
 //!
-//! The two ends and the Cauchy span come through the build-time mirror (§6.10) rather
-//! than being transcribed, so the range this samples and the range the pass integrates
-//! cannot drift; `dispersion_lambda_spans_the_visible` ties the three together.
-//!
-//! In `stark-engine` rather than beside the colorimetry it uses, because it reads
-//! the build-time shader mirror (§6.10) — and `stark-model` compiles without the
-//! shaders at all. The split is the mirror rule stating itself: what the `.wesl`
-//! file says belongs on the side that has the `.wesl` file.
+//! The two ends and the Cauchy span come through the mirror, so the range this
+//! samples and the range the pass integrates cannot drift.
 
 /// Oklab `L` of mid-grey — sRGB `0.5` — which is what `ColorAdjust::contrast`
 /// pivots about.
 ///
 /// **Generated from `filter_common.wesl`'s own declaration** (§6.10), which is the
-/// copy that actually runs — the host side exists so a test can predict a texel
-/// without a shader, and taking it through the mirror is what makes the two copies
-/// unable to drift (`stark-shaders/build.rs`, `CONSTS`). Worth stating why the
-/// number is what it is: sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum
-/// to one so a neutral's `l = m = s = 0.2140`, and `L` is the cube root of that.
+/// copy that actually runs, so the two cannot drift. Why the number is what it is:
+/// sRGB `0.5` is linear `0.2140`, the Oklab matrix rows sum to one so a neutral's
+/// `l = m = s = 0.2140`, and `L` is the cube root of that.
 pub const CONTRAST_PIVOT: f32 = stark_shaders::mirror::filter_common::CONTRAST_PIVOT;
 
 use stark_model::color::light_to_linear;
@@ -64,8 +56,7 @@ fn lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
 /// fit), normalized to D65 and clamped at zero.
 ///
 /// A *response*, not a color — its absolute scale means nothing, only its shape
-/// along `s`. In the pass that is why each channel of the gather divides by its own
-/// summed weight; a caller drawing the spectrum normalizes for the same reason.
+/// along `s`, so a caller drawing the spectrum normalizes as the pass's gather does.
 pub fn dispersion_weight(s: f32) -> [f32; 3] {
     let l = dispersion_lambda(s);
     let x = 1.056 * lobe(l, 599.8, 37.9, 31.0) + 0.362 * lobe(l, 442.0, 16.0, 26.7)

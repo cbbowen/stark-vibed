@@ -1,10 +1,9 @@
 //! The timeline (§5, §12): where the current [`DocState`] comes from, and how far back
 //! it can be walked.
 //!
-//! [`LinearTimeline`] is the single-user body, a thin wrapper over `history::History`;
-//! [`ReplicatedTimeline`] is the multi-peer one — a totally-ordered, grow-only action
-//! log (a replicated-log CRDT) materialized through that same `History` as a snapshot
-//! cache. Both are bodies of the [`Timeline`] enum, and neither is named by `Engine`.
+//! [`LinearTimeline`] is the single-user body; [`ReplicatedTimeline`] is the multi-peer
+//! one — a totally-ordered, grow-only action log (a replicated-log CRDT). Callers hold
+//! the [`Timeline`] enum, never a body.
 
 use std::collections::HashSet;
 
@@ -25,10 +24,6 @@ use stark_model::document::{Targets, effective_indices, targets, undo_target_of,
 
 /// A versioned document: the source of the current [`DocState`] plus undo/redo —
 /// **solo or shared**, which are the only two it will ever be.
-///
-/// An enum rather than a trait, so that an operation one mode must refuse is an arm
-/// with the refusal written beside it. A trait default is how a *new* operation comes
-/// to do nothing in one mode without anyone deciding it should.
 pub enum Timeline {
     /// One client's own history: a linear undo/redo stack (§5).
     Linear(LinearTimeline),
@@ -134,12 +129,9 @@ impl Timeline {
     /// The same history, one client's own again, once the session that shared it has
     /// ended (§12.3, §18.2.4).
     ///
-    /// A [`Replicated`](Self::Replicated) hands over its materialization, which *is* a
-    /// linear history, so the walk comes back for the cost of a move rather than of a
-    /// replay. **The log does not come with it**: with nobody left to merge, the `Undo`
-    /// actions and the actions they suppress answer a question nobody will ask again.
-    ///
-    /// Consuming, so nothing is left holding a shared log that nothing materializes.
+    /// **The log does not come with it**: the `Undo` actions and the actions they
+    /// suppress are dropped, so [`clone_actions`](Self::clone_actions) afterwards
+    /// reports only the effective walk.
     pub fn unshare(self) -> Self {
         match self {
             Timeline::Linear(t) => Timeline::Linear(t),
@@ -151,10 +143,9 @@ impl Timeline {
     /// counted in actions — or `None` for a timeline that cannot be scrubbed
     /// (§18.2.4).
     ///
-    /// `None` rather than `(n, n)`, because a frontend has to tell "there is no history
-    /// yet" from "this history is not yours alone to walk": a [`ReplicatedTimeline`]
-    /// has no single playhead at all — its materialization is a function of a log peers
-    /// are still appending to, so a scrub would be undone by the next arrival.
+    /// `None` rather than `(n, n)`: a [`ReplicatedTimeline`] has no single playhead —
+    /// its materialization is a function of a log peers are still appending to — and a
+    /// frontend has to tell that from a history that is merely empty.
     pub fn scrub_range(&self) -> Option<(usize, usize)> {
         match self {
             Timeline::Linear(t) => Some((t.applied(), t.applied() + t.redo.len())),
@@ -165,9 +156,9 @@ impl Timeline {
     /// Move the playhead to `to` (clamped to the range), applying or withdrawing
     /// whatever lies between. Returns whether the document changed.
     ///
-    /// The withdrawn actions are *kept*, where undo keeps them: scrubbing is lossless
-    /// in both directions, and committing a fresh edit at a scrubbed-back position
-    /// truncates the future exactly as painting after an undo does.
+    /// Withdrawn actions are *kept*, as undo keeps them: scrubbing is lossless in both
+    /// directions, and committing a fresh edit at a scrubbed-back position truncates the
+    /// future exactly as painting after an undo does.
     ///
     /// A shared session declines, for [`scrub_range`](Self::scrub_range)'s reason.
     pub fn seek(&mut self, to: usize, ctx: &mut ApplyCtx) -> bool {
@@ -203,16 +194,12 @@ impl Timeline {
     ///
     /// **The log is not shortened — only the reach of undo is.** What is folded is
     /// still returned by [`clone_actions`](Self::clone_actions), so the file, a
-    /// timelapse and a joining peer still get the whole painting (the document is its
-    /// log, §1, §8). What goes is the retained *snapshots*, and with them the tile
-    /// handles they were pinning — which is the point.
+    /// timelapse and a joining peer still get the whole painting (§1, §8). What goes is
+    /// the retained *snapshots*, and with them the tile handles they were pinning.
     ///
-    /// May fold **fewer** than asked, or none: `history` only folds as far as a cached
-    /// state it can reach without replaying, and its cache is geometrically spaced.
-    ///
-    /// A shared session folds **nothing**, and must: its document is re-materialized
-    /// from the whole log on every arriving action (§12.2), so a folded action is one
-    /// the next merge cannot replay.
+    /// May fold **fewer** than asked, or none. A shared session folds **nothing**, and
+    /// must: its document is re-materialized from the whole log on every arriving
+    /// action (§12.2), so a folded action is one the next merge cannot replay.
     pub fn forget_oldest(&mut self, count: usize) -> usize {
         match self {
             Timeline::Linear(t) => t.forget_oldest(count),
@@ -245,12 +232,10 @@ pub struct LinearTimeline {
     /// Actions folded out of the undo stack by [`LinearTimeline::forget_oldest`],
     /// oldest first — **still part of the document** (§5), so
     /// [`clone_actions`](Timeline::clone_actions) goes on reporting every action ever
-    /// committed. Keeping them is what makes retention safe: the log *is* the document
-    /// (§1, §8), and only the snapshots between them are gone.
+    /// committed. Only the snapshots between them are gone.
     ///
     /// Grows without bound, and that is correct: a `CommitStroke` is a few hundred
-    /// bytes, so tens of thousands of strokes are tens of megabytes of CPU memory —
-    /// against the GPU tiles at ~640 KB apiece this exists to reclaim.
+    /// bytes, against the GPU tiles at ~640 KB apiece this exists to reclaim.
     forgotten: Vec<Action>,
 }
 
@@ -266,10 +251,8 @@ impl LinearTimeline {
     /// Adopt a history materialized elsewhere — what [`Timeline::unshare`] hands
     /// over when a shared session ends.
     ///
-    /// Nothing is withheld and nothing is folded: the playhead starts at the newest
-    /// step with the whole walk behind it. What was undone during the session is *not*
-    /// waiting in `redo` — a suppressed action was never materialized — which is the
-    /// same flattening a solo load of the same file performs (`Engine::load_document`).
+    /// The playhead starts at the newest step with the whole walk behind it, and `redo`
+    /// starts empty: a suppressed action was never materialized.
     fn from_history(history: History<Entry>) -> Self {
         Self {
             history,
@@ -286,11 +269,8 @@ impl LinearTimeline {
             .chain(self.history.actions().map(|e| &**e))
     }
 
-    /// How many actions are currently applied — the playhead's position.
-    ///
-    /// Asked of the history rather than tracked beside it, so there is no second copy
-    /// to disagree with it. `O(1)`, which matters because
-    /// [`scrub_range`](Timeline::scrub_range) asks it once a render.
+    /// How many actions are currently applied — the playhead's position. `O(1)`, which
+    /// matters because [`scrub_range`](Timeline::scrub_range) asks it once a render.
     fn applied(&self) -> usize {
         self.history.actions().len()
     }
@@ -330,8 +310,7 @@ impl LinearTimeline {
     /// Compared against the history's **own** oldest version, not against
     /// `Version::default()`: the two part once
     /// [`forget_oldest`](Timeline::forget_oldest) folds anything, and against the
-    /// constant a fully folded history claims it can undo and then does nothing when
-    /// asked — an Undo button that is lit and inert.
+    /// constant a fully folded history would claim an undo it cannot perform.
     fn can_undo(&self) -> bool {
         self.history.last_version() != self.history.initial_version()
     }
@@ -343,10 +322,6 @@ impl LinearTimeline {
     /// Scrubbing **is** the undo/redo split, moved in bulk rather than one step at a
     /// time (§18.2.4): it leaves the timeline in a state undo could equally have
     /// produced, which is what makes it safe to paint from wherever the playhead stops.
-    ///
-    /// Backwards goes through `pop_actions_with`, which rebuilds the snapshot cache for
-    /// the shorter history *once* rather than once per step crossed. Forwards has no
-    /// such shortcut and wants none: re-applying an action is re-rendering its stroke.
     fn seek(&mut self, to: usize, ctx: &mut ApplyCtx) -> bool {
         let applied = self.applied();
         let to = to.min(applied + self.redo.len());
@@ -390,8 +365,7 @@ impl LinearTimeline {
     /// Folds through to `History::forget_actions`, keeping what it hands back.
     ///
     /// **The redo stack is deliberately untouched**: its actions are not applied, so
-    /// they pin no snapshot and cost no tiles, and folding them would give up an
-    /// offered redo for nothing.
+    /// they pin no snapshot and cost no tiles.
     ///
     /// Reports the actions actually folded, which is not always the number asked for —
     /// see [`Timeline::forget_oldest`].
@@ -412,9 +386,7 @@ impl LinearTimeline {
 /// Multi-peer timeline (§12): a grow-only set of actions, totally ordered by
 /// [`ActionId`] `(lamport, actor)`. The canonical state is the deterministic replay of
 /// the *effective* actions in that order, so two peers that have seen the same set
-/// compute identical pixels (strong eventual consistency). `history::History` is the
-/// materialization cache; an out-of-order arrival pops back to the first divergence and
-/// replays forward, kept shallow by that crate's dense snapshot retention (§12.2).
+/// compute identical pixels (strong eventual consistency, §12.2).
 pub struct ReplicatedTimeline {
     /// Whose undo/redo this timeline answers for ([`Timeline::undo_as_action`]).
     actor: ActorId,
@@ -427,25 +399,17 @@ pub struct ReplicatedTimeline {
     history: History<Entry>,
     stats: TimelineStats,
     /// What a local undo and redo would target as the log now stands — a pure
-    /// function of [`log`](Self::log) and [`actor`](Self::actor), resolved once
-    /// per log change in [`resync`](Self::resync).
-    ///
-    /// Cached because the questions are asked far more often than the log changes:
-    /// `can_undo`/`can_redo` reach `Engine::observe`, which the frontend refreshes
-    /// after every command — including the pointer samples of a stroke in flight, which
-    /// commit nothing and would each pay two backwards passes over the whole log.
+    /// function of [`log`](Self::log) and [`actor`](Self::actor), cached because
+    /// `can_undo`/`can_redo` are asked far more often than the log changes.
     ///
     /// **Every write to [`log`](Self::log) must resolve this**, or it can disagree with
-    /// what it was derived from. There is one such place ([`insert`](Self::insert),
-    /// which [`from_log`](Self::from_log) funnels through), and it either resolves both
-    /// targets directly or hands off to `resync`.
+    /// what it was derived from.
     targets: Targets,
-    /// Ids suppressed by effective `Undo`s ([`undone_ids`]) — the set every
-    /// question about effectiveness starts from.
-    ///
-    /// Held rather than rederived per insert, because the insert that dominates a
-    /// session cannot change it: an ordinary action suppresses nothing, and nothing
-    /// already in the log can be suppressing an action newer than all of it.
+    /// Ids suppressed by effective `Undo`s ([`undone_ids`]) — the set every question
+    /// about effectiveness starts from. Held rather than rederived per insert, because
+    /// the insert that dominates a session cannot change it: an ordinary action
+    /// suppresses nothing, and nothing already in the log can suppress an action newer
+    /// than all of it.
     undone: HashSet<ActionId>,
 }
 
@@ -493,14 +457,12 @@ impl ReplicatedTimeline {
         let pos = self.log.partition_point(|a| a.id < id);
         self.log.insert(pos, action);
 
-        // The insert that dominates a session — an ordinary action newer than
-        // everything already in the log — appends to the effective sequence and changes
-        // nothing else about it, which leaves the whole of `resync` a push. Nothing can
-        // suppress it (an `Undo` carries a larger id than its target, its author having
-        // seen the target to undo it), it suppresses and revives nothing itself, and
-        // its id is the largest so it sorts last. `undone` is consulted regardless,
-        // since a log arrives from files and peers and a malformed one need not respect
-        // the id ordering.
+        // An ordinary action newer than everything already in the log appends to the
+        // effective sequence and changes nothing else about it: nothing can suppress it
+        // (an `Undo` carries a larger id than its target), it suppresses and revives
+        // nothing itself, and its id sorts last. `undone` is consulted regardless, since
+        // a log arrives from files and peers and a malformed one need not respect the id
+        // ordering.
         if ordinary && appended && !self.undone.contains(&id) {
             let action = self.log[pos].clone();
             self.history.push_action_with(Entry::new(action), ctx);
@@ -530,21 +492,14 @@ impl ReplicatedTimeline {
     ///
     /// Reached when [`insert`](Self::insert) cannot say for itself what changed — an
     /// `Undo`, or an arrival that lands mid-log. The change is still almost always a
-    /// single action entering or leaving, so this classifies it (§12.6):
-    ///
-    /// - an action **removed** (an undo landed) goes to `remove_action_with`, which
-    ///   shifts it past everything it commutes with (via [`Footprint`], its
-    ///   `Centralizer`) using [`Action`]'s `inverse` — no re-render at all when the
-    ///   whole suffix commutes, and otherwise a replay only of what sits past the first
-    ///   conflict;
-    /// - an action **appended** (a fresh local commit, a causally-newest remote
-    ///   arrival, or a redo, which materializes at the *top* of the stack, §12.3) is
-    ///   just pushed;
-    /// - anything else rewinds to the first divergence and replays forward (§12.2).
+    /// single action entering or leaving, so this classifies it (§12.6): a removed
+    /// action is shifted out past everything it commutes with, an appended one is
+    /// pushed (a redo materializes at the *top* of the stack, §12.3), and anything else
+    /// rewinds to the first divergence and replays forward (§12.2).
     ///
     /// Untouched prefixes keep their snapshots, and their tiles' `Arc`s, in every case.
     /// The fast paths converge with the canonical replay only because every `apply`
-    /// reads and writes no more than its footprint declares (§12.6): disjoint
+    /// reads and writes no more than its [`Footprint`] declares (§12.6): disjoint
     /// footprints then mean the shifted materialization computes the *same pixels*.
     ///
     /// [`Footprint`]: stark_model::document::Footprint
@@ -577,13 +532,11 @@ impl ReplicatedTimeline {
         if eff.len() + 1 == mat.len()
             && (diverge..eff.len()).all(|i| self.log[eff[i]].id == mat[i + 1])
         {
-            // The history doesn't report which path it took, and pixels can't show it
-            // (that's the point) — so re-derive it for the stats.
-            //
-            // Off the **cached** footprints each `Logged` carries. `Logged` derefs to
-            // `Action`, so the free `compute_footprint` would resolve here silently and
-            // re-derive the whole commuting suffix for a counter — a `TransformWarp` in
-            // that run being a 57×57 fine-lattice solve apiece.
+            // The history doesn't report which path it took, so re-derive it for the
+            // stats — off the **cached** footprints each `Logged` carries. `Logged`
+            // derefs to `Action`, so the free `compute_footprint` would resolve here
+            // silently and re-derive the whole commuting suffix for a counter, a
+            // `TransformWarp` in that run being a 57×57 fine-lattice solve apiece.
             let commuting = {
                 let mut suffix = self.history.actions().skip(diverge);
                 let fp = suffix.next().expect("diverge < mat.len()").footprint();

@@ -18,18 +18,17 @@ const LASSO_MIN_STEP: f32 = 2.0;
 /// What a finished shape gesture resolves to (§6.8,
 /// §18.0.4): an edit to the selection, or a fill.
 ///
-/// The two travel together because they are one gesture with one preview — the
-/// [`ShapeAction`] chosen when the drag started decides which of them the release
-/// commits, and nothing downstream has to ask what tool was in hand.
+/// One gesture with one preview: the [`ShapeAction`] chosen when the drag started
+/// decides which of the two the release commits, so nothing downstream has to ask
+/// what tool was in hand.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShapeResult {
     Select(SelectionOp),
     Fill {
-        /// The layer the fill lands on — the active layer **at the press**,
-        /// pinned beside the frame it decides. The stroke builder pins its
-        /// target the same way and for the same reason: a retarget landing
-        /// mid-drag (a peer removing the layer under the hand) must not land an
-        /// op converted into one layer's frame on another layer.
+        /// The layer the fill lands on — the active layer **at the press**, pinned
+        /// beside the frame it decides, so a retarget landing mid-drag (a peer
+        /// removing the layer under the hand) cannot land an op converted into one
+        /// layer's frame on another layer.
         layer: LayerId,
         /// In that layer's frame (§14.12) — converted where the gesture becomes
         /// an op, so the preview, the wire and the commit take one value.
@@ -42,25 +41,20 @@ pub enum ShapeResult {
 /// What a shape gesture's action *means* against the selection it is drawn over:
 /// **Add, with nothing selected, is New** (§6.8).
 ///
-/// The algebra says otherwise and goes on saying it — `max(1, s) = 1`, so a union
-/// with the unrestricted selection *is* the unrestricted selection, and that is the
-/// answer every peer would rasterize. What it is not is what anyone means by the
-/// gesture: "add this region to the selection" with no selection in hand asks for a
-/// selection of that region, and a mask that comes back covering everything reads as
-/// the tool having done nothing at all. The Select panel's action row is one question
-/// with five answers — *what does this shape do?* — and one of them being inert on a
-/// fresh document is the row failing to answer it.
+/// The algebra says otherwise — `max(1, s) = 1`, so a union with the unrestricted
+/// selection *is* the unrestricted selection — but a mask that comes back covering
+/// everything reads as the tool having done nothing at all.
 ///
-/// Resolved **here, where a gesture becomes an op**, and deliberately not in the
-/// mask algebra. `SelectionMode::combine` stays the honest soft-set operation it
-/// documents, `Selection::plan` keeps its four identities, and what reaches the log
-/// is `Replace` — which is what the user got. So replay, undo, a save file and a peer
-/// receiving the op all reproduce the picture without knowing this rule exists, and
-/// no reordering of the log can make one op mean two things (§12.6).
+/// Resolved **here, where a gesture becomes an op**, and deliberately not in the mask
+/// algebra: `SelectionMode::combine` stays the honest soft-set operation it documents,
+/// `Selection::plan` keeps its four identities, and what reaches the log is the
+/// `Replace` the user got. So replay, undo, a save file and a peer receiving the op
+/// all reproduce the picture without knowing this rule exists, and no reordering of
+/// the log can make one op mean two things (§12.6).
 ///
-/// Only `Union` has anything to answer for. Subtracting from everything is the
-/// complement and intersecting with it is the shape, both of which are already what
-/// the gesture reads as.
+/// Only `Union` has anything to answer for: subtracting from everything is the
+/// complement and intersecting with it is the shape, which is what each already reads
+/// as.
 fn against_selection(action: ShapeAction, has_selection: bool) -> ShapeAction {
     match action {
         ShapeAction::Select(SelectionMode::Union) if !has_selection => {
@@ -77,12 +71,12 @@ fn against_selection(action: ShapeAction, has_selection: bool) -> ShapeAction {
 pub(super) struct ShapeDrag {
     tool: Tool,
     /// What the release will do with the region — captured at the *start* of the
-    /// drag, like the feather, so re-picking a chip mid-gesture cannot change what
-    /// the gesture already looks like it is doing.
+    /// drag, like the feather, so re-picking a chip mid-gesture cannot change what the
+    /// gesture already looks like it is doing.
     ///
-    /// The action as [`against_selection`] resolved it, not as the panel is set:
-    /// what a gesture means depends on what it is drawn over, and the only moment
-    /// that is settled is the press.
+    /// The action as [`against_selection`] resolved it, not as the panel is set: what
+    /// a gesture means depends on what it is drawn over, and only the press settles
+    /// that.
     action: ShapeAction,
     feather: f32,
     /// The color a fill will lay, taken off the brush when the drag began. Unused
@@ -92,10 +86,9 @@ pub(super) struct ShapeDrag {
     /// mid-drag cannot change what the drag already looks like it is doing.
     ///
     /// Unused by a selecting gesture, which mints its op at full strength: how
-    /// strongly a selection gates is the *whole* mask's opacity now, set after the
-    /// region is drawn rather than baked into it (§6.8). The per-shape
-    /// [`SelectionOp::opacity`] still stands underneath — nothing in the UI reaches
-    /// it.
+    /// strongly a selection gates is the *whole* mask's opacity, set after the region
+    /// is drawn rather than baked into it (§6.8). The per-shape
+    /// [`SelectionOp::opacity`] still stands underneath; nothing in the UI reaches it.
     opacity: f32,
     /// Where the drag started; for the marquees this is one corner of the box.
     start: Vec2,
@@ -146,14 +139,10 @@ impl ShapeDrag {
             }
             Tool::SelectLasso => {
                 // Close the loop with the newest sample: the shape has to reach the
-                // cursor mid-gesture, exactly as a stroke preview does.
-                //
-                // No second decimation pass: `push` already enforces `LASSO_MIN_STEP`
-                // between consecutive kept points as they arrive, and the one point
-                // that could fail that test — the trailing `current` — is one
-                // `decimate` would put straight back under its keep-the-last-sample
-                // rule. Running it here was an O(n) scan and an allocation, per
-                // preview frame *and* per publish tick, that could not change a thing.
+                // cursor mid-gesture, exactly as a stroke preview does. No second
+                // decimation pass — `push` already holds `LASSO_MIN_STEP` between
+                // kept points, and the trailing `current` is the one point a pass
+                // would keep anyway.
                 let mut points = self.points.clone();
                 if points.last().is_none_or(|q| *q != self.current) {
                     points.push(self.current);
@@ -205,23 +194,19 @@ impl Session {
     /// Begin a shape gesture with the session's current action, feather and brush.
     /// Any in-flight stroke or earlier gesture is abandoned.
     ///
-    /// `has_selection` is the engine's to supply — whether the author already has a
-    /// mask in force (`DocState::has_selection`) — because it decides what an Add
-    /// gesture means; see [`against_selection`]. Off the *committed* document, which
-    /// is the only selection this gesture can be adding to: the one thing that could
-    /// change it mid-drag is this drag.
-    /// `frame` is the active layer's frame at the press (§14.12) — read by a
-    /// gesture that resolves to a *fill*; a selecting one never consults it.
+    /// `has_selection` is the engine's to supply — whether a mask is already in force
+    /// (`DocState::has_selection`) — because it decides what an Add gesture means; see
+    /// [`against_selection`]. Off the *committed* document, which is the only
+    /// selection this gesture can be adding to. `translation` is the active layer's
+    /// frame at the press (§14.12), read only by a gesture that resolves to a fill.
     ///
-    /// A non-finite `pos` starts **no drag** — [`set_cursor`](Self::set_cursor)'s
-    /// filter, at the other door a canvas position enters this session through.
-    /// [`ShapeDrag::to_shape`]'s degeneracy tests do not close the class behind
-    /// it: for the reason [`SelectionShape::bounds`] gives, an all-NaN drag went
-    /// past them as a `Rect { min: NaN, max: NaN }` and an infinite corner as an
-    /// unbounded one. The model refuses both downstream, so no peer diverged —
-    /// but the release had already spent an undo step on an op that changes no
-    /// pixel. The press's other effects stand, the ordinal bump included: it did
-    /// abandon what was in flight, and that abandonment is what the bump records.
+    /// A non-finite `pos` starts **no drag**, matching
+    /// [`set_cursor`](Self::set_cursor)'s filter at the other door a canvas position
+    /// enters this session through. [`ShapeDrag::to_shape`]'s degeneracy tests do not
+    /// close the class behind it: for the reason [`SelectionShape::bounds`] gives, an
+    /// all-NaN drag passes them as a `Rect { min: NaN, max: NaN }` and an infinite
+    /// corner as an unbounded one. The press's other effects stand, the ordinal bump
+    /// included — it did abandon what was in flight.
     pub fn start_selection(
         &mut self,
         tool: Tool,
@@ -241,11 +226,9 @@ impl Session {
             tool,
             action: against_selection(self.shape_action, has_selection),
             feather: self.selection_feather,
-            // The color is the hand's ([`color`](Self::color)) — a fill lays the
-            // paint you have in hand, even while the brush held is an eraser.
-            // Its *alpha* is not: that is the brush's pigment talking, and how
-            // strongly a fill lands is the panel's own question (see
-            // [`shape_opacity`](Self::shape_opacity)).
+            // The hand's color, not the brush's: a fill lays the paint you have in
+            // hand even while an eraser is held. Its alpha is the brush's pigment
+            // talking, so how strongly a fill lands is `shape_opacity` instead.
             color: Srgb::new([r, g, b]),
             opacity: self.shape_opacity,
             start: pos,
@@ -277,18 +260,12 @@ impl Session {
 
     /// Finish the gesture, returning what to commit (`None` if it encloses nothing).
     ///
-    /// The **selecting** actions are momentary: having drawn a selection, the session
-    /// hands the canvas straight back to the brush. Selecting is a step *towards*
-    /// painting, essentially never something you do twice in a row, so making it
-    /// modal costs a deliberate switch-back on the overwhelmingly common path — and
-    /// leaves a brush gesture silently redefining the selection when the user forgets.
-    ///
-    /// **Fill** stays armed, because that argument is about a gesture that is a step
-    /// towards painting, and a fill *is* painting. Blocking in is done many times in
-    /// a row, and being handed the brush back after each one would be the same cost
-    /// the momentary rule exists to avoid, paid in the other direction. So the rule
-    /// is one sentence rather than a special case: the tool disarms when the gesture
-    /// was a step towards painting, and stays armed when the gesture was painting.
+    /// **The tool disarms when the gesture was a step towards painting, and stays
+    /// armed when the gesture was painting.** So a selecting action is momentary —
+    /// the canvas goes straight back to the brush, since selecting is essentially
+    /// never done twice in a row and a modal selection tool the user forgot about
+    /// means a brush gesture silently redefining the selection. A fill stays armed,
+    /// because blocking in *is* painting and is done many times in a row.
     ///
     /// A gesture that enclosed nothing (a stray click) leaves the tool armed either
     /// way, so a mis-click doesn't disarm it.
@@ -324,11 +301,8 @@ mod tests {
 
     /// **Add, with nothing selected, is New** ([`against_selection`]) — and the
     /// gesture is logged as the New it behaved as, so nothing downstream carries the
-    /// rule.
-    ///
-    /// Read off the *preview*, which is the same call the release commits
-    /// ([`Session::end_shape`]): the resolution happens once, at the press, so the
-    /// two cannot disagree about what the drag is doing.
+    /// rule. Read off the *preview*, which is the same call the release commits
+    /// ([`Session::end_shape`]).
     #[test]
     fn adding_to_nothing_selects_the_region() {
         let add = ShapeAction::Select(SelectionMode::Union);
@@ -363,15 +337,14 @@ mod tests {
         assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill { .. })));
     }
 
-    /// A non-finite press encloses nothing rather than a region of NaN, so the
-    /// release has nothing to commit — [`ShapeDrag::to_shape`]'s degeneracy
-    /// tests never have to catch it, because no drag was started to run them.
+    /// A non-finite press encloses nothing rather than a region of NaN, so the release
+    /// has nothing to commit — [`ShapeDrag::to_shape`]'s degeneracy tests never have
+    /// to catch it, because no drag was started to run them.
     ///
-    /// **Released with no move behind it**, which is the case that reached the
-    /// log: a later report covers the bad axis, `min`/`max` returning the finite
-    /// operand ([`SelectionShape::bounds`]), so a NaN *drag* was already refused
-    /// by the degeneracy test. The second half drags anyway, for the infinite
-    /// corner, which passed that test as an unbounded rect.
+    /// Both halves matter: released with no move behind it, and dragged. A later
+    /// report covers a NaN axis (`min`/`max` return the finite operand,
+    /// [`SelectionShape::bounds`]), but an infinite corner passes the degeneracy test
+    /// as an unbounded rect.
     #[test]
     fn a_non_finite_press_starts_no_shape_drag() {
         for pos in [

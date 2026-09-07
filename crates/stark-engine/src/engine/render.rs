@@ -48,11 +48,9 @@ enum Chrome {
 /// Which [`Compositor`](crate::gpu::Compositor) a render's offscreen attachments come
 /// from.
 ///
-/// Compositing runs through pass-A attachments the size of the target, so *whose*
-/// they are decides who pays for a resize. The substrate's are kept from frame to
-/// frame; anything rendered beside them is a different size and brings its own, so
-/// the screen's are never resized out from under it and rebuilt on the next frame to
-/// recover.
+/// Pass-A attachments are the size of the target, so *whose* they are decides who
+/// pays for a resize: the screen's are kept from frame to frame, and anything
+/// rendered beside them brings its own rather than resizing the screen's away.
 enum Attachments<'a> {
     /// The screen's own, cached across frames ([`Engine::compositor`]).
     Screen,
@@ -67,13 +65,12 @@ enum Attachments<'a> {
     Export(&'a mut Offscreen),
 }
 
-/// Which document a render draws: the one being *shown*, or the committed one
-/// alone.
+/// Which document a render draws: the one being *shown*, or the committed one alone.
 ///
-/// The screen wants [`Rendered::Live`] — that is what makes a stroke visible as it
-/// is drawn. A render that stands in for the *state of the work* wants
-/// [`Rendered::Committed`], since it refreshes when the document changes and
-/// following an in-flight stroke would mean re-rendering at pointer rate.
+/// The screen wants [`Rendered::Live`], which is what makes a stroke visible as it is
+/// drawn. A render standing in for the *state of the work* wants
+/// [`Rendered::Committed`], since following an in-flight stroke would mean
+/// re-rendering at pointer rate.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Rendered {
     /// The committed document with every in-flight gesture — this client's and
@@ -95,15 +92,12 @@ pub enum ExportScale {
     /// An exact width in image px; the height follows the frame's aspect.
     Width(u32),
     /// The largest scale whose output fits inside a box of image px, both axes
-    /// respected — what a *preview* of the whole piece asks for.
+    /// respected — what a *preview* of the whole piece asks for. Scales *up* as
+    /// happily as down: the overview shows the whole of a piece at a glance.
     ///
     /// Distinct from a 1× plan the caller then scales itself, because a piece wider
     /// than [`max_export_dim`] would fail *that* query for a render it was never
     /// going to make.
-    ///
-    /// Scales *up* as happily as down: the overview's job is to show the whole of a
-    /// piece at a glance, and a 60 px sketch shown at 60 px says less than the empty
-    /// panel around it.
     Fit(Extent2),
 }
 
@@ -124,9 +118,9 @@ impl ExportPlan {
     /// The view this plan renders through: centred on the rect, at `zoom` = its scale,
     /// with the plan's pixel size as the viewport.
     ///
-    /// Both things that render a planned rect — writing a file ([`Engine::export`])
-    /// and drawing the navigator's miniature ([`Engine::render_into`]) — derive their
-    /// view here, so the two cannot disagree about the framing.
+    /// Both consumers of a planned rect — [`Engine::export`] and
+    /// [`Engine::render_into`] — derive their view here, so the two cannot disagree
+    /// about the framing.
     pub fn view(&self) -> ViewTransform {
         ViewTransform {
             center: (self.min + self.max) * 0.5,
@@ -150,8 +144,7 @@ impl ExportPlan {
 /// number: the frontend requests `wgpu::Limits::default()` while the headless device
 /// ([`GpuContext::headless`]) asks only for the engine's own minimums
 /// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so any literal
-/// agrees with one of them and not the other. It also lets the ceiling rise with
-/// whatever a frontend requests.
+/// agrees with one of them and not the other.
 ///
 /// [`GpuContext::headless`]: crate::gpu::GpuContext::headless
 fn max_export_dim(gpu: &GpuContext) -> u32 {
@@ -159,11 +152,8 @@ fn max_export_dim(gpu: &GpuContext) -> u32 {
 }
 
 /// How much of the viewport [`Engine::show_piece`] leaves clear around the piece, as
-/// a fraction of each axis on each side.
-///
-/// Not zero, unlike the fit an *export* makes: a piece flush with all four window
-/// edges reads as one that carries on past them. Small enough that the picture is
-/// still what the window is mostly showing.
+/// a fraction of each axis on each side. Not zero, unlike the fit an *export* makes:
+/// a piece flush with all four window edges reads as one that carries on past them.
 const SHOW_PIECE_MARGIN: f32 = 0.04;
 
 impl Engine {
@@ -182,19 +172,14 @@ impl Engine {
     }
 
     /// Render the document through `view` into a target that is **not** the engine's
-    /// own substrate — a second substrate showing the same document (§11).
-    ///
-    /// The navigator's miniature is the consumer: reaching it through
-    /// [`export`](Self::export) instead is this same render plus a frame of latency
-    /// and a megabyte of pixels through the CPU.
+    /// own substrate — a second substrate showing the same document (§11), the
+    /// navigator's miniature being the consumer.
     ///
     /// `into` holds the pass-A attachments (see [`Offscreen`]); a consumer drawing
     /// repeatedly keeps them, so a refresh allocates nothing at all. `target` must
     /// carry the format [`target_format`](Self::target_format) reports and be
-    /// `view.viewport` in size.
-    ///
-    /// No chrome: a selection outline belongs to the substrate you are painting on,
-    /// not to a thumbnail of the piece.
+    /// `view.viewport` in size. No chrome: a selection outline belongs to the
+    /// substrate you are painting on, not to a thumbnail of the piece.
     pub fn render_into(
         &mut self,
         into: &mut Offscreen,
@@ -221,8 +206,7 @@ impl Engine {
     }
 
     /// Render through an **explicit** view rather than the session's, choosing what
-    /// sits under the paint and whether on-canvas chrome is drawn (§6.4,
-    /// §15.6).
+    /// sits under the paint and whether on-canvas chrome is drawn (§6.4, §15.6).
     ///
     /// The seam export needs: exporting a frame is rendering at `frame.rect × scale`,
     /// centred on the frame, at `zoom = scale` — **the same path the screen takes**,
@@ -237,11 +221,6 @@ impl Engine {
     /// consumers: what a caller may choose is a view, how much of the document, a
     /// substrate and where the attachments live, never whether chrome is drawn (it is,
     /// for the screen alone).
-    ///
-    /// Over the arity lint by one, and left that way: **every parameter here is a
-    /// distinct type**, so the transposition the lint guards against cannot be
-    /// written. A *second* `Option<LayerId>` would end that, and these would become a
-    /// "what to draw" value worth naming.
     #[expect(
         clippy::too_many_arguments,
         reason = "every argument is a distinct type, so the transposition the lint guards cannot be written"
@@ -279,10 +258,8 @@ impl Engine {
         //
         // Instrumented because the cache is the whole claim: this row's *count*
         // against `render.view`'s says how often the key actually moved, so a rebuild
-        // that stopped being rare shows up here before it shows up as a dropped
-        // frame. Braced because a timing span runs to the end of the block it is
-        // opened in, and what is being timed is the call rather than the rest of the
-        // render (`timing::span!`).
+        // that stopped being rare shows up here before it shows up as a dropped frame.
+        // Braced because a timing span runs to the end of the block it is opened in.
         let key = DrawKey {
             doc_revision: self.doc_revision,
             epoch: self.preview.epoch(),
@@ -308,10 +285,8 @@ impl Engine {
         let bg_resid = [bg.res[0], bg.res[1], bg.res[2], 0.0];
         // Chrome never reaches a file: an exported image gets no selection outline
         // (§15.6). Keyed on `chrome`, deliberately *not* on the background — a
-        // substrate export is still an export.
-        //
-        // Read off the owned `doc` rather than through `self`, so the compositor can
-        // be borrowed mutably at the end.
+        // substrate export is still an export. Read off the owned `doc`, so the
+        // compositor can be borrowed mutably at the end.
         let outlines: Vec<(crate::document::Selection, Option<[f32; 3]>)> = match chrome {
             Chrome::Hidden => Vec::new(),
             Chrome::Shown => self.visible_selections(&doc),
@@ -361,10 +336,9 @@ impl Engine {
             output,
         };
         // The three compositing passes and the draws inside them, encoded and
-        // submitted (§6.3). CPU time to *record* them, like every row here: WebGPU
-        // offers no timestamp query on the web, so nothing in this module can say
-        // what the GPU then spent executing them. The frontend's frame-skip counter
-        // (`Renderer::gpu_behind`) is the signal for that.
+        // submitted (§6.3). CPU time to *record* them: WebGPU offers no timestamp
+        // query on the web, so nothing here can say what the GPU then spent executing
+        // them — the frontend's `Renderer::gpu_behind` is that signal.
         crate::timing::span!("render.composite");
         match attachments {
             Attachments::Screen => {
@@ -384,7 +358,7 @@ impl Engine {
     /// layer that is not paint at all. Reads the *committed* document, so a caller
     /// mid-gesture is asking about the state before the live tail.
     ///
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`). A
+    /// `pub` for the suite and nothing else, and hidden to say so (`testing`): a
     /// conservation, opacity or erase claim read off the composited image cannot
     /// separate "height was not conserved" from "the light changed", and §6.1 is a
     /// claim about the first.
@@ -561,27 +535,26 @@ impl Engine {
     /// browser's event loop runs, so there is no way to block on it).
     ///
     /// Deliberately *not* an `async fn`: one would hold `&mut self` across the
-    /// readback, and a frontend taking that borrow from a shared cell would panic
-    /// with `AlreadyBorrowedMut` when the UI re-rendered mid-await. The borrow ends
-    /// when `export` returns — the future owns a cloned [`GpuContext`] and the target
-    /// texture, and touches the engine not at all.
+    /// readback, and a frontend taking that borrow from a shared cell would panic with
+    /// `AlreadyBorrowedMut` when the UI re-rendered mid-await. The future owns a cloned
+    /// [`GpuContext`] and the target texture and touches the engine not at all, so the
+    /// borrow ends when `export` returns.
     ///
     /// `content` chooses whether the in-flight gesture is in the picture: a file
     /// export takes [`Rendered::Live`], since that is what the artist is looking at.
     /// Anything refreshed per *committed* change wants [`Rendered::Committed`] and
     /// probably [`render_into`](Self::render_into).
     ///
-    /// `into` is where the render's attachments live. It renders **beside** the
-    /// substrate rather than into it, so it never touches the screen's; whether its
-    /// own outlive the call is the caller's choice (see [`Offscreen`]) — a
-    /// `&mut Offscreen::default()` for a one-shot, a held one for a repeat.
+    /// `into` is where the render's attachments live — **beside** the substrate rather
+    /// than in it, so the screen's are never touched; whether its own outlive the call
+    /// is the caller's choice (see [`Offscreen`]).
     ///
     /// **Two `Result`s, and they answer different questions.** The outer one is the
     /// request: a frame too small, a size past the device's limit — refused before
     /// anything is drawn, and answerable by asking for something else. The inner one
-    /// is the *readback*, which can only fail by the GPU failing underneath it (§5).
-    /// That is reported rather than panicked on, because the action log survives what
-    /// the device does not and a caller told this can still save the file.
+    /// is the *readback*, which can only fail by the GPU failing underneath it (§5),
+    /// and is reported rather than panicked on because the action log survives what
+    /// the device does not.
     ///
     /// ```text
     /// let readback = { engine.write().export(&mut own, frame, scale, bg, content)? }; // borrow ends
@@ -606,11 +579,10 @@ impl Engine {
     /// [`export`](Self::export) with the framing chosen by the caller instead of
     /// derived from the document.
     ///
-    /// `export` answers "the piece, at a scale", framing itself off a frame or the
-    /// painted bounds. This takes the view whole instead — `view.viewport` is the
-    /// output size — for a caller that means *this* rect at *this* pixel size, such
-    /// as a preset thumbnail. The same borrow bargain as `export` applies: the
-    /// returned future owns what it reads, so drop the engine borrow before awaiting.
+    /// This takes the view whole — `view.viewport` is the output size — for a caller
+    /// that means *this* rect at *this* pixel size, such as a preset thumbnail. The
+    /// same borrow bargain as `export` applies: the returned future owns what it
+    /// reads, so drop the engine borrow before awaiting.
     ///
     /// No chrome, like every render that is not the screen's (§15.6).
     ///
@@ -623,9 +595,8 @@ impl Engine {
     /// a caller that would rather keep its last picture than show a blank one should
     /// ask before rendering.
     ///
-    /// Errors mirror [`export_plan`](Self::export_plan)'s: a degenerate or
-    /// non-finite view, or a viewport past the device's texture limit, is reported
-    /// rather than surfacing as a wgpu validation panic.
+    /// Errors mirror [`export_plan`](Self::export_plan)'s: a degenerate or non-finite
+    /// view, or a viewport past the device's texture limit.
     pub fn export_view(
         &mut self,
         into: &mut Offscreen,
@@ -684,15 +655,12 @@ impl Engine {
     ///
     /// **A single-layer list is never cached.** The memo holds one list, so a
     /// thumbnail pass (one layer per row, interleaved with screen frames) would evict
-    /// the screen's list N times over. Such a key can never be hit twice anyway: every
-    /// row names a different `only`. Not a second slot keyed on `only` either — the
-    /// navigator refreshes per commit, when `doc_revision` has already moved the
-    /// screen's key.
+    /// the screen's list N times over — and such a key can never be hit twice anyway,
+    /// every row naming a different `only`.
     ///
     /// Takes the key and a borrowed `doc` so the caller can compute one while it still
     /// holds the other. The list comes back as an `Arc` rather than a reference into
-    /// the memo, so holding it does not hold a borrow of the engine — the compositor
-    /// is borrowed mutably a few lines after the call.
+    /// the memo, so holding it does not hold a borrow of the engine.
     pub(super) fn draw_list(&self, key: DrawKey, doc: &DocState) -> Arc<[CompositeGroup]> {
         if key.only.is_some() {
             return self.composite_groups(doc, key.only, key.visible).into();
@@ -706,35 +674,32 @@ impl Engine {
     /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
     /// (§18.0.4, §14.7).
     ///
-    /// Consecutive layers that need no isolation share one `Run` — they compose
-    /// correctly against each other and against everything below under
-    /// premultiplied "over", so a document that uses no blend modes, no clipping
-    /// and no groups produces exactly one `Run` and the compositor's work is
-    /// unchanged. Anything else becomes a group of its own, because its mode and
-    /// its clip are both defined against *what is underneath it*, which means it
-    /// has to be composited in isolation first.
+    /// Consecutive layers that need no isolation share one `Run`, composing correctly
+    /// against each other under premultiplied "over" — so a document with no blend
+    /// modes, no clipping and no groups produces exactly one. Anything else becomes a
+    /// group of its own, its mode and its clip both being defined against *what is
+    /// underneath it*, which has to be composited in isolation first.
     ///
-    /// A layer that **carries** others is a group, and composites as a `Stack`:
-    /// its own content at the bottom, then each carried layer merging into what is
-    /// beneath it *within the group* (§14.2). The group as a whole
-    /// then merges outward through its own — that is, its base's — blend mode,
-    /// clip and opacity.
+    /// A layer that **carries** others is a group, and composites as a `Stack`: its
+    /// own content at the bottom, then each carried layer merging into what is beneath
+    /// it *within the group* (§14.2), the whole then merging outward through the
+    /// base's blend mode, clip and opacity.
     ///
     /// Within a run this is an *ordered* item list rather than a flat tile list
     /// because a matte has to composite at its own place in the stack — a frame over
-    /// the painting, a substrate under it (§15.4.4). The compositor
-    /// re-batches consecutive tiles into one instanced draw, so an all-paint document
-    /// costs nothing for it.
+    /// the painting, a substrate under it (§15.4.4). The compositor re-batches
+    /// consecutive tiles into one instanced draw, so an all-paint document costs
+    /// nothing for it.
     ///
     /// `only` restricts the list to a single layer — the eyedropper's
-    /// sample-one-layer option (§18.0.2). It means that layer's *own*
-    /// paint: what it carries is left out, and its mode, clip and opacity go with
-    /// it, since a sample is of the paint that is there rather than of the part of
-    /// it that survives its surroundings. Sharing this with rendering is what makes
-    /// a sample come off the same stack the screen draws.
-    /// `visible` is the view-AABB cull (§6.3): only tiles it names are built into
-    /// the draw list. `None` culls nothing — see [`ViewTransform::visible_tiles`].
+    /// sample-one-layer option (§18.0.2). It means that layer's *own* paint: what it
+    /// carries is left out, and its mode, clip and opacity go with it, since a sample
+    /// is of the paint that is there rather than of the part of it that survives its
+    /// surroundings. Sharing this with rendering is what makes a sample come off the
+    /// same stack the screen draws.
     ///
+    /// `visible` is the view-AABB cull (§6.3): only tiles it names are built into the
+    /// draw list. `None` culls nothing — see [`ViewTransform::visible_tiles`].
     pub(super) fn composite_groups(
         &self,
         doc: &DocState,
@@ -742,17 +707,12 @@ impl Engine {
         visible: Option<TileRect>,
     ) -> Vec<CompositeGroup> {
         if let Some(id) = only {
-            // Fully transparent is the one exception to dropping the opacity below,
-            // and this filter is now the whole of it rather than an optimization: a
+            // Fully transparent is the one exception to dropping the opacity below: a
             // layer turned all the way down contributes nothing to the document, so
-            // sampling it answers "nothing here" — the same answer bare canvas gives —
-            // instead of reporting paint that is switched off. Everywhere above zero
-            // the setting says nothing about what the paint *is*, so nothing about
-            // what a sample of it reports; at zero it is not a fainter statement of
-            // the same thing, it is the absence of one.
-            //
-            // Hidden reads the same way, and for the reason it does everywhere else:
-            // a sample comes off the same stack the screen draws (§18.0.2).
+            // sampling it answers "nothing here" — the answer bare canvas gives —
+            // rather than reporting paint that is switched off. Hidden reads the same
+            // way, and for the reason it does everywhere else: a sample comes off the
+            // same stack the screen draws (§18.0.2).
             let Some(layer) = doc.layer(id).filter(|l| l.is_shown()) else {
                 return Vec::new();
             };
@@ -762,18 +722,15 @@ impl Engine {
             } else {
                 // **All three composite params are dropped**, opacity included: a
                 // sample is of the paint that is there, not of the part of it that
-                // survives its surroundings, and a layer's opacity is exactly such a
-                // surrounding — it says how much of this layer the *document* shows,
-                // which is the question the other two pick sources ask. Turning a
-                // layer down does not turn its paint into a paler paint, so
-                // "sample this layer" must answer the same color at any setting.
+                // survives its surroundings, and opacity says how much of the layer
+                // the *document* shows. So "sample this layer" answers the same color
+                // at any setting.
                 //
-                // The pick already reported that color, because it divides by the
-                // coverage it sums and the opacity cancels (`mean_channels`). What
-                // dropping it changes is where the pick answers **at all**: a faded
-                // layer's coverage was scaled down towards `PICK_MIN_OPACITY`, so a
-                // thin glaze on a layer at 20% could report "nothing here" while the
-                // same paint at 100% reported its color.
+                // The color would survive either way — the pick divides by the
+                // coverage it sums, so opacity cancels (`mean_channels`). What this
+                // changes is where the pick answers **at all**: a faded layer's
+                // coverage scales towards `PICK_MIN_OPACITY`, where a thin glaze would
+                // report "nothing here".
                 vec![CompositeGroup::leaf(CompositeParams::IDENTITY, items)]
             };
         }
@@ -782,14 +739,13 @@ impl Engine {
         self.composite_stack(doc.root().iter(), visible, false)
     }
 
-    /// The draw list for an eyedropper source (§18.0.2) —
-    /// [`composite_groups`](Self::composite_groups) for the whole-document and one-layer
-    /// questions,
-    /// plus the two scoped ones: a group's interior, and the document cut above a
-    /// layer. Here rather than in `engine::pick` because it is draw-list
-    /// arithmetic: everything it does is a restriction of `composite_stack`'s
-    /// walk, and keeping the restrictions beside the walk is what keeps a sample
-    /// coming off the same stack the screen draws.
+    /// The draw list for an eyedropper source (§18.0.2): the whole document or one
+    /// layer through [`composite_groups`](Self::composite_groups), plus the two scoped
+    /// questions — a group's interior, and the document cut above a layer.
+    ///
+    /// Here rather than in `engine::pick` because every one of them is a restriction
+    /// of `composite_stack`'s walk, and keeping the restrictions beside the walk is
+    /// what keeps a sample coming off the same stack the screen draws.
     pub(super) fn pick_groups(
         &self,
         doc: &DocState,
@@ -811,18 +767,16 @@ impl Engine {
     /// the bottom, then the members — all of them, or with `below` only those up to
     /// and including `layer` (`PickSource::Group`).
     ///
-    /// This is `composite_stack`'s group branch with the carrier's outward params
-    /// dropped instead of applied — the same trade `composite_groups` makes for one
-    /// layer, for the same reason: the params say how the group meets what is
+    /// The carrier's outward params are dropped rather than applied — the same trade
+    /// `composite_groups` makes for one layer: they say how the group meets what is
     /// beneath it, and beneath it is what this source excludes. The members keep
-    /// theirs, because a sibling's mode against the base is part of what the group
-    /// looks like *inside*. A layer in the root stack reads the root as its group,
-    /// which makes this the whole document — `Composite`, built by the same walk.
+    /// theirs, a sibling's mode against the base being part of what the group looks
+    /// like *inside*. A layer in the root stack reads the root as its group, which
+    /// makes this the whole document.
     ///
-    /// A carrier that is hidden or turned all the way down contributes nothing to
-    /// the screen, so its interior answers nothing — the `Layer` source's rule. The
-    /// layer itself is only the anchor: hidden or not, its *group* is still what is
-    /// being asked about, and the member walk already skips it like the screen does.
+    /// A carrier that is hidden or turned all the way down answers nothing, on the
+    /// `Layer` source's rule. The layer itself is only the anchor: hidden or not, its
+    /// *group* is what is being asked about.
     fn group_interior(
         &self,
         doc: &DocState,
@@ -888,12 +842,11 @@ impl Engine {
     /// beneath `path[0]` whole, then `path[0]` itself — whole when it is the target,
     /// cut above `path[1]` when it is an ancestor carrying the rest of the chain.
     ///
-    /// The ancestor's own composite params are **kept** and applied to the partial
-    /// group, unlike the one-layer and group-interior sources — because this source
-    /// asks what the screen would show with the upper layers hidden, and hiding a
-    /// member does not lift the group's mode, clip or opacity off what remains. An
-    /// ancestor that is itself hidden or turned off takes the whole chain with it,
-    /// exactly as it does on screen; the layers beneath it still answer.
+    /// The ancestor's own composite params are **kept**, unlike the one-layer and
+    /// group-interior sources: this source asks what the screen would show with the
+    /// upper layers hidden, and hiding a member does not lift the group's mode, clip
+    /// or opacity off what remains. A hidden ancestor takes the whole chain with it;
+    /// the layers beneath it still answer.
     fn stack_below(
         &self,
         layers: &rpds::Vector<Layer>,
@@ -925,9 +878,8 @@ impl Engine {
         let Some(group) = group_of(ancestor.composite, own, carried) else {
             return groups;
         };
-        // Through the same merge the draw list uses. This pushed unmerged before,
-        // which is pixel-identical — more direct runs, same picture — but it meant the
-        // two walks could disagree about the shape of what they built.
+        // Through the same merge the draw list uses, so the two walks cannot come to
+        // disagree about the shape of what they build.
         push_merging(&mut groups, group);
         groups
     }
@@ -935,15 +887,14 @@ impl Engine {
     /// One stack's worth of groups — the root's, or a layer's carried stack.
     ///
     /// `under` says whether something already composites beneath this stack's first
-    /// member: false for the document's own stack, and for a carried stack whether
-    /// the **base's own content** draws anything. That is §14.1's algorithm read
-    /// back — a group's members composite over the base's content, so inside a group
-    /// the base is what lies beneath the bottom member.
+    /// member: false for the document's own stack, and for a carried stack whether the
+    /// **base's own content** draws anything, since a group's members composite over
+    /// the base (§14.1).
     ///
-    /// Only a **filter** asks (§21.2), which is why this is a `bool` handed down
-    /// rather than the base's items handed down: everything else in this walk is
-    /// defined against what it is drawn *into*, and a filter is the one thing
-    /// defined against what has already been drawn.
+    /// Only a **filter** asks (§21.2), which is why it is a `bool` rather than the
+    /// base's items: everything else in this walk is defined against what it is drawn
+    /// *into*, and a filter is the one thing defined against what has already been
+    /// drawn.
     fn composite_stack<'a>(
         &self,
         layers: impl Iterator<Item = &'a Layer>,
@@ -960,21 +911,15 @@ impl Engine {
             // A **filter layer** rewrites what is already composited beneath it *in
             // its own stack* (§21.2) — the same set a clip reads, which is what makes
             // "filter just this layer" the single gesture of carrying it onto that
-            // layer rather than a scoping mode of its own. It never carries anything
-            // itself: the state refuses to attach children to one
-            // (`DocState::cannot_carry`), so this branch is the whole of what a
-            // filter can be.
+            // layer rather than a scoping mode of its own.
             //
             // Two ways it reaches nothing, and both drop it from the draw list rather
             // than encoding a pass that provably cannot change a texel: **nothing is
             // beneath it here** (the foot of a stack, or a stack whose lower members
             // were all culled), or the filter is at its **neutral** setting, which is
-            // what a freshly added one holds (§21.3).
-            //
-            // The first of those is also where a **clip** would have nothing to say
-            // (§14.4.3) — a filter with no backdrop is already the identity, so the
-            // one place the two properties could disagree is a pass that is not
-            // encoded at all.
+            // what a freshly added one holds (§21.3). The first is also where a
+            // **clip** would have nothing to say (§14.4.3), so the one place the two
+            // properties could disagree is a pass that is not encoded at all.
             if let Some(f) = layer.filter() {
                 debug_assert!(
                     layer.carries.is_empty(),
@@ -987,12 +932,10 @@ impl Engine {
             }
             let own = self.layer_items(layer, visible);
             let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
-            // An empty layer is dropped rather than given a group. For `Normal`
-            // that only saves a loop; for a blend mode or a clip it saves two
-            // render passes that provably compute the identity, which is what
-            // keeps a stack of empty glow layers free. A layer that carries
-            // something visible is not empty, whatever its own content.
-            //
+            // An empty layer is dropped rather than given a group: for a blend mode or
+            // a clip that saves two render passes which provably compute the identity,
+            // which is what keeps a stack of empty glow layers free. A layer that
+            // carries something visible is not empty, whatever its own content.
             let Some(group) = group_of(layer.composite, own, carried) else {
                 continue;
             };
@@ -1004,16 +947,13 @@ impl Engine {
     /// What one layer's own content draws, without what it carries.
     ///
     /// Every item comes out at **opacity 1**, and that is not a stub: the layer's
-    /// opacity is a [`CompositeParams`] field, so it arrives with the other two and
-    /// is folded in — or not — by [`CompositeGroup::leaf`], which is the one place
-    /// that decision is made (§14.7). This function is deliberately not told what a
-    /// layer's opacity is; tagging items with it here as well is how a group's base
-    /// gets faded twice.
+    /// opacity is a [`CompositeParams`] field, folded in — or not — by
+    /// [`CompositeGroup::leaf`], the one place that decision is made (§14.7). Tagging
+    /// items with it here as well is how a group's base gets faded twice.
     ///
-    /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be
-    /// the *hole* in a frame, whose fill covers everything outside it (§15.4.4), so
-    /// there is no box to test it against — and there is at most one per layer, so
-    /// there would be nothing to win.
+    /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be the
+    /// *hole* in a frame, whose fill covers everything outside it (§15.4.4), so there
+    /// is no box to test it against — and there is at most one per layer.
     fn layer_items(&self, layer: &Layer, visible: Option<TileRect>) -> Vec<CompositeItem> {
         match &layer.content {
             LayerContent::Paint(tiles) => {
@@ -1047,10 +987,9 @@ impl Engine {
                     stark_model::document::MatteRegion::Everything => REGION_EVERYTHING,
                 };
                 // sRGB in the log, working-space channels on the GPU — the same
-                // conversion the brush color gets, so a matte means the same
-                // color in an Oklab and a Mixbox document. A gradient converts
-                // every stop the same way, once per item build, and the shader
-                // interpolates in the working space (§22.4).
+                // conversion the brush color gets, so a matte means the same color in
+                // an Oklab and a Mixbox document. A gradient converts every stop the
+                // same way, and the shader interpolates in the working space (§22.4).
                 let (channels, resid, ramp) = match paint {
                     stark_model::document::Parcel::Solid(color) => {
                         let l = self.shared.color_space.rgb_to_latent(*color);
@@ -1073,12 +1012,10 @@ impl Engine {
                                 [center.x, center.y, radius, 0.0]
                             }
                         };
-                        // Indexed by the stop's own position, and bounded by
-                        // `Gradient`'s invariant rather than by a check here: a ramp
-                        // holds at most `gradient::MAX_STOPS`, which is the length
+                        // Bounded by `Gradient`'s own invariant rather than by a check
+                        // here: a ramp holds at most `gradient::MAX_STOPS`, the length
                         // `matte.wesl` declares `stop_c` at. Truncating instead would
-                        // hide a broken invariant behind a wrong picture; this way it
-                        // is loud, at the site.
+                        // hide a broken invariant behind a wrong picture.
                         for (i, stop) in stops.iter().enumerate() {
                             let l = self.shared.color_space.rgb_to_latent(stop.color);
                             ramp.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
@@ -1098,18 +1035,17 @@ impl Engine {
             }
             // A filter draws no items at all: it is a pass over what the *stack* has
             // built, not content of its own, so `composite_stack` gives it a group
-            // rather than asking here. That is also what the eyedropper's
-            // sample-one-layer option reads (§18.0.2) — a filter layer's own content
-            // is nothing, and sampling it reports nothing rather than reporting the
-            // picture it happens to be sitting over.
+            // rather than asking here. The eyedropper's sample-one-layer option reads
+            // that same nothing (§18.0.2), rather than the picture the filter happens
+            // to be sitting over.
             LayerContent::Filter(_) => Vec::new(),
         }
     }
 
     /// A flat 2-D texture to render into off-screen: an export's target, or one of the
     /// eyedropper's two sample attachments. Everything but the label, the format, the
-    /// size and the usage is the same for all of them — a single mip, a single sample,
-    /// no view formats — and was written out once per call site until it wasn't.
+    /// size and the usage is the same for all of them: a single mip, a single sample,
+    /// no view formats.
     pub(super) fn offscreen_target(
         &self,
         label: &str,
@@ -1153,24 +1089,21 @@ impl Engine {
     /// The canvas-space rect that **is the piece**: the named frame's, else the
     /// painted bounds, else `None` (§15.6).
     ///
-    /// The rule itself, without the last resort, because its two askers want
-    /// different last resorts and only one of them is "the viewport". An export has
-    /// to write *something*, so it frames what you are looking at; framing the view
-    /// on a document with neither paint nor frame has nothing to frame and should
-    /// leave the view alone — falling back the same way would zoom the window onto
-    /// itself. Shared so that what a file would hold and what
-    /// [`ViewCommand::ShowPiece`](crate::command::ViewCommand::ShowPiece) puts on
-    /// screen cannot come to disagree about where the piece ends.
+    /// The rule without the last resort, because its two askers want different ones:
+    /// an export has to write *something*, so it frames what you are looking at, while
+    /// [`ViewCommand::ShowPiece`](crate::command::ViewCommand::ShowPiece) on a document
+    /// with neither paint nor frame should leave the view alone rather than zoom the
+    /// window onto itself. Shared so the two cannot disagree about where the piece
+    /// ends.
     pub(super) fn piece_rect(
         &self,
         frame: Option<LayerId>,
     ) -> Option<(stark_model::geom::Vec2, stark_model::geom::Vec2)> {
         let doc = self.timeline.current();
-        // An `Everything` matte has no rect and so defines no frame: naming one
-        // falls through to the painted bounds, the same answer as no frame at
-        // all — a substrate is under the picture, not a crop of it (§15.6).
-        // The rect is placed by the layer's translation (§14.12), so export
-        // frames the hole where the compositor draws it.
+        // An `Everything` matte has no rect and so defines no frame: naming one falls
+        // through to the painted bounds — a substrate is under the picture, not a crop
+        // of it (§15.6). The rect is placed by the layer's translation (§14.12), so
+        // export frames the hole where the compositor draws it.
         if let Some(id) = frame
             && let Some(rect) = doc
                 .layer(id)
@@ -1200,11 +1133,10 @@ impl Engine {
 
     /// The selection masks to outline, and whose each is (§17.3).
     ///
-    /// `DocState` holds a selection for every actor that ever made one, because
-    /// replay needs them all; only the actors actually *here* are candidates. The log
-    /// decides what exists, presence decides what could be shown — and
-    /// `show_peer_selections` decides whether it is, since a second contour over the
-    /// artwork is a preference rather than a fact about the drawing.
+    /// `DocState` holds a selection for every actor that ever made one, since replay
+    /// needs them all: the log decides what exists, presence what could be shown, and
+    /// `show_peer_selections` whether it is — a second contour over the artwork being
+    /// a preference rather than a fact about the drawing.
     fn visible_selections(
         &self,
         doc: &DocState,
@@ -1226,28 +1158,7 @@ impl Engine {
     }
 }
 
-/// The entries of `map` that `visible` admits, **walking whichever side is smaller**.
-///
-/// The cull is the same set either way — `TileRect::contains` and a probe of
-/// `TileRect::coords` agree by construction — so the only question is which walk to
-/// pay for, and the two differ by orders of magnitude in opposite directions.
-///
-/// Scanning the layer and filtering is right when the viewport admits more tiles than
-/// the layer holds: every zoomed-out frame, which is the case the cull was written
-/// for (§6.3), where the visible count scales as 1/zoom². It is badly wrong the other
-/// way. At 1:1 on a large painting the viewport holds a few dozen tiles and a layer
-/// holds thousands, and `HashTrieMap::iter` walks the whole trie to discard nearly all
-/// of it — per layer, per frame, so a document's paint cost the frame rate whether or
-/// not any of it was on screen.
-///
-/// Probing costs one hash lookup per *visible* tile instead, so the frame follows the
-/// viewport. Which is what a cull is supposed to buy, and what the scan quietly was
-/// not buying.
-///
-/// `None` claims everything: the box could not be measured (a non-finite view, or one
-/// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
-/// see its input must do nothing rather than guess — see [`ViewTransform::visible_tiles`].
-/// The view's tile rect, restated in a layer frame placed at `frame` on the
+/// The view's tile rect, restated in a layer frame placed at `translation` on the
 /// canvas (§14.12): what is visible of a translated layer's **local** tiles.
 /// Rounded outward — a frame off the tile grid lands the rect astride tiles, and
 /// a cull may only ever keep too much. Saturating, so a frame at the integer
@@ -1282,6 +1193,20 @@ fn visible_in_frame(
     })
 }
 
+/// The entries of `map` that `visible` admits, **walking whichever side is smaller**.
+///
+/// The cull is the same set either way — `TileRect::contains` and a probe of
+/// `TileRect::coords` agree by construction — so the only question is which walk to
+/// pay for, and the two differ by orders of magnitude in opposite directions. Scanning
+/// the layer and filtering is right when the viewport admits more tiles than the layer
+/// holds: every zoomed-out frame, which is the case the cull was written for (§6.3),
+/// where the visible count scales as 1/zoom². Probing costs one hash lookup per
+/// *visible* tile instead, which is what keeps a 1:1 view of a large painting off the
+/// whole trie.
+///
+/// `None` claims everything: the box could not be measured (a non-finite view, or one
+/// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
+/// see its input must do nothing rather than guess — see [`ViewTransform::visible_tiles`].
 fn culled<V>(
     map: &rpds::HashTrieMap<stark_model::geom::TileCoord, V>,
     visible: Option<TileRect>,
@@ -1308,30 +1233,24 @@ fn culled<V>(
 /// here is a new notion of "has it changed", only the existing ones read together.
 ///
 /// - `doc_revision` moves on every **committed** change — a commit, an undo, a
-///   merged remote action, a load (`Engine::committed_changed`).
+///   merged remote action, a load.
 /// - `epoch` moves whenever the document the previews are drawn over is *replaced*:
-///   the unlogged drag preview being installed or dropped (`Preview::set_doc`, the
-///   only way to move that slot, which invalidates) — and a commit, which invalidates
-///   too. So it is *wider* than `doc_revision` rather than a second, narrower term.
-///   Both are named because a key names the terms its value depends on, not the
-///   smallest set that happens to cover them: reading the wide one alone would make
-///   this key rest on `committed_changed`'s implementation rather than on its promise.
+///   an unlogged drag preview installed or dropped, and a commit. So it is *wider*
+///   than `doc_revision` rather than a second, narrower term; both are named because
+///   a key names the terms its value depends on, not the smallest set that happens to
+///   cover them.
 /// - `fold` moves whenever the live fold is *rebuilt* (`Preview::rebuild`) — a stroke
 ///   in flight commits nothing and replaces no document, so neither counter above
 ///   stirs while one is being drawn, and a list keyed without this would hold the
-///   frame at the moment the pen went down. This is the term the two roster keys do
-///   not have and do not need: they project what is *shown*, and the fold is not that
-///   (`super::ShownKey`).
-/// - `content` is which document is being drawn at all. `Live` and `Committed`
-///   differ by exactly the in-flight gesture, so at one instant they are two
-///   different lists — and the navigator's miniature asks for the second while the
-///   canvas asks for the first.
+///   frame at the moment the pen went down. It is the term the two roster keys do not
+///   need: they project what is *shown*, and the fold is not that (`super::ShownKey`).
+/// - `content` is which document is being drawn at all. `Live` and `Committed` differ
+///   by exactly the in-flight gesture, so at one instant they are two different lists.
 /// - `only` and `visible` are the two arguments that shape the list.
 ///
 /// **What is deliberately absent is the view.** A draw list is built against the
 /// *tile rect* a view can reach, not the view, so panning within one tile — or
-/// rotating, or supersampling — hits the same key. That is `ViewTransform::visible_tiles`'
-/// conservatism paying for itself twice.
+/// rotating, or supersampling — hits the same key.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct DrawKey {
     doc_revision: u64,
@@ -1350,9 +1269,7 @@ pub(super) struct DrawKey {
 ///   composites with `IDENTITY` and the layer's params are applied once, to the
 ///   composited whole. Every one of the three would be wrong applied twice: a blend
 ///   mode would combine the base with itself, a clip would clip the base to its own
-///   coverage, and an opacity would fade it to `a²` — which is what happened for as
-///   long as the three were carried separately and the item builder tagged them with
-///   one of them.
+///   coverage, and an opacity would fade it to `a²`.
 ///
 /// The empty case answers `None` rather than an empty group because **the cull can
 /// empty a layer that has paint**, so it fires for a document scrolled away from as
@@ -1361,10 +1278,8 @@ pub(super) struct DrawKey {
 /// `cb` exactly — `cs.a` is 0, so both source terms vanish and the aux sum adds
 /// nothing — for every mode and both clip states.
 ///
-/// Asked in two walks, which is why it is a function: `composite_stack` builds the
-/// draw list, and `stack_below` builds the restriction of it a `PickSource::Below`
-/// sample comes off. Written out at each, the second keeps the old rule when the first
-/// changes.
+/// A function because two walks ask it: `composite_stack` builds the draw list, and
+/// `stack_below` builds the restriction of it a `PickSource::Below` sample comes off.
 fn group_of(
     params: CompositeParams,
     own: Vec<CompositeItem>,
@@ -1389,10 +1304,8 @@ fn group_of(
 /// the fast path, and the reason an ordinary document is one group.
 ///
 /// `as_direct_run_mut` is the test and the run in one, which is what makes this
-/// total. Asking `is_direct` of both sides and then re-matching the two
-/// `GroupContent`s behind an `if let` with no else leaves a gap: a group answering
-/// "direct" while holding something other than a `Run` would be counted as merged and
-/// then silently dropped.
+/// total: a group that answered "direct" while holding something other than a `Run`
+/// would otherwise be counted as merged and then silently dropped.
 fn push_merging(groups: &mut Vec<CompositeGroup>, mut group: CompositeGroup) {
     let merged = match (
         groups
@@ -1417,13 +1330,10 @@ mod tests {
     use stark_model::geom::TileCoord;
 
     /// **The two walks are the same cull.** [`culled`] picks between scanning the
-    /// layer and probing the viewport purely on which is cheaper, so the one thing
-    /// that must never depend on that choice is the answer — a disagreement would drop
-    /// paint from the picture at exactly one zoom level, which is the kind of bug that
-    /// gets blamed on the compositor for a week.
-    ///
-    /// Driven over map/rect pairs that put the branch on both sides of its own
-    /// threshold, including the equality case where it flips.
+    /// layer and probing the viewport purely on which is cheaper, so the answer must
+    /// not depend on that choice — a disagreement would drop paint from the picture at
+    /// exactly one zoom level. Driven over map/rect pairs that put the branch on both
+    /// sides of its own threshold, including the equality case where it flips.
     #[test]
     fn both_culling_walks_pick_the_same_tiles() {
         let map: rpds::HashTrieMap<TileCoord, i32> = (0..40)
@@ -1483,10 +1393,8 @@ mod tests {
             let got = sorted(culled(&map, Some(rect)).map(|(c, v)| (c, *v)).collect());
             assert_eq!(got, want, "culled disagreed on {rect:?}");
             // The probe is only asked where probing is *finite*, which is the size
-            // guard inside `culled` stated from the outside. `TileRect::ALL` counts
-            // 1.8e19 tiles, so walking its coords is not a slow test but a hung one —
-            // which is exactly the case the guard exists to keep the renderer out of,
-            // and this loop hit it before the guard was mirrored here.
+            // guard inside `culled` stated from the outside: `TileRect::ALL` counts
+            // 1.8e19 tiles, so walking its coords is not a slow test but a hung one.
             if rect.count() <= 10_000 {
                 assert_eq!(want, by_probe(rect), "the walks disagree on {rect:?}");
             }
@@ -1495,25 +1403,17 @@ mod tests {
         assert_eq!(culled(&map, None).count(), map.size());
     }
 
-    /// **"An ordinary document is one `Run`"**, which `composite_groups` claims and
-    /// nothing checked.
+    /// **"An ordinary document is one `Run`"**, which `composite_groups` claims.
     ///
     /// It is the whole argument for cutting the draw list into groups at all: a
-    /// document that uses no blend modes, no clipping and no groups must cost the
-    /// compositor exactly what it did before groups existed, or the feature is a tax
-    /// on everyone who does not use it. That is measurable, so it is measured — the
-    /// habit `a_trim_never_drops_below_the_epochs_peak_demand` and
-    /// `a_scope_hands_its_scratch_back_as_it_goes` already keep, extended to a
-    /// *performance* claim rather than a correctness one (C8).
+    /// document that uses no blend modes, no clipping and no groups must reach the
+    /// compositor as one run, or the feature is a tax on everyone who does not use
+    /// it — a *performance* claim measured like a correctness one (C8).
     ///
     /// Asked of the grouping rule directly rather than through an `Engine`, so it
     /// needs no GPU: what decides a run boundary is [`group_of`] plus [`push_merging`],
-    /// and both are functions of `CompositeParams`.
-    ///
-    /// Through those two rather than a copy of them. This test used to re-implement
-    /// the merge — the same `as_direct_run_mut` pair, written out again — so it pinned
-    /// a transcription of the rule and would have gone on passing if the rule itself
-    /// changed underneath it.
+    /// and both are functions of `CompositeParams`. Through those two rather than a
+    /// copy of them, which would pin a transcription of the rule instead.
     #[test]
     fn plain_layers_merge_into_one_run() {
         use crate::document::CompositeParams;

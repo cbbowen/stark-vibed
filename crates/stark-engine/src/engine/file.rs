@@ -5,11 +5,7 @@
 //! replay it — the brush shapes strokes reference and the canvas substrates they were
 //! deposited against, both bundled, because a deposit is stored and no later arrival
 //! un-bakes one laid against the wrong substrate. [`Engine::adopt`] is the order those
-//! have to arrive in, written once for the three callers that need it.
-//!
-//! The registries live here for the same reason: a substrate is a replay input first
-//! and a rendering input second, and its identity is derived from its bytes rather
-//! than asserted alongside them, so a wrong binding cannot be expressed.
+//! have to arrive in.
 
 use stark_model::DocError;
 
@@ -28,26 +24,14 @@ use stark_model::document::Action;
 /// A [`DocumentFile`] whose color space **this build can honour** (§6.7) — the one
 /// question every adoption path has to settle before it touches the open document.
 ///
-/// **The one place an untrusted color space enters.** Every `ColorSpaceId` decodes —
-/// the enum is unconditional so the save format's indices cannot shift with a build's
-/// features (§8, §19) — and what a build may lack is the *implementation*. So this is
-/// not a decode failure, and saying so is what lets a frontend offer "this document
-/// needs a Mixbox build" instead of "this file is corrupt". It is asked here rather
-/// than in [`DocumentFile::from_bytes`] because since the crate split (§2) the decoder
-/// cannot answer it: whether a space can be *honoured* is a fact about this build's
-/// renderer, and `stark-model` has no `mixbox` feature to consult.
+/// Not a decode failure: every `ColorSpaceId` decodes, since the enum is unconditional
+/// so the save format's indices cannot shift with a build's features (§8, §19), and
+/// what a build may lack is the *implementation*. Saying so is what lets a frontend
+/// offer "this document needs a Mixbox build" instead of "this file is corrupt".
 ///
-/// **A type rather than a call each caller remembers**, and the difference is not
-/// theoretical. [`Engine::adopt`] begins by emptying the document and then resolves
-/// the space, so the question must be settled *before* it is reached — and it made
-/// that argument in a comment, naming the two callers that had settled it. There was
-/// a third. `join_collaboration` handed it a file straight off the wire, so a build
-/// without Mixbox joining a Mixbox session met the `expect` with the painting still
-/// unsaved — on the web, the tab. A comment can be given a third caller; a
-/// constructor cannot.
-///
-/// Borrowing rather than owning, because every caller already holds the file and the
-/// validation reads one field: this is a *proof*, not a container.
+/// A type rather than a check each caller remembers: [`Engine::adopt`] empties the
+/// document before it resolves the space, so the question has to be settled first, and
+/// holding one of these is what makes that resolution infallible.
 #[derive(Clone, Copy)]
 pub(super) struct ValidatedFile<'a>(&'a DocumentFile);
 
@@ -76,18 +60,14 @@ impl Engine {
     /// brush-shape assets that strokes actually reference (§6.6) and the canvas
     /// substrates the log names (§6.4).
     ///
-    /// **What the log names is asked of [`DocumentFile::required_content`]**, which
-    /// is the crate's one answer to that question (`content.rs`) and already what
-    /// the loader, the joiner and the transport ask. This scanned the log itself
-    /// until it didn't: two scans of one log, in two modules, is two things to teach
-    /// about a new action that carries an id — and the one that is *not* taught
-    /// writes a file that silently fails to bundle it.
+    /// What the log names is asked of [`DocumentFile::required_content`], the crate's
+    /// one answer to that question and already what the loader, the joiner and the
+    /// transport ask.
     ///
     /// Every substrate the log names travels, not just the one it ends on: the tooth
     /// reads whichever was in force when a stroke was made, so a document that
     /// switched part-way through needs both to replay to the same pixels. `Flat` is
-    /// skipped — procedural, no bytes — as is anything whose image never arrived,
-    /// which cannot be bundled because it was never held.
+    /// skipped — procedural, no bytes — as is anything whose image never arrived.
     pub fn document_file(&self) -> DocumentFile {
         let mut file = DocumentFile::new(self.timeline.clone_actions());
         file.canvas.color_space = self.shared.color_space.id();
@@ -120,17 +100,15 @@ impl Engine {
     /// The same, leaving out content the opening app can produce itself — the ids
     /// of the assets it ships with (§8, §12.4).
     ///
-    /// Worth it because the bundle dominates the file: a log is fitted paths and
-    /// a canvas substrate is megabytes, so a doodle on the built-in rough substrate weighs 2.8
-    /// MB of which almost none is the painting. The id stays in the file either
-    /// way, so what is left out is looked up rather than guessed at, and bytes
-    /// that do not hash to it are refused rather than substituted.
+    /// The bundle dominates the file: a log is fitted paths where a canvas substrate
+    /// is megabytes. The id stays in the file either way, so what is left out is
+    /// looked up rather than guessed at, and bytes that do not hash to it are refused
+    /// rather than substituted.
     ///
-    /// What it costs is self-containment, which is why it is a separate call and
-    /// not a flag on the other one: the result needs an app that still ships the
-    /// content, and [`DocumentFile::unbundled_content`] is what the opener has to
-    /// settle before replaying. Anything not in `resolvable` is bundled as usual,
-    /// so passing an empty slice is [`Engine::save_bytes`].
+    /// What it costs is self-containment: the result needs an app that still ships
+    /// the content, and [`DocumentFile::unbundled_content`] is what the opener has to
+    /// settle before replaying. Anything not in `resolvable` is bundled as usual, so
+    /// passing an empty slice is [`Engine::save_bytes`].
     pub fn save_bytes_resolvable(&self, resolvable: &[AssetId]) -> Result<Vec<u8>> {
         let mut file = self.document_file();
         // Pictures are *not* dropped against this list, and cannot be: `resolvable`
@@ -159,20 +137,11 @@ impl Engine {
     ///   painting (§6.7);
     /// - the brush shapes strokes reference, and the substrates the log names, both
     ///   before any stroke that needs them. A deposit is *stored*: unlike the media
-    ///   pass, which re-reads the substrate every frame and rights itself the moment an
-    ///   image lands, no later arrival un-bakes a stroke laid against the flat
-    ///   stand-in (§6.6, §6.4).
-    ///
-    /// Written out per caller it drifts three ways: a timelapse missing the initial
-    /// substrate deposits every frame before the log's first `SetSubstrate` against the
-    /// wrong substrate; one missing the color space replays a Mixbox document through
-    /// Oklab's shaders; and one swallows a broken brush asset silently where the others
-    /// said so. A sequence whose *order* is the correctness argument is a sequence to
-    /// write once.
+    ///   pass, which re-reads the substrate every frame, no later arrival un-bakes a
+    ///   stroke laid against the flat stand-in (§6.6, §6.4).
     ///
     /// A substrate or a shape that fails to install is logged and skipped rather than
-    /// fatal: the document still opens, degraded, which is the same bargain either
-    /// asset gets.
+    /// fatal: the document still opens, degraded.
     pub(super) fn adopt(&mut self, file: ValidatedFile<'_>) {
         self.initial_substrate = file.canvas.substrate;
         self.reset_document();
@@ -210,12 +179,10 @@ impl Engine {
                 tracing::warn!("skipping content this document names — {e}");
             }
         }
-        // Reachable only from a collaboration join now — [`Engine::load_document`] and
-        // the timelapse refuse outright rather than adopt (`DocError::MissingContent`).
         // A joiner is the one caller that legitimately starts short: the actions arrive
         // over the same transport as the blobs, and the waitlist parks a `SetSubstrate`
-        // until its substrate lands (§12.4), so this is a statement about ordering in
-        // flight rather than about a document that cannot be reproduced.
+        // until its substrate lands (§12.4). A load or a timelapse refuses outright
+        // instead (`DocError::MissingContent`).
         let missing = self.unresolved_content(&file);
         if !missing.is_empty() {
             tracing::warn!(
@@ -232,9 +199,8 @@ impl Engine {
     /// undo timeline is available afterwards — undo-after-load (§8).
     ///
     /// **Fails, and changes nothing, if the file's content is not all here**
-    /// ([`DocError::MissingContent`]). The check is before [`Self::adopt`] rather
-    /// than inside it so a refusal leaves the open document alone: half-replacing a
-    /// painting is worse than declining to.
+    /// ([`DocError::MissingContent`]): the check runs before [`Self::adopt`], so a
+    /// refusal leaves the open document alone.
     pub fn load_document(&mut self, file: &DocumentFile) -> Result<()> {
         let file = ValidatedFile::new(file)?;
         self.require_content(&file)?;
@@ -277,9 +243,9 @@ impl Engine {
     /// it web-capable means awaiting the readback per frame — a change to this
     /// signature, not to the replay.
     ///
-    /// Refuses on unresolved content for the same reason [`Self::load_document`] does,
-    /// and it matters more here rather than less: a timelapse renders every
-    /// intermediate state, so a missing substrate is baked into every frame it emits.
+    /// Refuses on unresolved content as [`Self::load_document`] does, and it matters
+    /// more here: every intermediate state is rendered, so a missing substrate is
+    /// baked into every frame it emits.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn replay_timelapse(
         &mut self,
@@ -335,11 +301,10 @@ impl Engine {
     /// What `file` needs that neither it bundles nor this engine already holds
     /// (§8, §12.4).
     ///
-    /// A lean file leaves out content it expects the opening app to produce — the
-    /// assets that ship with it — so this is the bill, and it has to be settled
-    /// **before** [`Engine::load_document`] replays the log. A `SetSubstrate` whose
-    /// height map is not registered when its strokes replay deposits them through
-    /// the flat stand-in, and those pixels are stored (§6.4).
+    /// The bill a lean file leaves, to be settled **before**
+    /// [`Engine::load_document`] replays the log: a `SetSubstrate` whose height map
+    /// is not registered when its strokes replay deposits them through the flat
+    /// stand-in, and those pixels are stored (§6.4).
     ///
     /// Empty for a file that bundles everything, which is what
     /// [`Engine::save_bytes`] writes.
@@ -352,15 +317,15 @@ impl Engine {
 
     /// Start a fresh, empty document in `color_space`, on `substrate`.
     ///
-    /// The **only** way to choose a color space, and deliberately so: the channel
-    /// layouts differ between spaces, so existing tiles cannot be reinterpreted and
-    /// changing it can never preserve a document. Modelling it as a setter hid that
-    /// — every caller was really asking for a new document (§6.7).
+    /// The **only** way to choose a color space: the channel layouts differ between
+    /// spaces, so existing tiles cannot be reinterpreted and changing it can never
+    /// preserve a document (§6.7).
     ///
     /// Takes `&mut self` rather than being an associated function because
     /// frontend-provided *resources* survive: imported brush assets, and the
-    /// registered substrate and environment bytes. Those belong to the app, not to
-    /// the document, and re-fetching them on every New would be gratuitous.
+    /// registered substrate and environment bytes belong to the app rather than to
+    /// the document.
+    ///
     /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
     /// document alone, the same bargain [`Self::load_document`] makes. A frontend
@@ -395,23 +360,18 @@ impl Engine {
 
     /// What share of a substrate a tip with this tooth — the `give` it settles with
     /// and the `softness` of its contact transition — travelling along `dir`, stands
-    /// on (§6.4) — the bearing fraction the tool books its half of a toothed transfer
-    /// against.
+    /// on (§6.4): the bearing fraction a toothed transfer is booked against.
     ///
-    /// Exposed because it is the model's own falsifiable quantity: it is the substrate's
-    /// own rise-along-the-travel distribution integrated against the contact gate, so
-    /// it can be checked against the map rather than taken on trust
-    /// (`tests/tooth.rs`). `dir` is there because contact reads the substrate's slope
-    /// *along the travel*, which makes the curve a property of the substrate and the
-    /// direction crossing it together. Builds the substrate if this is the first time
-    /// it has been asked for.
+    /// Exposed because it is the model's own falsifiable quantity, checkable against
+    /// the map rather than taken on trust (`tests/tooth.rs`). `dir` is there because
+    /// contact reads the substrate's slope *along the travel*, which makes the curve a
+    /// property of the substrate and the direction crossing it together. Builds the
+    /// substrate on the first ask.
     ///
     /// At the **document's** scale, since that is the substrate a stroke would actually
-    /// bite right now (§6.4) — the same pair `apply` resolves. Asking for a bearing
-    /// against a differently-sized substrate than the one in force would be asking about
-    /// a substrate nothing is painting on.
+    /// bite right now (§6.4) — the same pair `apply` resolves.
     ///
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
+    /// `pub` for the suite and nothing else, and hidden to say so.
     #[doc(hidden)]
     pub fn substrate_bearing(
         &self,
@@ -436,13 +396,8 @@ impl Engine {
     /// how a substrate enters the engine, whether it ships with the app, came out of a
     /// save file, or arrived from a peer.
     ///
-    /// **The id is derived from the image, never asserted alongside it.** The
-    /// previous `register_substrate(id, bytes)` let a caller bind any name to any
-    /// bytes, and nothing downstream could tell a wrong binding from a right one —
-    /// which is the joint the tooth's divergence came through, since a substrate that
-    /// failed to arrive fell back to `Flat` and baked a flat deposit into tiles that
-    /// never heal. Here a mismatch cannot be expressed: ask for `id`, and `id` is
-    /// what these bytes *are*.
+    /// **The id is derived from the image, never asserted alongside it**, so a wrong
+    /// binding cannot be expressed: ask for `id`, and `id` is what these bytes *are*.
     ///
     /// Idempotent, and cheap on a repeat — the same image re-imports to the same id.
     /// If it is the substrate in use, it is rebuilt so the bytes take effect at once.
@@ -473,11 +428,9 @@ impl Engine {
     /// image twice holds one copy of it.
     ///
     /// A **request**, not a command (§4): it has to answer with the id, because the
-    /// action that references it cannot be built until the id exists. That ordering is
-    /// also what a shared session depends on — see
-    /// `CollabSession::add_content` (`stark-net`), which must be told about the bytes
-    /// before the commit that names them goes out. Not a link: the dependency points
-    /// the other way (§2), so this crate cannot name that type.
+    /// action that references it cannot be built until the id exists. A shared session
+    /// depends on that ordering too — `CollabSession::add_content` (`stark-net`) must
+    /// be told about the bytes before the commit that names them goes out.
     pub fn import_picture(&self, png_bytes: &[u8]) -> Result<AssetId> {
         self.shared.apply.pictures.import(png_bytes)
     }
@@ -485,12 +438,9 @@ impl Engine {
     /// Take in a picture that arrives already named: out of a save file's bundle, or
     /// fetched for a peer's `PlaceImage` (§8, §12.4, §23).
     ///
-    /// [`accept_substrate`](Engine::accept_substrate)'s argument, applied to the third
+    /// [`accept_substrate`](Engine::accept_substrate)'s check, applied to the third
     /// kind: bytes installed under someone else's id would place a *different
-    /// picture* than the log says, so they are refused rather than installed. The
-    /// failure it rules out is quieter than a substrate's — no tooth is baked, the wrong
-    /// photograph simply appears — but it is the same joint, and the same check closes
-    /// it.
+    /// picture* than the log says, so they are refused rather than installed.
     pub fn accept_picture(&self, expected: AssetId, png_bytes: &[u8]) -> Result<()> {
         let actual = self.shared.apply.pictures.insert_bytes(png_bytes)?;
         if actual != expected {
@@ -508,10 +458,10 @@ impl Engine {
     /// they are canonical by construction — and **checked against the id that asked
     /// for them**.
     ///
-    /// The check is the point. Bytes installed under someone else's id are the one
-    /// way a content-addressed substrate could still deposit the wrong tooth, so they
-    /// are refused rather than installed. `import_substrate` needs no equivalent: there
-    /// the id comes out of the bytes, so there is nothing to disagree with.
+    /// Bytes installed under someone else's id are the one way a content-addressed
+    /// substrate could still deposit the wrong tooth, so they are refused rather than
+    /// installed. `import_substrate` needs no equivalent: there the id comes out of the
+    /// bytes, so there is nothing to disagree with.
     ///
     /// If this is the substrate the document already moved to while its bytes were in
     /// flight, registering it is also what swaps the flat stand-in for the real
@@ -556,8 +506,7 @@ impl Engine {
     ///
     /// The pair, through [`DocState::substrate`], because the pair is what a `SubstrateMap` is
     /// built from (§6.4): a scale change with the substrate unmoved has to rebind the
-    /// media pass exactly as a substrate change does, and asking with the id alone was
-    /// how it would silently not.
+    /// media pass exactly as a substrate change does.
     ///
     /// There is deliberately no public `set_substrate`: the substrate is document state
     /// (§6.4), so it changes by logging an action like anything else.
@@ -579,7 +528,6 @@ impl Engine {
     /// it. No pipeline or pool rebuild, no document reset, and **no reallocation of
     /// the compositor's attachments**: what a swap costs is one bind group, which is
     /// what the binding stamp beside the generation buys (`CompositorPipeline`).
-    /// This sentence was true of the pipeline and false of the frame until then.
     fn apply_substrate(&mut self) {
         self.compositor_pipeline
             .set_substrate(self.shared.apply.substrates.current());
@@ -600,20 +548,18 @@ impl Engine {
     /// use, it's rebuilt so the bytes take effect immediately.
     ///
     /// **The bytes are decoded before they are stored**, by
-    /// [`Registry::register`](crate::gpu::registry::Registry::register) — which is
-    /// where both resources' door now is, rather than a check each caller had to
-    /// remember. An environment is fetched over the network and handed straight in,
-    /// so this is the boundary between bytes somebody else wrote and a value the
-    /// engine treats as its own: a truncated download or a file that is not an
-    /// `.hdr` is refused, the caller can say so, and the canvas keeps the light it
-    /// has. Without it the first *use* of the id met a decoder panic on the render
-    /// thread — an abort on the web, with the painting unsaved.
+    /// [`Registry::register`](crate::gpu::registry::Registry::register). An
+    /// environment is fetched over the network and handed straight in, so this is the
+    /// boundary between bytes somebody else wrote and a value the engine treats as its
+    /// own: a truncated download or a file that is not an `.hdr` is refused, the caller
+    /// can say so, and the canvas keeps the light it has. Otherwise the first *use* of
+    /// the id meets a decoder panic on the render thread.
     ///
     /// The decode is paid twice on the accepting path (once at the door, once in the
-    /// build), and that is the honest price of validating before storing: an HDR is
-    /// registered a handful of times in a session, where the build behind it is a mip
-    /// chain. Keeping the first decode instead would be several megabytes of float
-    /// image held for a build that has already happened — see
+    /// build), which is the price of validating before storing: an HDR is registered a
+    /// handful of times in a session, where the build behind it is a mip chain.
+    /// Keeping the first decode instead would be several megabytes of float image held
+    /// for a build that has already happened — see
     /// [`EnvironmentId::Decoded`](crate::gpu::registry::Resource::Decoded).
     pub fn register_environment(&mut self, id: EnvironmentId, hdr_bytes: Vec<u8>) -> Result<()> {
         let rebuilt = self
@@ -654,14 +600,10 @@ impl Engine {
         self.preview.clear();
         self.peers.clear();
         self.committed_changed();
-        // The document that just arrived is what later edits are measured against
-        // (`Engine::doc_origin`). After `committed_changed`, which moved the counter
-        // this is a copy of — a reset is itself a committed change, and the empty
-        // document it leaves has not been edited.
-        //
-        // A load re-states this once its replay is done, since every action of that
-        // replay moves the counter again; a join does not, because actions reaching a
-        // joiner over the wire *are* edits to a document no file of theirs holds.
+        // The baseline later edits are measured against, taken after
+        // `committed_changed` moves the counter it copies. A load re-states it once its
+        // replay is done; a join does not, because actions reaching a joiner over the
+        // wire *are* edits to a document no file of theirs holds.
         self.doc_origin = self.doc_revision;
         // One assignment: who this client is and what it owes the wire go back to
         // what a fresh engine starts with, which is the same statement the two
@@ -678,29 +620,19 @@ impl Engine {
     fn replay_one(&mut self, action: Action) {
         let ctx = &mut self.shared.apply;
         self.timeline.push(action, ctx);
-        // A replayed action is a committed change like any other, and
-        // `doc_revision` says so in its own doc — "a commit, an undo, a merged
-        // remote action, **a load**". Pushing straight onto the timeline left that
-        // false for every action of every load and every timelapse frame.
-        //
-        // Invisible until something read the counter per frame rather than per edit:
-        // the timelapse renders after each action, and with the revision frozen every
-        // frame after the first drew the first one's list (C4). Cheap here —
-        // `repoint_active_layer` returns on its first line while the layer exists,
-        // which through a replay from an empty document it does.
+        // A replayed action is a committed change like any other, and anything reading
+        // the counter per frame depends on it: the timelapse renders after each action,
+        // and with the revision frozen every frame after the first draws the first
+        // one's list. Cheap — `repoint_active_layer` returns on its first line while
+        // the layer exists, which through a replay from an empty document it does.
         self.committed_changed();
     }
 
     /// After loading, advance the Lamport clock past everything in the log so new
     /// edits get fresh, monotonic ids.
     ///
-    /// **One counter, where there were two.** The layer counter that stood beside it
-    /// is gone with the id shape it served: a layer's id is the id of the action that
-    /// minted it (`LayerId`), so resuming the action clock resumes the layer ids too,
-    /// and there is nothing left that could be resumed wrongly. What that machinery
-    /// cost while it existed is written up in §17.9 — a per-actor counter has to be
-    /// recovered from the log at *both* doors a document arrives by, and `AddFilter`
-    /// was missing from the list at one of them until the list stopped being a list.
+    /// One counter covers both: a layer's id is the id of the action that minted it
+    /// (`LayerId`), so resuming the action clock resumes the layer ids too (§17.9).
     pub(super) fn resync_counters(&mut self, actions: &[Action]) {
         let max_lamport = actions.iter().map(|a| a.id.lamport).max();
         self.authoring.clock = max_lamport.map_or(0, |m| m + 1);

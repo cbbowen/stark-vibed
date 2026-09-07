@@ -4,55 +4,47 @@
 //! from the stroke's seed**, into a small `Rgba8Snorm` 2-D texture (three
 //! independent signed channels; alpha unused) and sampled in the stamp shaders
 //! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
-//! GPUs, runs, and peers — the same determinism contract as the sRGB↔Oklab
-//! constants (§6.5) — and the bake uses only IEEE add/mul/floor/sqrt (all
-//! correctly rounded, no transcendentals), so the bytes are reproducible across
-//! platforms.
+//! GPUs, runs and peers — the same determinism contract as the sRGB↔Oklab
+//! constants (§6.5) — and the bake uses only IEEE add/mul/floor/sqrt, all
+//! correctly rounded, so the bytes reproduce across platforms.
 //!
-//! Per stroke rather than once, because a tile is *one* field: the same
-//! [`SIMPLEX_PERIOD`]² clouds, the same [`VORONOI_PERIOD`]² facets. A stroke
-//! that only translated its lookup into a shared tile would lay the very
-//! polygons and drifts every stroke beside it lays, shifted — visibly so for
-//! `Mosaic`, whose thirty-six facet colors would be the *same* thirty-six in
-//! every stroke of the picture. A seed of its own gives each stroke its own
-//! field. The bake is sized to be paid at pen-down: a few thousand texels for
-//! the smooth kinds, and the cellular kinds read their sites from a table
-//! hashed once per bake ([`Sites`]) rather than once per texel and neighbour —
-//! under a millisecond a stroke for every kind but `Mosaic`, whose 256² tile
-//! takes about two (release, native).
+//! Per stroke rather than once, because a tile is *one* field: strokes sharing
+//! one would lay the same [`SIMPLEX_PERIOD`]² clouds and [`VORONOI_PERIOD`]²
+//! facets as their neighbours, merely shifted — visibly so for `Mosaic`, whose
+//! thirty-six facet colors would repeat across the whole picture. The bake is
+//! sized to be paid at pen-down: under a millisecond a stroke for every kind but
+//! `Mosaic`, whose 256² tile takes about two (release, native).
 //!
 //! Two axes are enough because the lookup is **stroke-local** — across the
-//! stroke and along it — so the field never has to resolve a third, canvas
-//! axis.
+//! stroke and along it — so the field never has to resolve a canvas axis.
 //!
 //! Tileability is exact, not blended:
 //! - **White** noise is per-texel hashed, so it wraps trivially.
 //! - **Simplex** noise is evaluated on a genuinely periodic simplex grid: a
 //!   lattice point's gradient is hashed from `q = 6·(i,j,k) − (i+j+k)·(1,1,1)`
 //!   (six times its *unskewed* position — always integral) reduced modulo
-//!   `6·PERIOD`. Translating the input by `PERIOD` along an axis maps each
-//!   lattice point to one whose `q` differs by exactly `6·PERIOD` on that axis,
-//!   so the hash — and the noise — repeats exactly. (`PERIOD` must be a multiple
-//!   of 3 for the skewed cell indices to translate integrally.)
+//!   `6·PERIOD`. Translating the input by `PERIOD` along an axis shifts each
+//!   lattice point's `q` by exactly `6·PERIOD` on that axis, so the hash — and
+//!   the noise — repeats exactly. (`PERIOD` must be a multiple of 3 for the
+//!   skewed cell indices to translate integrally.)
 //!
-//!   The lattice stays **three-dimensional** even though the bake is a plane:
-//!   the periodic-gradient trick above needs the unskewed lattice positions to
-//!   be integral, which holds in 3-D (`G3 = 1/6`) and *not* in 2-D, where
-//!   `G2 = (3−√3)/6` is irrational — a 2-D simplex grid can be made periodic
-//!   along its own skewed lattice vectors, but not along the axes, which is
-//!   exactly what a tileable texture needs. So the field is the 3-D one
-//!   restricted to `z = 0`: still smooth, still exactly axis-periodic.
+//!   The lattice is **three-dimensional** even though the bake is a plane: that
+//!   trick needs the unskewed lattice positions to be integral, which holds in
+//!   3-D (`G3 = 1/6`) and *not* in 2-D, where `G2 = (3−√3)/6` is irrational — a
+//!   2-D simplex grid can be made periodic along its own skewed lattice vectors,
+//!   but not along the axes, which is what a tileable texture needs. So the field
+//!   is the 3-D one restricted to `z = 0`: still smooth, still exactly
+//!   axis-periodic.
 //! - **Voronoi** (Worley F1) noise puts one feature point per grid cell, placed
-//!   by hashing the cell index reduced modulo `PERIOD`, so translating the input
-//!   by `PERIOD` lands on cells with identical hashes and the field repeats
+//!   by hashing the cell index reduced modulo `PERIOD`, so the field repeats
 //!   exactly. Only the 3×3 cells around the sample are searched, which here is
 //!   not an approximation: every feature outside that ring is more than one cell
 //!   away, so the search is exact wherever the true `F1 ≤ 1`, and the shaping
 //!   flattens everything past 0.8 cells anyway (see [`VORONOI_MEAN`]).
 //! - **Mosaic** noise is the same cell grid read discretely — each cell's own
-//!   constant value, so the tile is flat polygons with hard edges — and inherits
-//!   the same exact wrap: the value, like the site, is hashed from the cell index
-//!   modulo `PERIOD`.
+//!   constant value, so the tile is flat polygons with hard edges — and wraps the
+//!   same way: the value, like the site, is hashed from the cell index modulo
+//!   `PERIOD`.
 
 use crate::gpu::context::GpuContext;
 use stark_model::document::NoiseKind;
@@ -74,11 +66,6 @@ pub const NOISE_TILE_PX: f32 = 256.0;
 /// "features" per side. Must be a multiple of 3 (see the module docs).
 const SIMPLEX_PERIOD: i32 = 6;
 /// The simplex lattice only closes on a period that is a multiple of 3 (module docs).
-///
-/// A `const` block rather than the `debug_assert!` this replaced: the property is of
-/// the constant, so it is decidable once at compile time, where the assertion asked it
-/// again per texel — 64² × 3 channels per bake, to re-derive something no run can
-/// change. `periodic_simplex` still takes `period`, because it reads it as a modulus.
 const _: () = assert!(
     SIMPLEX_PERIOD % 3 == 0,
     "the simplex lattice only closes on a period that is a multiple of 3",
@@ -249,12 +236,9 @@ fn white_at(x: u32, y: u32, seed: u32) -> [f32; 3] {
 
 /// The pcg4d hash (Jarzynski & Olano, JCGT 2020).
 ///
-/// It has no GPU counterpart to agree with, and deliberately so: the shader
-/// samples the texture this bakes rather than re-deriving it, which is the whole
-/// reason the field is bit-identical across adapters (see the module header).
-/// `lib/noise.wesl` did once carry a mirror of this hash — uncalled by any pass,
-/// so nothing ever compared the two — and it was deleted rather than kept as a
-/// contract neither side exercised.
+/// It has no GPU counterpart to agree with, deliberately: the shader samples the
+/// texture this bakes rather than re-deriving it, which is why the field is
+/// bit-identical across adapters (module header).
 fn pcg4d(mut v: [u32; 4]) -> [u32; 4] {
     for x in v.iter_mut() {
         *x = x.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -276,11 +260,9 @@ fn pcg4d(mut v: [u32; 4]) -> [u32; 4] {
 /// u32 → uniform f32 in [0, 1).
 ///
 /// **The top 24 bits, not all 32**, because that is what an `f32` can hold: `h /
-/// 2^32` rounds to nearest, so the 128 largest `h` round *up* to exactly 1.0 and the
-/// interval is not the half-open one this promises. Taking 24 bits makes every step
-/// exact and the bound true by construction. What it gives up is entropy this has no
-/// use for — the values are cell offsets and gradient picks, and 2²⁴ of them is more
-/// than any period here has cells.
+/// 2^32` rounds to nearest, so the 128 largest `h` would round *up* to exactly 1.0
+/// and break the half-open bound this promises. The entropy given up is unused —
+/// the values are cell offsets and gradient picks.
 fn unit(h: u32) -> f32 {
     (h >> 8) as f32 * 5.960_464_5e-8 // (h >> 8) / 2^24
 }
@@ -377,17 +359,14 @@ fn periodic_simplex(p: [f32; 3], period: i32, seed: u32) -> f32 {
 /// The feature points of a periodic jittered grid: one per cell, as an offset in
 /// [0, 1]² from the cell's corner, hashed from the cell index reduced modulo the
 /// period — so cells a whole period apart carry the same point and the field
-/// repeats exactly. The whole grid is translated by a per-seed constant, so
-/// three channels celled on three tables do not all put their walls near the
-/// same grid lines; a constant translation keeps the field periodic.
+/// repeats exactly. A per-seed constant translation of the whole grid keeps three
+/// channels' walls off the same grid lines, and being constant it stays periodic.
 ///
 /// A table rather than a hash at the lookup, because the lookup runs per texel
 /// *and* per neighbour searched: `period`² hashes once per bake instead of 9 or
-/// 25 per texel of it. The wrap is folded into the table for the same reason —
-/// the modulo is an integer division, and two of them per neighbour would cost
-/// the mosaic more than its distances do — by tabulating a `ring` of wrapped
-/// copies around the period's own cells: every cell a search from inside the
-/// period can touch, indexed directly.
+/// 25 per texel of it. The wrap is folded in for the same reason, by tabulating a
+/// `ring` of wrapped copies around the period's own cells — every cell a search
+/// from inside the period can touch, indexed directly.
 struct Sites {
     period: i64,
     /// Rings of wrapped cells tabulated around the period, and so the widest search
@@ -411,10 +390,8 @@ struct Site {
 impl Sites {
     /// `period` cells per side, searched `ring` cells out from a sample's own.
     ///
-    /// `ring` is a [`NonZeroU8`] because a table of no rings is
-    /// one [`Sites::nearest`] cannot answer from: its search widens outward and has
-    /// nowhere to stop. The parameter says that, where an `unreachable!` at the end of
-    /// the loop would be reachable by writing `0` at either call site.
+    /// `ring` is a [`NonZeroU8`]: [`Sites::nearest`] widens its search outward and
+    /// needs at least one tabulated ring to stop at.
     fn new(period: i32, seed: u32, ring: std::num::NonZeroU8) -> Self {
         let m = period as i64;
         let ring = i64::from(ring.get());
@@ -444,9 +421,9 @@ impl Sites {
     /// its own: the squared distance, and the cell it belongs to.
     fn nearest(&self, p: [f32; 2]) -> (f32, [u32; 2]) {
         let period = self.period as f32;
-        // Into the period, after the translation: exact when `p` is within a
-        // period or two of it (`v − k·period` by Sterbenz), which is every
-        // sample the bake and the tests make, and the field repeats exactly.
+        // Into the period, after the translation. Exact for every sample the bake
+        // and the tests make (`p` within a period or two, so `v − k·period` is
+        // Sterbenz-exact), which is what makes the repeat exact rather than close.
         let p = [p[0] + self.shift[0], p[1] + self.shift[1]].map(|v| {
             let v = v - period * (v / period).floor();
             // A quotient rounded up to a whole makes the difference a hair
@@ -460,12 +437,10 @@ impl Sites {
             }
         });
         let cell = (p[0].floor() as i64, p[1].floor() as i64);
-        // Widening squares, stopping at the first whose best is within `r`
-        // cells: every site outside it is more than `r` away along one axis, so
-        // none can beat that. The outer squares are the search's exactness, not
-        // its usual cost — a sample's own cell holds a site, so the first square
-        // settles nearly every sample, and the rescans it costs the rare
-        // widening are cheaper than a skip test in the loop that runs always.
+        // Widening squares, stopping at the first whose best is within `r` cells:
+        // every site outside it is more than `r` away along one axis, so none can
+        // beat that. A sample's own cell always holds a site, so the first square
+        // settles nearly all of them.
         let mut r = 1;
         loop {
             let found = self.within(p, cell, r);
@@ -512,12 +487,11 @@ fn periodic_voronoi(p: [f32; 2], sites: &Sites) -> f32 {
 /// not facets). Exactly periodic with the table's period on both axes; output
 /// in [-1, 1].
 ///
-/// Its table is searched two rings out (5×5 cells) where [`periodic_voronoi`]
-/// needs only one: this field has no clamp behind which a missed feature could
-/// hide — picking the wrong owner would draw a wrong polygon, in full contrast.
-/// A sample's own cell always holds a site, so the true nearest is at most √2
-/// cells away, while every site outside the 5×5 ring is more than 2 cells away:
-/// the owner is always found.
+/// Searched two rings out (5×5 cells) where [`periodic_voronoi`] needs one: this
+/// field has no clamp behind which a missed feature could hide, and a wrong owner
+/// draws a wrong polygon in full contrast. A sample's own cell always holds a
+/// site, so the true nearest is at most √2 cells away while every site outside
+/// the 5×5 ring is more than 2 — the owner is always found.
 fn periodic_mosaic(p: [f32; 2], sites: &Sites, values: u32) -> [f32; 3] {
     let (_, owner) = sites.nearest(p);
     let h = pcg4d([owner[0], owner[1], 0, values]);
@@ -613,11 +587,9 @@ mod tests {
     }
 
     /// The Voronoi shaping constants must keep the field centred and using its
-    /// range: a field biased to one side would tint every stroke rather than let
-    /// the color wander both ways. Centred over the *ensemble* of seeds — a
-    /// single stroke's thirty-six cells can lean either way, and that is
-    /// randomness, not a constant to correct — and every seed's field uses the
-    /// whole range.
+    /// range: a biased field would tint every stroke rather than let the color
+    /// wander both ways. Centred over the *ensemble* of seeds, since a single
+    /// stroke's thirty-six cells may lean either way.
     #[test]
     fn voronoi_is_centred_and_uses_its_range() {
         let n = 64usize;
@@ -668,10 +640,9 @@ mod tests {
     }
 
     /// The mosaic must be *flat polygons with hard edges*: exactly one value per
-    /// cell, the same cells in all three channels. A baked tile therefore holds
-    /// exactly as many distinct texel values as the grid has cells — more would
-    /// mean a channel celled on its own grid, or a wall smeared into a ramp of
-    /// in-between values; fewer, a cell the sample grid never reaches.
+    /// cell, the same cells in all three channels — so a baked tile holds as many
+    /// distinct texel values as the grid has cells. More means a channel celled on
+    /// its own grid or a wall smeared into a ramp; fewer, an unreached cell.
     #[test]
     fn mosaic_is_one_flat_value_per_cell() {
         let cells = (VORONOI_PERIOD * VORONOI_PERIOD) as usize;
@@ -771,10 +742,9 @@ mod tests {
     }
 
     /// Tileability of the *baked* tile: stepping across the wrap seam
-    /// (texel N−1 → texel 0) must look exactly like stepping anywhere in the
-    /// interior — a broken wrap shows up as an outsized seam step. White noise is
-    /// excluded: it is discontinuous by construction, so seam and interior steps
-    /// are equally large and the comparison says nothing.
+    /// (texel N−1 → texel 0) must look like stepping anywhere in the interior — a
+    /// broken wrap shows as an outsized seam step. White noise is excluded, being
+    /// discontinuous by construction, so the comparison would say nothing.
     #[test]
     fn smooth_bake_seams_match_interior() {
         let n = 64usize;

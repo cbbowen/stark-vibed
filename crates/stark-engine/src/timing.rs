@@ -1,95 +1,61 @@
 //! Where a frame's time actually goes — measured in the shipped app, not only
 //! under a benchmark (§7.1).
 //!
-//! One rule holds the module together: **a phase is a span, and the span's name is
-//! its row.** [`span!`] opens one, the layer [`layer`] builds keeps an HDR histogram
-//! of how long each *name* takes — creation to close, so a row is a span's own
-//! lifetime and a child's does not eat its parent's — and [`snapshot`] reads those
-//! histograms out. That is the whole model, and everything below is a consequence of
-//! it.
+//! **A phase is a span, and the span's name is its row.** [`span!`] opens one, the
+//! layer [`layer`] builds keeps an HDR histogram per name over creation-to-close —
+//! so a row is a span's own lifetime and a child's does not eat its parent's — and
+//! [`snapshot`] reads them out.
 //!
-//! - **Nothing here enumerates the phases.** Adding a `span!` to a new piece of the
-//!   pipeline is all it takes for a row to appear in the Timing Stats dialog and in
-//!   `examples/stroke_bench`'s table, because both render whatever the histograms
-//!   hold rather than a list somebody has to keep in step. The names are dotted
-//!   (`stroke.loop`, `render.composite`) so a reader can group them; that is a
-//!   naming convention for the eye, **not** a call tree — a span's histogram
-//!   aggregates every call site that opened it, and `stroke.range` is entered both
-//!   from a commit and from the live fold.
-//! - **A row is a distribution, not a number.** `mean` answers "what does this cost",
-//!   `p99`/`max` answer "what makes it hitch", and those are different questions —
-//!   the second is the one a painter feels and the one an average hides.
+//! - **Nothing here enumerates the phases.** A new `span!` becomes a row in the
+//!   Timing Stats dialog and in `examples/stroke_bench`'s table on its own. Dotted
+//!   names (`stroke.loop`, `render.composite`) group for the eye and are **not** a
+//!   call tree: one histogram aggregates every call site that opened that name.
+//! - **A row is a distribution.** `mean` is what a phase costs; `p99`/`max` are what
+//!   makes it hitch, which is the number a painter feels and an average hides.
 //! - **Totals are read against the window, not against each other.** [`Timings`]
-//!   carries the wall-clock span it covers, so `count / window` is a rate (frames a
-//!   second, pointer samples a second) and `total / window` is the share of wall
-//!   time a phase took. Nested spans double-count against each other by
-//!   construction; against the window they do not.
+//!   carries the wall-clock span it covers, so `count / window` is a rate and
+//!   `total / window` a share of wall time. Nested spans double-count against each
+//!   other by construction; against the window they do not.
 //!
 //! # The browser's clock is coarse, and that is the design constraint
 //!
 //! `quanta` reads `performance.now()` on the web, which browsers deliberately
-//! quantize — 100 µs in Chromium, and a full **millisecond** in a Firefox that is
-//! not cross-origin isolated. A single sub-millisecond phase therefore reads as 0
-//! or as one whole quantum there, and no amount of care in this file changes that.
+//! quantize — 100 µs in Chromium, a full **millisecond** in a Firefox that is not
+//! cross-origin isolated. Two things follow:
 //!
-//! Two things follow, and both are load-bearing:
+//! - **Instrument phases, not operations.** Every `span!` wraps something that is
+//!   milliseconds when it matters. A span around a bind-group build would be honest
+//!   arithmetic over noise.
+//! - **Say what the quantum is.** [`Timings::quantum`] is measured rather than
+//!   assumed, so a row reading `0.0 ms` is read as "under the clock's resolution"
+//!   rather than as "free". Aggregates survive the quantization individual samples
+//!   do not — truncation costs each sample under half a quantum — which is why this
+//!   module keeps histograms rather than last-value gauges.
 //!
-//! - **Instrument phases, not operations.** Every `span!` in the tree wraps
-//!   something that is milliseconds when it matters — a fold, a compute-pass
-//!   recording, a region composite. A span around a bind-group build would be
-//!   honest arithmetic over noise.
-//! - **Say what the quantum is.** [`Timings::quantum`] is *measured* — the clock is
-//!   watched until it moves — rather than assumed, and the dialog shows it, so a row
-//!   reading `0.0 ms` is read as
-//!   "under the clock's resolution" rather than as "free". Aggregate figures
-//!   survive the quantization that individual ones do not: truncation costs each
-//!   sample under half a quantum, so a mean over thousands of samples is good well
-//!   below the resolution of any one of them, which is exactly why this module
-//!   keeps histograms rather than last-value gauges.
-//!
-//! Natively — the benchmarks — `quanta` uses the invariant TSC and the same spans
-//! resolve to nanoseconds. The instrumentation does not change; only how finely it
-//! can be read does.
+//! Natively `quanta` uses the invariant TSC and the same spans resolve to
+//! nanoseconds.
 //!
 //! # Why these spans are `info`, and why they carry a target
 //!
 //! The workspace pins `tracing`'s `release_max_level_info`, so a release build
 //! compiles `debug!` and `trace!` away entirely — and instrumentation the shipped
-//! app does not carry cannot answer a question about the shipped app. So the spans
-//! are `info_span!`, at the same level as the handful of things Stark actually logs.
+//! app does not carry cannot answer a question about the shipped app.
 //!
-//! That makes [`TARGET`] the thing that separates them, and it separates them in
-//! *both* directions — which is why [`TimingFilter`] is one type with two settings
-//! rather than a predicate each layer negates for itself. `TimingFilter::<true>`
-//! keeps foreign spans out of the histograms, or every `info_span!` in `iroh` would
-//! open a row. `TimingFilter::<false>` keeps these spans out of the log, which is not
-//! cosmetic: `tracing_wasm`'s layer calls `performance.mark`/`measure` on **every**
-//! span it sees, so an unfiltered console layer would spend two JS calls and two
-//! `String`s per phase per frame reporting timings into the devtools timeline.
-//!
-//! Getting that target right at ~20 call sites is why [`span!`] exists and why no
-//! call site writes `info_span!` by hand.
+//! [`TARGET`] is therefore what separates timing spans from everything else, in
+//! *both* directions. `TimingFilter::<true>` keeps foreign spans out of the
+//! histograms, or every `info_span!` in `iroh` would open a row.
+//! `TimingFilter::<false>` keeps these spans out of the log: `tracing_wasm`'s layer
+//! calls `performance.mark`/`measure` on **every** span it sees, so an unfiltered
+//! console layer would spend two JS calls and two `String`s per phase per frame.
+//! [`span!`] exists so that no call site writes that target by hand.
 //!
 //! # What it costs, and why it is always on
 //!
-//! Opening a span takes the registry's per-span write lock and boxes a `u64` into
-//! that span's extensions; closing one takes the histogram lock, hashes a
-//! `&'static str` and records a sample. Measured at **234 ns a span** end to end, and **1.4 ns** with no subscriber installed —
-//! `cargo test`, or an embedding that never calls [`layer`] — where the macro is an
-//! atomic load and a disabled span. At the granularity above that is a few
-//! microseconds a frame against a 16 ms budget, and 0.07–0.2% of the stroke
-//! benchmarks, which is why they run instrumented (`benches/stroke.rs`).
-//!
-//! So it is on for everyone, always, and that is the point: a profile you have to
-//! rebuild to collect is a profile of a build nobody is using.
-//!
-//! # Why the layer is written here rather than taken off the shelf
-//!
-//! `tracing-timing` is the obvious crate for this, and its **read** path cannot run
-//! in a browser — see [`PhaseLayer`] for what exactly goes wrong and what was kept.
-//! The short version: what it offers over these forty lines is multi-threaded
-//! recording, the browser build has one thread, and the machinery that buys the
-//! threads is precisely the machinery that panics without a `std` clock.
+//! **234 ns a span** end to end, and **1.4 ns** with no subscriber installed —
+//! `cargo test`, or an embedding that never calls [`layer`]. At the granularity
+//! above that is a few microseconds a frame against a 16 ms budget, and 0.07–0.2% of
+//! the stroke benchmarks, which is why they run instrumented (`benches/stroke.rs`).
+//! A profile you have to rebuild to collect is a profile of a build nobody is using.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -111,34 +77,22 @@ use crate::unpoisoned;
 /// which is what an unqualified target defaults to.
 pub const TARGET: &str = "stark::timing";
 
-/// Which half of the world a layer wants: the phases that feed the histograms, or
-/// everything else.
+/// Which half of the world a layer wants: `TimingFilter::<true>` is the half that
+/// measures, `TimingFilter::<false>` the half that logs.
 ///
-/// `TimingFilter::<true>` is the half that measures; `TimingFilter::<false>` is the
-/// half that logs.
-///
-/// **The two are exact complements**, which is the whole reason this is one type with
-/// a flipped parameter rather than a predicate each layer negates for itself. A
-/// subscriber stack that puts `<true>` on the histogram layer and `<false>` on the
-/// console layer handles every event exactly once, and that stays true if what counts
-/// as a timing span ever grows past a target comparison — the definition lives in
-/// [`admits`](Self::admits), and neither call site restates it.
-///
-/// The negative half is not tidiness (see the module note): `tracing_wasm`'s layer
-/// spends a `performance.mark` and a formatted `String` on every span it is shown, so
-/// a console layer without `TimingFilter::<false>` would report Stark's own
-/// instrumentation into the devtools timeline a dozen times a frame, for nobody.
+/// **The two are exact complements**, so a stack that puts `<true>` on the histogram
+/// layer and `<false>` on the console layer handles every span exactly once — and
+/// stays complementary if what counts as a timing span ever grows past a target
+/// comparison, since both settings share [`admits`](Self::admits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimingFilter<const KEEP_TIMING: bool>;
 
 impl<const KEEP_TIMING: bool> TimingFilter<KEEP_TIMING> {
     /// Whether this filter admits `meta`.
     ///
-    /// A comparison against the target, and — as long as that is all it is — one
-    /// that depends on nothing but the callsite, which is what lets
-    /// [`callsite_enabled`](Filter::callsite_enabled) answer once and for all below.
-    /// A future definition that reads anything *dynamic* has to give that up in the
-    /// same commit.
+    /// **Must depend on nothing but the callsite**, which is what lets
+    /// [`callsite_enabled`](Filter::callsite_enabled) cache the answer below. A
+    /// definition that reads anything dynamic has to give that up in the same commit.
     fn admits(&self, meta: &tracing::Metadata<'_>) -> bool {
         (meta.target() == TARGET) == KEEP_TIMING
     }
@@ -149,14 +103,11 @@ impl<const KEEP_TIMING: bool, S> Filter<S> for TimingFilter<KEEP_TIMING> {
         self.admits(meta)
     }
 
-    /// Answered per callsite rather than per event, so `tracing` caches the decision
-    /// and the layer is never asked again about a span it will always take or always
-    /// refuse.
+    /// Answered per callsite so `tracing` caches the decision, which is sound only
+    /// because [`admits`](Self::admits) reads nothing but the `'static` metadata.
     ///
-    /// Sound because [`admits`](Self::admits) reads only the metadata, which is
-    /// `'static` per callsite. `Interest` here is *per layer* — a `never` from this
-    /// filter disables the callsite for the layer it is attached to and leaves the
-    /// others alone, which is exactly the arrangement the two settings describe.
+    /// `Interest` is *per layer*: a `never` here disables the callsite for the layer
+    /// this filter is attached to and leaves the others alone.
     fn callsite_enabled(&self, meta: &'static tracing::Metadata<'static>) -> Interest {
         if self.admits(meta) {
             Interest::always()
@@ -175,19 +126,14 @@ impl<const KEEP_TIMING: bool, S> Filter<S> for TimingFilter<KEEP_TIMING> {
 /// }
 /// ```
 ///
-/// **A statement, not an expression**, and deliberately: the guard is bound to a
-/// name only the macro can see, so there is no binding for a call site to drop early
-/// by writing `let _ = …` — the classic way to turn a span into a no-op that still
-/// looks instrumented. Measuring a *part* of a block is spelled the way scope is
-/// always spelled, with braces around it.
+/// **A statement, not an expression**: the guard is bound to a name only the macro
+/// can see, so no call site can drop it early and leave a span that still looks
+/// instrumented. Measure part of a block by putting braces around that part.
 ///
 /// The name is the row, so it should read as a phase of the pipeline
 /// (`stroke.writeback`) rather than as the function it happens to sit in.
-// `#[macro_export]` puts this at the crate root, which would be a *second* public
-// spelling of one name — `stark_engine::__stark_timing_span!` beside
-// `stark_engine::timing::span!`. Hidden so the re-export below is the only one
-// documented, which is `lib.rs`'s rule about modules applied to the one item that
-// cannot obey it directly.
+// Hidden because `#[macro_export]` puts this at the crate root: the re-export below
+// is the one documented spelling.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __stark_timing_span {
@@ -202,12 +148,10 @@ pub use crate::__stark_timing_span as span;
 
 /// The narrowest and widest phase a histogram can distinguish, in nanoseconds.
 ///
-/// A microsecond floor is below every clock Stark runs on — the TSC's tick is under
-/// a nanosecond and the browser quantizes to 100 µs or worse — so the floor is never
-/// what limits a reading. The ten-second ceiling is not a phase anyone is timing but
-/// a *saturation* point: a tab left in a background throttle, or a first-frame shader
-/// compile, records at the ceiling instead of resizing the histogram under the
-/// recorder.
+/// The microsecond floor is below every clock Stark runs on, so it never limits a
+/// reading. The ten-second ceiling is a *saturation* point rather than a phase
+/// anyone times: an outlier records at the ceiling instead of resizing the histogram
+/// under the recorder.
 const HIST_LOW_NS: u64 = 1_000;
 const HIST_HIGH_NS: u64 = 10_000_000_000;
 
@@ -216,12 +160,9 @@ const HIST_HIGH_NS: u64 = 10_000_000_000;
 /// kilobytes a row, a rounding error against a single tile.
 const HIST_SIGFIG: u8 = 2;
 
-/// When a span was created, stashed in the registry's own per-span extensions.
-///
-/// The registry already allocates that storage for every span it tracks, so a phase
-/// costs no allocation of its own — and the reading is the *raw* counter rather than
-/// a `Duration`, so the conversion happens once, at close, on the value that is
-/// actually recorded.
+/// When a span was created: a *raw* clock reading, so the conversion to nanoseconds
+/// happens once, at close, on the value actually recorded. Kept in the registry's own
+/// per-span extensions, which it allocates anyway.
 #[derive(Clone, Copy)]
 struct Opened(u64);
 
@@ -230,26 +171,17 @@ struct Opened(u64);
 ///
 /// # Why this is ~40 lines here and not a dependency
 ///
-/// `tracing-timing` is the obvious crate for this and Stark used it first. Its
-/// **read** path cannot run in a browser: draining a `SyncHistogram` means
-/// `refresh_timeout`, which calls `std::time::Instant::now()` before it looks at
-/// anything, and on `wasm32-unknown-unknown` that is a panic — "time not implemented
-/// on this platform". There is no way round it from outside the crate, because
-/// `force_synchronize` is the only door to the recorders and it always passes a
-/// timeout.
+/// `tracing-timing` is the obvious crate for this and its **read** path cannot run in
+/// a browser: draining a `SyncHistogram` goes through `refresh_timeout`, which calls
+/// `std::time::Instant::now()` — a panic on `wasm32-unknown-unknown` — and
+/// `force_synchronize` is the only door to its recorders. What it offers over these
+/// forty lines is lock-free recording across many OS threads; the browser build has
+/// one, so `hdrhistogram`'s quantiles are kept and its `sync` feature (and with it
+/// `crossbeam-channel`) is not.
 ///
-/// The whole apparatus that needs it — a channel, a phase counter, a recorder per
-/// thread — exists to let many OS threads record without synchronizing. Stark's
-/// browser build has one thread. So what is kept is the part that was doing the work
-/// (`hdrhistogram`, whose quantiles are the point) and what is dropped is the
-/// cross-thread machinery that only ever cost us: `hdrhistogram`'s `sync` feature
-/// goes, taking `crossbeam-channel` out of the wasm binary, and span *creation*
-/// touches no lock of this layer's own — `tracing-timing` takes one there, where
-/// this leaves the stamp in the registry's own per-span extensions. Not free:
-/// `extensions_mut` is that span's write lock and the `u64` is boxed. Uncontended in
-/// a single-threaded build, and counted in the 234 ns above rather than argued away —
-/// the number is what justifies shipping this, so the mechanism behind it should be
-/// re-derivable by whoever next wants to add a `span!` to a tighter loop.
+/// Span creation therefore costs the registry's own per-span write lock and a boxed
+/// `u64` rather than a lock of this layer's — uncontended single-threaded, and inside
+/// the 234 ns quoted above rather than argued away.
 struct PhaseLayer {
     clock: quanta::Clock,
     /// One histogram per [`span!`] name. Keyed by the `&'static str` the callsite
@@ -306,15 +238,12 @@ where
         }
     }
 
-    /// **Creation to close is the sample**, which for every call site in Stark is the
-    /// enclosing block: [`span!`] creates and enters in one statement and the guard
-    /// drops at the brace.
+    /// **Creation to close is the sample** — for every [`span!`] call site, the
+    /// enclosing block.
     ///
-    /// Deliberately *not* accumulated across enter/exit pairs. A phase that were
-    /// entered, left and re-entered would then report the time it was on the stack
-    /// rather than the time it took, and the two differ only for a span held across
-    /// an await — which no `span!` in this crate is, because the macro's guard is not
-    /// `Send` and so cannot cross one.
+    /// Deliberately not accumulated across enter/exit pairs, which would report the
+    /// time a phase spent on the stack rather than the time it took. The two differ
+    /// only for a span held across an await, and the macro's guard is not `Send`.
     fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
         let opened = span.extensions().get::<Opened>().copied();
@@ -346,36 +275,23 @@ where
     PhaseLayer::new().with_filter(TimingFilter::<true>)
 }
 
-/// The installed [`PhaseLayer`], if a subscriber holds one.
-///
-/// Every reader goes through here rather than through a handle the caller has to keep,
-/// because the layer is handed to a subscriber and the subscriber is global. The
-/// `Filtered` wrapper `layer` puts round it forwards a downcast to the layer inside,
-/// so the type asked for is the bare one.
+/// The installed [`PhaseLayer`], if a subscriber holds one — the only way a reader
+/// reaches it, since the layer is owned by a global subscriber rather than by any
+/// handle a caller keeps. The `Filtered` wrapper `layer` adds forwards the downcast,
+/// so the type asked for here is the bare one.
 fn with_layer<R>(f: impl Fn(&PhaseLayer) -> R) -> Option<R> {
     tracing::dispatcher::get_default(|dispatch| dispatch.downcast_ref::<PhaseLayer>().map(&f))
 }
 
 /// One instrumented phase, as it stands right now.
 ///
-/// Durations rather than raw nanoseconds, so a consumer that wants milliseconds asks
-/// for milliseconds instead of dividing by a constant it had to look up.
-///
-/// Five numbers, and no more, because a histogram will give as many quantiles as
-/// anyone cares to ask for and an unread one is a column nobody knows the meaning
-/// of: how often, what it usually costs, what its bad case costs, what its worst
-/// case was, and how much of the session it accounts for. Both consumers show all
-/// five. A `p50` sat here unrendered for exactly as long as it took to notice.
+/// Five numbers and no more: a histogram yields as many quantiles as anyone asks for,
+/// and one no consumer renders is a column nobody knows the meaning of. Both the
+/// dialog and the benchmark tables show all five.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Phase {
-    /// The [`span!`] name, dotted (`stroke.loop`).
-    ///
-    /// Borrowed from the callsite that recorded it, which is where the map's key
-    /// already lives: a phase is registered under the `&'static str` the `span!`
-    /// wrote, so there is nothing here to outlive the lock the histograms are read
-    /// under. It was `String` on the argument that there might be — one allocation
-    /// per row per snapshot, twice a second for as long as the timing dialog is open,
-    /// to copy a `str` that is already `'static`.
+    /// The [`span!`] name, dotted (`stroke.loop`). Borrowed from the callsite that
+    /// recorded it, so a snapshot allocates nothing to report a row's name.
     pub name: &'static str,
     /// How many times the phase ran inside [`Timings::window`].
     pub count: u64,
@@ -414,10 +330,9 @@ impl Timings {
     /// How often `name` ran, per second of the window. `None` when the phase is not
     /// instrumented in this build or has not run.
     ///
-    /// The end-to-end numbers are exactly this shape: `rate("frame")` is the frame
-    /// rate the app actually achieved, and `rate("input.sample")` is how many pointer
-    /// reports per second reached the engine — which is the pair the whole latency
-    /// question is asked in.
+    /// The end-to-end numbers are this shape: `rate("frame")` is the frame rate the
+    /// app achieved and `rate("input.sample")` the pointer reports a second that
+    /// reached the engine — the pair the latency question is asked in.
     pub fn rate(&self, name: &str) -> Option<f64> {
         let phase = self.phases.iter().find(|p| p.name == name)?;
         let window = self.window.as_secs_f64();
@@ -425,25 +340,17 @@ impl Timings {
     }
 }
 
-/// The phase table as text: one indented row per phase and a line saying what the
-/// numbers are measured over.
+/// The phase table as text: one two-space-indented row per phase, in
+/// **milliseconds**, then a line saying what the numbers are measured over. Shared by
+/// `benches/stroke.rs` and `examples/stroke_bench.rs`, so a column added to one is
+/// added to both; the Timing Stats dialog renders its own.
 ///
-/// Here rather than in each benchmark that prints one, because there are two of them
-/// (`benches/stroke.rs` and `examples/stroke_bench.rs`) and a column added to one
-/// copy and not the other is a column that means different things in two places. The
-/// Timing Stats dialog renders its own, and should: a DOM table is not a `Display`.
+/// **Sorted by total, descending**, unlike [`snapshot`]'s name order: this table is
+/// read once, and the question asked of it is which phase is the biggest.
 ///
-/// **Sorted by total, descending**, unlike [`snapshot`]'s name order. A live table is
-/// watched and so wants rows that stay put; this one is read once and the only
-/// question being asked of it is which phase is the biggest.
-///
-/// The share is of [`window`](Self::window) rather than of any parent row, so the
-/// rows sum to roughly what the process was doing and whatever is missing is untimed.
-/// Nested phases overlap — `stroke.piece` contains the four under it — so the column
-/// sums past 100%; the dotted names are what say which rows are inside which.
-///
-/// Indented by two, because it is a block that belongs under a heading naming the
-/// scenario it describes, and every caller has one.
+/// The share is of [`window`](Self::window) rather than of any parent row, so nested
+/// phases overlap and the column sums past 100% — the dotted names say which rows are
+/// inside which.
 impl std::fmt::Display for Timings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let window = self.window.as_secs_f64();
@@ -478,10 +385,9 @@ impl std::fmt::Display for Timings {
 /// Read the histograms out of the installed subscriber, or `None` where no
 /// subscriber holds a [`layer`] — an embedding that never installed one, or a test.
 ///
-/// One lock, held for as long as it takes to read a quantile off each row and let go
-/// — there is nothing to drain and nothing to wait for, which is the point of owning
-/// the layer (see [`PhaseLayer`]). Still not for a frame loop: it allocates a `Phase`
-/// per row. Twice a second while a dialog is open is what it is sized for.
+/// Sorted by [`Phase::name`]. Nothing to drain and nothing to wait for, but not for
+/// a frame loop either: it allocates a `Phase` per row, and is sized for the twice a
+/// second a dialog asks.
 pub fn snapshot() -> Option<Timings> {
     let mut timings = with_layer(|layer| {
         let phases = {
@@ -508,13 +414,11 @@ pub fn snapshot() -> Option<Timings> {
 
 /// Start a fresh window: every histogram is emptied and [`Timings::window`] restarts.
 ///
-/// What makes the dialog usable for an experiment rather than only for a session
-/// average — clear it, paint one stroke, read the rows that moved. A no-op where no
-/// subscriber holds a [`layer`].
+/// What makes the dialog usable for an experiment — clear it, paint one stroke, read
+/// the rows that moved. A no-op where no subscriber holds a [`layer`].
 ///
-/// The rows are **dropped**, not cleared in place: a phase that does not run in the
-/// new window should be absent from it rather than present with a count of zero, and
-/// a table of zeroes is a table nobody reads down.
+/// Rows are **dropped**, not cleared in place, so a phase that does not run in the
+/// new window is absent from it rather than reported with a count of zero.
 pub fn reset() {
     with_layer(|layer| {
         unpoisoned(layer.rows.lock()).clear();
@@ -529,21 +433,18 @@ pub fn reset() {
 /// The finest interval this layer's clock can actually resolve — **measured**, by
 /// watching it until it moves, and then cached.
 ///
-/// There is no way to ask for this. Natively it is the TSC's scaled tick; on the web
-/// it is whatever quantization the browser applies to `performance.now()`, which
-/// varies by vendor, by version and by whether the page is cross-origin isolated. A
-/// number this file asserted would be wrong on some browser the day it was written.
+/// There is no way to ask for this: natively it is the TSC's scaled tick, on the web
+/// whatever quantization the browser applies to `performance.now()`, which varies by
+/// vendor, by version and by whether the page is cross-origin isolated.
 ///
 /// **The step it waits for is a nanosecond of `delta_as_nanos`, not a tick of
-/// `raw`**, and the difference is not pedantry: an invariant TSC ticks about three
-/// times a nanosecond, so a loop watching the raw counter returns after a step that
-/// converts to *zero* nanoseconds — a resolution of "0 ns" that reads as a broken
-/// clock when what it means is a clock finer than the unit the histograms are kept
-/// in. Nanoseconds are that unit, so nanoseconds are the quantum worth reporting.
+/// `raw`.** An invariant TSC ticks about three times a nanosecond, so a loop watching
+/// the raw counter returns after a step converting to *zero* nanoseconds — which
+/// reads as a broken clock when it means one finer than the nanosecond unit the
+/// histograms are kept in.
 ///
-/// The loop is bounded rather than trusting the clock to move at all: a stopped
-/// clock — a hardened browser, a mock — would otherwise spin forever, and answering
-/// "at least this coarse" is both true and enough for a caption.
+/// The loop is bounded rather than trusting the clock to move at all: a stopped clock
+/// would spin forever, and "at least this coarse" is enough for a caption.
 impl PhaseLayer {
     fn quantum(&self) -> Duration {
         let cached = self.quantum_ns.load(Ordering::Relaxed);
@@ -554,14 +455,10 @@ impl PhaseLayer {
         // straddle a boundary and read short; the smallest of several is the quantum.
         const ATTEMPTS: usize = 5;
         // Enough reads to cross a millisecond quantum even on a slow wasm build: at a
-        // browser's ~50 ns per `performance.now()` this is fifty times what a
-        // millisecond needs.
-        //
-        // **What a frozen clock costs is that margin times `ATTEMPTS`** — on the order
-        // of a tenth of a second, once, the first time anything asks for the quantum.
-        // Stated rather than bounded further because the alternative is worse in both
-        // directions: a shorter spin reports a coarser quantum than the clock really
-        // has on a slow build, and there is no second clock to time the loop against.
+        // browser's ~50 ns per `performance.now()`, fifty times what a millisecond
+        // needs. A frozen clock therefore costs that margin times `ATTEMPTS` — a tenth
+        // of a second, once. Shortening it would report a coarser quantum than the
+        // clock really has, and there is no second clock to time the loop against.
         const MAX_SPINS: usize = 1 << 20;
         let mut best = u64::MAX;
         for _ in 0..ATTEMPTS {
@@ -620,11 +517,9 @@ mod tests {
     /// Run `f` under a subscriber of this thread's own and return what the
     /// histograms held at the end of it.
     ///
-    /// `with_default` rather than `set_global_default`, because the suite is one
-    /// process and a global default may be installed once. That makes the layer —
-    /// and so the histograms — **per thread**, which is what lets these tests run
-    /// beside each other; the two `static`s above are genuinely process-wide, so
-    /// nothing here asserts on [`Timings::window`] beyond its sign.
+    /// `with_default` rather than `set_global_default`, because a global default may
+    /// be installed once per process. The layer, and so the histograms, are therefore
+    /// **per thread**, which is what lets these tests run beside each other.
     fn under_a_subscriber(f: impl FnOnce()) -> Timings {
         let subscriber = Registry::default().with(layer());
         tracing::subscriber::with_default(subscriber, || {
@@ -639,15 +534,11 @@ mod tests {
 
     /// **A span's row is its own lifetime, not its lifetime minus its children's.**
     ///
-    /// This is the whole model, and the reading every row in the dialog is annotated
-    /// with. It follows from `on_close` differencing against the stamp `on_new_span`
-    /// left, and from nothing else — no accumulation across enter/exit pairs, no
-    /// bubbling into enclosing spans. It is worth a test rather than a comment
-    /// because both of those are plausible things for a later hand to add, and either
-    /// would leave every number on screen quietly meaning something different: an
-    /// outer row would start reading as "time since the innermost thing that last
-    /// finished". (It is also the shape `tracing-timing` reaches only by turning off
-    /// two of its own defaults.)
+    /// This is the reading every row in the dialog is annotated with, and it holds
+    /// only because `on_close` differences against `on_new_span`'s stamp and does
+    /// nothing else. Accumulating across enter/exit pairs, or bubbling into enclosing
+    /// spans, are both plausible additions that would leave every number on screen
+    /// quietly meaning something different.
     #[test]
     fn a_span_is_one_row_and_a_child_does_not_eat_the_parent() {
         let t = under_a_subscriber(|| {
@@ -721,17 +612,13 @@ mod tests {
     /// **[`TimingFilter`]'s two halves partition the world**: every span reaches
     /// exactly one of the two layers, and neither reaches both.
     ///
-    /// Both directions matter and they fail differently. A timing span that got past
-    /// `logging` would cost a `performance.mark` and a formatted `String` per phase
-    /// per frame in the browser, for a devtools entry nobody asked for. A foreign
-    /// span that got past `timing` would open a row — every `info_span!` in `iroh`
-    /// and `wgpu` — and the dialog would become a list of other people's subsystems
-    /// with Stark's phases somewhere in it.
+    /// Both directions fail differently: a timing span past the console layer costs a
+    /// `performance.mark` and a `String` per phase per frame in the browser, and a
+    /// foreign span past the histogram layer turns the dialog into a list of `iroh`'s
+    /// and `wgpu`'s subsystems.
     ///
-    /// Through a real subscriber stack rather than by calling `Filter::enabled`
-    /// directly, because what has to hold is the arrangement and not the predicate:
-    /// `&'static Metadata` only exists at a callsite, and it is the callsite-level
-    /// caching (`callsite_enabled`) that would be the subtle thing to get wrong.
+    /// Through a real subscriber stack rather than by calling `Filter::enabled`, so
+    /// that the callsite-level caching (`callsite_enabled`) is exercised too.
     #[test]
     fn the_two_filters_are_exact_complements() {
         let seen = Seen::default();
@@ -797,12 +684,10 @@ mod tests {
         });
     }
 
-    /// Every clock Stark runs on resolves *something*, and [`Timings::quantum`] must
-    /// say what — it is the caption that tells a reader whether a row of `0.0 ms` is
-    /// fast or merely unmeasurable.
-    ///
-    /// Bounded rather than asserted exactly, because the answer is the machine's: a
-    /// nanosecond off the TSC here, 100 µs or a whole millisecond in a browser.
+    /// [`Timings::quantum`] is the caption that says whether a row of `0.0 ms` is fast
+    /// or merely unmeasurable, so it must report *something*. Bounded rather than
+    /// asserted exactly: the answer is the machine's — a nanosecond off the TSC here,
+    /// 100 µs or a whole millisecond in a browser.
     #[test]
     fn the_clock_reports_a_resolution_it_can_actually_meet() {
         let q = under_a_subscriber(|| {}).quantum;

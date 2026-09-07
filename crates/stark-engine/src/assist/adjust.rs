@@ -1,9 +1,9 @@
 //! **Adjustment**: what the rest of the drag means once a shape has been recognized
 //! (§6.9).
 //!
-//! Both arms are derived from the shape *as recognized* plus the pointer's travel
-//! since, never from the previous frame's shape, so a long adjustment cannot
-//! accumulate drift — the same bargain the transform gesture makes (§16.6).
+//! Both arms are derived from the shape *as recognized* plus the pointer's travel since,
+//! never from the previous frame's shape, so a long adjustment cannot accumulate drift —
+//! the same bargain the transform gesture makes (§16.6).
 
 use super::AssistShape;
 use stark_model::geom::{Ellipse, Vec2};
@@ -16,28 +16,27 @@ const MIN_GRIP: f32 = 1.0;
 impl AssistShape {
     /// The shape as the pointer's travel from `grip` to `pointer` leaves it.
     ///
-    /// Always applied to the shape **as recognized**, with the grip where the pointer
-    /// was when it snapped — so what a caller holds is one shape plus one displacement,
-    /// and a minute of adjustment is no different from the same drag made at once.
+    /// Must always be applied to the shape **as recognized**, with `grip` where the
+    /// pointer was when it snapped: a caller holds one shape plus one displacement, so a
+    /// minute of adjustment is no different from the same drag made at once. Feeding the
+    /// previous frame's result back in is the thing this is shaped not to do.
     ///
-    /// - A **line** moves the end the pointer is holding. By the pointer's delta rather
+    /// - A **line** moves the end the pointer is holding, by the pointer's delta rather
     ///   than to the pointer itself: snapping moved that end off the hand by up to the
     ///   fit residual, and driving it absolutely would jump it back on the first move.
     ///   A line that snapped to a **guide axis** keeps that direction and takes only
     ///   the component of the travel along it, so the end runs out and back along the
-    ///   grid line for the rest of the drag. Adjustment preserves what recognition
-    ///   established — the same bargain that keeps a drawn loop's eccentricity — and
-    ///   an alignment that a single sideways nudge could break would not be one.
+    ///   grid line — an alignment a single sideways nudge could break would not be one.
     /// - An **ellipse** turns and scales about its centre, so that the point being held
     ///   follows the pointer. Turning is what the feature is for; the scale rides along
     ///   because a one-pointer drag has two degrees of freedom and the radius is the
-    ///   only other thing a hand at that position could mean. The eccentricity the
-    ///   drawn loop established is preserved.
+    ///   only other thing a hand at that position could mean. The drawn eccentricity is
+    ///   preserved.
     /// - A **perspective circle** (§20.7) is sized, and only sized, in the plane it is
-    ///   a circle on: turning a circle does nothing, so the turn the free arm spends a
+    ///   a circle on: a circle has no orientation, so the turn the free arm spends a
     ///   degree of freedom on is not there to spend. Its eccentricity and tilt on the
-    ///   canvas then follow from where on the plane it sits — which is the point of the
-    ///   thing, and is why it cannot be done by scaling the drawn ellipse.
+    ///   canvas follow from where on the plane it sits, which is why this cannot be done
+    ///   by scaling the drawn ellipse.
     pub fn adjust(self, grip: Vec2, pointer: Vec2) -> Self {
         match self {
             Self::Line { a, b, on_axis } => {
@@ -62,12 +61,10 @@ impl AssistShape {
                 winding,
                 plane: Some(plane),
             } => {
-                // A circle has no orientation, so there is nothing here for the drag to
-                // turn: what is left of the ellipse's two degrees of freedom is the
-                // size, taken in the plane's own coordinates about the centre it has
-                // *there*. The canvas ellipse's centre is not the image of the circle's
-                // centre, so scaling the drawn shape about it would leave the plane at
-                // once.
+                // What is left of the ellipse's two degrees of freedom is the size, taken
+                // in the plane's own coordinates about the centre it has *there*: the
+                // canvas ellipse's centre is not the image of the circle's centre, so
+                // scaling the drawn shape about it would leave the plane at once.
                 let sized = plane
                     .circle_behind(Ellipse::new(center, radii, angle))
                     .zip(plane.to_plane(grip).zip(plane.to_plane(pointer)))
@@ -135,10 +132,7 @@ impl AssistShape {
 mod tests {
     use super::*;
 
-    /// A line's parts, or a panic naming what came back instead. The root's test module
-    /// has a copy: seven of its assertions want it and one of this file's does, and one
-    /// four-line `match` in each place is cheaper than making it visible across a
-    /// module boundary for a single caller.
+    /// A line's parts, or a panic naming what came back instead.
     fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
         match shape {
             AssistShape::Line { a, b, on_axis } => (a, b, on_axis),

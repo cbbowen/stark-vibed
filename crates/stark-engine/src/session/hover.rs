@@ -32,18 +32,16 @@ pub(super) struct HoverStroke {
 ///
 /// Denominated on the tolerance because the tolerance is what the window exists to
 /// average away: this many tolerances of recent motion hold the heading to roughly
-/// `atan(1/this)` of noise, whatever the device and whatever the zoom — which
-/// is also why it is the engine's to derive rather than the frontend's to
-/// state, unlike the reach: nothing about it is a fact about the screen.
+/// `atan(1/this)` of noise, whatever the device and whatever the zoom. Nothing about
+/// it is a fact about the screen, so unlike the reach it is the engine's to derive.
 const WINDOW_ARC_TOLERANCES: f32 = 40.0;
 
 /// Most reports the hover window keeps ([`Session::hover_to`]).
 ///
 /// The tolerance-derived arc ([`WINDOW_ARC_TOLERANCES`]) is the extent; this is the
-/// cost ceiling behind it. Every accepted report refits the whole window, so
-/// this bounds what a report can cost — and it binds only where motion is
-/// dense at the tolerance (a pen crawling pitch by pitch), where the window is
-/// this many *tolerances* long and the heading has long since settled.
+/// cost ceiling behind it, since every accepted report refits the whole window. It
+/// binds only where motion is dense at the tolerance — a pen crawling pitch by pitch,
+/// where the heading has long since settled.
 const HOVER_WINDOW: usize = 32;
 
 /// Prune `window` from its old end until its arc fits `arc` and its count
@@ -93,58 +91,46 @@ impl Session {
     ///
     /// **Both halves of the mark read it** — the door reports enter through
     /// ([`hover_to`](Self::hover_to)) and the fold that draws it
-    /// ([`hover_view`](Self::hover_view)) — because the door is not free: an
-    /// accepted report bumps the gesture ordinal, and a bump mid-stroke makes
-    /// every peer discard its assembly and restart (§17.5) and drops the local
-    /// renderer's cached head, for a mark the fold would decline to draw.
+    /// ([`hover_view`](Self::hover_view)) — because the door is not free: an accepted
+    /// report bumps the gesture ordinal, and a bump mid-stroke makes every peer
+    /// discard its assembly (§17.5) and drops the local renderer's cached head.
     fn hovering(&self) -> bool {
         self.in_flight.is_none() && self.selecting.is_none() && !self.tool.is_selection()
     }
 
-    /// Feed the hover mark one report: append it to the trailing window of
-    /// recent reports, refit the window, and lay the **probe** — the stroke a
-    /// drag begun this instant would open, `reach` canvas px from the cursor
-    /// along the hover's extrapolated heading. The engine keeps the window, so
-    /// the frontend sends one sample per move exactly as it does for a stroke.
+    /// Feed the hover mark one report: append it to the trailing window of recent
+    /// reports, refit the window, and lay the **probe** — the stroke a drag begun this
+    /// instant would open, `reach` canvas px from the cursor along the hover's
+    /// extrapolated heading. The engine keeps the window, so the frontend sends one
+    /// sample per move exactly as it does for a stroke.
     ///
-    /// **The window is the estimator, not the mark** (§6.2). Reports are
-    /// quantized to the device tolerance, so the heading of two adjacent reports
-    /// snaps between the eight compass points — jitter in the *input*, which
-    /// the fitter is precisely the machinery to price against detail, given
-    /// the redundancy a window carries and a bare pair never did. But what is
-    /// rendered is not the window's own trace — that is where the pointer
-    /// *was*, which the screen already shows — it is the trace's heading
-    /// carried forward from the cursor: a press is being predicted, and a
-    /// press starts where the pointer is.
+    /// **The window is the estimator, not the mark** (§6.2). Reports are quantized to
+    /// the device tolerance, so the heading of two adjacent reports snaps between the
+    /// eight compass points; the fitter is the machinery that prices that jitter
+    /// against detail, over redundancy a bare pair never carried. What is rendered is
+    /// not the window's own trace — that is where the pointer *was* — but the trace's
+    /// heading carried forward from the cursor, because a press starts where the
+    /// pointer is.
     ///
-    /// The probe is **straight**, deliberately: continuing the trace's
-    /// curvature would double down on the very quantity the tolerance makes
-    /// noisiest, and "from here, this way" is the whole of what a press this
-    /// instant can honestly be said to do. It is built through the fitter from
-    /// two synthesized samples wearing the newest report's own channels, so it
-    /// is bit-for-bit the record a real gesture of those two samples would
-    /// commit — the prediction is synthesized; the rendering of it is not.
+    /// The probe is **straight**, deliberately: continuing the trace's curvature would
+    /// double down on the quantity the tolerance makes noisiest. It is built through
+    /// the fitter from two synthesized samples wearing the newest report's own
+    /// channels, so it is bit-for-bit the record a real gesture of those two samples
+    /// would commit — the prediction is synthesized; the rendering of it is not.
     ///
     /// `tolerance` is the frontend's statement of its input tolerance, as
-    /// [`start_stroke`](Self::start_stroke) takes it — the window's own extent
-    /// derives from it ([`WINDOW_ARC_TOLERANCES`]), since how much history the
-    /// estimator needs is a fact about the tolerance. `reach` is how far the probe
-    /// extends, in **canvas px by nature rather than by conversion**: the mark
-    /// is a hypothesis about paint, paint is denominated on the canvas, and a
-    /// screen-fixed length grew in canvas terms as the view zoomed out —
-    /// promising more painting the less closely you looked.
+    /// [`start_stroke`](Self::start_stroke) takes it, and the window's own extent
+    /// derives from it ([`WINDOW_ARC_TOLERANCES`]). `reach` is how far the probe
+    /// extends, in **canvas px by nature rather than by conversion**: the mark is a
+    /// hypothesis about paint, and a screen-fixed length would promise more painting
+    /// the further the view zoomed out.
     ///
-    /// A report arriving while the hand is not [`hovering`](Self::hovering) is
-    /// refused outright, rather than kept for a fold that would decline to draw
-    /// it — see there for what accepting one costs.
-    ///
-    /// A non-finite report is refused at the door for
-    /// [`stroke_to`](Self::stroke_to)'s reason — the window *remembers* — and
-    /// a report within a tolerance of the last is dropped: it carries nothing the
-    /// fit could use, and a resting pen's sub-tolerance drift would otherwise buy
-    /// a whole-window refit per report. Hence the answer: whether anything
-    /// changed, so a caller can skip the refold for a report that changed
-    /// nothing.
+    /// Answers whether anything changed, so a caller can skip the refold. A report is
+    /// refused outright when the hand is not [`hovering`](Self::hovering) — see there
+    /// for what accepting one costs — when it is non-finite, for
+    /// [`stroke_to`](Self::stroke_to)'s reason that the window *remembers*, and when
+    /// it is within a tolerance of the last, where a resting pen's drift would buy a
+    /// whole-window refit for nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
         if !self.hovering() || !sample.is_admissible() || !reach.is_finite() {
             return false;
@@ -193,12 +179,11 @@ impl Session {
         self.hover.take().is_some()
     }
 
-    /// The hover window, surrendered as a stroke's run-up (§6.2) — empty when
-    /// there is none, or when it does not lead up to `press`: a window whose
-    /// newest report sits farther from the press than the window's own scale
-    /// (the same tolerance-derived arc that bounds it, [`WINDOW_ARC_TOLERANCES`]) is
-    /// history from somewhere else — a teleported pointer, a trail gone stale —
-    /// and evidence about nothing this stroke does.
+    /// The hover window, surrendered as a stroke's run-up (§6.2) — empty when there is
+    /// none, or when it does not lead up to `press`: a window whose newest report sits
+    /// farther from the press than the window's own scale ([`WINDOW_ARC_TOLERANCES`]
+    /// tolerances) is history from somewhere else, and evidence about nothing this
+    /// stroke does.
     pub(super) fn take_hover_context(&mut self, press: Vec2, tolerance: f32) -> Vec<InputSample> {
         let Some(h) = self.hover.take() else {
             return Vec::new();
@@ -216,17 +201,13 @@ impl Session {
         self.hover.is_some()
     }
 
-    /// The hover mark as the fold wants it, authored by `actor` with `seed` —
-    /// the same [`GestureView`] shape a real gesture folds as, so the renderer
-    /// cannot tell them apart, and the probe renders as exactly the pixels its
-    /// gesture would commit: the prediction is synthesized, its rendering is
-    /// inherited.
+    /// The hover mark as the fold wants it, authored by `actor` with `seed` — the same
+    /// [`GestureView`] shape a real gesture folds as, so the probe renders as exactly
+    /// the pixels its gesture would commit.
     ///
-    /// `None` unless the hand is [`hovering`](Self::hovering): a fact outranks a
-    /// hypothesis and the fold holds at most one gesture per actor, so neither a
-    /// stroke nor a shape drag leaves room for the mark — and a selection tool
-    /// drags a shape rather than the brush. An unpaintable active layer needs no
-    /// test here: the stroke renderer refuses it exactly as a commit would.
+    /// `None` unless the hand is [`hovering`](Self::hovering): the fold holds at most
+    /// one gesture per actor, and a fact outranks a hypothesis. An unpaintable active
+    /// layer needs no test here — the stroke renderer refuses it as a commit would.
     pub fn hover_view(
         &self,
         actor: ActorId,
@@ -291,11 +272,10 @@ mod tests {
         assert!(view.is_some(), "the free hand's mark did not fold");
     }
 
-    /// A hover report arriving mid-stroke is refused, ordinal untouched. The
-    /// fold already declined to draw one; what it could not undo was the door's
-    /// side effects — an ordinal bump is a gesture *restart* on the wire (§17.5),
-    /// so a frontend that forgot to gate its moves restarted every peer per
-    /// pointer report of the stroke it was drawing.
+    /// A hover report arriving mid-stroke is refused, ordinal untouched. The fold
+    /// declining to draw one is not enough: an ordinal bump is a gesture *restart* on
+    /// the wire (§17.5), so a frontend that does not gate its moves would restart
+    /// every peer once per pointer report of the stroke it is drawing.
     #[test]
     fn a_hover_during_a_stroke_does_not_advance_the_gesture_ordinal() {
         let mut s = session(ShapeAction::default());
@@ -328,11 +308,10 @@ mod tests {
         assert!(!s.hover_held());
     }
 
-    /// A selection tool refuses the report at the door, not merely at the fold.
-    /// It is the condition that holds across a whole stretch of moves rather
-    /// than a gesture, so it is where the waste piled up: two full solves and a
-    /// spent ordinal per pointer move, building a window the fold declined every
-    /// time.
+    /// A selection tool refuses the report at the door, not merely at the fold. It is
+    /// the condition that holds across a whole stretch of moves rather than one
+    /// gesture, so accepting would cost two full solves and a spent ordinal per
+    /// pointer move, for a window the fold declines every time.
     #[test]
     fn a_selection_tool_refuses_the_hover_report_not_just_the_fold() {
         let mut s = session(ShapeAction::default());

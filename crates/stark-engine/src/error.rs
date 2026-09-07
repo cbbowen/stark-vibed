@@ -23,29 +23,23 @@ pub enum EngineError {
     /// The GPU failed underneath an operation — a lost device, an exhausted one, or
     /// an error no scope caught (§5).
     ///
-    /// **Reported rather than panicked on, because the document survives it.** The
-    /// engine's state is an action log in ordinary memory, so a caller told this can
-    /// still write the file; the readback path used to discover the same fact with an
-    /// `expect`, which on the web is an abort and takes the painting with it.
+    /// **Reported rather than panicked on, because the document survives it** (§5).
+    /// The engine's state is an action log in ordinary memory, so a caller told this
+    /// can still write the file — where an `expect` on the web is an abort that takes
+    /// the painting with it.
     ///
     /// Distinct from [`Self::Export`], which is about a request that does not make
     /// sense (a frame too small, a size past the device's limit). That is answerable
     /// by asking for something else; this is not answerable at all.
     ///
-    /// **Carries the failure, not a rendering of it.** It was `Gpu(String)`, built by
-    /// `to_string()`-ing a [`DeviceFailure`](crate::DeviceFailure) the constructor had
-    /// in hand — so a caller could not tell `FailureKind::Lost` (permanent; recovery
-    /// means building a new device) from `FailureKind::OutOfMemory` (not necessarily
-    /// terminal) without going to
-    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) to be told
-    /// what the error itself had just erased. That second channel is still how a
-    /// frontend watches the device; it is no longer how it learns what happened.
-    ///
-    /// Carried by value rather than as a `#[from]` source: [`DeviceFailure`] is a
-    /// plain reportable fact — `Clone`, comparable, free of any borrow of the device
-    /// that died — precisely so it can also cross into `ObservableState`, and making
-    /// it an `Error` to gain a conversion nothing asks for would be the tail wagging
-    /// the dog. There is one construction site, and it names the variant.
+    /// **Carries the failure, not a rendering of it**, so a caller can tell
+    /// `FailureKind::Lost` (permanent; recovery means building a new device) from
+    /// `FailureKind::OutOfMemory` (not necessarily terminal) without consulting
+    /// [`ObservableState::gpu_failure`](crate::ObservableState::gpu_failure) — which
+    /// remains how a frontend *watches* the device, rather than how it learns what
+    /// happened. By value rather than as a `#[from]` source, because
+    /// [`DeviceFailure`] is a plain reportable fact — `Clone`, comparable, borrowing
+    /// nothing of the device that died — so it can also cross into `ObservableState`.
     ///
     /// [`DeviceFailure`]: crate::DeviceFailure
     #[error("{0}")]
@@ -53,9 +47,8 @@ pub enum EngineError {
 
     /// A GPU operation failed while the device reports nothing wrong with itself.
     ///
-    /// The other half of what [`Self::Gpu`] used to conflate: a readback that came
-    /// back empty on a live device is a different fact from a dead one, and only one
-    /// of the two is worth retrying.
+    /// A readback that came back empty on a live device is a different fact from
+    /// [`Self::Gpu`], and unlike it may be worth retrying.
     #[error("readback failed ({0})")]
     Readback(String),
 
@@ -71,14 +64,13 @@ pub enum EngineError {
 /// Why a render or an export could not be produced — a **request** that does not
 /// make sense, or the encoder refusing what it was handed.
 ///
-/// A type rather than a `String` because the two halves want different answers.
+/// A type rather than a `String` because the halves want different answers.
 /// [`TooSmall`](Self::TooSmall), [`OverLimit`](Self::OverLimit),
-/// [`UnusableView`](Self::UnusableView) and [`JpegTooLarge`](Self::JpegTooLarge)
-/// are all "ask for something else", and a frontend that wants to *say* what else
-/// — clamp the scale, offer the device's limit — needs the numbers rather than a
-/// sentence containing them. [`Encode`](Self::Encode) and
-/// [`EncodeJpeg`](Self::EncodeJpeg) are not answerable by asking differently at
-/// all, and are the arms carrying somebody else's error.
+/// [`UnusableView`](Self::UnusableView) and [`JpegTooLarge`](Self::JpegTooLarge) are
+/// all "ask for something else", and a frontend that wants to *say* what else —
+/// clamp the scale, offer the device's limit — needs the numbers, not a sentence
+/// containing them. [`Encode`](Self::Encode) and [`EncodeJpeg`](Self::EncodeJpeg) are
+/// not answerable by asking differently at all.
 #[derive(Debug, Error)]
 pub enum ExportError {
     /// The frame has no area to render: an empty or non-finite bound (§15.6).
@@ -138,10 +130,8 @@ impl Produces {
 
 /// `?` on a content-id failure, in one hop.
 ///
-/// [`DocError`](stark_model::DocError) already folds `AssetError` in, but `From` does not chain: without
-/// this, every `?` on an id derivation inside an engine function would have to spell
-/// the two steps out. One impl beats a hundred `.map_err`s, and it keeps the error a
-/// caller sees identical either way.
+/// [`DocError`](stark_model::DocError) already folds `AssetError` in, but `From` does
+/// not chain, so without this every `?` on an id derivation would spell both steps out.
 impl From<stark_assetid::AssetError> for EngineError {
     fn from(e: stark_assetid::AssetError) -> Self {
         EngineError::Document(e.into())
@@ -151,9 +141,7 @@ impl From<stark_assetid::AssetError> for EngineError {
 /// Convenience alias used throughout the engine.
 ///
 /// **Fixed rather than defaulted.** `Result<T, E = EngineError>` would widen this to
-/// a superset of `std::result::Result` and save the two places below that spell the
-/// std one out — but a type-parameter default is not used for *inference*, so
-/// `stark_engine::Result::Ok(v)` in expression position stops resolving `E`, and that
-/// is exactly how a frontend closure pins its error type (`stark-dioxus-frontend`'s
-/// `collab`). Two in-crate spellings is the cheaper side of that trade.
+/// a superset of `std::result::Result`, but a type-parameter default is not used for
+/// *inference*, so `stark_engine::Result::Ok(v)` in expression position would stop
+/// resolving `E` — which is how a frontend closure pins its error type.
 pub type Result<T> = std::result::Result<T, EngineError>;

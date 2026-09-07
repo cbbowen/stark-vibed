@@ -1,7 +1,6 @@
-//! What an engine is made of (§6.7, §11): the GPU half that is expensive to build
-//! and shared between siblings, the three ways an engine comes to hold one — built
-//! fresh, built over a donor's, rebuilt for a new color space — and the one
-//! constructor every path ends in.
+//! How an engine is built (§6.7, §11): the GPU half that is expensive and shared
+//! between siblings, the three ways one comes to hold it — fresh, over a donor's,
+//! rebuilt for a new color space — and the constructor every path ends in.
 
 use std::sync::Arc;
 
@@ -111,31 +110,25 @@ impl Engine {
     }
 
     /// A second engine on `donor`'s device, **sharing** everything expensive and
-    /// immutable — the compiled pipelines (stroke, compositing, selection,
-    /// transform, fill, merge, the blend pass and its pigment LUT), the tile
-    /// allocator, the content-addressed brush assets, and the decoded substrate and
-    /// environment caches — around a fresh document of its own.
+    /// immutable — the compiled pipelines, the tile allocator, the content-addressed
+    /// brush assets, and the decoded substrate and environment caches — around a fresh
+    /// document of its own.
     ///
-    /// This is what a *preview* engine is (§11): the brush editor's test canvas and
-    /// a preset thumbnail both paint strokes that must render exactly as the main
-    /// canvas would, so sharing the machinery is a correctness argument as much as an
-    /// economy. The cost is a document, a compositor's attachments and a fistful of
-    /// `Arc` bumps, where building one standalone recompiles ~19 shaders and ~30
-    /// pipelines and re-decodes every image the app has already decoded.
-    ///
-    /// What is shared is exactly what cannot disagree: immutable (pipelines),
-    /// content-addressed (assets, the substrate/environment caches), or an allocator
-    /// (the tile pool). Everything an engine can *set* stays per-engine — the
-    /// document, the session view, and the three compositor view settings, which start
-    /// mirroring the donor's current look and move independently from there.
+    /// This is what a *preview* engine is (§11): the brush editor's test canvas and a
+    /// preset thumbnail must render a stroke exactly as the main canvas would, so
+    /// sharing the machinery is a correctness argument as much as an economy. What is
+    /// shared is what cannot disagree — immutable, content-addressed, or an allocator.
+    /// Everything an engine can *set* stays per-engine: the document, the session view,
+    /// and the three compositor view settings, which open mirroring the donor's look
+    /// and move independently from there.
     ///
     /// The document opens on the donor's current substrate, so a preview needs no
     /// `SetSubstrate` step — and no substrate bytes handed across.
     ///
     /// Divergence after construction is safe but not tracked: a
     /// [`new_document`](Self::new_document) that changes *this* engine's color
-    /// space rebuilds it an unshared set (`rebuild_gpu_for`), and the donor doing
-    /// the same simply stops feeding the shared caches this engine keeps using.
+    /// space rebuilds it an unshared set, and the donor doing the same simply stops
+    /// feeding the shared caches this engine keeps using.
     pub fn new_sharing(donor: &Engine, viewport: Extent2) -> Self {
         Self::on_shared(donor.shared(), viewport)
     }
@@ -144,9 +137,9 @@ impl Engine {
     /// [`new_sharing`](Self::new_sharing), for a caller that holds the shared half
     /// without holding an engine.
     ///
-    /// A preset thumbnail wants the device and the pipelines; requiring a *donor
-    /// engine* would mean borrowing whichever live one happens to exist — with its
-    /// substrate, its document and its in-flight gesture — for the length of the call.
+    /// Reach for it where requiring a donor *engine* would mean borrowing whichever
+    /// live one happens to exist — with its substrate, its document and its in-flight
+    /// gesture — for the length of the call.
     ///
     /// The document opens on `shared`'s current substrate, so a preview needs no
     /// `SetSubstrate` step — and no substrate bytes handed across.
@@ -183,14 +176,11 @@ impl Engine {
     /// and the [`apply_document_substrate`](Self::apply_document_substrate) both
     /// constructors owe once they are set.
     ///
-    /// One place for a field added to [`Engine`] to be given a value: two struct
-    /// literals naming fourteen identical fields go wrong invisibly on the main canvas
-    /// and show up only on a preview or a thumbnail, the hardest surface in the app to
-    /// notice on.
-    ///
-    /// Every parameter is a distinct type, so a transposed argument list is a compile
-    /// error rather than a silently wrong engine — which is what makes six positional
-    /// values safe here.
+    /// One place for a field added to [`Engine`] to be given a value: fourteen fields
+    /// spelled out twice go wrong invisibly on the main canvas and show up only on a
+    /// preview or a thumbnail, the hardest surface in the app to notice on. Every
+    /// parameter is a distinct type, so a transposed argument list is a compile error
+    /// rather than a silently wrong engine.
     fn assemble(
         shared: EngineShared,
         compositor: Compositor,
@@ -224,12 +214,9 @@ impl Engine {
             debug_samples: Vec::new(),
             authoring: Authoring::solo(),
         };
-        // Park the substrate registry on the document's substrate. A no-op for a fresh
-        // document (both are `Flat`) and for a sibling, whose two halves were just
-        // seeded from the same place — and not for one `new_document` seeded, where it
-        // is what makes the substrate actually render. Here rather than at the two
-        // call sites for the reason the fields above are: an invariant every engine
-        // holds belongs where every engine is built.
+        // Park the substrate registry on the document's substrate — a no-op unless
+        // `new_document` seeded one, where it is what makes that substrate render.
+        // Here rather than at the two call sites: every engine owes it.
         engine.apply_document_substrate();
         engine
     }
@@ -237,9 +224,8 @@ impl Engine {
     /// The expensive half of this engine, for building another on the same device
     /// (§11) — see [`EngineShared`].
     ///
-    /// The three view settings ride along as the look a sibling **opens** on, read
-    /// live rather than from when this engine was built, so a preview of the canvas
-    /// mirrors the canvas as it stands.
+    /// The three view settings are read live, so a sibling opens on the look the
+    /// canvas has now rather than the one it was built with.
     pub fn shared(&self) -> EngineShared {
         debug_assert!(
             Arc::ptr_eq(&self.shared.passes, &self.compositor_pipeline.passes()),
@@ -252,20 +238,19 @@ impl Engine {
         }
     }
 
-    /// Rebuild the GPU subsystems (pool/stroke/compositor) for `id`. Assumes the
-    /// document is already empty (no tiles of the old format are referenced).
-    /// Takes the *resolved* space rather than an id, which is what keeps this
-    /// infallible: every caller has already had to obtain one, so there is no
-    /// "unsupported space" case left to handle here or to forget.
+    /// Rebuild the GPU subsystems (pool/stroke/compositor) for `cs`. Requires an
+    /// already-empty document: no tiles of the old format may still be referenced.
+    ///
+    /// Takes the *resolved* space rather than an id, which is what keeps it
+    /// infallible — every caller has already had to obtain one, so no "unsupported
+    /// space" case is left to handle here or to forget.
     pub(super) fn rebuild_gpu_for(&mut self, cs: Arc<dyn ColorSpace>) {
         // Cloned out before the rebuild: the registry lives on `self.shared.apply`, which is
         // replaced below, and a `SubstrateMap` is two reference-counted wgpu handles.
         let substrate = self.shared.apply.substrates.current();
         let environment = self.shared.environment.current();
         let built = build_gpu(GpuBuild {
-            // What a rebuild does not touch, moved through into the new context —
-            // stated as a list rather than as four arguments, because "what survives
-            // a color-space change" is the interesting half of this function.
+            // What a rebuild does not touch, moved through into the new context.
             keep: GpuKeep {
                 gpu: self.shared.gpu.clone(),
                 assets: self.shared.apply.assets.clone(),
@@ -279,23 +264,19 @@ impl Engine {
             substrate: &substrate,
             environment: &environment,
         });
-        // Whole, not field by field: anything added to the shared half is rebuilt
-        // here by construction rather than by somebody remembering this line — which
-        // now includes the compiled `passes`, and that one matters. Assigned
-        // piecemeal, a rebuild left `shared.passes` naming the pipelines it had just
-        // replaced, so the next sibling built off `shared()` would have taken the old
-        // ones. `Engine::shared`'s `debug_assert` is the guard on exactly that.
+        // Whole, not field by field: anything added to the shared half is rebuilt by
+        // construction rather than by somebody remembering this line. `passes` is the
+        // one that matters — left stale, the next sibling built off `shared()` takes
+        // pipelines that no longer exist, which `Engine::shared` asserts against.
         self.shared = built.shared;
         self.compositor = built.compositor;
         self.compositor_pipeline = built.compositor_pipeline;
     }
 }
 
-/// What the color-space-dependent GPU subsystems are built from.
-///
-/// Grouped because they are always supplied together: the pool, stroke renderer and
-/// compositor are torn down and rebuilt as a set whenever the color space changes
-/// (§6.7).
+/// What the color-space-dependent GPU subsystems are built from. Grouped because the
+/// pool, stroke renderer and compositor are torn down and rebuilt as a set whenever
+/// the color space changes (§6.7).
 struct GpuBuild<'a> {
     /// What the rebuild does **not** touch, moved through into the context it comes
     /// back in.
@@ -310,12 +291,9 @@ struct GpuBuild<'a> {
 }
 
 /// The pieces of [`ApplyCtx`] a color-space rebuild **survives** — the device, and
-/// the three stores whose contents are either content-addressed or independent of
-/// how color is represented (§6.7).
-///
-/// A struct rather than four parameters so that "what survives a rebuild" is stated
-/// once and read as a list. The two callers differ only in where they get it: a
-/// fresh engine builds these, a rebuild clones them off the context it is replacing.
+/// the stores whose contents are either content-addressed or independent of how color
+/// is represented (§6.7). A struct rather than loose parameters so that "what survives
+/// a rebuild" is stated once and read as a list.
 struct GpuKeep {
     gpu: GpuContext,
     /// Brush shapes, named by the hash of their bytes — so nothing about them
@@ -328,11 +306,9 @@ struct GpuKeep {
     /// (`gpu::scratch`) — **one pool for the whole stack**, so a stroke's ring, a
     /// transform's parcel and a merge's expansions feed one another's free lists.
     ///
-    /// Kept across a color-space rebuild, unlike the renderers it serves: what a
-    /// checkout asks for is a size, a format and a usage, so a pool holds no opinion
-    /// about the space and would only have to warm up again (§6.7). Nothing in it is
-    /// live at the moment a rebuild happens — a rebuild needs an empty document, and
-    /// a lease outlives no submit.
+    /// Kept across a color-space rebuild, unlike the renderers it serves: a checkout
+    /// asks only for a size, a format and a usage (§6.7). Nothing in it is live at that
+    /// moment — a rebuild needs an empty document, and a lease outlives no submit.
     scratch: ScratchPool,
     /// The canvas substrates and their registered bytes: a height map, likewise
     /// nothing to do with how color is represented (§6.4). Keyed by the substrate *and
@@ -347,12 +323,9 @@ struct GpuKeep {
 
 /// Everything a build hands back, in the shape the engine stores it.
 ///
-/// The whole [`EngineShared`] rather than its parts loose, which is the point: a
-/// rebuild is then `self.shared = built.shared` and anything added to the shared half
-/// is rebuilt by construction. Assigned field by field, each renderer has to be
-/// remembered in three places — the tuple, the constructor and the rebuild — and the
-/// rebuild is the one whose omission shows up only in a document that changed color
-/// space.
+/// The whole [`EngineShared`] rather than its parts loose, so a rebuild is
+/// `self.shared = built.shared` and anything added to the shared half is rebuilt by
+/// construction.
 ///
 /// The two compositor values come back beside it rather than inside it because they
 /// are **per-engine**: the attachments are this target's, and the pipeline carries
@@ -380,12 +353,10 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         substrate,
         environment,
     } = b;
-    // The color space's formats — the only ones this call site knows. The pool
-    // unions in its own (the selection mask, the wide scratch aux), so none can be
-    // forgotten here (`TilePool::new`). The residual's is `Rgba16Float`, which every
-    // space's color already is, but it is passed rather than assumed for the same
-    // reason the aux is: the first space to choose otherwise would meet
-    // `acquire_tex`'s "unsupported format" panic on its first stroke.
+    // The color space's formats — the only ones this call site knows; the pool unions
+    // in its own (`TilePool::new`), so none can be forgotten here. The residual's is
+    // passed rather than assumed `Rgba16Float`: the first space to choose otherwise
+    // would meet `acquire_tex`'s "unsupported format" panic on its first stroke.
     let pool = TilePool::new(
         gpu.clone(),
         [cs.color_format(), cs.aux_format()]
@@ -393,11 +364,9 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             .chain(cs.resid_format()),
     );
     let zeroes = Zeroes::new(&gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
-    // Built here rather than inside either consumer, because both bind the group a
-    // *tile* caches over its own channels and a cached group answers to one layout:
-    // pass A composites the document, and the stamp loop composites the very same
-    // tiles into its working region (§6.2). Same bargain as `blend` and `filter`
-    // below — built once at the top, handed to everyone who needs it.
+    // One layout for everyone, because a cached bind group answers to one: pass A
+    // composites the document and the stamp loop composites the very same tiles into
+    // its working region (§6.2). Same bargain as `blend` and `filter` below.
     let tile_bgl = crate::gpu::composite::tile_bind_group_layout(&gpu.device, cs.as_ref());
     let stroke = StrokeRenderer::new(
         &gpu,

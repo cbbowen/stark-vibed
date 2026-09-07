@@ -25,8 +25,7 @@
 //!   (§8, §6.4, §6.6).
 //!
 //! The data structures the read side is built from — [`Projected`], `Memo` and the
-//! `Revision` that keys one — name no engine type and live at the crate root
-//! (`projection`).
+//! `Revision` that keys one — live at the crate root (`projection`).
 
 mod build;
 mod collab;
@@ -69,18 +68,14 @@ const ROOT_LAYER: LayerId = LayerId::ROOT;
 /// The expensive half of an engine: everything a second engine on the same device
 /// reuses rather than rebuilding (§11).
 ///
-/// **The store is shared; the choice is not** — [`Registry`]'s own rule. The
-/// registered bytes, decoded substrates and environments, tile pool, compiled
-/// pipelines and brush assets are genuinely one copy behind `Arc`s. The choices that
-/// ride along — substrate, environment, media parameters — are per-engine values a
-/// clone merely **seeds** from the donor, so a sibling opens mirroring the canvas it
-/// came from and is free to move from there.
+/// **The store is shared; the choice is not** — [`Registry`]'s own rule. Registered
+/// bytes, decoded substrates and environments, tile pool, compiled pipelines and
+/// brush assets are one copy behind `Arc`s; the choices riding along — substrate,
+/// environment, media parameters — are per-engine values a clone only **seeds** from
+/// the donor, so a sibling opens mirroring the canvas it came from.
 ///
-/// One type rather than a constructor's argument list, so that anything added here
-/// is shared on every path — the new engine, the sibling, and the color-space
-/// rebuild. It is also cheap to clone and outlives whoever it came from, so a
-/// consumer wanting only the device and the pipelines (a preset thumbnail) need not
-/// borrow a live engine to reach them.
+/// Cheap to clone and outlives its donor, so a consumer wanting only the device and
+/// the pipelines (a preset thumbnail) need not borrow a live engine.
 #[derive(Clone)]
 pub struct EngineShared {
     gpu: GpuContext,
@@ -96,12 +91,8 @@ pub struct EngineShared {
     /// the stroke renderer, the asset store, the selection rasterizer, and the canvas
     /// substrates — held as the `history::Action::Context` (§5).
     ///
-    /// Stored rather than built per call: it only changes when the color space is
-    /// rebuilt, and `Context` is an owned associated type, so building it per call
-    /// would clone all of it on every commit, undo, redo and remote merge.
-    ///
-    /// `selection` is color-space independent (a mask is one coverage channel whatever
-    /// the paint is), so unlike the pool and the stroke renderer it survives a rebuild.
+    /// A color-space rebuild replaces the pool and the stroke renderer; `selection`
+    /// survives one, a mask being one coverage channel whatever the paint is.
     apply: ApplyCtx,
     /// The working textures and buffers every recording leases (`gpu::scratch`), one
     /// pool for the whole stack. Held here as well as inside the renderers that lease
@@ -149,38 +140,31 @@ pub struct Engine {
     /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,
     /// The presence clock: the newest instant a caller has handed in, in seconds on
-    /// a monotonic scale.
-    ///
-    /// The engine owns no clock *source* (so it runs on wasm and native alike) but it
-    /// owns the *value*, so expiry, publishing and the timestamping of arriving frames
-    /// all see one instant. Advanced by `max`: a clock that steps backwards must not
+    /// a monotonic scale. Advanced by `max` — a clock that steps backwards must not
     /// un-expire a peer.
+    ///
+    /// The engine owns no clock *source*, so expiry, publishing and the timestamping
+    /// of arriving frames all read this one value.
     now: f64,
     /// What is being *shown* over the committed document, and the caches that make
     /// showing it affordable: the unlogged drag in flight, the fold of every
     /// in-flight gesture, the settled head of each live stroke, and the epoch that
-    /// says when a head has gone stale (§17.6).
-    ///
-    /// One field rather than four because they carry one invariant: the slot cannot
-    /// move without the epoch moving with it.
+    /// says when a head has gone stale (§17.6). One field rather than four, since the
+    /// slot cannot move without the epoch moving with it.
     preview: live::Preview,
     /// How much resident tile memory history retention may hold before undo depth
     /// is given up (§5) —
     /// [`ViewCommand::SetHistoryBudget`](crate::command::ViewCommand::SetHistoryBudget),
     /// defaulting to
-    /// [`DEFAULT_HISTORY_BUDGET`].
-    ///
-    /// Per-client and never logged: how much history a machine can afford is a fact
-    /// about the machine.
+    /// [`DEFAULT_HISTORY_BUDGET`]. Per-client and never logged: how much history a
+    /// machine can afford is a fact about the machine.
     history_budget: u64,
     /// Whether a stroke's commit takes the tiles its live preview already drew
     /// (§6.2) — [`ViewCommand::SetFastCommit`](crate::command::ViewCommand::SetFastCommit),
     /// defaulting to
-    /// [`DEFAULT_FAST_COMMIT`].
-    ///
-    /// Per-client and never logged, like the budget above: it changes how *this*
-    /// client spends the moment the pointer comes up, not the document. A peer
-    /// receives the stroke as an action either way.
+    /// [`DEFAULT_FAST_COMMIT`]. Per-client and never logged: it changes what this
+    /// client spends at pointer-up, not the document — a peer receives the stroke as
+    /// an action either way.
     fast_commit: bool,
     /// The compositor's draw list and the key it was built from — the largest of the
     /// three memos, and the only one whose value is not a projection
@@ -191,12 +175,9 @@ pub struct Engine {
     /// The guide roster this client sees, on the roster above's terms plus one
     /// ([`Engine::projected_guides`]).
     guide_cache: Memo<GuideKey, Guides>,
-    /// Bumped whenever this client opens or shuts a **guide's eye** (§20.5).
-    ///
-    /// Its own counter beside `doc_revision` and the exact complement of one: the eye
-    /// is the one thing about a guide that is not in the document, so the document's
-    /// revision does not move when it does, and the roster this client sees is a
-    /// function of both.
+    /// Bumped whenever this client opens or shuts a **guide's eye** (§20.5). Its own
+    /// counter beside `doc_revision`, the eye being the one thing about a guide that
+    /// is not in the document; the roster this client sees is a function of both.
     guide_epoch: Revision,
     /// Bumped whenever the **committed** document changes — a commit, an undo, a
     /// merged remote action, a load. Projected as
@@ -204,17 +185,14 @@ pub struct Engine {
     /// rendered stand-in for the document (the navigator's miniature) watches.
     ///
     /// Strictly narrower than the preview's epoch, which an unlogged drag also bumps
-    /// at pointer rate without changing the document. The two advance together
-    /// through [`Engine::committed_changed`].
+    /// at pointer rate without changing the document.
     doc_revision: u64,
     /// What [`doc_revision`](Self::doc_revision) read when the document now open
     /// *arrived* — the reset that made a new one, or the last action of a load.
     /// Projected as [`ObservableState::edited`], which is the comparison.
     ///
-    /// The engine's rather than a frontend's, because every way a document can be
-    /// replaced — `new_document`, `load_document`, a collaboration join — reaches
-    /// [`reset_document`](Self::reset_document). The other half of "unsaved" —
-    /// which revision was last written to a file — is the frontend's alone.
+    /// The other half of "unsaved" — which revision was last written to a file — is
+    /// the frontend's alone.
     doc_origin: u64,
     /// How many of this client's stroke commits took the preview's tiles instead of
     /// rendering the stroke again (`PreparedStroke`, §6.2). For tests and
@@ -231,11 +209,8 @@ pub struct Engine {
 }
 
 /// Who this client is when it writes to the log (§17.9), and what it owes the
-/// wire (§12.4).
-///
-/// One struct because every field moves at exactly the moments that identity does —
-/// sharing, joining, and the reset that precedes a load — so "a fresh solo session"
-/// is one value rather than a shape each call site fills in for itself.
+/// wire (§12.4). One struct because every field moves at the moments identity does:
+/// sharing, joining, and the reset that precedes a load.
 struct Authoring {
     actor: ActorId,
     /// This client's Lamport counter: the `lamport` half of every
@@ -245,20 +220,16 @@ struct Authoring {
     /// Locally-committed actions awaiting broadcast to peers (§12.4), drained by
     /// the transport through [`Engine::take_outbox`].
     ///
-    /// `None` when solo, rather than an empty `Vec` beside a flag: the presence of
-    /// the queue *is* the answer to [`is_shared`](Engine::is_shared), and it decides
-    /// whether a commit pays to clone its action at all — a stroke's control-point
-    /// list is the largest thing in the log.
+    /// `None` when solo: the presence of the queue *is* the answer to
+    /// [`is_shared`](Engine::is_shared), and it decides whether a commit pays to
+    /// clone its action at all.
     outbox: Option<Vec<Action>>,
 }
 
 impl Authoring {
     /// A fresh, unshared session: the solo actor, the clock at its origin, nothing
-    /// owed to anybody.
-    ///
-    /// One counter, because a `LayerId` is the id of the action that minted it, so
-    /// the clock is the only thing a fresh session starts and a loaded one resumes
-    /// (§17.9).
+    /// owed to anybody. The clock is the only thing a loaded session resumes, a
+    /// `LayerId` being the id of the action that minted it (§17.9).
     const fn solo() -> Self {
         Self {
             actor: ActorId::SOLO,
@@ -303,13 +274,9 @@ impl Engine {
     /// What the stroke in flight has snapped to (§6.9), or `None` where there is no
     /// stroke or the hold found nothing.
     ///
-    /// A named read like [`view`](Self::view) and [`tow_string`](Self::tow_string).
-    /// The frontend owns the *dwell* (§6.9) and the engine owns what a hold means, so
-    /// whether one found anything is knowable only here.
-    ///
-    /// Read **before** the gesture's `End`, which is the only moment it answers: what
-    /// is committed is the path the shape produced, not the shape, and the assist goes
-    /// with the gesture (`assist::AssistShape`).
+    /// Read **before** the gesture's `End`, the only moment it answers: the assist
+    /// goes with the gesture, and what is committed is the path the shape produced,
+    /// not the shape.
     pub fn assisted(&self) -> Option<crate::assist::Assisted> {
         self.session.assisted()
     }
@@ -317,21 +284,18 @@ impl Engine {
     /// What the guide overlay draws and what a snapped stroke is held to, for the
     /// document `doc` — this client's shown guides (§20.5), gathered.
     ///
-    /// Where the two halves of the roster meet on the *rendering* side, as
-    /// `GuideInfo` is on the panel's: the document holds the guides,
+    /// The eye is applied here — the document holds the guides,
     /// [`Session::shown_guides`](crate::session::Session::shown_guides) drops the
-    /// ones this client has hidden, and everything past here sees only geometry.
+    /// ones this client has hidden — so everything past here sees only geometry.
     pub(crate) fn scaffold(&self, doc: &DocState) -> Scaffold {
         Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
     }
 
     /// Whether the GPU is still usable, and what went wrong if not (§5) — the same
     /// fact [`ObservableState::gpu_failure`] projects, as a **request** for a caller
-    /// that holds the engine and has no projection to hand.
-    ///
-    /// The collaboration pump is the caller: it services peer traffic without taking
-    /// an observation each time (§17.5), and must stop applying anything once the
-    /// device has died.
+    /// that holds the engine and has no projection to hand. The collaboration pump is
+    /// that caller: it services peer traffic without taking an observation each time
+    /// (§17.5), and must stop applying anything once the device has died.
     pub fn gpu_failure(&self) -> Option<crate::gpu::DeviceFailure> {
         self.shared.gpu.health().failure()
     }
@@ -348,9 +312,9 @@ impl Engine {
     /// (a shared session). See
     /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range).
     ///
-    /// A **request** rather than a field of [`ObservableState`]: it is asked for only
-    /// while a scrubber is on screen, and in the projection every pointer sample of
-    /// every stroke would pay for it.
+    /// A **request** rather than a field of [`ObservableState`]: only a scrubber on
+    /// screen asks for it, where in the projection every pointer sample of every
+    /// stroke would pay for it.
     pub fn scrub_range(&self) -> Option<(usize, usize)> {
         self.timeline.scrub_range()
     }

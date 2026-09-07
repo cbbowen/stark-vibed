@@ -2,9 +2,8 @@
 //! keys them: a list shared rather than copied ([`Projected`]), a one-slot cache
 //! rebuilt when its key moves ([`Memo`]), and the [`Revision`] a key's terms are.
 //!
-//! Nothing here names an engine type — that is what lets the rule on [`Memo`] be
-//! stated once and read without the engine open. The keys themselves live beside
-//! what they key (`engine::observe`, `engine::render`).
+//! Nothing here names an engine type. The keys themselves live beside what they key
+//! (`engine::observe`, `engine::render`).
 
 use std::sync::Arc;
 
@@ -15,23 +14,16 @@ use std::sync::Arc;
 ///
 /// Two properties, and the type exists for both:
 ///
-/// - **Handing one out is a refcount bump**, whatever it holds and however long it
-///   is. What that saves depends on the list: the layer roster costs a walk of the
-///   whole tree, cloning every name and asking
-///   [`merge::plan_at`](crate::document::merge::plan_at) per row, and `Engine` keeps
-///   the last one against the counters it is a function of
-///   ([`Engine::projected_layers`](crate::Engine::projected_layers)) so an unchanged
+/// - **Handing one out is a refcount bump**, whatever it holds and however long it is.
+///   The layer roster would otherwise cost a walk of the whole tree, cloning every name
+///   and asking [`merge::plan_at`](crate::document::merge::plan_at) per row; `Engine`
+///   keeps the last one against the counters it is a function of
+///   ([`Engine::projected_layers`](crate::Engine::projected_layers)), so an unchanged
 ///   document walks nothing at all.
-/// - **Asking "did this move?" is a pointer comparison** — see the [`PartialEq`]
-///   impl, which is the half a frontend holding this in a reactive signal actually
-///   feels.
+/// - **Asking "did this move?" is a pointer comparison** — see the [`PartialEq`] impl,
+///   which is the half a frontend holding this in a reactive signal feels.
 ///
-/// Generic because the argument is about what a *projection* is, not about what any
-/// one list holds — a second roster projected from the same `observe()` at the same
-/// rate would otherwise be a `Vec` deep-cloned and deep-compared per pointer sample.
-///
-/// Derefs to `[T]`, so it is read exactly as the `Vec` it replaces was. Building one
-/// is `Vec::into`, which happens where the list actually changes and nowhere else.
+/// Derefs to `[T]`; build one with `Vec::into`, where the list actually changes.
 #[derive(Debug)]
 pub struct Projected<T>(Arc<[T]>);
 
@@ -73,15 +65,14 @@ impl<T> FromIterator<T> for Projected<T> {
 impl<T: PartialEq> PartialEq for Projected<T> {
     /// **Structural equality, with identity as a fast path.**
     ///
-    /// The fast path is the whole point of sharing the list: two projections taken
-    /// while the document stood still hold the *same* `Arc`, so the frontend's
-    /// "did this slice move?" — asked per memo, per command — is one pointer
-    /// comparison instead of a walk of every element.
+    /// Two projections taken while the document stood still hold the *same* `Arc`, so
+    /// the frontend's "did this slice move?" — asked per memo, per command — is one
+    /// pointer comparison instead of a walk of every element.
     ///
-    /// The fall-through keeps the answer exact. Identity alone would be sound
-    /// (same `Arc` ⇒ same contents, since the contents are immutable once shared)
-    /// but conservative: a rebuild that changed nothing would report a change, and a
-    /// commit that leaves the tree alone happens on every stroke.
+    /// The fall-through keeps the answer exact. Identity alone would be sound (same
+    /// `Arc` ⇒ same contents, since the contents are immutable once shared) but
+    /// conservative: a rebuild that changed nothing would report a change, and a commit
+    /// that leaves the tree alone happens on every stroke.
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
     }
@@ -92,24 +83,23 @@ impl<T: PartialEq> PartialEq for Projected<T> {
 /// roster and the compositor's draw list — and this type is the whole of what they
 /// have in common.
 ///
-/// **The rule, stated here rather than three times over.** A key must name every term
-/// its value is a function of. One term too few and the memo hands back a stale answer
-/// that nothing downstream can notice; one too many and it rebuilds for a change the
-/// value cannot see, which is only a cost. So where a key cannot be exact it errs
-/// *wide*, and each key says where it does.
+/// **The rule.** A key must name every term its value is a function of. One term too
+/// few and the memo hands back a stale answer nothing downstream can notice; one too
+/// many and it rebuilds for a change the value cannot see, which is only a cost. So
+/// where a key cannot be exact it errs *wide*, and each key says where it does.
 ///
-/// **Nothing here counts anything of its own**, and that is what makes a memo sound
-/// rather than merely plausible. Every term of every key is a counter something else
-/// already maintains for its own reasons — `Engine::doc_revision`, `Preview::epoch`,
-/// `Preview::fold`, `Engine::guide_epoch` — and [`Revision`] is what such a counter
-/// is. There is no invalidation call anywhere, because the key *is* the
-/// invalidation; a memo that had to be told it was stale would be one a new mutation
-/// path could forget to tell (§1).
+/// **Nothing here counts anything of its own.** Every term of every key is a counter
+/// something else already maintains for its own reasons — `Engine::doc_revision`,
+/// `Preview::epoch`, `Preview::fold`, `Engine::guide_epoch` — and [`Revision`] is what
+/// such a counter is. There is no invalidation call anywhere, because the key *is* the
+/// invalidation; one that had to be told it was stale would be one a new mutation path
+/// could forget to tell (§1).
 ///
-/// `RefCell` because [`Engine::observe`](crate::Engine::observe) takes `&self`: a projection is a *read*, and
-/// making it `&mut` to let it memoize would put a mutable borrow of the whole engine
-/// on the path every panel takes to draw itself. The draw list is held the same way
-/// for a second reason — see [`Engine::draw_list`](crate::Engine::draw_list).
+/// `RefCell` because [`Engine::observe`](crate::Engine::observe) takes `&self`: a
+/// projection is a *read*, and making it `&mut` to let it memoize would put a mutable
+/// borrow of the whole engine on the path every panel takes to draw itself. The draw
+/// list is held the same way for a second reason — see
+/// [`Engine::draw_list`](crate::Engine::draw_list).
 pub(crate) struct Memo<K, V> {
     slot: std::cell::RefCell<Option<(K, V)>>,
 }
@@ -127,12 +117,10 @@ impl<K, V> Default for Memo<K, V> {
 impl<K: PartialEq, V: Clone> Memo<K, V> {
     /// What was built from `key`, or `build`'s answer stored against it.
     ///
-    /// **The borrow is released before `build` runs**, which is the half of this that
-    /// had to be a function rather than three comparisons written out. A build is
-    /// arbitrary engine code — the layer walk asks
-    /// [`merge::plan_at`](crate::document::merge::plan_at) per row, the draw list
-    /// walks every visible tile of every layer — so one that read the memo it was
-    /// filling would panic, at run time, on whichever path a test did not take.
+    /// **The borrow is released before `build` runs.** A build is arbitrary engine code
+    /// — the layer walk asks [`merge::plan_at`](crate::document::merge::plan_at) per
+    /// row, the draw list walks every visible tile of every layer — so one that read
+    /// the memo it was filling would panic at run time.
     ///
     /// `V: Clone`, and cheaply so at all three call sites: the two rosters hand back
     /// an `Arc` bump ([`Projected`]) and the draw list an `Arc<[CompositeGroup]>`. A
@@ -159,10 +147,9 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
 
 /// A counter that exists to be a term of a [`Memo`] key: bumped by whatever owns it
 /// when the thing it stands for has moved, compared by the key, read by nothing
-/// else. What a bump *means* is the owner's — `Preview::epoch` is "the document
-/// under the previews was replaced", `Engine::guide_epoch` is "an eye opened or
-/// shut" — and this holds only the arithmetic, once, where four counters had it
-/// four ways.
+/// else. What a bump *means* is the owner's — `Preview::epoch` is "the document under
+/// the previews was replaced", `Engine::guide_epoch` is "an eye opened or shut"; this
+/// holds only the arithmetic.
 ///
 /// Wrapping rather than checked: a key's job is to differ from the value it was
 /// last compared against, and 2⁶⁴ bumps between two comparisons is not a case a

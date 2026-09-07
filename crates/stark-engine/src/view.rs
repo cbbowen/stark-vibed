@@ -1,32 +1,19 @@
 //! The canvas **view**: how the painting is being looked at (§6.4, §18.1.2).
 //!
 //! Pan, zoom, rotation and the mirror — per-client, never logged, never sent, and
-//! invisible to replay. That is why it is here and not in `stark-model` beside the
-//! tile grid it does arithmetic against.
-//!
-//! **It was in the model, and it did not belong there.** That crate's charter is
-//! "the document, and nothing else", and the rule it states for deciding what is
-//! the document is mechanical: a type that is `Serialize` is a fact about the log
-//! and lives there, a type that holds a tile is a cache and lives here. A view
-//! transform is neither — it is session state, as its own doc has always said —
-//! and `stark-net`, the consumer the crate split was made for (§2), was compiling
-//! four hundred lines of it that it can never use.
+//! invisible to replay, which is why this is session state and not the model's (§2).
 //!
 //! The tile grid it maps onto stays in the model, because *that* is document
 //! vocabulary: a footprint quantizes against `TILE_SIZE` and a saved log is
-//! addressed in it. So the split runs between the canvas and the eye, which is the
-//! same line §18.1.2 draws when it says two people sharing a drawing can have it
-//! at different angles.
+//! addressed in it. So the split runs between the canvas and the eye — the same line
+//! §18.1.2 draws when it says two people sharing a drawing can have it at different
+//! angles.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use stark_model::geom::{Mat2, TileRect, Vec2};
 
 /// A pixel size (e.g. a render target's dimensions).
-///
-/// Here rather than beside the tile grid it is measured in: a viewport is how much
-/// of the canvas is being looked at, which is session state like the rest of
-/// [`ViewTransform`] (§18.1.2), and the model is the document and nothing else (§2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Extent2 {
     pub width: u32,
@@ -40,31 +27,20 @@ impl Extent2 {
 }
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
-/// substrate (§6.4). This is session state and is never historized.
+/// substrate (§6.4). Session state: per-client, never historized, never sent, and
+/// invisible to replay (§18.1.2), so two people sharing a drawing can have it at
+/// different angles.
 ///
-/// Everything here is *how you are looking at* the painting rather than anything
-/// about it, which is what makes turning the canvas and holding it up to a mirror
-/// the same kind of act as panning: per-client, never logged, never sent, and
-/// invisible to replay (§18.1.2). Two people sharing a drawing can
-/// have it at different angles.
 /// **Mutation goes through the methods below, and every one of them is total**: an
 /// argument that would leave the view unusable ([`usable`](Self::usable)) is refused
-/// and the view is left exactly as it was.
+/// and the view is left exactly as it was. A clamp is not a guard here — `f32::clamp`
+/// passes NaN straight through, both of its comparisons being false — and a stored
+/// NaN reaches `screen_to_canvas`, then the stroke fitter, whose spline solve panics
+/// on input it was written to refuse.
 ///
-/// That is a rule about a *class*, and it is the only thing standing between a
-/// frontend's arithmetic and a panic three subsystems away. `f32::clamp` passes NaN
-/// straight through — both of its comparisons are false — so
-/// `pinch(.., scale: NaN, ..)` used to store a NaN zoom despite the clamp, and the
-/// next `screen_to_canvas` then handed NaN canvas coordinates to the stroke fitter,
-/// whose normal equations are unsolvable at any ridge and whose solve says so by
-/// panicking. Every guard that existed caught it *downstream* — `export_view`
-/// refusing to render, `footprint` refusing a control point — so the view stayed
-/// poisoned and export failed for the rest of the session with no way back.
-///
-/// The fields stay public because reading them is the whole point (a frontend maps
-/// pointer events through this on every report). Writing one directly bypasses the
-/// rule; there is no such write in the workspace, and `a_view_never_stores_a_number_it_cannot_use`
-/// is what keeps the mutators honest.
+/// The fields stay public because reading them is the whole point: a frontend maps
+/// pointer events through this on every report. Writing one directly bypasses the
+/// rule.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ViewTransform {
     /// Canvas-space point shown at the center of the viewport.
@@ -75,17 +51,13 @@ pub struct ViewTransform {
     /// (the sense of a canvas rotated on an easel, in a y-down frame).
     ///
     /// Applied after [`flip_h`](Self::flip_h), so the mirror is about the canvas's
-    /// own vertical axis whatever angle it is being viewed at — which is what makes
-    /// "flip it to check the drawing" mean the same thing at every rotation.
+    /// own vertical axis whatever angle it is being viewed at.
     pub rotation: f32,
-    /// Whether the canvas is mirrored left↔right on screen — the oldest trick for
-    /// catching a drawing error, since the eye stops recognising what it expected to
-    /// see and starts seeing what is there.
+    /// Whether the canvas is mirrored left↔right on screen.
     ///
-    /// Only the horizontal one, and that is not a limitation: a vertical flip is this
-    /// one composed with a half turn, and the pair "mirror + angle" says which of
-    /// those two the artist meant. It also keeps the mirror a *toggle* rather than
-    /// two independent booleans that can both be on.
+    /// Only the horizontal one: a vertical flip is this composed with a half turn,
+    /// so "mirror + angle" says which of the two the artist meant, and the mirror
+    /// stays a toggle rather than two booleans that can both be on.
     pub flip_h: bool,
     /// Size of the target substrate, in pixels.
     pub viewport: Extent2,
@@ -106,13 +78,11 @@ impl ViewTransform {
     /// The same view rendered at `n` samples per axis: the viewport and the zoom
     /// scaled together, everything else left alone (§6.4).
     ///
-    /// Scaling *both* is what makes supersampling invisible to every pass. The
-    /// canvas→NDC map comes out identical (the zoom and the viewport divide out), so
-    /// the same canvas pixel lands at the same place in the picture; and anything a
-    /// shader measures in target px — an outline's width, a matte's edge fade, a
-    /// guide's line — is measured against the scaled zoom, so it comes out `n` times
-    /// wider in a picture that is about to be `n` times smaller. Which is the same
-    /// width, drawn with `n²` samples of coverage instead of one.
+    /// Scaling *both* is what makes supersampling invisible to every pass: the
+    /// canvas→NDC map comes out identical (the zoom and the viewport divide out), and
+    /// anything a shader measures in target px comes out `n` times wider in a picture
+    /// about to be `n` times smaller — the same width, drawn with `n²` samples of
+    /// coverage instead of one.
     pub fn supersampled(self, n: u32) -> Self {
         Self {
             zoom: self.zoom * n as f32,
@@ -123,12 +93,11 @@ impl ViewTransform {
 
     /// The canvas→screen linear map with the zoom divided out: the mirror, then the
     /// rotation. Orthogonal (`|det| = 1`), so its transpose is its inverse — which is
-    /// the whole reason the view keeps an angle and a flag rather than a free matrix
-    /// that would have to be inverted, and could drift away from being a rigid motion.
+    /// why the view keeps an angle and a flag rather than a free matrix that would
+    /// have to be inverted and could drift away from being a rigid motion.
     ///
     /// Frontend chrome that draws a canvas-space shape over the canvas hands exactly
-    /// this to CSS: a rotated frame, or the transform widget's ellipse, is its
-    /// canvas-space shape composed with this.
+    /// this to CSS.
     pub fn orientation(self) -> Mat2 {
         Mat2::from_angle(self.rotation) * self.mirror()
     }
@@ -163,14 +132,13 @@ impl ViewTransform {
     /// Linear map from canvas pixels to normalized device coordinates:
     /// `ndc = m * canvas_pos + translate`. Derivation in §6.4.
     ///
-    /// The y row is negated because canvas y is downward while NDC y is upward. An
-    /// upright, unmirrored view leaves `m` diagonal and this is exactly the scale it
-    /// always was.
+    /// The y row is negated because canvas y is downward while NDC y is upward; an
+    /// upright, unmirrored view leaves `m` diagonal.
     pub fn canvas_to_ndc(self) -> (Mat2, Vec2) {
         let vw = self.viewport.width.max(1) as f32;
         let vh = self.viewport.height.max(1) as f32;
         // The screen→NDC scale with the zoom already folded in, so an upright view
-        // computes bit-for-bit what it did before rotation existed.
+        // stays bit-exact through the rotation path.
         let d = Vec2::new(2.0 * self.zoom / vw, -2.0 * self.zoom / vh);
         let o = self.orientation();
         // Scaling the *rows* of `o` by `d`, which in column-major is each column
@@ -196,10 +164,8 @@ impl ViewTransform {
     /// The canvas-space **bounding box** of everything the viewport shows.
     ///
     /// A bound rather than the region itself, because under rotation the region is a
-    /// turned rectangle and its callers — framing what you are looking at, falling
-    /// back to "the visible canvas" when nothing is painted — all want a rect. It
-    /// therefore covers a little more than is really on screen at an angle, which is
-    /// the safe direction for both.
+    /// turned rectangle and every caller wants a rect. It therefore covers a little
+    /// more than is really on screen at an angle, which is the safe direction.
     pub fn visible_bounds(self) -> (Vec2, Vec2) {
         let half = self.half();
         let (a, b) = (
@@ -220,12 +186,10 @@ impl ViewTransform {
     /// screen. `None` for a direction with no length to speak of, which asks for
     /// nothing.
     ///
-    /// A question rather than an instruction, and stated as a direction rather than an
-    /// angle, because that is what a drag gives — and because an angle would have to
-    /// be measured against a zero the mirror keeps moving. What the frontend does with
-    /// the answer is the frontend's: the navigator eases toward it and snaps it to a
-    /// quarter turn, both of which are properties of dragging with a hand rather than
-    /// of the view (see `panels::navigator`).
+    /// A question rather than an instruction, and stated as a direction because that
+    /// is what a drag gives — an angle would have to be measured against a zero the
+    /// mirror keeps moving. Easing toward the answer and snapping it to a quarter
+    /// turn are the frontend's, being properties of dragging with a hand.
     pub fn rotation_for_up(self, up: Vec2) -> Option<f32> {
         // The mirror is applied before the turn, so where `up` *would* fall is
         // independent of the rotation this is asking about.
@@ -250,12 +214,8 @@ impl ViewTransform {
     /// Whether this view can be rendered and inverted through: finite everywhere,
     /// and with a zoom that can actually be divided by.
     ///
-    /// **One definition, asked by the mutators and by the render path alike.**
-    /// `stark-engine`'s `Engine::export_view` spelled the same predicate out
-    /// inline, which is how a view could be refused at the render and still be
-    /// sitting in the session — the check said what was wrong without stopping it
-    /// being stored. Now the store is what refuses, and the render's check is the
-    /// same question asked of a value that has already passed it.
+    /// **One definition, asked by the mutators and by the render path alike**, so a
+    /// view cannot be refused at the render and still be sitting in the session.
     ///
     /// The viewport is absent because it is `u32`: there is no unusable one, and
     /// `canvas_to_ndc` floors it at 1 rather than dividing by zero.
@@ -272,9 +232,8 @@ impl ViewTransform {
     /// mutator here ends in, and the whole of the rule stated on the type.
     ///
     /// Whole-view rather than per-field, because the fields are not independent: a
-    /// pinch derives its centre *from* the zoom it just set, so a NaN scale reaches
-    /// the centre too and refusing one field would store half a poisoned view. This
-    /// way a refused mutation is a no-op rather than a partial one.
+    /// pinch derives its centre *from* the zoom it just set, so refusing one field
+    /// would store half a poisoned view. A refused mutation is a no-op, never partial.
     fn commit(&mut self, candidate: Self) {
         if candidate.usable() {
             *self = candidate;
@@ -284,9 +243,6 @@ impl ViewTransform {
     /// Pan by a **screen-pixel** drag: content follows the cursor, so the centre
     /// moves opposite, carried into canvas units through the whole map (a turned or
     /// mirrored canvas sends a screen drag somewhere else entirely).
-    ///
-    /// A method rather than `view.center -= view.canvas_delta(d)` at the call site,
-    /// so that the one door onto the centre is a total one — see the type's note.
     pub fn pan_by(&mut self, screen_delta: Vec2) {
         let delta = self.canvas_delta(screen_delta);
         self.commit(Self {
@@ -307,19 +263,14 @@ impl ViewTransform {
     /// unmirrored, at the largest zoom that leaves `margin` of the viewport — a
     /// fraction of each axis, on each side — clear around it.
     ///
-    /// **The easel is straightened, deliberately**, which is what makes this "show me
-    /// the piece" rather than "zoom to fit". A turn and a mirror are ways of *looking*
-    /// at a painting (§18.1.2), so the caller here is a piece arriving rather than a
-    /// hand adjusting one — the same reading that has `stark-engine`'s `ExportPlan::view` write a
-    /// file upright at whatever angle the canvas is being worked at. It is also the
-    /// only fit this asks: at an angle the rect's *screen* footprint is a larger,
-    /// turned box, so fitting one and fitting the other are two questions with two
-    /// answers.
+    /// **The easel is straightened, deliberately**, which makes this "show me the
+    /// piece" rather than "zoom to fit": a turn and a mirror are ways of *looking* at
+    /// a painting (§18.1.2), and the caller here is a piece arriving rather than a
+    /// hand adjusting one. It is also the only fit this asks — at an angle the rect's
+    /// *screen* footprint is a larger, turned box, a different question.
     ///
-    ///
-    /// Refused, like every mutator here, when handed a rect no view could be fitted
-    /// to: an inverted or empty one leaves the view exactly as it was rather than
-    /// storing a zoom worked out from a negative width.
+    /// A rect no view could be fitted to — inverted or empty — leaves the view
+    /// exactly as it was.
     pub fn show_rect(&mut self, min: Vec2, max: Vec2, margin: f32) {
         let size = max - min;
         // Also the NaN gate: every comparison against one is false, so a rect with a
@@ -347,8 +298,7 @@ impl ViewTransform {
     /// Note that the target substrate is now `viewport` pixels.
     ///
     /// Nothing to refuse — a pixel size is `u32` — but it goes through the same door
-    /// as the rest, so "the view is mutated through its methods" has no exceptions to
-    /// remember.
+    /// as the rest, so the total-mutator rule has no exceptions to remember.
     pub fn resize(&mut self, viewport: Extent2) {
         self.commit(Self { viewport, ..*self });
     }
@@ -356,17 +306,14 @@ impl ViewTransform {
     /// Mirror what is **on screen**, left↔right — the flip an artist means when they
     /// hold the drawing up to a mirror to check it.
     ///
-    /// Screen-relative, not canvas-relative, which is the whole point: at any angle it
-    /// swaps what is on the left of the screen with what is on the right, so the check
-    /// means the same thing however the easel is turned. Mirroring about the canvas's
-    /// own axis instead would, on a canvas turned a quarter, swap top for bottom —
-    /// technically a flip, and not the one anyone asked for.
+    /// Screen-relative, not canvas-relative: at any angle it swaps what is on the left
+    /// of the screen with what is on the right, so the check means the same thing
+    /// however the easel is turned. Mirroring about the canvas's own axis would, on a
+    /// canvas turned a quarter, swap top for bottom instead.
     ///
-    /// Reflecting the *result* keeps the view a rotation-and-a-mirror rather than
-    /// becoming a free matrix, because a reflection can be pushed back through a
-    /// rotation: `M·R(θ) = R(−θ)·M`. So the whole operation is to negate the angle and
-    /// toggle the mirror — and doing it twice is exactly the identity, which is what
-    /// makes it a toggle rather than a setting.
+    /// A reflection pushes back through a rotation (`M·R(θ) = R(−θ)·M`), so the view
+    /// stays a rotation-and-a-mirror and doing this twice is exactly the identity —
+    /// which is what makes it a toggle rather than a setting.
     pub fn mirror_screen_h(&mut self) {
         // One commit rather than a `set_rotation` and a toggle: the pair *is* the
         // reflection (`M·R(θ) = R(−θ)·M`), so a refused half would leave a view that
@@ -389,23 +336,18 @@ impl ViewTransform {
     /// and turned by `turn` radians clockwise about it. The two-finger gesture
     /// (§18.1.7), and — with `to == anchor` and no turn — the wheel's zoom.
     ///
-    /// One command rather than a pan, a zoom and a turn, because a pinch is one motion
-    /// of one pair of fingers and the three are not independent: each of the three
-    /// anchors against the view it is applied to, so sending them in sequence would
-    /// have the second and third re-anchor against a view the hand never saw, and the
-    /// point being held would slide out from under it. Composed here, what the fingers
-    /// hold is held exactly.
+    /// One command rather than a pan, a zoom and a turn, because the three are not
+    /// independent: each anchors against the view it is applied to, so sent in
+    /// sequence the last two would re-anchor against a view the hand never saw and
+    /// the point being held would slide out from under it.
     ///
     /// The mirror is left alone and the turn adds straight onto the angle, because the
-    /// gesture is stated in **screen** terms: a twist clockwise on the glass is a twist
-    /// clockwise on the screen at any angle and either handedness — the same
-    /// screen-relative sense [`mirror_screen_h`](Self::mirror_screen_h) is defined in.
+    /// gesture is stated in **screen** terms — the same screen-relative sense
+    /// [`mirror_screen_h`](Self::mirror_screen_h) is defined in.
     /// (`R(δ)·R(θ)·M = R(θ+δ)·M`, so it stays a rotation-and-a-mirror.)
-    /// Refused whole when any of its four arguments is non-finite, which is what the
-    /// clamp below cannot do on its own: `f32::clamp` compares, and every comparison
-    /// against NaN is false, so `(zoom * NaN).clamp(MIN, MAX)` is NaN and not `MAX`.
-    /// A refused pinch leaves the view exactly as the hand found it — see the note on
-    /// the type for what a stored NaN costs.
+    ///
+    /// Refused whole when any of its four arguments is non-finite, which the clamp
+    /// below cannot do on its own: `(zoom * NaN).clamp(MIN, MAX)` is NaN, not `MAX`.
     pub fn pinch(&mut self, anchor: Vec2, to: Vec2, scale: f32, turn: f32) {
         // The canvas point the gesture is holding, read through the view as it stands.
         let held = self.screen_to_canvas(anchor);
@@ -430,23 +372,18 @@ impl ViewTransform {
 
     /// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).
     ///
-    /// Pass A places a tile as the quad `[origin, origin + TILE_SIZE]` and lets the
-    /// rasterizer clip it, so a tile outside this rect covers no pixel of a
-    /// viewport-sized target and building a draw for it produces nothing. Skipping it
-    /// is therefore a pure subtraction: same pixels, less work.
+    /// A tile outside this rect covers no pixel of a viewport-sized target, so
+    /// skipping it is a pure subtraction: same pixels, less work.
     ///
     /// The bound is conservative twice over, which is the direction that cannot crop a
-    /// picture. [`Self::visible_bounds`] is the AABB of the *rotated* viewport,
-    /// so it covers more canvas than is really on screen; and [`TileRect::covering`]
-    /// then floors to whole tiles. A supersampled render sees the same rect —
-    /// [`Self::supersampled`] scales zoom and viewport together, leaving the
-    /// canvas region fixed — so culling against the caller's view is consistent with
-    /// the draw's.
+    /// picture: [`Self::visible_bounds`] is the AABB of the *rotated* viewport, and
+    /// [`TileRect::covering`] then floors to whole tiles. A supersampled render sees
+    /// the same rect, so culling against the caller's view is consistent with the
+    /// draw's.
     ///
     /// `None` when the box cannot be measured (a non-finite view, or one so far out
-    /// that whole tiles fall off the `i32` grid). That is the "claim everything" answer
-    /// [`TileRect::covering`] leaves to its callers: culling is an optimization, and an
-    /// optimization that cannot measure its input must do nothing rather than guess.
+    /// that whole tiles fall off the `i32` grid): culling is an optimization, and one
+    /// that cannot measure its input must do nothing rather than guess.
     pub fn visible_tiles(self) -> Option<TileRect> {
         let (lo, hi) = self.visible_bounds();
         TileRect::covering(lo, hi, 0)
@@ -469,14 +406,6 @@ mod tests {
 
     /// **No mutator may store a number the view cannot be used with**, whatever it is
     /// handed — the rule stated on [`ViewTransform`], asked of every mutator there is.
-    ///
-    /// This is the guard that was missing, and its absence was not theoretical: the
-    /// clamp in `pinch` looks like it bounds the zoom, and `f32::clamp` passes NaN
-    /// through both of its comparisons, so a NaN scale stored a NaN zoom. From there
-    /// `screen_to_canvas` fed NaN canvas positions to the stroke fitter and the
-    /// spline solve panicked — and nothing in between could put the view back,
-    /// because every other check in the codebase asks at the *render*, by which point
-    /// the bad value is already resident.
     ///
     /// Driven off a list of mutations rather than one test each, so that a mutator
     /// added later has somewhere obvious to be added and no way to be quietly
@@ -523,18 +452,12 @@ mod tests {
                     after.usable(),
                     "{name} stored {f} and left the view unusable: {after:?}",
                 );
-                // **NaN is the value that must be refused whole**, and it is the only
-                // one. An infinite or zero *scale* is a request the clamp can honour —
-                // it means "as far as this goes", and `MIN_ZOOM`/`MAX_ZOOM` are where
-                // it goes — so those legitimately take effect. NaN cannot be clamped
-                // into range (every comparison against it is false, which is the bug
-                // this whole rule exists for), so the only total answer is to leave
-                // the view alone.
-                //
-                // Whole, not merely refused: `zoom_about` with a NaN *anchor* has a
-                // perfectly good zoom and an unusable centre, and committing the
-                // first while dropping the second would leave a view the hand never
-                // asked for. That case is in the list above for exactly this reason.
+                // NaN is the only value refused whole. An infinite or zero *scale* is
+                // a request the clamp can honour — "as far as this goes" — so those
+                // take effect; NaN cannot be clamped into range at all. Whole, not
+                // merely refused: `zoom_about` with a NaN anchor has a good zoom and
+                // an unusable centre, and committing the first would leave a view the
+                // hand never asked for.
                 if f.is_nan() {
                     assert_eq!(
                         after, before,
@@ -902,15 +825,14 @@ mod tests {
         )
     }
 
-    /// **The cull must never crop**, which is the whole risk it carries: it runs on
-    /// the export path as well as the screen, so a bound one tile too tight would
-    /// silently drop the edge of a saved image rather than fail.
+    /// **The cull must never crop**: it runs on the export path as well as the screen,
+    /// so a bound one tile too tight would silently drop the edge of a saved image
+    /// rather than fail.
     ///
-    /// Asked the way the renderer asks it — walk the pixels the viewport actually
-    /// shows, map each back to canvas space, and require its tile to be in the draw
-    /// list — rather than by re-deriving the bound, which would only restate the
-    /// implementation. That is also what makes it meaningful under rotation and
-    /// mirroring, where the visible region is not the box `visible_bounds` returns.
+    /// Asked the way the renderer asks it — walk the pixels the viewport shows, map
+    /// each back to canvas space, require its tile to be in the draw list — rather
+    /// than by re-deriving the bound. That is what makes it meaningful under rotation
+    /// and mirroring, where the visible region is not the box `visible_bounds` returns.
     fn every_pixel_on_screen_keeps_its_tile(v: ViewTransform) {
         let rect = v.visible_tiles().expect("an ordinary view is measurable");
         let (w, h) = (v.viewport.width as f32, v.viewport.height as f32);

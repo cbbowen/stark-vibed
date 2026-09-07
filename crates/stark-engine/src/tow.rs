@@ -1,13 +1,12 @@
 //! The towed tip — per-brush stroke smoothing (§6.11).
 //!
 //! The mark is drawn by a tip towed behind the pointer on a string of fixed
-//! length. While the pointer wanders within the rope of the tip, the string is
-//! slack and the tip is **parked** — jitter and hesitation never move it at
-//! all. The moment it comes taut the tip is dragged, and a dragged tip traces
-//! the classical pursuit curve, the **tractrix**. The pen-up **parks the tip**:
-//! lifting stops pulling the string, it does not reel the tip in, so the mark
-//! ends where the rope had towed it to — which is the trace the preview was
-//! already showing at the release (§6.11).
+//! length (canvas px). While the pointer wanders within the rope of the tip the
+//! string is slack and the tip is **parked** — jitter and hesitation never move
+//! it at all. The moment it comes taut the tip is dragged, and a dragged tip
+//! traces the classical pursuit curve, the **tractrix**. The pen-up **parks the
+//! tip**: lifting stops pulling the string, it does not reel the tip in, so the
+//! mark ends where the rope had towed it to (§6.11).
 //!
 //! This is an *input* transform: it sits between the raw pointer reports and
 //! [`PathFitter::push`](crate::path::PathFitter::push), one stage upstream of
@@ -23,15 +22,12 @@
 //! is a quadratic. The tip's *trajectory* is therefore a function of the
 //! pointer's path alone, not of its report clock: cutting a run in two
 //! composes, because the exponential is exponential in arc (§6.2's
-//! partition-independence discipline, applied to input). The samples emitted
-//! along that trajectory do land on a per-run grid, but they are always *on*
-//! the trajectory, and the fitter downstream smooths through sampling.
+//! partition-independence discipline, applied to input). Emissions land on a
+//! per-run grid but are always *on* that trajectory.
 //!
-//! Transcendentals (`exp`, `sqrt`) are fine here, and the boundary is worth
-//! stating: the tow runs **once, on the originating client, upstream of the
-//! record** — the same class of computation as the fitter's own least-squares
-//! solve. §12.1's bit-agreement rules (the reason `taper_profile` is a
-//! polynomial) reach only what is derived *from* the record.
+//! Transcendentals (`exp`, `sqrt`) are fine here: the tow runs **once, on the
+//! originating client, upstream of the record**, and §12.1's bit-agreement
+//! rules reach only what is derived *from* the record.
 
 use crate::command::InputSample;
 use stark_model::geom::Vec2;
@@ -41,9 +37,9 @@ use stark_model::geom::Vec2;
 /// within a couple of rope-lengths of travel, so a quarter-rope grid gives the
 /// fitter several samples across it; the fit smooths through the rest.
 ///
-/// How far the grid runs is [`bend_reach`], and the two are only meaningful
-/// together: this one is a fraction *of the rope*, so on its own it makes the cost
-/// of a pointer report inverse in the smoothing knob.
+/// Only meaningful with [`bend_reach`], which says how far the grid runs: a fraction
+/// *of the rope* alone would make the cost of a pointer report inverse in the
+/// smoothing knob.
 const EMIT_SPACING: f32 = 0.25;
 
 /// How far past the taut crossing that grid is worth laying, in canvas px — the
@@ -52,13 +48,7 @@ const EMIT_SPACING: f32 = 0.25;
 ///
 /// **The spacing is a fraction of the rope, so without this the number of samples
 /// one pointer report costs goes as `1/rope`** — and a smoothing knob near zero is
-/// a rope near zero. Measured on the frontend's own mapping (`rope_in`: the 0..1
-/// amount squared, times 160 screen px), one 4 px report at 8× zoom cost 320 fitter
-/// pushes at amount 0.05 and 2000 at amount 0.02 — 15 ms and 445 ms of fitting for
-/// a single pointer move, natively. That is the whole of why a near-zero smoothing
-/// setting froze: not the fit being slow, but the input stage handing it thousands
-/// of samples per report. The loop also stopped terminating once the step fell under
-/// the f32 ULP of the distance it was accumulating into.
+/// a rope near zero, thousands of fitter pushes for one pointer move.
 ///
 /// The bound is read off the tractrix rather than picked. The tip's offset from its
 /// straight asymptote is `2·rope·t/√(1+t²) ≤ 2·rope·t`, and the half-angle decays as
@@ -75,8 +65,7 @@ const EMIT_SPACING: f32 = 0.25;
 ///   rope rather than inverse in it.
 /// * **A rope at or under half the tolerance reaches zero**, so the tow emits exactly one
 ///   sample per report: the same rate as no tow at all, which is the right answer for
-///   a string shorter than the pointer can resolve. The knob's bottom end degrades to
-///   the untowed path instead of falling off a cliff into it.
+///   a string shorter than the pointer can resolve.
 fn bend_reach(rope: f32, tolerance: f32) -> f32 {
     (2.0 * rope / tolerance).ln().max(0.0) * rope
 }
@@ -118,25 +107,21 @@ impl Tow {
     /// A tow of `rope` canvas px over input that resolves to `tolerance` canvas px,
     /// tip parked on the first report.
     ///
-    /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and
-    /// the session simply feeds the fitter directly (bit-identical to the
-    /// pre-§6.11 path). A rope that is merely *small* needs no gate of its own:
-    /// [`bend_reach`] takes it to one emission a report, which is that same
-    /// rate.
+    /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and the
+    /// session feeds the fitter directly. A rope that is merely *small* needs no gate
+    /// of its own: [`bend_reach`] takes it to one emission a report, which is that
+    /// same rate.
+    ///
+    /// `tolerance` is the caller's declared input resolution — the one thing the tow
+    /// cannot work out for itself, and the same number the fitter is built with — so
+    /// it is held to the same bounds by the same function
+    /// ([`clamp_tolerance`](crate::path::clamp_tolerance)).
     ///
     /// # Panics
     ///
-    /// In debug, on a `rope` that is not positive and finite. It is the caller's
-    /// gate and not a repair here, because the two answers are different tools: a
-    /// zero rope means *do not build one of these*, where silently substituting some
-    /// positive rope would put a smoothing the artist switched off back into the
-    /// stroke. Stated as an assertion so a caller that forgets the gate finds out at
-    /// the door rather than in [`bend_reach`]'s arithmetic.
-    ///
-    /// `tolerance` is the caller's declared input resolution — the one thing the tow
-    /// cannot work out for itself, and the same number the fitter is built with —
-    /// so it is held to the same bounds by the same function, rather than by a
-    /// second copy of them here.
+    /// In debug, on a `rope` that is not positive and finite. Substituting some
+    /// positive rope here would put a smoothing the artist switched off back into the
+    /// stroke, so the gate stays the caller's.
     pub fn new(rope: f32, tolerance: f32, first: InputSample) -> Self {
         debug_assert!(
             rope.is_finite() && rope > 0.0,
@@ -186,11 +171,10 @@ impl Tow {
         if dist > self.rope {
             self.tip = prev.pos - d * (self.rope / dist);
         }
-        // Slack: the target runs on alone until the string comes taut — the
-        // larger root of `|d + s·u|² = rope²`. One expression covers every
-        // case: a target moving *toward* the tip deepens the slack and pays it
-        // out on the far side, and a string already taut and receding crosses
-        // at `s = 0`.
+        // Slack: the target runs on alone until the string comes taut — the larger
+        // root of `|d + s·u|² = rope²`. One expression covers every case: a target
+        // moving *toward* the tip deepens the slack and pays it out on the far side,
+        // and a string already taut and receding crosses at `s = 0`.
         let d = prev.pos - self.tip;
         let b = d.dot(u);
         let c = d.length_squared() - self.rope * self.rope; // ≤ 0 by the invariant
@@ -233,15 +217,13 @@ impl Tow {
             *tip = sample.pos;
             emit(sample);
         };
-        // The grid, laid over the bend and no further ([`bend_reach`]), then the
-        // run's end — which is where the tip actually finishes and so is always
-        // emitted, grid or no grid.
+        // The grid, laid over the bend and no further (`bend_reach`), then the run's
+        // end — where the tip actually finishes, so it is always emitted.
         //
-        // **Counted, not accumulated.** The old loop walked `s += step` until it
-        // reached `len`, which is a loop whose trip count is `1/rope` and which
-        // does not terminate at all once `step` falls under the f32 ULP of `s`.
-        // A count computed up front cannot do either: it is bounded by
-        // [`bend_reach`]'s own logarithm, and it is an integer.
+        // Counted, not accumulated: the count is an integer bounded by `bend_reach`'s
+        // own logarithm, where walking `s += step` to `len` has a trip count of
+        // `1/rope` and does not terminate at all once `step` falls under the f32 ULP
+        // of `s`.
         let step = self.rope * EMIT_SPACING;
         let reach = bend_reach(self.rope, self.tolerance).min(len - s0);
         let steps = if step > 0.0 {
@@ -366,11 +348,10 @@ mod tests {
         );
     }
 
-    /// A flick shorter than the rope never brings the string taut, so it never
-    /// tows — and the pen-up does not rescue it. The mark is the dab that was
-    /// on screen for the whole gesture: a tick smaller than the string is
-    /// indistinguishable from the wobble the string exists to eat, and a brush
-    /// that hatches wants little smoothing or none.
+    /// A flick shorter than the rope never brings the string taut, so it never tows —
+    /// and the pen-up does not rescue it. The mark is the dab that was on screen for
+    /// the whole gesture: a tick smaller than the string is indistinguishable from the
+    /// wobble the string exists to eat.
     #[test]
     fn a_flick_inside_the_rope_leaves_only_the_dab() {
         let (tow, out) = run(
@@ -421,12 +402,10 @@ mod tests {
     /// [`bend_reach`] exists for, swept over the whole of what the frontend can
     /// ask for.
     ///
-    /// The spacing is a fraction of the rope, so the count was `1/rope` and a
-    /// smoothing knob near zero froze the tab: 2000 emissions for one 4 px report
-    /// at amount 0.02 and 8x zoom, each one a full least-squares update. The
-    /// frontend's own mapping is reproduced here rather than cited, because what is
-    /// being pinned is the composition of the two — a rope this module never sees
-    /// alone.
+    /// The frontend's own mapping is reproduced here rather than cited, because what
+    /// is being pinned is the composition of the two — a rope this module never sees
+    /// alone. Each emission is a full least-squares update, so an unbounded count at a
+    /// near-zero smoothing knob freezes the tab.
     #[test]
     fn one_report_costs_a_bounded_number_of_emissions() {
         // `rope_in` / `tolerance_in`: both the string and the tolerance are the
@@ -493,8 +472,7 @@ mod tests {
     /// run far longer than the bend still finishes in the right place.
     #[test]
     fn cutting_the_grid_short_does_not_move_the_tip() {
-        // One report covering 4000 px at a 4 px rope — 4000 grid points under the
-        // old rule, one under this one.
+        // One report covering 4000 px at a 4 px rope: the grid covers the bend only.
         let mut long = Tow::new(4.0, 1.0, sample(0.0, 0.0));
         long.to(sample(4000.0, 0.0), &mut |_| {});
         // The same travel delivered in reports short enough that the grid covers

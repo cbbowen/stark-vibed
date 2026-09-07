@@ -26,19 +26,15 @@ pub type Guides = Projected<GuideInfo>;
 /// What a projection off the **shown** document is a function of: the committed state,
 /// and the unlogged edit standing in for it (§17.6).
 ///
-/// - `doc_revision` advances whenever the committed document does
-///   ([`Engine::committed_changed`]).
+/// - `doc_revision` advances whenever the committed document does.
 /// - `preview` is `Preview::epoch`, which advances whenever the stand-in document is
-///   installed, replaced or dropped — `Preview::set_doc` is the only way to move that
-///   slot, and it invalidates.
+///   installed, replaced or dropped.
 ///
 /// The same two terms [`render::DrawKey`](super::render::DrawKey) keys the
 /// compositor's draw list on.
 ///
-/// **The live fold is absent because `shown` is not the fold.** [`Engine::observe`]
-/// reads `Preview::doc` — the unlogged drag slot — and falls back to the committed
-/// document; the fold is the renderer's. A stroke in flight bumps `Preview::fold` and
-/// neither term here, so a stroke's samples reproject nothing at all.
+/// **The live fold is absent because `shown` is not the fold.** A stroke in flight
+/// bumps `Preview::fold` and neither term here, so its samples reproject nothing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ShownKey {
     doc_revision: u64,
@@ -46,23 +42,18 @@ pub(super) struct ShownKey {
 }
 
 /// [`ShownKey`] and the one term a guide roster has that no document does: whether
-/// **this client** draws each guide (§20.5).
-///
-/// Shutting an eye changes what the roster answers while changing nothing about the
-/// document, so a key built from the document alone would hand back a stale roster.
-/// See [`Engine::guide_epoch`].
+/// **this client** draws each guide (§20.5). Shutting an eye changes what the roster
+/// answers while changing nothing about the document, so a key built from the
+/// document alone would hand back a stale roster.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct GuideKey {
     shown: ShownKey,
     guide_epoch: Revision,
 }
 
-/// One row of the drawing-guide roster, **as this client sees it** (§20.5).
-///
-/// A guide is kept in two places: its camera, name and place in the roster are
-/// document state — logged, saved, replicated, undoable — while its **eye** is
-/// per-client view state that is none of those. A panel row, a hit test and the
-/// overlay all want the two put together, which is this.
+/// One row of the drawing-guide roster, **as this client sees it** (§20.5): the
+/// document's half of a guide — camera, name, place — put together with this client's
+/// **eye** on it, which is view state and so none of logged, saved or undoable.
 ///
 /// Cheap to clone: the camera is `Copy` and the name an `Arc<str>` bump.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,43 +115,32 @@ pub struct LayerInfo {
     /// Whether the compositor would draw anything beneath this layer **within its
     /// own stack** — which is exactly what a filter layer rewrites (§21.2).
     ///
-    /// Not [`has_backdrop`](Self::has_backdrop), in two ways. It counts the
-    /// **carrier's own content**, since a group's base composites at the bottom of
-    /// the group — so a filter carried onto a painted layer has that paint beneath it
-    /// even as the first carried row. And it counts only what would actually
-    /// **draw**: a hidden, fully transparent or never-painted layer is culled from
-    /// the draw list (`render.rs`). `has_backdrop` stays positional because blend and
-    /// clip are defined against position (§14.4.3); this follows the renderer because
-    /// a filter's reach *is* the renderer's accumulator.
+    /// Not [`has_backdrop`](Self::has_backdrop): it counts the **carrier's own
+    /// content**, a group's base compositing at the bottom of the group, and it counts
+    /// only what would actually **draw** — a hidden, transparent or never-painted
+    /// layer is culled from the draw list (`render.rs`). `has_backdrop` stays
+    /// positional because blend and clip are defined against position (§14.4.3); this
+    /// follows the renderer because a filter's reach *is* the renderer's accumulator.
     pub has_underlay: bool,
     /// The layer this one would **merge down** onto, or `None` when there is no merge
     /// here that leaves the document looking the same (§14.11).
     ///
     /// The destination rather than a `bool`, so the panel's label and its click come
-    /// from one answer.
-    ///
-    /// Unlike every other field here this is a statement about a *pair* of layers,
-    /// and it is the only control in the panel that is absent rather than merely
-    /// inert when the answer is no: a merge that would change the picture is a
-    /// different edit, not a weaker one.
+    /// from one answer — and the one control the panel *hides* rather than greys out
+    /// when the answer is no: a merge that would change the picture is a different
+    /// edit, not a weaker one.
     pub merge_down: Option<LayerId>,
     /// A number that changes exactly when this layer's own tiles do, or `None` for a
     /// layer that holds none — [`Layer::content_revision`], projected (§14.6).
     ///
-    /// The layer panel's thumbnails are keyed on it, so the panel can ask "is the
-    /// picture I cached still this layer's picture?" at the same instant it reads the
-    /// name and blend chip beside it.
+    /// The layer panel keys its thumbnails on it. **The one field here that moves on
+    /// an ordinary stroke** — every other describes the tree, which a stroke leaves
+    /// alone, so without this the roster would compare equal across a commit that
+    /// only painted.
     ///
-    /// **This is the one field that moves on an ordinary stroke.** Every other one
-    /// describes the tree, which a stroke leaves alone — so without this the roster
-    /// would compare equal across a commit that only painted.
-    ///
-    /// A stroke costs one rebuild, at the commit: the live fold is the renderer's
-    /// document and neither term of [`ShownKey`] moves while a pen is down. An
-    /// unlogged drag is the exception — `PreviewTransform` and `PreviewFill` install a
-    /// fresh `DocState` per pointer sample, so this row moves per sample where the
-    /// tree beside it does not. That is the price of reading the field off `shown`,
-    /// which is what makes a thumbnail track the drag rather than lag it.
+    /// Read off `shown`, so an unlogged drag — which installs a fresh `DocState` per
+    /// pointer sample — moves this row per sample where the tree beside it does not.
+    /// That is what makes a thumbnail track the drag rather than lag it.
     ///
     /// [`Layer::content_revision`]: crate::document::Layer::content_revision
     pub content_revision: Option<u64>,
@@ -220,23 +200,19 @@ pub struct ObservableState {
     /// A counter that changes whenever the **committed** document does — a commit,
     /// an undo, a merged remote action, a load.
     ///
-    /// For a frontend keeping a *rendered* stand-in for the document — the
-    /// navigator's miniature, one GPU render plus a readback, so it cannot be redone
-    /// per observation. Nothing else here answers the question: a second stroke over
-    /// the same tiles leaves the bounds, the layer list and the undo flags untouched.
-    ///
-    /// Deliberately *not* bumped by an in-flight gesture or an unlogged drag preview,
-    /// which change what the canvas shows at pointer rate; `is_stroking` is the
-    /// in-flight question.
+    /// For a frontend keeping a *rendered* stand-in for the document, such as the
+    /// navigator's miniature: nothing else here answers the question, since a second
+    /// stroke over the same tiles leaves the bounds, the layer list and the undo flags
+    /// untouched. Not bumped by an in-flight gesture or an unlogged drag preview —
+    /// `is_stroking` is the in-flight question.
     pub doc_revision: u64,
     /// Whether the committed document has moved since it arrived — since the reset
     /// that made a new one, or since the last action of a load. False for a document
-    /// that still stands exactly as the file it came out of, and for the empty one
-    /// the app opens on.
+    /// that still stands exactly as the file it came out of.
     ///
     /// **Not "unsaved".** A frontend that asks before throwing the page away wants
-    /// this *and* something only it knows — whether the revision on screen is one it
-    /// has since written to a file (`stark-dioxus-frontend`'s `files::unsaved`).
+    /// this *and* whether the revision on screen is one it has since written to a
+    /// file, which only it knows (`stark-dioxus-frontend`'s `files::unsaved`).
     pub edited: bool,
     pub active_layer: LayerId,
     /// Layers bottom-to-top. Shared rather than copied — see [`Layers`].
@@ -269,9 +245,9 @@ pub struct ObservableState {
     /// is given up, in bytes (§5) — what
     /// [`ViewCommand::SetHistoryBudget`](crate::command::ViewCommand) sets.
     ///
-    /// Projected for the reason `tool` and `brush` are: a frontend's own copy, seeded
-    /// from a default rather than from the engine, goes stale the moment anything
-    /// else moves it (§4). The settings dialog reads its slider off this.
+    /// Projected for the reason `tool` and `brush` are: a frontend's own copy goes
+    /// stale the moment anything else moves it (§4). The settings dialog reads its
+    /// slider off this.
     pub history_budget: u64,
     /// Whether a stroke's commit takes the tiles its preview already drew (§6.2) —
     /// what [`ViewCommand::SetFastCommit`](crate::command::ViewCommand) sets.
@@ -311,13 +287,12 @@ pub struct ObservableState {
     pub substrate_color: Srgb,
 
     /// Set once the GPU has failed — a lost device, an out-of-memory, an error no
-    /// scope caught (§5). `None` for a healthy device, which is every ordinary
-    /// observation.
+    /// scope caught (§5); `None` for a healthy device.
     ///
-    /// **Projected because the document outlives the device.** The engine's state is
-    /// an action log in ordinary memory, so a frontend told this can still write the
-    /// file. What it should do is stop dispatching and offer to save; what it must
-    /// not do is keep painting, since nothing after this point reaches a pixel.
+    /// **Projected because the document outlives the device.** The log is in ordinary
+    /// memory, so a frontend told this can still write the file: it should stop
+    /// dispatching and offer to save, and must not keep painting, since nothing past
+    /// this point reaches a pixel.
     pub gpu_failure: Option<Arc<crate::gpu::DeviceFailure>>,
 }
 
@@ -361,25 +336,19 @@ impl Engine {
             l.is_shown() && (l.draws_content() || l.carries.iter().any(contributes))
         }
         let doc = self.timeline.current();
-        // The layers and the substrate color are read from the *previewed* document
-        // when one is in flight (§15.7, §15.5), so the frame's handles track a drag
-        // and the color swatch tracks the picker rather than lagging the canvas,
-        // which renders `presented`.
-        //
-        // Only those two: `has_selection` must stay committed-only, or a marquee drag
-        // flashes the selection bar in and out before anything is selected
-        // (`a_selection_gesture_commits_the_same_op_it_previewed`). A stroke preview
-        // changes no presentation property, so it is not consulted here at all.
+        // Layers and the substrate color come off the *previewed* document when one is
+        // in flight (§15.7, §15.5), so the frame's handles track a drag and the color
+        // swatch tracks the picker rather than lagging the canvas. Only those two:
+        // `has_selection` must stay committed-only, or a marquee drag flashes the
+        // selection bar in and out before anything is selected.
         let shown = self.preview.doc().unwrap_or(doc);
         // Flattened in **composite order** — each stack bottom-to-top, a group's base
         // before what it carries — with the tree carried alongside as `depth` and
         // `carrier` (§14.6). That is the order a panel draws in and the order the
         // compositor draws in, so one list means both.
         /// What the walk knows about the stack it is currently in, one per depth.
-        ///
-        /// Truncating on the way back up is what makes these per-*stack* rather than
-        /// per-depth: re-entering depth `d` from deeper is the same stack and keeps
-        /// them, while descending to a new `d` starts a fresh one.
+        /// Truncating on the way back up is what makes these per-*stack*: re-entering
+        /// depth `d` from deeper keeps them, descending to a new `d` starts a fresh one.
         struct Cursor<'a> {
             /// Whether this stack has anything drawable beneath the row being visited
             /// — "would a filter here reach something" (§21.2), answered by the draw
@@ -433,11 +402,10 @@ impl Engine {
                     has_backdrop: !layers.is_empty(),
                     name: l.name.clone(),
                     matte: match &l.content {
-                        // On the canvas, where the chrome lives: the region and its
-                        // paint are stated in the layer's frame (§15.2), and this
-                        // places them the way the compositor does — the mint takes
-                        // the same offset back out (`DocCommand::SetMatteRect`), so
-                        // the handles never do frame arithmetic.
+                        // Placed onto the canvas, where the chrome lives: region and
+                        // paint are stated in the layer's frame (§15.2), and the mint
+                        // takes the same offset back out (`DocCommand::SetMatteRect`),
+                        // so the handles never do frame arithmetic.
                         LayerContent::Matte { region, paint } => {
                             let d = l.translation.as_vec2();
                             Some(MatteInfo {
@@ -449,12 +417,11 @@ impl Engine {
                     },
                     filter: l.filter(),
                     has_underlay,
-                    // Read off the walk, which already knows what the question needs:
-                    // the lower sibling it visited a moment ago and the carrier it
-                    // descended through. Asking `merge::plan` per row instead costs a
-                    // `site_of` — a walk of the whole tree — making this projection
-                    // quadratic in the layer count (79 µs at 60 layers against 1.3 µs
-                    // at 4).
+                    // Off the walk, which already holds what the question needs: the
+                    // lower sibling and the carrier. Asking `merge::plan` per row
+                    // costs a `site_of` — a walk of the whole tree — making this
+                    // projection quadratic in the layer count (79 µs at 60 layers
+                    // against 1.3 µs at 4).
                     merge_down: stack[depth]
                         .below
                         .map(|d| (d, false))

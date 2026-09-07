@@ -12,11 +12,9 @@
 //!   single basis matrix serves every span.
 //!
 //! Only what the stroke fitter uses is here: evaluation, and a windowed least-squares
-//! solve with a frozen prefix, a held tail, and an optional curvature penalty. This
-//! was a generic crate (`spline-fit`) with an EM fit, a closest-point search and a
-//! monotonic assignment search; `PathFitter` declares the correspondence rather than
-//! searching for it, so it used none of that. Monomorphizing to `f32` and to cubic
-//! also drops `generic_const_exprs` — the `{P + 1}` arithmetic was the only use.
+//! solve with a frozen prefix, a held tail, and an optional curvature penalty. The
+//! correspondence between samples and curve parameters is the caller's; nothing here
+//! searches for it.
 
 use nalgebra::{Cholesky, Const, Dyn, OMatrix, SMatrix, SVector};
 
@@ -33,18 +31,13 @@ pub(crate) const ORDER: usize = DEGREE + 1;
 /// points: how many spans it has, which backing row each conceptual knot reads, and
 /// where a parameter falls.
 ///
-/// All of that is a function of the control-point *count* and nothing else — the
-/// knot vector is fixed by the two constraints at the top of this module, so there
-/// is no knot data and the values themselves are only ever read by
-/// [`CubicBSpline::evaluate`]. Naming that is what lets the least-squares fit be
-/// **in-place**: `fit_into` needs the structure and a buffer to write, and the
-/// buffer is the caller's own control points. Held together in one type they alias,
-/// and the fitter paid for the separation with a full copy of the polygon per
-/// candidate, per pointer report (see [`CubicBSpline`]).
-///
-/// It is also just true, and worth saying: the solve does not depend on where the
-/// control points currently are except through the ridge prior, which is the buffer
-/// it is handed.
+/// All of that is a function of the control-point *count* and nothing else — the knot
+/// vector is fixed by the two constraints at the top of this module, so there is no
+/// knot data. Separating it from the points is what lets the least-squares fit be
+/// **in-place**: [`fit_into`](Self::fit_into) needs the structure and a buffer to
+/// write, and the buffer is the caller's own control points. The solve does not depend
+/// on where the control points currently are except through the ridge prior, which is
+/// that same buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SplineIndex {
     m: usize,
@@ -53,12 +46,9 @@ pub struct SplineIndex {
 /// A clamped cardinal cubic B-spline in `D` dimensions: an index structure and the
 /// control points it addresses.
 ///
-/// **Borrows its control points rather than owning them.** Owned, every construction
-/// was a copy of the whole polygon — and the stroke fitter builds four of these per
-/// pointer report (two candidate solves, two scorings of them), so the copies were
-/// `O(stroke length)` work on the interactive drawing path to read a curve that
-/// already existed. Nothing here mutates them, so there was never anything for the
-/// ownership to protect.
+/// **Borrows its control points rather than owning them.** Nothing here mutates them,
+/// and the stroke fitter builds four of these per pointer report, so owning would make
+/// every construction an `O(stroke length)` copy on the interactive drawing path.
 pub struct CubicBSpline<'a, const D: usize> {
     index: SplineIndex,
     control_points: &'a OMatrix<f32, Dyn, Const<D>>,
@@ -73,11 +63,11 @@ pub struct Observations<'a, const E: usize> {
     pub ts: &'a [f32],
     pub values: &'a [[f32; E]],
     /// **How much of the thing being fitted each value stands for** — see
-    /// `CubicBSpline::solve_window` for why a fit over sampled values needs one at all.
+    /// `SplineIndex::solve_window` for why a fit over sampled values needs one at all.
     ///
-    /// Empty means one each, which is the plain sum-over-values fit and what a caller
-    /// whose values are already an even sampling of its subject wants. Otherwise the
-    /// same length as `values`.
+    /// Empty means one each: the plain sum-over-values fit, right where the values are
+    /// already an even sampling of their subject. Otherwise the same length as
+    /// `values`.
     pub weights: &'a [f32],
 }
 
@@ -139,18 +129,11 @@ impl SplineIndex {
     /// in the polynomial weight of conceptual control point `k + a` on any span `k`,
     /// with `u = t - k`. Thanks to the duplicating knot view, this one matrix serves
     /// every span.
-    /// The basis matrix, built once for the process.
     ///
-    /// It is a compile-time constant that `const fn` cannot express — the Cox–de Boor
-    /// recurrence below needs floating-point division, and the f64 reciprocal it takes
-    /// is load-bearing for bit-identical goldens, so it cannot be a `const` and must
-    /// not be hand-transcribed as sixteen literals either. A `OnceLock` is the
-    /// remaining spelling of "computed once".
-    ///
-    /// Worth it because [`Self::solve_window`] asked for it *per call*, and the stroke
-    /// fitter runs four of those per pointer report — two candidate solves, geometry
-    /// and channels each — so a 4×4 recurrence with three nested loops ran four times
-    /// per pointer event to produce the same sixteen floats.
+    /// Built once for the process: the Cox–de Boor recurrence needs floating-point
+    /// division, so this cannot be a `const`, and the f64 reciprocal it takes is
+    /// load-bearing for bit-identical goldens, so it must not be hand-transcribed as
+    /// sixteen literals either.
     fn basis_matrix() -> &'static SMatrix<f32, ORDER, ORDER> {
         static BASIS: std::sync::OnceLock<SMatrix<f32, ORDER, ORDER>> = std::sync::OnceLock::new();
         BASIS.get_or_init(Self::build_basis_matrix)
@@ -208,12 +191,10 @@ impl SplineIndex {
     /// Least-squares control values for `E` per-point channels sampled at `ts`.
     ///
     /// Used both for the geometry itself (`E = 2`) and for the pen channels riding
-    /// along with it (`E = 4`: pressure, tilt x/y, time). Deliberately *not* one fit
-    /// in `D + E` dimensions — folding channels into the geometry would let a
-    /// pressure ramp pull on the parameterization and distort the curve to buy error
-    /// in a quantity that has no length. The geometry decides `ts` alone and the
-    /// channels solve against it, which also means no weight is needed to reconcile
-    /// pixels with whatever units the channels are in.
+    /// along with it (`E = 4`: pressure, tilt x/y, time) — deliberately *not* one fit
+    /// in `D + E` dimensions, which would let a pressure ramp pull on the
+    /// parameterization and distort the curve to buy error in a quantity that has no
+    /// length. The geometry decides `ts` alone and the channels solve against it.
     ///
     /// The first `frozen` rows and the last `tail` rows of `prior` come back
     /// unchanged; only the window between them is solved for. `smoothing` charges the
@@ -260,14 +241,10 @@ impl SplineIndex {
     /// [`fit_channels`](Self::fit_channels) **in place**: `values` is read as the
     /// prior and overwritten with the result.
     ///
-    /// This is the form the stroke fitter uses, and the reason the index is a type of
-    /// its own. Held on a spline that owned its control points, one fit cost three
-    /// full copies of the polygon — the spline's own, the grown prior, and the
-    /// returned result — and the fitter does four of them per pointer report, so the
-    /// copying was `O(stroke length)` per report on the interactive drawing path
-    /// while the system being solved stayed at `FREE_CONTROL_POINTS` unknowns. The
-    /// windowing inside `solve_window` had already made the *arithmetic* constant; this is
-    /// the plumbing around it catching up.
+    /// The form the stroke fitter uses, and the reason the index is a type of its own:
+    /// returning an owned result costs a copy of the whole polygon per fit, four times
+    /// a pointer report, while the system being solved stays at `FREE_CONTROL_POINTS`
+    /// unknowns.
     ///
     /// **In-place is sound rather than merely convenient.** The rows the solve writes
     /// are exactly `frozen..m - tail`, and every row it *reads* as a prior is outside
@@ -316,25 +293,16 @@ impl SplineIndex {
     /// **`control` is read and then written**, and both halves matter: the rows it
     /// arrives with are the ridge's target — where each free control point is pulled
     /// back towards when the data does not determine it — and the window
-    /// `frozen..m - tail` is overwritten with the solution. Naming it for either half
-    /// alone would be half a description; it was called `prior`, which is the half a
-    /// reader would not expect a `&mut` to be.
-    ///
-    /// `solve_window`, not `m_step`. The M-step was the maximization half of an EM
-    /// loop whose E-step — re-estimating each sample's curve parameter — was deleted
-    /// when the parameterization became arc length (§6.2), and a name for one half of
-    /// an algorithm that no longer has the other half is a name that sends a reader
-    /// looking for it.
+    /// `frozen..m - tail` is overwritten with the solution.
     ///
     /// **Every value carries a weight, and one each is a claim rather than a neutral
     /// default.** A plain sum minimizes the error *per value supplied*, which is the
     /// right objective only where the values are an even sampling of whatever is being
-    /// fitted. Where they are not, the fit is to the sampling and not to the subject,
-    /// and wherever the two disagree the sampling wins on sheer count. `weights` is how
-    /// a caller states what each value stands for — see
-    /// `path::arc_weights` for the case that forced it — and `n`
-    /// becomes their sum, so the two knobs scaled by it below (the smoothing's average
-    /// data pull, the ridge's floor) go on meaning what they meant.
+    /// fitted; where they are not, the fit is to the sampling and not to the subject,
+    /// and the sampling wins on sheer count. `weights` is how a caller states what each
+    /// value stands for (see `path::arc_weights`), and `n` becomes their sum, so the
+    /// two knobs scaled by it below — the smoothing's average data pull, the ridge's
+    /// floor — go on meaning what they meant (§6.2).
     fn solve_window<const E: usize>(
         self,
         obs: Observations<'_, E>,
@@ -359,11 +327,9 @@ impl SplineIndex {
         };
         if frozen + tail >= m || points.is_empty() {
             // Nothing left to solve for, or nothing to solve against. With no points
-            // the normal equations are all ridge, whose solution is `control` exactly —
-            // so in place there is literally nothing to do, where returning an owned
-            // result had to copy the whole polygon to say so. Taking this branch also
-            // keeps `lambda` (scaled by `n`) off zero, which it could never escalate
-            // away from.
+            // the normal equations are all ridge, whose solution is `control` exactly,
+            // so in place there is nothing to do. The branch also keeps `lambda`
+            // (scaled by `n`) off zero, which it could never escalate away from.
             return;
         }
         // The normal equations are assembled over a **window**, not the whole polygon.
@@ -372,10 +338,9 @@ impl SplineIndex {
         // local: a point in span `k` touches rows `k - 2 ..= k + 1`, so any point that
         // reaches a free row touches nothing below `frozen - (ORDER - 1)`. Everything
         // before that is a frozen row coupled to no free one, contributing zero. An
-        // `m x m` matrix therefore spends nearly all of itself on structural zeros —
-        // 160KB of them at 200 control points, memset four times per sample, which was
-        // most of the cost of a long stroke and the reason the per-update time grew
-        // with the length of the whole thing rather than with the window.
+        // `m x m` matrix would therefore be nearly all structural zeros — 160KB of them
+        // at 200 control points, cleared four times per sample — and the per-update
+        // cost would grow with the length of the whole stroke rather than the window.
         let base = frozen.saturating_sub(ORDER - 1);
         let w = m - base;
         let mut btb = OMatrix::<f32, Dyn, Dyn>::zeros(w, w);
@@ -406,13 +371,11 @@ impl SplineIndex {
         // is just another symmetric band added to the normal matrix — and its target
         // is zero curvature, so the right-hand side is untouched.
         //
-        // This is what stops the curve wandering where no point is assigned. Note it
-        // lands in `btb` *before* the frozen block is folded into the right-hand side
-        // below, so it also couples the first free control point to the frozen ones —
-        // which is what makes the free tail continue smoothly out of the committed
-        // prefix instead of being free to start off in any direction at all. Only the
-        // triples that touch a solved row are in the window; the rest act on frozen
-        // rows alone.
+        // This is what stops the curve wandering where no point is assigned. It lands
+        // in `btb` *before* the frozen block is folded into the right-hand side below,
+        // so it also couples the first free control point to the frozen ones — which is
+        // what makes the free tail continue smoothly out of the committed prefix. Only
+        // the triples that touch a solved row are in the window.
         if smoothing > 0.0 && m >= 3 {
             // Ratio in f64 then narrowed — see the note in `basis_matrix`.
             let sw = smoothing * ((n as f64 / m as f64) as f32);
@@ -448,10 +411,9 @@ impl SplineIndex {
             }
             if let Some(chol) = Cholesky::new(lhs) {
                 let solved = chol.solve(&rhs);
-                // The one write, and the reason the reads above are safe to have made
-                // from the same buffer: every row outside `frozen..frozen + free` is
-                // left exactly as it was, and every row inside it was read into `rhs`
-                // before this point.
+                // The one write, and why reading the same buffer above was safe: every
+                // row outside `frozen..frozen + free` is left as it was, and every row
+                // inside it was read into `rhs` before this point.
                 control.rows_mut(frozen, free).copy_from(&solved);
                 return;
             }
@@ -459,23 +421,15 @@ impl SplineIndex {
         }
         // Unreachable for admissible input — a ridge-regularized normal matrix is
         // positive definite, and `lambda` escalates until it dominates. What reaches
-        // it is a non-finite entry, and the fitter's door refuses one:
-        // `InputSample::is_admissible` bounds the position as well as requiring it
-        // finite, so no difference of two samples is infinite either (C2).
-        //
-        // **That argument covers one of the two doors.** `fit_channels` and `fit_into`
-        // are `pub`, and the shape assist reaches them from `AssistShape` geometry
-        // (`assist::realize`), which no sample ever passed `is_admissible` to produce.
-        // Its own producers do guard finiteness today, so nothing reaches here — but
-        // the guarantee would be spread across three modules and stated by none of
-        // the entry points, which is a check a call site could forget (CLAUDE.md).
+        // here is a non-finite entry, which `InputSample::is_admissible` refuses at the
+        // fitter's door (C2); but `fit_channels` and `fit_into` are `pub` and the shape
+        // assist reaches them from `AssistShape` geometry (`assist::realize`), which no
+        // sample ever passed that door.
         //
         // So this answers instead of panicking, and the answer is the *correct* one
         // rather than a fallback: with the system unsolvable at every ridge, what the
-        // ridge alone determines is `control` exactly — which is what the
-        // `frozen + tail >= m` branch above returns, for the same reason and by the
-        // same argument. Leaving the polygon as it arrived is the honest reading of
-        // data that determined nothing.
+        // ridge alone determines is `control` exactly — the same answer, for the same
+        // reason, as the `frozen + tail >= m` branch above.
     }
 }
 
@@ -632,11 +586,9 @@ mod tests {
     /// A channel that *is* a spline over these knots must be recovered by the solve:
     /// sample it, fit the samples, get the control values back.
     ///
-    /// To ~1%, not to rounding. The proximal ridge is `n · √ε`, and `√ε` is 3.4e-4 in
-    /// f32 against 1.5e-8 in f64 — some 2300× more pull towards `control` (zero here)
-    /// for the same data. That bias, not the quality of the fit, sets this bound. It
-    /// is measured in f32 because that is what the engine solves in; an f64 test would
-    /// hold the solver to a tolerance no caller ever sees.
+    /// To ~1%, not to rounding: the proximal ridge is `n · √ε`, and `√ε` is 3.4e-4 in
+    /// f32 — some 2300× more pull towards `control` (zero here) than the same solve in
+    /// f64. That bias, not the quality of the fit, sets this bound.
     #[test]
     fn channel_fitting_recovers_an_exact_channel() {
         let c = wiggle_pts();

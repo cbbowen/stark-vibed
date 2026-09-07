@@ -1,13 +1,10 @@
 //! **Arc length ↔ curve parameter**: the map a fit and a realized shape both place
 //! their samples through (§6.2).
 //!
-//! Its own file because it has two independent consumers and belongs to neither.
+//! Two independent consumers, and it belongs to neither:
 //! [`PathFitter`](super::PathFitter) builds it to assign each pointer report a place
 //! on the curve; `assist::realize` builds it to spread a recognized shape's targets
-//! along one. It lived inside `fit`, so `path` re-exported two of its items
-//! `pub(crate)` purely so `assist` could reach through the fitter's private module for
-//! them — which is the shape `path.rs` already argues against: what belongs to none of
-//! the three sits beside them, not inside one.
+//! along one.
 //!
 //! Nothing here knows what is being fitted. It is a curve and a list of settled
 //! lengths.
@@ -24,12 +21,12 @@ pub(super) const ARC_SAMPLES_PER_SPAN: usize = 4;
 /// parameter `t` is well short of `t / num_spans` of the way along. Assuming
 /// otherwise leaves a residual on input the curve could fit exactly — a straight
 /// stroke read as several px of error — and the growth rule then buys control points
-/// to explain it away. Sparse input has nothing between samples to hold those extra
-/// control points, so they oscillate.
+/// to explain it away, which sparse input has nothing to hold down.
+///
 /// `settled` is a profile of the same curve's *frozen* spans, carried over from an
-/// earlier update: those spans' control points are held, so their geometry — and so
-/// their length — cannot change, and re-walking them every update is the last piece
-/// of per-update work that scaled with the whole stroke rather than the window.
+/// earlier update: those spans' control points are held, so their length cannot
+/// change, and re-walking them would be the one piece of per-update work that scales
+/// with the whole stroke rather than with the window.
 pub(crate) fn arc_profile(curve: &CubicBSpline<'_, 2>, settled: &[f32]) -> Vec<f32> {
     let mut cum = Vec::new();
     arc_profile_into(curve, settled, &mut cum);
@@ -61,11 +58,11 @@ pub(super) fn arc_profile_into(curve: &CubicBSpline<'_, 2>, settled: &[f32], out
 
 /// The parameter at which `profile`'s curve is `f` of the way along its own length.
 ///
-/// This is a *global, monotone* reparameterization: one function, applied to every
-/// sample alike. That is what separates it from projecting each sample onto the
-/// curve independently — samples keep their order and their relative spacing, so
-/// they cannot slide past one another or bunch up on the input's jitter, which is
-/// how per-sample correction blew strokes up to 45px with loops.
+/// A *global, monotone* reparameterization: one function applied to every sample
+/// alike, unlike projecting each sample onto the curve independently. Samples keep
+/// their order and their relative spacing, so they cannot slide past one another or
+/// bunch up on the input's jitter — per-sample correction blew looped strokes up to
+/// 45px.
 pub(crate) fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
     let total = *profile.last().expect("profile is never empty");
     if total <= 1e-6 || profile.len() < 2 {

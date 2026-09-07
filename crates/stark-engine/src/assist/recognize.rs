@@ -1,11 +1,9 @@
 //! **Recognition**: which shape, if any, a raw pointer trace is (§6.9).
 //!
-//! It answers `None` freely — see the module note in [`super`] for why a false
-//! positive costs more than a miss. A line that lands near an axis of a perspective
-//! guide the artist has up is turned onto it, and a loop drawn on a plane becomes a
-//! circle in it (§20.6) — this is where a guide is *read*. [`super::adjust`] knows
-//! about one too, but for the other half: sizing a recognized circle in the plane it
-//! was found on (§20.7).
+//! It declines freely — a false positive costs more than a miss — and deterministically,
+//! since replay depends on the same trace giving the same answer. A line that lands near
+//! an axis of a perspective guide the artist has up is turned onto it (§20.6), and a loop
+//! drawn on a plane becomes a circle in it (§20.7): this is where a guide is *read*.
 
 use super::AssistShape;
 use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
@@ -22,70 +20,58 @@ const MIN_SIZE: f32 = 32.0;
 /// How far the trace may sit from a candidate **line** at its worst, as a fraction of
 /// the segment's own length.
 ///
-/// The **worst** sample and not the RMS, which is the whole difference between a bar
-/// that discriminates and one that does not. A hand's wobble along a straight drag is
-/// noise — its worst is a small multiple of its RMS — while a curve somebody *meant*
-/// deviates systematically, so averaging is exactly the operation that hides it. A
-/// 300px stroke bowed 40px reads as 4% RMS, indistinguishable from a shaky straight
-/// line, and as 9% at its worst, which is not close to anything.
+/// The **worst** sample and not the RMS: a hand's wobble along a straight drag is noise,
+/// while a curve somebody *meant* deviates systematically, so averaging is exactly the
+/// operation that hides it. A 300px stroke bowed 40px reads as 4% RMS — indistinguishable
+/// from a shaky straight line — and as 9% at its worst.
 const LINE_RESIDUAL: f32 = 0.035;
 
 /// The same bar for an **ellipse**, as a fraction of its mean radius. Looser than the
 /// line's on purpose, and by a wide margin.
 ///
-/// Two reasons, and they compound. The same hand movement is spread over a radius
-/// rather than over a length, so the same absolute wobble is a larger fraction of it —
-/// and a loop is a *longer* gesture than a drag of the same size, since going round
-/// costs π times the diameter where crossing costs one, with the wrist reversing
-/// direction twice on the way. A worst-sample bar on a signal that long is being asked
-/// about the one moment the hand was least steady.
+/// Two reasons that compound. The same wobble is a larger fraction of a radius than of a
+/// length, and a loop is a *longer* gesture than a drag of the same size — π times the
+/// diameter, with the wrist reversing direction twice on the way. A worst-sample bar on a
+/// signal that long is being asked about the one moment the hand was least steady.
 ///
-/// The bar that discriminates is still not the ellipse's: a shape that is not a loop of
-/// *some* ellipse fails this by tens of percent, not by ones — the cardioid in the tests
-/// misses it several times over — and the shapes near the edge of it are ellipses drawn
-/// shakily. So the cost of the miss (draw it again, steadier) buys less here than it
-/// does on a line, where a bowed stroke sits just the other side of the bar.
+/// It still discriminates: a shape that is not a loop of *some* ellipse misses by tens of
+/// percent, not by ones, and the shapes near the edge of the bar are ellipses drawn
+/// shakily.
 const ELLIPSE_RESIDUAL: f32 = 0.15;
 
 /// How far a recognized line may sit from a **guide axis** and still be read as one of
 /// that axis's lines (§20.6), as a fraction of the line's own length.
 ///
-/// Quoted the same way [`LINE_RESIDUAL`] is, and for the same reason — a bar in canvas
-/// px would mean two things at two zoom levels — but wider, because it is not the same
-/// question. `LINE_RESIDUAL` asks whether the hand drew a line at all, where a false
-/// positive replaces a considered curve; this asks *which* line it meant, at a moment
-/// when the artist has already dwelt to ask for an ideal one and has a grid up to
-/// answer with. A hand aiming at a vanishing point a metre off the page is doing well
-/// to be within a few degrees, and a fraction of the length is a fixed cone: 0.15 is
+/// Wider than [`LINE_RESIDUAL`] because it is not the same question. That one asks
+/// whether the hand drew a line at all; this asks *which* line it meant, at a moment when
+/// the artist has already dwelt to ask for an ideal one and has a grid up to answer with.
+///
+/// The cone holds the *aim*, not the wrist: a vanishing point off the page is not
+/// somewhere the eye can look while drawing, so what is priced is a guess at an angle,
+/// and a few degrees is a good guess. A fraction of the length is a fixed cone — 0.15 is
 /// 8.6°, so three axes claim between a quarter and a third of the compass and a
 /// deliberately diagonal line is still left alone.
-///
-/// The cone has to hold the *aim*, not the wrist. Where a stroke lands is decided at the
-/// moment the hand commits to a direction, before the drag exists to be judged, and a
-/// vanishing point off the page is not somewhere the eye can look while drawing — so the
-/// error being priced is a guess at an angle, and a few degrees is a good guess.
 const GUIDE_LINE_RESIDUAL: f32 = 0.15;
 
 /// The same bar for a **perspective circle** (§20.7), as a fraction of the drawn loop's
 /// mean radius: how far the trace may sit from the circle-on-a-plane that claims it.
 ///
-/// Wider again than [`ELLIPSE_RESIDUAL`], and this is where the feature actually lives.
-/// The hard part of drawing a circle in perspective is not its size or its place, which
-/// a hand gets about right, but its **eccentricity and its tilt** — both fixed by where
-/// on the plane it sits, and both exactly what the eye cannot judge. A bar that only
-/// accepted loops already correct in the two would help nobody.
+/// Wider again than [`ELLIPSE_RESIDUAL`], and this is where the feature lives. The hard
+/// part of drawing a circle in perspective is not its size or its place but its
+/// **eccentricity and its tilt** — both fixed by where on the plane it sits, and both
+/// exactly what the eye cannot judge. A bar that only accepted loops already correct in
+/// the two would help nobody.
 ///
-/// Measured, on ellipses a few hundred px across: 0.26 admits a loop about a quarter
-/// too round, or leaning 9° out of the tilt its position calls for, or a lesser mix of
-/// the two — and declines at around a third and 11°, so a loop drawn deliberately across
-/// the grid stays the ellipse it is. Those are the figures for the plane that shows the
-/// tilt most; a plane seen closer to face-on forgives 15° or 40°, and correctly, since a
-/// rounder image has proportionally less tilt to be wrong about.
+/// Measured on ellipses a few hundred px across, for the plane that shows the tilt most:
+/// 0.26 admits a loop about a quarter too round, or leaning 9° out of the tilt its
+/// position calls for, and declines at around a third and 11°, so a loop drawn
+/// deliberately across the grid stays the ellipse it is. A plane seen closer to face-on
+/// forgives 15° or 40°, and correctly — a rounder image has proportionally less tilt to
+/// be wrong about.
 ///
-/// The cost of the bar being an isotropic fraction of the
-/// mean radius is that it forgives eccentricity more readily than tilt on a strongly
-/// foreshortened circle, which is the right way round: how *open* a near-edge-on
-/// ellipse should be is genuinely hard to see, and which way it leans is not.
+/// An isotropic fraction of the mean radius forgives eccentricity more readily than tilt
+/// on a strongly foreshortened circle, which is the right way round: how *open* a
+/// near-edge-on ellipse should be is genuinely hard to see, and which way it leans is not.
 const GUIDE_CIRCLE_RESIDUAL: f32 = 0.26;
 
 /// Residual floor, in input tolerances. Without it the fractional bars above scale to
@@ -99,11 +85,9 @@ const RESIDUAL_FLOOR: f32 = 4.0;
 ///
 /// Neither side of that is free. Below it is what a hand actually does — closing a loop
 /// is the last thing it does and the first it gets wrong (see [`weigh`]) — and the gap
-/// costs the fit little, because the wedges the trace never reached are filled from the
-/// estimate rather than guessed at: measured, a fifth-turn gap on a 400px loop still
-/// lands the centre and the major axis within 3%. Above it the closed form starts to
-/// describe an arc instead — a quarter-turn gap walks the centre 5% off — and, more to
-/// the point, an arc is a shape somebody can mean.
+/// costs the fit little: a fifth-turn gap on a 400px loop still lands the centre and the
+/// major axis within 3%. Above it the closed form starts to describe an arc instead (a
+/// quarter-turn gap walks the centre 5% off), and an arc is a shape somebody can mean.
 const CLOSE_GAP: f32 = 1.5;
 
 /// Points the ellipse fit works over, resampled uniformly along the trace. Enough to
@@ -134,16 +118,17 @@ const PARAM_BINS: usize = 32;
 /// screen offer: axes a line may be aimed along (§20.6) and planes a loop may be a
 /// circle on (§20.7). Pass an empty one and the answer is the hand's own shape.
 ///
+/// Deterministic, declining included: replay depends on the same trace answering the
+/// same way.
+///
 /// A closed trace is offered to the ellipse fit first and **falls through** to the line
-/// fit if it misses the bar, rather than being refused outright: that is one rule
-/// instead of a decision tree, and it means a rough rectangle (closed, but no ellipse
-/// and no line) simply does not snap.
+/// fit if it misses the bar, rather than being refused outright, so a rough rectangle
+/// (closed, but no ellipse and no line) simply does not snap.
 ///
 /// The guide question is asked strictly *after* the stroke has been accepted as a
-/// shape, never instead: recognition decides whether this is a line or an ellipse, and
-/// only then does the grid get to say *which* line, or on which plane the ellipse is a
-/// circle. A curve that happens to bow along a fan line is still a curve, and the two
-/// bars cannot be traded against each other.
+/// shape, never instead: only then does the grid get to say *which* line, or on which
+/// plane the ellipse is a circle. A curve that happens to bow along a fan line is still
+/// a curve, and the two bars cannot be traded against each other.
 pub fn recognize(trace: &[Vec2], tolerance: f32, guides: &Scaffold) -> Option<AssistShape> {
     if trace.len() < MIN_SAMPLES {
         return None;
@@ -186,12 +171,11 @@ pub fn recognize(trace: &[Vec2], tolerance: f32, guides: &Scaffold) -> Option<As
 /// The guide axis the trace reads as, if any: among the pencils' lines through the
 /// anchor, the one it strays least from, provided that is within `bar`.
 ///
-/// Through the **anchor** and not through the trace's middle, because that is the point
-/// the line is already anchored at — the start, placed deliberately (see [`fit_line`]).
-/// Aligning about it turns the stroke onto the grid without sliding it off where the
-/// hand began, which is also why this snaps to a *direction* rather than to the nearest
-/// drawn fan line: the fans are a sampling of the pencil at whatever cell size the
-/// slider says, and there is no reason a stroke's position should quantize to it.
+/// Through the **anchor** — the deliberately-placed start (see [`fit_line`]) — so
+/// aligning turns the stroke onto the grid without sliding it off where the hand began.
+/// It snaps to a *direction* rather than to the nearest drawn fan line: the fans are a
+/// sampling of the pencil at whatever cell size the slider says, and a stroke's position
+/// has no reason to quantize to that.
 fn snap_to_pencil(
     trace: &[Vec2],
     anchor: Vec2,
@@ -210,19 +194,16 @@ fn snap_to_pencil(
 /// the screen, the one whose circle explains the loop best, if that is within `bar`.
 ///
 /// Each plane is asked in its own coordinates, where the question is not "which ellipse
-/// is this" but "which *circle*" — and answering it is one call to the same
-/// [`fit_ellipse`], because a circle is an ellipse whose radii agree and the measure
-/// corrections that fit earned (speed, overshoot, undershoot) are exactly as necessary
-/// on a pulled-back trace as on a drawn one. Its two radii are then collapsed to the
-/// one of equal area: a loop drawn as a circle in perspective pulls back to a circle,
-/// so they already agree, and where they do not it is the canvas score below that
-/// declines rather than this choice.
+/// is this" but "which *circle*" — one call to the same [`fit_ellipse`], since a circle
+/// is an ellipse whose radii agree. Those two radii are then collapsed to the one of
+/// equal area: a loop drawn as a circle in perspective pulls back to a circle, so they
+/// already agree, and where they do not the canvas score below declines.
 ///
-/// **Scored on the canvas, never in the plane.** A plane's own metric is stretched by
-/// the perspective — unboundedly, toward its vanishing line — so a residual measured
-/// there would mean something different at every depth, and the far half of a loop
-/// would count for orders of magnitude more than the near half. What decides is the
-/// same residual the free ellipse was judged by, in the space the artist drew it in.
+/// **Scored on the canvas, never in the plane.** A plane's own metric is stretched
+/// unboundedly toward its vanishing line, so a residual measured there would mean
+/// something different at every depth and the far half of a loop would count for orders
+/// of magnitude more than the near half. What decides is the same residual the free
+/// ellipse was judged by, in the space the artist drew it in.
 fn snap_to_plane(trace: &[Vec2], planes: &[AxisPlane], bar: f32) -> Option<AssistShape> {
     let mut best: Option<(f32, AssistShape)> = None;
     for plane in planes {
@@ -279,17 +260,15 @@ struct LineFit {
 /// The line **through the first sample** that best fits the rest, minimizing
 /// perpendicular distance.
 ///
-/// Anchored rather than free, because the two ends of a drag are not the same kind of
-/// thing: where a stroke *starts* is placed deliberately, with the pen at rest on the
-/// point the hand chose, while where it ends is wherever the hand had got to. So the
-/// start is taken as drawn and the fit spends all its freedom on the direction. That
-/// also makes the residual honest — it is measured against the line that will actually
-/// be drawn, rather than against a free one the snap then moves off.
+/// Anchored rather than free: where a stroke *starts* is placed deliberately, while
+/// where it ends is wherever the hand had got to. So the start is taken as drawn and the
+/// fit spends all its freedom on the direction, which also makes the residual honest —
+/// it is measured against the line that will actually be drawn.
 ///
 /// Perpendicular distance and not vertical offset (total least squares, the principal
 /// axis of the scatter *about that anchor*), because ordinary least squares would
-/// answer differently for the same stroke drawn at a different angle — which for a
-/// gesture on a canvas that can itself be rotated (§18.1.2) is not a fit at all.
+/// answer differently for the same stroke drawn at a different angle — and the canvas
+/// itself can be rotated (§18.1.2).
 ///
 /// The far end is the last sample projected onto the line: it is where the pointer is
 /// holding, and so what the rest of the drag moves.
@@ -312,9 +291,8 @@ fn fit_line(trace: &[Vec2]) -> Option<LineFit> {
 /// The trace read as a line from `anchor` along `dir` (unit): where it ends, and how
 /// far it strays at its worst.
 ///
-/// The scoring half of [`fit_line`], with the direction supplied rather than solved
-/// for — so a guide axis is judged by exactly the measure the free fit is judged by,
-/// which is what makes the two residuals comparable at all (§20.6).
+/// The scoring half of [`fit_line`] with the direction supplied, which is what makes a
+/// guide axis's residual comparable with the free fit's (§20.6).
 fn line_along(trace: &[Vec2], anchor: Vec2, dir: Vec2) -> LineFit {
     let last = trace.last().copied().unwrap_or(anchor);
     LineFit {
@@ -412,11 +390,10 @@ impl Frame {
 
     /// Distance from `p` to the ellipse.
     ///
-    /// The algebraic residual divided by its own gradient — the standard first-order
-    /// correction, and exact in the limit of a point on the curve. Measuring *radially*
-    /// instead (the obvious thing) over-reads by up to the axis ratio at the ends of the
-    /// major axis, which would mean a 2:1 ellipse had to be drawn twice as accurately as
-    /// a circle to snap at all.
+    /// The algebraic residual divided by its own gradient — the first-order correction,
+    /// exact in the limit of a point on the curve. Measuring *radially* over-reads by up
+    /// to the axis ratio at the ends of the major axis, which would mean a 2:1 ellipse
+    /// had to be drawn twice as accurately as a circle to snap at all.
     fn distance(&self, p: Vec2) -> f32 {
         let q = self.local(p);
         let (a2, b2) = (
@@ -438,16 +415,15 @@ impl Frame {
 /// The second moments of points spread uniformly in an ellipse's own parameter are
 /// exactly `½·diag(a², b²)` in its own frame, so the covariance gives the shape in
 /// closed form — but only for that measure. Pointer reports are spread by the hand's
-/// *speed*, and resampling them uniformly by arc length does not fix it either: arc
-/// length runs fastest at the ends of the minor axis, so an arc-length measure reads a
-/// 2:1 ellipse as roughly 1.7:1.
+/// *speed*, and resampling uniformly by arc length does not fix it: arc length runs
+/// fastest at the ends of the minor axis, so an arc-length measure reads a 2:1 ellipse
+/// as roughly 1.7:1.
 ///
-/// So the measure is corrected instead of assumed. Each pass estimates the shape, reads
-/// off the parameter every sample sits at, and reweights each sample by the *parameter*
-/// it stands for — which makes the true ellipse a fixed point of the iteration rather
-/// than something the first estimate has to land on. Four passes; the correspondence is
-/// declared from the current estimate and never searched, which is the same discipline
-/// [`PathFitter`](crate::path::PathFitter) applies to the stroke fit.
+/// So each pass estimates the shape, reads off the parameter every sample sits at, and
+/// reweights each sample by the *parameter* it stands for, which makes the true ellipse
+/// a fixed point of the iteration rather than something the first estimate has to land
+/// on. The correspondence is declared from the current estimate and never searched, the
+/// same discipline [`PathFitter`](crate::path::PathFitter) applies to the stroke fit.
 fn fit_ellipse(trace: &[Vec2]) -> Option<EllipseFit> {
     let pts = resample(trace, ELLIPSE_SAMPLES)?;
     // The first pass has no estimate to weigh against, so it takes the resampled points
@@ -489,11 +465,9 @@ fn settled(a: Ellipse, b: Ellipse) -> bool {
 
 /// The ellipse whose second moments are the weighted samples' own.
 ///
-/// Closed form, and exact for the measure it assumes: points spread uniformly in an
-/// ellipse's parameter have covariance `½·diag(a², b²)` in its own frame, so the
-/// principal axes of the scatter *are* the axes and its eigenvalues *are* the squared
-/// semi-axes. Everything difficult about the fit is in earning that measure, which is
-/// [`weigh`]'s job.
+/// Closed form, and exact for the measure it assumes: the principal axes of the scatter
+/// *are* the axes and its eigenvalues *are* the squared semi-axes. Everything difficult
+/// about the fit is in earning that measure, which is [`weigh`]'s job.
 fn moments(weighted: &[(Vec2, f32)]) -> Option<Ellipse> {
     let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
     if !(total.is_finite() && total > 0.0) {
@@ -520,17 +494,14 @@ fn moments(weighted: &[(Vec2, f32)]) -> Option<Ellipse> {
 /// into [`PARAM_BINS`] equal wedges, and every **occupied** wedge is worth the same,
 /// shared out among the samples that landed in it.
 ///
-/// Coverage, not travel — and that distinction is the whole of it. Weighting by the
-/// gap to each neighbour instead counts an arc *twice* when the hand goes over it
-/// twice, which is precisely what closing a loop does: you come back past where you
-/// started. A 6% overshoot on a 2:1 ellipse walked the estimated centre 78px off and
-/// took the worst residual from 4px to 112px, so the shape was rejected for being
-/// drawn the way loops are actually drawn.
+/// Coverage, not travel. Weighting by the gap to each neighbour counts an arc *twice*
+/// when the hand goes over it twice, which is precisely what closing a loop does: a 6%
+/// overshoot on a 2:1 ellipse walked the estimated centre 78px off and took the worst
+/// residual from 4px to 112px.
 ///
-/// An **empty** wedge is worth nothing, which is the other half: a loop that stopped
-/// short leaves a gap in the parameter circle, and a gap has no data in it. Sharing its
-/// weight out to the samples on either side would let two of them speak for a sixth of
-/// the ellipse.
+/// An **empty** wedge is worth nothing: a loop that stopped short leaves a gap in the
+/// parameter circle, and a gap has no data in it. Sharing its weight out to the samples
+/// on either side would let two of them speak for a sixth of the ellipse.
 fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
     let mut occupants = [0u32; PARAM_BINS];
     let bins: Vec<usize> = pts
@@ -549,16 +520,13 @@ fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
         .zip(&bins)
         .map(|(p, &bin)| (*p, 1.0 / occupants[bin] as f32))
         .collect();
-    // A wedge the hand never reached is **filled from the estimate itself** — one point
-    // on the current ellipse at the middle of each empty wedge.
-    //
-    // Closing the loop is the last thing a hand does and the first thing it gets wrong,
-    // and stopping a few degrees short leaves the moments to describe an arc while the
-    // closed-form they invert assumes a whole turn: an 8% short loop walked the centre
-    // 27px off, which was enough to fail the bar at every eccentricity. Filling is
-    // sound because the truth is still a fixed point — an estimate that is already
-    // right puts its synthetic points on the true ellipse — and the gap is at most a
-    // fifth of the circle ([`CLOSE_GAP`]), so what was drawn always outvotes it.
+    // A wedge the hand never reached is filled from the estimate itself — one point on
+    // the current ellipse at the middle of each empty wedge. Stopping a few degrees short
+    // leaves the moments describing an arc while the closed form they invert assumes a
+    // whole turn: an 8% short loop walked the centre 27px off, enough to fail the bar at
+    // every eccentricity. The truth stays a fixed point — an estimate already right puts
+    // its synthetic points on the true ellipse — and the gap is at most a fifth of the
+    // circle (`CLOSE_GAP`), so what was drawn always outvotes it.
     out.extend(
         occupants
             .iter()
@@ -575,11 +543,9 @@ fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
 /// `trace` resampled to `n` points spread uniformly by arc length.
 ///
 /// Purely a decimation — a slow drag reports thousands of times and the fit has no use
-/// for them — since [`weigh`] is what actually decides how much each sample
-/// counts for. An earlier version closed the loop with a chord from the last sample
-/// back to the first, to span the wedge a not-quite-closed loop leaves; that is
-/// fabricated data, and once the weights measure *coverage* the wedge correctly counts
-/// for nothing on its own.
+/// for them — since [`weigh`] is what actually decides how much each sample counts for.
+/// The loop is left open: a chord from the last sample back to the first would be
+/// fabricated data, and the wedge it would span correctly counts for nothing.
 fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
     if trace.len() < 2 || n < 3 {
         return None;
@@ -712,10 +678,8 @@ mod tests {
 
     /// Eccentricity is not something the recognizer may be shy about: a long thin loop
     /// is a *more* deliberate thing to draw than a circle, not a less confident one.
-    ///
-    /// This is the case a naive moment fit cannot reach at all — read through an
-    /// arc-length measure a 2:1 ellipse comes back nearer 1.7:1, and the error grows
-    /// with the axis ratio until the shape misses the bar for being what it is.
+    /// A naive moment fit cannot reach this case — through an arc-length measure a 2:1
+    /// ellipse comes back nearer 1.7:1, and the error grows with the axis ratio.
     #[test]
     fn a_long_thin_loop_is_still_an_ellipse() {
         for ratio in [2.0f32, 4.0, 8.0] {
@@ -736,15 +700,10 @@ mod tests {
     /// **Where a loop closes is where a hand is least accurate**, so neither running
     /// past the start nor stopping short of it may cost the shape.
     ///
-    /// Both are easy to get wrong: unweighted, an overshoot double-counts the
-    /// re-traversed wedge and walks the centre 78px off a 400px ellipse, while an
-    /// undershoot leaves the closed-form inversion describing an arc while assuming a
-    /// whole turn. See [`weigh`].
-    /// A loop is a longer gesture than a drag of the same size and the wrist reverses
-    /// twice on the way round it, so the hand that draws one is not the hand that draws
-    /// a line — see [`ELLIPSE_RESIDUAL`]. A tenth of the radius of wobble is a shaky
-    /// hand, not a considered shape, and it has to come back as the ellipse it was aimed
-    /// at.
+    /// Both are easy to get wrong (see [`weigh`]), and a loop is a longer gesture than a
+    /// drag of the same size (see [`ELLIPSE_RESIDUAL`]). A tenth of the radius of wobble
+    /// is a shaky hand, not a considered shape, and it has to come back as the ellipse it
+    /// was aimed at.
     #[test]
     fn a_shaky_loop_is_still_an_ellipse() {
         let radii = Vec2::new(300.0, 150.0);
@@ -954,13 +913,10 @@ mod tests {
         }
     }
 
-    /// What the artist cannot see cannot bend a line: the same trace, with the
-    /// guide's eye shut, is the hand's own.
-    ///
-    /// The eye is per-client, so it is not a field of the guide any more (§20.5) —
-    /// shutting one is the engine leaving it out of the scaffold, and what this
-    /// pins is that the assist reads the scaffold and nothing else. A guide it was
-    /// not handed cannot reach a stroke however visible it is to somebody.
+    /// What the artist cannot see cannot bend a line: the same trace, with the guide's
+    /// eye shut, is the hand's own. The eye is per-client (§20.5), so shutting one is the
+    /// engine leaving the guide out of the scaffold — what this pins is that the assist
+    /// reads the scaffold and nothing else.
     #[test]
     fn a_hidden_guide_does_not_snap() {
         let g = guide();
@@ -1005,12 +961,10 @@ mod tests {
 
     /// Mean radius, in canvas px, of the *image* every §20.7 test draws around.
     ///
-    /// Sized on the canvas rather than in the plane, because a plane radius is not a
-    /// comparable quantity across three planes lying at three depths: the same 0.12 in
-    /// plane units images to 130px on one of this guide's planes and to 1500px on
-    /// another, and a residual bar quoted as a fraction of the shape means something
-    /// quite different at those two sizes. What a hand draws is a few hundred px
-    /// across, so that is what these ask about.
+    /// Sized on the canvas rather than in the plane: a plane radius is not comparable
+    /// across three planes at three depths — the same 0.12 in plane units images to 130px
+    /// on one of this guide's planes and 1500px on another, and a residual bar quoted as
+    /// a fraction of the shape means something quite different at those two sizes.
     const DRAWN_SIZE: f32 = 180.0;
 
     fn as_ellipse(shape: AssistShape) -> (Vec2, Vec2, f32, Option<AxisPlane>) {
@@ -1166,11 +1120,10 @@ mod tests {
         );
     }
 
-    /// The width of the window is the feature, not an implementation detail: a hand
-    /// that has to draw the circle accurately to be given the circle has been given
-    /// nothing. A loop a fifth too round and leaning 6° out of its plane's tilt — well
-    /// past what an eye can judge — is still that plane's circle, and
-    /// [`GUIDE_CIRCLE_RESIDUAL`] is set wide enough to say so.
+    /// The width of the window is the feature: a hand that has to draw the circle
+    /// accurately to be given the circle has been given nothing. A loop a fifth too round
+    /// and leaning 6° out of its plane's tilt — past what an eye can judge — is still that
+    /// plane's circle ([`GUIDE_CIRCLE_RESIDUAL`]).
     #[test]
     fn a_loop_only_roughly_in_perspective_still_snaps() {
         let g = guide();
@@ -1195,8 +1148,7 @@ mod tests {
     /// the hand — which is the whole reason the plane is carried at all.
     ///
     /// The pointer is put on the circle half again as wide, at a place of its own
-    /// choosing: the drag is therefore mostly *across* the shape, and the answer has to
-    /// be exactly the circle half again as wide, because sideways travel means nothing
+    /// choosing, so the drag is mostly *across* the shape: sideways travel means nothing
     /// to a shape with no orientation to turn.
     #[test]
     fn a_perspective_circle_is_steered_in_its_plane() {

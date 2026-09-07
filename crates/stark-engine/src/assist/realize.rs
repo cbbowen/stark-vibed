@@ -1,10 +1,10 @@
 //! **Realization**: the ideal shape as a fitted path, carrying the pen channels the
 //! stroke was drawn with (§6.9).
 //!
-//! This is what keeps a snapped stroke *painted* rather than turning it into vector
-//! art with a brush texture on it: the geometry is replaced wholesale, and the
-//! pressure, tilt and time that were put into the drawn stroke are carried onto the
-//! ideal shape at the same fraction of the way along.
+//! This is what keeps a snapped stroke *painted* rather than vector art with a brush
+//! texture on it: the geometry is replaced wholesale, and the pressure, tilt and time
+//! that were put into the drawn stroke are carried onto the ideal shape at the same
+//! fraction of the way along.
 
 use super::AssistShape;
 use crate::path::{FLATTEN_TOLERANCE, arc_profile, flatten, param_at};
@@ -17,14 +17,13 @@ use std::f32::consts::TAU;
 /// How far a snapped ellipse may sit off the true one, in canvas px — what fixes its
 /// leg count.
 ///
-/// The binding error is *not* the interior ripple (`r·Δ⁴/384` for a leg of `Δ`
-/// radians, which is microscopic at any leg count worth using) but the **clamped end**:
-/// the first leg of the path is deformed by the end condition, and its chord bows
-/// `r·Δ²/8` off the arc it stands for. Placing the end control points by least squares
-/// ([`realize`]) spreads that, leaving a little under a quarter of it — measured at
-/// 1.69px for a 200px circle on 30° legs, against `r·Δ²/8 = 6.85`. So the leg count
-/// solves `r·Δ²/24 ≤` this: the divisor is rounded *down* from the measured ratio, so
-/// the number below is a bound rather than an average of one.
+/// The binding error is *not* the interior ripple (`r·Δ⁴/384` for a leg of `Δ` radians,
+/// microscopic at any leg count worth using) but the **clamped end**: the first leg of
+/// the path is deformed by the end condition, and its chord bows `r·Δ²/8` off the arc it
+/// stands for. Placing the end control points by least squares ([`realize`]) spreads
+/// that, leaving a little under a quarter — measured at 1.69px for a 200px circle on 30°
+/// legs, against `r·Δ²/8 = 6.85`. So the leg count solves `r·Δ²/24 ≤` this, the divisor
+/// rounded *down* from the measured ratio so the bound is a bound.
 const ELLIPSE_ERROR: f32 = 0.4;
 
 /// Legs a snapped ellipse is built from, whatever [`ELLIPSE_ERROR`] asks for. The floor
@@ -39,10 +38,9 @@ const MAX_LEGS: usize = 96;
 ///
 /// A clamped cubic B-spline's **first span is a straight chord** — the clamp collapses
 /// three of its four Bézier points onto the first control point — so an ellipse cannot
-/// be exact at the two ends of the open path that draws it, however many control
-/// points it gets. Overlapping the seam puts that flat sixth-of-a-leg *underneath* the
-/// far end's correctly-curved interior instead of beside it, which is also what makes
-/// a closed loop join without a notch.
+/// be exact at the two ends of the open path that draws it, however many control points
+/// it gets. Overlapping the seam puts that flat sixth-of-a-leg *underneath* the far end's
+/// correctly-curved interior, which is also what makes a closed loop join without a notch.
 const SEAM_OVERLAP: usize = 2;
 
 /// Ceiling on a snapped path's control points. Nothing here needs to outgrow what the
@@ -54,14 +52,8 @@ const TARGETS_PER_KNOT: usize = 4;
 
 /// The pen channels of the stroke as drawn, against distance along it.
 ///
-/// This is what keeps a snapped stroke *painted*. The geometry is replaced wholesale;
-/// the pressure, tilt and time that were put into it are carried onto the ideal shape
-/// at the same fraction of the way along, so a line snapped out of a stroke that swelled
-/// in the middle still swells in the middle. Without it the feature would produce
-/// vector art with a brush texture on it.
-///
-/// Read off the *fitted* path rather than off the raw reports, because that is already
-/// the smoothed, de-jittered version of the same signal and it is what the stroke would
+/// Read off the *fitted* path rather than off the raw reports: that is already the
+/// smoothed, de-jittered version of the same signal, and it is what the stroke would
 /// have been drawn with had nothing snapped.
 pub struct PenProfile {
     /// `(fraction along, [pressure, tilt x, tilt y, time])`, in order.
@@ -115,12 +107,11 @@ impl AssistShape {
     /// live. Geometry decides the floor and the pen decides nothing else — the same
     /// split [`SplineIndex::fit_channels`] draws.
     ///
-    /// The geometry of a **line** is placed in closed form (any collinear control
-    /// polygon draws exactly that line, so there is nothing to solve and nothing to
-    /// round off). An **ellipse** is *fitted*: a clamped B-spline's ends are pinned to
-    /// their own control points, so control points placed analytically on the ellipse
-    /// leave an `O(Δ²)` bulge exactly at the seam, and a solve is what places the end
-    /// rows to cancel it. The pen channels are fitted either way.
+    /// The geometry of a **line** is placed in closed form: any collinear control polygon
+    /// draws exactly that line. An **ellipse** is *fitted*, because a clamped B-spline's
+    /// ends are pinned to their own control points, so points placed analytically on the
+    /// ellipse leave an `O(Δ²)` bulge exactly at the seam and the solve is what places the
+    /// end rows to cancel it. The pen channels are fitted either way.
     pub fn to_path(self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
         let (seed, targets, fit_geometry) = match self {
             Self::Line { a, b, .. } => {
@@ -140,10 +131,9 @@ impl AssistShape {
                 let span = (m - 1) as f32 * delta;
                 // Control points sit on a slightly *larger* ellipse: a uniform cubic
                 // B-spline runs inside its own control polygon by `(1 - cos Δ)/3`, and
-                // undoing that is what makes the drawn curve the ellipse asked for
-                // rather than a shrunken one. Exact for an ellipse as well as a circle
-                // — the construction is an affine image of the circle case, and
-                // B-splines commute with affine maps.
+                // undoing that is what makes the drawn curve the ellipse asked for.
+                // Exact for an ellipse as well as a circle — the construction is an
+                // affine image of the circle case, and B-splines commute with affine maps.
                 let bulge = 3.0 / (2.0 + delta.cos());
                 let start = -(SEAM_OVERLAP as f32) * delta;
                 let seed = spread(m, |f| self.at(start + f * span, bulge));
@@ -166,9 +156,9 @@ fn spread(n: usize, f: impl Fn(f32) -> Vec2) -> Vec<Vec2> {
 /// Fit `seed`'s control polygon to `targets`, and the pen channels alongside it.
 ///
 /// The parameters the targets are fitted at come from the seed curve's own **arc
-/// profile**, which is the correction [`PathFitter`](crate::path::PathFitter) makes
-/// for the same reason: a clamped B-spline is not parameterized by distance, and
-/// assuming otherwise leaves a residual on data the curve could match exactly.
+/// profile**, the same correction [`PathFitter`](crate::path::PathFitter) makes: a
+/// clamped B-spline is not parameterized by distance, and assuming otherwise leaves a
+/// residual on data the curve could match exactly.
 fn realize(
     seed: &[Vec2],
     targets: &[Vec2],

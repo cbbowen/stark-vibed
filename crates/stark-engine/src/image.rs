@@ -46,14 +46,10 @@ impl RgbaImage {
     /// Build from bytes read back off a render target of `format`, normalizing the
     /// channel order.
     ///
-    /// A readback returns the target's bytes *in the target's own order*, and this
-    /// type is RGBA by definition, so a BGRA target has to be swizzled. That
-    /// distinction is invisible on the machines the tests run on — they render to
-    /// `Rgba8Unorm` — but a browser substrate is typically `Bgra8Unorm`, and the
-    /// result was an exported PNG with red and blue swapped: salmon paper came out
-    /// pale blue, orange paint came out blue. Green, black and white all survive a
-    /// R↔B swap unchanged, which is what made it look like a color-space bug
-    /// rather than a byte-order one.
+    /// A readback returns the target's bytes *in the target's own order* and this type
+    /// is RGBA by definition, so a BGRA target has to be swizzled. Skipping it swaps
+    /// red and blue — invisible where tests render to `Rgba8Unorm`, but a browser
+    /// substrate is typically `Bgra8Unorm`.
     pub fn from_target_bytes(
         width: u32,
         height: u32,
