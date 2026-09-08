@@ -467,10 +467,14 @@ fn a_float_dragged_and_merged_back_is_the_baked_move() {
         b.observe().layers.len(),
         "the merge folded the float away",
     );
+    // The ramp's recompute band, at 3 rather than 2 since §6.6: the two paths resample
+    // the same picture, and a tip whose falloff is narrower puts a steeper gradient
+    // under that resampling — a third of a percent of pixels land one level further
+    // apart. Still a band about *rounding*, not about the two paths disagreeing.
     assert_within(
         &a.render_to_image(),
         &b.render_to_image(),
-        2,
+        3,
         "float+drag+merge vs cut/paste",
     );
 }

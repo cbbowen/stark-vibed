@@ -110,10 +110,14 @@ fn reference_light_reproduces_opaque_paint() {
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
 
-    // Two passes: one is already opaque to within a byte, the second puts the visible
-    // alpha far enough into the exponential's tail that the substrate cannot reach the
-    // substrate at all — which is the property the two substrates below check.
-    const PASSES: usize = 2;
+    // Passes enough to put the visible alpha far into the exponential's tail, so the
+    // substrate cannot reach through at all — which is the property the two substrates
+    // below check. Three rather than two since §6.6's tip lays one pass of depth at its
+    // hardest where the old one laid 1.8 (its ceiling sat above `TAU_PER_PASS`), so the
+    // same place in the tail costs one more pass. Nothing here is a claim about the
+    // brush: the count exists to make the paint opaque, and the test is the media
+    // pass's.
+    const PASSES: usize = 3;
 
     for &c in PROBES {
         for substrate in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {

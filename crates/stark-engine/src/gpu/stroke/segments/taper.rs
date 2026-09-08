@@ -370,8 +370,16 @@ mod tests {
             whole(&rec).len()
         };
         let (small, large) = (count(5.0), count(500.0));
+        // Bounded, not equal, and the bound is loose on purpose. The budget is
+        // `max(TAPER_OUTLINE_PX, slack·shoulder·r)`: both terms of the count scale with
+        // the radius, so the *shoulder* arm is scale-free, and the spread is entirely
+        // the px floor holding the small tip's budget above what its own falloff would
+        // buy. The floor therefore binds further up the size range the narrower the
+        // family's falloff is, and §6.6's is narrower — 2.5× here where it was 1.4×,
+        // over a hundredfold of brush. What the test is for is a taper that costs
+        // *unboundedly* more on a fat brush, which is a different shape of number.
         assert!(
-            large <= small * 2,
+            large <= small * 3,
             "the same stroke costs {small} segments at radius 5 and {large} at 500",
         );
     }

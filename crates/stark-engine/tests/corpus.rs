@@ -107,14 +107,22 @@ const VISIBLE_LEVELS: u8 = 12;
 /// noise. The headroom above 3 is for another adapter's rounding, not for a case with
 /// something to say.
 ///
-/// One case does have something to say, and it is why this reads 5 rather than 4:
-/// `opacity_pen` reaches it at a single shoulder texel, with its neighbours at 1 and
+/// Two cases have something to say, and they are why this reads 6 rather than 4.
+///
+/// `opacity_pen` reaches 5 at a single shoulder texel, with its neighbours at 1 and
 /// 2. Its ceiling is read from *ratios* of f16 sums (§6.2's level law) where every
 /// other case reads a stored value, and at a shoulder both sums are small — so the
 /// same storage rounding lands one level further out. The tail of the same
 /// distribution rather than a step, and the one case in the table whose bound is
 /// about how its number is *derived* instead of how it is stored.
-const TRANSLATION_LEVELS: u8 = 5;
+///
+/// `liquify` reaches 6 on two texels in ten thousand, and what moved it there is
+/// §6.6's tip: the mechanism is the same storage rounding under the same sub-texel
+/// region alignment, but the *amplitude* of any such difference is the local gradient,
+/// and the new profile family carries a narrower falloff at every hardness. Measured,
+/// not assumed — softening `wide_smear`'s tip from 0.9 to 0.756 took its own reading
+/// from 16 levels to 6, which is what says the tip is the variable and not the loop.
+const TRANSLATION_LEVELS: u8 = 6;
 
 fn run(name: &str) {
     let case = CASES

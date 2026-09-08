@@ -179,12 +179,18 @@ fn a_wet_brushs_flow_scales_the_smear() {
     let (Some(full), Some(half), Some(off)) = (carried(1.0), carried(0.35), carried(0.0)) else {
         return;
     };
+    // Quoted against the full-flow carry rather than in levels, because *how much* a
+    // tip carries is a property of the tip — §6.6's lays a bounded depth where the old
+    // one's ceiling let it run past a pass — while what this test is about is that the
+    // three are separated and ordered. A quarter of the full carry between each is the
+    // same claim the level counts were making, in a unit that survives the tip.
+    let step = full / 4;
     assert!(
-        full > half + 10,
+        full > half + step,
         "a lower flow must carry visibly less: full {full}, half {half}",
     );
     assert!(
-        half > off + 10,
+        half > off + step,
         "…and a token flow still more than none: half {half}, off {off}",
     );
     assert!(
@@ -1921,12 +1927,16 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
             worst
         };
 
-        // Measured at 1 and 0 on the adapter this was built on; the slack covers
+        // Measured at 4 and 0 on the adapter this was built on; the slack covers
         // cross-adapter rounding, not a smaller ring — the artifact this pins was a
-        // visible rim, not a level of noise.
+        // visible rim (a band of surplus paint with a scraped groove inside it), not a
+        // level of noise. The rim reading moved from 1 to 4 with §6.6's tip, whose
+        // shoulder carries a different `κ` across it and so settles in a slightly
+        // different order; four levels is still two orders under what the wick pass
+        // existed to treat.
         let (r, rx, ry) = ring(&before, &after);
         assert!(
-            r <= 3,
+            r <= 6,
             "{name}: a rim rises {r} levels outside a groove at ({rx}, {ry}) — the \
              lift-end ring is back; the settle is no longer delivering the shoulder's \
              payout in order",

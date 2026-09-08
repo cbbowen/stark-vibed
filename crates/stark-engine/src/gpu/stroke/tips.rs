@@ -307,6 +307,14 @@ type NoiseKey = (NoiseKind, u32);
 /// of its profile in the visible band and fades over a *wider* one.
 const SOFT_PEAK_DEPTH: f32 = 2.0;
 
+/// How fast the peak climbs off [`SOFT_PEAK_DEPTH`] as the dial hardens.
+///
+/// Anchored rather than chosen: at 2.5 a tip at hardness 0.8 lays 6.78, which is what
+/// the family this replaced laid there (6.73). Everything from the middle of the dial
+/// up therefore covers as it always did, and the whole of the lightening the bounded
+/// peak buys is spent in the soft half, where it is the point.
+const SOFT_FALLOFF: f32 = 2.5;
+
 /// The 10–90 width of the softest tip's profile, in radii — the widest falloff the
 /// dial offers, and the constant `budget::shoulder_per_radius` reports scaled by
 /// `1 − hardness`.
@@ -380,7 +388,14 @@ impl RoundProfile {
     /// one.
     pub(super) fn of(hardness: f32) -> Self {
         let hardness = hardness.clamp(0.0, 1.0);
-        let peak = SOFT_PEAK_DEPTH * (super::budget::TAU_PER_PASS / SOFT_PEAK_DEPTH).powf(hardness);
+        // Geometric between the two depths, but on `1 − (1 − hardness)^SOFT_FALLOFF`
+        // rather than on the dial itself: the airiness belongs to the *soft* end, and
+        // spreading it evenly left a mid-hard tip a few percent short of covering,
+        // which reads as opaque paint that is not quite opaque and is not what any
+        // dial position should mean.
+        let soft = 1.0 - hardness;
+        let peak = SOFT_PEAK_DEPTH
+            * (super::budget::TAU_PER_PASS / SOFT_PEAK_DEPTH).powf(1.0 - soft.powf(SOFT_FALLOFF));
         let want = SOFT_SHOULDER * (1.0 - hardness);
         // Scanned rather than bisected, in two passes. The shoulder rises with `p`,
         // turns over, and falls again: below the turn the profile opens from a disc into

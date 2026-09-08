@@ -778,12 +778,20 @@ mod tests {
         }
         assert_eq!(extent_cell(&soft, 250.0), 5);
         assert_eq!(extent_cell(&soft, 500.0), 10);
-        // Shoulder-bound: at hardness 0.99 a 500 px tip's shoulder is 15 px, so the
-        // quarter-shoulder term (3.75) undercuts the 10 the radius term would give.
-        assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.99 }, 500.0), 3);
-        // At least four cells across the shoulder wherever the shoulder binds.
+        // Shoulder-bound, and now bound past the floor: at hardness 0.99 a 500 px
+        // tip's shoulder is 2.5 px, so a quarter of it is 0.6 — under the threshold of
+        // 2, and the tip takes the exact kernel. It used to coarsen to 3, on a
+        // `shoulder_per_radius` that overstated the falloff by an order (§6.6): a tip
+        // whose whole falloff is 2.5 px cannot pay for 3 px cells, and that is the
+        // reading the number now gives.
+        assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.99 }, 500.0), 1);
+        // Shoulder-bound where the shoulder is wide enough to bind at all.
+        assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.9 }, 500.0), 6);
+        // At least four cells across the shoulder wherever the shoulder binds. Off
+        // `shoulder_per_radius` rather than a copy of it, so the law and its own bound
+        // cannot part company.
         for h in [0.9f32, 0.95, 0.99] {
-            let shoulder = 3.0 * (1.0 - h) * 500.0;
+            let shoulder = shoulder_per_radius(&BrushShape::Round { hardness: h }) * 500.0;
             let cell = extent_cell(&BrushShape::Round { hardness: h }, 500.0);
             assert!(
                 cell as f32 * 4.0 <= shoulder || cell == 1,
@@ -955,8 +963,13 @@ mod tests {
         };
         // A hard tip at real flow: the 1× visible edge is a fraction of a px.
         assert_eq!(supersample_scale(&heavy_hard(1.0, 2.5, 10.0)), SUPERSAMPLE);
-        // The same flow through a soft tip: the shoulder already spans px.
-        assert_eq!(supersample_scale(&heavy_hard(0.5, 2.5, 20.0)), 1);
+        // The same flow through a soft tip: the shoulder already spans px. A 40 px
+        // tip at hardness 0.5 carries a 10 px falloff, which the slab law sharpens to
+        // ~1.3 px of visible edge — over the box filter's own, so 1× draws it. (20 px
+        // was the case before §6.6's family change; its 5 px falloff now renders a
+        // visible edge under the px, and supersamples for the same reason a hard tip
+        // does.)
+        assert_eq!(supersample_scale(&heavy_hard(0.5, 2.5, 40.0)), 1);
         // A hard tip laying almost nothing: the slab law never saturates, so the
         // τ ramp *is* the visible edge.
         assert_eq!(supersample_scale(&heavy_hard(1.0, 0.1, 10.0)), 1);

@@ -63,7 +63,7 @@ pub struct Tol {
     /// changing width — so the two are directly comparable and the corpus reads as one
     /// table of *how much of this stroke the hand coming off it moves*.
     ///
-    /// **Fifteen of the sixteen are 0, exactly, and that is the claim.** A release
+    /// **Seventeen of the twenty are 0, exactly, and that is the claim.** A release
     /// carries no arc length, so by §6.2 it deposits nothing — the swept integral is a
     /// definite integral over travel, and `generate_segments_in` drops any edge shorter
     /// than `1e-5` before the question reaches a shader at all.
@@ -595,7 +595,7 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |_, _| {
             let mut b = brush(RED, 16.0);
-            b.shape = BrushShape::Round { hardness: 0.9 };
+            b.shape = BrushShape::Round { hardness: 0.756 };
             b.drain = 0.0;
             b.paint_mut().expect("a paint brush").flow = 1.0;
             b.start_taper_length = 4.0;
@@ -690,7 +690,7 @@ pub const CASES: &[Case] = &[
         prepare: |e, _| {
             linen_substrate(e);
             let mut b = smear_brush(45.0);
-            b.shape = BrushShape::Round { hardness: 0.9 };
+            b.shape = BrushShape::Round { hardness: 0.756 };
             b.tooth.give = 0.1;
             // Named, not inherited: what the *default* softness is set to is taste —
             // which tool the app opens on — and this golden is a claim about the tooth
@@ -724,7 +724,10 @@ pub const CASES: &[Case] = &[
         tol: Tol {
             golden: 6,
             seam: 12,
-            refine: 0.06,
+            // Raised with §6.6's family. The refit moves the same paint it always did —
+            // this is the base sequential case and its fit is untouched — but a narrower
+            // falloff carries more of that movement past twelve levels.
+            refine: 0.25,
             lift: 0.0,
         },
     },
@@ -796,13 +799,18 @@ pub const CASES: &[Case] = &[
             let mut lay = brush([0.0, 0.0, 0.0], 260.0);
             lay.paint_mut().expect("a paint brush").flow = 1.5;
             lay.drain = 0.0;
+            // Hard, and said here rather than inherited from `brush`: "laid flat" is
+            // this case's whole premise — the smear's own structure is what it reads —
+            // and a field carrying the shared helper's shoulder puts a gradient under
+            // the mark that the translation check then reads as the loop's.
+            lay.shape = BrushShape::Round { hardness: 0.95 };
             replay_with(
                 e,
                 lay,
                 &[at + Vec2::new(-260.0, 0.0), at + Vec2::new(260.0, 0.0)],
             );
             let mut b = smear_brush(250.0);
-            b.shape = BrushShape::Round { hardness: 0.9 };
+            b.shape = BrushShape::Round { hardness: 0.756 };
             let w = b.make_wet();
             w.dynamics.add = 0.0;
             w.dynamics.lift = 0.9;
@@ -862,7 +870,11 @@ pub const CASES: &[Case] = &[
             golden: 6,
             seam: 12,
             refine: 0.12,
-            lift: 0.0,
+            // A handful of texels rather than the exact zero the column's claim is about,
+            // and the fit's doing, not the renderer's: §6.6's tip carries a narrower
+            // falloff, so the release's own re-solve of the last span crosses the
+            // visibility threshold where it used to stay under it.
+            lift: 0.01,
         },
     },
     Case {
@@ -977,8 +989,14 @@ pub const CASES: &[Case] = &[
             // stops responding to the cut at all. The margin is over the
             // measured case, and a regression past the uncapped control would
             // still fail loudly.
-            refine: 0.15,
-            lift: 0.0,
+            // Raised with §6.6's family: the same refit moves the same paint, and a
+            // narrower falloff puts more of it past twelve levels.
+            refine: 0.20,
+            // A few dozen texels rather than the exact zero the column's claim is about,
+            // and the fit's doing rather than the renderer's: the release re-solves the
+            // last span, and §6.6's narrower falloff shows that re-solve where the old
+            // one blurred over it.
+            lift: 0.01,
         },
     },
     Case {

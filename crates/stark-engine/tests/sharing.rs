@@ -139,7 +139,15 @@ fn export_view_frames_the_callers_view() {
         return;
     };
     let at = Vec2::new(300.0, -140.0);
-    paint(&mut engine, RED, 20.0, &[at, at + Vec2::new(1.0, 0.0)]);
+    // Three passes of the same one-px dab. One is a *sweep* over 1/20 of a radius, so
+    // what it lays is the tip's depth per unit travel and not a pass of it — under
+    // §6.6's tip that is a fifth of coverage, which no longer clears `MARGIN`. Kept a
+    // dab rather than lengthened into a stroke: a mark that filled the frame would
+    // satisfy the assertion below wherever the framing put it, which is the one thing
+    // this test is for.
+    for _ in 0..3 {
+        paint(&mut engine, RED, 20.0, &[at, at + Vec2::new(1.0, 0.0)]);
+    }
     let size = Extent2::new(64, 32);
     let view = ViewTransform {
         center: at,

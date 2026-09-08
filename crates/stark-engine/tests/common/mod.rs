@@ -248,6 +248,11 @@ pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
         // the point: the unit change is a change of interpretation, and no test in
         // the suite was measuring the interpretation.
         drain: 0.0015 * radius,
+        // Remapped with §6.6's family (2026-09-07): what `hardness` names is the
+        // falloff width, and the new family's widest is 0.50 of the radius where the
+        // old one's was 0.80 — so the same number is a sharper tip. Carried over by
+        // its place in the dial's range (`1 − old_width/0.80`), which is what keeps
+        // the suite exercising the tip it was written for.
         shape: BrushShape::Round { hardness: 0.8 },
         ..BrushParams::default()
     }
