@@ -131,10 +131,10 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(1),
             0.15,
             100.0,
-            1.25,
+            3.0,
             BrushConfig {
                 drain: 0.1,
-                shape: BrushShape::Round { hardness: 0.38 },
+                shape: BrushShape::Round { hardness: 0.9 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
@@ -395,7 +395,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             None,
             0.2,
             90.0,
-            0.2,
+            1.0,
             BrushConfig {
                 shape: BrushShape::Round { hardness: 0.0 },
                 effect: BrushEffectType::Liquify,
