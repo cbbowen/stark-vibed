@@ -2780,12 +2780,20 @@ impl Canvas {
 
 impl Render for Canvas {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        // **The frame after a resize exists only because of this.** The surface
-        // element resizes its textures during prepaint, which is after this runs, so
-        // the new size is first visible here one frame later — and a window resize
-        // schedules no further frame of its own. Cheap to ask for: the tree is small,
-        // and the engine renders only when something has actually changed.
-        window.request_animation_frame();
+        // A shared session is the one thing here that needs the frame loop to keep
+        // turning on its own: presence rides it rather than a timer (`tick_presence`),
+        // so an idle client that stopped asking would be expired by its peers.
+        //
+        // **Asked for only then.** wgpui honours the request now — a queued animation
+        // frame chains the next one — where it used to sit unread until unrelated
+        // input woke the loop, so an unconditional ask is an event loop that never
+        // sleeps. Nothing else here wants the cadence: the stylus wakes the window
+        // itself (`stark_pen`), a peer's frames arrive on a task, a resize is a frame
+        // the surface element asks for, and everything a command touches goes through
+        // `repaint`.
+        if self.collab.phase == collab::Phase::Shared {
+            window.request_animation_frame();
+        }
         // The stylus first, before anything reads the document: what it reported since
         // the last frame is a press, a run of samples and a lift, and the engine has to
         // have them before `paint` below renders the answer — which is what keeps a

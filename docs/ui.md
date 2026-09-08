@@ -1451,11 +1451,20 @@ the exit criterion is an act, not a diff.
   assertions, since it is the seam this crate owns and the transport is not.
 
   **The frame loop is the presence pump.** The web app spawns a 30 Hz task, because
-  it has no other clock to offer the engine. This frontend already runs `render` on
-  the display's cadence, and `presence_due` is a `&self` comparison — so the tick
-  is three lines in `render` and an idle shared session costs one comparison a
-  frame and takes no mutable borrow at all. It is the first place the native app's
-  shape is *better* than the web's rather than behind it.
+  it has no other clock to offer the engine. This frontend asks the window for the
+  next frame instead, and `presence_due` is a `&self` comparison — so the tick is
+  three lines in `render` and an idle shared session costs one comparison a frame
+  and takes no mutable borrow at all. It is the first place the native app's shape
+  is *better* than the web's rather than behind it.
+
+  **Sharing is the only thing that asks.** The ask used to be unconditional, on a
+  window that quietly dropped it — an animation frame reached a queue nothing
+  drained until unrelated input arrived (`vendor/wgpui` patch 5). Once the window
+  honours it, asking every frame is an event loop that never sleeps, so the request
+  is spent on the one thing that needs a clock rather than an event. Everything else
+  has its own: the stylus wakes the window from its window procedure (§11.3), a
+  peer's frames arrive on a task, a resize is a frame the surface element asks for,
+  and a command repaints.
 
   **Still open: leaving.** There is no act for it, so a session ends when the
   process does and peers drop this client on the presence timeout rather than at

@@ -139,6 +139,20 @@ fn pick_corner_radius(center_to_point: vec2<f32>, radii: Corners) -> f32 {
     }
 }
 
+// STARK PATCH: the same signed distance `quads.wgsl` measures a rounded rect by,
+// for the crisp path below. Negative inside, positive outside.
+fn quad_sdf_impl(corner_center_to_point: vec2<f32>, corner_radius: f32) -> f32 {
+    if (corner_radius == 0.0) {
+        return max(corner_center_to_point.x, corner_center_to_point.y);
+    } else {
+        let signed_distance_to_inset_quad =
+            length(max(vec2<f32>(0.0), corner_center_to_point)) +
+            min(0.0, max(corner_center_to_point.x, corner_center_to_point.y));
+
+        return signed_distance_to_inset_quad - corner_radius;
+    }
+}
+
 fn gaussian(x: f32, sigma: f32) -> f32 {
     return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * M_PI_F) * sigma);
 }
@@ -187,6 +201,17 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
     let center_to_point = input.position.xy - center;
 
     let corner_radius = pick_corner_radius(center_to_point, shadow.corner_radii);
+
+    // STARK PATCH: an unblurred shadow — the 1px ring a popover surface wears — is
+    // a crisp rounded rect, and the gaussian path below cannot draw one: it divides
+    // by the blur radius, so at zero every term is NaN and the whole rect lands
+    // opaque black whatever the colour's alpha says. The blend the antialiased edge
+    // of a quad uses is the right answer for it.
+    if (shadow.blur_radius <= 0.0) {
+        let corner_center_to_point = abs(center_to_point) - half_size + corner_radius;
+        let distance = quad_sdf_impl(corner_center_to_point, corner_radius);
+        return blend_color(input.color, saturate(0.5 - distance));
+    }
 
     let low = center_to_point.y - half_size.y;
     let high = center_to_point.y + half_size.y;

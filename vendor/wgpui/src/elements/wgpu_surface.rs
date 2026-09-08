@@ -264,6 +264,12 @@ impl Element for WgpuSurface {
             if let Some(cb) = &self.on_resize {
                 cb(pixel_w, pixel_h, &self.handle);
             }
+            // STARK PATCH: the buffers this frame composites were filled at the old
+            // size, and this runs after the embedder has already decided what to draw
+            // — so the new size is first renderable one frame later, and that frame
+            // has to be asked for. Nothing else asks: a window resize schedules no
+            // frame beyond the one that carried the event.
+            window.request_animation_frame();
         }
     }
 

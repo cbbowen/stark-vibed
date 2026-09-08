@@ -2002,6 +2002,15 @@ impl Window {
     }
 
     fn complete_frame(&self) {
+        // STARK PATCH: an animation asks for its next frame by queueing a callback
+        // (`request_animation_frame` -> `on_next_frame`), and that queue is drained
+        // only when the platform delivers a frame. Nothing else asks for one, so
+        // under `ControlFlow::Wait` an animation played its first frame and then
+        // stopped until unrelated input woke the loop. Chaining here leaves the idle
+        // case asleep: the queue is empty unless something is mid-animation.
+        if !RefCell::borrow(&self.next_frame_callbacks).is_empty() {
+            self.platform_window.request_frame();
+        }
         self.platform_window.completed_frame();
     }
 

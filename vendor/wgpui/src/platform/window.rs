@@ -350,6 +350,15 @@ impl PlatformWindow for CrossWindow {
         }
     }
 
+    // STARK PATCH: the event loop runs under `ControlFlow::Wait` and
+    // `RedrawRequested` deliberately does not chain itself, so this is the only
+    // way a frame that wants a successor can say so.
+    fn request_frame(&self) {
+        if let Some(window) = self.0.winit_window.get() {
+            window.request_redraw();
+        }
+    }
+
     fn create_wgpu_surface(
         &self,
         width: u32,

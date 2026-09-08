@@ -2,7 +2,7 @@
 
 wgpui `0.3.5` from the crates.io source (`registry/src/.../wgpui-0.3.5`,
 upstream commit `cc6706e62b` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus four local patches. Substituted for the crates.io crate via
+tree**, plus six local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest, which also redirects what
 `wgpui-component` (§11.1) asks for, so the widget layer draws with the device the
 first patch describes. License: Apache-2.0 (`LICENSE.md`, kept).
@@ -211,6 +211,74 @@ Not upstreamable as is — upstream would want the color space to be a
 `WindowOptions` choice rather than "HDR when the display has it" — but the shader
 half is what any such option would need.
 
+## Patch 5 — the frame an animation asked for is actually delivered
+
+`Window::complete_frame` asks the platform for another frame while
+`next_frame_callbacks` is non-empty, through a new `PlatformWindow::request_frame`
+(default no-op; `CrossWindow` calls winit's `request_redraw`). And
+`WgpuSurface::prepaint` calls `request_animation_frame` when it resizes the
+surface's textures.
+
+### Why
+
+**Every animation in the app played one frame and then stopped.** The chain has
+no loop in it: `Window::request_animation_frame` pushes a callback onto
+`next_frame_callbacks`, that queue is drained only when the platform delivers a
+frame, and the winit loop runs under `ControlFlow::Wait` — its `RedrawRequested`
+arm deliberately does not chain itself, and `about_to_wait` deliberately does not
+request one. So an element that wants the next frame has no way to say so, and
+the next frame arrives only when unrelated input wakes the loop.
+
+**How it surfaced.** `wgpui-component`'s dropdowns fade and slide in over 150ms
+(`popover::dropdown_popup`). Opening the Layers blend picker painted its first
+frame — the surface at `opacity(0)`, 8px high — and froze there until the pointer
+moved, which is a `WM_MOUSEMOVE` and so a frame, by which time the animation was
+past its duration and snapped to settled. With patch 6 the frozen frame was a
+black slab; without it, a dropdown that opens on nothing at all.
+
+The condition is what keeps the idle case idle: the queue is empty unless
+something is mid-animation, so the loop still sleeps at ~0% when nothing is.
+
+**The surface half is the same bug from the other side.** A `WgpuSurface` resizes
+its textures in prepaint, which is after the embedder has decided what to draw, so
+the new size is first renderable one frame later — and a window resize schedules
+no frame past the one that carried the event. `stark-wgpui-frontend`'s `Canvas`
+was covering this by asking for an animation frame *every* frame, which under the
+bug above was very nearly free. Once the request works, an unconditional one is an
+event loop that never sleeps, so the ask moved to the element that knows it
+resized, and the canvas now asks only for the presence cadence a shared session
+needs.
+
+Upstreamable, and worth it — an animation framework whose animations do not run
+without help from the mouse is a bug independent of anything Stark wants.
+
+## Patch 6 — a shadow with no blur is a crisp rect, not NaN
+
+`shaders/shadows.wgsl`: `fs_shadow` takes a `blur_radius <= 0` early-out that
+measures the rounded-rect signed distance (`quad_sdf_impl`, the same arithmetic
+`quads.wgsl` uses) and blends by `saturate(0.5 - distance)`.
+
+### Why
+
+The gaussian path divides by the blur radius — `gaussian(y, sigma)` is
+`exp(-y²/2σ²) / (σ√2π)` and the quadrature step is `(end - start) / 4` where both
+ends clamp to zero. At `σ = 0` every term is NaN, and the fragment returned NaN in
+all four channels, which this hardware resolves to **opaque black over the
+shadow's whole bounds** — alpha ignored entirely.
+
+An unblurred shadow is not a corner case: it is how a 1px ring is drawn.
+`wgpui-component` gives every popover surface one (`styled::popover_shadow`, "No
+blur, so it takes the shader's crisp path rather than the gaussian one" — a path
+that exists in GPUI and did not survive into this fork). So every popover, select
+and date picker in the app wore a hard black hairline where a translucent ring
+belonged, and any of them drawn at less than full opacity showed a black slab
+through the panel. That last is what the dropdown froze on, and what
+`dropdown_popup` mistook for a compositing limit: it ramps its shadow's ink by the
+*cube* of the fade to keep the slab out of sight, which cannot work, because the
+ink is what the shader was throwing away.
+
+Upstreamable, and worth it.
+
 ## The deletion
 
 `examples/` is gone, and with it the thirty `[[example]]` blocks that named its
@@ -266,9 +334,10 @@ where the patch had carried a `generation` on the pair — the same fix.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply the five changes: the
+Unpack the new version over this directory, then re-apply the seven changes: the
 `DeviceDescriptor` threading, the `WindowBounds` plumbing, the RGBA
-`RenderImage`, the HDR swapchain with its shader decode, and the deletion —
+`RenderImage`, the HDR swapchain with its shader decode, the animation frame that
+asks for its successor, the crisp shadow, and the deletion —
 `rm -rf examples/` and strip the `[[example]]` blocks the new manifests bring
 back. The 0.3.4 → 0.3.5 move was done as a `diff -ruN` of this tree against the
 pristine registry copy, applied with `patch -p1` onto the new tarball; 22 files,
