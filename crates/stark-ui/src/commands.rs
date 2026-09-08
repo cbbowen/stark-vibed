@@ -783,6 +783,26 @@ impl VisibilityToggle {
         VisibilityToggle::Timeline,
     ];
 
+    /// The word the entry wears where its surroundings have already said what the
+    /// list is: a shelf's title bar in the docked frontend (`panel::title`), a row
+    /// in the visibility menu. "Color", where the palette's row for the same act
+    /// reads "Color panel" — a search result stands alone, a column of panels does
+    /// not.
+    ///
+    /// A delegation rather than a table of its own, so the enum stays the view of
+    /// the registry [`command`](Self::command) claims it is. The gap between the two
+    /// spellings is `tests::a_panel_entry_is_its_command_less_the_word`.
+    pub fn name(self) -> &'static str {
+        self.command().word()
+    }
+
+    /// The mark the entry wears — its command's ([`Command::icon`]), so the panel
+    /// half of the menu is the stack's own column of glyphs and the other three
+    /// wear what their rows in the palette do.
+    pub fn icon(self) -> Icon {
+        self.command().icon()
+    }
+
     /// The act the entry's row runs — the whole of what the row *is*, since the
     /// menu draws every other part of it from here too (`rail::CmdItem`).
     pub fn command(self) -> Command {
@@ -1985,6 +2005,33 @@ mod tests {
             assert!(
                 !VisibilityToggle::ALL[i + 1..].contains(&entry),
                 "{entry:?} is listed twice in the visibility menu"
+            );
+        }
+    }
+
+    /// A panel entry's word and its command's name are one word apart, and the six
+    /// pairs are a rule rather than six coincidences: the palette says "Color panel"
+    /// because a row of unrelated acts would otherwise claim the subject, the shelf
+    /// says "Color" because its column has said the rest. Either spelling can be
+    /// edited alone, and nothing else would notice.
+    ///
+    /// Caselessly, for the reason `every_panel_has_a_toggle_row` is: the stack titles
+    /// that panel "Drawing Guides" and the palette lists it in the sentence case a run
+    /// of acts is written in.
+    ///
+    /// The three entries that are not panels have no second spelling to drift — they
+    /// are checked here too, since that is what makes the loop the whole menu.
+    #[test]
+    fn a_panel_entry_is_its_command_less_the_word() {
+        for entry in VisibilityToggle::ALL {
+            let expected = match entry {
+                VisibilityToggle::Panel(_) => format!("{} panel", entry.name()),
+                _ => entry.name().to_string(),
+            };
+            assert_eq!(
+                entry.command().name().to_lowercase(),
+                expected.to_lowercase(),
+                "{entry:?}'s menu word and its command's name have drifted apart"
             );
         }
     }

@@ -463,7 +463,7 @@ pub fn width(side: Side, hidden: &HashSet<VisibilityToggle>) -> f32 {
 /// on the fold control either way, so the text costs nothing that was not already
 /// spent.
 fn title(regions: &Regions, what: VisibilityToggle, open: bool) -> impl IntoElement {
-    let command = what.command();
+    let name = what.name();
     let row = div()
         .id(SharedString::from(format!("fold-{what:?}")))
         .relative()
@@ -473,8 +473,8 @@ fn title(regions: &Regions, what: VisibilityToggle, open: bool) -> impl IntoElem
         .pt_2()
         .cursor_pointer()
         .child(probe(regions, Region::Fold(what)))
-        .child(crate::icons::icon(command.icon(), style::INK_LABEL))
-        .child(div().flex_1().heading().child(command.name()))
+        .child(crate::icons::icon(what.icon(), style::INK_LABEL))
+        .child(div().flex_1().heading().child(name))
         .child(
             div()
                 .text_xs()
