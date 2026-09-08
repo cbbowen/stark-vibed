@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::assets::{AssetStore, Integrand, build_coverage_r8, build_prefix};
+use crate::assets::{AssetStore, COVERAGE_PREFIX_LABEL, build_depth_r16, build_prefix};
 use crate::gpu::context::GpuContext;
 use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 
@@ -88,7 +88,7 @@ impl TipCache {
 
     /// The brush's swept-extent prefix-τ texture: an image brush's from the asset
     /// store, the round tip's generated (and cached) from its hardness — with the
-    /// plain coverage beside it, and, for a liquify brush, the coverage prefix its
+    /// unintegrated depth beside it, and, for a liquify brush, the coverage prefix its
     /// follow reads and the tip's rise the step budget prices (§6.13).
     ///
     /// Both render paths resolve it the same way; they differ in which bind-group
@@ -107,7 +107,7 @@ impl TipCache {
                     .mask_views(id, brush.orientation, warping)
                     .map(|views| ResolvedTip {
                         prefix: views.prefix,
-                        coverage: views.coverage,
+                        depth: views.depth,
                         warp: views.warp,
                         rise: views.rise,
                     })
@@ -116,7 +116,7 @@ impl TipCache {
                 let tip = self.round_tip(super::budget::effective_hardness(hardness, brush.size));
                 Some(ResolvedTip {
                     prefix: tip.prefix,
-                    coverage: tip.coverage,
+                    depth: tip.depth,
                     warp: warping.then_some(tip.warp),
                     rise: tip.rise,
                 })
@@ -127,33 +127,51 @@ impl TipCache {
     /// The round tip's baked textures for a given `hardness`, cached so live preview
     /// — which re-renders per pointer move — doesn't rebuild them each frame.
     ///
-    /// Built and cached **together**, off a single [`round_coverage`] evaluation,
+    /// Built and cached **together**, off a single [`round_depth`] evaluation,
     /// because they are readings of one field: 256² texels of `acos`/`exp` a texture
     /// each would run again for the same hardness, and held apart the stamp loop could
-    /// find its prefix hot and its coverage cold. The coverage prefix is baked with them
+    /// find its prefix hot and its depth cold. The coverage prefix is baked with them
     /// rather than on a liquify brush's first ask — one linear pass over a field already
     /// in hand.
+    ///
+    /// **The depth is the field and the coverage is a reading of it**, not the other way
+    /// round: the prefix-τ integrates `κ` as [`round_depth`] states it, where handing it
+    /// the coverage and letting `assets::tau_of` recover `κ` capped the core at that
+    /// function's mask ceiling (τ ≈ 6.9). The two orderings agree wherever `κ` stays
+    /// under the ceiling and nowhere else — over the disc where it does not, the
+    /// recovered field was flat, which the sweep laid as a plateau across the middle of
+    /// every stroke. That disc is 0.07 of the radius at hardness 0 and 0.71 at 0.95.
     fn round_tip(&self, hardness: f32) -> RoundTip {
         let mut cache = unpoisoned(self.round_tip.lock());
         let (tip, _evicted) = lru(&mut cache, hardness.to_bits(), ROUND_TIPS_KEPT, || {
-            let cov = round_coverage(hardness, ROUND_RES);
+            let depth = round_depth(hardness, ROUND_RES);
             // The round tip is rotation-invariant, so a single orientation layer
             // suffices — the shader's wrapping lookup reads it for every
             // orientation (§6.6).
-            let prefix = build_prefix(&self.ctx, ROUND_RES, ROUND_RES, 1, &cov, Integrand::Tau);
+            let prefix = build_prefix(
+                &self.ctx,
+                ROUND_RES,
+                ROUND_RES,
+                1,
+                &depth,
+                "stark round tip prefix-tau",
+            );
+            let depth_view = build_depth_r16(&self.ctx, ROUND_RES, ROUND_RES, &depth);
+            // The coverage prefix a liquify follow reads (§6.13) is the one place the
+            // tip is wanted *as* a coverage: a follow is a fraction of how long the tip
+            // covered a texel, which saturates exactly as a coverage does.
+            let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - (-k).exp()).collect();
             let warp = build_prefix(
                 &self.ctx,
                 ROUND_RES,
                 ROUND_RES,
                 1,
                 &cov,
-                Integrand::Coverage,
+                COVERAGE_PREFIX_LABEL,
             );
-            let bytes: Vec<u8> = cov.iter().map(|c| (c * 255.0).round() as u8).collect();
-            let coverage = build_coverage_r8(&self.ctx, ROUND_RES, ROUND_RES, &bytes);
             RoundTip {
                 prefix,
-                coverage,
+                depth: depth_view,
                 warp,
                 rise: round_rise(hardness),
             }
@@ -232,14 +250,19 @@ impl NoiseLease {
     }
 }
 
-/// The textures selected together for one brush: the prefix-τ volume and the
-/// coverage mask every path reads, and — for a liquify brush alone — the coverage
-/// prefix its follow reads (§6.13), with the tip's **rise** beside it.
+/// The textures selected together for one brush: the prefix-τ volume the swept
+/// deposit differences and the tip's own depth the wet loop's tool side reads — one
+/// field, integrated and not — and, for a liquify brush alone, the coverage prefix its
+/// follow reads (§6.13), with the tip's **rise** beside it.
 pub(super) struct ResolvedTip {
     pub(super) prefix: wgpu::TextureView,
-    pub(super) coverage: wgpu::TextureView,
-    /// The **coverage prefix** (`assets::Integrand::Coverage`): the same volume as
-    /// `prefix`, integrated linearly, which the liquify `warp` kernel reads at the
+    /// The tip's `κ` per unit travel (`assets::build_depth_r16`): what a reservoir
+    /// texel's exposure is (`dynamics.wesl::depth_at`), and the field `prefix` is the
+    /// travel integral of. Bound by the wet loop alone — the swept path differences
+    /// the prefix instead.
+    pub(super) depth: wgpu::TextureView,
+    /// The **coverage prefix**: the same volume as
+    /// `prefix`, integrated linearly over the coverage, which the liquify `warp` kernel reads at the
     /// prefix-τ's own binding so a follow is the mask's mean over the pass rather
     /// than its optical depth. `None` on every other effect, which never asks.
     pub(super) warp: Option<wgpu::TextureView>,
@@ -250,13 +273,13 @@ pub(super) struct ResolvedTip {
 }
 
 /// A baked round tip: the **prefix-τ** volume both render paths integrate the swept
-/// deposit against, the plain **coverage** mask the stamp loop's reservoir texels weight
+/// deposit against, the **depth** the stamp loop's reservoir texels weigh their exposure
 /// by, the **coverage prefix** the liquify follow reads (§6.13), and the tip's rise. One
-/// type because they are one thing — the same coverage field, read four ways.
+/// type because they are one thing — the same depth field, read four ways.
 #[derive(Clone)]
 struct RoundTip {
     prefix: wgpu::TextureView,
-    coverage: wgpu::TextureView,
+    depth: wgpu::TextureView,
     warp: wgpu::TextureView,
     rise: f32,
 }
@@ -264,59 +287,241 @@ struct RoundTip {
 /// What a noise tile is cached by: the brush's kind and the stroke's seed.
 type NoiseKey = (NoiseKind, u32);
 
-/// Generate the round tip's coverage: the soft disc whose *swept* profile across the
-/// stroke is `1 − |y|^h`, for `h = 1/(1 − hardness)` and `y` the distance from the
-/// centreline in radii.
+/// The depth one full pass lays over the centreline, at every hardness.
 ///
-/// The profile is what is being designed here, not the extent. What `hardness`
-/// names is how the *stroke* falls off from its centreline; the tip that produces it
-/// is whatever it has to be, and it is not the profile's own shape — a swept deposit
-/// composes in **optical depth**, so a full pass lays `1 − exp(−τ(y))` where `τ` is
-/// this mask's `κ = −ln(1 − coverage)` integrated along the travel axis
-/// ([`build_prefix`]). Ask instead for the field
-/// whose row integrals are
+/// The depth a full pass of the **softest** tip lays over its own centreline; the
+/// hardest lays [`TAU_PER_PASS`](super::budget::TAU_PER_PASS), and the dial runs
+/// geometrically between them ([`RoundProfile::of`]).
+///
+/// This is the one place the tip's *airiness* is set, and it has to move with the dial
+/// because coverage saturates above `τ ≈ 3`: hold the peak at one pass and every
+/// hardness reads as a solid bar with a blurred edge, since the only part of the profile
+/// left in the visible band is its rim. Two is where a soft pass is a gradient all the
+/// way across — 0.865 at the centreline, half of that by four fifths of the radius —
+/// while the hard end still covers in one pass, at 0.999.
+///
+/// So a softer tip does lay a lighter mark, which is what a soft brush *is*: less of it
+/// is in contact. It is not a second opacity dial — the swing over the whole range is
+/// 0.865 to 0.999 — and a lighter mark than the soft end gives is what **flow** is for,
+/// which composes the right way round: flow scales the depth, so a fainter pass has more
+/// of its profile in the visible band and fades over a *wider* one.
+const SOFT_PEAK_DEPTH: f32 = 2.0;
+
+/// The 10–90 width of the softest tip's profile, in radii — the widest falloff the
+/// dial offers, and the constant `budget::shoulder_per_radius` reports scaled by
+/// `1 − hardness`.
+///
+/// Just under the widest this family can draw at the soft end's own peak (0.524, at
+/// `p ≈ 2`): the width rises with `p`, turns over there and falls again, so asking for
+/// the maximum itself would put [`RoundProfile::of`]'s scan on a stationary point with
+/// two branches meeting on it.
+pub(super) const SOFT_SHOULDER: f32 = 0.50;
+
+/// One round tip's profile: what `hardness` resolves to before any radius is involved.
+///
+/// **The stroke is specified, and the tip is whatever draws it** (§6.6) — that much is
+/// unchanged. What changed is the family. A full pass lays
 ///
 /// ```text
-/// τ(y) = −h·ln|y|        (so 1 − exp(−τ(y)) = 1 − |y|^h, as wanted)
+/// P(y) = 1 − exp(−T·(1 − y²)^p)
 /// ```
 ///
-/// and that is an Abel transform, which inverts in closed form: the radial
+/// at `y` radii off the centreline, and the field that sweeps to it is the Abel
+/// inverse, which for this family is elementary:
 ///
 /// ```text
-/// κ(r) = (h/π)·acos(r)/r,   r < 1
+/// κ(r) = κ₀·(1 − r²)^(p − ½),    κ₀ = T / (2∫₀^{π/2} cos^{2p}θ dθ)
 /// ```
 ///
-/// has exactly those integrals. So the tip is `1 − exp(−κ(r))` and the profile is
-/// arrived at rather than approached. Rate scales the exponent rather than leaving the
-/// family — a pass at strength `a` lays `1 − |y|^(a·h)`, the same shape at another
-/// hardness — and the field is radially symmetric, as a round tip's ought to be.
+/// since the transform of `(1 − r²)^m` is `B(½, m+1)·(1 − y²)^{m+½}`.
 ///
-/// `κ` diverges at the centre, as it must for a profile that reaches exactly 1 there,
-/// so the core saturates against the 0.999 clamp and lands a shade under 1 instead.
-/// Outside it the profile is exact to a thousandth (`tests`, below).
-fn round_coverage(hardness: f32, res: u32) -> Vec<f32> {
-    let mut cov = vec![0.0f32; (res * res) as usize];
-    for y in 0..res {
-        let fy = (y as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-        for x in 0..res {
-            let fx = (x as f32 + 0.5) / res as f32 * 2.0 - 1.0;
-            cov[(y * res + x) as usize] = round_coverage_at(hardness, (fx * fx + fy * fy).sqrt());
-        }
-    }
-    cov
+/// **Why this family and not `1 − |y|^h`.** The old profile reached exactly 1 at the
+/// centreline, and a coverage of exactly 1 is an *infinite* optical depth. Its `κ` duly
+/// diverged — ~9000 at the centre texel of a hard bake — and every ceiling that kept
+/// that finite showed up in the picture as a flat disc across the middle of the stroke
+/// with the falloff resuming at its rim in a visible crease, worst at low flow, where
+/// the strength scales the exponent and the core is not saturated enough to hide it.
+/// There is no ceiling that avoids it: the profile wanted a depth the engine cannot
+/// carry, and the engine's every stroke budget is denominated in
+/// [`TAU_PER_PASS`](super::budget::TAU_PER_PASS) — one pass ≈ 6.9 — so a tip that
+/// delivered eighty of those per pass banded at the segment cadence and stopped
+/// answering to `flow`.
+///
+/// This family has a **bounded** peak by construction, `T ≤ TAU_PER_PASS` at every
+/// hardness, so the scale the budgets are written in is a property of the tip rather
+/// than an accident of a clamp. The profile is a smooth dome — zero derivative at the
+/// centreline, no cusp, no flat spot — and *flow scales `T` without touching the
+/// shape*, so the same is true at every flow, which is what the old family could not
+/// manage at any ceiling.
+#[derive(Copy, Clone)]
+pub(super) struct RoundProfile {
+    /// `p`: the falloff exponent, solved so the shoulder is the one `hardness` names.
+    p: f32,
+    /// `κ₀`: the field's value at the centre, normalizing it to `peak`.
+    k0: f32,
 }
 
-/// [`round_coverage`]'s field at radius `r` ∈ [0, ∞), radii: `1 − exp(−κ(r))`, zero
-/// outside the disc, and `+∞` at a centre exactly hit (`acos(0)/0`), which is the
-/// one place the profile asks for a coverage of exactly 1.
-fn round_coverage_at(hardness: f32, r: f32) -> f32 {
-    let h = 1.0 / (1.0 - hardness).max(0.01);
-    let kappa = if r < 1.0 {
-        h * r.acos() / (std::f32::consts::PI * r)
-    } else {
-        0.0
+impl RoundProfile {
+    /// The profile `hardness` names.
+    ///
+    /// **A flat top is the work of a small exponent, not of a deep tip**, which is what
+    /// keeps this dial from turning into a second opacity: leaning on the depth for it
+    /// would have
+    /// hardness quietly setting how dark a stroke lands — see [`SOFT_PEAK_DEPTH`] for
+    /// why it moves anyway, and by how little.
+    ///
+    /// One condition fixes `p`: the **shoulder**, which is the dial's whole meaning
+    /// — `SOFT_SHOULDER·(1 − hardness)` of 10–90 width, swept evenly so the whole dial
+    /// does work. Solved rather than inverted, because no closed form does it.
+    ///
+    /// A softer look than the soft end offers is what **flow** is for, and it composes
+    /// the right way round: flow scales the depth, so a fainter pass has more of its
+    /// profile inside the visible band and fades over a *wider* band, not a narrower
+    /// one.
+    pub(super) fn of(hardness: f32) -> Self {
+        let hardness = hardness.clamp(0.0, 1.0);
+        let peak = SOFT_PEAK_DEPTH * (super::budget::TAU_PER_PASS / SOFT_PEAK_DEPTH).powf(hardness);
+        let want = SOFT_SHOULDER * (1.0 - hardness);
+        // Scanned rather than bisected, in two passes. The shoulder rises with `p`,
+        // turns over, and falls again: below the turn the profile opens from a disc into
+        // a dome, above it the dome bunches around the centreline and stops reaching the
+        // tip's own rim. The dial wants the first of those, so the turn is found and the
+        // target met at or under it — a bisection would land on whichever endpoint it
+        // started nearest, and the turn moves with the peak, so it cannot be a constant.
+        // Geometric steps, so the resolution is even in the ratio rather than crowded at
+        // the hard end.
+        let steps = ((P_MAX / P_MIN).ln() / SCAN_RATIO.ln()) as u32;
+        let at = |i: u32| P_MIN * SCAN_RATIO.powi(i as i32);
+        let mut turn = 0;
+        for i in 0..=steps {
+            if shoulder_of(peak, at(i)) >= shoulder_of(peak, at(turn)) {
+                turn = i;
+            }
+        }
+        let mut best = (f32::INFINITY, P_MIN);
+        for i in 0..=turn {
+            let p = at(i);
+            let d = (shoulder_of(peak, p) - want).abs();
+            if d <= best.0 {
+                best = (d, p);
+            }
+        }
+        let p = best.1;
+        // `peak` is not kept: it is `k0·2∫cos^{2p}` and nothing at render time asks.
+        Self {
+            p,
+            k0: peak / (2.0 * cos_power_integral(p)),
+        }
+    }
+
+    /// The tip's optical depth at `r` radii from its centre, per radius of travel.
+    ///
+    /// `1 − r²` is held at one texel of the bake, which is the finest thing the field
+    /// is ever read at: below `p = ½` the exponent is negative and the continuum field
+    /// runs away at the rim, where what a texel actually carries is its own average.
+    /// That is what bounds `κ` — to about 22 at the hardest, against ~9000 before, and
+    /// under [`TAU_PER_PASS`](super::budget::TAU_PER_PASS) itself for every hardness
+    /// below 0.8.
+    pub(super) fn depth_at(&self, r: f32) -> f32 {
+        if r >= 1.0 {
+            return 0.0;
+        }
+        let rim = 2.0 / ROUND_RES as f32;
+        self.k0 * (1.0 - r * r).max(rim).powf(self.p - 0.5)
+    }
+
+    /// The tip's coverage at `r`: `1 − exp(−κ(r))`. What the mask and the rise read —
+    /// never the prefix, which integrates [`depth_at`](Self::depth_at) itself.
+    fn coverage_at(&self, r: f32) -> f32 {
+        1.0 - (-self.depth_at(r)).exp()
+    }
+
+    /// The profile this tip sweeps to at `y` radii off the centreline, for a pass at
+    /// full strength. The claim the bake exists to make (`tests`, below).
+    #[cfg(test)]
+    pub(super) fn profile_at(&self, y: f32) -> f32 {
+        let peak = self.k0 * 2.0 * cos_power_integral(self.p);
+        1.0 - (-peak * (1.0 - y * y).max(0.0).powf(self.p)).exp()
+    }
+}
+
+/// The exponents [`RoundProfile::of`] searches between. `P_MAX` is the shoulder's own
+/// maximum, so the scan stays on the **broad** branch — past it the width falls again,
+/// and the same shoulder is met a second time by a profile bunched around the
+/// centreline that never reaches the tip's own rim. `P_MIN` is where the rim clamp has
+/// taken over and a smaller exponent changes nothing.
+const P_MIN: f32 = 0.03;
+const P_MAX: f32 = 2.6;
+/// The step [`RoundProfile::of`]'s scan takes between them.
+const SCAN_RATIO: f32 = 1.01;
+
+/// `∫₀^{π/2} cos^{2p}θ dθ` — half of `B(½, p+½)`, the constant that normalizes
+/// [`RoundProfile`]'s field to its peak.
+///
+/// In `θ` rather than `r` on purpose: `∫₀¹(1 − r²)^{p−½} dr` is the same number with a
+/// singular integrand for `p < ½`, and `r = sin θ` takes the singularity out, leaving
+/// a bounded smooth periodic integrand the midpoint rule converges on geometrically.
+/// A gamma function would answer it in closed form and is not worth the dependency for
+/// one constant per bake.
+fn cos_power_integral(p: f32) -> f32 {
+    const N: usize = 4096;
+    let step = std::f32::consts::FRAC_PI_2 / N as f32;
+    (0..N)
+        .map(|i| (((i as f32 + 0.5) * step).cos()).powf(2.0 * p))
+        .sum::<f32>()
+        * step
+}
+
+/// The 10–90 width of `1 − exp(−peak·(1 − y²)^p)`, in radii — measured against the
+/// profile's **own** peak, since a soft tip's peak is under 0.9 and a fixed 90% would
+/// be unreachable. Closed form, so [`RoundProfile::of`] can scan it.
+fn shoulder_of(peak: f32, p: f32) -> f32 {
+    let top = 1.0 - (-peak).exp();
+    let y_at = |f: f32| -> f32 {
+        let t = -(1.0 - f * top).ln();
+        if t >= peak {
+            0.0
+        } else {
+            (1.0 - (t / peak).powf(1.0 / p)).max(0.0).sqrt()
+        }
     };
-    1.0 - (-kappa).exp()
+    y_at(0.1) - y_at(0.9)
+}
+
+/// How finely [`round_depth`] samples each texel of the bake, per axis.
+///
+/// A texel of a prefix volume stands for the field's **mean** over its own square, and
+/// below `p = ½` the field rises into the rim steeply enough that its centre is a poor
+/// reading of that: at the hard end a midpoint bake misses the swept profile by 6e-3 of
+/// coverage well inside the disc, where four-by-four holds it under a thousandth
+/// everywhere the picture can show. Paid once per hardness, behind the cache.
+const DEPTH_SUBSAMPLES: u32 = 4;
+
+/// Generate the round tip's **optical depth** field on the bake grid (§6.6): the
+/// radial `κ` of the [`RoundProfile`] `hardness` names, averaged over each texel.
+///
+/// Finite everywhere, which `build_prefix` requires and a prefix sum gives no second
+/// chance at — `RoundProfile::depth_at` holds the rim, and there is no centre
+/// divergence in this family to hold.
+fn round_depth(hardness: f32, res: u32) -> Vec<f32> {
+    let profile = RoundProfile::of(hardness);
+    let n = DEPTH_SUBSAMPLES;
+    let inv = 1.0 / (n * n) as f32;
+    let mut depth = vec![0.0f32; (res * res) as usize];
+    for y in 0..res {
+        for x in 0..res {
+            let mut acc = 0.0f32;
+            for sy in 0..n {
+                let fy = (y as f32 + (sy as f32 + 0.5) / n as f32) / res as f32 * 2.0 - 1.0;
+                for sx in 0..n {
+                    let fx = (x as f32 + (sx as f32 + 0.5) / n as f32) / res as f32 * 2.0 - 1.0;
+                    acc += profile.depth_at((fx * fx + fy * fy).sqrt());
+                }
+            }
+            depth[(y * res + x) as usize] = acc * inv;
+        }
+    }
+    depth
 }
 
 /// How finely [`round_rise`] samples the radial profile: the rise is answered to a
@@ -339,8 +544,9 @@ const RISE_SAMPLES: usize = 2048;
 /// inside the final ten-thousandth of a radius.
 pub(super) fn round_rise(hardness: f32) -> f32 {
     let n = RISE_SAMPLES;
+    let profile = RoundProfile::of(hardness);
     let cov: Vec<f32> = (0..=n)
-        .map(|i| round_coverage_at(hardness, i as f32 / n as f32))
+        .map(|i| profile.coverage_at(i as f32 / n as f32))
         .collect();
     let climbs = |width: usize| -> bool {
         (0..=n - width).any(|i| cov[i] - cov[i + width] >= super::budget::WARP_CONTRACTION)
@@ -386,12 +592,13 @@ mod tests {
     /// merely finite.
     #[test]
     fn the_round_tips_rise_narrows_with_hardness() {
-        for hardness in [0.0f32, 0.25] {
-            let rise = round_rise(hardness);
-            assert!(rise > 0.1 && rise < 1.0, "hardness {hardness}: rise {rise}");
-        }
+        // Monotone across the *whole* dial now, where the old family's two softest
+        // tips merely had finite rises: that one climbed steepest at its centre,
+        // where `κ = h/(2r)` spiked, and the spike was narrower at hardness 0 than a
+        // slightly harder tip's mid-profile climb. This family has no centre spike to
+        // be non-monotone about — its steepest climb is always at the rim.
         let mut last = f32::INFINITY;
-        for hardness in [0.5f32, 0.8, 0.95, 1.0] {
+        for hardness in [0.0f32, 0.25, 0.5] {
             let rise = round_rise(hardness);
             assert!(
                 rise > 0.0 && rise < last,
@@ -399,22 +606,28 @@ mod tests {
             );
             last = rise;
         }
-        let at = round_rise(0.8);
+        let at = round_rise(0.0);
         assert!(
-            (0.06..=0.11).contains(&at),
-            "hardness 0.8 rises over {at} radii"
+            (0.15..=0.28).contains(&at),
+            "the softest tip rises over {at} radii"
         );
-        assert!(
-            round_rise(1.0) < 0.01,
-            "a hard tip rises inside its last texels"
-        );
+        // Past the middle of the dial the whole climb is inside the sampling floor,
+        // and the budget's texel floor takes over from there (§6.13).
+        for hardness in [0.8f32, 0.95, 1.0] {
+            let rise = round_rise(hardness);
+            assert!(
+                rise <= 2.0 / RISE_SAMPLES as f32,
+                "hardness {hardness} rises over {rise} radii, not inside the sampling",
+            );
+        }
         // The rise is a rise: the sampled profile really climbs that much over it.
         let n = RISE_SAMPLES;
         let width = (at * n as f32) as usize;
+        let soft = RoundProfile::of(0.0);
         let climbed = (0..=n - width)
             .map(|i| {
-                round_coverage_at(0.8, i as f32 / n as f32)
-                    - round_coverage_at(0.8, (i + width) as f32 / n as f32)
+                soft.coverage_at(i as f32 / n as f32)
+                    - soft.coverage_at((i + width) as f32 / n as f32)
             })
             .fold(0.0f32, f32::max);
         assert!(
@@ -423,36 +636,113 @@ mod tests {
         );
     }
 
-    /// The whole claim [`round_coverage`] makes: a full pass of the tip lays
-    /// `1 − |y|^h` across the stroke.
+    /// One row of the baked field, swept: the sum `assets::prefix_data` accumulates
+    /// across a row, in brush-local width. What the shader reads as a full pass's τ.
+    fn swept_tau(depth: &[f32], res: u32, row: u32) -> f32 {
+        (0..res)
+            .map(|x| depth[(row * res + x) as usize])
+            .sum::<f32>()
+            * (2.0 / res as f32)
+    }
+
+    /// The whole claim [`RoundProfile`] makes: a pass of the tip at strength `a` lays
+    /// `1 − exp(−a·T·(1 − y²)^p)` across the stroke — **at every `y`, the core
+    /// included**, and at every strength.
     ///
-    /// Swept through the very integral the GPU volume is built from — the row sum
-    /// `assets::build_prefix` does, sharing its `tau_of` so the clamp cannot drift
-    /// between the two. Inside `|y| < 0.2` the profile is past 0.99 for every hardness
-    /// and the clamped core takes over, so that is where the pin stops.
+    /// Swept through the very integral the GPU volume is built from (`swept_tau`), so
+    /// the bake and the profile it claims cannot drift. The strengths matter as much as
+    /// the hardnesses: `a` scales the depth without touching the shape, so a low flow is
+    /// where anything the bake has flattened stops being hidden under a coverage that
+    /// had saturated anyway.
+    ///
+    /// **The regression this pins** (2026-09-07): the tip was `1 − |y|^h`, whose depth
+    /// diverges at the centreline because the profile reaches exactly 1 there. Every
+    /// ceiling that kept that finite — `assets::tau_of`'s mask clamp at τ ≈ 6.9 — flattened
+    /// a disc across the middle of the stroke and left the falloff resuming at its rim
+    /// in a visible crease, 0.07 of the radius across at hardness 0 and 0.71 at 0.95,
+    /// worst at low flow. This family has a bounded peak by construction, so there is
+    /// no ceiling to flatten anything and the claim holds to a thousandth.
     #[test]
     fn the_round_tip_sweeps_to_the_profile_its_hardness_names() {
         const RES: u32 = ROUND_RES;
         for hardness in [0.0, 0.25, 0.5, 0.8, 0.95] {
-            let h = 1.0 / (1.0 - hardness);
-            let cov = round_coverage(hardness, RES);
-            for row in 0..RES {
-                let y = ((row as f32 + 0.5) / RES as f32 * 2.0 - 1.0).abs();
-                if y < 0.2 {
-                    continue;
+            let profile = RoundProfile::of(hardness);
+            let depth = round_depth(hardness, RES);
+            for a in [1.0f32, 0.5, 0.25] {
+                for row in RES / 2..RES {
+                    let y = (row as f32 + 0.5) / RES as f32 * 2.0 - 1.0;
+                    let laid = 1.0 - (-a * swept_tau(&depth, RES, row)).exp();
+                    // The profile at strength `a` is the same shape at depth `a·T`.
+                    let want = 1.0 - (1.0 - profile.profile_at(y)).powf(a);
+                    // Two claims, not one loose one. Over the **body** of the profile
+                    // the bake is a reading of the closed form and is held to a
+                    // few thousandths. The **outer tenth** is where the disc's own edge and
+                    // the rim clamp meet a 256² grid: below `p = ½` the field rises
+                    // into the rim, no finite sampling resolves that as well, and what
+                    // is left is a few levels across the antialiased edge the sweep's
+                    // box filter owns anyway (§6.2). Both are far under the 0.05–0.22
+                    // of coverage the ceiling this family replaced cost, and that one
+                    // was in the middle of the stroke.
+                    // The outermost texel row is the one the rim clamp holds
+                    // (`RoundProfile::depth_at`), so it is the tip's antialiased edge
+                    // rather than a reading of the profile — the sweep's own box filter
+                    // owns it (§6.2), and comparing it to the continuum is comparing
+                    // two different claims.
+                    if row == RES - 1 {
+                        continue;
+                    }
+                    let bound = if y.abs() <= 0.9 { 4e-3 } else { 3e-2 };
+                    assert!(
+                        (laid - want).abs() < bound,
+                        "hardness {hardness} at strength {a}: at y = {y:.4} the sweep                          lays {laid:.5}, not the {want:.5} its profile names",
+                    );
                 }
-                // The row's optical depth, as the sweep sees it after the tip has
-                // passed over: every column of the mask, in brush-local width.
-                let tau: f32 = (0..RES)
-                    .map(|x| crate::assets::tau_of(cov[(row * RES + x) as usize]))
-                    .sum::<f32>()
-                    * (2.0 / RES as f32);
-                let laid = 1.0 - (-tau).exp();
-                let want = 1.0 - y.powf(h);
+            }
+        }
+    }
+
+    /// The property the family exists for, and the one the old one could not hold: the
+    /// depth a full pass lays is **bounded by one pass**, at every hardness.
+    ///
+    /// That is the scale every stroke budget in `budget.rs` is denominated in
+    /// (`TAU_PER_PASS`) — the exchange step the flattener buys, the coarse cell, the
+    /// supersample gate. `1 − |y|^h` broke it by eighty-fold at the hard end, because a
+    /// profile reaching exactly 1 at the centreline needs an unbounded depth to get
+    /// there, and what that cost was not a wrong picture but a *banded* one: strokes
+    /// printing at the segment cadence, a bleed stencil laying displaced copies of an
+    /// edge, `flow` no longer scaling a smear.
+    ///
+    /// The profile's shape is not asserted here — `the_round_tip_sweeps_to_the_profile_its_hardness_names`
+    /// pins it against the closed form, which is a stronger statement than monotonicity
+    /// and one the bake's own quadrature does not blur.
+    #[test]
+    fn the_round_tip_never_lays_more_than_one_pass() {
+        const RES: u32 = ROUND_RES;
+        for hardness in [0.0f32, 0.25, 0.5, 0.8, 0.95, 1.0] {
+            let depth = round_depth(hardness, RES);
+            for row in RES / 2..RES {
+                let tau = swept_tau(&depth, RES, row);
+                // To within the bake's own quadrature: `PEAK_DEPTH` normalizes the
+                // continuum field and the grid's reading of it lands a fraction of a
+                // percent either side.
                 assert!(
-                    (laid - want).abs() < 2e-3,
-                    "hardness {hardness}: at y = {y:.4} the sweep lays {laid:.5}, \
-                     not the {want:.5} its profile names",
+                    tau <= super::super::budget::TAU_PER_PASS * 1.01,
+                    "hardness {hardness}: a pass lays {tau}, past the one pass every                      budget is priced in",
+                );
+            }
+        }
+        // And the peak really is at the centreline, which is what makes it the bound —
+        // to within the same quadrature, since the profile is flat to second order
+        // there (`T ≈ T(1 − p·y²)`) and the grid's reading of the disc's own edge moves
+        // by more than that between one row and the next.
+        for hardness in [0.0f32, 0.5, 0.95] {
+            let depth = round_depth(hardness, RES);
+            let core = swept_tau(&depth, RES, RES / 2);
+            for row in RES / 2..RES {
+                let tau = swept_tau(&depth, RES, row);
+                assert!(
+                    tau <= core + 1e-2,
+                    "hardness {hardness}: row {row} lays {tau}, more than the                      centreline's {core}",
                 );
             }
         }

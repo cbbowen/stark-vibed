@@ -86,6 +86,16 @@ pub struct BuiltinShapes {
 /// invariants below (every entry shipped, every slot distinct and on the rack)
 /// are the kind that a sixth preset breaks silently: the rack would quietly drop
 /// or overwrite one, and nothing on screen would say which.
+///
+/// **The round hardnesses were remapped when the tip's profile family changed**
+/// (§6.6, 2026-09-07). What `hardness` names is the width of the falloff, and the new
+/// family's widest is 0.50 of the radius where the old one's was 0.80 — so the numbers
+/// that read the same no longer *are* the same. Each was carried over by its place in
+/// the dial's own range rather than by its value: `1 − old_width/0.80`, which holds
+/// every preset's softness relative to the others and to the ends of the dial. The
+/// absolute widths are narrower across the board, because the family that had wider
+/// ones paid for them with an unbounded optical depth at the centreline — which is the
+/// plateau that change went to fix.
 pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     // One constructor for the lot, so "everything the app ships is a built-in and
     // sits on a digit" is a property of the list rather than five copies of two
@@ -121,10 +131,10 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             Some(1),
             0.15,
             100.0,
-            3.0,
+            1.25,
             BrushConfig {
                 drain: 0.1,
-                shape: BrushShape::Round { hardness: 0.98 },
+                shape: BrushShape::Round { hardness: 0.38 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
                 flow_modulation: Some(Modulation::linear(ModSource::Pressure)),
@@ -269,7 +279,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             500.0,
             0.1,
             BrushConfig {
-                shape: BrushShape::Round { hardness: 0.5 },
+                shape: BrushShape::Round { hardness: 0.0 },
                 modulation: BrushModulations {
                     size: Some(Modulation {
                         source: ModSource::Pressure,
@@ -299,7 +309,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
                     give: 0.5,
                     ..ToothParams::default()
                 },
-                shape: BrushShape::Round { hardness: 0.8 },
+                shape: BrushShape::Round { hardness: 0.57 },
                 effect: BrushEffectType::Wet,
                 opacity: 1.0,
                 // The Flow slider scales the *blend* — what the flow/add split
@@ -338,7 +348,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             80.0,
             1.0,
             BrushConfig {
-                shape: BrushShape::Round { hardness: 0.25 },
+                shape: BrushShape::Round { hardness: 0.07 },
                 effect: BrushEffectType::Erase,
                 erase: EraseConfig {
                     opacity_modulation: Some(Modulation::linear(ModSource::Pressure)),
@@ -360,7 +370,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             // shoulder — the hard edge the name promises.
             2.0,
             BrushConfig {
-                shape: BrushShape::Round { hardness: 0.95 },
+                shape: BrushShape::Round { hardness: 0.87 },
                 effect: BrushEffectType::Erase,
                 erase: EraseConfig {
                     opacity_modulation: Some(Modulation::linear(ModSource::Pressure)),
@@ -385,7 +395,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
             None,
             0.2,
             90.0,
-            1.0,
+            0.2,
             BrushConfig {
                 shape: BrushShape::Round { hardness: 0.0 },
                 effect: BrushEffectType::Liquify,

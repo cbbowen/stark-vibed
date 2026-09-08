@@ -51,7 +51,7 @@ struct Mask {
     /// brush-dynamics stamp loop (§6.2). Orientation rotates the sample coordinates,
     /// so one texture serves both sources — unlike the prefix-τ, whose integration
     /// axis is baked in.
-    coverage_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
     /// The **coverage prefix** a liquify follow reads (§6.13): the prefix-τ's shape
     /// with the coverage integrated linearly — one identity layer for the
     /// follow-stroke source, a rotated stack for the pen. Built on the first liquify
@@ -84,8 +84,11 @@ impl Mask {
                 let (w, h) = (self.width, self.height);
                 let cov: Vec<f32> = self.coverage.iter().map(|&b| b as f32 / 255.0).collect();
                 let layers = orientation_layers(w, h);
-                let rotated = rotate_layers(&cov, w, h, layers);
-                build_prefix(ctx, w, h, layers, &rotated, Integrand::Tau)
+                let mut rotated = rotate_layers(&cov, w, h, layers);
+                // In place: the rotated stack is the largest allocation the store
+                // makes, and τ is a per-texel reading of the coverage it holds.
+                rotated.iter_mut().for_each(|c| *c = tau_of(*c));
+                build_prefix(ctx, w, h, layers, &rotated, "stark brush prefix-tau")
             })
             .clone()
     }
@@ -109,12 +112,12 @@ impl Mask {
             crate::timing::span!("asset.warp_bake");
             match orientation {
                 stark_model::document::OrientationSource::FollowStroke => {
-                    build_prefix(ctx, w, h, 1, &cov(), Integrand::Coverage)
+                    build_prefix(ctx, w, h, 1, &cov(), COVERAGE_PREFIX_LABEL)
                 }
                 stark_model::document::OrientationSource::Pen => {
                     let layers = orientation_layers(w, h);
                     let rotated = rotate_layers(&cov(), w, h, layers);
-                    build_prefix(ctx, w, h, layers, &rotated, Integrand::Coverage)
+                    build_prefix(ctx, w, h, layers, &rotated, COVERAGE_PREFIX_LABEL)
                 }
             }
         })
@@ -126,7 +129,8 @@ impl Mask {
 /// two every path reads, and the liquify path's two beside them.
 pub(crate) struct MaskViews {
     pub(crate) prefix: wgpu::TextureView,
-    pub(crate) coverage: wgpu::TextureView,
+    /// The mask's optical depth (`build_depth_r16`) — the tool side's field.
+    pub(crate) depth: wgpu::TextureView,
     /// The coverage prefix (§6.13), when asked for.
     pub(crate) warp: Option<wgpu::TextureView>,
     /// The mask's rise (§6.13), radii.
@@ -192,8 +196,11 @@ impl AssetStore {
             let cov: Vec<f32> = coverage.iter().map(|&b| b as f32 / 255.0).collect();
             // The follow-stroke volume, which is the whole of the bake for the common
             // brush: one layer, the mask as it stands, integrated over its own width.
-            let follow = build_prefix(&self.ctx, w, h, 1, &cov, Integrand::Tau);
-            let coverage_view = build_coverage_r8(&self.ctx, w, h, &coverage);
+            let tau: Vec<f32> = cov.iter().map(|&c| tau_of(c)).collect();
+            let follow = build_prefix(&self.ctx, w, h, 1, &tau, "stark brush prefix-tau");
+            // The same τ, unintegrated: the tool side's reading of the one field
+            // (`build_depth_r16`).
+            let depth_view = build_depth_r16(&self.ctx, w, h, &tau);
             let rise = mask_rise(&coverage, w, h);
             slot.insert(Mask {
                 bytes,
@@ -202,7 +209,7 @@ impl AssetStore {
                 height: h,
                 follow,
                 pen: None,
-                coverage_view,
+                depth_view,
                 warp_follow: None,
                 warp_pen: None,
                 rise,
@@ -240,7 +247,7 @@ impl AssetStore {
         let mask = inner.masks.get_mut(&id)?;
         Some(MaskViews {
             prefix: mask.prefix(&self.ctx, orientation),
-            coverage: mask.coverage_view.clone(),
+            depth: mask.depth_view.clone(),
             warp: warp.then(|| mask.warp_prefix(&self.ctx, orientation)),
             rise: mask.rise,
         })
@@ -374,42 +381,35 @@ fn mask_rise(coverage: &[u8], width: u32, height: u32) -> f32 {
     }
 }
 
-/// A coverage sample's **optical depth**, `κ = −ln(1 − coverage)` — the currency the
+/// The **coverage prefix**'s texture label ([`build_prefix`]): the coverage
+/// integrated as it stands, so a difference across a stretch of travel is the mask's
+/// mean over it times the travel — what a liquify follow is a fraction of (§6.13).
+/// Linear where τ is not, so a texel's follow is how *long* the tip covered it and a
+/// full pass over the tip's core is exactly the travel.
+pub(crate) const COVERAGE_PREFIX_LABEL: &str = "stark brush coverage prefix";
+
+/// A **stored mask's** optical depth, `κ = −ln(1 − coverage)` — the currency the
 /// deposit sums (§6.1), and the one conversion between the two.
 ///
 /// The clamp keeps `κ` finite where a mask reaches 1: full coverage is infinite
 /// depth, and would carry `+∞` into every prefix sum downstream of it.
 /// `dynamics.wesl`'s own `tau_of` mirrors this clamp, so the tool side — which has
 /// no prefix to difference — agrees with the volume built here.
+///
+/// **For a mask, and only a mask.** An 8-bit coverage really does saturate, so the
+/// depth above the clamp is information the mask never carried and the ceiling costs
+/// nothing. A tip that knows its own `κ` in closed form must hand *that* to
+/// [`build_prefix`] instead of laundering it through a coverage: the round tip's
+/// diverges at the centre by construction (`tips::round_depth`), and round-tripping it
+/// through here capped its core at τ ≈ 6.9 — a flat disc 0.07 of the radius across at
+/// hardness 0 and 0.71 at 0.95, with the profile's own falloff resuming at its rim as
+/// a visible crease.
 pub(crate) fn tau_of(coverage: f32) -> f32 {
     -(1.0 - coverage.clamp(0.0, 0.999)).ln()
 }
 
-/// What a prefix volume integrates along the travel ([`build_prefix`]).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Integrand {
-    /// The **prefix-τ**: optical depth `κ = −ln(1 − coverage)` ([`tau_of`]), the
-    /// currency every deposit is denominated in (§6.1, §6.2).
-    Tau,
-    /// The **coverage prefix**: the coverage itself, so a difference across a
-    /// stretch of travel is the mask's mean over it times the travel — what the
-    /// liquify follow is a fraction of (§6.13). Linear where τ is not, so a texel's
-    /// follow is how *long* the tip covered it and a full pass over the tip's core
-    /// is exactly the travel.
-    Coverage,
-}
-
-impl Integrand {
-    fn of(self, coverage: f32) -> f32 {
-        match self {
-            Self::Tau => tau_of(coverage),
-            Self::Coverage => coverage,
-        }
-    }
-}
-
 /// Build a brush's **prefix** volume (§6.2, §6.6): for each orientation `layer` and
-/// each row, the running integral of the [`Integrand`] along the travel axis (x), in
+/// each row, the running integral of `field` along the travel axis (x), in
 /// brush-local units (x spans `[-1, 1]`, width 2). Stored as an `Rg32Float`
 /// **2D-array** texture — the array axis is orientation, sampled with wrapping — and
 /// read via `textureLoad` + manual trilinear by the sweep shader, so a segment's
@@ -423,11 +423,20 @@ impl Integrand {
 /// Baked at the midpoint rule: a row's value is the integral *to* its centre, which
 /// is what makes the shader's bilinear tap exact there rather than half a texel off.
 ///
+/// **The caller says what it is integrating**, and hands the samples themselves:
+/// [`tau_of`] over a stored mask for a prefix-τ, the coverage as it stands for the
+/// coverage prefix a liquify follow reads (§6.13), the closed-form depth for a tip
+/// that has one (`tips::round_depth`). An enum picking the conversion in here would
+/// have to name the field it was handed as well, and it is that pairing — a τ volume
+/// reconstructed from a coverage the tip had already been flattened into — that put a
+/// clamped plateau in the round tip's core.
+///
 /// Shared by [`AssetStore`] (image brushes — one identity layer for follow-stroke, a
 /// rotated stack for pen) and the stroke renderer (the round tip, regenerated per
-/// `hardness` — rotation-invariant, 1 layer). `coverage` is `layers × height × width`
-/// row-major in `[0, 1]`. Every volume is baked on the mask's own grid, so one
-/// column's brush-local width is `2/width` throughout.
+/// `hardness` — rotation-invariant, 1 layer). `field` is `layers × height × width`
+/// row-major, and must be finite: a prefix sum carries one `+∞` to the end of its
+/// row. Every volume is baked on the mask's own grid, so one column's brush-local
+/// width is `2/width` throughout.
 ///
 /// Returns the view alone: it holds its own reference to the texture, so there is
 /// nothing for a caller to keep beside it.
@@ -436,20 +445,17 @@ pub(crate) fn build_prefix(
     width: u32,
     height: u32,
     layers: u32,
-    coverage: &[f32],
-    integrand: Integrand,
+    field: &[f32],
+    label: &'static str,
 ) -> wgpu::TextureView {
-    let data = prefix_data(width, height, layers, coverage, integrand);
+    let data = prefix_data(width, height, layers, field);
     let extent = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: layers,
     };
     let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(match integrand {
-            Integrand::Tau => "stark brush prefix-tau",
-            Integrand::Coverage => "stark brush coverage prefix",
-        }),
+        label: Some(label),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
@@ -477,27 +483,21 @@ pub(crate) fn build_prefix(
 }
 
 /// A prefix volume's texels ([`build_prefix`]): interleaved `(r, g)` pairs, `r`
-/// the travel prefix of the integrand per row, `g` the lateral (midpoint-rule)
+/// the travel prefix of `field` per row, `g` the lateral (midpoint-rule)
 /// prefix of `r` per column. Split from the upload so the arithmetic is testable
 /// without a device.
-fn prefix_data(
-    width: u32,
-    height: u32,
-    layers: u32,
-    coverage: &[f32],
-    integrand: Integrand,
-) -> Vec<f32> {
+fn prefix_data(width: u32, height: u32, layers: u32, field: &[f32]) -> Vec<f32> {
     let w = width as usize;
     let h = height as usize;
     let dx = 2.0 / width as f32;
     let dy = 2.0 / height as f32;
-    let mut data = vec![0.0f32; coverage.len() * 2];
+    let mut data = vec![0.0f32; field.len() * 2];
     for l in 0..layers as usize {
         let plane = l * w * h;
         for y in 0..h {
             let mut acc = 0.0f32;
             for x in 0..w {
-                acc += integrand.of(coverage[plane + y * w + x]) * dx;
+                acc += field[plane + y * w + x] * dx;
                 data[(plane + y * w + x) * 2] = acc;
             }
         }
@@ -516,17 +516,29 @@ fn prefix_data(
     data
 }
 
-/// Upload a coverage mask as a filterable `R8Unorm` texture — the per-stamp
-/// footprint the brush-dynamics loop samples (rotating the sample coordinates
-/// for orientation, so no pre-rotated layers are needed). Shared by the asset
-/// store (image brushes) and the stroke renderer (the round tip, per hardness).
+/// Upload a tip's **optical depth** `κ` as a filterable `R16Float` texture — what
+/// the brush-dynamics loop's *tool* side reads for a reservoir texel's exposure
+/// (`dynamics.wesl::depth_at`), rotating the sample coordinates for orientation, so
+/// no pre-rotated layers are needed. Shared by the asset store (image brushes, whose
+/// `κ` is [`tau_of`] of their 8-bit coverage) and the stroke renderer (the round tip's
+/// closed form, per hardness).
+///
+/// **`κ` and not the coverage it reads off**, and in a float format for the same
+/// reason [`build_prefix`] takes a field rather than a conversion: the two sides of
+/// the exchange are two quadratures of one bilinear form and conserve only while they
+/// agree texel for paired texel (§6.2). A coverage saturates at 1 — τ ≈ 6.9 — where a
+/// round tip's `κ` reaches ~9000 at the centre texel of its hardest bake
+/// (`tips::round_depth`), so a tool side handed the coverage recovered a `τ` its canvas
+/// side had not capped, and took from the canvas what the reservoir never gave up.
+/// `R16Float` carries that with room to spare (max 65504, and ~5e-4 of relative step
+/// there) and is filterable, which `R32Float` is not.
 ///
 /// Returns the view alone, like [`build_prefix`].
-pub(crate) fn build_coverage_r8(
+pub(crate) fn build_depth_r16(
     ctx: &GpuContext,
     width: u32,
     height: u32,
-    coverage: &[u8],
+    depth: &[f32],
 ) -> wgpu::TextureView {
     let extent = wgpu::Extent3d {
         width,
@@ -534,21 +546,25 @@ pub(crate) fn build_coverage_r8(
         depth_or_array_layers: 1,
     };
     let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark brush coverage"),
+        label: Some("stark brush depth"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R8Unorm,
+        format: wgpu::TextureFormat::R16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    let halves: Vec<u16> = depth
+        .iter()
+        .map(|&k| crate::gpu::half::f32_to_f16(k))
+        .collect();
     ctx.queue.write_texture(
         texture.as_image_copy(),
-        coverage,
+        bytemuck::cast_slice(&halves),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(width),
+            bytes_per_row: Some(width * 2),
             rows_per_image: Some(height),
         },
         extent,
@@ -617,7 +633,8 @@ mod tests {
                 (0.9 * x * (0.3 + 0.7 * y) * (1.0 - 0.4 * l as f32)).clamp(0.0, 0.95)
             })
             .collect();
-        let data = prefix_data(w, h, layers, &cov, Integrand::Tau);
+        let tau: Vec<f32> = cov.iter().map(|&c| tau_of(c)).collect();
+        let data = prefix_data(w, h, layers, &tau);
         let dy = 2.0 / h as f32;
         let r = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2];
         let g = |l: usize, x: usize, y: usize| data[(l * plane + y * w as usize + x) * 2 + 1];

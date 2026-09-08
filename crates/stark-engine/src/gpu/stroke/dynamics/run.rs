@@ -336,10 +336,10 @@ struct DynamicsRun<'a> {
     consts: &'a super::super::StrokeConstants,
     /// Functions of the brush alone, so shared by every piece: the swept-extent
     /// prefix-τ bind group (group 1 of `bake`/`deposit` — the same texture the swept
-    /// fast path samples), the plain coverage mask the reservoir texels weight by,
-    /// and the color-dynamics field the `add` paint is jittered against.
+    /// fast path samples), the unintegrated depth the reservoir texels weigh their
+    /// exposure by, and the color-dynamics field the `add` paint is jittered against.
     prefix_bg: wgpu::BindGroup,
-    cov: wgpu::TextureView,
+    depth: wgpu::TextureView,
     noise: super::super::tips::NoiseLease,
     /// The tool reservoir ping-pong, and which half currently holds the tool.
     brush_color_tex: [wgpu::Texture; 2],
@@ -418,8 +418,8 @@ impl<'a> DynamicsRun<'a> {
         let device = &r.ctx.device;
         let mut scope = r.scratch.scope(&r.ctx, "stark dynamics stroke");
 
-        // The brush's swept-extent prefix-τ (shared with the fast path) and its
-        // plain coverage mask (the reservoir texels' own extent weights).
+        // The brush's swept-extent prefix-τ (shared with the fast path) and the
+        // unintegrated field under it (the reservoir texels' own exposure).
         let prefix_view = tip.prefix.clone();
         let prefix_bg = desc::bind_group_for(
             device,
@@ -429,7 +429,7 @@ impl<'a> DynamicsRun<'a> {
             false,
             |_| wgpu::BindingResource::TextureView(&prefix_view),
         );
-        let cov = tip.coverage.clone();
+        let depth = tip.depth.clone();
         // Color dynamics for the brush's own `add` paint — the same field and
         // lookup parameters as the fast path (see `deposit` in dynamics.wesl).
         let noise = r.tips.noise(&rec.brush.color_dynamics(), consts.noise_seed);
@@ -598,7 +598,7 @@ impl<'a> DynamicsRun<'a> {
             dirty: BTreeSet::new(),
             consts,
             prefix_bg,
-            cov,
+            depth,
             noise,
             brush_color_tex,
             brush_aux_tex,
@@ -1104,7 +1104,7 @@ impl<'a> DynamicsRun<'a> {
                         b::UNDER_AUX_W => view(&under.aux),
                         b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
                         b::SAMP => samp(&kit.exchange_sampler),
-                        b::COV_TEX => view(&self.cov),
+                        b::DEPTH_TEX => view(&self.depth),
                         b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
                         b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
                         b::BRUSH_SRC_RESID => {

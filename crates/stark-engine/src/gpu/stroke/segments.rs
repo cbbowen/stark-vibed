@@ -96,7 +96,7 @@ pub(super) struct Sweep {
     ///
     /// Every shape is swept over brush-local `|x| ≤ 1, |y| ≤ 1`, but nothing any shape
     /// can paint lies outside the **disc** inscribed in that square, at any
-    /// orientation: the round tip by construction (`tips::round_coverage`), an image
+    /// orientation: the round tip by construction (`tips::round_depth`), an image
     /// stamp by its canonical form's reach normalization (`stark_assetid::coverage`,
     /// §6.6). So the widest tip's radius, drawn out by the stretch, is the exact bound.
     pub(super) reach: f32,

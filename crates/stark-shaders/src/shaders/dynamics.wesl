@@ -122,10 +122,18 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @group(0) @binding(4) var under_aux_w: texture_storage_2d<rgba16float, write>;
 // Bilinear clamp sampler for the region / reservoir / coverage lookups.
 @group(0) @binding(5) var samp: sampler;
-// The brush tip's coverage mask over brush-local [-1,1]² (R8; §6.6) — the
-// reservoir texel's own extent weight. Read by the **tool** side only
-// (`exchange`); the canvas side uses the prefix-τ exposure instead.
-@group(0) @binding(6) var cov_tex: texture_2d<f32>;
+// The brush tip's **optical depth** κ over brush-local [-1,1]² (R16Float; §6.6)
+// — the depth a reservoir texel delivers per unit travel, which is its own extent
+// weight in the currency the exchange is denominated in. Read by the **tool** side
+// only (`exchange`); the canvas side reads the same field integrated along the
+// travel, as the prefix-τ.
+//
+// **Depth and not coverage**, because the two sides have to agree texel for paired
+// texel or the transfer stops conserving (§6.2), and only one of them can be
+// reconstructed: a coverage saturates at 1 and a round tip's κ does not (its
+// centreline diverges by construction, §6.6), so the tool side deriving τ back out
+// of a coverage capped it where the canvas side did not.
+@group(0) @binding(6) var depth_tex: texture_2d<f32>;
 // The tool reservoir ping-pong: color = (latent .xyz, per-unit opacity .w),
 // aux = (carried height, _, _, _). `src` is read this dispatch, `dst` written;
 // the host swaps the bind group after each pass that writes it — `exchange`,
@@ -465,17 +473,16 @@ fn jitter_at(rt: vec2<i32>) -> f32 {
 // the prefix-τ volume's differences; the tool side, which has no prefix to
 // difference, converts its own coverage the same way the volume was built
 // (`assets::build_prefix`), clamp included, so the two agree.
-fn tau_of(cov: f32) -> f32 {
-    return -log(1.0 - min(cov, 0.999));
-}
-
-// Extent coverage at brush-local `local` ∈ [-1,1]² (0 outside — image masks may
-// have non-zero borders, so the clamp sampler alone can't be trusted at the edge).
-fn coverage_at(local: vec2<f32>) -> f32 {
+// The tip's optical depth at brush-local `local` ∈ [-1,1]², per unit travel (0
+// outside — image masks may have non-zero borders, so the clamp sampler alone can't
+// be trusted at the edge). Baked host-side off the same field the prefix integrates
+// (`assets::build_depth_r16`), so there is no second copy of the conversion here to
+// drift from it.
+fn depth_at(local: vec2<f32>) -> f32 {
     if any(abs(local) >= vec2<f32>(1.0, 1.0)) {
         return 0.0;
     }
-    return textureSampleLevel(cov_tex, samp, local * 0.5 + vec2<f32>(0.5, 0.5), 0.0).r;
+    return textureSampleLevel(depth_tex, samp, local * 0.5 + vec2<f32>(0.5, 0.5), 0.0).r;
 }
 
 // (`blend_latent` — the parcel-stacking law — is shared with the transform's
@@ -829,7 +836,7 @@ fn exchange(
     // reciprocal — the two are opposite sides of one substitution, and it is what makes
     // the books balance: a stretch multiplies the canvas's total exposure by `s` and
     // the area each reservoir texel answers for by the same `s`.
-    let e = tau_of(coverage_at(local))
+    let e = depth_at(local)
         * st.travel_radii * st.stretch.x * st.tooth_bearing;
     let ex = exchange_at(e);
     let rdim = vec2<f32>(textureDimensions(region_color));

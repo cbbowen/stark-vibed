@@ -659,10 +659,12 @@ extent. All on the GPU with no readback (`gpu/stroke/dynamics.rs`,
      mid-pass sample — exact for any segment length.
    - **Paint does not migrate within the tip: the `wick` pass (2026-07-31 →
      2026-08-10) is retired.** The disease it treated is real, and worth keeping on
-     the record. A cell's exposure is keyed on its own optical depth, and τ is flat
-     across the interior (the coverage clamp caps it) then falls away over a hard
-     tip's shoulder — at `hardness = 0.95`, some twenty times slower at the last
-     cells still in contact. Left as isolated cells, that disparity strands paint:
+     the record. A cell's exposure is keyed on its own optical depth, and τ
+     falls away steeply over a hard tip's shoulder — at `hardness = 0.95`, some
+     fifteen times slower at the last cells still in contact than at the middle. (Of
+     that era's tip it was flatter still: the coverage clamp then pinned τ across most
+     of a hard tip's disc, so the disparity sat entirely in the shoulder.) Left as
+     isolated cells, that disparity strands paint:
      once a stroke's own source runs dry (`drain`) and the tip is only smearing, the
      interior empties in step with the fading trail while the shoulder ring still
      holds what it lifted hundreds of pixels back. With the settle of that era, the
@@ -776,6 +778,12 @@ from the same pre-state (the canvas side measuring its exposure through the
 prefix-τ, the reservoir side as `τ(l) · Δs/r` — two quadratures of the same
 bilinear form, which agree texel for paired texel), so with `add = 0` total height
 (canvas + tool) is conserved up to resampling error, whatever the segment length.
+**Agreeing texel for paired texel is a claim about the field, not just the
+quadrature**, and it is what makes the tool side read a baked `τ`
+(`assets::build_depth_r16`) rather than derive one from a coverage: a coverage
+saturates at 1 and the prefix's `κ` need not, so a tool side re-deriving `τ` capped it
+exactly where a round tip's core exceeds the cap and took the two halves off two
+different forms.
 
 *The pen-up.* A stroke stops with the tip still in contact and the transfer still
 in flight. Everywhere else on the trail a point sees the whole extent pass over
@@ -1518,18 +1526,86 @@ channel too — so a worn-bristle tip lays down *broken* impasto rather than a
 uniform slab.
 
 **The round tip is specified by the stroke it draws, not by its own silhouette.**
-What `hardness` names is the profile *across the stroke* — a full pass lays
-`1 − |y|^h` at `y` radii off the centreline, for `h = 1/(1 − hardness)` — and the
-extent is then whatever produces it. The two are not the same shape, because
-the deposit composes in optical depth: what the sweep integrates along the travel
-axis is `κ = −ln(1 − coverage)`, not coverage, so a mask carrying the profile's
-own falloff draws a very different one. Asking instead for the field whose row
-integrals are `τ(y) = −h·ln|y|` is an Abel transform, and it inverts in closed
-form to the radial `κ(r) = (h/π)·acos(r)/r` — so the tip is `1 − exp(−κ(r))` and
-the profile is exact rather than approached. (It was not, before: normalizing a
-`1 − r^h` disc by its chord half-length aimed at the same profile through the
-linear integral, and drew a stroke up to 0.54 in coverage fuller than its
-hardness named, with the falloff crushed into the outermost texels.)
+What `hardness` names is the profile *across the stroke*, and the extent is then
+whatever produces it. The two are not the same shape, because the deposit
+composes in optical depth: what the sweep integrates along the travel axis is
+`κ = −ln(1 − coverage)`, not coverage, so a mask carrying the profile's own falloff
+draws a very different one. A full pass lays
+
+```text
+P(y) = 1 − exp(−T·(1 − y²)^p)
+```
+
+at `y` radii off the centreline, and the field whose row integrals are that `T·(1−y²)^p`
+is an Abel transform away, inverting in closed form to the radial
+
+```text
+κ(r) = κ₀·(1 − r²)^(p − ½),    κ₀ = T / B(½, p+½)
+```
+
+since the transform of `(1 − r²)^m` is `B(½, m+1)·(1 − y²)^{m+½}`. So the profile is
+arrived at rather than approached, and the tip is elementary to bake.
+
+**Two numbers, one dial.** `p` is the falloff, solved so the profile's 10–90 width is
+`0.50·(1 − hardness)` of the radius — an even sweep from a broad dome to a disc whose
+only falloff is at its rim, and the *definition* of what the dial means, which
+`budget::shoulder_per_radius` then reports to every budget that spends it. `T` is the
+depth over the centreline, running 2 → `TAU_PER_PASS` across the same dial: it has to
+move, because coverage saturates above `τ ≈ 3`, and a tip held at one pass everywhere
+reads as a solid bar with a blurred edge at every hardness — the only part of its
+profile still in the visible band being the rim. A softer tip laying a lighter mark is
+what a soft brush *is*; the swing over the whole dial is 0.865 to 0.999, so it is not a
+second opacity, and anything lighter than the soft end is what **flow** is for. Flow
+scales `T` without touching the shape, so a fainter pass has *more* of its profile in
+the visible band and fades over a wider one — which is the right way round.
+
+**Why a bounded depth, and what the unbounded one cost.** The family until 2026-09-07
+was `1 − |y|^h` for `h = 1/(1 − hardness)`, off the radial `κ(r) = (h/π)·acos(r)/r`.
+It reached *exactly* 1 at the centreline, and a coverage of exactly 1 is an infinite
+optical depth — so its `κ` diverged there, about 9000 at the centre texel of a hard
+bake. Nothing downstream could carry that, and the two ways of not carrying it are both
+bad:
+
+- **Clamp it, as the bake did.** The one conversion back from a coverage
+  (`assets::tau_of`) holds a full texel to `τ ≈ 6.9`, and a tip routed through it came
+  out flat over the disc where its own `κ` had exceeded that — 0.07 of the radius at
+  hardness 0, 0.13 at 0.5, 0.71 at 0.95. The sweep laid that as a **plateau** across the
+  middle of every stroke, meeting the true falloff at its rim in a crease you could see.
+  What hid it at the top of the dial is that a saturated core reads as ~1 either way;
+  what shows it is **low flow**, where the strength scales the depth and the plateau
+  lands in the visible band — at hardness 0 and quarter flow, 0.22 of coverage under the
+  profile at the centreline.
+- **Don't clamp it.** Then the picture is right and the *engine* is not.
+  `TAU_PER_PASS` is not a clamp, it is the unit every stroke budget is written in
+  — the exchange step the flattener buys (§6.2), the coarse cell, the supersample gate
+  — and a tip delivering eighty of those per pass breaks all of them at once. Measured:
+  strokes banding at the segment cadence, a bleed stencil laying displaced copies of an
+  edge instead of blurring it, `flow` no longer scaling a smear, and the tile grid's own
+  translation invariance (§6.4) failing by up to 32 levels.
+
+There is no ceiling between those two — the plateau's visibility is set by `a·τ` for the
+pass strength `a`, so any finite ceiling shows at a low enough flow, and any ceiling
+high enough to hide it is past what the budgets can price. The family had to change, and
+what it had to change *to* is one whose peak is bounded by construction: `T ≤
+TAU_PER_PASS` at every hardness, so the scale the budgets are written in is a property
+of the tip rather than an accident of a clamp, and `κ ≤ 2.7` for every hardness under
+0.8 — below one pass. The profile is a smooth dome, and since flow scales `T` without
+touching `p`, it stays one at every flow, which is the part no ceiling could have given.
+
+(An older failure, kept for the record: before either of these, normalizing a `1 − r^h`
+disc by its chord half-length aimed at the profile through the *linear* integral, and
+drew a stroke up to 0.54 in coverage fuller than its hardness named, with the falloff
+crushed into the outermost texels.)
+
+**What the bake keeps is `κ`, and both readers take it whole.** The prefix-τ integrates
+it along the travel; the wet loop's tool side reads it unintegrated
+(`assets::build_depth_r16`, `R16Float`) for a reservoir texel's exposure. That is one
+field and not two on purpose: the exchange's halves conserve only while they are two
+quadratures of the same bilinear form (§6.2), and the tool side used to re-derive its
+`τ` from a coverage in the shader — which capped it exactly where the canvas side's did
+not the moment the bake stopped capping. The 8-bit coverage mask beside them is still a
+coverage, because a stored mask genuinely saturates and `tau_of`'s ceiling costs it
+nothing.
 
 The hardness a stroke actually bakes is **floored by its own size**: the tip's
 shoulder — `3·(1−hardness)·radius` px, the one definition
@@ -1706,8 +1782,12 @@ Content-addressing is the load-bearing choice:
   iroh blobs sync (§12.4): a peer seeing a stroke referencing an unknown
   `AssetId` fetches that blob by hash before rendering it.
 
-**Asset store.** `AssetStore` maps `AssetId →` a GPU coverage texture
-(single-channel `R8`, mip-mapped for clean minification). On import the image is
+**Asset store.** `AssetStore` maps `AssetId →` the two GPU readings of one mask:
+the prefix-τ volume the swept deposit differences, and the same `τ` unintegrated
+(single-channel `R16Float`) for the wet loop's tool side. Both are `τ` and not
+coverage, because the exchange's two halves conserve only while they read one field
+(§6.2) — and because a tip that knows its own `κ` in closed form has more of it than
+a coverage can hold. On import the image is
 decoded, normalized to coverage (alpha if present, else luminance),
 box-downsampled to `assets::MAX_SHAPE_DIM` (1024) so an oversized upload cannot
 exceed device texture limits, hashed, uploaded and cached

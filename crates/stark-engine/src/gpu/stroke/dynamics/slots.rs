@@ -56,7 +56,7 @@ pub(super) const EXCHANGE: &[Slot] = &[
     Slot::at(d::UNDER_AUX_W),
     Slot::at(d::UNDER_RESID_W),
     Slot::at(d::SAMP),
-    Slot::sampled(d::COV_TEX),
+    Slot::sampled(d::DEPTH_TEX),
     Slot::at(d::BRUSH_SRC_COLOR),
     Slot::at(d::BRUSH_SRC_AUX),
     Slot::sampled(d::BRUSH_SRC_RESID),
