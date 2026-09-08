@@ -50,6 +50,39 @@ pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: 
     }
 }
 
+/// The one GPU context a test binary builds, kept for that binary's life.
+///
+/// **The caching is here; the blocking is still the caller's.** `build` runs at most
+/// once, and `pollster` stays a dev-dependency of the suite rather than a dependency
+/// of the shipped crate — which is the split the module note above draws, with the
+/// cache moved across it and the plumbing left where it was.
+///
+/// What moving it buys is the crate the static is *proved* in.
+/// `OnceLock<Option<GpuContext>>: Sync` unfolds through wgpu's dispatch enum and
+/// wgpu-core's `Global` deeply enough to outrun the default recursion limit, and the
+/// limit is a **crate** property: this crate raises it once (`lib.rs`), where the
+/// forty-odd integration-test crates that share `tests/common` would each have had to
+/// raise their own, and a forty-first would have to remember.
+///
+/// Still one device per test *binary*, which is what it was when `tests/common` held
+/// the lock: a static in a linked rlib is per-binary, and each test target is its own
+/// binary. What that means for a test — a shared device and driver shader cache, but
+/// its own pool, renderers and document — `tests/common` explains at the call site.
+///
+/// Native only, and not by taste: a `GpuContext` is `Send + Sync` on native — wgpu's
+/// handles are, and the health cell is an `Arc<Mutex<..>>` — while on wasm they are
+/// `Rc<Cell<..>>` and a `static` could not hold one at all. The suite is native by
+/// construction, which is what let `tests/common` keep this without a gate; the gate
+/// is what the move across the crate boundary costs (`bench` below is gated for its
+/// own reason).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn shared_context(
+    build: impl FnOnce() -> Option<crate::GpuContext>,
+) -> Option<&'static crate::GpuContext> {
+    static CTX: std::sync::OnceLock<Option<crate::GpuContext>> = std::sync::OnceLock::new();
+    CTX.get_or_init(build).as_ref()
+}
+
 /// The stroke the two benchmarks time (§7.1), stated once.
 ///
 /// `benches/stroke.rs` is the regression gate and `examples/stroke_bench.rs` the quick

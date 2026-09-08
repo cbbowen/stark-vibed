@@ -251,6 +251,10 @@ mod tests {
 
     /// A stored headroom outside the slider's range reads back inside it.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+    )]
     fn a_stored_headroom_is_held_to_the_slider() {
         let wild = |headroom: f32| Hdr { on: true, headroom }.clamped_headroom();
         assert_eq!(wild(0.25), Hdr::MIN_HEADROOM);

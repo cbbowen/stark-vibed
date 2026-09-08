@@ -422,6 +422,10 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
 /// Read back off a published frame because the session's brush has no other public
 /// reading, and the frame is built from the field the renderer draws from.
 #[test]
+#[expect(
+    clippy::float_cmp_const,
+    reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+)]
 fn a_brush_from_the_frontend_is_held_like_one_from_a_peer() {
     let Some(mut engine) = engine_or_skip() else {
         return;

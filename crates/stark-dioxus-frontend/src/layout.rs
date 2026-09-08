@@ -1201,6 +1201,10 @@ mod tests {
     /// A very long column still gets a thumb that can be grabbed — the whole reason
     /// the rail exists is a hand with no wheel.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the floor lands on MIN_THUMB itself, so the assertion is identity rather than proximity"
+    )]
     fn a_long_column_keeps_a_grabbable_thumb() {
         let scroll = Scroll {
             top: 0.0,

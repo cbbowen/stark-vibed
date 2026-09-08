@@ -97,17 +97,19 @@ fn env_flag(name: &str) -> bool {
 /// validation error would leave every later test in that binary observing a failed
 /// GPU — no test does, and one that wants to should build its own context.
 fn shared_context() -> Option<&'static stark_engine::GpuContext> {
-    static CTX: std::sync::OnceLock<Option<stark_engine::GpuContext>> = std::sync::OnceLock::new();
-    CTX.get_or_init(|| {
-        // The decision — skip or fail — is `stark_engine::testing`'s, so this harness,
-        // `tests/tile_pool.rs` and `benches/stroke.rs` cannot come to disagree about
-        // what a missing adapter means. The blocking and the caching stay here.
+    // The decision — skip or fail — is `stark_engine::testing`'s, so this harness,
+    // `tests/tile_pool.rs` and `benches/stroke.rs` cannot come to disagree about what a
+    // missing adapter means. **The cache is that module's too**, and for a reason that
+    // is nothing to do with sharing: the `OnceLock`'s `Sync` proof outruns the default
+    // recursion limit, which is a crate property, and this file is compiled into
+    // forty-odd test crates that would each have had to raise it. The blocking stays
+    // here, so `pollster` stays a dev-dependency.
+    stark_engine::testing::shared_context(|| {
         stark_engine::testing::or_skip(
             pollster::block_on(stark_engine::GpuContext::headless()),
             "GPU tests",
         )
     })
-    .as_ref()
 }
 
 /// An engine of `size` in `space`, on this binary's shared device — or `None` where

@@ -94,11 +94,10 @@ fn read_scanline(
 
     // Four channel planes (R, G, B, E), each run-length encoded across the row.
     // `ch` indexes the *inner* `[u8; 4]` of `scan[x]`, not `scan` itself, so there is
-    // no slice for clippy's iterator rewrite to walk.
-    #[expect(
-        clippy::needless_range_loop,
-        reason = "`ch` indexes the inner [u8; 4] of each pixel, not a slice to walk"
-    )]
+    // no slice for an iterator rewrite to walk. This carried an
+    // `#[expect(clippy::needless_range_loop)]` until clippy learned to see that for
+    // itself, at which point the expectation failed as an unfulfilled one — which is
+    // the mechanism working, and the reason these are `expect` and not `allow`.
     for ch in 0..4 {
         let mut x = 0usize;
         while x < w {

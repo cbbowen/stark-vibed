@@ -346,6 +346,10 @@ mod tests {
     /// one sits near 492 and moves with `MAX_TEXTURE_DIM_2D` and the tile arithmetic,
     /// so pinning it would fail on every retune.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the clamp lands on MAX_STRETCH itself, so the assertion is identity rather than proximity"
+    )]
     fn the_offered_stretch_is_always_drawable() {
         for size in [1.0f32, 30.0, 110.0, 250.0, 400.0, 492.0, 500.0] {
             for bleed in [0.0f32, 0.6] {

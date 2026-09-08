@@ -48,6 +48,16 @@
 //!
 //! Build status lives in §13, not here.
 
+// **The auto-trait proofs here are deep**, and the default limit of 128 no longer
+// reaches the end of them: `Mutex<assets::Inner>: Send` unfolds through the shape
+// cache, a `wgpu::TextureView`, wgpu's dispatch enum and wgpu-core's `Global`, and
+// runs out before it settles. Overrunning the limit is a future-incompatibility
+// warning today (`recursion_depth_exceeding_limit`, rust#159228) and a hard error
+// later; it is attached to the whole crate, so it cannot be quietened where it
+// arises, and the compiler names this as the fix. Nothing here earned it — wgpu's
+// own nesting grew.
+#![recursion_limit = "256"]
+
 pub(crate) mod assets;
 pub(crate) mod assist;
 pub(crate) mod colorspace;

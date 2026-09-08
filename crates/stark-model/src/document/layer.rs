@@ -508,6 +508,10 @@ mod tests {
     /// falls back to the default rather than to a bound — [`BlendMode::sanitized`]'s
     /// contract, which the fullscreen blend pass has no coverage to hide behind.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+    )]
     fn a_bend_is_sanitized_into_range() {
         let k = |m: BlendMode| m.sanitized().drago_k();
         assert_eq!(k(BlendMode::Drago { k: 0.0 }), DRAGO_K_RANGE.0);

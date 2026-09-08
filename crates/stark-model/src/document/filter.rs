@@ -687,6 +687,10 @@ mod tests {
     /// outside it. What is left to check is that the ramp survives hot values without
     /// degenerating, and that the sanitizer is the identity on it.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+    )]
     fn a_gradient_maps_stops_are_bounded_before_it_is_sanitized() {
         use crate::Srgb;
         use crate::gradient::{Gradient, GradientStop};

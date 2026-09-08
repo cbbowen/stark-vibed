@@ -266,6 +266,10 @@ mod tests {
     /// pass through to a shader as a NaN texel. A wide-gamut value passes as it is,
     /// since the cube is not the bound (§6.5).
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+    )]
     fn a_color_from_the_wire_is_finite_and_bounded() {
         let wire = |c: [f32; 3]| {
             carbonite::from_slice_static::<Srgb>(&carbonite::to_vec_static(&c).expect("encodes"))
@@ -292,6 +296,10 @@ mod tests {
     /// The projection is **out and never in**: reading goes through to the array, and
     /// there is no way back that skips the constructor.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+    )]
     fn the_only_door_is_the_constructor() {
         let c = Srgb::new([0.25, 0.5, 0.75]);
         // Deref gives the array's own API to a reader.

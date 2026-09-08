@@ -480,6 +480,10 @@ mod tests {
     /// The clamp in `pinch` really is load-bearing for *finite* input — the test
     /// above would pass on a `pinch` that refused every scale.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the clamp lands on MIN_ZOOM and MAX_ZOOM themselves, so the assertion is identity rather than proximity"
+    )]
     fn a_pinch_still_zooms_and_stays_in_range() {
         let mut v = view(Vec2::ZERO, 1.0, Extent2::new(800, 600));
         v.zoom_about(Vec2::new(400.0, 300.0), 4.0);

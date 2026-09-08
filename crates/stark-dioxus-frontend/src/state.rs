@@ -1676,6 +1676,10 @@ mod tests {
     /// pinning where it falls would be a test about the region arithmetic wearing
     /// this one's name.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the gate leaves MAX_STRETCH exactly alone, which is the whole claim"
+    )]
     fn the_clamp_leaves_a_small_tip_alone() {
         for size in [
             stark_ui::brush_config::MIN_RADIUS,

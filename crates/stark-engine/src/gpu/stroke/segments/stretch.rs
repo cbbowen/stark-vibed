@@ -386,6 +386,10 @@ mod tests {
     /// because the elongation prices the stroke, every tile the drawn-out tip reaches
     /// being one the loop rasterizes and dispatches over.
     #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the knob saturates at MAX_ELONGATION itself, so the assertion is identity rather than proximity"
+    )]
     fn the_elongation_knob_is_the_identity_at_rest_and_bounded_at_the_top() {
         assert_eq!(BrushParams::elongation(0.0), 1.0);
         assert_eq!(

@@ -651,6 +651,10 @@ mod tests {
             leaving: false,
         };
 
+        #[expect(
+            clippy::float_cmp_const,
+            reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
+        )]
         fn assert_gated(peer: &Peer) {
             assert_eq!(
                 peer.cursor, None,
