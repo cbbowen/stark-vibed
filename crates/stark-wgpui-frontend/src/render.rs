@@ -52,6 +52,9 @@ pub struct Renderer {
 struct Overview {
     surface: WgpuSurfaceHandle,
     targets: stark_engine::Offscreen,
+    /// The surface size the last render covered, in device px — the canvas keeps the
+    /// same number under the same argument ([`viewport`](Renderer::viewport)).
+    drawn: (u32, u32),
 }
 
 impl Renderer {
@@ -361,7 +364,9 @@ impl Renderer {
     /// the surface's *actual* size as its viewport rather than the plan's. The two
     /// differ by a pixel of rounding in the steady state and by a whole aspect on the
     /// frame after the piece is reshaped, and taking the target's word for it is what
-    /// keeps that frame a slightly wider crop rather than a stretched picture.
+    /// keeps that frame a slightly wider crop rather than a stretched picture. That
+    /// resize also *discards* what was drawn, which is what
+    /// [`overview_resized`](Self::overview_resized) is for.
     ///
     /// The **committed** document, over the substrate: an overview is a picture of the
     /// piece as it stands, and following the stroke in hand would mean compositing
@@ -380,6 +385,8 @@ impl Renderer {
             self.overview = Some(Overview {
                 surface,
                 targets: stark_engine::Offscreen::default(),
+                // Nothing drawn into it yet, and no size it could have been drawn at.
+                drawn: (0, 0),
             });
         }
         let Some(ov) = self.overview.as_mut() else {
@@ -397,8 +404,20 @@ impl Renderer {
             stark_engine::Background::Substrate,
             stark_engine::Rendered::Committed,
         );
+        ov.drawn = size;
         ov.surface.swap_buffers();
         true
+    }
+
+    /// Whether the element has resized the miniature's surface out from under the
+    /// picture drawn into it — the miniature's [`resized`](Self::resized), and
+    /// sharper: a resized surface is two **new** textures, so what was drawn is not
+    /// stretched, it is gone. Nothing else asks for it back, since the refresh policy
+    /// is otherwise keyed on the document's revision and a resize does not move that.
+    pub fn overview_resized(&self) -> bool {
+        self.overview
+            .as_ref()
+            .is_some_and(|ov| ov.surface.size() != ov.drawn)
     }
 
     /// The miniature's handle, for the element that composites it — `None` until

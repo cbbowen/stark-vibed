@@ -1380,11 +1380,17 @@ the exit criterion is an act, not a diff.
     disagree with the picture a file would hold. The refresh policy is three
     clauses and each earns its place: due when the committed revision moves, never
     under a live gesture, and at most once a settle so a held undo collapses into
-    one render. The viewport marker is a **painted path** rather than a positioned
-    box, because the rectangle is *turned*: a box could say where the view is and
-    not which way up it is, and which way up is half of what an overview answers
-    once the easel can be turned (§18.1.2). Putting the navigator away drops the
-    surface, which is what hiding it actually gives back.
+    one render. A fourth clause is owed by the surface rather than by the picture:
+    the element sizes the surface from its own laid-out bounds and the first render
+    sized it from the plan, so the frame after the shelf appears **replaces both
+    textures** — a resize is not a stretch, it is two new textures and the picture
+    is gone. Nothing else would ask for it back, since the revision has not moved,
+    so a resized surface redraws at once rather than at the next settle
+    (`Renderer::overview_resized`). The viewport marker is a **painted path**
+    rather than a positioned box, because the rectangle is *turned*: a box could
+    say where the view is and not which way up it is, and which way up is half of
+    what an overview answers once the easel can be turned (§18.1.2). Putting the
+    navigator away drops the surface, which is what hiding it actually gives back.
 
   One thing the guides shelf had to answer that the layers shelf did not: **which
   row the dressing is about**. The web app's answer is the edit mode — the guide in

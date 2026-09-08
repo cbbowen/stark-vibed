@@ -2,7 +2,7 @@
 
 wgpui `0.3.5` from the crates.io source (`registry/src/.../wgpui-0.3.5`,
 upstream commit `cc6706e62b` in `.cargo_vcs_info.json`), **less its `examples/`
-tree**, plus six local patches. Substituted for the crates.io crate via
+tree**, plus seven local patches. Substituted for the crates.io crate via
 `[patch.crates-io]` in the root workspace manifest, which also redirects what
 `wgpui-component` (§11.1) asks for, so the widget layer draws with the device the
 first patch describes. License: Apache-2.0 (`LICENSE.md`, kept).
@@ -279,6 +279,42 @@ ink is what the shader was throwing away.
 
 Upstreamable, and worth it.
 
+## Patch 7 — every surface in a frame gets its own rect (sites marked `STARK PATCH`)
+
+`platform/renderer.rs`: `surface_params_buffer` is a read-only **storage array** of
+`SurfaceParams` — `MAX_SURFACES_PER_FRAME` entries — written once from
+`scene.surfaces` before the render pass opens, where each surface's draw used to
+write the one uniform it then read. The `surfaces_bind_group_layout`'s binding 0
+becomes `Storage { read_only: true }`, the draw is
+`pass.draw(0..4, instance..instance + 1)` off a `surfaces_first_instance` counter
+kept beside the five the other primitive kinds already keep, and
+`shaders/surfaces.wgsl` reads `b_surfaces[instance_id]`.
+
+### Why
+
+**Two `WgpuSurface`s in one window drew each other's rectangles.** A
+`Queue::write_buffer` is staged and applied at the next `submit`, *before* the
+command buffers it precedes — and the whole frame is one encoder and one submit.
+So the per-draw write did not sequence with the draws at all: every surface in the
+frame sampled its own texture through whichever surface wrote last.
+
+**How it surfaced.** Stark's navigator (§11) is a second surface showing the same
+document, and the panel column paints after the canvas — so the miniature's rect
+won, the canvas surface was drawn *into the navigator's box* (clipped to it, and
+then covered by the navigator's own draw over the top), and the canvas area was
+left with nothing in it: the window's clear colour, on a window that had been
+painting a frame a moment earlier. Hiding the navigator restored it, which reads
+as the navigator breaking the canvas and is really the frame having one rectangle
+to share.
+
+The fix is the shape the file already uses six times over: quads, shadows,
+underlines and both sprite kinds each put their whole scene array in a buffer once
+and index it by `@builtin(instance_index)`. Surfaces were the one kind that did
+not, because there had only ever been one.
+
+Upstreamable, and worth it — a UI framework that composites exactly one embedder
+surface per frame is a bug independent of anything Stark wants.
+
 ## The deletion
 
 `examples/` is gone, and with it the thirty `[[example]]` blocks that named its
@@ -334,10 +370,10 @@ where the patch had carried a `generation` on the pair — the same fix.
 
 ## Updating
 
-Unpack the new version over this directory, then re-apply the seven changes: the
+Unpack the new version over this directory, then re-apply the eight changes: the
 `DeviceDescriptor` threading, the `WindowBounds` plumbing, the RGBA
 `RenderImage`, the HDR swapchain with its shader decode, the animation frame that
-asks for its successor, the crisp shadow, and the deletion —
+asks for its successor, the crisp shadow, the per-surface rect, and the deletion —
 `rm -rf examples/` and strip the `[[example]]` blocks the new manifests bring
 back. The 0.3.4 → 0.3.5 move was done as a `diff -ruN` of this tree against the
 pristine registry copy, applied with `patch -p1` onto the new tarball; 22 files,

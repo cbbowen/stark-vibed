@@ -245,6 +245,13 @@ struct SurfaceParams {
     content_mask: Bounds,
 }
 
+/// STARK PATCH: how many embedder surfaces one frame may composite. A window with
+/// this many is not a thing anyone builds — the canvas and the navigator's miniature
+/// are two — and the array is 32 bytes an entry, so the cap is generous and the
+/// buffer is still small. Surfaces past it are not drawn rather than written out of
+/// bounds.
+const MAX_SURFACES_PER_FRAME: usize = 64;
+
 impl Quad {
     #[allow(dead_code)]
     const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 22] = &{
@@ -895,8 +902,11 @@ impl WgpuPipelines {
                         wgpu::BindGroupLayoutEntry {
                             binding: 0,
                             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            // STARK PATCH: the array every other primitive kind
+                            // already binds, where this was a lone uniform one
+                            // surface at a time wrote over.
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
                             },
@@ -1478,8 +1488,10 @@ impl WgpuRenderer {
 
         let surface_params_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Surface Params Buffer"),
-            size: std::mem::size_of::<SurfaceParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            // STARK PATCH: room for every surface a frame paints, where this held
+            // exactly one — see `draw`, which fills it before the pass opens.
+            size: (std::mem::size_of::<SurfaceParams>() * MAX_SURFACES_PER_FRAME) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -1643,6 +1655,41 @@ impl WgpuRenderer {
                 });
         }
 
+        // STARK PATCH: every surface's rect, written once, where each draw used to
+        // write the one buffer it then read. A queue write lands before the frame's
+        // commands run, so with two surfaces up both drew through whichever wrote
+        // last — the canvas at the navigator's bounds, and nothing where the canvas
+        // was. The instance index picks the entry, as it does for every other
+        // primitive kind here.
+        let surface_params: Vec<SurfaceParams> = scene
+            .surfaces
+            .iter()
+            .take(MAX_SURFACES_PER_FRAME)
+            .map(|surface| SurfaceParams {
+                bounds: Bounds {
+                    origin: [surface.bounds.origin.x.0, surface.bounds.origin.y.0],
+                    size: [surface.bounds.size.width.0, surface.bounds.size.height.0],
+                },
+                content_mask: Bounds {
+                    origin: [
+                        surface.content_mask.bounds.origin.x.0,
+                        surface.content_mask.bounds.origin.y.0,
+                    ],
+                    size: [
+                        surface.content_mask.bounds.size.width.0,
+                        surface.content_mask.bounds.size.height.0,
+                    ],
+                },
+            })
+            .collect();
+        if !surface_params.is_empty() {
+            self.context
+                .queue
+                .write_buffer(&self.surface_params_buffer, 0, unsafe {
+                    as_bytes(&surface_params)
+                });
+        }
+
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -1755,6 +1802,8 @@ impl WgpuRenderer {
         let mut underlines_first_instance: u32 = 0;
         let mut mono_sprites_first_instance: u32 = 0;
         let mut poly_sprites_first_instance: u32 = 0;
+        // STARK PATCH: which entry of the surface params array the next surface reads.
+        let mut surfaces_first_instance: u32 = 0;
 
         for batch in scene.batches() {
             match batch {
@@ -1867,6 +1916,16 @@ impl WgpuRenderer {
                 }
                 PrimitiveBatch::Surfaces(surfaces) => {
                     for surface in surfaces {
+                        // STARK PATCH: which entry of the params array this surface
+                        // is. Counted rather than derived, exactly as every other
+                        // batch counts its instances — the batches walk `surfaces`
+                        // in order, so the running total is the index the vertex
+                        // shader reads.
+                        let instance = surfaces_first_instance;
+                        surfaces_first_instance += 1;
+                        if instance as usize >= surface_params.len() {
+                            continue;
+                        }
                         let crate::SurfaceContent::Wgpu(surface_id) = &surface.content;
                         if let Some((idx, revision, views)) =
                             self.context.surface_registry.binding_snapshot(*surface_id)
@@ -1876,32 +1935,6 @@ impl WgpuRenderer {
                             self.context
                                 .surface_registry
                                 .clear_present_pending(*surface_id);
-
-                            let params = SurfaceParams {
-                                bounds: Bounds {
-                                    origin: [surface.bounds.origin.x.0, surface.bounds.origin.y.0],
-                                    size: [
-                                        surface.bounds.size.width.0,
-                                        surface.bounds.size.height.0,
-                                    ],
-                                },
-                                content_mask: Bounds {
-                                    origin: [
-                                        surface.content_mask.bounds.origin.x.0,
-                                        surface.content_mask.bounds.origin.y.0,
-                                    ],
-                                    size: [
-                                        surface.content_mask.bounds.size.width.0,
-                                        surface.content_mask.bounds.size.height.0,
-                                    ],
-                                },
-                            };
-
-                            self.context.queue.write_buffer(
-                                &self.surface_params_buffer,
-                                0,
-                                bytemuck::bytes_of(&params),
-                            );
 
                             // fetch or create cached bind groups for this surface
                             let surface_bind_group = {
@@ -1954,7 +1987,7 @@ impl WgpuRenderer {
                             pass.set_pipeline(&self.pipelines.surfaces_pipeline);
                             pass.set_bind_group(0, &self.pipelines.globals_bind_group, &[]);
                             pass.set_bind_group(1, &surface_bind_group, &[]);
-                            pass.draw(0..4, 0..1);
+                            pass.draw(0..4, instance..instance + 1);
 
                             seen_surface_generations.push((*surface_id, revision));
                         }

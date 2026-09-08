@@ -1138,6 +1138,11 @@ impl Canvas {
     /// every tile in the document and mid-stroke is exactly where that is least
     /// affordable; and it is drawn at most once a settle, so a held undo collapses
     /// into one render rather than one a frame.
+    ///
+    /// A **resized** surface is the one thing that does not wait for the settle
+    /// ([`Renderer::overview_resized`]): the picture is gone rather than stale, and
+    /// the frame the element asked for on resizing is the one chance to draw it. Held
+    /// to the same `quiet` all the same.
     fn refresh_overview(&mut self, window: &Window) {
         let Some(o) = self.obs.as_ref() else { return };
         // The **topmost** frame rather than the selected one: this is a permanent
@@ -1169,10 +1174,18 @@ impl Canvas {
         // into it — so the miniature keeps the piece's aspect from the first frame,
         // and the column does not change shape under a refresh.
         self.overview = Some(navigator::Overview::of(&plan, scale));
-        let due = revision != self.overview_at || self.overview_when.is_infinite();
+        // The first call sizes the surface from the plan and the element resizes it
+        // from its own bounds a frame later, so the two disagree by a pixel of layout
+        // rounding on the frame after the shelf appears — and every frame after that
+        // agrees, which is why this settles rather than oscillating.
+        let lost = self
+            .renderer
+            .as_ref()
+            .is_some_and(Renderer::overview_resized);
+        let moved = revision != self.overview_at || self.overview_when.is_infinite();
+        let due = lost || (moved && now - self.overview_when >= navigator::SETTLE);
         if due
             && quiet
-            && now - self.overview_when >= navigator::SETTLE
             && let Some(r) = self.renderer.as_mut()
             && r.paint_overview(window, &plan)
         {

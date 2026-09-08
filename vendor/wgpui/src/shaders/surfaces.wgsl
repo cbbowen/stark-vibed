@@ -27,7 +27,10 @@ struct SurfaceVarying {
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
-@group(1) @binding(0) var<uniform> params: SurfaceParams;
+// STARK PATCH: an array indexed by the instance, where it was a single uniform.
+// One buffer written per frame holds every surface the scene paints, so two
+// surfaces no longer read one another's bounds — see `WgpuRenderer::draw`.
+@group(1) @binding(0) var<storage, read> b_surfaces: array<SurfaceParams>;
 @group(1) @binding(1) var t_surface: texture_2d<f32>;
 @group(1) @binding(2) var s_surface: sampler;
 
@@ -37,7 +40,8 @@ fn to_device_position(position: vec2<f32>) -> vec4<f32> {
 }
 
 @vertex
-fn vs_surface(@builtin(vertex_index) vertex_id: u32) -> SurfaceVarying {
+fn vs_surface(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> SurfaceVarying {
+    let params = b_surfaces[instance_id];
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let position = unit_vertex * params.bounds.size + params.bounds.origin;
 
