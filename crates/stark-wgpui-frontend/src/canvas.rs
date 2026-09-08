@@ -215,6 +215,11 @@ pub struct Canvas {
     /// The same, for the Select section, the transform bar, the two galleries and
     /// the three shelves that came after them.
     select_regions: select::Regions,
+    /// The Select section's *acts*, which are not in the section: they are a bar over
+    /// the canvas, up only while there is a selection (`crate::select`). A second
+    /// list rather than a second enum — the two are built at different times into
+    /// different places, and only ever one of them holds a `select::Region::Act`.
+    select_bar_regions: select::Regions,
     color_regions: color::Regions,
     bar_regions: transform::Regions,
     gallery_regions: gallery::Regions,
@@ -383,6 +388,7 @@ impl Canvas {
             menu_open: None,
             menu_regions: menu::Regions::default(),
             select_regions: select::Regions::default(),
+            select_bar_regions: select::Regions::default(),
             color_regions: color::Regions::default(),
             bar_regions: transform::Regions::default(),
             gallery_regions: gallery::Regions::default(),
@@ -484,6 +490,23 @@ impl Canvas {
             }
         }
 
+        // The selection's bar is over the canvas rather than over a column, so it is
+        // asked before the columns and before anything else could call this paint.
+        // It is mounted only when the mode's bar is not, so the two hit tests above
+        // and here cannot both answer.
+        match select::hit(&self.select_bar_regions, ev.position) {
+            Some(select::Region::Act(i)) => {
+                if let Some(command) = select::SELECT_ACTS.get(i) {
+                    self.run(*command, window, cx);
+                }
+                return;
+            }
+            // The strip behind the chips, and nothing else reaches this list: a press
+            // that missed a chip is still not a press on the picture.
+            Some(_) => return,
+            None => {}
+        }
+
         // Every shelf of both columns, then the columns themselves. Order between the
         // hit tests is immaterial — the region lists are disjoint — but *all* of them
         // come before the catch-all below, which is what turns a press on a column
@@ -549,12 +572,9 @@ impl Canvas {
                 }
                 return;
             }
-            Some(select::Region::Act(i)) => {
-                if let Some(command) = select::SELECT_ACTS.get(i) {
-                    self.run(*command, window, cx);
-                }
-                return;
-            }
+            // The acts and the strip they sit on are the bar's, measured into its own
+            // list above and never into this one.
+            Some(select::Region::Act(_) | select::Region::Bar) => return,
             None => {}
         }
 
@@ -2804,6 +2824,7 @@ impl Render for Canvas {
         self.regions.borrow_mut().clear();
         self.color_regions.borrow_mut().clear();
         self.select_regions.borrow_mut().clear();
+        self.select_bar_regions.borrow_mut().clear();
         self.gallery_regions.borrow_mut().clear();
         self.layer_regions.borrow_mut().clear();
         self.bar_regions.borrow_mut().clear();
@@ -3068,6 +3089,13 @@ impl Render for Canvas {
             ),
             None => (None, None),
         };
+        // The selection's own bar takes the same edge, and stands down rather than
+        // stacking under the mode's: a transform owns the canvas, and an act on the
+        // whole selection reaching under one would move the wrong region on Done.
+        // (The web app recedes its bar instead — dimmed and inert, so the place Done
+        // returns to stays visible — which is a design this frontend has not got.)
+        let select_bar = (mode.is_none() && select::bar_mounted(self.obs.as_ref()))
+            .then(|| select::selection_bar(&self.bindings, &self.select_bar_regions));
 
         let Some(r) = self.renderer.as_mut() else {
             return unavailable();
@@ -3102,7 +3130,8 @@ impl Render for Canvas {
                             // canvas space and the surface is what canvas space maps onto, so
                             // the overlay's own bounds are the frame the mapping lands in.
                             .children(overlay)
-                            .children(bar),
+                            .children(bar)
+                            .children(select_bar),
                     )
                     .children(roster),
             )

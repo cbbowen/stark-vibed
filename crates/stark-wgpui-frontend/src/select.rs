@@ -1,7 +1,8 @@
-//! The Select section: which shape draws the next region, what that region does, and
-//! the acts on the selection once there is one (§6.8, §18.0.4, §11.2 N6).
+//! The Select section: which shape draws the next region and what that region does —
+//! and, on a bar of its own, the acts on the selection once there is one (§6.8,
+//! §18.0.4, §11.2 N6).
 //!
-//! Three rows and up to three dials, and almost nothing here decides anything. Which
+//! Two rows and up to three dials, and almost nothing here decides anything. Which
 //! tools there are and what a press on a lit one means, which actions there are and
 //! what each is called, what a held modifier does to one — all of it is
 //! `stark_ui::selection`, and the five acts are the registry's. What is this
@@ -11,6 +12,15 @@
 //! The section is drawn into the brush panel's column rather than a floating panel of
 //! its own: this frontend has one column of chrome, and a second floating surface is
 //! a design (§25.7) rather than a stage.
+//!
+//! # Why the acts are not in the column
+//!
+//! [`selection_bar`] is a strip over the canvas, mounted only while there *is* a
+//! selection — so the bar being on screen is what says the canvas is masked, where a
+//! permanent row of five chips said it only by being read for which of them are grey.
+//! The web app's `SelectionBar` makes the same trade, and the gate is the registry's
+//! on both sides ([`Command::enabled`]), so the two cannot come to disagree about
+//! when an act is available.
 
 use stark_engine::ObservableState;
 use stark_engine::command::Tool;
@@ -18,17 +28,16 @@ use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
-use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*};
+use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb, rgba};
 
 use crate::controls::Controls;
 use crate::style::{self, StyleExt};
 
-/// The acts a selection can be put through, in the order the row draws them.
+/// The acts a selection can be put through, in the order the bar draws them.
 ///
-/// Every one of them is gated on there *being* a selection
-/// ([`Command::enabled`]) — which is the registry's answer, so a dim button here and
-/// a dim palette row in the web app cannot come to disagree about when an act is
-/// available.
+/// Every one of them is gated on there *being* a selection ([`Command::enabled`]),
+/// which is exactly what [`selection_bar`] is mounted on — so the bar carries no dim
+/// chip at all: the whole of the gate is spent on whether there is a bar.
 pub const SELECT_ACTS: [Command; 5] = [
     Command::Deselect,
     Command::InvertSelection,
@@ -141,14 +150,26 @@ pub enum Region {
     Tool(usize),
     /// One of [`SHAPE_ACTIONS`], by index.
     Action(usize),
-    /// One of [`SELECT_ACTS`], by index.
+    /// One of [`SELECT_ACTS`], by index — measured into [`selection_bar`]'s own list
+    /// rather than the section's, since that is where the acts are drawn.
     Act(usize),
+    /// The bar's strip, behind its chips. A press that missed a chip is still not a
+    /// press on the picture, and over the canvas there is nothing below to say so.
+    Bar,
 }
 
 /// Where each of this section's controls was laid out — `crate::panel`'s device, for
 /// its reason: the panel reports its geometry rather than deriving it.
 pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
 
+/// Measure one control.
+///
+/// Four insets rather than a size (`crate::menu` probes the same way). The two
+/// resolve against the same rectangle — the parent's box inside its border, padding
+/// included — but a child given only a size is *placed* where the flow had reached,
+/// so it lands right only by being its parent's first child (§11.2 N6). The insets
+/// say where it goes as well as how big it is, which is one fewer thing for a control
+/// that gains a sibling to break.
 fn probe(regions: &Regions, region: Region) -> impl IntoElement {
     let regions = regions.clone();
     canvas(
@@ -156,14 +177,23 @@ fn probe(regions: &Regions, region: Region) -> impl IntoElement {
         |_, (), _, _| {},
     )
     .absolute()
-    .size_full()
+    .top_0()
+    .left_0()
+    .right_0()
+    .bottom_0()
 }
 
 /// Which control a press landed on.
+///
+/// Innermost first (`.rev()`, as `crate::menu` reads its own list): the section's
+/// rectangles are disjoint and would answer the same either way, but the bar's strip
+/// contains every chip on it and is probed first, being the strip's first child — so
+/// reading forwards would hand back the ground under a chip that was pressed.
 pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
     regions
         .borrow()
         .iter()
+        .rev()
         .find(|(_, bounds)| bounds.contains(&at))
         .map(|(region, _)| *region)
 }
@@ -201,7 +231,6 @@ pub fn select_body(
                         probe(regions, Region::Tool(i)),
                         command.icon(),
                         *t == tool,
-                        true,
                         command.tooltip(bindings),
                     )
                 })),
@@ -218,7 +247,6 @@ pub fn select_body(
                         probe(regions, Region::Action(i)),
                         action_mark(*a),
                         *a == action,
-                        true,
                         action_tip(*a).to_string(),
                     )
                 })),
@@ -235,26 +263,76 @@ pub fn select_body(
                 controls.dial(dial),
             )
         }))
+}
+
+/// Whether the acts have anything to be about — and so whether [`selection_bar`] is
+/// mounted at all.
+///
+/// A function rather than a line at the call site: the bar stands on exactly what its
+/// five acts are gated on ([`Command::enabled`]), and saying that once is what keeps
+/// the two from drifting apart.
+pub fn bar_mounted(o: Option<&ObservableState>) -> bool {
+    o.is_some_and(|o| o.has_selection)
+}
+
+/// The acts on the whole selection, as a bar along the top of the canvas.
+///
+/// The same edge and the same ground as the transform bar (`crate::transform`), for
+/// the same reason — the one edge of this frontend's canvas with nothing above it —
+/// and the two never share it: a mode draws its own bar and stands this one down
+/// (`crate::canvas`), so a Deselect cannot reach under a transform that has not been
+/// committed.
+///
+/// The chips wear their word beside their mark where the column's wear the mark alone
+/// (`marked`): a bar is as wide as the canvas, so the room the column never had is
+/// here. The hover still carries the chord, as everything in this chrome does.
+pub fn selection_bar(bindings: &Bindings, regions: &Regions) -> impl IntoElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .p_2()
+        .bg(rgba(style::PANEL_OVER_CANVAS))
+        .border_b_1()
+        .border_color(rgb(style::EDGE))
+        .text_color(rgb(style::INK_LIT))
+        .child(probe(regions, Region::Bar))
+        // The Select section's own mark: this bar is that section's state made
+        // visible, so it says so with the section's glyph rather than with a second
+        // picture of a marquee.
         .child(
             div()
                 .flex()
+                .items_center()
                 .gap_1()
-                .pt_1()
-                .children(SELECT_ACTS.iter().enumerate().map(|(i, command)| {
-                    // Dim rather than absent when there is nothing to act on, so the
-                    // row keeps its shape and a person can see what the selection
-                    // would buy them.
-                    let live = command.enabled(o);
-                    marked(
-                        format!("act-{}", command.word()).into(),
-                        probe(regions, Region::Act(i)),
-                        command.icon(),
-                        false,
-                        live,
-                        command.tooltip(bindings),
-                    )
-                })),
+                .py_1()
+                .px_2()
+                .caption()
+                .child(crate::icons::icon(
+                    stark_ui::icons::SELECTION,
+                    style::INK_LABEL,
+                ))
+                .child("Selection"),
         )
+        .children(SELECT_ACTS.iter().enumerate().map(|(i, command)| {
+            let chip = div()
+                .id(SharedString::from(command.word()))
+                .chip()
+                .flex()
+                .items_center()
+                .gap_1()
+                .py_1()
+                .px_2()
+                .resting()
+                .child(probe(regions, Region::Act(i)))
+                .child(crate::icons::icon(command.icon(), style::INK_MARK))
+                .child(command.word());
+            style::tip(chip, command.tooltip(bindings))
+        }))
 }
 
 /// What the hover says one of the five shape actions does.
@@ -313,21 +391,18 @@ fn action_mark(action: ShapeAction) -> Icon {
 /// all (`crate::panel`). Dropping it is what lets five chips share one row rather
 /// than wrapping onto two — and the hover says more than the word ever fit.
 ///
-/// `live` is whether the chip has anything to act on: dim rather than absent, so the
-/// row keeps its shape and a person can see what a selection would buy them.
+/// Every chip this draws is one a press can always take: arming a tool and picking
+/// what a shape does are answers about a gesture that has not been made, so there is
+/// nothing for either to be unavailable *for*. The acts, which do have such a gate,
+/// are the bar's ([`selection_bar`]).
 fn marked(
     id: SharedString,
     probe: impl IntoElement,
     mark: Icon,
     lit: bool,
-    live: bool,
     tip: String,
 ) -> impl IntoElement {
-    let ink = match (lit, live) {
-        (true, _) => style::INK_LIT,
-        (false, true) => style::INK_MARK,
-        (false, false) => style::INK_DEAD,
-    };
+    let ink = if lit { style::INK_LIT } else { style::INK_MARK };
     let chip = div()
         .id(id)
         .chip()
@@ -347,11 +422,13 @@ mod tests {
     use super::*;
 
     /// Before there is a document there is nothing to be armed and nothing to act
-    /// on, so the section is its three rows and no dials — the frame between the
-    /// window opening and the engine's first projection, which is a real frame.
+    /// on, so the section is its two rows and no dials and the bar is not up — the
+    /// frame between the window opening and the engine's first projection, which is
+    /// a real frame.
     #[test]
     fn nothing_is_offered_before_there_is_a_document() {
         assert!(dials(None).is_empty());
+        assert!(!bar_mounted(None));
         for command in SELECT_ACTS {
             assert!(!command.enabled(None), "{command:?} has nothing to act on");
         }

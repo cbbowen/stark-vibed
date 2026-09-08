@@ -1085,6 +1085,19 @@ the exit criterion is an act, not a diff.
   exactly the kind of divergence that is cheap to fix while it is two callers and
   expensive once it is a picture someone has noticed.
 
+  The acts on a *whole* selection — deselect, invert, fill, float, transform — sat
+  at the bottom of the Select section for a stage, five chips greyed whenever there
+  was nothing to act on. They are a bar over the canvas now
+  (`select::selection_bar`), up only while there is a selection, which is the
+  arrangement the web app already had: the bar being on screen says the canvas is
+  masked, where a permanent row said it only by being read for which of its chips
+  are grey — and it says so without spending column space the rest of the time. The
+  gate is the same one either way (`Command::enabled`); what moved is where it is
+  spent, on whether there is a bar rather than on each chip in it. It takes the
+  transform bar's edge and stands down entirely while a mode is composing, which is
+  the one thing the web app does differently — there the bar recedes, dimmed and
+  inert, so the place Done returns to stays visible.
+
   Three things this frontend does differently, each an admission. There is no
   **remembered** shape tool: the web app keeps the last one armed in a signal so
   the action row can hand it back, and this one hands back the rectangle. The
@@ -1234,10 +1247,11 @@ the exit criterion is an act, not a diff.
   Everything *about* a row is the registry's: its name (the full one, since a menu
   row stands alone where a chip sits under a header that has already named the
   subject), its mark, the chord that also reaches it, and whether the document makes
-  it available. So a greyed "Deselect" and a dim panel button are one control's
-  answer rather than two. **Which** commands, and in which menu, is this frontend's —
-  and that is not a reluctance to share: the menus differ because the apps implement
-  different subsets, so a shared table would be a list one of them has to filter.
+  it available. So a greyed "Deselect" in the menu and a dim row for it in the
+  search palette are one control's answer rather than two. **Which** commands, and
+  in which menu, is this frontend's — and that is not a reluctance to share: the
+  menus differ because the apps implement different subsets, so a shared table would
+  be a list one of them has to filter.
   Every row is an act `Canvas::run` answers, checked by a test, because a menu
   offering a dead act is worse than a short menu.
 
