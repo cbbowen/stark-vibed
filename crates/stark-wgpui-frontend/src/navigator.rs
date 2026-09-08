@@ -54,7 +54,7 @@ use crate::style;
 /// The width is the reading column's, less its padding. The height is a bargain with
 /// the shelves under it: every pixel here is a layer row they do not get, and an
 /// overview too small to find the marker in is not worth the ones it does spend.
-pub const MAX_WIDTH: f32 = crate::panel::RIGHT_WIDTH - 24.0;
+pub const MAX_WIDTH: f32 = crate::panel::RIGHT_CONTENT;
 pub const MAX_HEIGHT: f32 = 168.0;
 
 /// How long a change has to stop arriving before the miniature is drawn again, in

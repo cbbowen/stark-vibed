@@ -35,9 +35,15 @@ use crate::style;
 /// (§11.2, the wide-gamut wheel).
 const WHEEL_GAMUT: stark_model::color::Gamut = stark_model::color::Gamut::Srgb;
 
-/// The wheel's side, logical px — and the ramp's width, so the two controls line up
-/// in a column narrower than the panel.
-const WHEEL: f32 = 168.0;
+/// The wheel's side, logical px — and the ramp's width, and the hex row's, so the
+/// three controls are one edge-to-edge column.
+///
+/// The shelf's whole width rather than a figure of its own (`crate::panel`): a picker
+/// is a picture read by eye, so every px of the column is resolution it can spend, and
+/// one narrower than the layer rows under it reads as a control that failed to lay
+/// out. The rim's antialiasing is a texel of [`FIELD_N`] scaled to this, so it softens
+/// as this grows — which is what `inside_the_rim` is trading for an unclipped circle.
+const WHEEL: f32 = crate::panel::RIGHT_CONTENT;
 
 /// The `L` track's height.
 const TRACK: f32 = 16.0;

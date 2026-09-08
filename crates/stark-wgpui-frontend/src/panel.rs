@@ -39,11 +39,10 @@ use crate::style::{self, StyleExt};
 
 /// The panel's own padding (`p_3`), in logical px.
 ///
-/// Test-only, and that is the point: nothing at run time needs it any more, because
-/// nothing at run time computes where a control is. It survives here to build the
-/// stand-in rectangles a measured layout would have reported.
-#[cfg(test)]
-const PADDING: f32 = 12.0;
+/// Nothing at run time asks it where a control *is* — that is measured ([`Regions`]),
+/// and the tests below build their stand-in rectangles from it. What it is still for
+/// is how wide a control may be: see [`RIGHT_CONTENT`].
+pub const PADDING: f32 = 12.0;
 
 /// The tool column's width in logical px. Wide enough for a mark, a track that still
 /// resolves a hundred steps, and the figure beside it.
@@ -53,6 +52,15 @@ pub const LEFT_WIDTH: f32 = 216.0;
 /// and four controls — and because the color wheel is a picture rather than a control
 /// and wants the room.
 pub const RIGHT_WIDTH: f32 = 268.0;
+
+/// The room a right-hand shelf's body actually has: the column, less its padding on
+/// both sides.
+///
+/// A picture in this column is drawn *this* wide rather than at a figure of its own —
+/// the color wheel and the navigator's miniature both are. A control narrower than
+/// this reads as a mistake beside the layer rows, which fill the column because a row
+/// of text and buttons has nothing to do but fill it.
+pub const RIGHT_CONTENT: f32 = RIGHT_WIDTH - 2.0 * PADDING;
 
 /// Which side of the window a column is docked to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
