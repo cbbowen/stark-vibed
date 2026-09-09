@@ -193,14 +193,22 @@ impl Renderer {
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
     /// replays of the same samples keep the same color dynamics and dither
     /// (see `Engine::replay_stroke_seeded`).
+    ///
+    /// **Answers whether it committed one.** Samples that hold no stroke — none at
+    /// all, or a hand that never left its first point — commit nothing, and the brush
+    /// editor's preview has to know: it undoes the committed stroke before each
+    /// replay, and an undo for a commit that never happened reaches past into the
+    /// reference band beneath (`stark_ui::brush_editor::TestStroke`).
     pub fn replay_stroke_seeded(
         &mut self,
         tool: Tool,
         samples: &[InputSample],
         seed: u64,
         rope: f32,
-    ) {
-        self.engine.replay_stroke_seeded(tool, samples, seed, rope);
+    ) -> bool {
+        self.engine
+            .replay_stroke_seeded(tool, samples, seed, rope)
+            .is_some()
     }
 
     pub fn observe(&self) -> ObservableState {

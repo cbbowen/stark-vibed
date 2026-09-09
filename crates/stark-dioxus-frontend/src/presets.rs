@@ -154,13 +154,16 @@ pub fn apply(state: AppState, name: &str) {
 /// `from`, which is what
 /// [`Signals::preset_in_hand`](crate::state::Signals::preset_in_hand) takes.
 ///
-/// The rule this module's docs state, as a function, because it is not only the
-/// preset library's any more — the quick-brush rack (`crate::slots`) swaps
-/// brushes in and out through it too, in both directions. Stated once, so "a
-/// tool is everything but the color" cannot come to mean two things: a slot
-/// that changed the color under the hand on the way in, or handed back the old
-/// one on the way out, would make the color a property of which key was last
+/// The swap itself is [`BrushConfig::worn_over`], shared with the native frontend
+/// (§11.2) — the rule is not only the preset library's, since the quick-brush rack
+/// (`crate::slots`) goes through it in both directions, and it is not only the web's.
+/// Stated once, so "a tool is everything but the color" cannot come to mean two
+/// things: a slot that changed the color under the hand on the way in, or handed back
+/// the old one on the way out, would make the color a property of which key was last
 /// pressed.
+///
+/// What is left here is the two halves only this frontend can do: the tour's bracket,
+/// and resolving the stamp against this browser's shape library.
 ///
 /// The RGB kept is the *live* one, so it survives every swap; the effect's own
 /// opacity (`BrushEffect::opacity`, part of what the tool does — §6.2) rides
@@ -184,7 +187,8 @@ pub fn wear(state: AppState, brush: BrushConfig, tune: Transient, from: Option<S
     // the place to say so.
     crate::tutor::not_reaching(state, true);
     let mut brush = brush;
-    brush.smoothing = brush.smoothing.clamp(0.0, 1.0);
+    // The one part of a swap that is this *browser's*, and so the one part below the
+    // shared door: which stamps a session actually has is a fact about this library.
     brush.shape = match brush.shape {
         BrushShape::Stamp(id) => crate::shapes::ensure(state, id)
             .map(BrushShape::Stamp)
@@ -192,15 +196,10 @@ pub fn wear(state: AppState, brush: BrushConfig, tune: Transient, from: Option<S
         round @ BrushShape::Round { .. } => round,
     };
     update_brush(state, move |b, t| {
-        // The hand's color survives the swap — a tool is everything but it
-        // (§18.1.8), and this door is where that rule lives now that the
-        // color rides the transient: the whole configuration moves as one,
-        // the feel (§6.11), the inactive effect and the tune included, and
-        // the one field written back is the color the hand already held.
-        let rgb = t.color;
-        *b = brush;
-        *t = tune;
-        t.color = rgb;
+        // The whole configuration moves as one — the feel (§6.11), the inactive
+        // effect and the tune included — with the hand's color kept over it and the
+        // pair settled to something the renderer will draw (`BrushConfig::worn_over`).
+        (*b, *t) = BrushConfig::worn_over(brush, tune, *t);
     });
     crate::tutor::not_reaching(state, false);
     let mut in_hand = state.preset_in_hand;

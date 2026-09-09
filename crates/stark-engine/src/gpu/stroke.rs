@@ -383,9 +383,9 @@ impl StrokeRenderer {
         // own extent overflows the region lands here.
         //
         // **No brush this app can build does.** The frontier is published as
-        // [`max_tip_reach`](budget::max_tip_reach) and the frontend clamps
-        // every brush to it (`stark-dioxus-frontend`'s
-        // `state::hold_the_tip_drawable`), so reaching this arm means a record
+        // [`max_tip_reach`](budget::max_tip_reach) and the chrome clamps every
+        // brush to it (`stark_ui::brush_config::BrushConfig::settle`, which both
+        // frontends run at their one door), so reaching this arm means a record
         // came from somewhere that did not — a peer, or a file written by
         // another build — and is not being honoured.
         if matches!(plan.path, StrokePath::TipTooLarge)

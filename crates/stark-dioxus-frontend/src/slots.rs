@@ -35,7 +35,7 @@ use crate::layout::chrome_dimmed;
 use crate::presets;
 use crate::state::AppState;
 use stark_ui::brush_config::{BrushConfig, Transient};
-use stark_ui::slots::{self, ERASER, Grip, Held, QuickBrush, Row, View};
+use stark_ui::slots::{self, Digit, ERASER, Grip, Held, QuickBrush, Row, View};
 
 /// [`slots::resolve`] against the app's library, for the callers that have only the
 /// state: its own statement so the library's read guard is dropped before the caller
@@ -63,10 +63,7 @@ fn resolve_in(state: AppState, slot: &QuickBrush) -> Option<(BrushConfig, Transi
 /// below the guard on a hold in flight, so a held key's repeats are never presses; and
 /// counted for keys alone, since the pen's tail is on the glass or off it, and two
 /// dabs of it are two erase strokes.
-pub fn hold(state: AppState, slot: usize, grip: Grip) {
-    if slot >= slots::COUNT {
-        return;
-    }
+pub fn hold(state: AppState, slot: Digit, grip: Grip) {
     let mut held = state.slots.held;
     // Answered without cloning the hold, since this runs on every report of a hovering
     // pen and nearly all of them are already holding.
@@ -89,7 +86,7 @@ pub fn hold(state: AppState, slot: usize, grip: Grip) {
     // rewrites the brush signal underneath it (`state::update_brush`).
     let base = presets::worn(state);
     let base_from = state.preset_in_hand.peek().clone();
-    let bound = state.slots.brushes.peek()[slot].clone();
+    let bound = state.slots.brushes.peek()[slot.as_index()].clone();
     let mut hold = Held::open(slot, grip, base, base_from, picked);
     // The slot's brush as it is *now* — its preset looked up live, at the slot's own
     // size and flow. A binding the library cannot answer is an empty slot, and an
@@ -123,7 +120,7 @@ pub fn claim(state: AppState) {
 
 /// End the hold on `slot`, if `grip` is what is holding it ([`Held::ends_on`]): keep
 /// whatever was changed, and put the displaced brush back.
-pub fn release(state: AppState, slot: usize, grip: Grip) {
+pub fn release(state: AppState, slot: Digit, grip: Grip) {
     let mut held = state.slots.held;
     // The guard is answered before the hold is cloned: this runs on every report of a
     // pen whose tail is not facing the glass (`input::tail_says`), and the overwhelming
@@ -272,10 +269,10 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
     let state = use_context::<AppState>();
     // Which row heard the press in flight, so a click applies a row only when it closes
     // a press that landed there (see [`SlotOverlay`] on the pen's release).
-    let mut pressed: Signal<Option<usize>> = use_signal(|| None);
+    let mut pressed: Signal<Option<Digit>> = use_signal(|| None);
     // The trash being held down right now, if any: its row wears the fill for as long
     // as this says so, and nothing else keeps time.
-    let mut arming: Signal<Option<usize>> = use_signal(|| None);
+    let mut arming: Signal<Option<Digit>> = use_signal(|| None);
     let arming_now = arming();
     let rack = (state.slots.brushes)();
     // The whole tool, feel and inactive effect included, off the frontend's own signals
@@ -459,8 +456,8 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
 /// alike, exactly as holding 3 and clicking a preset assigns that preset. One rule, not
 /// a special case (`Held::settle`), and it is a whole tool arriving, so it says so
 /// ([`claim`]) — copying 5 onto 3 must work when 5 is already what is in hand.
-pub fn pick(state: AppState, slot: usize) {
-    let bound = state.slots.brushes.peek().get(slot).cloned().flatten();
+pub fn pick(state: AppState, slot: Digit) {
+    let bound = state.slots.brushes.peek()[slot.as_index()].clone();
     let Some(bound) = bound else { return };
     // A binding the library cannot answer is an empty row, and an empty row's click
     // puts on nothing.
@@ -497,16 +494,17 @@ pub fn set_pinned(state: AppState, pinned: bool) {
 }
 
 /// Bind `slot` to `brush` — a preset, at a size and flow — and persist the rack.
-pub fn assign(state: AppState, slot: usize, brush: QuickBrush) {
+pub fn assign(state: AppState, slot: Digit, brush: QuickBrush) {
     let mut brushes = state.slots.brushes;
-    if slots::assign(&mut brushes.write(), slot, brush) {
-        slots::persist(&brushes.read());
-    }
+    // Its own statement, this module's rule: a write guard held across the call would
+    // still be alive under the `read` beside it.
+    slots::assign(&mut brushes.write(), slot, brush);
+    slots::persist(&brushes.read());
 }
 
 /// Empty `slot` and persist the rack — the trash on a pinned row, held down until its
 /// fill closes ([`SlotOverlay`]).
-pub fn clear(state: AppState, slot: usize) {
+pub fn clear(state: AppState, slot: Digit) {
     let mut brushes = state.slots.brushes;
     // Its own statement, this module's rule: a write guard held across the `if` would
     // still be alive under the `read` in its body.

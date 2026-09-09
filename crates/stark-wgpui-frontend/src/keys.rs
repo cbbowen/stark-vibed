@@ -193,15 +193,18 @@ mod tests {
     /// this table for (§18.1.8) — and nothing that is not a digit reaches one.
     #[test]
     fn the_digit_row_names_the_rack() {
-        for d in 0..10 {
-            let stroke = stroke(&press(&d.to_string(), false, false));
-            assert_eq!(stark_ui::slots::of_code(stroke.code), Some(d));
+        for n in 0..stark_ui::slots::COUNT {
+            let stroke = stroke(&press(&n.to_string(), false, false));
+            assert_eq!(
+                stark_ui::slots::of_code(stroke.code),
+                Some(stark_ui::slots::Digit::ALL[n])
+            );
         }
         // Shift is the rack's to tolerate, since it is what most layouts type a digit
         // under — the code says the same thing either way.
         assert_eq!(
             stark_ui::slots::of_code(stroke(&press("4", false, true)).code),
-            Some(4)
+            Some(stark_ui::slots::Digit::ALL[4])
         );
         for key in ["[", "]", "q", "escape", "f5"] {
             assert_eq!(

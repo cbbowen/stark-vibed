@@ -124,21 +124,34 @@ impl Knob {
         }
     }
 
-    /// The knob's range. Size and flow are the app's own bounds — the ones a tuning
-    /// drag clamps against too, which is why they live beside the brush rather than
-    /// on a panel (`stark_ui::brush_config`).
-    pub fn range(self) -> (f32, f32) {
+    /// The knob's range **for this brush**.
+    ///
+    /// The size's is the app's own bound — the one a tuning drag clamps against too,
+    /// which is why it lives beside the brush rather than on a panel
+    /// (`stark_ui::brush_config`). The flow's is the *in-force effect's*
+    /// (`BrushConfig::max_flow`): the liquify strength stops at its quoted,
+    /// load-bearing 1 (§6.13) where every other rate stops at the slider's own top.
+    ///
+    /// Taking the brush is the whole of why the tracks are fractions. A
+    /// `SliderState`'s bounds are fixed when it is built and the flow's top moves with
+    /// the effect chips, so the trough is a fraction and the view maps it — the shape
+    /// the editor's own rows already had (`crate::controls`). Held to `MAX_FLOW`
+    /// instead, this slider ran to 3 on a liquify brush while the projection clamped
+    /// at 1, and the top two-thirds of it did nothing.
+    pub fn range(self, brush: &Brush) -> (f32, f32) {
         match self {
             Knob::Size => (MIN_RADIUS, MAX_RADIUS),
-            Knob::Flow => (0.0, MAX_FLOW),
+            Knob::Flow => (0.0, brush.config.max_flow()),
         }
     }
 
-    /// The step a track moves in: whole px for a size, a hundredth for a strength.
+    /// The step a track moves in, **as a fraction of its own range** — the trough is
+    /// one (see [`range`](Self::range)), so the quantum has to be too: a whole px of
+    /// the size's span, a hundredth of the widest flow.
     pub fn step(self) -> f32 {
         match self {
-            Knob::Size => 1.0,
-            Knob::Flow => 0.01,
+            Knob::Size => 1.0 / (MAX_RADIUS - MIN_RADIUS),
+            Knob::Flow => 0.01 / MAX_FLOW,
         }
     }
 
@@ -498,15 +511,17 @@ pub fn within(at: Point<Pixels>, left: f32, right: f32, window: f32) -> bool {
     (left > 0.0 && x <= left) || (right > 0.0 && x >= window - right)
 }
 
-/// The value a fraction along `knob`'s track means.
-pub fn value_at(knob: Knob, fraction: f32) -> f32 {
-    let (lo, hi) = knob.range();
+/// The value a fraction along `knob`'s track means, for the brush the track is
+/// showing — see [`Knob::range`] for why that is not a constant.
+pub fn value_at(knob: Knob, brush: &Brush, fraction: f32) -> f32 {
+    let (lo, hi) = knob.range(brush);
     lo + fraction.clamp(0.0, 1.0) * (hi - lo)
 }
 
 /// Move `knob` to `fraction` of its range.
 pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) {
-    knob.write(brush, value_at(knob, fraction));
+    let value = value_at(knob, brush, fraction);
+    knob.write(brush, value);
 }
 
 #[cfg(test)]
@@ -639,7 +654,7 @@ mod tests {
         let mut brush = Brush::new(Default::default());
         for knob in KNOBS {
             drag_knob(&mut brush, knob, 0.25);
-            let (lo, hi) = knob.range();
+            let (lo, hi) = knob.range(&brush);
             let want = lo + 0.25 * (hi - lo);
             assert!(
                 (knob.read(&brush) - want).abs() < 1e-3,
@@ -647,6 +662,27 @@ mod tests {
                 knob.read(&brush),
             );
         }
+    }
+
+    /// **The Flow track ends where the effect does.** A liquify brush's strength is
+    /// clamped to its quoted 1 at the projection (§6.13), so a track running to
+    /// `MAX_FLOW` would have had two thirds of its travel do nothing — and the knob is
+    /// reachable three ways (this dial, the editor's row, the tuning drag), which is
+    /// what `BrushConfig::max_flow` exists to keep to one answer.
+    #[test]
+    fn a_liquify_brush_gets_the_flow_track_its_effect_has() {
+        let mut brush = Brush::new(Default::default());
+        assert_eq!(Knob::Flow.range(&brush), (0.0, MAX_FLOW));
+        brush.config.effect = stark_ui::brush_config::BrushEffectType::Liquify;
+        assert_eq!(Knob::Flow.range(&brush), (0.0, 1.0));
+        // The full track is the full strength, rather than a third of it.
+        drag_knob(&mut brush, Knob::Flow, 1.0);
+        assert_eq!(brush.tune.flow, 1.0);
+        assert_eq!(
+            brush.config.params(brush.tune).effect.flow(),
+            1.0,
+            "and the projection has nothing left to clamp away",
+        );
     }
 
     /// Every knob and every effect wears a mark, which is the whole of what a column

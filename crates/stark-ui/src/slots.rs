@@ -41,9 +41,90 @@ use crate::storage::{self, Store};
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;
 
+/// **A digit the rack actually has** — `0..`[`COUNT`], and nothing else can be
+/// written.
+///
+/// A number, until this type existed, guarded in nine places across this module, the
+/// preset library and both frontends: a `< COUNT` before a hold, a `get_mut` before a
+/// binding, a `filter` before a seed, a bounds check in the store. Every one of them
+/// defended against a value only two things could produce — [`of_code`], which is
+/// structurally `0..=9`, and a hand-written [`PresetEntry::slot`] — and each answered
+/// differently, so what a stray digit *did* depended on which door it arrived at.
+/// One fallible constructor, and the guards are the type's.
+///
+/// **The stored form is unchanged**: a bare number, exactly as the record has always
+/// carried it, with the range check moved into the deserializer where the store's
+/// skip-a-damaged-entry rule already handles it ([`StoredSlot`]).
+///
+/// [`PresetEntry::slot`]: crate::presets::PresetEntry::slot
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[serde(try_from = "usize", into = "usize")]
+pub struct Digit(u8);
+
+impl Digit {
+    /// The ten, in numeric order — so `Digit::ALL[n]` **is** the digit `n`. That is
+    /// how a definition names one (`presets::shipped`), and what makes this a roster
+    /// rather than a second table to keep in step with the keyboard.
+    pub const ALL: [Digit; COUNT] = {
+        let mut all = [Digit(0); COUNT];
+        let mut i = 0;
+        while i < COUNT {
+            all[i] = Digit(i as u8);
+            i += 1;
+        }
+        all
+    };
+
+    /// The digit `n` names, or `None` for a number past the rack — **the one
+    /// constructor**, and so the one place the range is ever asked about.
+    pub fn new(n: usize) -> Option<Self> {
+        (n < COUNT).then_some(Self(n as u8))
+    }
+
+    /// Where this digit sits in a [`Rack`] — infallible, which is the whole point:
+    /// the value cannot name a row the array does not have.
+    pub fn as_index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl std::fmt::Display for Digit {
+    /// The key it is reached by, which is what a row's tip says.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<Digit> for usize {
+    fn from(digit: Digit) -> Self {
+        digit.as_index()
+    }
+}
+
+impl TryFrom<usize> for Digit {
+    type Error = NotADigit;
+
+    fn try_from(n: usize) -> Result<Self, Self::Error> {
+        Digit::new(n).ok_or(NotADigit(n))
+    }
+}
+
+/// A number no digit stands for — what a stored row from a longer build reads as, and
+/// the only way a [`Digit`] is ever refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NotADigit(usize);
+
+impl std::fmt::Display for NotADigit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is not one of the rack's {COUNT} digits", self.0)
+    }
+}
+
+impl std::error::Error for NotADigit {}
+
 /// The slot the pen's other end holds, and the one the `0` key holds: the digit past
 /// the nine, which is where a tenth of anything goes on a keyboard.
-pub const ERASER: usize = 0;
+pub const ERASER: Digit = Digit::ALL[0];
 
 /// The slot a key **code** stands for, or `None` for every other key.
 ///
@@ -52,12 +133,12 @@ pub const ERASER: usize = 0;
 /// `&é"'` unshifted, and a rack reachable only through Shift would be no rack at
 /// all. The numeric keypad is the same ten slots — it is a digit row that happens
 /// to be square.
-pub fn of_code(code: &str) -> Option<usize> {
+pub fn of_code(code: &str) -> Option<Digit> {
     let digit = code
         .strip_prefix("Digit")
         .or_else(|| code.strip_prefix("Numpad"))?;
     match digit.as_bytes() {
-        [d @ b'0'..=b'9'] => Some((d - b'0') as usize),
+        [d @ b'0'..=b'9'] => Digit::new((d - b'0') as usize),
         _ => None,
     }
 }
@@ -91,9 +172,9 @@ pub struct QuickBrush {
     pub transient: Transient,
 }
 
-/// The rack: one optional binding per digit, indexed **by the digit itself**, so
-/// `rack[3]` is what the `3` key holds and there is no off-by-one to get wrong
-/// between the keyboard, the panel and storage.
+/// The rack: one optional binding per digit, indexed **by the digit itself**
+/// ([`Digit::as_index`]), so `rack[3]` is what the `3` key holds and there is no
+/// off-by-one to get wrong between the keyboard, the panel and storage.
 pub type Rack = [Option<QuickBrush>; COUNT];
 
 /// An empty rack — `Default` spelled out, since `[None; COUNT]` wants a `Copy`
@@ -126,13 +207,14 @@ pub fn resolve(library: &[PresetEntry], slot: &QuickBrush) -> Option<(BrushConfi
 /// why the module defines no brush of its own: what a slot starts as is a question
 /// about the app's tools, and those live in one place.
 ///
-/// A slot past the rack is a definition to fix, not a panic to take: the preset is
-/// still perfectly usable from the list.
+/// A definition that named a digit off the rack used to be dropped here. It cannot
+/// name one now ([`Digit`]), so there is nothing to drop and no quietly-unplaced
+/// preset to notice.
 pub fn seed(library: &[PresetEntry]) -> Rack {
     let mut rack = empty_rack();
     for entry in library {
-        if let Some(slot) = entry.slot.filter(|s| *s < COUNT) {
-            rack[slot] = Some(QuickBrush {
+        if let Some(slot) = entry.slot {
+            rack[slot.as_index()] = Some(QuickBrush {
                 preset: entry.name.clone(),
                 transient: entry.transient,
             });
@@ -141,17 +223,17 @@ pub fn seed(library: &[PresetEntry]) -> Rack {
     rack
 }
 
-/// Bind `slot` to `brush`. `false` for a digit off the rack, which is the caller's
-/// cue that there is nothing to persist.
-pub fn assign(rack: &mut Rack, slot: usize, brush: QuickBrush) -> bool {
-    let Some(row) = rack.get_mut(slot) else {
-        return false;
-    };
-    *row = Some(brush);
-    true
+/// Bind `slot` to `brush`.
+///
+/// Answers nothing: it used to say "the digit was on the rack", which is now the
+/// type's ([`Digit`]) — and a binding written is always a binding to persist.
+pub fn assign(rack: &mut Rack, slot: Digit, brush: QuickBrush) {
+    rack[slot.as_index()] = Some(brush);
 }
 
-/// Empty `slot`, and say whether that changed anything.
+/// Empty `slot`, and say whether that changed anything — **the binding, not the
+/// digit**: a slot off the rack is unwritable now ([`Digit`]), so the answer is only
+/// ever "was there something in it".
 ///
 /// The live brush is untouched, exactly as removing a preset leaves it: what goes is
 /// the *binding*, not the tool. A slot cleared while it is being held is cleared for
@@ -160,8 +242,8 @@ pub fn assign(rack: &mut Rack, slot: usize, brush: QuickBrush) -> bool {
 ///
 /// Clearing the last filled slot leaves a rack that is empty rather than unset, and
 /// the two must not be confused: see [`read_storage`].
-pub fn clear(rack: &mut Rack, slot: usize) -> bool {
-    rack.get_mut(slot).is_some_and(|row| row.take().is_some())
+pub fn clear(rack: &mut Rack, slot: Digit) -> bool {
+    rack[slot.as_index()].take().is_some()
 }
 
 /// Empty every slot bound to the preset called `name` — what removing a preset does
@@ -204,7 +286,7 @@ pub const DOUBLE_TAP: f64 = 0.3;
 /// hold is in flight before it asks.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Taps {
-    last: Option<(usize, f64)>,
+    last: Option<(Digit, f64)>,
 }
 
 impl Taps {
@@ -214,7 +296,7 @@ impl Taps {
     ///
     /// A pair is spent by being reported, so a third press in the same window starts
     /// over rather than pairing with the second: the count is exactly two.
-    pub fn press(&mut self, slot: usize, now: f64) -> bool {
+    pub fn press(&mut self, slot: Digit, now: f64) -> bool {
         let double = self
             .last
             .is_some_and(|(s, at)| s == slot && now - at < DOUBLE_TAP);
@@ -257,7 +339,7 @@ impl Grip {
 /// against.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Held {
-    slot: usize,
+    slot: Digit,
     grip: Grip,
     /// The brush the hold displaced — both halves, what comes back when it ends.
     base: (BrushConfig, Transient),
@@ -289,7 +371,7 @@ impl Held {
     /// slot — nothing is swapped, so nothing moved. A hold that *did* swap says what it
     /// landed on with [`enter`](Self::enter).
     pub fn open(
-        slot: usize,
+        slot: Digit,
         grip: Grip,
         base: (BrushConfig, Transient),
         base_from: Option<String>,
@@ -316,7 +398,7 @@ impl Held {
     }
 
     /// The digit being held.
-    pub fn slot(&self) -> usize {
+    pub fn slot(&self) -> Digit {
         self.slot
     }
 
@@ -344,14 +426,14 @@ impl Held {
     /// a pen lift from releasing a key still under a finger; the **slot** keeps a
     /// second number pressed and released during a hold — a hand rolling from 3 to 4 —
     /// from ending the hold that 3 still has.
-    pub fn ends_on(&self, slot: usize, grip: Grip) -> bool {
+    pub fn ends_on(&self, slot: Digit, grip: Grip) -> bool {
         self.slot == slot && self.grip == grip
     }
 
     /// Whether a press made with `grip` takes this hold's brush away
     /// ([`Grip::displaces`]), and with it the slot and grip whose release the caller
     /// owes first.
-    pub fn displaced_by(&self, grip: Grip) -> Option<(usize, Grip)> {
+    pub fn displaced_by(&self, grip: Grip) -> Option<(Digit, Grip)> {
         grip.displaces(self.grip).then_some((self.slot, self.grip))
     }
 
@@ -461,7 +543,7 @@ pub struct View<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     /// The digit this row is reached by.
-    pub slot: usize,
+    pub slot: Digit,
     /// The brush the row is *about to* hold, resolved — the release's own rule asked a
     /// moment early for the held digit ([`Held::would_keep`]), and what is stored for
     /// every other row.
@@ -518,18 +600,22 @@ impl Row {
 /// that do nothing.
 pub fn rows(view: View<'_>) -> Vec<Row> {
     let held = view.holding.map(Held::slot);
-    (1..COUNT)
+    // The keyboard's order, not the roster's: 1 through 9, then the eraser's own 0
+    // where the key sits.
+    Digit::ALL
+        .into_iter()
+        .skip(1)
         .chain(std::iter::once(ERASER))
-        .filter(|slot| view.rack[*slot].is_some() || Some(*slot) == held)
+        .filter(|slot| view.rack[slot.as_index()].is_some() || Some(*slot) == held)
         .map(|slot| {
-            let stored = view.rack[slot]
+            let stored = view.rack[slot.as_index()]
                 .as_ref()
                 .and_then(|b| resolve(view.library, b));
             let binding = view
                 .holding
                 .filter(|h| h.slot() == slot)
                 .and_then(|h| h.would_keep(view.live.1, view.in_hand))
-                .or_else(|| view.rack[slot].clone());
+                .or_else(|| view.rack[slot.as_index()].clone());
             let brush = binding.as_ref().and_then(|b| resolve(view.library, b));
             Row {
                 slot,
@@ -557,9 +643,15 @@ pub fn rows(view: View<'_>) -> Vec<Row> {
 // that holds one.
 
 /// One assigned slot.
+///
+/// `digit` is a [`Digit`] rather than a number, which is where "a digit past the rack
+/// is an entry a shorter build cannot place" now lives: the deserializer refuses it,
+/// and [`storage::load_list`]'s skip-a-damaged-entry rule drops that row and keeps the
+/// others — the same answer the reader used to reach by hand, one layer down and with
+/// nothing left for the reader to forget.
 #[derive(Serialize, Deserialize)]
 pub struct StoredSlot {
-    digit: usize,
+    digit: Digit,
     #[serde(flatten)]
     brush: QuickBrush,
 }
@@ -570,9 +662,9 @@ impl storage::Entry for StoredSlot {
 
 /// Write the rack down.
 pub fn persist(rack: &Rack) {
-    let stored: Vec<StoredSlot> = rack
-        .iter()
-        .enumerate()
+    let stored: Vec<StoredSlot> = Digit::ALL
+        .into_iter()
+        .zip(rack)
         .filter_map(|(digit, brush)| {
             Some(StoredSlot {
                 digit,
@@ -593,12 +685,11 @@ pub fn persist(rack: &Rack) {
 /// both.
 pub fn read_storage() -> Option<Rack> {
     let mut rack = empty_rack();
+    // A digit past the rack never gets here: it is an entry a shorter build cannot
+    // place, and refusing it in the deserializer ([`StoredSlot`]) makes the store's own
+    // skip-a-damaged-entry rule drop that row without moving its neighbours.
     for entry in storage::load_list::<StoredSlot>()? {
-        // A digit past the rack is an entry a shorter build cannot place, and dropping
-        // it is the only answer that does not move its neighbours.
-        if entry.digit < COUNT {
-            rack[entry.digit] = Some(entry.brush);
-        }
+        rack[entry.digit.as_index()] = Some(entry.brush);
     }
     Some(rack)
 }
@@ -615,8 +706,13 @@ mod tests {
         }
     }
 
+    /// The digit `n`, for a test that knows it named one.
+    fn d(n: usize) -> Digit {
+        Digit::new(n).expect("a digit the rack has")
+    }
+
     fn held(entered: Transient, base: BrushConfig) -> Held {
-        let mut h = Held::open(3, Grip::Key, (base, entered), None, false);
+        let mut h = Held::open(d(3), Grip::Key, (base, entered), None, false);
         h.enter(entered);
         h
     }
@@ -641,21 +737,30 @@ mod tests {
     /// The digit row and the keypad are the same ten slots, read by position.
     #[test]
     fn both_digit_rows_reach_the_same_slots() {
-        for d in 0..10 {
-            assert_eq!(of_code(&format!("Digit{d}")), Some(d));
-            assert_eq!(of_code(&format!("Numpad{d}")), Some(d));
+        for n in 0..COUNT {
+            assert_eq!(of_code(&format!("Digit{n}")), Digit::new(n));
+            assert_eq!(of_code(&format!("Numpad{n}")), Digit::new(n));
         }
         assert!(of_code("KeyA").is_none());
         assert!(of_code("Digit").is_none());
         assert!(of_code("DigitX").is_none());
     }
 
-    /// Every slot a key can reach is a slot the rack has.
+    /// Every slot a key can reach is a slot the rack has — which is the *type's*
+    /// claim now rather than a range check at each door, so what is left to say is
+    /// that the roster is the digits themselves and that nothing else becomes one.
     #[test]
     fn no_key_names_a_slot_off_the_rack() {
-        for d in 0..10 {
-            assert!(of_code(&format!("Digit{d}")).is_some_and(|s| s < COUNT));
+        for n in 0..COUNT {
+            assert_eq!(
+                Digit::ALL[n].as_index(),
+                n,
+                "the roster is in numeric order"
+            );
+            assert_eq!(of_code(&format!("Digit{n}")), Some(Digit::ALL[n]));
         }
+        assert_eq!(Digit::new(COUNT), None, "…and the tenth digit is the last");
+        assert_eq!(ERASER, Digit::ALL[0], "the pen's own end is the 0 key");
     }
 
     #[test]
@@ -759,7 +864,7 @@ mod tests {
         // what was swapped in at the press is what the hand keeps.
         let base = BrushConfig::default();
         let entered = tune(40.0, 1.0);
-        let mut h = Held::open(3, Grip::Key, (base, entered), None, true);
+        let mut h = Held::open(d(3), Grip::Key, (base, entered), None, true);
         h.enter(entered);
         let (kept, back) = h.settle(entered, Some("Pen"));
         assert_eq!(
@@ -775,7 +880,7 @@ mod tests {
         // number — and, this once, stays in hand as well.
         let base = BrushConfig::default();
         let entered = tune(40.0, 1.0);
-        let mut h = Held::open(3, Grip::Key, (base, entered), None, true);
+        let mut h = Held::open(d(3), Grip::Key, (base, entered), None, true);
         h.enter(entered);
         let (kept, back) = h.settle(tune(64.0, 1.0), Some("Pen"));
         assert_eq!(kept, bound("Pen", tune(64.0, 1.0)));
@@ -792,9 +897,12 @@ mod tests {
         assert!(!Grip::Eraser.displaces(Grip::Eraser));
         let h = held(Transient::default(), BrushConfig::default());
         assert_eq!(h.displaced_by(Grip::Key), None, "a key cannot take a key");
-        assert!(h.ends_on(3, Grip::Key));
-        assert!(!h.ends_on(4, Grip::Key), "a roll from 3 to 4 ends neither");
-        assert!(!h.ends_on(3, Grip::Eraser), "nor does the wrong hand");
+        assert!(h.ends_on(d(3), Grip::Key));
+        assert!(
+            !h.ends_on(d(4), Grip::Key),
+            "a roll from 3 to 4 ends neither"
+        );
+        assert!(!h.ends_on(d(3), Grip::Eraser), "nor does the wrong hand");
     }
 
     #[test]
@@ -828,63 +936,60 @@ mod tests {
     fn two_presses_of_one_digit_within_the_window_are_a_double_tap() {
         let mut taps = Taps::default();
         assert!(
-            !taps.press(3, 10.0),
+            !taps.press(d(3), 10.0),
             "the first press of anything is a hold"
         );
-        assert!(taps.press(3, 10.0 + DOUBLE_TAP / 2.0));
+        assert!(taps.press(d(3), 10.0 + DOUBLE_TAP / 2.0));
     }
 
     #[test]
     fn a_slow_second_press_is_another_hold() {
         let mut taps = Taps::default();
-        assert!(!taps.press(3, 10.0));
-        assert!(!taps.press(3, 10.0 + DOUBLE_TAP));
+        assert!(!taps.press(d(3), 10.0));
+        assert!(!taps.press(d(3), 10.0 + DOUBLE_TAP));
         // ...and opens a window of its own.
-        assert!(taps.press(3, 10.0 + DOUBLE_TAP + 0.1));
+        assert!(taps.press(d(3), 10.0 + DOUBLE_TAP + 0.1));
     }
 
     #[test]
     fn a_different_digit_never_pairs() {
         // A hand rolling 3, 4 is two holds, however fast.
         let mut taps = Taps::default();
-        assert!(!taps.press(3, 10.0));
-        assert!(!taps.press(4, 10.1));
+        assert!(!taps.press(d(3), 10.0));
+        assert!(!taps.press(d(4), 10.1));
         // And the roll moved the window: 3 again is measured against the 4.
-        assert!(!taps.press(3, 10.2));
+        assert!(!taps.press(d(3), 10.2));
     }
 
     #[test]
     fn a_pair_is_spent_by_being_reported() {
         let mut taps = Taps::default();
-        assert!(!taps.press(3, 10.0));
-        assert!(taps.press(3, 10.1));
-        assert!(!taps.press(3, 10.2), "a third press starts over");
-        assert!(taps.press(3, 10.3), "...and pairs with the fourth");
+        assert!(!taps.press(d(3), 10.0));
+        assert!(taps.press(d(3), 10.1));
+        assert!(!taps.press(d(3), 10.2), "a third press starts over");
+        assert!(taps.press(d(3), 10.3), "...and pairs with the fourth");
     }
 
     /// A rack is seeded from the digits the presets themselves declare, so the two
     /// orders — the list's and the keyboard's — stay free of each other.
+    ///
+    /// The definition that named a digit off the rack is gone with the number: a
+    /// [`PresetEntry::slot`] is a [`Digit`], so there is no stray row left to drop.
     #[test]
     fn the_rack_is_seeded_from_the_librarys_own_digits() {
         let mut pen = entry("Pen", BrushConfig::default(), tune(18.0, 1.0));
-        pen.slot = Some(2);
+        pen.slot = Some(d(2));
         let mut eraser = entry("Eraser", BrushConfig::default(), tune(80.0, 1.0));
         eraser.slot = Some(ERASER);
-        // A digit off the rack is a definition to fix, not a row to place.
-        let mut stray = entry("Stray", BrushConfig::default(), Transient::default());
-        stray.slot = Some(COUNT + 3);
         let rack = seed(&[
             pen,
             eraser,
-            stray,
             entry("Loose", BrushConfig::default(), tune(9.0, 1.0)),
         ]);
-        assert_eq!(rack[2].as_ref().map(|b| b.preset.as_str()), Some("Pen"));
-        assert_eq!(rack[2].as_ref().map(|b| b.transient), Some(tune(18.0, 1.0)));
-        assert_eq!(
-            rack[ERASER].as_ref().map(|b| b.preset.as_str()),
-            Some("Eraser")
-        );
+        let at = |slot: Digit| rack[slot.as_index()].as_ref();
+        assert_eq!(at(d(2)).map(|b| b.preset.as_str()), Some("Pen"));
+        assert_eq!(at(d(2)).map(|b| b.transient), Some(tune(18.0, 1.0)));
+        assert_eq!(at(ERASER).map(|b| b.preset.as_str()), Some("Eraser"));
         assert_eq!(rack.iter().flatten().count(), 2);
     }
 
@@ -893,38 +998,19 @@ mod tests {
     #[test]
     fn removing_a_preset_empties_the_numbers_bound_to_it() {
         let mut rack = empty_rack();
-        assert!(assign(
-            &mut rack,
-            1,
-            QuickBrush {
-                preset: "Pen".into(),
-                transient: tune(10.0, 1.0)
-            }
-        ));
-        assert!(assign(
-            &mut rack,
-            7,
-            QuickBrush {
-                preset: "Pen".into(),
-                transient: tune(60.0, 1.0)
-            }
-        ));
-        assert!(assign(
-            &mut rack,
-            4,
-            QuickBrush {
-                preset: "Ink".into(),
-                transient: tune(30.0, 1.0)
-            }
-        ));
-        assert!(!assign(
-            &mut rack,
-            COUNT,
-            QuickBrush {
-                preset: "Off".into(),
-                transient: Transient::default()
-            }
-        ));
+        let bind = |rack: &mut Rack, slot: usize, preset: &str, size: f32| {
+            assign(
+                rack,
+                d(slot),
+                QuickBrush {
+                    preset: preset.into(),
+                    transient: tune(size, 1.0),
+                },
+            );
+        };
+        bind(&mut rack, 1, "Pen", 10.0);
+        bind(&mut rack, 7, "Pen", 60.0);
+        bind(&mut rack, 4, "Ink", 30.0);
         assert!(unbind(&mut rack, "Pen"));
         assert!(rack[1].is_none() && rack[7].is_none());
         assert!(rack[4].is_some(), "a slot on another name is untouched");
@@ -932,12 +1018,8 @@ mod tests {
             !unbind(&mut rack, "Pen"),
             "and a second removal writes nothing"
         );
-        assert!(clear(&mut rack, 4));
-        assert!(!clear(&mut rack, 4), "an empty slot is already clear");
-        assert!(
-            !clear(&mut rack, COUNT),
-            "and a digit off the rack is not one"
-        );
+        assert!(clear(&mut rack, d(4)));
+        assert!(!clear(&mut rack, d(4)), "an empty slot is already clear");
     }
 
     /// The rows are the digits in keyboard order with the eraser's last, empty ones
@@ -956,7 +1038,7 @@ mod tests {
         let mut rack = empty_rack();
         assign(
             &mut rack,
-            2,
+            d(2),
             QuickBrush {
                 preset: "Pen".into(),
                 transient: tune(18.0, 1.0),
@@ -980,7 +1062,7 @@ mod tests {
         });
         assert_eq!(
             listed.iter().map(|r| r.slot).collect::<Vec<_>>(),
-            vec![2, ERASER]
+            vec![d(2), ERASER]
         );
         assert!(listed[0].lit, "the brush in hand lights its row");
         assert!(!listed[1].lit);
@@ -989,7 +1071,7 @@ mod tests {
         // Holding an empty 5 and having clicked Ink under it: the row exists because it
         // is held, and it already shows what the release will write.
         let mut h = Held::open(
-            5,
+            d(5),
             Grip::Key,
             (pen, tune(18.0, 1.0)),
             Some("Pen".into()),
@@ -1006,7 +1088,7 @@ mod tests {
         });
         assert_eq!(
             listed.iter().map(|r| r.slot).collect::<Vec<_>>(),
-            vec![2, 5, ERASER]
+            vec![d(2), d(5), ERASER]
         );
         let five = &listed[1];
         assert!(five.held);
@@ -1025,7 +1107,7 @@ mod tests {
         let mut rack = empty_rack();
         assign(
             &mut rack,
-            3,
+            d(3),
             QuickBrush {
                 preset: "Gone".into(),
                 transient: tune(10.0, 1.0),

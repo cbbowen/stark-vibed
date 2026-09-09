@@ -32,6 +32,7 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 use stark_model::{ColorSpaceId, SubstrateId};
+use strum::{EnumCount as _, VariantArray as _};
 
 use crate::brush_config::{BrushConfig, BrushEffectType, MAX_RADIUS, MIN_RADIUS, Transient};
 use crate::icons::Icon;
@@ -66,7 +67,7 @@ const MAX_FLUX: f32 = 0.95;
 /// cannot drift out of step with the engine's set — adding a target to any of the
 /// modulation tables (`BrushModulations`, `PaintModulations`, `EraseModulations`)
 /// and not here fails to compile at [`Self::slot`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, strum::VariantArray, strum::EnumCount)]
 pub enum ModRow {
     Size,
     Opacity,
@@ -79,20 +80,36 @@ pub enum ModRow {
     Bleed,
 }
 
-/// Every modulatable row, for a caller that wants the set rather than one of them.
-pub const MOD_ROWS: [ModRow; 9] = [
-    ModRow::Size,
-    ModRow::Opacity,
-    ModRow::Flow,
-    ModRow::Stretch,
-    ModRow::ToothGive,
-    ModRow::Add,
-    ModRow::Lift,
-    ModRow::Deposit,
-    ModRow::Bleed,
-];
+/// Every modulatable row, for a caller that wants the set rather than one of them —
+/// **derived**, so a tenth row cannot be laid out by a section and missing from here.
+///
+/// An array rather than [`strum::VariantArray`]'s own slice, because a frontend keeps
+/// one control per row and builds the run with `MOD_ROWS.map(…)`, which a slice does
+/// not offer. Its order is the declaration order, which is what makes
+/// [`ModRow::index`] an infallible seat number rather than a search.
+pub const MOD_ROWS: [ModRow; ModRow::COUNT] = {
+    let mut rows = [ModRow::Size; ModRow::COUNT];
+    let mut i = 0;
+    while i < ModRow::COUNT {
+        rows[i] = ModRow::VARIANTS[i];
+        i += 1;
+    }
+    rows
+};
 
 impl ModRow {
+    /// Where this row sits in [`MOD_ROWS`] — the seat a frontend's control for it is
+    /// kept in.
+    ///
+    /// `as usize` rather than a search, and the two agree by construction: the roster
+    /// *is* the declaration order ([`MOD_ROWS`]), so there is no answer to be wrong
+    /// and no arm for a new row to be missing from. What was a `position().expect()`
+    /// in a frontend — a panic on the frame a forgotten row's dialog opened — is now
+    /// nothing at all.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// The word on the row, which is also the word the section already used for the
     /// parameter. Takes the brush because the Flow row *is* the in-force effect's
     /// rate, and the liquify effect's rate is not a flow of anything: it is how hard
@@ -333,6 +350,46 @@ pub fn curve_points(m: Modulation) -> Vec<(f32, f32)> {
 
 // --- every other track ----------------------------------------------------
 
+/// Which of the color space's three channels a wander amplitude is about (§6.7).
+///
+/// A closed set rather than an index, because there is no fourth: `ColorDynamics`
+/// carries exactly three amplitudes and every space this app renders in has exactly
+/// three channels. An index could name a channel that does not exist, and used to —
+/// with three different wrong answers, since the reader clamped, the writer clamped
+/// onto a channel the caller had not named, and the label's wildcard read "Blue ↔
+/// yellow" for all of them.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, strum::VariantArray, strum::EnumCount)]
+pub enum Channel {
+    First,
+    Second,
+    Third,
+}
+
+impl Channel {
+    /// Where the channel sits in `ColorDynamics::amplitude` — the space's own order
+    /// (§6.7), which is what [`Knob::label`] names it by.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Which lookup axis a wander frequency is about: across the stroke, then along it.
+///
+/// [`Channel`]'s argument for the other indexed family — `ColorDynamics::frequency`
+/// is a pair, and a third axis is not a thing a stroke has.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, strum::VariantArray, strum::EnumCount)]
+pub enum Axis {
+    Across,
+    Along,
+}
+
+impl Axis {
+    /// Where the axis sits in `ColorDynamics::frequency`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// A parameter with no pen mapping — its word, its range, and where the value lives.
 ///
 /// Everything the pen *can* drive is a [`ModRow`] instead. The split is the model's
@@ -362,20 +419,18 @@ pub enum Knob {
     Jitter,
     /// Depletion per radius travelled — the stroke runs dry (§6.2).
     Drain,
-    /// How far one color channel wanders, in the channel's own units. The index is the
-    /// *color space's* channel, so the word depends on the space (§6.7).
-    Amplitude(usize),
-    /// How fast the color wanders along one lookup axis: across the stroke, then along
-    /// it.
-    Frequency(usize),
+    /// How far one color channel wanders, in the channel's own units. Which channel
+    /// is the *color space's*, so the word depends on the space (§6.7).
+    Amplitude(Channel),
+    /// How fast the color wanders along one lookup axis.
+    Frequency(Axis),
     /// The finite glob pre-loaded on the tool (the palette knife, §6.2).
     Charge,
 }
 
-/// Every knob the editor can show, so a frontend that keeps one control per knob has
-/// a list to build them from. The two indexed families are spelled out, because a
-/// control cannot hang off a variant that has not been named.
-pub const KNOBS: [Knob; 14] = [
+/// The knobs that are one row and one variant each — everything but the two families
+/// that carry a member.
+const PLAIN: [Knob; 9] = [
     Knob::Hardness,
     Knob::StartTaper,
     Knob::EndTaper,
@@ -384,13 +439,38 @@ pub const KNOBS: [Knob; 14] = [
     Knob::ToothSoftness,
     Knob::Jitter,
     Knob::Drain,
-    Knob::Amplitude(0),
-    Knob::Amplitude(1),
-    Knob::Amplitude(2),
-    Knob::Frequency(0),
-    Knob::Frequency(1),
     Knob::Charge,
 ];
+
+/// Every knob the editor can show, so a frontend that keeps one control per knob has
+/// a list to build them from.
+///
+/// The two families are **swept** rather than spelled out — a control can hang off
+/// every member of a closed set, which is what [`Channel`] and [`Axis`] being closed
+/// bought. A fourth channel would arrive here, in the sections that lay it out and in
+/// the frontends' runs of controls together, instead of compiling clean and panicking
+/// the moment the dialog opened.
+pub const KNOBS: [Knob; PLAIN.len() + Channel::COUNT + Axis::COUNT] = {
+    let mut knobs = [Knob::Hardness; PLAIN.len() + Channel::COUNT + Axis::COUNT];
+    let mut i = 0;
+    while i < PLAIN.len() {
+        knobs[i] = PLAIN[i];
+        i += 1;
+    }
+    let mut c = 0;
+    while c < Channel::COUNT {
+        knobs[i] = Knob::Amplitude(Channel::VARIANTS[c]);
+        i += 1;
+        c += 1;
+    }
+    let mut a = 0;
+    while a < Axis::COUNT {
+        knobs[i] = Knob::Frequency(Axis::VARIANTS[a]);
+        i += 1;
+        a += 1;
+    }
+    knobs
+};
 
 impl Knob {
     /// The word on the row. Takes the space because the three color-dynamics channels
@@ -406,9 +486,9 @@ impl Knob {
             Self::ToothSoftness => "Tooth softness",
             Self::Jitter => "Jitter",
             Self::Drain => "Drain",
-            Self::Amplitude(i) => channel_label(space, i),
-            Self::Frequency(0) => "Scale \u{2192} across stroke",
-            Self::Frequency(_) => "Scale \u{2192} along stroke",
+            Self::Amplitude(channel) => channel_label(space, channel),
+            Self::Frequency(Axis::Across) => "Scale \u{2192} across stroke",
+            Self::Frequency(Axis::Along) => "Scale \u{2192} along stroke",
             Self::Charge => "Charge",
         }
     }
@@ -464,8 +544,8 @@ impl Knob {
             Self::ToothSoftness => b.tooth.softness,
             Self::Jitter => b.jitter,
             Self::Drain => b.drain,
-            Self::Amplitude(i) => b.color_dynamics.amplitude[i.min(2)],
-            Self::Frequency(i) => b.color_dynamics.frequency[i.min(1)],
+            Self::Amplitude(c) => b.color_dynamics.amplitude[c.index()],
+            Self::Frequency(a) => b.color_dynamics.frequency[a.index()],
             Self::Charge => b.wet.charge,
         }
     }
@@ -482,8 +562,8 @@ impl Knob {
             Self::ToothSoftness => b.tooth.softness = v,
             Self::Jitter => b.jitter = v,
             Self::Drain => b.drain = v,
-            Self::Amplitude(i) => b.color_dynamics.amplitude[i.min(2)] = v,
-            Self::Frequency(i) => b.color_dynamics.frequency[i.min(1)] = v,
+            Self::Amplitude(c) => b.color_dynamics.amplitude[c.index()] = v,
+            Self::Frequency(a) => b.color_dynamics.frequency[a.index()] = v,
             Self::Charge => b.wet.charge = v,
         }
     }
@@ -491,14 +571,19 @@ impl Knob {
 
 /// What the three color-dynamics channels are called in `space` — the noise offsets
 /// the *space's* own channels (§6.2, §6.7), so the words follow the document.
-fn channel_label(space: ColorSpaceId, i: usize) -> &'static str {
-    match (space, i) {
-        (ColorSpaceId::Mixbox, 0) => "Pigment 1",
-        (ColorSpaceId::Mixbox, 1) => "Pigment 2",
-        (ColorSpaceId::Mixbox, _) => "Pigment 3",
-        (_, 0) => "Lightness",
-        (_, 1) => "Green \u{2194} red",
-        (_, _) => "Blue \u{2194} yellow",
+///
+/// Exhaustive in the channel, which is what [`Channel`] being a closed set is for: the
+/// wildcard that used to close this match spelled the third channel's word for
+/// anything a caller passed, so an out-of-range index read as "Blue ↔ yellow" rather
+/// than failing.
+fn channel_label(space: ColorSpaceId, channel: Channel) -> &'static str {
+    match (space, channel) {
+        (ColorSpaceId::Mixbox, Channel::First) => "Pigment 1",
+        (ColorSpaceId::Mixbox, Channel::Second) => "Pigment 2",
+        (ColorSpaceId::Mixbox, Channel::Third) => "Pigment 3",
+        (_, Channel::First) => "Lightness",
+        (_, Channel::Second) => "Green \u{2194} red",
+        (_, Channel::Third) => "Blue \u{2194} yellow",
     }
 }
 
@@ -752,14 +837,15 @@ impl Section {
             }
             Self::Color => {
                 rows.push(Row::Noise);
-                for i in 0..3 {
-                    rows.push(Row::Knob(Knob::Amplitude(i)));
+                for channel in Channel::VARIANTS {
+                    rows.push(Row::Knob(Knob::Amplitude(*channel)));
                 }
                 // The two lookup axes live only while some channel is active: at zero
                 // amplitude they scale nothing.
                 if b.color_dynamics.is_active() {
-                    rows.push(Row::Knob(Knob::Frequency(0)));
-                    rows.push(Row::Knob(Knob::Frequency(1)));
+                    for axis in Axis::VARIANTS {
+                        rows.push(Row::Knob(Knob::Frequency(*axis)));
+                    }
                 }
             }
             Self::Wet => {
@@ -881,6 +967,139 @@ pub fn reference_brush() -> BrushParams {
         drain: 0.0,
         effect: BrushEffect::painted(REFERENCE_COLOR),
         ..BrushParams::default()
+    }
+}
+
+/// The test stroke a preview replays, and what a hand on the preview canvas does to
+/// it (§6.2, §11.2).
+///
+/// Six values and five transitions, and both frontends carried the same six until
+/// this type did: which samples are replayed, whether they are the artist's own
+/// rather than the seeded default, the samples of a stroke in flight, whether a hand
+/// is down, and whether a stroke is *committed* on the preview document and so has to
+/// be undone before the next replay. What a frontend keeps is one of these — a
+/// `Signal` on the web, a field natively — and the engine calls around it, which are
+/// the only half a toolkit shows in.
+///
+/// **A tap is not a stroke**, which is the rule the type exists to state once. The
+/// engine says so too (`Engine::replay_stroke_seeded` answers `None` for a hand that
+/// never left its first point), and getting it wrong is not cosmetic: the press has
+/// already undone the committed stroke, so a tap marked committed makes the *next*
+/// edit's undo reach past it into the reference band beneath, and two taps empty the
+/// preview canvas with nothing on screen saying why.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TestStroke {
+    /// What is replayed, in the preview document's canvas space.
+    samples: Vec<InputSample>,
+    /// Whether [`samples`](Self::samples) is the artist's own rather than the seeded
+    /// default — the one thing a resize must not lay over.
+    drawn: bool,
+    /// The samples of a stroke in flight on the preview canvas.
+    rec: Vec<InputSample>,
+    /// Whether a hand is on the preview canvas right now.
+    drawing: bool,
+    /// Whether a committed test stroke is on the preview document.
+    committed: bool,
+}
+
+impl TestStroke {
+    /// Lay the seeded stroke for a `w`×`h` preview surface under `view`
+    /// ([`default_stroke`]) — what opening the dialog and the Reset button both do.
+    pub fn seed(&mut self, w: f32, h: f32, view: ViewTransform) {
+        self.samples = default_stroke(w, h, view);
+        self.drawn = false;
+    }
+
+    /// Re-lay the seeded stroke onto a surface that has changed size, so the default
+    /// keeps running the length of the column instead of ending short of it.
+    ///
+    /// A stroke the artist drew is left exactly where they drew it: it is theirs, and
+    /// it is in canvas space, so it survives the resize untouched.
+    pub fn relay_after_resize(&mut self, w: f32, h: f32, view: ViewTransform) {
+        if !self.drawn {
+            self.seed(w, h, view);
+        }
+    }
+
+    /// Begin a stroke the artist is drawing, at `first`. **Answers whether the caller
+    /// owes the preview document an undo** — the committed test stroke has to come off
+    /// before a new one goes on, and only the frontend holds the engine to say so.
+    #[must_use]
+    pub fn begin(&mut self, first: InputSample) -> bool {
+        self.rec = vec![first];
+        self.drawing = true;
+        // Taken, not read: the stroke is off the document the moment the caller acts
+        // on this answer, so leaving the flag up would have the next replay undo one
+        // stroke too many.
+        std::mem::take(&mut self.committed)
+    }
+
+    /// Extend the stroke in flight. Ignored when there is none, so a stray move
+    /// between a cancel and the next press records nothing.
+    pub fn extend(&mut self, sample: InputSample) {
+        if self.drawing {
+            self.rec.push(sample);
+        }
+    }
+
+    /// End it, and answer whether it **became** the test stroke.
+    ///
+    /// `false` for a hand that never left its first point (see the type's doc) and for
+    /// a release with no stroke under it; the caller replays what was already there
+    /// either way, and must not mark anything committed off the back of it.
+    ///
+    /// Two samples is the test because it is the one the frontend can make: what the
+    /// engine actually refuses is a *fit* that painted nothing
+    /// (`Session::end_stroke`), and `GestureCommand::End` answers nothing back. So a
+    /// hand that moved less than the fitter's tolerance is the one case left where
+    /// this says yes and the document holds no stroke — narrower than the tap it
+    /// replaces by every gesture that is a single point, and not closable from here.
+    #[must_use]
+    pub fn end(&mut self) -> bool {
+        if !self.drawing {
+            return false;
+        }
+        self.drawing = false;
+        let rec = std::mem::take(&mut self.rec);
+        if rec.len() < 2 {
+            return false;
+        }
+        self.samples = rec;
+        self.drawn = true;
+        self.committed = true;
+        true
+    }
+
+    /// Abandon the stroke in flight — a cancelled pointer. The caller restores the
+    /// last one by replaying, which is what leaves nothing to say here about
+    /// [`needs_undo`](Self::needs_undo).
+    pub fn cancel(&mut self) {
+        self.drawing = false;
+        self.rec.clear();
+    }
+
+    /// Say what a replay did: `true` where it committed a stroke the next one has to
+    /// undo, `false` where the samples held none.
+    pub fn replayed(&mut self, committed: bool) {
+        self.committed = committed;
+    }
+
+    /// What to replay.
+    pub fn samples(&self) -> &[InputSample] {
+        &self.samples
+    }
+
+    /// Whether a committed test stroke stands on the preview document, and so has to
+    /// be undone before the next replay.
+    pub fn needs_undo(&self) -> bool {
+        self.committed
+    }
+
+    /// Whether a hand is on the preview canvas — what stands a replay down, since
+    /// what is on screen then is the stroke being drawn and replacing it mid-gesture
+    /// would take it out from under the pointer.
+    pub fn drawing(&self) -> bool {
+        self.drawing
     }
 }
 
@@ -1084,6 +1303,103 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every modulatable row sits in the seat its own [`ModRow::index`] names — the
+    /// claim that lets a frontend keep one control per row and reach it without a
+    /// search, and so without a panic for a row the roster had lost.
+    ///
+    /// It cannot fail while [`MOD_ROWS`] is derived from the declaration order, which
+    /// is exactly what it is here to say: it is what would fail first if the roster
+    /// were ever written out by hand again.
+    #[test]
+    fn every_row_sits_in_the_seat_its_index_names() {
+        for row in MOD_ROWS {
+            assert_eq!(MOD_ROWS[row.index()], row);
+        }
+    }
+
+    /// **A tap is not a stroke**, and the stroke that was showing survives one.
+    ///
+    /// The bug this is here for cost the whole test canvas: opening the gesture had
+    /// already undone the committed stroke, so marking a tap committed made the *next*
+    /// edit's undo reach past it into the reference band — and two taps in a row left
+    /// the canvas empty with nothing on screen saying why.
+    #[test]
+    fn a_tap_does_not_become_the_test_stroke() {
+        let mut stroke = TestStroke::default();
+        stroke.seed(
+            300.0,
+            500.0,
+            ViewTransform::identity(stark_engine::Extent2::new(300, 500)),
+        );
+        let seeded = stroke.samples().len();
+        stroke.replayed(true);
+
+        // A press takes the committed stroke off, which is what the caller is told.
+        assert!(stroke.begin(InputSample::default()), "the replay had one");
+        assert!(!stroke.needs_undo(), "…and it is off the document now");
+        assert!(!stroke.end(), "one sample is not a stroke");
+        assert_eq!(
+            stroke.samples().len(),
+            seeded,
+            "the stroke that was there stays"
+        );
+        assert!(
+            !stroke.needs_undo(),
+            "and nothing is claimed committed for a later undo to reach past"
+        );
+
+        // Two recorded samples are a gesture the caller may replay, which is what
+        // becomes the test stroke — see [`TestStroke::end`] on why the count is the
+        // test a frontend can make.
+        assert!(!stroke.begin(InputSample::default()), "nothing to undo");
+        stroke.extend(InputSample::default());
+        assert!(stroke.end());
+        assert_eq!(stroke.samples().len(), 2, "and it becomes the test stroke");
+        assert!(stroke.needs_undo());
+    }
+
+    /// A resize re-lays the *seeded* stroke and leaves the artist's own alone — it is
+    /// theirs, and it is in canvas space, so it survives untouched.
+    #[test]
+    fn a_resize_re_lays_only_the_stroke_nobody_drew() {
+        let view = ViewTransform::identity(stark_engine::Extent2::new(300, 500));
+        let mut stroke = TestStroke::default();
+        stroke.seed(300.0, 200.0, view);
+        let short = stroke.samples().to_vec();
+        stroke.relay_after_resize(300.0, 500.0, view);
+        assert_ne!(stroke.samples(), short, "the default follows the column");
+
+        assert!(!stroke.begin(InputSample::default()));
+        stroke.extend(InputSample::default());
+        assert!(stroke.end());
+        let drawn = stroke.samples().to_vec();
+        stroke.relay_after_resize(300.0, 900.0, view);
+        assert_eq!(
+            stroke.samples(),
+            drawn,
+            "a hand's own stroke is not re-laid"
+        );
+    }
+
+    /// A cancelled pointer abandons the stroke in flight without laying it down, and
+    /// without claiming anything for the next replay to undo.
+    #[test]
+    fn a_cancelled_stroke_lays_nothing_down() {
+        let mut stroke = TestStroke::default();
+        stroke.seed(
+            300.0,
+            500.0,
+            ViewTransform::identity(stark_engine::Extent2::new(300, 500)),
+        );
+        let seeded = stroke.samples().to_vec();
+        assert!(!stroke.begin(InputSample::default()));
+        stroke.extend(InputSample::default());
+        stroke.cancel();
+        assert!(!stroke.drawing());
+        assert!(!stroke.end(), "there is no stroke left to end");
+        assert_eq!(stroke.samples(), seeded);
     }
 
     /// The curve the plot draws is the one the renderer applies, sampled over the unit

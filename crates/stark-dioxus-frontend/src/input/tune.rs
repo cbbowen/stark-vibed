@@ -7,50 +7,15 @@
 //! for Flow — and the Brush panel's own sliders, which is why this is one of the
 //! two gestures that deliberately does **not** fade the chrome: the answer is on
 //! a panel as well as under the hand.
+//!
+//! **What the drag means is `stark_ui::tune`'s** (§11.2) — the rates, the axis lock
+//! and the clamps, shared with the native frontend. What is left here is the three
+//! things only this frontend can do: capture the pointer, write the brush, and draw
+//! the readout.
 
 use super::*;
 
-/// How far a tuning drag must travel before it commits to a knob, in page px
-/// (§18.1.9).
-///
-/// `nav::MIN_SPAN`'s reasoning applied to one pointer instead of two: below this the
-/// drag's *direction* is noise, and the direction is the whole of what picks the
-/// parameter. A press meant for Size that happens to leave the glass two pixels high
-/// must not arrive as Flow.
-const AXIS_DEADZONE: f32 = 8.0;
-
-/// How far a tuning drag has to travel sideways to **double** the brush radius, in
-/// page px (§18.1.9).
-///
-/// A ratio on the size the drag began with, not a size stated outright: the hand keeps
-/// whatever brush it had chosen and asks for *more* or *less* of it, which is the
-/// gesture every other editor binds here and the one a hand already reaches for. Right
-/// is bigger and left is smaller, so the two directions are no longer the same gesture
-/// — the drag has a sign now, because a change does and a size does not.
-///
-/// **Exponential** for the scrubby zoom's reason (`nav::ZOOM_DRAG_DOUBLE`): radius is felt
-/// proportionally, so a fixed step per pixel would crawl on a wash and leap on a liner.
-/// Equal distances are equal ratios, which also makes the gesture exactly reversible —
-/// dragging back to the press restores the brush it started on.
-///
-/// Faster than the zoom's rate rather than matched to it, and set from the range it has
-/// to cover: `MIN_RADIUS..MAX_RADIUS` is about nine doublings, and a size drag spends
-/// its travel on *one* side of the press where a zoom drag may run either way from it,
-/// so the budget is half a screen and not a whole one. At this rate that half-screen
-/// carries the finest brush to the widest.
-const SIZE_DRAG_DOUBLE: f32 = 100.0;
-
-/// How far a tuning drag has to travel vertically to sweep the **whole** flow range,
-/// in page px.
-///
-/// Linear where the radius is exponential ([`SIZE_DRAG_DOUBLE`]), because flow's zero
-/// is a value it has to be able to reach and no number of halvings gets there. There is
-/// also nothing for flow to be a picture of: a size drag can be shown as the circle it
-/// asks for, while flow has no length on screen to be measured against, so the honest
-/// mapping is the one every slider has — move the hand, move the number. Wider than a
-/// screen is tall on purpose: the everyday range is the narrow band around 1, and this
-/// is what makes a tenth of it a visible movement of the hand.
-const FLOW_DRAG_SPAN: f32 = 200.0;
+use stark_ui::tune::Knob;
 
 /// The brush-tuning drag — sideways for **Size** and up-and-down for **Flow**,
 /// the Brush panel's two knobs under the hand that is already on the painting
@@ -69,12 +34,12 @@ const FLOW_DRAG_SPAN: f32 = 200.0;
 ///
 /// Either knob draws itself, in [`TuneReadout`] — which is not decoration but the
 /// readout. A size drag's ring is a ratio on the one the press found
-/// ([`SIZE_DRAG_DOUBLE`]), so the pair of circles at the press point *is* what the
-/// gesture means: the brush it started on, and the brush it is asking for. A flow
-/// drag's bar is a level, which is the only honest picture of a knob with no length on
-/// the canvas. And for as long as one of them is up the canvas takes the crosshair
-/// down (`canvas`): what the gesture is about is a number, so the pointer has stopped
-/// promising paint anywhere.
+/// (`stark_ui::tune::SIZE_DRAG_DOUBLE`), so the pair of circles at the press point *is*
+/// what the gesture means: the brush it started on, and the brush it is asking for. A
+/// flow drag's bar is a level, which is the only honest picture of a knob with no
+/// length on the canvas. And for as long as one of them is up the canvas takes the
+/// crosshair down (`canvas`): what the gesture is about is a number, so the pointer has
+/// stopped promising paint anywhere.
 #[derive(Clone, Copy)]
 pub struct Tune {
     state: AppState,
@@ -82,58 +47,25 @@ pub struct Tune {
     drag: Signal<Option<TuneDrag>>,
 }
 
-/// A tuning drag in flight.
+/// A tuning drag in flight: the shared gesture, and the one number that is this
+/// frontend's.
 #[derive(Copy, Clone)]
 struct TuneDrag {
-    /// The pointer's last position, page px — what a *step* is measured from, which is
-    /// what Flow moves by.
-    last: Vec2,
-    /// Where the press was, page px. Both the axis and the **size** are measured from
-    /// here rather than from the last move: which knob this gesture is about is a fact
-    /// about the whole gesture, and so is the ratio it is asking for
-    /// ([`SIZE_DRAG_DOUBLE`]).
-    from: Vec2,
-    /// The radius the brush had at the press, canvas px — what the size drag is a ratio
-    /// **on**, and the ring's reference. One number doing both, which is why the ring
-    /// reads as before-and-after: the circle behind is the size the gesture is measured
-    /// against, not merely the size it happened to start at.
-    ///
-    /// Latching it is what makes the drag a function of where the pointer *is* rather
-    /// than an accumulation of steps — so a long gesture cannot drift, and a drag run
-    /// past `MAX_RADIUS` and back comes back down the way it went up, since the clamp
-    /// is never folded into the base. It is also why every write to
-    /// [`Signals::tune_readout`](crate::state::Signals::tune_readout) is a write and never a read-modify-write: the drag holds
-    /// everything the indicator shows, which keeps the picture from drifting out of step
-    /// with the gesture (and keeps a `peek` out of an `if`).
-    was: f32,
+    /// Where the press landed, what it landed on, and the knob it has committed to —
+    /// all of it measured from the press, which is what makes the drag a function of
+    /// where the pointer *is* rather than an accumulation of steps
+    /// (`stark_ui::tune::Tune`).
+    gesture: stark_ui::tune::Tune,
     /// The view's zoom when the drag began — what turns a canvas radius into the ring's
     /// radius on screen.
     ///
-    /// The size no longer passes through it: a ratio on the radius the drag began with
-    /// is the same ratio at every zoom, and that is one thing the exponential mapping
+    /// The size does not pass through it: a ratio on the radius the drag began with is
+    /// the same ratio at every zoom, and that is one thing the exponential mapping
     /// bought. What is left is the drawing, and it is latched so that a wheel notch
     /// mid-drag (the pointer is captured, but the wheel is not) cannot rescale the ring
     /// under a hand that is holding still — the readout would read as the size moving
     /// when it has not.
     zoom: f32,
-    /// The knob this drag has committed to, once it has travelled far enough to say
-    /// ([`AXIS_DEADZONE`]); `None` until then.
-    ///
-    /// One knob per gesture, and that is the point of locking it. Both at once would
-    /// read better on paper and be worse in the hand: flow's useful range is narrow
-    /// enough that the incidental drift of a long sideways drag would empty or bury
-    /// the brush, and the user would have no way to ask for size *alone*. The travel
-    /// spent earning the lock is spent — a deadband, not a jump.
-    knob: Option<Knob>,
-}
-
-/// The two parameters a tuning drag can reach, and the axis each is on.
-#[derive(Copy, Clone)]
-enum Knob {
-    /// Sideways: the brush radius.
-    Size,
-    /// Up and down: how much paint the brush lays (`BrushDynamics::add`).
-    Flow,
 }
 
 impl Tune {
@@ -153,11 +85,6 @@ impl Tune {
     /// this only for the press the table gave it, after [`Nav::begin`] — which is
     /// what leaves space+accelerator a zoom rather than a size drag.
     ///
-    /// No test on the tool, deliberately: the eraser end tunes the eraser for the
-    /// reason it erases (§18.1.8), and Size and Flow are the live brush's whatever
-    /// the canvas is set to do with it — a marquee tool's Fill spends `add` as its
-    /// opacity.
-    ///
     /// Declines before the engine exists, where there is neither a brush to tune nor a
     /// zoom to measure the drag against. The press then falls through to the paint
     /// path, which does nothing with it for the same reason.
@@ -165,17 +92,14 @@ impl Tune {
         let Some(view) = view_of(self.state) else {
             return false;
         };
-        let radius = self.state.transient.peek().size;
+        let was = *self.state.transient.peek();
         e.prevent_default();
         e.stop_propagation();
         capture_pointer(e);
         let at = page_xy(e);
         let in_flight = TuneDrag {
-            last: at,
-            from: at,
-            was: radius,
+            gesture: stark_ui::tune::Tune::press(at, was),
             zoom: view.zoom,
-            knob: None,
         };
         let mut drag = self.drag;
         drag.set(Some(in_flight));
@@ -188,7 +112,7 @@ impl Tune {
         // is a ratio *of*, so the circle is the reference and not merely the first frame.
         // It is also the one thing that makes this binding discoverable: press with the
         // accelerator held and the brush draws itself.
-        self.show_ring(&in_flight, radius);
+        self.show_ring(&in_flight, was.size);
         true
     }
 
@@ -200,65 +124,25 @@ impl Tune {
         let Some(mut in_flight) = drag() else {
             return false;
         };
-        let p = page_xy(e);
-        let step = p - in_flight.last;
-        in_flight.last = p;
-        if in_flight.knob.is_none() {
-            let travel = p - in_flight.from;
-            if travel.length() >= AXIS_DEADZONE {
-                in_flight.knob = Some(if travel.x.abs() >= travel.y.abs() {
-                    Knob::Size
-                } else {
-                    Knob::Flow
-                });
-            }
-        }
-        let knob = in_flight.knob;
+        // The in-force effect's own ceiling (`BrushConfig::max_flow`) — read live
+        // rather than latched at the press, since the effect chips are on a panel the
+        // captured pointer does not cover. Its own statement, so no read guard is alive
+        // when the write below rewrites the brush signal.
+        let max = self.state.brush.peek().max_flow();
+        let turn = in_flight.gesture.moved(page_xy(e), max);
         drag.set(Some(in_flight));
-        // Clamped to the sliders' own bounds (`panels::brush`), so the drag cannot put
-        // the brush somewhere the panel is unable to show or take back.
-        match knob {
-            Some(Knob::Size) => {
-                // Right is bigger, left is smaller — a ratio on the size at the press
-                // rather than a size stated outright, so the hand asks for more or less
-                // of the brush it already chose. Still a function of where the pointer
-                // *is* and not of how it got there (`TuneDrag::was`): a long gesture
-                // cannot drift, and dragging back to the press restores the brush it
-                // started on exactly.
-                let travel = p.x - in_flight.from.x;
-                let radius = (in_flight.was * (travel / SIZE_DRAG_DOUBLE).exp2())
-                    .clamp(MIN_RADIUS, MAX_RADIUS);
-                update_brush(self.state, |_, t| t.size = radius);
+        if let Some(turn) = turn {
+            update_brush(self.state, |_, t| turn.write(t));
+            match turn.knob {
                 // The ring follows the *clamp* rather than the pointer, so a drag that
                 // has run past the largest brush stops growing where the brush did.
-                self.show_ring(&in_flight, radius);
+                Knob::Size => self.show_ring(&in_flight, turn.value),
+                // The bar does not have to wait for the ring to come down. It was the
+                // *size* drag's readout and this is the flow drag's, and a gesture has
+                // one — which `TuneReadout` says by being one value, so putting the bar
+                // up *is* taking the ring down.
+                Knob::Flow => self.show_bar(&in_flight, turn.fill(max)),
             }
-            // Up is more, because up is more on every slider in the app — and page y
-            // grows downward, which is the whole of why this reads as a subtraction.
-            Some(Knob::Flow) => {
-                // Carried out of the write: this knob is a rate, so what the brush
-                // ends up carrying is only known inside that closure.
-                let mut fill = None;
-                update_brush(self.state, |b, t| {
-                    // The one overall rate, paint or eraser or liquify alike —
-                    // the drag tunes the tool in hand (`Transient::flow`,
-                    // §6.2, §6.12, §6.13) — against the in-force effect's
-                    // own range (`BrushConfig::max_flow`), so a full drag is a
-                    // full knob whichever it is.
-                    let max = b.max_flow();
-                    let stepped = (t.flow - step.y * max / FLOW_DRAG_SPAN).clamp(0.0, max);
-                    t.flow = stepped;
-                    fill = Some(stepped / max);
-                });
-                // The ring does not have to be taken down first. It was the *size*
-                // drag's readout and this is the flow drag's, and a gesture has one —
-                // which `TuneReadout` says by being one value, so putting the bar up
-                // *is* taking the ring down.
-                if let Some(fill) = fill {
-                    self.show_bar(&in_flight, fill);
-                }
-            }
-            None => {}
         }
         true
     }
@@ -283,8 +167,8 @@ impl Tune {
     fn show_ring(self, drag: &TuneDrag, radius: f32) {
         let mut readout = self.state.tune_readout;
         readout.set(Some(TuneReadout::Size(BrushRing {
-            at: drag.from,
-            was: drag.was * drag.zoom,
+            at: drag.gesture.from(),
+            was: drag.gesture.was().size * drag.zoom,
             now: radius * drag.zoom,
         })));
     }
@@ -296,7 +180,7 @@ impl Tune {
     fn show_bar(self, drag: &TuneDrag, fill: f32) {
         let mut readout = self.state.tune_readout;
         readout.set(Some(TuneReadout::Flow(FlowBar {
-            at: drag.from,
+            at: drag.gesture.from(),
             fill,
         })));
     }

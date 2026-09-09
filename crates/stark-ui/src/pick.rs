@@ -77,23 +77,58 @@ impl Sampler {
     /// sampling nothing. The canvas color stands behind the sample exactly when the
     /// group fence is down: a group is paint, and the whole document is a picture on
     /// a canvas (§15.5).
+    ///
+    /// **One arm per reach**, each answering the layer and the fence for itself. The
+    /// resolution used to be a `match` on the pair with two trailing wildcards, which
+    /// meant a fourth [`PickScope`] would compile and silently sample the whole
+    /// composite — and this module's own note says the resolution is not the chrome's
+    /// to get wrong. The scope is a closed set everywhere else it is met
+    /// (`PickScope::VARIANTS` builds both bars), so it is closed here too.
     pub fn options(self, active: Option<LayerId>) -> PickOptions {
-        PickOptions {
-            source: match (self.scope, active) {
-                (PickScope::ThisLayer, Some(id)) => PickSource::Layer(id),
-                (PickScope::AndBelow, Some(id)) if self.group_only => PickSource::Group {
+        let source = match self.scope {
+            PickScope::ThisLayer => match active {
+                // One layer alone is one layer alone whichever side of the fence it is
+                // asked from: the group is what a *reach* runs through, and this reach
+                // is one layer.
+                Some(id) => PickSource::Layer(id),
+                None => self.whole_document(),
+            },
+            PickScope::AndBelow => match active {
+                Some(id) if self.group_only => PickSource::Group {
                     layer: id,
                     below: true,
                 },
-                (PickScope::AndBelow, Some(id)) => PickSource::Below(id),
-                (PickScope::AllLayers, Some(id)) if self.group_only => PickSource::Group {
+                Some(id) => PickSource::Below(id),
+                None => self.whole_document(),
+            },
+            PickScope::AllLayers => match active {
+                Some(id) if self.group_only => PickSource::Group {
                     layer: id,
                     below: false,
                 },
-                _ if self.group_only => PickSource::Composite,
-                _ => PickSource::CompositeOverSubstrate,
+                // Unfenced, "every visible layer" already *is* the whole document, so
+                // the selected layer decides nothing and the arm falls through with
+                // the layerless one.
+                _ => self.whole_document(),
             },
+        };
+        PickOptions {
+            source,
             radius: self.radius,
+        }
+    }
+
+    /// The two answers that name no layer — what every reach falls back to with none
+    /// selected, and what "all layers" is outright.
+    ///
+    /// The fence is the whole of the choice: on, a group answers and bare canvas
+    /// answers nothing; off, the document answers **over the substrate**, which is the
+    /// one reach whose answer can be a color no layer holds (§15.5).
+    fn whole_document(self) -> PickSource {
+        if self.group_only {
+            PickSource::Composite
+        } else {
+            PickSource::CompositeOverSubstrate
         }
     }
 }

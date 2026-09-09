@@ -24,7 +24,7 @@ use stark_model::document::{
 use crate::brush_config::{
     BrushConfig, BrushEffectType, EraseConfig, LiquifyConfig, Transient, WetDynamics,
 };
-use crate::slots;
+use crate::slots::{self, Digit};
 use crate::storage::{self, Store};
 
 /// One named preset in the library.
@@ -48,7 +48,7 @@ pub struct PresetEntry {
     /// own presets declare it and everything the user saves has `None`. The rack
     /// is the user's to arrange after that, and a preset does not follow its
     /// shipped digit around once it has been moved off it.
-    pub slot: Option<usize>,
+    pub slot: Option<Digit>,
     /// Whether this is one of the app's own presets rather than the user's.
     ///
     /// Never stored: it is *provenance*, set where the entry is made — true in
@@ -108,7 +108,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     // definition cannot say them anywhere else now that the config is the
     // durable half alone.
     let shipped = |name: &str,
-                   slot: Option<usize>,
+                   slot: Option<Digit>,
                    smoothing: f32,
                    size: f32,
                    flow: f32,
@@ -128,7 +128,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     vec![
         shipped(
             "Hard Round",
-            Some(1),
+            Some(Digit::ALL[1]),
             0.15,
             100.0,
             3.0,
@@ -204,7 +204,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
         // makes when it lands a line and flicks off it.
         shipped(
             "Pen",
-            Some(2),
+            Some(Digit::ALL[2]),
             0.5,
             18.0,
             1.0,
@@ -236,7 +236,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
         // from the pencil it is imitating and what it could not ask for before.
         shipped(
             "Pencil",
-            Some(3),
+            Some(Digit::ALL[3]),
             0.0,
             30.0,
             0.4,
@@ -274,7 +274,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
         ),
         shipped(
             "Airbrush",
-            Some(4),
+            Some(Digit::ALL[4]),
             0.1,
             500.0,
             0.1,
@@ -300,7 +300,7 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
         ),
         shipped(
             "Blender",
-            Some(5),
+            Some(Digit::ALL[5]),
             0.1,
             100.0,
             1.0,
@@ -599,17 +599,71 @@ mod tests {
 
     #[test]
     fn every_shipped_preset_has_a_distinct_home_on_the_rack() {
-        // `slots::seed` writes each preset to its own digit, so a
-        // repeat would silently mean "whichever came last" and a slot past the
-        // end would be dropped — neither of them visible anywhere.
+        // `slots::seed` writes each preset to its own digit, so a repeat would
+        // silently mean "whichever came last" and nothing on screen would say which.
+        // A slot *past* the end used to be the other half of this: it is now a value
+        // a definition cannot write (`slots::Digit`).
         let mut seen = Vec::new();
         for entry in table() {
             let Some(slot) = entry.slot else {
                 continue;
             };
-            assert!(slot < slots::COUNT, "{} ships on {slot}", entry.name);
             assert!(!seen.contains(&slot), "two presets ship on {slot}");
             seen.push(slot);
+        }
+    }
+
+    /// **Every number a shipped preset carries is inside the track that shows it.**
+    ///
+    /// The table is some eighty hand-written figures and the editor's ranges are
+    /// stated somewhere else entirely (`brush_editor::Knob::range`,
+    /// `ModRow::range`), so nothing but this connects the two. A shipped value past a
+    /// slider's end is a track a hand can move but never move back — the control
+    /// clamps on the first drag, and what the preset shipped as is gone with no way to
+    /// return to it.
+    ///
+    /// Swept over the rows each preset actually *gets*, since which rows a brush has
+    /// is the brush's (`Section::mounted`, `Section::rows`) — a liquify brush has no
+    /// opacity ceiling to be out of range of. Both ends of every range are inclusive:
+    /// three of these ship exactly *on* an end (Hard Round's flow, Airbrush's size),
+    /// which is the top of the track and not past it.
+    #[test]
+    fn no_shipped_preset_sits_off_the_end_of_its_own_track() {
+        use crate::brush_editor::{Row, SECTIONS, Shown};
+
+        for entry in table() {
+            let shown = Shown {
+                brush: entry.brush,
+                tune: entry.transient,
+                // The document's two, which the rows depend on but a preset does not
+                // carry: the app's own defaults, since a range never turns on either.
+                space: stark_model::ColorSpaceId::Oklab,
+                substrate: stark_model::SubstrateId::Flat,
+            };
+            let name = &entry.name;
+            for section in SECTIONS.into_iter().filter(|s| s.mounted(&entry.brush)) {
+                for row in section.rows(&shown).into_iter().chain(section.more(&shown)) {
+                    let (what, (lo, hi), at) = match row {
+                        Row::Knob(knob) => {
+                            (format!("{knob:?}"), knob.range(), knob.get(&entry.brush))
+                        }
+                        Row::Mod(m) => (
+                            format!("{m:?}"),
+                            m.range(&entry.brush, entry.transient),
+                            m.get(&entry.brush, entry.transient),
+                        ),
+                        Row::Shapes
+                        | Row::Orientation
+                        | Row::Effects
+                        | Row::Noise
+                        | Row::Note(_) => continue,
+                    };
+                    assert!(
+                        (lo..=hi).contains(&at),
+                        "{name} ships {what} at {at}, off its own {lo}..={hi} track",
+                    );
+                }
+            }
         }
     }
 

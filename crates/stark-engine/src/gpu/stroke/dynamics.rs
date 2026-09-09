@@ -56,8 +56,9 @@ pub(super) enum StrokePath {
     /// and none of the manipulation.
     ///
     /// Unreachable from a brush this app built — the frontier is published as
-    /// [`max_tip_reach`](super::budget::max_tip_reach) and the frontend clamps to it
-    /// — so what arrives here is a record from a peer or another build.
+    /// [`max_tip_reach`](super::budget::max_tip_reach) and the chrome clamps to it
+    /// (`stark_ui::brush_config::BrushConfig::settle`) — so what arrives here is a
+    /// record from a peer or another build.
     TipTooLarge,
 }
 

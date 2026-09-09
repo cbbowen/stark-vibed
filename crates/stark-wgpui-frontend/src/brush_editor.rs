@@ -42,7 +42,7 @@ use stark_engine::command::InputSample;
 use stark_model::document::{ModSource, NoiseKind, OrientationSource};
 use stark_model::geom::Vec2;
 use stark_ui::brush_config::BrushEffectType;
-use stark_ui::brush_editor::{ModRow, Row, Section, Shown};
+use stark_ui::brush_editor::{ModRow, Row, Section, Shown, TestStroke};
 use wgpui::{
     AnyElement, Bounds, Entity, IntoElement, PathBuilder, Pixels, Point, SharedString,
     WgpuSurfaceHandle, canvas, div, point, prelude::*, px, rgb, rgba, wgpu_surface,
@@ -188,19 +188,11 @@ pub struct Editor {
     /// The test canvas. `None` where wgpui is not on its wgpu renderer — the dialog
     /// still opens and every knob still works, it simply shows no stroke.
     pub preview: Option<Preview>,
-    /// The test stroke, in the preview document's canvas space. Replayed on every
-    /// setting change.
-    samples: Vec<InputSample>,
-    /// Whether [`samples`](Self::samples) is the artist's own stroke rather than the
-    /// seeded default — the one thing a resize must not lay over.
-    drawn: bool,
-    /// Samples of a stroke in progress on the test canvas.
-    rec: Vec<InputSample>,
-    /// Whether a hand is on the test canvas right now.
-    pub drawing: bool,
-    /// Whether a committed test stroke is on the preview document, and so has to be
-    /// undone before the next replay.
-    committed: bool,
+    /// The test stroke and what a hand on the test canvas does to it — the whole of
+    /// it, since the six values and five transitions are `stark_ui`'s and the web
+    /// frontend carries the same one (§11.2). What is this frontend's is the engine
+    /// calls around it.
+    stroke: TestStroke,
     /// Which groups are folded to their title bar. The specialised two start shut
     /// (`Section::open_by_default`).
     shut: HashSet<Section>,
@@ -216,11 +208,7 @@ impl Editor {
     pub fn new(preview: Option<Preview>) -> Self {
         Self {
             preview,
-            samples: Vec::new(),
-            drawn: false,
-            rec: Vec::new(),
-            drawing: false,
-            committed: false,
+            stroke: TestStroke::default(),
             shut: stark_ui::brush_editor::SECTIONS
                 .into_iter()
                 .filter(|s| !s.open_by_default())
@@ -276,7 +264,7 @@ impl Editor {
         });
         let samples = stark_ui::brush_editor::reference_stroke(w, h, view);
         p.replay_stroke(&samples, stark_ui::brush_editor::PREVIEW_STROKE_SEED, 0.0);
-        self.samples = stark_ui::brush_editor::default_stroke(w, h, view);
+        self.stroke.seed(w, h, view);
     }
 
     /// Put the seeded stroke back, whatever the artist drew over it.
@@ -285,19 +273,18 @@ impl Editor {
             return;
         };
         let (w, h) = size_of(p);
-        self.samples = stark_ui::brush_editor::default_stroke(w, h, p.view());
-        self.drawn = false;
+        self.stroke.seed(w, h, p.view());
     }
 
     /// Re-lay the seeded stroke to a surface that has changed size, so the default
-    /// keeps running the length of the column instead of ending short of it.
-    ///
-    /// A stroke the artist drew is left exactly where they drew it: it is theirs, and
-    /// it is in canvas space, so it survives the resize untouched.
+    /// keeps running the length of the column instead of ending short of it — and
+    /// leave the artist's own alone, which is `TestStroke`'s rule.
     pub fn relay_after_resize(&mut self) {
-        if !self.drawn {
-            self.reset_stroke();
-        }
+        let Some(p) = self.preview.as_ref() else {
+            return;
+        };
+        let (w, h) = size_of(p);
+        self.stroke.relay_after_resize(w, h, p.view());
     }
 
     /// Undo the committed test stroke, push `brush`, and replay the recorded hand as a
@@ -311,13 +298,13 @@ impl Editor {
     /// stroke being drawn, and replacing it mid-gesture would take it out from under
     /// the pointer.
     pub fn restroke(&mut self, brush: &crate::brush::Brush) {
-        if self.drawing {
+        if self.stroke.drawing() {
             return;
         }
         let Some(p) = self.preview.as_mut() else {
             return;
         };
-        if self.committed {
+        if self.stroke.needs_undo() {
             p.process(stark_engine::command::DocCommand::Undo);
         }
         // The test stroke wears the fixed preview gold whatever the palette holds, so
@@ -335,11 +322,12 @@ impl Editor {
         // stroke is a hand, and replaying it through the tow is what lets the track
         // show its work on the stroke beside it.
         let rope = stark_ui::input::rope(p.view(), brush.config.smoothing);
-        self.committed = p.replay_stroke(
-            &self.samples,
+        let committed = p.replay_stroke(
+            self.stroke.samples(),
             stark_ui::brush_editor::PREVIEW_STROKE_SEED,
             rope,
         );
+        self.stroke.replayed(committed);
     }
 
     /// Begin a stroke the artist is drawing on the test canvas: clear the committed
@@ -348,11 +336,12 @@ impl Editor {
         let Some(p) = self.preview.as_mut() else {
             return;
         };
-        if self.committed {
-            p.process(stark_engine::command::DocCommand::Undo);
-            self.committed = false;
-        }
         let sample = sample_at(p.view(), at);
+        // The committed test stroke comes off before the new one goes on, and whether
+        // there is one to take off is the stroke's own answer (`TestStroke::begin`).
+        if self.stroke.begin(sample) {
+            p.process(stark_engine::command::DocCommand::Undo);
+        }
         p.process(stark_engine::command::GestureCommand::Start {
             tool: stark_engine::command::Tool::Brush,
             sample,
@@ -364,13 +353,11 @@ impl Editor {
             // than like the brush with its string cut.
             rope,
         });
-        self.rec = vec![sample];
-        self.drawing = true;
     }
 
     /// Extend it.
     pub fn stroke_to(&mut self, at: Vec2) {
-        if !self.drawing {
+        if !self.stroke.drawing() {
             return;
         }
         let Some(p) = self.preview.as_mut() else {
@@ -378,37 +365,24 @@ impl Editor {
         };
         let sample = sample_at(p.view(), at);
         p.process(stark_engine::command::GestureCommand::To { sample });
-        self.rec.push(sample);
+        self.stroke.extend(sample);
     }
 
     /// Commit it as the new test stroke, so every later edit replays what the artist
     /// drew rather than the seeded default.
     ///
-    /// Answers whether the hand actually drew one. **A tap is not a stroke** — the
-    /// engine says so too (`Engine::replay_stroke_seeded` answers `None` for a hand
-    /// that never left its first point) — so a press that went nowhere leaves the
-    /// stroke that was there and the caller replays it.
-    ///
-    /// Getting this wrong is not a cosmetic bug and it was one: the press had already
-    /// undone the committed stroke, so marking a tap committed made the *next* edit's
-    /// undo reach past it into the reference band, and two taps emptied the canvas.
+    /// Answers whether the hand actually drew one. **A tap is not a stroke**
+    /// (`TestStroke::end`, which carries the argument) — so a press that went nowhere
+    /// leaves the stroke that was there and the caller replays it.
     #[must_use]
     pub fn end_stroke(&mut self) -> bool {
-        if !self.drawing {
+        if !self.stroke.drawing() {
             return false;
         }
         if let Some(p) = self.preview.as_mut() {
             p.process(stark_engine::command::GestureCommand::End);
         }
-        self.drawing = false;
-        let rec = std::mem::take(&mut self.rec);
-        if rec.len() < 2 {
-            return false;
-        }
-        self.samples = rec;
-        self.drawn = true;
-        self.committed = true;
-        true
+        self.stroke.end()
     }
 }
 
@@ -1136,41 +1110,6 @@ mod tests {
         assert!(editor.shut.contains(&Section::Tip));
         editor.fold(Section::Tip);
         assert!(!editor.shut.contains(&Section::Tip));
-    }
-
-    /// **A tap is not a stroke**, and the stroke that was showing survives one.
-    ///
-    /// The bug this is here for cost the whole test canvas: opening the gesture had
-    /// already undone the committed stroke, so marking a tap committed made the *next*
-    /// edit's undo reach past it into the reference band — and two taps in a row left
-    /// the canvas empty with nothing on screen saying why.
-    #[test]
-    fn a_tap_does_not_become_the_test_stroke() {
-        let mut editor = Editor::new(None);
-        let seeded = vec![InputSample::default(); 4];
-        editor.samples = seeded.clone();
-        // What a press leaves behind: the committed stroke taken off, one sample
-        // recorded, and the hand still down (`Editor::start_stroke`).
-        editor.drawing = true;
-        editor.committed = false;
-        editor.rec = vec![InputSample::default()];
-        assert!(!editor.end_stroke(), "one sample is not a stroke");
-        assert_eq!(
-            editor.samples.len(),
-            seeded.len(),
-            "the stroke that was there stays"
-        );
-        assert!(
-            !editor.committed,
-            "and nothing is claimed committed for a later undo to reach past"
-        );
-
-        // Two points are a hand that moved, which is a stroke.
-        editor.drawing = true;
-        editor.rec = vec![InputSample::default(); 2];
-        assert!(editor.end_stroke());
-        assert_eq!(editor.samples.len(), 2, "and it becomes the test stroke");
-        assert!(editor.committed);
     }
 
     /// Only ever one mapping open, and pressing the open one shuts it.

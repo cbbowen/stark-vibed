@@ -77,6 +77,8 @@
 //!   visibility menu's own list (§11, §25.6).
 //! - [`nav`] — what a press, a drag and a wheel notch do to the **view**, at the
 //!   rates both apps travel at (§18.1.7).
+//! - [`tune`] — and what one does to the **brush** (§18.1.9): the size sideways, the
+//!   flow up and down, and the axis lock that keeps a gesture to one knob.
 //! - [`selection`] — what a shape gesture is about to do (§6.8, §18.0.4): which tool
 //!   draws the region, and what the region it encloses lands on.
 //! - [`slots`] — the ten brushes under the hand (§18.1.8): what a digit holds, what a
@@ -118,4 +120,5 @@ pub mod selection;
 pub mod slots;
 pub mod storage;
 pub mod transform;
+pub mod tune;
 pub mod visibility;

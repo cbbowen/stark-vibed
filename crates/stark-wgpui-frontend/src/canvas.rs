@@ -23,7 +23,7 @@ use stark_model::geom::Vec2;
 use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
-use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_config::{BrushEffectType, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Bindings, Command, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input as chrome_input;
@@ -71,17 +71,6 @@ use crate::transform;
 /// added to a 4-px tip is a quarter of it and nothing at all to a 400-px one. The same
 /// figure the web frontend steps by.
 const SIZE_STEP: f32 = 1.1;
-
-/// How much of the size range one horizontal pixel of a tuning drag spends, as an
-/// exponent — so the knob moves multiplicatively, for `SIZE_STEP`'s reason.
-///
-/// `MIN_RADIUS..MAX_RADIUS` is about nine doublings, and this spends them over some
-/// 900 px: a drag across a window covers the range once, and a short one is fine.
-const TUNE_SIZE_PER_PX: f32 = 0.007;
-
-/// How much flow one vertical pixel spends — the range over some 300 px, which is
-/// shorter because there is far less of it to cross.
-const TUNE_FLOW_PER_PX: f32 = 0.01;
 
 /// Something the window has to say about the last act — a failure, or the one kind
 /// of success that leaves nothing on screen. Queued by [`Canvas::report`] and
@@ -149,14 +138,12 @@ enum Held {
     PreviewStroke,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
     /// flow up and down, from where the press landed.
-    Tune {
-        /// Where the drag started, in logical px, and the tune it started from — so
-        /// a long drag is one map from the press rather than a chain of steps, which
-        /// is `stark_ui::transform`'s rule applied to a knob.
-        from: Point<Pixels>,
-        size: f32,
-        flow: f32,
-    },
+    ///
+    /// The gesture itself is `stark_ui::tune`, shared with the web frontend — where
+    /// the press landed, the tune it landed on, and the one knob it has committed to.
+    /// Both apps ran their own arithmetic here until it was, and neither the rates nor
+    /// the axis lock agreed (§11.2).
+    Tune(stark_ui::tune::Tune),
 }
 
 pub struct Canvas {
@@ -759,11 +746,10 @@ impl Canvas {
         // than a ladder of modifier tests here (§25.3).
         match self.drags.lookup(mods, DragButton::Left) {
             Some(DragAction::TuneBrush) => {
-                self.held = Some(Held::Tune {
-                    from: at,
-                    size: self.brush.tune.size,
-                    flow: self.brush.tune.flow,
-                });
+                self.held = Some(Held::Tune(stark_ui::tune::Tune::press(
+                    logical_at(at),
+                    self.brush.tune,
+                )));
                 // The other one: the brush is moving rather than the pointer meaning
                 // anything on the canvas (§18.1.9), so the mark under it stops being a
                 // picture of the next stroke.
@@ -947,17 +933,16 @@ impl Canvas {
                 }
                 self.repaint(cx);
             }
-            Some(Held::Tune { from, size, flow }) => {
-                // Both knobs from the press rather than from the last move, so a long
-                // drag is one map and rounding cannot walk over its length.
-                let dx = f32::from(at.x) - f32::from(from.x);
-                let dy = f32::from(at.y) - f32::from(from.y);
-                self.brush.tune.size =
-                    (size * (TUNE_SIZE_PER_PX * dx).exp()).clamp(MIN_RADIUS, MAX_RADIUS);
-                // Up is more, which is the direction every slider in the app grows in
-                // and the opposite of the screen's y.
-                self.brush.tune.flow = (flow - dy * TUNE_FLOW_PER_PX).clamp(0.0, MAX_FLOW);
-                self.send_brush(cx);
+            Some(Held::Tune(mut drag)) => {
+                // The range is the in-force effect's (`BrushConfig::max_flow`), so a
+                // full drag is a full knob whichever it is — and a liquify brush's
+                // strength stops where its slider does rather than two thirds past it.
+                let turn = drag.moved(logical_at(at), self.brush.config.max_flow());
+                self.held = Some(Held::Tune(drag));
+                if let Some(turn) = turn {
+                    turn.write(&mut self.brush.tune);
+                    self.send_brush(cx);
+                }
             }
             Some(Held::Stroke { .. } | Held::Shape { .. }) => {
                 let (scale, now) = (window.scale_factor(), self.elapsed());
@@ -3451,10 +3436,7 @@ impl Canvas {
     /// A slot with nothing in it still enters the hold rather than declining: the hold
     /// *is* the arming, and holding an empty number while clicking a preset is how the
     /// number gets its first brush.
-    fn hold_slot(&mut self, slot: usize, grip: Grip, cx: &mut Context<'_, Self>) {
-        if slot >= slots::COUNT {
-            return;
-        }
+    fn hold_slot(&mut self, slot: slots::Digit, grip: Grip, cx: &mut Context<'_, Self>) {
         if let Some(held) = self.rack.held.as_ref() {
             match held.displaced_by(grip) {
                 Some((slot, grip)) => self.release_slot(slot, grip, cx),
@@ -3475,7 +3457,7 @@ impl Canvas {
         // The slot's brush as it is *now* — its preset looked up live, at the slot's own
         // size and flow. A binding the library cannot answer is an empty slot, and an
         // empty slot is held without a swap.
-        let bound = self.rack.brushes[slot].clone();
+        let bound = self.rack.brushes[slot.as_index()].clone();
         if let Some(bound) = bound
             && let Some((config, tune)) = slots::resolve(&self.brush.library, &bound)
         {
@@ -3490,7 +3472,7 @@ impl Canvas {
 
     /// End the hold on `slot`, if `grip` is what is holding it: keep whatever was
     /// changed, and put the displaced brush back (`slots::Held::settle`).
-    fn release_slot(&mut self, slot: usize, grip: Grip, cx: &mut Context<'_, Self>) {
+    fn release_slot(&mut self, slot: slots::Digit, grip: Grip, cx: &mut Context<'_, Self>) {
         let Some(held) = self.rack.held.take_if(|held| held.ends_on(slot, grip)) else {
             return;
         };
@@ -3537,8 +3519,8 @@ impl Canvas {
     /// press enters a hold whose release keeps the slot's brush rather than putting the
     /// displaced one back (`slots::Held`), so this is not called for it and there is no
     /// second path to one outcome.
-    fn pick_slot(&mut self, slot: usize, cx: &mut Context<'_, Self>) {
-        let Some(bound) = self.rack.brushes.get(slot).cloned().flatten() else {
+    fn pick_slot(&mut self, slot: slots::Digit, cx: &mut Context<'_, Self>) {
+        let Some(bound) = self.rack.brushes[slot.as_index()].clone() else {
             return;
         };
         // A binding the library cannot answer is an empty row, and an empty row's click
@@ -3551,10 +3533,9 @@ impl Canvas {
     }
 
     /// Bind `slot` and write the rack down.
-    fn assign_slot(&mut self, slot: usize, bound: slots::QuickBrush) {
-        if slots::assign(&mut self.rack.brushes, slot, bound) {
-            slots::persist(&self.rack.brushes);
-        }
+    fn assign_slot(&mut self, slot: slots::Digit, bound: slots::QuickBrush) {
+        slots::assign(&mut self.rack.brushes, slot, bound);
+        slots::persist(&self.rack.brushes);
     }
 
     /// Empty `slot` and write the rack down — the trash on a pinned row, held until its
@@ -3562,7 +3543,7 @@ impl Canvas {
     ///
     /// The live brush is untouched, exactly as removing a preset would leave it: what
     /// goes is the *binding*, not the tool.
-    fn clear_slot(&mut self, slot: usize, cx: &mut Context<'_, Self>) {
+    fn clear_slot(&mut self, slot: slots::Digit, cx: &mut Context<'_, Self>) {
         if slots::clear(&mut self.rack.brushes, slot) {
             slots::persist(&self.rack.brushes);
             self.repaint(cx);
@@ -4226,6 +4207,16 @@ fn screen_at(position: Point<Pixels>, origin: Point<Pixels>, scale: f32) -> Vec2
     let x = f32::from(position.x) - f32::from(origin.x);
     let y = f32::from(position.y) - f32::from(origin.y);
     Vec2::new(x * scale, y * scale)
+}
+
+/// A window position as a plain vector of **logical** px.
+///
+/// Neither [`screen_at`] nor [`canvas_at`]: the brush-tuning drag is denominated in
+/// what the hand travelled across the glass, not in what the view is showing
+/// (`stark_ui::tune`), so it is measured where the window reports rather than through
+/// the origin or the zoom. The web frontend's page coordinates are the same quantity.
+fn logical_at(position: Point<Pixels>) -> Vec2 {
+    Vec2::new(f32::from(position.x), f32::from(position.y))
 }
 
 /// A window position in canvas px.

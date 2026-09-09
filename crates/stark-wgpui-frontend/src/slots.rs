@@ -23,7 +23,7 @@
 //! length of the stroke) and the rack's grip is `Grip::Key` alone; the vocabulary
 //! for the other is already shared, and what it waits on is a hovering report.
 
-use stark_ui::slots::{self, ERASER, Row};
+use stark_ui::slots::{self, Digit, ERASER, Row};
 use wgpui::{
     AnyElement, Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, px,
     relative, rgb,
@@ -75,9 +75,9 @@ const DANGER: u32 = 0xe8757a;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
     /// A row, by the digit it is reached by. Its press picks the slot.
-    Row(usize),
+    Row(Digit),
     /// The trash on a filled row, by the same digit.
-    Trash(usize),
+    Trash(Digit),
 }
 
 /// Where the rack's controls were laid out — `crate::panel`'s device, for its reason.
@@ -131,10 +131,10 @@ pub struct Rack {
     /// closes a press that landed there — a dialog's rule (§25.7), for the same device:
     /// the trash's hold removes the row while the pen is still down, and a release is
     /// hit-tested afresh.
-    pressed: Option<usize>,
+    pressed: Option<Digit>,
     /// The trash being held down: which row, and when the press landed. The row wears
     /// the fill for as long as this says so, and **nothing else keeps time**.
-    arming: Option<(usize, f64)>,
+    arming: Option<(Digit, f64)>,
 }
 
 impl Default for Rack {
@@ -195,7 +195,7 @@ impl Rack {
     ///
     /// Disarms whatever was armed either way: letting go is what a trash held down
     /// stops being.
-    pub fn release(&mut self, region: Option<Region>) -> Option<usize> {
+    pub fn release(&mut self, region: Option<Region>) -> Option<Digit> {
         self.arming = None;
         let pressed = self.pressed.take()?;
         match region {
@@ -222,7 +222,7 @@ impl Rack {
     ///
     /// Spent by being answered: the press is over, and the release that follows is
     /// nobody's click, so the row moving up under a still-down pen cannot be picked.
-    pub fn armed_out(&mut self, now: f64) -> Option<usize> {
+    pub fn armed_out(&mut self, now: f64) -> Option<Digit> {
         let (slot, at) = self.arming?;
         if now - at < CLEAR_HOLD {
             return None;
@@ -240,7 +240,7 @@ impl Rack {
 
     /// How far the fill on `slot`'s trash has closed, `0..=1` — nothing for a row that
     /// is not being held down.
-    fn arming_at(&self, slot: usize, now: f64) -> Option<f32> {
+    fn arming_at(&self, slot: Digit, now: f64) -> Option<f32> {
         let (armed, at) = self.arming?;
         (armed == slot).then(|| (((now - at) / CLEAR_HOLD) as f32).clamp(0.0, 1.0))
     }
@@ -420,11 +420,16 @@ mod tests {
     use stark_ui::brush_config::Transient;
     use stark_ui::slots::QuickBrush;
 
+    /// The digit `n`, for a test that knows it named one.
+    fn d(n: usize) -> Digit {
+        Digit::new(n).expect("a digit the rack has")
+    }
+
     fn filled() -> Rack {
         let mut rack = Rack::default();
         slots::assign(
             &mut rack.brushes,
-            3,
+            d(3),
             QuickBrush {
                 preset: "Pen".into(),
                 transient: Transient::default(),
@@ -439,16 +444,16 @@ mod tests {
     #[test]
     fn a_row_is_picked_only_by_a_click_it_heard_the_press_of() {
         let mut rack = filled();
-        rack.press(Region::Row(3), 0.0);
-        assert_eq!(rack.release(Some(Region::Row(3))), Some(3));
-        assert_eq!(rack.release(Some(Region::Row(3))), None, "a spent press");
-        rack.press(Region::Row(3), 0.0);
+        rack.press(Region::Row(d(3)), 0.0);
+        assert_eq!(rack.release(Some(Region::Row(d(3)))), Some(d(3)));
+        assert_eq!(rack.release(Some(Region::Row(d(3)))), None, "a spent press");
+        rack.press(Region::Row(d(3)), 0.0);
         assert_eq!(
-            rack.release(Some(Region::Row(7))),
+            rack.release(Some(Region::Row(d(7)))),
             None,
             "a release over another row is nobody's click"
         );
-        rack.press(Region::Row(3), 0.0);
+        rack.press(Region::Row(d(3)), 0.0);
         assert_eq!(rack.release(None), None, "nor is one over the painting");
     }
 
@@ -457,21 +462,21 @@ mod tests {
     #[test]
     fn the_trash_is_held_and_a_tap_on_it_picks_the_row() {
         let mut rack = filled();
-        rack.press(Region::Trash(3), 10.0);
+        rack.press(Region::Trash(d(3)), 10.0);
         assert_eq!(rack.armed_out(10.0 + CLEAR_HOLD / 2.0), None);
         assert_eq!(
-            rack.release(Some(Region::Trash(3))),
-            Some(3),
+            rack.release(Some(Region::Trash(d(3)))),
+            Some(d(3)),
             "letting go early is the row's tap"
         );
         assert_eq!(rack.armed_out(10.0 + CLEAR_HOLD * 2.0), None, "disarmed");
 
-        rack.press(Region::Trash(3), 20.0);
-        assert_eq!(rack.arming_at(3, 20.0 + CLEAR_HOLD / 2.0), Some(0.5));
-        assert_eq!(rack.arming_at(7, 20.0 + CLEAR_HOLD / 2.0), None);
-        assert_eq!(rack.armed_out(20.0 + CLEAR_HOLD), Some(3));
+        rack.press(Region::Trash(d(3)), 20.0);
+        assert_eq!(rack.arming_at(d(3), 20.0 + CLEAR_HOLD / 2.0), Some(0.5));
+        assert_eq!(rack.arming_at(d(7), 20.0 + CLEAR_HOLD / 2.0), None);
+        assert_eq!(rack.armed_out(20.0 + CLEAR_HOLD), Some(d(3)));
         assert_eq!(
-            rack.release(Some(Region::Trash(3))),
+            rack.release(Some(Region::Trash(d(3)))),
             None,
             "the press was spent by the hold closing"
         );
@@ -481,13 +486,16 @@ mod tests {
     #[test]
     fn sliding_off_the_trash_is_a_tap() {
         let mut rack = filled();
-        rack.press(Region::Trash(3), 30.0);
-        assert!(rack.moved(Some(Region::Row(3))));
-        assert!(!rack.moved(Some(Region::Row(3))), "nothing left to disarm");
+        rack.press(Region::Trash(d(3)), 30.0);
+        assert!(rack.moved(Some(Region::Row(d(3)))));
+        assert!(
+            !rack.moved(Some(Region::Row(d(3)))),
+            "nothing left to disarm"
+        );
         assert_eq!(rack.armed_out(30.0 + CLEAR_HOLD * 2.0), None);
         assert_eq!(
-            rack.release(Some(Region::Row(3))),
-            Some(3),
+            rack.release(Some(Region::Row(d(3)))),
+            Some(d(3)),
             "and the row still heard the press"
         );
     }
@@ -502,7 +510,7 @@ mod tests {
         assert!(rack.up());
         rack.pinned = false;
         rack.held = Some(slots::Held::open(
-            2,
+            d(2),
             slots::Grip::Eraser,
             (Default::default(), Transient::default()),
             None,
@@ -510,7 +518,7 @@ mod tests {
         ));
         assert!(!rack.up(), "the tail's hold draws no rack");
         rack.held = Some(slots::Held::open(
-            2,
+            d(2),
             slots::Grip::Key,
             (Default::default(), Transient::default()),
             None,

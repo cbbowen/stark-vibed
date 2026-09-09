@@ -59,8 +59,8 @@ use crate::widgets::{Modal, Slider};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
-    ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown, noise_label,
-    source_label,
+    ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown, TestStroke,
+    noise_label, source_label,
 };
 use stark_ui::commands::Command;
 
@@ -96,17 +96,11 @@ struct Preview {
     /// therefore no publish to pair a mutation with, which is the whole of what
     /// `state::with_engine` exists to enforce.
     renderer: Signal<Option<Renderer>>,
-    /// The test stroke (canvas-space samples), replayed on every setting change.
-    samples: Signal<Vec<InputSample>>,
-    /// Whether `samples` is the user's own stroke rather than the seeded default
-    /// — the one thing [`resize_preview`] must not re-seed over.
-    drawn: Signal<bool>,
-    /// Samples of an in-progress user stroke on the preview canvas.
-    rec: Signal<Vec<InputSample>>,
-    /// Whether the user is mid-stroke on the preview canvas.
-    drawing: Signal<bool>,
-    /// Whether a committed stroke is on the preview document (undo it before replaying).
-    committed: Signal<bool>,
+    /// The test stroke and what a hand on the preview canvas does to it — the whole
+    /// of it, since the six values and five transitions are `stark_ui`'s and the
+    /// native frontend carries the same one (§11.2). What is this frontend's is the
+    /// signal around it and the engine calls below.
+    stroke: Signal<TestStroke>,
     /// Edit throttle gate: whether the post-edit cooldown is running.
     cooling: Signal<bool>,
     /// The latest edit deferred during the cooldown, owed a trailing apply.
@@ -158,11 +152,7 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
     let preview = Preview {
         renderer: use_signal(|| None),
-        samples: use_signal(Vec::new),
-        drawn: use_signal(|| false),
-        rec: use_signal(Vec::new),
-        drawing: use_signal(|| false),
-        committed: use_signal(|| false),
+        stroke: use_signal(TestStroke::default),
         cooling: use_signal(|| false),
         pending: use_signal(|| None),
     };
@@ -346,10 +336,8 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
                             start_preview_stroke(state, preview, &e);
                         }
                     },
-                    onpointermove: move |e| {
-                        if (preview.drawing)() { move_preview_stroke(preview, &e); }
-                    },
-                    onpointerup: move |_| end_preview_stroke(preview),
+                    onpointermove: move |e| move_preview_stroke(preview, &e),
+                    onpointerup: move |_| end_preview_stroke(state, preview),
                     onpointercancel: move |_| cancel_preview_stroke(state, preview),
                 }
                 div { class: "be-preview-hint", "Test stroke — draw here to replace it" }
@@ -898,21 +886,10 @@ async fn init_preview(state: AppState, mut preview: Preview) {
 
     // Seed the default test stroke and render it with the current brush.
     r.paint();
-    preview.samples.set(default_stroke(&r));
+    let (w, h) = r.size();
+    preview.stroke.write().seed(w as f32, h as f32, r.view());
     preview.renderer.set(Some(r));
     restroke(state, preview);
-}
-
-/// The seeded test stroke: an S-curve **down** the preview column with a pressure
-/// bell (light → full → light) and a forward tilt that ramps in — so pressure- and
-/// tilt-modulated settings visibly shape the stroke even for mouse users.
-///
-/// Downward because the preview is a tall column, and because it is the direction
-/// a hand draws a test stroke in: the run is along the long axis, and the S's swing
-/// is across the short one.
-fn default_stroke(r: &Renderer) -> Vec<InputSample> {
-    let (w, h) = r.size();
-    stark_ui::brush_editor::default_stroke(w as f32, h as f32, r.view())
 }
 
 /// The fixed reference stroke laid on the preview canvas before any test
@@ -943,7 +920,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
 /// across edits and only the changed parameter moves.
 /// No-op while the user is drawing on the preview.
 fn restroke(state: AppState, mut preview: Preview) {
-    if *preview.drawing.peek() {
+    if preview.stroke.peek().drawing() {
         return;
     }
     let brush = *state.brush.peek();
@@ -954,11 +931,14 @@ fn restroke(state: AppState, mut preview: Preview) {
     // the main engine's content-addressed asset store, so whatever the brush
     // holds is already here.
     tune.color = PREVIEW_STROKE_COLOR;
-    let samples = preview.samples.peek().clone();
+    // Each read is its own statement: no guard on the stroke may be alive when the
+    // replay's answer is written back into it below.
+    let samples = preview.stroke.peek().samples().to_vec();
+    let undo = preview.stroke.peek().needs_undo();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
-    if *preview.committed.peek() {
+    if undo {
         r.process(DocCommand::Undo);
     }
     r.process(ViewCommand::SetBrush {
@@ -969,10 +949,13 @@ fn restroke(state: AppState, mut preview: Preview) {
     // test stroke is a hand, and replaying it through the tow is what lets the
     // slider show its work on the stroke beside it.
     let rope = stark_ui::input::rope(r.view(), brush.smoothing);
-    r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
+    // What the replay actually did, not what it was asked for: samples that hold no
+    // stroke commit nothing, and claiming otherwise would send the next undo one
+    // step too far — into the reference band beneath (`TestStroke`).
+    let committed = r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
     r.paint();
     drop(guard);
-    preview.committed.set(true);
+    preview.stroke.write().replayed(committed);
 }
 
 /// Apply a brush edit to the real document brush and re-stroke the preview —
@@ -1037,22 +1020,24 @@ fn resize_preview(state: AppState, mut preview: Preview, width: u32, height: u32
         return;
     }
     r.resize(width, height);
-    let reseeded = (!*preview.drawn.peek()).then(|| default_stroke(r));
+    let (w, h) = (r.size().0 as f32, r.size().1 as f32);
+    let view = r.view();
     drop(guard);
-    if let Some(samples) = reseeded {
-        preview.samples.set(samples);
-    }
+    preview.stroke.write().relay_after_resize(w, h, view);
     restroke(state, preview);
 }
 
 /// Restore the default test stroke and re-render it.
 fn reset_stroke(state: AppState, mut preview: Preview) {
-    let samples = match preview.renderer.peek().as_ref() {
-        Some(r) => default_stroke(r),
-        None => return,
+    let laid_out = preview
+        .renderer
+        .peek()
+        .as_ref()
+        .map(|r| (r.size(), r.view()));
+    let Some(((w, h), view)) = laid_out else {
+        return;
     };
-    preview.samples.set(samples);
-    preview.drawn.set(false);
+    preview.stroke.write().seed(w as f32, h as f32, view);
     restroke(state, preview);
 }
 
@@ -1075,11 +1060,13 @@ fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<Pointer
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
-    if *preview.committed.peek() {
-        r.process(DocCommand::Undo);
-        preview.committed.set(false);
-    }
     let s = preview_sample(r, e);
+    // The committed test stroke comes off before the new one goes on, and whether
+    // there is one to take off is the stroke's own answer (`TestStroke::begin`).
+    let undo = preview.stroke.write().begin(s);
+    if undo {
+        r.process(DocCommand::Undo);
+    }
     r.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: s,
@@ -1090,13 +1077,15 @@ fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<Pointer
         rope: stark_ui::input::rope(r.view(), state.brush.peek().smoothing),
     });
     r.paint();
-    drop(guard);
-    preview.rec.set(vec![s]);
-    preview.drawing.set(true);
 }
 
-/// Extend the in-progress user test stroke.
+/// Extend the in-progress user test stroke. Harmless with no hand down, which is
+/// what lets the surface hand every move over without asking first.
 fn move_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
+    let drawing = preview.stroke.peek().drawing();
+    if !drawing {
+        return;
+    }
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
@@ -1104,12 +1093,17 @@ fn move_preview_stroke(mut preview: Preview, e: &Event<PointerData>) {
     r.process(GestureCommand::To { sample: s });
     r.paint();
     drop(guard);
-    preview.rec.write().push(s);
+    preview.stroke.write().extend(s);
 }
 
 /// Commit the user's stroke as the new test stroke.
-fn end_preview_stroke(mut preview: Preview) {
-    if !*preview.drawing.peek() {
+///
+/// **A tap is not a stroke** (`TestStroke::end`), and the one it interrupted has to be
+/// put back: opening the gesture is what took it off the canvas, so a press that went
+/// nowhere leaves the document showing the reference band alone until this replays.
+fn end_preview_stroke(state: AppState, mut preview: Preview) {
+    let drawing = preview.stroke.peek().drawing();
+    if !drawing {
         return;
     }
     let mut renderer = preview.renderer;
@@ -1119,24 +1113,22 @@ fn end_preview_stroke(mut preview: Preview) {
         r.paint();
     }
     drop(guard);
-    preview.drawing.set(false);
-    preview.committed.set(true);
-    let rec = preview.rec.peek().clone();
-    if !rec.is_empty() {
-        preview.samples.set(rec);
-        preview.drawn.set(true);
+    let became = preview.stroke.write().end();
+    if !became {
+        restroke(state, preview);
     }
 }
 
 /// A cancelled pointer aborts the in-progress stroke and restores the last one.
 fn cancel_preview_stroke(state: AppState, mut preview: Preview) {
-    if !*preview.drawing.peek() {
+    let drawing = preview.stroke.peek().drawing();
+    if !drawing {
         return;
     }
     let mut renderer = preview.renderer;
     if let Some(r) = renderer.write().as_mut() {
         r.process(GestureCommand::Cancel);
     }
-    preview.drawing.set(false);
+    preview.stroke.write().cancel();
     restroke(state, preview);
 }

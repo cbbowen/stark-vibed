@@ -32,7 +32,10 @@
 //! half has always been editable in waiting.
 //!
 //! The engine never sees either type — [`params`](BrushConfig::params) is the
-//! one projection down, and `state::update_brush` the one door that sends it.
+//! one projection down, and each frontend's own single door sends it (the web's
+//! `state::update_brush`, the native `Canvas::send_brush`). What holds the pair to
+//! a brush the renderer will actually draw is [`BrushConfig::settle`], which both
+//! of those doors and the projection itself run.
 //!
 //! # Durable and transient
 //!
@@ -168,8 +171,8 @@ impl Default for WetDynamics {
 ///
 /// The color is the transient with one rule the other two knobs do not have:
 /// **it never arrives with a tool.** A preset or a slot put on keeps the color
-/// the hand already held (`presets::wear`, the one door every swap comes
-/// through), and a slot decides "did the hold change anything?" with the color
+/// the hand already held ([`BrushConfig::worn_over`], the one door every swap
+/// comes through), and a slot decides "did the hold change anything?" with the color
 /// set aside ([`same_tune`](Self::same_tune)) — a color picked mid-hold is the
 /// Color panel's act, not the number's to keep. So the color a stored tune
 /// carries is simply the color the hand held when the snapshot was taken;
@@ -418,11 +421,26 @@ impl BrushConfig {
     /// with one meaning the flow/add split bought (§6.2), clamped to the
     /// liquify strength's own load-bearing 1 where that is the effect.
     ///
+    /// **Settled on the way down** ([`settle`](Self::settle)): this is the one
+    /// projection to the engine, so it is the place that can promise the renderer
+    /// never sees a brush it would refuse. Idempotent, since the frontier ignores
+    /// the knob it bounds (`stark_engine::max_stretch`), so a caller that settled
+    /// first pays nothing for saying so twice.
+    pub fn params(&self, t: Transient) -> BrushParams {
+        let mut settled = *self;
+        settled.settle(t);
+        settled.projected(t)
+    }
+
+    /// [`params`](Self::params) without the settling — what [`settle`](Self::settle)
+    /// itself asks the engine about, and the reason the two are separate functions
+    /// rather than one that recurses into its own door.
+    ///
     /// Written out field by field with no `..` on purpose, the effect structs
     /// included: a field added to `BrushParams` or to an effect fails to
     /// compile here, which is what keeps this type from silently dropping a
     /// knob the engine grew.
-    pub fn params(&self, t: Transient) -> BrushParams {
+    fn projected(&self, t: Transient) -> BrushParams {
         BrushParams {
             size: t.size,
             shape: self.shape,
@@ -487,6 +505,67 @@ impl BrushConfig {
                 }),
             },
         }
+    }
+
+    /// Hold the pair to what this app can actually hold: the **stretch** to what the
+    /// renderer can draw at `t.size` (§6.2), the **smoothing** to its own `0..=1`
+    /// (§6.11).
+    ///
+    /// A tip reaching further than one dynamics region holds does not draw a coarser
+    /// stroke — it loses its lift, deposit and charge *entirely*, and nothing on
+    /// screen says which path ran. `stark_engine::max_stretch` is published as a
+    /// frontier an editor clamps against for that reason, and this is where the app
+    /// clamps: [`sanitized`](BrushParams::sanitized) bounds the knob to the constant
+    /// [`BrushParams::MAX_STRETCH`], which is a different — and, for a large brush,
+    /// looser — number than the size-dependent one.
+    ///
+    /// **Here rather than on the stretch control**, which is the whole reason it is a
+    /// function. The reach is a product of *two* knobs and the size has four writers
+    /// in each app — a panel dial, the editor's own row, the tuning drag (§18.1.9)
+    /// and the `[`/`]` keys — so a clamp living with the stretch would be silently
+    /// bypassed by every one of them. Both frontends run it at the door the live
+    /// brush goes through, and [`params`](Self::params) runs it again on the way
+    /// down, which makes "no brush this app holds is undrawable" a property of the
+    /// seam rather than a rule a dozen call sites have to remember.
+    ///
+    /// **The stretch yields, never the size.** Size is what the artist reaches for
+    /// and what three of those writers exist to move; a size drag that quietly shrank
+    /// itself would be a fight. Stretch giving way is visible instead — the slider's
+    /// own top moves with it, and the editor says why
+    /// (`brush_editor::Note::StretchCapped`).
+    pub fn settle(&mut self, t: Transient) {
+        self.stretch = self
+            .stretch
+            .min(stark_engine::max_stretch(&self.projected(t)));
+        self.smoothing = self.smoothing.clamp(0.0, 1.0);
+    }
+
+    /// `config` put on over the hand's `live` tune — **the one door every swap comes
+    /// through**, in both directions (§18.1.8): a preset row clicked, a quick slot
+    /// borrowed, and the same slot handing the displaced brush back.
+    ///
+    /// Two things happen here and they are the two that must not be written twice.
+    /// The **color stays the hand's**: a tool is everything but it, and a swap that
+    /// changed the color on the way in — or handed the old one back on the way out —
+    /// would make the color a property of which key was last pressed. And the pair is
+    /// [`settle`](Self::settle)d, because a stored brush is a brush from some other
+    /// session: a preset saved at a small size and worn at a large one is exactly the
+    /// combination the stretch frontier bites on.
+    ///
+    /// A free function over both halves rather than a method, because a swap replaces
+    /// the whole pair and there is no `self` left of the brush being displaced.
+    pub fn worn_over(
+        config: BrushConfig,
+        tune: Transient,
+        live: Transient,
+    ) -> (BrushConfig, Transient) {
+        let mut config = config;
+        let tune = Transient {
+            color: live.color,
+            ..tune
+        };
+        config.settle(tune);
+        (config, tune)
     }
 
     /// The effect's **opacity** — the ceiling on what a saturated stroke does
@@ -643,5 +722,137 @@ mod tests {
             "the strength's 1 is load-bearing (§6.13)",
         );
         assert_eq!(c.params(Transient { flow: 0.4, ..t }).effect.flow(), 0.4);
+    }
+
+    /// **No brush this app can hold is one the renderer refuses to draw.**
+    ///
+    /// The chrome's half of the bargain the engine keeps in
+    /// `dynamics::tests::the_offered_stretch_is_always_drawable`: whatever a caller
+    /// hands [`BrushConfig::settle`], what leaves it has a drawable tip. Swept over
+    /// the app's own ranges — [`MIN_RADIUS`]..[`MAX_RADIUS`] and the stretch knob's
+    /// full travel — including the combinations no slider can reach but a *drag* or a
+    /// stored preset can, since those are the writers the clamp is positioned to
+    /// catch.
+    ///
+    /// Checked against `max_tip_reach` rather than against `max_stretch`, so it fails
+    /// if the clamp is ever quietly rewritten in terms of itself.
+    #[test]
+    fn the_clamp_leaves_every_brush_drawable() {
+        for size in [MIN_RADIUS, 30.0, 110.0, 250.0, MAX_RADIUS] {
+            for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
+                for bleed in [0.0, 0.6] {
+                    let t = Transient {
+                        size,
+                        ..Transient::default()
+                    };
+                    let mut b = BrushConfig {
+                        stretch: knob,
+                        effect: BrushEffectType::Wet,
+                        ..BrushConfig::default()
+                    };
+                    b.wet.bleed = bleed;
+                    b.settle(t);
+                    let reach = t.size * BrushParams::elongation(b.stretch);
+                    assert!(
+                        reach <= stark_engine::max_tip_reach(&b.params(t)),
+                        "size {size}, stretch {knob}, bleed {bleed}: a reach of \
+                         {reach} survived the clamp",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The clamp costs a brush nothing it did not have to give: every stretch a tip
+    /// short of the region's reach can carry survives it untouched. A clamp that
+    /// over-reached would pass the test above by flattening every brush to no stretch
+    /// at all.
+    ///
+    /// The sizes stop at 400 rather than at [`MAX_RADIUS`] because the frontier is
+    /// near 492 (`stark_engine::max_tip_reach` over an elongation of 8) and a test
+    /// pinning where it falls would be a test about the region arithmetic wearing
+    /// this one's name.
+    #[test]
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "the gate leaves MAX_STRETCH exactly alone, which is the whole claim"
+    )]
+    fn the_clamp_leaves_a_small_tip_alone() {
+        for size in [MIN_RADIUS, 30.0, 110.0, 250.0, 400.0] {
+            let t = Transient {
+                size,
+                ..Transient::default()
+            };
+            let mut b = BrushConfig {
+                stretch: BrushParams::MAX_STRETCH,
+                ..BrushConfig::default()
+            };
+            b.settle(t);
+            assert_eq!(
+                b.stretch,
+                BrushParams::MAX_STRETCH,
+                "a {size} px tip should keep the whole stretch range",
+            );
+        }
+    }
+
+    /// Settling twice says nothing the first did not — which is what lets the
+    /// projection run it again on a pair a door already settled
+    /// ([`BrushConfig::params`]).
+    #[test]
+    fn settling_is_idempotent() {
+        let t = Transient {
+            size: MAX_RADIUS,
+            ..Transient::default()
+        };
+        let mut once = BrushConfig {
+            stretch: BrushParams::MAX_STRETCH,
+            smoothing: 4.0,
+            ..BrushConfig::default()
+        };
+        once.settle(t);
+        let mut twice = once;
+        twice.settle(t);
+        assert_eq!(once, twice);
+        assert_eq!(once.smoothing, 1.0, "a stored feel is clamped to its range");
+    }
+
+    /// The one door every swap comes through: the tool arrives whole, the **color
+    /// does not** — it is the hand's (§18.1.8) — and what lands is settled, since a
+    /// preset saved on a small tip and worn on a large one is exactly the pair the
+    /// stretch frontier bites on.
+    #[test]
+    fn a_swap_keeps_the_hands_color_and_lands_drawable() {
+        let live = Transient {
+            size: 12.0,
+            flow: 0.5,
+            color: [0.9, 0.1, 0.2],
+        };
+        let saved = Transient {
+            size: MAX_RADIUS,
+            flow: 2.0,
+            color: [0.0, 0.0, 0.0],
+        };
+        let (config, tune) = BrushConfig::worn_over(
+            BrushConfig {
+                stretch: BrushParams::MAX_STRETCH,
+                smoothing: 0.5,
+                ..BrushConfig::default()
+            },
+            saved,
+            live,
+        );
+        assert_eq!(tune.color, live.color, "the color is not the tool's");
+        assert_eq!(
+            (tune.size, tune.flow),
+            (saved.size, saved.flow),
+            "…and everything else in the tune is",
+        );
+        assert!(
+            config.stretch < BrushParams::MAX_STRETCH,
+            "a tip this large cannot carry the whole stretch range",
+        );
+        let reach = tune.size * BrushParams::elongation(config.stretch);
+        assert!(reach <= stark_engine::max_tip_reach(&config.params(tune)));
     }
 }

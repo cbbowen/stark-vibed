@@ -68,27 +68,30 @@ pub struct Controls {
     _subscriptions: Vec<Subscription>,
 }
 
-/// **Every editor track runs 0..=1**, whatever the parameter under it does.
+/// **Every track in this chrome that shows a brush runs 0..=1**, whatever the
+/// parameter under it does.
 ///
 /// A `SliderState`'s bounds are set when it is built and there is no way to move them
-/// on a live one — and two of the editor's ranges are not constants: the Flow row's top
-/// is the in-force effect's, and the Stretch row's is what the renderer can draw at the
-/// size in hand (`stark_ui::brush_editor::ModRow::range`). So the trough is a fraction
-/// and the *view* maps it, which is the shape `Canvas::turn` already had for the
-/// panel's knobs. The figure beside the track prints the real value, so none of this
-/// reaches the artist.
+/// on a live one — and three of the ranges are not constants: the editor's Flow row and
+/// the Brush shelf's Flow dial both end where the in-force effect does
+/// (`BrushConfig::max_flow`), and the Stretch row's top is what the renderer can draw
+/// at the size in hand (`stark_ui::brush_editor::ModRow::range`). So the trough is a
+/// fraction and the *view* maps it. The figure beside the track prints the real value,
+/// so none of this reaches the artist.
 const EDITOR_STEP: f32 = 0.005;
 
 impl Controls {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Canvas>) -> Self {
         let mut subs = Vec::new();
+        // Fractions, like the editor's tracks below and for the same reason: the Flow
+        // knob's top is the in-force effect's (`panel::Knob::range`) and a
+        // `SliderState`'s bounds are fixed when it is built.
         let knobs = KNOBS.map(|knob| {
-            let (lo, hi) = knob.range();
-            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(knob.step()));
+            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(knob.step()));
             subs.push(
                 cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
                     if let SliderEvent::Change(v) = event {
-                        this.turn(knob, fraction(v.start(), lo, hi), cx);
+                        this.turn(knob, v.start(), cx);
                     }
                 }),
             );
@@ -291,12 +294,14 @@ impl Controls {
     }
 
     /// The state behind one of the brush editor's modulatable tracks.
+    ///
+    /// An index rather than a search: the roster is derived from the enum's own order
+    /// (`stark_ui::brush_editor::MOD_ROWS`), so `ModRow::index` names a seat that
+    /// exists by construction. It used to be a `position().expect()`, which a tenth
+    /// row wired up and left out of the roster would have turned into a panic on the
+    /// frame the dialog opened.
     pub fn editor_mod(&self, row: ModRow) -> &Entity<SliderState> {
-        let i = brush_editor::MOD_ROWS
-            .iter()
-            .position(|r| *r == row)
-            .expect("every modulatable row has a state");
-        &self.editor_mods[i]
+        &self.editor_mods[row.index()]
     }
 
     /// The state behind one of its plain ones.
@@ -333,7 +338,8 @@ impl Controls {
             mapping,
         } = what;
         for (knob, state) in KNOBS.iter().zip(&self.knobs) {
-            settle(state, knob.read(brush), window, cx);
+            let (lo, hi) = knob.range(brush);
+            settle(state, fraction(knob.read(brush), lo, hi), window, cx);
         }
         if let Some(o) = obs {
             for (dial, state) in DIALS.iter().zip(&self.dials) {

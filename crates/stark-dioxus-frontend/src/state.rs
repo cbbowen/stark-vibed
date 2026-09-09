@@ -1578,7 +1578,11 @@ pub fn update_brush(
     let mut config = *state.brush.peek();
     let mut tune = *state.transient.peek();
     f(&mut config, &mut tune);
-    hold_the_tip_drawable(&mut config, tune);
+    // The one door the live brush goes through, so this is where it is held to a brush
+    // the renderer will actually draw (`BrushConfig::settle`, §6.2): the stretch has to
+    // give where the size the drag just moved cannot carry it, and the size has four
+    // writers a clamp on the stretch control would be bypassed by.
+    config.settle(tune);
     dispatch(
         state,
         ViewCommand::SetBrush {
@@ -1592,118 +1596,9 @@ pub fn update_brush(
     sig.set(tune);
 }
 
-/// Keep the brush inside what the renderer can actually draw: a tip reaching
-/// further than one region holds loses its lift, deposit and charge *entirely*
-/// (§6.2), so the stretch is brought down to the most this size can carry
-/// (`stark_engine::max_stretch`).
-///
-/// **Here rather than on the stretch slider**, which is the only reason this is a
-/// function and not a line in the brush editor. The reach is a product of two
-/// knobs, and `size` has four writers — the panel slider, the editor's own row, the
-/// tuning drag (`input::Tune`) and the `[`/`]` keys — so a clamp living with the
-/// *stretch* control would be silently bypassed by all four. This is the one door
-/// the live brush goes through, which makes "no brush the app holds is undrawable"
-/// a property of the seam instead of a rule four call sites have to remember.
-///
-/// **The stretch yields, never the size.** Size is what the artist reaches for and
-/// what three of those four writers exist to move; a size drag that quietly shrank
-/// itself would be a fight. Stretch giving way is visible instead — the slider's own
-/// top moves with it, and the editor says why (`ModRow::range`).
-fn hold_the_tip_drawable(
-    b: &mut stark_ui::brush_config::BrushConfig,
-    t: stark_ui::brush_config::Transient,
-) {
-    b.stretch = b.stretch.min(stark_engine::max_stretch(&b.params(t)));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::document::BrushParams;
-
-    /// **No brush this app can hold is one the renderer refuses to draw.**
-    ///
-    /// `stark-dioxus-frontend`'s half of the bargain the engine keeps in
-    /// `dynamics::tests::the_offered_stretch_is_always_drawable`: whatever a caller
-    /// asks `update_brush` for, what reaches the engine has a drawable tip. Swept
-    /// over the app's own ranges — `brush_config::{MIN_RADIUS, MAX_RADIUS}` and the
-    /// stretch knob's full travel — including the combinations no slider can reach
-    /// but a *drag* or a preset can, since those are the writers the clamp is
-    /// positioned to catch.
-    ///
-    /// Checked against `max_tip_reach` rather than against `max_stretch`, so it
-    /// fails if the clamp is ever quietly rewritten in terms of itself.
-    #[test]
-    fn the_clamp_leaves_every_brush_drawable() {
-        for size in [
-            stark_ui::brush_config::MIN_RADIUS,
-            30.0,
-            110.0,
-            250.0,
-            stark_ui::brush_config::MAX_RADIUS,
-        ] {
-            for knob in [0.0, 0.25, 0.5, 0.75, BrushParams::MAX_STRETCH] {
-                for bleed in [0.0, 0.6] {
-                    let t = stark_ui::brush_config::Transient {
-                        size,
-                        ..Default::default()
-                    };
-                    let mut b = stark_ui::brush_config::BrushConfig {
-                        stretch: knob,
-                        ..Default::default()
-                    };
-                    b.effect = stark_ui::brush_config::BrushEffectType::Wet;
-                    b.wet.bleed = bleed;
-                    hold_the_tip_drawable(&mut b, t);
-                    let reach = t.size * BrushParams::elongation(b.stretch);
-                    assert!(
-                        reach <= stark_engine::max_tip_reach(&b.params(t)),
-                        "size {size}, stretch {knob}, bleed {bleed}: a reach of \
-                         {reach} survived the clamp",
-                    );
-                }
-            }
-        }
-    }
-
-    /// The clamp costs a brush nothing it did not have to give: every stretch a tip
-    /// short of the region's reach can carry survives it untouched. A clamp that
-    /// over-reached would pass the test above by flattening every brush to no
-    /// stretch at all.
-    ///
-    /// The sizes stop at 400 rather than at `MAX_RADIUS` because the frontier is
-    /// near 492 (`stark_engine::max_tip_reach` over an elongation of 8) and a test
-    /// pinning where it falls would be a test about the region arithmetic wearing
-    /// this one's name.
-    #[test]
-    #[expect(
-        clippy::float_cmp_const,
-        reason = "the gate leaves MAX_STRETCH exactly alone, which is the whole claim"
-    )]
-    fn the_clamp_leaves_a_small_tip_alone() {
-        for size in [
-            stark_ui::brush_config::MIN_RADIUS,
-            30.0,
-            110.0,
-            250.0,
-            400.0,
-        ] {
-            let t = stark_ui::brush_config::Transient {
-                size,
-                ..Default::default()
-            };
-            let mut b = stark_ui::brush_config::BrushConfig {
-                stretch: BrushParams::MAX_STRETCH,
-                ..Default::default()
-            };
-            hold_the_tip_drawable(&mut b, t);
-            assert_eq!(
-                b.stretch,
-                BrushParams::MAX_STRETCH,
-                "a {size} px tip should keep the whole stretch range",
-            );
-        }
-    }
 
     /// The claim [`AppState`] is a newtype for: the handle is **one pointer**,
     /// whatever [`Signals`] grows to hold.
