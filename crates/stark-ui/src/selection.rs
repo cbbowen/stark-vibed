@@ -100,6 +100,79 @@ pub fn override_for(action: ShapeAction, mods: Mods) -> Option<ShapeAction> {
 mod tests {
     use super::*;
 
+    /// **Every selecting tool has a chip.** Both rows are hand-written arrays, and
+    /// nothing but this stops a fourth tool or a fifth mode from being reachable by
+    /// no control at all in either frontend.
+    ///
+    /// The device, here and below, is a `match` that maps each variant to its place
+    /// in a local roster: a new variant fails to compile, the arm added to answer
+    /// that has to name an index, an index the roster does not have panics, and a
+    /// roster that grew forces the row to grow with it. Each of those three is one of
+    /// the ways the loop could otherwise be satisfied without the row being right.
+    #[test]
+    fn every_selecting_tool_has_a_chip() {
+        const ALL: [Tool; 4] = [
+            Tool::Brush,
+            Tool::SelectRect,
+            Tool::SelectEllipse,
+            Tool::SelectLasso,
+        ];
+        for tool in ALL {
+            let k = match tool {
+                Tool::Brush => 0,
+                Tool::SelectRect => 1,
+                Tool::SelectEllipse => 2,
+                Tool::SelectLasso => 3,
+            };
+            assert_eq!(ALL[k], tool);
+            assert_eq!(
+                SHAPE_TOOLS.contains(&tool),
+                tool.is_selection(),
+                "{tool:?} is in the row but does not select, or the other way round"
+            );
+        }
+        assert_eq!(
+            SHAPE_TOOLS.len(),
+            ALL.iter().filter(|t| t.is_selection()).count()
+        );
+    }
+
+    /// And every combine mode has one, plus the fill that is the row's fifth answer.
+    #[test]
+    fn every_combine_mode_has_a_chip() {
+        const ALL: [SelectionMode; 4] = [
+            SelectionMode::Replace,
+            SelectionMode::Union,
+            SelectionMode::Subtract,
+            SelectionMode::Intersect,
+        ];
+        for mode in ALL {
+            let k = match mode {
+                SelectionMode::Replace => 0,
+                SelectionMode::Union => 1,
+                SelectionMode::Subtract => 2,
+                SelectionMode::Intersect => 3,
+            };
+            assert_eq!(ALL[k], mode);
+            assert!(
+                SHAPE_ACTIONS.contains(&ShapeAction::Select(mode)),
+                "{mode:?} has no chip"
+            );
+        }
+        // Fill is the one action that is not a mode, and it is exhaustive here for
+        // the same reason: a third `ShapeAction` is a build error.
+        for action in SHAPE_ACTIONS {
+            match action {
+                ShapeAction::Select(_) | ShapeAction::Fill => {}
+            }
+        }
+        assert_eq!(
+            SHAPE_ACTIONS.len(),
+            ALL.len() + 1,
+            "a mode left off the row"
+        );
+    }
+
     /// Arming the tool already in hand puts it down. The row's escape hatch.
     #[test]
     fn pressing_the_lit_tool_hands_the_canvas_back() {

@@ -33,20 +33,73 @@
 /// tremor on a pen does not move anything.
 const GRAB_SLOP: f32 = 4.0;
 
-/// A press on a row, which may or may not have become a drag yet.
+/// One row's vertical box, with the identity the element it was measured from wears.
 ///
-/// Boxes carry the identity string off the element they were measured from (the
-/// `data-` attribute `platform::layer_boxes` and its neighbours read), so a panel
-/// matches them to its rows **by identity**. Matched by position a row would be measured through its neighbour's
-/// box in silence.
+/// The identity is what a panel matches its rows by; matched by position a row would
+/// be measured through its neighbour's box in silence.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RowBox {
+    /// The `data-` attribute `platform::layer_boxes` and its neighbours read.
+    pub key: String,
+    pub top: f32,
+    pub height: f32,
+}
+
+impl From<(String, f32, f32)> for RowBox {
+    /// The shape a DOM measurement arrives in — `(key, top, height)`, named here so
+    /// that is the last place the order has to be remembered.
+    fn from((key, top, height): (String, f32, f32)) -> Self {
+        Self { key, top, height }
+    }
+}
+
+/// A row's vertical box: where it starts and how tall it is.
+///
+/// **Never where it ends.** [`Slide::resolve`] adds the height to get the bottom, so
+/// a caller handing it `(top, bottom)` got geometry off by a height and no type error
+/// for it. The field name is the check two `f32`s in a tuple could not be.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Extent {
+    pub top: f32,
+    pub height: f32,
+}
+
+impl Extent {
+    /// The row's lower edge.
+    pub fn bottom(&self) -> f32 {
+        self.top + self.height
+    }
+
+    /// The line a row yields at — the leading edge of the travelling block has to
+    /// cross it (§14.8).
+    fn center(&self) -> f32 {
+        self.top + self.height * 0.5
+    }
+}
+
+/// Where a press on a row has got to.
+///
+/// Three states rather than two flags, which could spell a fourth: a grab that is
+/// both spent and live is a dropped row still following the pointer, and it was ruled
+/// out only by `spend` happening to clear one of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Phase {
+    /// Pressed, not travelled: still a click.
+    Pressed,
+    /// Travelled: a drag, and it stays one.
+    Dragging,
+    /// Landed, or ended by a press that is no longer down. **Terminal.**
+    Spent,
+}
+
+/// A press on a row, which may or may not have become a drag yet.
 #[derive(Clone, PartialEq)]
 pub struct Grab {
     key: String,
-    boxes: Vec<(String, f32, f32)>,
+    boxes: Vec<RowBox>,
     anchor: (f32, f32),
     pointer: (f32, f32),
-    live: bool,
-    over: bool,
+    phase: Phase,
 }
 
 impl Grab {
@@ -56,14 +109,17 @@ impl Grab {
     /// Measured on the press rather than on the first move, so the list is described
     /// as it stood when the hand closed on it and no pointer travel is lost waiting
     /// for a measurement.
-    pub fn begin(key: impl Into<String>, boxes: Vec<(String, f32, f32)>, at: (f32, f32)) -> Self {
+    pub fn begin(
+        key: impl Into<String>,
+        boxes: impl IntoIterator<Item = impl Into<RowBox>>,
+        at: (f32, f32),
+    ) -> Self {
         Self {
             key: key.into(),
-            boxes,
+            boxes: boxes.into_iter().map(Into::into).collect(),
             anchor: at,
             pointer: at,
-            live: false,
-            over: false,
+            phase: Phase::Pressed,
         }
     }
 
@@ -85,7 +141,7 @@ impl Grab {
     /// every caller to check, because a caller that forgets leaves a panel only a
     /// close and reopen can put right.
     pub fn track(&mut self, at: (f32, f32), held: bool) {
-        if self.over {
+        if self.phase == Phase::Spent {
             return;
         }
         if !held {
@@ -94,13 +150,15 @@ impl Grab {
         }
         self.pointer = at;
         let (dx, dy) = self.delta();
-        self.live |= dx.abs().max(dy.abs()) > GRAB_SLOP;
+        if dx.abs().max(dy.abs()) > GRAB_SLOP {
+            self.phase = Phase::Dragging;
+        }
     }
 
     /// Whether the pointer has said this is a drag. A press that has not travelled
     /// yet draws nothing and lands nothing.
     pub fn live(&self) -> bool {
-        self.live
+        self.phase == Phase::Dragging
     }
 
     /// Whether the gesture is finished — landed, or ended by a press that is no longer
@@ -108,7 +166,7 @@ impl Grab {
     /// click behind it arrives (see the frontend's `claimed`), which is what a panel checks this
     /// for: there is no gesture here to feed.
     pub fn over(&self) -> bool {
-        self.over
+        self.phase == Phase::Spent
     }
 
     /// How far the hand has taken the row, in px.
@@ -120,21 +178,21 @@ impl Grab {
     }
 
     /// Where the grabbed row sits among `keys` — the panel's rows in the order it
-    /// draws them — and every row's `(top, height)`.
+    /// draws them — and every row's extent.
     ///
     /// `None` if any row was not measured, or if the grabbed row is no longer in the
     /// list. That is what a list changing under the pointer looks like, and the
     /// answer to it is to draw at rest and land nothing rather than to act on
     /// geometry describing a list that is gone.
-    pub fn resolve(&self, keys: &[String]) -> Option<(usize, Vec<(f32, f32)>)> {
+    pub fn resolve(&self, keys: &[String]) -> Option<(usize, Vec<Extent>)> {
         let at = keys.iter().position(|k| *k == self.key)?;
         let boxes = keys
             .iter()
             .map(|k| {
-                self.boxes
-                    .iter()
-                    .find(|(m, ..)| m == k)
-                    .map(|&(_, top, h)| (top, h))
+                self.boxes.iter().find(|b| b.key == *k).map(|b| Extent {
+                    top: b.top,
+                    height: b.height,
+                })
             })
             .collect::<Option<Vec<_>>>()?;
         Some((at, boxes))
@@ -155,8 +213,7 @@ impl Grab {
     ///
     /// [`track`]: Self::track
     pub fn spend(&mut self) {
-        self.live = false;
-        self.over = true;
+        self.phase = Phase::Spent;
     }
 }
 
@@ -187,16 +244,16 @@ impl Slide {
     ///
     /// `None` if the block is not a range of `boxes`, which a caller that measured
     /// the list it is talking about cannot produce.
-    pub fn resolve(boxes: &[(f32, f32)], block: (usize, usize), dy: f32) -> Option<Self> {
+    pub fn resolve(boxes: &[Extent], block: (usize, usize), dy: f32) -> Option<Self> {
         let (start, end) = block;
         if start > end || end >= boxes.len() {
             return None;
         }
-        let (block_top, block_bottom) = (boxes[start].0, boxes[end].0 + boxes[end].1);
+        let (block_top, block_bottom) = (boxes[start].top, boxes[end].bottom());
         // The space between two rows, so a slide closes the slot exactly rather than
         // leaving a seam the width of a margin.
         let gap_px = if boxes.len() > 1 {
-            (boxes[1].0 - boxes[0].0 - boxes[0].1).max(0.0)
+            (boxes[1].top - boxes[0].bottom()).max(0.0)
         } else {
             0.0
         };
@@ -204,7 +261,7 @@ impl Slide {
         let gap = (0..boxes.len())
             .filter(|i| *i < start || *i > end)
             .filter(|&k| {
-                let center = boxes[k].0 + boxes[k].1 * 0.5;
+                let center = boxes[k].center();
                 if k < start {
                     top >= center
                 } else {
@@ -289,8 +346,13 @@ mod tests {
     const STEP: f32 = H + GAP;
     const FIRST: f32 = 100.0;
 
-    fn boxes(n: usize) -> Vec<(f32, f32)> {
-        (0..n).map(|i| (FIRST + i as f32 * STEP, H)).collect()
+    fn boxes(n: usize) -> Vec<Extent> {
+        (0..n)
+            .map(|i| Extent {
+                top: FIRST + i as f32 * STEP,
+                height: H,
+            })
+            .collect()
     }
 
     /// One row moved down past its neighbours, a row at a time.
@@ -348,7 +410,7 @@ mod tests {
     /// A press that has not travelled is not a drag, and a drag that has stays one.
     #[test]
     fn a_press_becomes_a_drag_once_and_stays_one() {
-        let mut g = Grab::begin("a", vec![], (0.0, 0.0));
+        let mut g = Grab::begin("a", Vec::<RowBox>::new(), (0.0, 0.0));
         assert!(!g.live());
         g.track((0.0, GRAB_SLOP), true);
         assert!(!g.live(), "the slop itself is still a click");
@@ -365,7 +427,7 @@ mod tests {
     /// already been moved in, with no gesture left that could put it down.
     #[test]
     fn a_spent_grab_is_not_re_armed_by_the_hover_behind_it() {
-        let mut g = Grab::begin("a", vec![], (0.0, 0.0));
+        let mut g = Grab::begin("a", Vec::<RowBox>::new(), (0.0, 0.0));
         g.track((0.0, 8.0 * GRAB_SLOP), true);
         assert!(g.live());
         g.spend();
@@ -387,7 +449,7 @@ mod tests {
     /// than steering it, because a drop is committed by a release and this is not one.
     #[test]
     fn a_move_with_nothing_held_ends_the_gesture() {
-        let mut g = Grab::begin("a", vec![], (0.0, 0.0));
+        let mut g = Grab::begin("a", Vec::<RowBox>::new(), (0.0, 0.0));
         g.track((0.0, 8.0 * GRAB_SLOP), true);
         assert!(g.live());
         g.track((0.0, 9.0 * GRAB_SLOP), false);
@@ -398,7 +460,7 @@ mod tests {
     /// A row the press never measured abandons the gesture rather than guessing.
     #[test]
     fn an_unmeasured_row_abandons_the_gesture() {
-        let measured = vec![("a".into(), 0.0, H), ("b".into(), STEP, H)];
+        let measured: Vec<RowBox> = vec![("a".into(), 0.0, H).into(), ("b".into(), STEP, H).into()];
         let g = Grab::begin("a", measured, (0.0, 0.0));
         let keys = |ks: &[&str]| ks.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(g.resolve(&keys(&["a", "b"])).map(|(i, _)| i), Some(0));
@@ -407,5 +469,69 @@ mod tests {
             g.resolve(&keys(&["b"])).is_none(),
             "the grabbed row is gone"
         );
+    }
+
+    /// **A block dragged up**, which is where the leading-edge rule and the index
+    /// remap meet: going up the block's *top* leads, and the rows it passes are the
+    /// ones before it — the half of `motion`'s arithmetic the downward cases never
+    /// reach.
+    #[test]
+    fn a_block_dragged_up_takes_the_rows_it_passed_with_it() {
+        let b = boxes(5);
+        // Rows 2 and 3 travel two rows up. `gap == 0` is the block landing above
+        // every row that stayed put.
+        let s = Slide::resolve(&b, (2, 3), -2.0 * STEP).expect("resolves");
+        assert_eq!(s.gap, 0);
+        assert!((s.step - 2.0 * STEP).abs() < 0.01, "{}", s.step);
+        // The rows above it open up by exactly the slot, and the one below never
+        // moved — nothing between the block and the end of the list was crossed.
+        assert_eq!(s.motion(0, (0.0, 0.0)).shift, (0.0, s.step), "opened");
+        assert_eq!(s.motion(1, (0.0, 0.0)).shift, (0.0, s.step), "opened");
+        assert!(s.motion(2, (0.0, -40.0)).lifted);
+        assert!(s.motion(3, (0.0, -40.0)).lifted);
+        assert_eq!(s.motion(4, (0.0, 0.0)).shift, (0.0, 0.0), "never crossed");
+    }
+
+    /// **The two halves of a slide have to describe the same list.** `motion` draws
+    /// the rows shifting and `gap` commits the order; nothing in the code makes them
+    /// agree, and a disagreement is a row that animates into a slot it does not land
+    /// in. Exhaustive over every list up to six rows, every contiguous block in it,
+    /// and every travel that reaches past either end.
+    #[test]
+    fn what_the_shifts_draw_is_the_order_the_gap_commits() {
+        for n in 1..=6usize {
+            let b = boxes(n);
+            for start in 0..n {
+                for end in start..n {
+                    for k in -(n as i32)..=(n as i32) {
+                        let dy = k as f32 * STEP;
+                        let s = Slide::resolve(&b, (start, end), dy).expect("resolves");
+
+                        // Where each row is drawn: its own top plus whatever the
+                        // block's shift or its own slide puts it at.
+                        let mut drawn: Vec<(usize, f32)> = (0..n)
+                            .map(|i| {
+                                let m = s.motion(i, (0.0, dy));
+                                (i, b[i].top + m.shift.1)
+                            })
+                            .collect();
+                        drawn.sort_by(|a, c| a.1.total_cmp(&c.1));
+                        let drawn: Vec<usize> = drawn.into_iter().map(|(i, _)| i).collect();
+
+                        // And where `gap` says they land: the block taken out and put
+                        // back after that many of the rows that stayed.
+                        let mut rest: Vec<usize> =
+                            (0..n).filter(|i| *i < start || *i > end).collect();
+                        let block: Vec<usize> = (start..=end).collect();
+                        let mut committed = rest.split_off(s.gap);
+                        let mut landed = rest;
+                        landed.extend(block);
+                        landed.append(&mut committed);
+
+                        assert_eq!(drawn, landed, "n={n} block=({start},{end}) dy={k} rows",);
+                    }
+                }
+            }
+        }
     }
 }

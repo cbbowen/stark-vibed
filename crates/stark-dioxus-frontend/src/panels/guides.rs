@@ -1394,7 +1394,12 @@ mod tests {
     #[test]
     fn a_row_lands_where_it_was_dropped() {
         const H: f32 = 20.0;
-        let boxes: Vec<(f32, f32)> = (0..4).map(|i| (i as f32 * H, H)).collect();
+        let boxes: Vec<stark_ui::reorder::Extent> = (0..4)
+            .map(|i| stark_ui::reorder::Extent {
+                top: i as f32 * H,
+                height: H,
+            })
+            .collect();
         let order = |from: usize, dy: f32| {
             let slide = Slide::resolve(&boxes, (from, from), dy).expect("resolves");
             let mut list: Vec<usize> = (0..4).collect();
