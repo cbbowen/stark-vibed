@@ -18,10 +18,12 @@
 //! here either. That is [`reorder`](crate::reorder), shared with the guide list; what is
 //! here is the part only a *tree* has.
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::HashSet;
 
 use crate::reorder::{Grab, Motion, Slide};
 use stark_engine::LayerInfo;
+use stark_engine::command::DocCommand;
 use stark_model::document::LayerId;
 use stark_model::document::Place;
 
@@ -39,22 +41,88 @@ pub struct Row {
     pub info: LayerInfo,
     /// Collapsed away under a group whose triangle is shut.
     pub hidden: bool,
-    /// Shut, for a group. Meaningless for a layer that carries nothing.
+    /// Shut, **and it is a group**. A frontend keeps its folded ids in a set nothing
+    /// prunes, so a layer that was a group, was folded, then had its last member
+    /// released is still in that set — and a row that reported the fold anyway would
+    /// leave every use site to remember `&& is_group`. It is spent here instead.
     pub collapsed: bool,
-    /// The layer directly below this one *in its own stack* — what Carry would put
-    /// it on, and the layer a clip would be bounded by. `None` at the foot of a
-    /// stack, where there is nothing to be carried by.
-    pub carry_onto: Option<LayerId>,
+    /// The layer directly below this one *in its own stack* — what [`carry`] would
+    /// put it on, and the layer a clip would be bounded by (§14.4). `None` at the
+    /// foot of a stack, where there is nothing to be carried by.
+    ///
+    /// [`carry`]: Self::carry
+    carry_onto: Option<LayerId>,
     /// The group this layer is in, and what carries *that* — between them, where
-    /// Release would put it: out of the group and directly above it. `None` for a
+    /// [`release`] would put it: out of the group and directly above it. `None` for a
     /// layer that is not in a group, which is the only state Release has nothing to
     /// say about.
-    pub release_to: Option<(LayerId, Option<LayerId>)>,
+    ///
+    /// [`release`]: Self::release
+    release_to: Option<(LayerId, Option<LayerId>)>,
     /// Whether Remove would leave a document behind. Removing a group takes what it
     /// carries with it (§14.2), so the floor is not "more than one row" but
     /// "something would be left" — which for a row deep in a group is nearly always
     /// true, and for the sole top-level stack never is.
     pub removable: bool,
+}
+
+impl Row {
+    /// Put this layer on the one below it in its own stack, so the two become a
+    /// group (§14.2, §14.8). `None` at the foot of a stack, and where the row below
+    /// is a filter, which never carries (§21.2).
+    ///
+    /// The command whole rather than the layer to carry onto: what a frontend does
+    /// with the answer is spell §14.2's rule, and two frontends spelling it apart is
+    /// two apps. A row with nothing to carry onto simply has no button.
+    pub fn carry(&self) -> Option<DocCommand> {
+        Some(DocCommand::MoveLayer {
+            id: self.info.id,
+            carrier: Some(self.carry_onto?),
+            at: Place::Top,
+        })
+    }
+
+    /// Lift this layer out of the group it is in, to directly above it (§14.2).
+    /// `None` for a layer that is in no group.
+    pub fn release(&self) -> Option<DocCommand> {
+        let (group, outer) = self.release_to?;
+        Some(DocCommand::MoveLayer {
+            id: self.info.id,
+            carrier: outer,
+            at: Place::Above(group),
+        })
+    }
+
+    /// Whether the blend picker has anything to say about this layer.
+    ///
+    /// Blend and clip go inert together with nothing beneath them (§14.4.3), and
+    /// **they part on a filter** — the one row where a shared condition would be
+    /// wrong (§21.4). A mode describes how a *source* meets a backdrop and a filter
+    /// has no source; a clip says where the layer may land, a question a filter still
+    /// answers by being confined to the coverage it read.
+    ///
+    /// They also read *different predicates* for the half they share, which is the
+    /// second thing the split brings out. A blend is positional, so it takes
+    /// [`has_backdrop`]. A filter's clip is inert exactly where the **filter** is, so
+    /// it takes [`has_underlay`] — the renderer's own answer (§21.2), which counts a
+    /// carrier's base as beneath what it carries. `has_backdrop` says no there, and
+    /// that arrangement is "filter just this layer": the chip would be dead in the one
+    /// place it is reached for most.
+    ///
+    /// [`has_backdrop`]: LayerInfo::has_backdrop
+    /// [`has_underlay`]: LayerInfo::has_underlay
+    pub fn blend_inert(&self) -> bool {
+        !self.info.has_backdrop || self.info.filter.is_some()
+    }
+
+    /// Whether the clip chip has anything to say about this layer — see
+    /// [`blend_inert`](Self::blend_inert) for why the two are not one answer.
+    pub fn clip_inert(&self) -> bool {
+        match self.info.filter {
+            Some(_) => !self.info.has_underlay,
+            None => !self.info.has_backdrop,
+        }
+    }
 }
 
 /// What to call a layer that has never been named: which one it was, or what
@@ -79,25 +147,57 @@ pub struct Row {
 /// wears), and putting it in the *string* costs twice over: this label is also a
 /// rename field's placeholder, so opening the field on a frame would show a corner mark
 /// inside a text box. The row draws the glyph, which leaves the placeholder a name.
-pub fn layer_label(info: &LayerInfo) -> String {
+///
+/// Borrowed wherever there is something to borrow, which is every arm but one: four
+/// of the five answers are already text somebody else owns, and only "Layer 7" has to
+/// be built. This runs once per row per frame on both frontends.
+pub fn layer_label(info: &LayerInfo) -> Cow<'_, str> {
     match (&info.name, info.matte.as_ref(), info.filter.as_ref()) {
-        (Some(name), ..) => name.to_string(),
+        (Some(name), ..) => Cow::Borrowed(&**name),
         // The two kinds of matte, told apart by the one thing that differs:
         // a frame is defined against a rect, a background against none (§15.5).
-        (None, Some(m), _) if m.rect.is_some() => "Frame".to_string(),
-        (None, Some(_), _) => "Background".to_string(),
+        (None, Some(m), _) if m.rect.is_some() => Cow::Borrowed("Frame"),
+        (None, Some(_), _) => Cow::Borrowed("Background"),
         // The *filter's* own name rather than the word "Filter" (§21.6): unlike a
         // frame, of which there is only ever one kind, which filter this is is the
         // first thing to know about the row — and a stack of three rows all reading
         // "Filter" would say nothing at all.
-        (None, _, Some(f)) => f.label().to_string(),
+        (None, _, Some(f)) => Cow::Borrowed(f.label()),
         // Every paint layer is minted with a number, so the second arm is dead —
         // written out rather than a panic, because a row's label is not worth taking
         // the panel down over.
         (None, None, None) => match info.number {
-            Some(n) => format!("Layer {n}"),
-            None => "Layer".to_string(),
+            Some(n) => Cow::Owned(format!("Layer {n}")),
+            None => Cow::Borrowed("Layer"),
         },
+    }
+}
+
+/// The rows as a panel **shows** them: top of the document first, with whatever a
+/// shut group folded away left out.
+///
+/// Not the order [`rows`] hands back, which is the engine's — bottom-to-top, a
+/// group's base *before* what it carries — and the difference is not cosmetic.
+/// [`landing`]'s reach-back over a dragged block, its depth bounds and its walk up to
+/// an ancestor are all written against *this* order. While both lists were `&[Row]`,
+/// the only thing between a correct drag and a silently inverted one was a line each
+/// frontend wrote for itself — one had written it, the other had not yet grown a drag
+/// to need it. A type is what makes the turn unskippable.
+///
+/// Borrows rather than clones. A `LayerInfo` carries a name, a filter with a
+/// gradient's stops and a matte with another, and this list is rebuilt every frame.
+pub struct Display<'a>(Vec<&'a Row>);
+
+/// The displayed rows of `rows`, in the order a panel draws them — see [`Display`].
+pub fn display(rows: &[Row]) -> Display<'_> {
+    Display(rows.iter().rev().filter(|r| !r.hidden).collect())
+}
+
+impl<'a> std::ops::Deref for Display<'a> {
+    type Target = [&'a Row];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -118,9 +218,13 @@ pub struct Landing {
     pub depth: usize,
     /// Where the block is drawn while in flight.
     pub shift: (f32, f32),
-    /// The move this commits to (§14.8).
+    /// Whose stack the drop lands in — public because the panel asks a question of
+    /// it that is not the move: which row to *mark* as the one taking the drop, and
+    /// which fold to open so a layer dropped into a shut group does not vanish.
     pub carrier: Option<LayerId>,
-    pub at: Place,
+    /// Where in that stack. Read through [`move_layer`](Self::move_layer), which is
+    /// the only thing this and `carrier` are together.
+    at: Place,
     /// Whether that move would change anything. A drag that ends where it began must
     /// not spend an undo step saying so — in a tree that means the same slot *and*
     /// the same depth, since one seam can hold several depths.
@@ -131,6 +235,19 @@ impl Landing {
     /// How to draw the row at display index `i`.
     pub fn motion(&self, i: usize) -> Motion {
         self.slide.motion(i, self.shift)
+    }
+
+    /// What dropping `id` here commits (§14.8) — the whole command, since `carrier`
+    /// and `at` are literally [`MoveLayer`]'s own fields minus the id, and a frontend
+    /// reassembling them is a frontend that can reassemble them differently.
+    ///
+    /// [`MoveLayer`]: DocCommand::MoveLayer
+    pub fn move_layer(&self, id: LayerId) -> DocCommand {
+        DocCommand::MoveLayer {
+            id,
+            carrier: self.carrier,
+            at: self.at,
+        }
     }
 }
 
@@ -162,7 +279,7 @@ impl Landing {
 /// travelling block is not one. And the landing is total — every depth in the range
 /// names exactly one real position, because the ancestors of the row below the gap
 /// cover every depth beneath it without a gap.
-pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
+pub fn landing(display: &Display<'_>, drag: &Grab) -> Option<Landing> {
     // Each row's box, found by the id it wears rather than by where it sits.
     let keys: Vec<String> = display.iter().map(|r| r.info.id.to_string()).collect();
     let (from, boxes) = drag.resolve(&keys)?;
@@ -181,8 +298,8 @@ pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
         .filter(|i| *i < start || *i > from)
         .collect();
 
-    let above = gap.checked_sub(1).map(|k| &display[rest[k]]);
-    let below = rest.get(gap).map(|&k| &display[k]);
+    let above = gap.checked_sub(1).map(|k| display[rest[k]]);
+    let below = rest.get(gap).map(|&k| display[k]);
     let low = above.map_or(0, |r| r.info.depth);
     // One past the row below is that row *carrying* the drop — unless the row below
     // is a filter, which never carries (§21.2): the engine would refuse the move, so
@@ -205,7 +322,7 @@ pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
             // is the *foot* of its carried stack — unless those rows are folded away,
             // in which case this seam stands for the whole subtree and a drop belongs
             // on top of it, where it will be when the fold opens.
-            if b.collapsed && b.info.is_group {
+            if b.collapsed {
                 Place::Top
             } else {
                 Place::Bottom
@@ -217,7 +334,15 @@ pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
             let mut anchor = b;
             while anchor.info.depth > depth {
                 let up = anchor.info.carrier?;
-                anchor = display.iter().find(|r| r.info.id == up)?;
+                let outer = *display.iter().find(|r| r.info.id == up)?;
+                // A carrier chain that does not climb is not a tree, and this walk is
+                // over a list the *caller* supplies: a peer's edit landing half-applied
+                // (§17), or a fixture. Refusing it is what makes the loop finite —
+                // strictly decreasing depth bounds it by the deepest row there is.
+                if outer.info.depth >= anchor.info.depth {
+                    return None;
+                }
+                anchor = outer;
             }
             (anchor.info.carrier, Place::Above(anchor.info.id))
         }
@@ -250,58 +375,68 @@ pub fn landing(display: &[Row], drag: &Grab) -> Option<Landing> {
 /// they are computed here rather than per row: the nearest sibling *below* a layer is
 /// simply the last one seen in its stack, and a group's base is walked before
 /// anything it carries, so what carries the group is known by the time a member asks.
-/// Both are one map lookup per row rather than a scan of the list per row.
+///
+/// One `Vec` answers both, indexed by depth — a stack of cursors, which is how the
+/// walk that *builds* this list keeps its place (`observe`'s `Cursor`). Entry `d` is
+/// the last row seen at depth `d`, **truncated on
+/// the way out** of a subtree, and that truncation is what makes it the current row's
+/// ancestor chain as well as its stack: the sibling below is entry `depth`, and what
+/// carries this row's group is entry `depth - 2`. Leaving a stack means passing
+/// through a shallower row, which drops everything deeper than it.
+///
+/// So the whole projection is one pass with two hash maps and a per-row scan of the
+/// list fewer than it was — which is worth the paragraph because it runs on both
+/// frontends' render path, once a frame.
 pub fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
     let mut out = Vec::with_capacity(layers.len());
     let mut shut_at: Option<usize> = None;
-    // The topmost layer seen so far in each stack, and whether it is a filter —
-    // which the Carry answer below has to know, since a filter never carries
-    // (§21.2) and a button that spelled a move the engine refuses would be a lie.
-    let mut top_of: HashMap<Option<LayerId>, (LayerId, bool)> = HashMap::new();
-    // What carries each layer, for the rows that will ask about their group.
-    let mut outer_of: HashMap<LayerId, Option<LayerId>> = HashMap::new();
-    for info in layers {
+    // The last row seen at each depth, and whether it is a filter — which the Carry
+    // answer below has to know, since a filter never carries (§21.2) and a button
+    // that spelled a move the engine refuses would be a lie.
+    let mut seen: Vec<(LayerId, bool)> = Vec::new();
+    // Removing a row takes everything it carries with it, so the only row that would
+    // empty the document is the base of a *sole* top-level stack — which is the first
+    // row, the engine's order putting a base before what it carries.
+    let roots = layers.iter().filter(|l| l.depth == 0).count();
+    for (i, info) in layers.iter().enumerate() {
         if shut_at.is_some_and(|d| info.depth <= d) {
             shut_at = None;
         }
         let hidden = shut_at.is_some();
-        let collapsed = collapsed.contains(&info.id);
-        if !hidden && collapsed && info.is_group {
+        let collapsed = collapsed.contains(&info.id) && info.is_group;
+        if !hidden && collapsed {
             shut_at = Some(info.depth);
         }
-        let carry_onto = top_of
-            .get(&info.carrier)
+        let carry_onto = seen
+            .get(info.depth)
             .and_then(|&(id, filter)| (!filter).then_some(id));
-        let release_to = info
-            .carrier
-            .map(|group| (group, outer_of.get(&group).copied().flatten()));
-        // After the reads, so neither answer is the layer itself. A collapsed group's
-        // members are still in their stack, so this happens for hidden rows too.
-        top_of.insert(info.carrier, (info.id, info.filter.is_some()));
-        outer_of.insert(info.id, info.carrier);
+        let release_to = info.carrier.map(|group| {
+            // The group sits at `depth - 1`, so what carries *it* is one further down.
+            // `get` rather than an index: this reads a list the engine supplies, and a
+            // panel is not the place to report a malformed one with a panic.
+            let outer = info
+                .depth
+                .checked_sub(2)
+                .and_then(|d| seen.get(d))
+                .map(|&(id, _)| id);
+            (group, outer)
+        });
+        // After the reads, so neither answer is the layer itself, and the truncation
+        // is what drops a subtree this row has just walked back out of. A collapsed
+        // group's members are still in their stack, so this happens for hidden rows
+        // too.
+        seen.truncate(info.depth);
+        seen.push((info.id, info.filter.is_some()));
         out.push(Row {
             info: info.clone(),
             hidden,
             collapsed,
             carry_onto,
             release_to,
-            removable: subtree_len(layers, info.id) < layers.len(),
+            removable: !(i == 0 && roots == 1),
         });
     }
     out
-}
-
-/// How many rows `id` takes with it if removed: itself, plus everything it carries
-/// at any depth. Those are exactly the rows that follow it while deeper than it.
-fn subtree_len(layers: &[LayerInfo], id: LayerId) -> usize {
-    let Some(at) = layers.iter().position(|l| l.id == id) else {
-        return 0;
-    };
-    let depth = layers[at].depth;
-    1 + layers[at + 1..]
-        .iter()
-        .take_while(|l| l.depth > depth)
-        .count()
 }
 
 #[cfg(test)]
@@ -357,7 +492,7 @@ mod tests {
     ///
     /// `shut` names the groups whose carried rows are folded away — the one thing a
     /// display list cannot show, since those rows are not in it.
-    fn display(spec: &[(u64, usize)], shut: &[u64]) -> Vec<Row> {
+    fn drawn(spec: &[(u64, usize)], shut: &[u64]) -> Vec<Row> {
         spec.iter()
             .enumerate()
             .map(|(i, &(id, depth))| {
@@ -381,6 +516,15 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// The fixture's rows as the [`Display`] [`landing`] takes.
+    ///
+    /// The identity rather than [`display`]'s reversal, because [`drawn`] writes them
+    /// in display order already — which is what lets a spec be read as the picture.
+    /// That [`display`] produces this order from the engine's is its own test below.
+    fn shown(rows: &[Row]) -> Display<'_> {
+        Display(rows.iter().collect())
     }
 
     /// Every row's box, in display order — with `missing` left out, which is what a
@@ -411,7 +555,7 @@ mod tests {
 
     /// A flat document: three layers in the root stack, drawn top-first.
     fn flat() -> Vec<Row> {
-        display(&[(1, 0), (2, 0), (3, 0)], &[])
+        drawn(&[(1, 0), (2, 0), (3, 0)], &[])
     }
 
     /// Dragging a row past its neighbour reorders it within its own stack — the move
@@ -420,7 +564,7 @@ mod tests {
     #[test]
     fn a_drag_down_lands_above_the_row_it_passed() {
         let rows = flat();
-        let l = landing(&rows, &drag(&rows, 1, 0.0, STEP)).expect("resolves");
+        let l = landing(&shown(&rows), &drag(&rows, 1, 0.0, STEP)).expect("resolves");
         assert_eq!((l.carrier, l.at), (None, Place::Above(LayerId::solo(3))));
         assert!(!l.inert);
     }
@@ -430,7 +574,7 @@ mod tests {
     #[test]
     fn a_drag_to_the_bottom_lands_under_everything() {
         let rows = flat();
-        let l = landing(&rows, &drag(&rows, 1, 0.0, 3.0 * STEP)).expect("resolves");
+        let l = landing(&shown(&rows), &drag(&rows, 1, 0.0, 3.0 * STEP)).expect("resolves");
         assert_eq!((l.carrier, l.at), (None, Place::Bottom));
     }
 
@@ -440,8 +584,8 @@ mod tests {
     #[test]
     fn a_drag_to_the_right_is_what_carries() {
         let rows = flat();
-        let straight = landing(&rows, &drag(&rows, 1, 0.0, STEP)).expect("resolves");
-        let over = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        let straight = landing(&shown(&rows), &drag(&rows, 1, 0.0, STEP)).expect("resolves");
+        let over = landing(&shown(&rows), &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
         assert_eq!(straight.depth, 0);
         assert_eq!(
             (over.carrier, over.at),
@@ -463,7 +607,7 @@ mod tests {
             .expect("row 3 is displayed")
             .info
             .filter = Some(Filter::Color(ColorAdjust::NEUTRAL));
-        let over = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        let over = landing(&shown(&rows), &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
         assert_eq!(
             (over.depth, over.carrier, over.at),
             (0, None, Place::Above(LayerId::solo(3))),
@@ -477,7 +621,7 @@ mod tests {
     fn a_drag_that_goes_nowhere_is_inert() {
         let rows = flat();
         for dy in [0.0, 6.0, -6.0] {
-            let l = landing(&rows, &drag(&rows, 2, 0.0, dy)).expect("resolves");
+            let l = landing(&shown(&rows), &drag(&rows, 2, 0.0, dy)).expect("resolves");
             assert!(l.inert, "a {dy}px drag stayed in the same slot");
         }
     }
@@ -493,7 +637,7 @@ mod tests {
     ///   A  6        depth 0
     /// ```
     fn nested() -> Vec<Row> {
-        display(&[(1, 0), (2, 0), (3, 2), (4, 1), (5, 0), (6, 0)], &[])
+        drawn(&[(1, 0), (2, 0), (3, 2), (4, 1), (5, 0), (6, 0)], &[])
     }
 
     /// **One seam, four meanings.** The gap between `B` and `K` is where four
@@ -508,7 +652,8 @@ mod tests {
     fn one_seam_can_mean_four_different_stacks() {
         let rows = nested();
         let landed = |steps: f32| {
-            let l = landing(&rows, &drag(&rows, 1, steps * INDENT as f32, STEP)).expect("resolves");
+            let l = landing(&shown(&rows), &drag(&rows, 1, steps * INDENT as f32, STEP))
+                .expect("resolves");
             (l.depth, l.carrier, l.at)
         };
         assert_eq!(
@@ -538,7 +683,7 @@ mod tests {
     #[test]
     fn dragging_a_group_lifts_everything_it_carries() {
         let rows = nested();
-        let l = landing(&rows, &drag(&rows, 5, 0.0, STEP)).expect("resolves");
+        let l = landing(&shown(&rows), &drag(&rows, 5, 0.0, STEP)).expect("resolves");
         assert_eq!(l.slide.block, (2, 4), "K, H and G move together");
         // Three rows and the gaps between them, so the slot opened is the size of what
         // is going into it.
@@ -561,7 +706,7 @@ mod tests {
         for steps in 0..8 {
             for dy in [-3.0 * STEP, -STEP, 0.0, STEP, 3.0 * STEP] {
                 let d = drag(&rows, 5, steps as f32 * INDENT as f32, dy);
-                let l = landing(&rows, &d).expect("resolves");
+                let l = landing(&shown(&rows), &d).expect("resolves");
                 assert!(
                     !l.carrier.is_some_and(|c| block.contains(&c)),
                     "landed inside its own subtree at {steps} indents, {dy}px"
@@ -576,10 +721,10 @@ mod tests {
     /// drop then does, so the answer is looked at rather than inferred.
     #[test]
     fn a_folded_group_takes_the_drop_on_top() {
-        let rows = display(&[(1, 0), (2, 0), (3, 0), (4, 0)], &[3]);
+        let rows = drawn(&[(1, 0), (2, 0), (3, 0), (4, 0)], &[3]);
         // One row down puts the seam directly over the shut group, and one indent
         // right is the depth that goes into it.
-        let l = landing(&rows, &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
+        let l = landing(&shown(&rows), &drag(&rows, 1, INDENT as f32, STEP)).expect("resolves");
         assert_eq!((l.carrier, l.at), (Some(LayerId::solo(3)), Place::Top));
     }
 
@@ -591,7 +736,7 @@ mod tests {
     fn a_row_that_was_not_measured_abandons_the_drag() {
         let rows = flat();
         let d = drag_of(boxes(&rows, Some(2)), &rows, 1, 0.0, STEP);
-        assert!(landing(&rows, &d).is_none());
+        assert!(landing(&shown(&rows), &d).is_none());
     }
 
     /// The four things a row can be called, and the order they win in. What the
@@ -633,5 +778,165 @@ mod tests {
             layer_label(&filter),
             Filter::Color(ColorAdjust::NEUTRAL).label()
         );
+    }
+
+    /// A document in the order the engine keeps it, for the projection's own tests:
+    /// bottom-to-top, a group's base before what it carries. The reverse of what
+    /// [`drawn`] takes, deliberately — that difference is what [`display`] is.
+    fn projected(spec: &[(u64, usize, Option<u64>, bool)]) -> Vec<LayerInfo> {
+        spec.iter()
+            .map(|&(id, depth, carrier, group)| info(id, depth, carrier, group))
+            .collect()
+    }
+
+    /// [`display`] is the one place the panel's order is stated: top of the document
+    /// first, folded rows gone. The engine's order is the other way round and a base
+    /// comes *before* what it carries, so a list handed to [`landing`] unturned is not
+    /// a wrong drop — it is the mirror of the right one, and the whole gesture is
+    /// stated against it.
+    #[test]
+    fn the_displayed_order_is_the_engines_turned_over() {
+        // A group `1` carrying `2`, then a root `3` above them both.
+        let layers = projected(&[
+            (1, 0, None, true),
+            (2, 1, Some(1), false),
+            (3, 0, None, false),
+        ]);
+        let rows = rows(&layers, &HashSet::from([LayerId::solo(1)]));
+        let shown: Vec<u64> = display(&rows)
+            .iter()
+            .map(|r| r.info.id.action.lamport)
+            .collect();
+        assert_eq!(
+            shown,
+            [3, 1],
+            "top of the document first, the fold's member gone"
+        );
+    }
+
+    /// A carrier chain that does not climb is refused rather than walked forever.
+    /// The list is the *caller's* — a peer's edit can land half-applied mid-drag
+    /// (§17) — so the loop cannot be left to trust that it terminates.
+    #[test]
+    fn a_carrier_chain_that_does_not_climb_lands_nothing() {
+        let mut rows = drawn(&[(1, 0), (2, 0), (3, 1), (4, 0)], &[]);
+        // Row 3 sits at depth 1 and says row 3 carries it — a cycle of one, which is
+        // a tree no walk up can leave.
+        rows[2].info.carrier = Some(LayerId::solo(3));
+        // Straight down onto the seam over row 3, at the root's own depth: the arm
+        // that walks up to an ancestor.
+        let d = drag(&rows, 1, 0.0, STEP);
+        assert!(landing(&shown(&rows), &d).is_none());
+    }
+
+    /// **A fold is a group's.** A frontend's set of shut ids is not pruned when a
+    /// group's last member is released, so the id of a layer that is no longer a group
+    /// is still in it — and a row that reported that fold would hide whatever it sat
+    /// under and take a drop on top of itself.
+    #[test]
+    fn a_stale_fold_is_not_a_fold() {
+        // Two roots, neither carrying anything, and both ids shut.
+        let layers = projected(&[(1, 0, None, false), (2, 0, None, false)]);
+        let shut = HashSet::from([LayerId::solo(1), LayerId::solo(2)]);
+        let rows = rows(&layers, &shut);
+        assert!(rows.iter().all(|r| !r.collapsed), "neither is a group");
+        assert!(
+            rows.iter().all(|r| !r.hidden),
+            "so neither folds anything away"
+        );
+    }
+
+    /// Blend and clip part on a filter, and the halves they share read different
+    /// predicates — the case that is easy to get backwards, since three of the four
+    /// answers agree (§21.4).
+    #[test]
+    fn a_filters_clip_outlives_its_blend() {
+        use stark_model::document::{ColorAdjust, Filter};
+
+        let row = |filter: bool, backdrop: bool, underlay: bool| Row {
+            info: LayerInfo {
+                filter: filter.then_some(Filter::Color(ColorAdjust::NEUTRAL)),
+                has_backdrop: backdrop,
+                has_underlay: underlay,
+                ..info(1, 0, None, false)
+            },
+            hidden: false,
+            collapsed: false,
+            carry_onto: None,
+            release_to: None,
+            removable: true,
+        };
+
+        // A paint layer: one answer, twice, off `has_backdrop`.
+        let paint = row(false, true, true);
+        assert!(!paint.blend_inert() && !paint.clip_inert());
+        let floor = row(false, false, false);
+        assert!(floor.blend_inert() && floor.clip_inert());
+
+        // A filter: the mode has no source to describe wherever it sits, and the clip
+        // follows the *renderer* instead — which counts a carrier's base as beneath
+        // what it carries, so "filter just this layer" keeps its chip.
+        let filter = row(true, true, true);
+        assert!(filter.blend_inert(), "a filter has no source to blend");
+        assert!(!filter.clip_inert(), "but it still says where it may land");
+        let alone = row(true, false, true);
+        assert!(
+            !alone.clip_inert(),
+            "has_backdrop would have killed the chip in the one place it is used most"
+        );
+        let empty = row(true, true, false);
+        assert!(empty.clip_inert(), "nothing under it in its own stack");
+    }
+
+    /// Carry and Release come out of the row whole. Each was spelled twice — once per
+    /// frontend — out of ingredients the row handed over untyped, and §14.2's rule is
+    /// not a thing two apps get to answer separately.
+    #[test]
+    fn carry_and_release_are_the_move_they_mean() {
+        // A group `1` carrying `2` and `3`, with a root `4` above the lot.
+        let layers = projected(&[
+            (1, 0, None, true),
+            (2, 1, Some(1), false),
+            (3, 1, Some(1), false),
+            (4, 0, None, false),
+        ]);
+        let rows = rows(&layers, &HashSet::new());
+
+        // `3` sits on `2` inside the group; carrying it makes the two a group of
+        // their own, on top of what `2` already carries (nothing).
+        assert!(matches!(
+            rows[2].carry(),
+            Some(DocCommand::MoveLayer { id, carrier: Some(c), at: Place::Top })
+                if id == LayerId::solo(3) && c == LayerId::solo(2)
+        ));
+        // Releasing it puts it in the document's own stack, directly above the group.
+        assert!(matches!(
+            rows[2].release(),
+            Some(DocCommand::MoveLayer { id, carrier: None, at: Place::Above(g) })
+                if id == LayerId::solo(3) && g == LayerId::solo(1)
+        ));
+        // The foot of the document's stack has nothing under it to be carried by, and
+        // nothing to be released from.
+        assert!(rows[0].carry().is_none() && rows[0].release().is_none());
+        // And the bottom of a group is in one without sitting on anything.
+        assert!(rows[1].carry().is_none() && rows[1].release().is_some());
+    }
+
+    /// What Remove would leave behind, over a document whose only root is a group:
+    /// the base takes everything with it, and every row inside it leaves that base.
+    #[test]
+    fn only_the_base_of_a_sole_stack_refuses_to_go() {
+        let layers = projected(&[(1, 0, None, true), (2, 1, Some(1), false)]);
+        let sole = rows(&layers, &HashSet::new());
+        assert!(!sole[0].removable, "removing it would empty the document");
+        assert!(sole[1].removable);
+
+        // A second root, and the first becomes removable — what is left is a document.
+        let layers = projected(&[
+            (1, 0, None, true),
+            (2, 1, Some(1), false),
+            (3, 0, None, false),
+        ]);
+        assert!(rows(&layers, &HashSet::new()).iter().all(|r| r.removable));
     }
 }

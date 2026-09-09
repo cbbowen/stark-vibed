@@ -51,9 +51,9 @@ use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::LayerId;
-use stark_model::document::{BlendMode, DRAGO_K_RANGE, Place};
+use stark_model::document::{BlendMode, DRAGO_K_RANGE};
 use stark_ui::commands::Command;
-use stark_ui::layer_tree::{INDENT, Row, landing, rows};
+use stark_ui::layer_tree::{self, INDENT, Row, landing, rows};
 use stark_ui::reorder::{Grab, Motion};
 
 /// Add a paint layer where the artist is working (`Command::AddLayer`): into
@@ -138,11 +138,13 @@ pub fn LayerPanel() -> Element {
     }));
     let shut = collapsed.read().clone();
     let rows = rows(&layers, &shut);
-    // The rows as the panel actually shows them: top of the document first, with
-    // whatever is folded away left out. One list, used three times — to draw, to
-    // resolve the drag against, and to say what a drop means — so the gesture is
-    // reasoning about the same picture the user is looking at.
-    let display: Vec<Row> = rows.iter().rev().filter(|r| !r.hidden).cloned().collect();
+    // The rows as the panel actually shows them (`layer_tree::display`): top of the
+    // document first, with whatever is folded away left out. One list, used three
+    // times — to draw, to resolve the drag against, and to say what a drop means — so
+    // the gesture is reasoning about the same picture the user is looking at. The
+    // turn itself is the tree's, because `landing` is written against it and a list
+    // handed over unturned resolves to the mirror image of the right drop.
+    let display = layer_tree::display(&rows);
     // The drag preview, resolved to numbers here rather than read by each row: the
     // rows that do not move do not re-render as the pointer travels, and the drop's
     // meaning is decided in one place instead of once per row.
@@ -156,28 +158,14 @@ pub fn LayerPanel() -> Element {
     // and cannot be read again after a handler has moved it. The id is all most
     // handlers here want, and it still copies.
     let selected_id = selected.as_ref().map(|l| l.id);
+
     // Whether the two relational controls have anything to say about the selected
-    // layer. **They part on a filter**, which is the one row where a shared condition
-    // for the two would be wrong (§21.4): a mode describes how a *source*
-    // meets a backdrop and a filter has no source, while a clip says where the layer
-    // may land — a question a filter still answers, by being confined to the coverage
-    // it read. Both go inert with nothing beneath them (§14.4.3), which is the half
-    // they do share.
-    //
-    // And they read *different predicates* for that half, which is the second thing
-    // the split brings out. A blend is positional, so it takes `has_backdrop`. A
-    // filter's clip is inert exactly where the **filter** is, so it takes
-    // `has_underlay` — the renderer's own answer (§21.2), which counts a carrier's
-    // base as beneath what it carries. `has_backdrop` would say no there, and that
-    // arrangement is "filter just this layer": the chip would be dead in the one
-    // place it is reached for most.
-    let blend_inert = selected
-        .as_ref()
-        .is_none_or(|l| !l.has_backdrop || l.filter.is_some());
-    let clip_inert = selected.as_ref().is_none_or(|l| match l.filter {
-        Some(_) => !l.has_underlay,
-        None => !l.has_backdrop,
-    });
+    // layer. The row answers both (`layer_tree::Row::blend_inert`), and carries the
+    // argument for why they part on a filter. Off `rows` rather than `display`, so a
+    // selection folded away under a shut group still answers.
+    let picked = selected_id.and_then(|id| rows.iter().find(|r| r.info.id == id));
+    let blend_inert = picked.is_none_or(Row::blend_inert);
+    let clip_inert = picked.is_none_or(Row::clip_inert);
     rsx! {
         if let Some(l) = selected {
             div { class: "slider-row marked",
@@ -364,7 +352,7 @@ pub fn LayerPanel() -> Element {
         // stack, drawn — and the ground under a picture is not the ground the
         // controls stand on.
         div { class: "layer-tree",
-            for (i, row) in display.iter().enumerate() {
+            for (i, row) in display.iter().copied().enumerate() {
                 LayerRow {
                     // Keyed by the layer, so a reorder *moves* the row's element instead
                     // of repainting whichever row now stands in that position. Positional
@@ -418,11 +406,7 @@ pub fn LayerPanel() -> Element {
                         if let Some(c) = l.carrier {
                             collapsed.write().remove(&c);
                         }
-                        dispatch(state, DocCommand::MoveLayer {
-                            id,
-                            carrier: l.carrier,
-                            at: l.at,
-                        });
+                        dispatch(state, l.move_layer(id));
                     },
                 }
             }
@@ -617,8 +601,11 @@ pub fn LayerRow(
     // acting on "the selected layer"; here each acts on the row it is drawn in, which
     // is the layer being talked about anyway — and the row already knows both answers,
     // so neither has an inapplicable state to sit in.
-    let carry_onto = row.carry_onto;
-    let release_to = row.release_to;
+    //
+    // The whole command each, not the ingredients: §14.2's rule is the tree's to
+    // spell, and it was spelled here and again in the native panel.
+    let carry = row.carry();
+    let release = row.release();
     let removable = row.removable;
     // The layer this one folds into, or `None` where no merge preserves the picture
     // (§14.11). Read straight off the projection rather than worked out here: whether a
@@ -686,18 +673,12 @@ pub fn LayerRow(
             // makes the offset safe to subtract: `carrier` is `Some` exactly when
             // `depth` is at least one, both being read off the same walk in
             // `observe()`, so the button never asks for a step the indent has not got.
-            if let Some((group, outer)) = release_to {
+            if let Some(release) = release {
                 button {
                     class: "layer-release",
                     style: "left:{indent - INDENT}px",
                     title: "Lift this layer out of its group",
-                    onclick: move |_| {
-                        dispatch(state, DocCommand::MoveLayer {
-                            id,
-                            carrier: outer,
-                            at: Place::Above(group),
-                        });
-                    },
+                    onclick: move |_| dispatch(state, release.clone()),
                     {icon(stark_ui::icons::RELEASE)}
                 }
             }
@@ -758,17 +739,11 @@ pub fn LayerRow(
                 // indent, each drawn the way the row's own indent is about to move.
                 // They are the only pair in the panel drawn as one picture mirrored,
                 // which is what makes a move and its undo readable as such.
-                if let Some(onto) = carry_onto {
+                if let Some(carry) = carry {
                     button {
                         class: "layer-carry",
                         title: "Put this layer on the one below it \u{2014} they become a group",
-                        onclick: move |_| {
-                            dispatch(state, DocCommand::MoveLayer {
-                                id,
-                                carrier: Some(onto),
-                                at: Place::Top,
-                            });
-                        },
+                        onclick: move |_| dispatch(state, carry.clone()),
                         {icon(stark_ui::icons::CARRY)}
                     }
                 } else {
