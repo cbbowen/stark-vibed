@@ -1503,6 +1503,16 @@ the exit criterion is an act, not a diff.
   describe one reach three ways; the fence and the four patches are the bar's own,
   being settings rather than nameable acts.
 
+  It also cost one line that was owed before any of this: **the canvas is focused
+  when the window opens.** A key event is dispatched down the path from the
+  *focused* node, and with nothing focused that path is the dispatch tree's root
+  alone — so this view's listeners were not on it, and every chord, plus every frame
+  the held modifiers owe, waited for a click on the canvas to happen first. The bar
+  is what made it visible: press Alt on a window nobody has touched and the frame it
+  asks for is never drawn, so the bar appears on the next pointer move instead and
+  stays up until the one after the release. Anything a field or a dialog focuses
+  later is a descendant of this view, so the path still runs through it.
+
   Two smaller things came with it. The cursor is the platform's **crosshair** rather
   than a drawn dropper — this toolkit offers no custom bitmap, and the crosshair is the
   fallback the web app's own rule already names behind its inline SVG. And

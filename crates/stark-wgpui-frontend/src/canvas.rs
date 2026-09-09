@@ -404,6 +404,15 @@ impl Canvas {
         // no `wgpui` one either.
         let tablet = Tablet::attach(&*window);
         let focus = cx.focus_handle();
+        // **Focused before the first frame, not on the first press.** A key event is
+        // dispatched down the path from the *focused* node, so with nothing focused
+        // that path is the tree's root alone and this view's listeners are not on it —
+        // every chord, and every frame the held modifiers owe (§18.0.2,
+        // [`modifiers`](Self::modifiers)), waited for a click on the canvas to happen
+        // first. Anything a field or a dialog focuses later is a descendant of this
+        // view, so the path still runs through it; this is only about the state before
+        // anything at all has been touched.
+        focus.focus(window, cx);
         let obs = renderer.as_ref().map(Renderer::observe);
         let controls = Controls::new(window, cx);
         Self {
