@@ -102,7 +102,9 @@ crates/
                    a drag makes of it, what switching families costs — what a shape
                    gesture is about to do to the selection or to the paint, what the
                    eyedropper's next sample is taken with and whether the chord that
-                   arms it is free to take the press at all, the canvas
+                   arms it is free to take the press at all, the whole of the
+                   quick-brush rack (§18.1.8) — what a digit holds, what a hold's
+                   release keeps and hands back, when two presses are a pick — the canvas
                    rectangles a frontend asks the document for, the layer tree's
                    arithmetic, the Oklab picker's gamut geometry, the icon catalog — which
                    glyph each control wears, and why — the view-navigation bindings, the

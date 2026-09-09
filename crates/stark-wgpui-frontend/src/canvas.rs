@@ -31,12 +31,13 @@ use stark_ui::keys::Mods;
 use stark_ui::nav;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
+use stark_ui::slots::{self, Grip};
 use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
     AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window, canvas, div, point,
-    prelude::*, px, rgb, wgpu_surface,
+    MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Subscription, Window,
+    canvas, div, point, prelude::*, px, rgb, wgpu_surface,
 };
 use wgpui_component::button::{Button, ButtonVariants};
 use wgpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
@@ -61,6 +62,7 @@ use crate::panel::{self, Knob, Region, Regions, Side};
 use crate::pick;
 use crate::render::{Preview, Renderer};
 use crate::select;
+use crate::slots::Rack;
 use crate::transform;
 
 /// How far one press of the bracket keys moves the brush's size, as a factor.
@@ -163,6 +165,14 @@ pub struct Canvas {
     renderer: Option<Renderer>,
     /// The tool in hand and the library it can be swapped for.
     brush: Brush,
+    /// The ten brushes under the hand (§18.1.8, `crate::slots`): what each digit
+    /// holds, what is holding one down, and whether the rack is pinned up.
+    ///
+    /// **Not a member of `hidden`**, though its pin is a Window-menu row like the
+    /// shelves': the rack floats over the painting rather than taking a column's room,
+    /// so pinning it moves nothing about where the canvas begins ([`Canvas::origin`]).
+    rack: Rack,
+    slot_regions: crate::slots::Regions,
     /// What the pointer is holding, if anything.
     held: Option<Held>,
     /// The widget layer's dials and picker for the panels (§11.1), and the
@@ -333,6 +343,14 @@ pub struct Canvas {
     /// session.
     editor: Option<Editor>,
     editor_regions: brush_editor::Regions,
+    /// The one event that can take a key away without ever sending its keyup: the
+    /// window losing focus. A hold left standing through an Alt+Tab would keep the
+    /// borrowed brush for the rest of the session, with the key that would give it back
+    /// now belonging to another window (§18.1.8) — the same class of bug the web
+    /// frontend rules out on `blur`.
+    ///
+    /// Held rather than detached because a `Subscription` unsubscribes when it drops.
+    _focus_out: Subscription,
     /// The shared session, if any, and where it stands (§12.4, `crate::collab`).
     ///
     /// One value rather than a phase beside a session, because they are one fact and a
@@ -401,11 +419,22 @@ impl Canvas {
         // view, so the path still runs through it; this is only about the state before
         // anything at all has been touched.
         focus.focus(window, cx);
+        // Read off the shipped library rather than restated: a preset declares the
+        // digit it ships on, so the rack and the panel's list are one table (§18.1.8).
+        let rack = Rack::stored(&brush.library);
         let obs = renderer.as_ref().map(Renderer::observe);
         let controls = Controls::new(window, cx);
+        // A hold has to end when the keyboard goes, and a window that has lost focus
+        // sends no keyup — so the release is hung off focus leaving this view. A field
+        // or dialog inside it is a descendant, and taking focus there is not leaving.
+        let focus_out = cx.on_focus_out(&focus, window, |this, _, _window, cx| {
+            this.release_slots(cx);
+        });
         Self {
             renderer,
             brush,
+            rack,
+            slot_regions: crate::slots::Regions::default(),
             held: None,
             controls,
             bindings: Bindings::default(),
@@ -459,6 +488,7 @@ impl Canvas {
             pen: Vec::new(),
             editor: None,
             editor_regions: brush_editor::Regions::default(),
+            _focus_out: focus_out,
             collab: Collab::default(),
         }
     }
@@ -640,6 +670,11 @@ impl Canvas {
             }
             Some(Region::Preset(i)) => {
                 if let Some(name) = self.brush.library.get(i).map(|e| e.name.clone()) {
+                    // A whole tool arriving from the library is what a held number is
+                    // listening for: it counts as the hold's change even where it moves
+                    // nothing, which is exactly the case of filling a slot with the
+                    // brush already in hand (§18.1.8, `slots::Held::claim`).
+                    self.claim_slot();
                     self.brush.wear(&name);
                     self.send_brush(cx);
                 }
@@ -657,6 +692,19 @@ impl Canvas {
                 return;
             }
             None => {}
+        }
+
+        // The quick-brush rack, which stands over the canvas rather than beside it
+        // (§18.1.8). Its rows record a rectangle only while it is **pinned**, so a
+        // transient rack is never asked and the stroke it is standing over is never
+        // swallowed — the same bargain the web frontend makes by granting the pointer
+        // in its stylesheet.
+        if let Some(region) = crate::slots::hit(&self.slot_regions, ev.position) {
+            let now = self.elapsed();
+            if self.rack.press(region, now) {
+                self.repaint(cx);
+            }
+            return;
         }
 
         // Neither column claimed it, so this is the canvas — and what a press on the
@@ -837,6 +885,12 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // Sliding off the rack's trash backs out of the hold that would empty the slot
+        // — what sliding off a button has always meant (§18.1.8). Asked before anything
+        // else, because a press on it took hold of nothing else.
+        if self.rack.moved(crate::slots::hit(&self.slot_regions, at)) {
+            self.repaint(cx);
+        }
         // [`open_canvas`](Self::open_canvas)'s reason, and one more: three of the arms
         // below want it, and a second reading is a second place to get it from.
         let origin = self.origin();
@@ -944,7 +998,17 @@ impl Canvas {
 
     /// End whatever the press took hold of — for a stroke, the one edge that commits
     /// an action (§4).
-    fn release(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+    fn release(&mut self, ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        // The rack's own click, and it is hit-tested afresh rather than remembered:
+        // holding the trash removes the row while the pen is still down, so a release
+        // has to land on whichever row has moved up under it — and pick nothing
+        // (`slots::Rack::release`).
+        if let Some(slot) = self
+            .rack
+            .release(crate::slots::hit(&self.slot_regions, ev.position))
+        {
+            self.pick_slot(slot, cx);
+        }
         self.release_at(cx);
     }
 
@@ -1806,7 +1870,7 @@ impl Canvas {
         if !self.folded.insert(what) {
             self.folded.remove(&what);
         }
-        crate::visibility::persist(&self.hidden, &self.folded);
+        crate::visibility::persist(&self.hidden, &self.folded, self.rack.pinned);
         self.repaint(cx);
     }
 
@@ -1850,7 +1914,7 @@ impl Canvas {
         if !self.hidden.insert(what) {
             self.hidden.remove(&what);
         }
-        crate::visibility::persist(&self.hidden, &self.folded);
+        crate::visibility::persist(&self.hidden, &self.folded, self.rack.pinned);
         self.repaint(cx);
     }
 
@@ -2324,6 +2388,7 @@ impl Canvas {
         match command {
             Command::TogglePanel(id) => Some(self.shown(VisibilityToggle::Panel(id))),
             Command::ToggleNavigator => Some(self.shown(VisibilityToggle::Navigator)),
+            Command::ToggleQuickBrushes => Some(self.rack.pinned),
             Command::ToggleHdr => Some(self.hdr.on),
             Command::SetPickScope(scope) => Some(self.sampler.scope == scope),
             _ => None,
@@ -2918,6 +2983,24 @@ impl Canvas {
             self.clear_hover_mark(cx);
             return;
         }
+        // The quick-brush rack, claimed before the chord table is consulted so a future
+        // row on a digit could never shadow it. A digit is not a chord: it is a *hold*,
+        // owning both edges of its key (§18.1.8); it is read off the physical row
+        // (`crate::keys::code_of`) so a layout that types something else there still has
+        // a rack; and **Shift is tolerated**, since on most layouts it is what the digit
+        // row types under and a hand resting on it should not silently disarm the rack.
+        // Alt is not: bare Alt is the eyedropper's, and only a bare digit is ours.
+        //
+        // `hold_slot` ignores a press while a hold is in flight, which is what makes the
+        // key's own auto-repeat harmless, and it is what counts a digit pressed twice in
+        // a beat (`slots::Taps`) — so nothing here keeps time.
+        if !stroke.mods.ctrl
+            && !stroke.mods.alt
+            && let Some(slot) = slots::of_code(stroke.code)
+        {
+            self.hold_slot(slot, Grip::Key, cx);
+            return;
+        }
         let Some(command) = self.bindings.lookup(&stroke) else {
             return;
         };
@@ -2958,9 +3041,18 @@ impl Canvas {
     /// A key-up is not a chord — the table answers presses — so this reaches nothing
     /// else. It exists because the modifier that makes a left drag a pan is a *key*,
     /// and a key that is never seen to rise stays down for good.
-    fn key_up(&mut self, ev: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<'_, Self>) {
-        if stark_ui::keys::is_space(&crate::keys::stroke(&ev.keystroke)) {
+    fn key_up(&mut self, ev: &KeyUpEvent, _window: &mut Window, cx: &mut Context<'_, Self>) {
+        let stroke = crate::keys::stroke(&ev.keystroke);
+        if stark_ui::keys::is_space(&stroke) {
             self.space = false;
+        }
+        // The rack's release, named by the slot it lets go of — so a hand rolling from 3
+        // to 4 and off 4 first does not end the hold 3 still has (§18.1.8). Unguarded by
+        // the focused-field test the keydown makes, and for the reason the web frontend
+        // leaves its own unguarded: focus can move between a press and its release, and
+        // a release that never arrived would leave the brush swapped.
+        if let Some(slot) = slots::of_code(stroke.code) {
+            self.release_slot(slot, Grip::Key, cx);
         }
     }
 
@@ -3024,6 +3116,7 @@ impl Canvas {
             Command::ToggleHdr => self.toggle_hdr(window, cx),
             Command::TogglePanel(id) => self.toggle_shelf(VisibilityToggle::Panel(id), cx),
             Command::ToggleNavigator => self.toggle_shelf(VisibilityToggle::Navigator, cx),
+            Command::ToggleQuickBrushes => self.pin_rack(!self.rack.pinned, cx),
             Command::AddPerspective => self.guide_act(guides::Region::Add, cx),
             // Setting, never cycling — so the chip the bar lights, the chord held
             // under the modifier that raised it and the palette row are one act.
@@ -3330,6 +3423,167 @@ impl Canvas {
         self.repaint(cx);
     }
 
+    // --- the quick-brush rack (§18.1.8, `crate::slots`) -----------------------
+    //
+    // The rule is `stark_ui::slots`', shared with the web frontend. What is here is
+    // what only this window can do: reach the live brush, keep the four values, and ask
+    // for a frame.
+
+    /// Put `config` on at `tune`, keeping the colour in hand, and tell the engine — the
+    /// one door every swap comes through, in both directions (`Brush::put_on`).
+    fn wear(
+        &mut self,
+        config: stark_ui::brush_config::BrushConfig,
+        tune: stark_ui::brush_config::Transient,
+        from: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.brush.put_on(config, tune, from);
+        self.send_brush(cx);
+    }
+
+    /// Begin holding `slot`.
+    ///
+    /// Ignored when a hold is already in flight, which is what makes it safe to call on
+    /// every keydown: a held key repeats at the system's rate and each repeat is another
+    /// keydown. The one exception is `Grip::displaces`' — an act over a posture.
+    ///
+    /// A slot with nothing in it still enters the hold rather than declining: the hold
+    /// *is* the arming, and holding an empty number while clicking a preset is how the
+    /// number gets its first brush.
+    fn hold_slot(&mut self, slot: usize, grip: Grip, cx: &mut Context<'_, Self>) {
+        if slot >= slots::COUNT {
+            return;
+        }
+        if let Some(held) = self.rack.held.as_ref() {
+            match held.displaced_by(grip) {
+                Some((slot, grip)) => self.release_slot(slot, grip, cx),
+                None => return,
+            }
+        }
+        // Counted below the guard above, so a held key's repeats are never presses; and
+        // for keys alone, since a tail is on the glass or off it and two dabs of it are
+        // two erase strokes.
+        let picked = grip == Grip::Key && self.rack.taps.press(slot, self.elapsed());
+        let mut hold = slots::Held::open(
+            slot,
+            grip,
+            self.brush.worn(),
+            self.brush.from.clone(),
+            picked,
+        );
+        // The slot's brush as it is *now* — its preset looked up live, at the slot's own
+        // size and flow. A binding the library cannot answer is an empty slot, and an
+        // empty slot is held without a swap.
+        let bound = self.rack.brushes[slot].clone();
+        if let Some(bound) = bound
+            && let Some((config, tune)) = slots::resolve(&self.brush.library, &bound)
+        {
+            self.wear(config, tune, Some(bound.preset), cx);
+            // Read back rather than assumed: what the app now holds is what the release
+            // has to compare against.
+            hold.enter(self.brush.tune);
+        }
+        self.rack.held = Some(hold);
+        self.repaint(cx);
+    }
+
+    /// End the hold on `slot`, if `grip` is what is holding it: keep whatever was
+    /// changed, and put the displaced brush back (`slots::Held::settle`).
+    fn release_slot(&mut self, slot: usize, grip: Grip, cx: &mut Context<'_, Self>) {
+        let Some(held) = self.rack.held.take_if(|held| held.ends_on(slot, grip)) else {
+            return;
+        };
+        let (kept, back) = held.settle(self.brush.tune, self.brush.from.as_deref());
+        if let Some(bound) = kept {
+            self.assign_slot(held.slot(), bound);
+        }
+        // Back through the door it left by, with the name it had: the hold borrowed the
+        // hand, and a preset chosen *during* it went to the slot, not to this. Or not
+        // back at all, for a double-tap's hold, whose whole point is that the swap
+        // stands.
+        match back {
+            Some((config, tune)) => self.wear(config, tune, held.base_from(), cx),
+            None => self.repaint(cx),
+        }
+    }
+
+    /// End whatever hold is in flight, whoever made it — for the one event that can take
+    /// a key away without ever sending its keyup: the window losing focus.
+    fn release_slots(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some((slot, grip)) = self.rack.held.as_ref().map(|h| (h.slot(), h.grip())) {
+            self.release_slot(slot, grip, cx);
+        }
+    }
+
+    /// Say that a whole tool was just put on deliberately, so a hold in flight keeps
+    /// what is live when it ends whether or not that moved anything.
+    ///
+    /// Raised by the two acts that mean *the artist chose a tool from a library* — a
+    /// preset row clicked and a rack row clicked — and by nothing else. A knob turned
+    /// needs no such word: it changed a value, and `settle`'s comparison sees that.
+    /// Never from inside [`wear`](Self::wear), which the hold uses itself in both
+    /// directions and which would therefore make every hold claim itself on the way in.
+    fn claim_slot(&mut self) {
+        if let Some(held) = self.rack.held.as_mut() {
+            held.claim();
+        }
+    }
+
+    /// Make `slot`'s brush the live one for good — what clicking a row of the pinned
+    /// rack does, and the only way to a slot for a hand with no keyboard under it.
+    ///
+    /// Tapping the number twice arrives at the same place by another route: the second
+    /// press enters a hold whose release keeps the slot's brush rather than putting the
+    /// displaced one back (`slots::Held`), so this is not called for it and there is no
+    /// second path to one outcome.
+    fn pick_slot(&mut self, slot: usize, cx: &mut Context<'_, Self>) {
+        let Some(bound) = self.rack.brushes.get(slot).cloned().flatten() else {
+            return;
+        };
+        // A binding the library cannot answer is an empty row, and an empty row's click
+        // puts on nothing.
+        let Some((config, tune)) = slots::resolve(&self.brush.library, &bound) else {
+            return;
+        };
+        self.claim_slot();
+        self.wear(config, tune, Some(bound.preset), cx);
+    }
+
+    /// Bind `slot` and write the rack down.
+    fn assign_slot(&mut self, slot: usize, bound: slots::QuickBrush) {
+        if slots::assign(&mut self.rack.brushes, slot, bound) {
+            slots::persist(&self.rack.brushes);
+        }
+    }
+
+    /// Empty `slot` and write the rack down — the trash on a pinned row, held until its
+    /// fill closes (`crate::slots`).
+    ///
+    /// The live brush is untouched, exactly as removing a preset would leave it: what
+    /// goes is the *binding*, not the tool.
+    fn clear_slot(&mut self, slot: usize, cx: &mut Context<'_, Self>) {
+        if slots::clear(&mut self.rack.brushes, slot) {
+            slots::persist(&self.rack.brushes);
+            self.repaint(cx);
+        }
+    }
+
+    /// Pin the rack up or put it away — the Window menu's act, and **the only thing that
+    /// writes `Rack::pinned`**, which is what makes durability structural rather than a
+    /// line the menu row has to remember.
+    ///
+    /// Pinning is not the same question as the rack being *up*: while a number is held
+    /// it shows regardless, and what the pin buys is a rack that stays and takes clicks.
+    fn pin_rack(&mut self, pinned: bool, cx: &mut Context<'_, Self>) {
+        if self.rack.pinned == pinned {
+            return;
+        }
+        self.rack.pinned = pinned;
+        crate::visibility::persist(&self.hidden, &self.folded, self.rack.pinned);
+        self.repaint(cx);
+    }
+
     /// Seconds since the window opened, for `InputSample::time` — which the stroke
     /// dynamics read as velocity and the timelapse (§8) replays against.
     fn elapsed(&self) -> f64 {
@@ -3428,6 +3682,17 @@ impl Render for Canvas {
         if self.collab.phase == collab::Phase::Shared {
             window.request_animation_frame();
         }
+        // The rack's one clock: the trash held down empties its slot when the fill it
+        // is drawn from closes, and both are read off this same elapsed value
+        // (`crate::slots::CLEAR_HOLD`) so what the disc shows and what happens cannot
+        // come apart. A frame is asked for while it runs, since nothing else moves.
+        let now = self.elapsed();
+        if let Some(slot) = self.rack.armed_out(now) {
+            self.clear_slot(slot, cx);
+        }
+        if self.rack.clearing() {
+            window.request_animation_frame();
+        }
         // The stylus first, before anything reads the document: what it reported since
         // the last frame is a press, a run of samples and a lift, and the engine has to
         // have them before `paint` below renders the answer — which is what keeps a
@@ -3475,6 +3740,7 @@ impl Render for Canvas {
         self.nav_regions.borrow_mut().clear();
         self.pick_regions.borrow_mut().clear();
         self.editor_regions.borrow_mut().clear();
+        self.slot_regions.borrow_mut().clear();
         // The miniature, before anything is built: it is a *second render* rather
         // than an element, and what it produces — the box it fills — is what the
         // shelf below is laid out to. Put away, its surface goes with it, which is
@@ -3770,6 +4036,24 @@ impl Render for Canvas {
             (mode.is_none() && pick_bar.is_none() && select::bar_mounted(self.obs.as_ref()))
                 .then(|| select::selection_bar(&self.bindings, &self.select_bar_regions));
 
+        // The quick-brush rack (§18.1.8), built only while there is one to draw — held
+        // by a key, or pinned up by the Window menu. Its rows are resolved against the
+        // library here, a slot being a name until something looks it up
+        // (`stark_ui::slots::rows`).
+        let rack = self.rack.up().then(|| {
+            let rows = stark_ui::slots::rows(stark_ui::slots::View {
+                rack: &self.rack.brushes,
+                library: &self.brush.library,
+                // A **key** hold alone: the pen's tail holds a slot for the length of
+                // every erase stroke, and a rack flying in and out of the corner of the
+                // eye on each one is noise answering a question nobody asked.
+                holding: self.rack.held.as_ref().filter(|h| h.by_key()),
+                live: self.brush.worn(),
+                in_hand: self.brush.from.as_deref(),
+            });
+            crate::slots::rack(&self.rack, &rows, now, &self.slot_regions)
+        });
+
         // Built while `self` is still borrowable, like the mode's two pieces above: the
         // surface below takes a mutable borrow of the renderer that outlives the rest
         // of the tree.
@@ -3825,6 +4109,7 @@ impl Render for Canvas {
                             // canvas space and the surface is what canvas space maps onto, so
                             // the overlay's own bounds are the frame the mapping lands in.
                             .children(overlay)
+                            .children(rack)
                             .children(bar)
                             .children(select_bar)
                             .children(pick_bar),

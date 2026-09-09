@@ -247,7 +247,7 @@ fn next_missing(state: AppState) -> Option<(BrushConfig, Transient)> {
         .chain(
             rack.iter()
                 .flatten()
-                .filter_map(|slot| crate::slots::resolve(&presets, slot)),
+                .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
         )
         // Asked on the same terms the cache answers on ([`keyed`]) — and it has
         // to be, or a brush filed under its rendered color would be reported

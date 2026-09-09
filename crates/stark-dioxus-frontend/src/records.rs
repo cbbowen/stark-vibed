@@ -45,7 +45,7 @@ mod tests {
             <crate::tutor::Row as Entry>::STORE,
             <stark_ui::assets::Row<stark_ui::assets::Shapes> as Entry>::STORE,
             <stark_ui::presets::StoredPreset as Entry>::STORE,
-            <crate::slots::StoredSlot as Entry>::STORE,
+            <stark_ui::slots::StoredSlot as Entry>::STORE,
             <crate::gradients::GradientEntry as Entry>::STORE,
             <stark_ui::assets::Row<stark_ui::assets::Substrates> as Entry>::STORE,
         ];

@@ -1531,6 +1531,56 @@ the exit criterion is an act, not a diff.
   *names* had nothing to answer them with — so those three chords reached nothing here
   at all.
 
+  **And the quick-brush rack** (§18.1.8) — the first thing this frontend took that
+  is a *rule* rather than a panel, and the clearest case yet of what the seam is
+  worth. `stark_ui::slots` had held two constants since N2, for the reason N2
+  records: a shipped preset declares the digit it ships on, and a record cannot
+  outrun its vocabulary. What came down now is the rest of the module — what a
+  digit holds, what a press and a release each decide (`Held::settle`, the five
+  properties §18.1.8 names), how two presses become a pick, which rows there are to
+  draw, and the record — and the web frontend's `slots.rs` went from 1272 lines to
+  a shell of signals and markup. Sixteen tests travelled with it and four more were
+  written on the way, because a rule with two callers is a rule worth a test that
+  names neither.
+
+  Two things the native rack does differently, and both are admissions. A row wears
+  the preset's **name**, not a picture: this frontend's preset list is words
+  (`crate::panel`), and ten rendered test strokes would be ten more sibling engines
+  for chrome that is on screen while a finger is on a key. And the **pen's tail**
+  did not come — §18.1.8's eraser end holds slot 0 from the moment it is in *range*,
+  which is the one place that rule must not be approximated, and `stark-pen` reports
+  contact only (§11.3). So the tail goes on swapping the effect for the length of
+  the stroke here, and `Grip` — the type that tells a key's hold from the tail's —
+  came down anyway, which is what makes that a gap rather than a fork.
+
+  The one thing the move had to *decide* rather than carry is the trash's clock.
+  The web app's is its stylesheet: the fill is a CSS animation and `animationend`
+  is what clears, so the duration is stated once and what the disc shows and what
+  happens cannot come apart. There is no stylesheet here, so the frame keeps the
+  clock and *derives* the fill from it — one value read twice, which is the same
+  property reached from the other side.
+
+  Two smaller things it cost. `keys::code_of` learnt the digit row, which is the
+  same lesson the eyedropper's three Alt rows taught one paragraph up and the same
+  limit: wgpui reports the logical key, so a layout whose top row types `&é"'`
+  has no rack until the toolkit reports a physical one. And the Window menu grew a
+  row that is **not a shelf** — the rack floats over the painting rather than taking
+  a column's room, so pinning it moves nothing about where the canvas begins, and
+  `visibility::persist` takes it as a bool beside the two sets rather than as a
+  member of them.
+
+  **A bug that row exposed, and it is older than the row.** A menu's drop-down is
+  `deferred` so it paints after every ancestor — but the `wgpu_surface` element is
+  composited after that, so a drop-down is clipped at the left column's right edge
+  and anything hanging over the canvas is invisible. Select and Brush lose their
+  right-hand halves; **Window, whose title sits past the column, draws nothing at
+  all** — its title lights, its rows are hit-tested off recorded bounds and still
+  run, and none of it can be seen. Every menu in the bar has been in that state
+  since the bar landed; the rack's row is only what made it worth writing down.
+  Non-deferred chrome over the surface is fine — the rack itself, the three bars
+  and the transform overlay all draw — so what is wrong is the deferred pass
+  specifically.
+
   **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
   mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
   overlay of its own, which is why they sequence after the stack that holds them.

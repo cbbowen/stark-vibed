@@ -40,7 +40,7 @@ pub struct PresetEntry {
     /// quick slot substitutes a tune of its own (`slots::resolve`).
     pub transient: Transient,
     /// The digit this preset **ships on**, if any — how a fresh quick-brush rack
-    /// is filled (§18.1.8; `slots::seed_defaults`).
+    /// is filled (§18.1.8; `slots::seed`).
     ///
     /// Not the binding itself: a slot names its preset from the rack's side
     /// (`slots::QuickBrush`), and this says only where the app puts a tool on the
@@ -459,7 +459,7 @@ pub fn same_tool(current: &BrushConfig, preset: &BrushConfig) -> bool {
 /// painting color alone set aside ([`Transient::same_tune`]), since a frontend's `apply`
 /// deliberately leaves it. The
 /// stricter of the two tests, for the questions a size counts in: whether a
-/// quick slot's brush is the one in hand (`slots::SlotOverlay`), and whether
+/// quick slot's brush is the one in hand (`slots::rows`), and whether
 /// writing the brush back over its preset would change anything
 /// ([`Overwrite::Unchanged`]), since a preset carries the transient half too.
 pub fn same_brush(a: &(BrushConfig, Transient), b: &(BrushConfig, Transient)) -> bool {
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn every_shipped_preset_has_a_distinct_home_on_the_rack() {
-        // `slots::seed_defaults` writes each preset to its own digit, so a
+        // `slots::seed` writes each preset to its own digit, so a
         // repeat would silently mean "whichever came last" and a slot past the
         // end would be dropped — neither of them visible anywhere.
         let mut seen = Vec::new();

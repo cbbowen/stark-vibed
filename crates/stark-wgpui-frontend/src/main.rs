@@ -50,6 +50,7 @@ mod panel;
 mod pick;
 mod render;
 mod select;
+mod slots;
 mod store;
 mod style;
 mod theme;

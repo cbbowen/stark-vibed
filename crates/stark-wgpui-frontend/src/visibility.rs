@@ -69,10 +69,12 @@ pub const RIGHT: [VisibilityToggle; 3] = [
 /// Every shelf this frontend draws, in the order the Window menu lists them: the tool
 /// column down one edge, then the reading column down the other.
 ///
-/// **Seven of the nine**, and the absences are the same ones the menu bar's are:
-/// there is no quick-brush rack here and no Timeline mode, and a Window menu offering
-/// to show something that does not exist would be worse than a short menu
-/// (`crate::menu`). Written out rather than folded from the two above so this list
+/// **Seven of the nine**, and the two absences are not alike. There is no Timeline
+/// mode here at all, and a Window menu offering to show one would be the dead act
+/// `crate::menu` forbids. The **quick-brush rack** is the other kind: this window does
+/// draw one (`crate::slots`), and it is not a shelf — it floats over the painting
+/// rather than taking a column's room — so it is a Window-menu row without being a
+/// member of this list. Written out rather than folded from the two above so this list
 /// says what it holds; a test keeps the three in step.
 pub const SHELVES: [VisibilityToggle; 7] = [
     panel(PanelId::Brush),
@@ -104,16 +106,25 @@ pub fn stored_folded() -> HashSet<VisibilityToggle> {
 ///
 /// The exhaustive match is what the shared writer asks for and what this frontend
 /// owes it: a tenth entry in the vocabulary stops the build here until somebody says
-/// where its bit is kept. Two of them have no bit at all — the quick-brush rack and
-/// Timeline mode are surfaces this frontend has not got — and saying so is the
-/// answer, not a gap.
-pub fn persist(hidden: &HashSet<VisibilityToggle>, folded: &HashSet<VisibilityToggle>) {
+/// where its bit is kept. One of them has no bit at all — Timeline mode is a surface
+/// this frontend has not got — and saying so is the answer, not a gap.
+///
+/// `pinned` is the quick-brush rack's, and it is a field on the view rather than a
+/// member of `hidden` because the rack is not a shelf: hiding a docked column changes
+/// where the canvas begins, and pinning a strip that floats over the painting does
+/// not (`Canvas::origin`).
+pub fn persist(
+    hidden: &HashSet<VisibilityToggle>,
+    folded: &HashSet<VisibilityToggle>,
+    pinned: bool,
+) {
     stark_ui::visibility::persist(
         |what| match what {
             VisibilityToggle::Panel(_) | VisibilityToggle::Navigator => {
                 SHELVES.contains(&what) && !hidden.contains(&what)
             }
-            VisibilityToggle::QuickBrushes | VisibilityToggle::Timeline => false,
+            VisibilityToggle::QuickBrushes => pinned,
+            VisibilityToggle::Timeline => false,
         },
         |what| folded.contains(&what),
     );

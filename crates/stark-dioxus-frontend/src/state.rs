@@ -546,16 +546,16 @@ pub struct SlotState {
     /// (`slots::QuickBrush`), never a brush; `None` for a slot nobody has
     /// filled. Loaded from `localStorage` at startup like the shape and preset
     /// libraries, and resolved against the preset library at every use.
-    pub brushes: Signal<crate::slots::Rack>,
+    pub brushes: Signal<stark_ui::slots::Rack>,
     /// The hold in flight — `Some` for exactly as long as a number key is down
     /// or the pen's eraser end is on the glass. The rack's overlay is mounted on
     /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
     /// restore from it.
-    pub held: Signal<Option<crate::slots::Held>>,
+    pub held: Signal<Option<stark_ui::slots::Held>>,
     /// The last press of a number key, so the next can tell whether it is the
     /// second of a double-tap (`slots::Taps`, §18.1.8). Read and written by
     /// `slots::hold` alone, and rendered by nothing.
-    pub taps: Signal<crate::slots::Taps>,
+    pub taps: Signal<stark_ui::slots::Taps>,
     /// Whether the rack is kept open with no key held — the visibility menu's
     /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
     /// which is the only way to a slot for a hand with no keyboard under it.
@@ -917,9 +917,9 @@ impl ShapesState {
 impl SlotState {
     fn new() -> Self {
         Self {
-            brushes: root_signal(crate::slots::empty_rack),
+            brushes: root_signal(stark_ui::slots::empty_rack),
             held: root_signal(|| None),
-            taps: root_signal(crate::slots::Taps::default),
+            taps: root_signal(stark_ui::slots::Taps::default),
             // The rack's pin is one of the four entries of the visibility menu
             // this browser remembers (`crate::visibility`, §25.6).
             pinned: root_signal(|| {

@@ -482,8 +482,8 @@ replaced had the opposite property — a slot was a copy of the tool as it had b
 the day it was assigned, and editing the preset reached nothing.
 
 Everything the feature does falls out of that instead of being wired up three
-times — this is the whole of `stark-dioxus-frontend/src/slots.rs`, and the panel
-and the engine learn nothing:
+times — this is the whole of `stark_ui::slots`, and the panel and the engine
+learn nothing:
 
 - **Hold and draw** and the stroke is the number's, because the slot's brush *is*
   the live brush for the length of the hold, and a stroke takes its copy of the
@@ -754,9 +754,25 @@ rack is filled from those. So a tool reaches the keyboard under the same name an
 with the same parameters the panel lists it by, adding one is a field rather than
 a second table, and the two orders stay free of each other — the eraser is last
 in the list and first on the keyboard, because a list is read top-down and a rack
-is reached by the digit under the finger. It is also why `slots.rs` defines no
+is reached by the digit under the finger. It is also why `slots` defines no
 brush of its own: what a slot starts as is a question about the app's tools, and
 those live in one place.
+
+**Both frontends have it, and the rule is written once** (`stark_ui::slots`,
+§11.2): what a digit holds, what a press and a release each decide, how two
+presses become a pick, which rows the rack draws and how the whole is stored are
+all one module below either chrome. What a frontend owes is the three things only
+it can do — put a brush on and take the live one back, keep those values wherever
+it keeps state, and draw. The native rack differs in two ways, and both are
+admissions rather than designs. A row wears the preset's **name** where the web
+row wears a rendered stroke, because that frontend's preset list is words too and
+ten test canvases is real GPU spent on chrome that is up while a finger is on a
+key. And the **pen's tail is the web's alone**: the hold has to be armed from the
+moment the tail is in range rather than on contact, and `stark-pen` reports
+contact only (§11.3) — so the native eraser end goes on swapping the effect for
+the length of the stroke, and what it waits on is a hovering report rather than a
+second copy of the rule. The `Grip` that tells the two holds apart is already
+shared, which is what makes that a gap and not a fork.
 
 The seed is in memory and unpersisted, so storage is written only by the user's
 act, an improved default reaches the rack on the next start exactly as it reaches

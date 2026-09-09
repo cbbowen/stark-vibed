@@ -36,6 +36,13 @@ fn accel(m: &wgpui::Modifiers) -> bool {
     }
 }
 
+/// The ten digit-row codes, indexed by the digit — what the quick-brush rack is read
+/// off (`stark_ui::slots::of_code`, §18.1.8).
+const DIGITS: [&str; 10] = [
+    "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+    "Digit9",
+];
+
 /// A W3C `code` for the keys the shipped chord table binds by position, and `""` for
 /// everything else — see the module note.
 ///
@@ -63,6 +70,20 @@ fn code_of(key: &str) -> &'static str {
         "right" => "ArrowRight",
         "up" => "ArrowUp",
         "down" => "ArrowDown",
+        // The quick-brush rack, which is *only* reachable by position: a digit is a
+        // hold rather than a chord, and a rack read off the character would be no rack
+        // on a layout whose top row types `&é"'` (§18.1.8). Last, so the punctuation
+        // named above keeps its own row.
+        //
+        // **And that is as far as a reconstruction can go.** wgpui reports the logical
+        // key, so on such a layout the digits arrive as their own characters and this
+        // answers nothing for them — the rack is then reachable through Shift, which
+        // §18.1.8 says is no rack. What closes it is a toolkit that reports the
+        // physical key, not a longer table here.
+        d if d.len() == 1 => match d.as_bytes()[0] {
+            b @ b'0'..=b'9' => DIGITS[usize::from(b - b'0')],
+            _ => "",
+        },
         _ => "",
     }
 }
@@ -166,6 +187,29 @@ mod tests {
     fn an_unmapped_key_reports_no_code() {
         assert_eq!(stroke(&press("f13", false, false)).code, "");
         assert_eq!(stroke(&press("escape", false, false)).code, "Escape");
+    }
+
+    /// Every digit reaches its own slot, which is the whole of what the rack needs
+    /// this table for (§18.1.8) — and nothing that is not a digit reaches one.
+    #[test]
+    fn the_digit_row_names_the_rack() {
+        for d in 0..10 {
+            let stroke = stroke(&press(&d.to_string(), false, false));
+            assert_eq!(stark_ui::slots::of_code(stroke.code), Some(d));
+        }
+        // Shift is the rack's to tolerate, since it is what most layouts type a digit
+        // under — the code says the same thing either way.
+        assert_eq!(
+            stark_ui::slots::of_code(stroke(&press("4", false, true)).code),
+            Some(4)
+        );
+        for key in ["[", "]", "q", "escape", "f5"] {
+            assert_eq!(
+                stark_ui::slots::of_code(stroke(&press(key, false, false)).code),
+                None,
+                "{key} is not a slot"
+            );
+        }
     }
 
     /// The two keys a capture spends on itself are named by role, not by chord.

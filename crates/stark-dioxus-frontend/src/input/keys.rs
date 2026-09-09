@@ -76,8 +76,8 @@ pub fn bind_pen(state: AppState) {
         ("pointerout", PenReport::Out),
     ] {
         on_window_pointer(kind, move |e| match tail_says(report, &e) {
-            Some(Tail::Facing) => slots::hold(state, slots::ERASER, Grip::Eraser),
-            Some(Tail::Away) => slots::release(state, slots::ERASER, Grip::Eraser),
+            Some(Tail::Facing) => slots::hold(state, stark_ui::slots::ERASER, Grip::Eraser),
+            Some(Tail::Away) => slots::release(state, stark_ui::slots::ERASER, Grip::Eraser),
             None => {}
         });
     }

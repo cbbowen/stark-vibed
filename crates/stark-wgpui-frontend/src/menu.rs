@@ -123,11 +123,17 @@ pub const MENUS: &[Menu] = &[
         // draws one. Its rows carry a state where every other row here is an act, so
         // they are the reason a row can wear a tick at all ([`item`]).
         //
-        // The seven shelves this frontend has, and no more — a row offering to show a
-        // quick-brush rack it does not draw would be exactly the dead act the rule
-        // above forbids. The list is `crate::visibility`'s, so what the menu offers
-        // and what the record can hold cannot come apart; the rule between the runs is
-        // where the window's two columns divide.
+        // The seven shelves this frontend has, then the one thing on this menu that is
+        // not one. The list of shelves is `crate::visibility`'s, so what the menu
+        // offers and what the record can hold cannot come apart; the first rule between
+        // the runs is where the window's two columns divide.
+        //
+        // The **quick-brush rack** is behind the second rule for what it is rather than
+        // for where it sits: it floats over the painting instead of taking a column's
+        // room, so showing it costs no canvas and its row is not about the furniture
+        // the rest of this menu arranges (§18.1.8, `crate::slots`). Timeline mode is
+        // still absent, being a surface this frontend has not got — and a row offering
+        // one would be exactly the dead act the rule above forbids.
         rows: &[
             Some(Command::TogglePanel(PanelId::Brush)),
             Some(Command::TogglePanel(PanelId::Select)),
@@ -137,6 +143,8 @@ pub const MENUS: &[Menu] = &[
             Some(Command::ToggleNavigator),
             Some(Command::TogglePanel(PanelId::Color)),
             Some(Command::TogglePanel(PanelId::Layers)),
+            None,
+            Some(Command::ToggleQuickBrushes),
         ],
     },
 ];
@@ -406,7 +414,8 @@ mod tests {
         }
     }
 
-    /// The Window menu is the shelves this frontend draws — all of them, once each.
+    /// The Window menu is the shelves this frontend draws — all of them, once each —
+    /// and then the chrome that is on this menu without being a shelf.
     ///
     /// Both lists are written out by hand and each is edited for its own reason: a
     /// shelf arrives in `visibility::SHELVES` because the window now has one, and in
@@ -423,10 +432,17 @@ mod tests {
             .map(|command| match command {
                 Command::TogglePanel(id) => VisibilityToggle::Panel(*id),
                 Command::ToggleNavigator => VisibilityToggle::Navigator,
+                // The rack floats rather than docking, so it is a row here and not a
+                // member of the column list (`crate::visibility`).
+                Command::ToggleQuickBrushes => VisibilityToggle::QuickBrushes,
                 other => panic!("the Window menu offers {other:?}, which shows nothing"),
             })
             .collect();
-        assert_eq!(listed, crate::visibility::SHELVES.to_vec());
+        let expected: Vec<VisibilityToggle> = crate::visibility::SHELVES
+            .into_iter()
+            .chain(std::iter::once(VisibilityToggle::QuickBrushes))
+            .collect();
+        assert_eq!(listed, expected);
     }
 
     /// A row's name comes off the registry, so a menu entry and the palette row the

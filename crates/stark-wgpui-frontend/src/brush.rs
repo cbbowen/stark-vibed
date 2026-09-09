@@ -63,6 +63,34 @@ impl Brush {
         }
     }
 
+    /// The live brush, both halves — the pair a quick slot displaces and puts back
+    /// (§18.1.8), with nothing to assemble.
+    pub fn worn(&self) -> (BrushConfig, Transient) {
+        (self.config, self.tune)
+    }
+
+    /// Put `config` on at `tune`, **keeping the colour in hand**, and record which
+    /// preset it came `from`.
+    ///
+    /// **The one door every swap comes through**, in both directions — a preset row
+    /// clicked, a quick slot borrowed, and the same slot handing the displaced brush
+    /// back. Stated once so "a tool is everything but the colour" cannot come to mean
+    /// two things: a slot that changed the colour under the hand on the way in, or
+    /// handed back the old one on the way out, would make the colour a property of
+    /// which key was last pressed (§18.1.8).
+    ///
+    /// `from` is the caller's to say rather than looked up here, because every caller
+    /// knows it better than a lookup by snapshot could: a row clicked has an exact name
+    /// even where two entries hold the same brush, a slot names its preset outright,
+    /// and a hold ending puts back a brush that may have been edited away from its
+    /// preset and must not forget which one that was.
+    pub fn put_on(&mut self, config: BrushConfig, tune: Transient, from: Option<String>) {
+        let color = self.tune.color;
+        self.config = config;
+        self.tune = Transient { color, ..tune };
+        self.from = from;
+    }
+
     /// Wear the preset called `name`, keeping the colour in hand.
     ///
     /// The colour stays because it is the Colour panel's rather than the tool's
@@ -72,13 +100,9 @@ impl Brush {
         let Some(entry) = self.library.iter().find(|e| e.name == name) else {
             return;
         };
-        let color = self.tune.color;
-        self.config = entry.brush;
-        self.tune = Transient {
-            color,
-            ..entry.transient
-        };
-        self.from = Some(entry.name.clone());
+        // Copied out before the write: the entry borrows the library this brush owns.
+        let (config, tune, name) = (entry.brush, entry.transient, entry.name.clone());
+        self.put_on(config, tune, Some(name));
     }
 
     /// Note that a knob has been moved: the tool is no longer *the* preset, though

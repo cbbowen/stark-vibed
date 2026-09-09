@@ -38,7 +38,7 @@ use crate::platform::{
     self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,
     on_window_pointer, sleep_ms,
 };
-use crate::slots::{self, Grip};
+use crate::slots;
 use crate::state::{
     AppState, BrushRing, Dwell, FlowBar, TowUi, TuneReadout, dispatch, update_brush,
 };
@@ -49,6 +49,7 @@ use stark_model::document::{LayerId, ShapeAction};
 use stark_model::geom::Vec2;
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_ui::pick::Sampler;
+use stark_ui::slots::Grip;
 
 mod carry;
 mod keys;
