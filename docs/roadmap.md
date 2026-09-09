@@ -950,8 +950,9 @@ selection mask, and the wet-mixing against whatever paint is already there
 press — and inherited rather than maintained, which is the whole design:
 
 - **One report per move, windowed in the engine — and the window is the
-  estimator, not the mark.** The canvas's move handler feeds
-  `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke`); the
+  estimator, not the mark.** Each canvas's move handler feeds
+  `ViewCommand::PreviewHover` the newest sample (`input::hover_stroke` on the
+  web, `Canvas::hover_to` natively — both over one `Hovering`, §11.2); the
   session appends it to a trailing window of recent reports and fits the
   window with the same `PathFitter` a gesture uses. The fit is the smoothing:
   reports are quantized to the device tolerance, so the heading of two adjacent
@@ -975,7 +976,7 @@ press — and inherited rather than maintained, which is the whole design:
   mark should lean as the stroke would. A fresh hover's single report has no
   heading to carry forward, and honestly predicts a *click*.
 - **The reach is the mark's length, and it is canvas-denominated by
-  nature.** The probe extends 40 **canvas** px (`input::hover_stroke`) — not
+  nature.** The probe extends 8 **canvas** px (`stark_ui::input::Hovering`) — not
   screen px, and not by oversight: the mark is a hypothesis about paint,
   paint is denominated on the canvas, and a screen-fixed length grew in
   canvas terms as the view zoomed out, promising more painting the less
@@ -1035,6 +1036,23 @@ press — and inherited rather than maintained, which is the whole design:
   with no hover behind it carries marker 0 unchanged — and a click at the end
   of a watched approach has its marker at its curve's very end, deposits
   nothing, and commits nothing.
+
+**Both frontends lay it** (§11.2, N8). The native canvas has no circle over the
+mark and does not want one — it keeps the system cursor, which is the hotspot the
+web app's crosshair is — so there the mark is the *whole* of what says where the
+brush is and what it would do. What moved down to make that so is small and is
+exactly the half that must not differ: the reach, the full-pressure substitution,
+and the list of states in which a press is promised to something other than paint
+(`stark_ui::input::Hovering`). What stayed in each frontend is how it reads that
+list — four signals and a drag table on the web, one `Held` and a docked chrome's
+own hit test natively — and where the pointer is.
+
+One thing the native mark is missing, and it is the stylus rather than the mark:
+`stark-pen` reports contact only (§11.3, `Phase`), and over the claimed rectangle
+a hovering pen's compatibility mouse message is swallowed — so the native mark is
+the mouse's until that crate reports proximity. Everything downstream is already
+right for it: the pose is threaded through `Canvas::hover_to` and the tilt would
+lean the mark exactly as it leans a stroke.
 
 #### 18.1.11 Touch: the held press — built
 

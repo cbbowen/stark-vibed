@@ -44,7 +44,7 @@ use crate::state::{
 };
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
-use stark_engine::command::{GestureCommand, HoverReport, PeerCommand, ViewCommand};
+use stark_engine::command::{GestureCommand, PeerCommand, ViewCommand};
 use stark_engine::{PickOptions, PickSource};
 use stark_model::document::{LayerId, ShapeAction};
 use stark_model::geom::Vec2;
@@ -566,54 +566,29 @@ pub fn point_at(state: AppState, at: Option<Vec2>) {
     }
 }
 
-/// How far ahead of the cursor the hover mark reaches, in **canvas px**
-/// (§18.1.10).
-///
-/// Canvas rather than screen px by nature, not oversight: the mark is a
-/// hypothesis about *paint*, and paint is denominated on the canvas — fixed on
-/// the screen, the predicted stroke grew in canvas terms as the view zoomed
-/// out, promising more painting the less closely you looked. The size circle
-/// over it already scales with the zoom, so the two halves of the cursor now
-/// shrink and grow together. The *smoothing* does not ride this number: the
-/// heading's estimator window is tolerance-relative inside the engine, so its
-/// steadiness survives every zoom.
-const HOVER_REACH_CANVAS_PX: f32 = 8.0;
-
 /// Feed the hover mark one report (§18.1.10): the engine appends `s` to its
 /// trailing window and folds the probe — the stroke a drag begun this instant
 /// would open, carrying the hover's heading forward from the cursor — the
 /// painted half of the brush cursor, under the circle [`hover_at`] places.
 ///
-/// Gated on the states that promise the press to something other than paint —
-/// space's pan, a chord the drag table answers with an act that shadows the
-/// brush (`DragAction::shadows_paint`: the eyedropper, the layer carry), the
-/// eyedropper already dragging, and playback, where a stroke would be refused
-/// (`panels::timeline::is_playing`). The engine gates the rest itself: a
-/// selection tool folds no mark, an unpaintable layer refuses the render, and a
-/// real gesture always outranks the hypothesis.
-///
-/// The report's pressure is replaced with **full pressure**: a hovering pen
-/// (and a mouse) reports zero, which would honestly preview no mark at all.
-/// Full rather than a middle weight so the mark fills the size circle drawn
-/// over it — two overlays about one brush must not disagree about its reach.
-/// Tilt is kept: a hovering pen reports it, and the mark should lean as the
-/// stroke would.
+/// What the report *is* — the reach, and the full pressure a hovering hand does
+/// not report — is `stark_ui::input::Hovering`, shared with the native frontend
+/// (§11.2), and so is the list of states that promise the press to something
+/// other than paint. What is here is only this frontend's reading of each — the
+/// signals it keeps them in, and the drag table asked of the modifiers held.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
-    if *state.space_down.peek()
-        || stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
-            .is_some_and(stark_ui::drags::DragAction::shadows_paint)
-        || *state.pick.dragging.peek()
-        || crate::panels::timeline::is_playing(state)
-    {
-        return;
-    }
+    let hand = stark_ui::input::Hovering {
+        panning: *state.space_down.peek(),
+        shadowed: stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
+            .is_some_and(stark_ui::drags::DragAction::shadows_paint),
+        sampling: *state.pick.dragging.peek(),
+        playing: crate::panels::timeline::is_playing(state),
+    };
     let Some(tolerance) = input_tolerance(state, e) else {
         return;
     };
-    let report = HoverReport {
-        sample: InputSample { pressure: 1.0, ..s },
-        tolerance,
-        reach: HOVER_REACH_CANVAS_PX,
+    let Some(report) = hand.report(s, tolerance) else {
+        return;
     };
     crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some(report)));
 }

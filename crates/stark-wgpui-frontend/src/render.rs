@@ -319,6 +319,13 @@ impl Renderer {
         self.engine.view()
     }
 
+    /// Whether the engine holds a hover mark (§18.1.10) — peeked before taking one
+    /// down, so the clear costs a command and a frame only when there is one to
+    /// remove (`Canvas::clear_hover_mark`).
+    pub fn hover_held(&self) -> bool {
+        self.engine.hover_held()
+    }
+
     /// The handle the element composites. Cloned per frame, which costs two atomic
     /// bumps — the element wants it by value.
     pub fn surface(&self) -> WgpuSurfaceHandle {

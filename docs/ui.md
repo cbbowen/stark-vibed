@@ -1446,6 +1446,36 @@ the exit criterion is an act, not a diff.
   A tap is not a stroke, which is what `Engine::replay_stroke_seeded` had been saying
   all along by answering `None` for a hand that never left its first point.
 
+  **And the hover mark** (§18.1.10), which is the smallest move in this stage and the
+  clearest about what a move *is*. The engine has held the whole of it since the web
+  app got it — the trailing window, the fit, the probe, the fold that renders it as
+  the gesture it predicts — so what a frontend owes is one report per resting move.
+  What came down is the part of that report neither app may answer for itself:
+  `stark_ui::input::Hovering` is the reach, in canvas px by nature; the full-pressure
+  substitution, which is what makes a hovering hand preview anything at all; and the
+  list of states in which a press means something other than paint. It hands back an
+  `Option<HoverReport>` rather than a bool beside a constructor, so a frontend cannot
+  build the report and forget to ask — the class ruled out rather than the instance
+  checked (CLAUDE.md).
+
+  What each app spells for itself is how it *reads* that list, and the two are as
+  different as the chromes are: the web app has four signals and a captured pointer,
+  and this one has a `Held`, a docked column and a hit test that already knows where
+  the picture stops. So the mark comes down here on a move that lands on a column,
+  where the web app takes it down on `pointerleave` — and the one case a docked
+  chrome does not catch that way is the pointer leaving the *window*, which wgpui
+  offers no element hook for. That is a `Window::on_mouse_event` off a zero-sized
+  `canvas`, registered per frame because that is the lifetime such a listener has.
+
+  Two things this frontend does not do, both deliberate. There is no size **circle**
+  over the mark: the web app draws one because it hides the cursor and needs to say
+  how far a soft tip reaches, and this window keeps the system cursor, so the mark is
+  the whole of the answer. And the shadowing-chord clause is `false` rather than the
+  table's answer, because this frontend's press ladder does not yet honour the acts
+  that shadow the brush — a mark that vanished under a modifier the press then painted
+  through would be lying about which of the two is coming. It is one line on the day
+  the eyedropper lands.
+
   **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
   mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
   overlay of its own, which is why they sequence after the stack that holds them.

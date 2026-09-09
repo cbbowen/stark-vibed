@@ -14,7 +14,9 @@
 
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::command::{
+    DocCommand, GestureCommand, HoverReport, InputSample, Tool, ViewCommand,
+};
 use stark_model::AssetNeed;
 use stark_model::document::{BrushShape, FillOp, GuideId, SelectionOp, ShapeAction};
 use stark_model::geom::Vec2;
@@ -31,9 +33,9 @@ use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
 use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
-    AnyElement, Context, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window,
-    div, point, prelude::*, px, rgb, wgpu_surface,
+    AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+    ScrollDelta, ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, rgb, wgpu_surface,
 };
 use wgpui_component::button::{Button, ButtonVariants};
 use wgpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
@@ -254,7 +256,10 @@ pub struct Canvas {
     substrate: SubstrateId,
     /// What a press on the transform widget would take hold of, as of the last move
     /// — the cursor, and nothing else. Meaningless with no mode live.
-    hover: Hint,
+    ///
+    /// Not the hover *mark*, which is paint rather than chrome and is the engine's
+    /// (§18.1.10, `Canvas::hover_to`): nothing here holds it.
+    hint: Hint,
     /// The transform gesture in flight, if any (§16.6).
     ///
     /// **The mode is this one `Option`**, which is the web frontend's rule arrived at
@@ -417,7 +422,7 @@ impl Canvas {
             shapes,
             substrates,
             substrate: SubstrateId::Flat,
-            hover: Hint::Move,
+            hint: Hint::Move,
             mode: None,
             obs,
             hdr,
@@ -677,6 +682,10 @@ impl Canvas {
             mods.ctrl,
         ) {
             self.held = Some(Held::Navigate { mode, last: at });
+            // And this press is navigation, so the mark's promise of paint is over
+            // (§18.1.10). One of the two places that clears it on a press — a press
+            // that *paints* must not, or the stroke loses its run-up.
+            self.clear_hover_mark(cx);
             return;
         }
 
@@ -694,6 +703,10 @@ impl Canvas {
                 size: self.brush.tune.size,
                 flow: self.brush.tune.flow,
             });
+            // The other one: the brush is moving rather than the pointer meaning
+            // anything on the canvas (§18.1.9), so the mark under it stops being a
+            // picture of the next stroke.
+            self.clear_hover_mark(cx);
             return;
         }
 
@@ -875,14 +888,20 @@ impl Canvas {
                 if let (Some(ui), Some(view)) = (self.mode, self.view()) {
                     let over = canvas_at(view, at, origin, window.scale_factor());
                     let hint = grab_at(ui, over, view).hint();
-                    if hint != self.hover {
-                        self.hover = hint;
+                    if hint != self.hint {
+                        self.hint = hint;
                         // The cursor is set during *paint*, so a changed hint owes a
                         // frame; an unchanged one owes nothing, which is what keeps a
                         // resting pointer from repainting the window.
                         self.repaint(cx);
                     }
                 }
+                // And the mark a press would lay, which is what a move with no gesture
+                // behind it *is* (§18.1.10). A moving pointer therefore owes a frame
+                // where the hint alone owed one only on a change — the price is
+                // painting's, and it is paid by the hand: a window hears no move from a
+                // hand that is still.
+                self.hover_to(at, pen, window, cx);
             }
         }
     }
@@ -937,6 +956,125 @@ impl Canvas {
             // drags built it (§16.6).
             _ => self.repaint(cx),
         }
+    }
+
+    /// Lay the hover mark under a resting pointer (§18.1.10): the stroke a drag begun
+    /// this instant would open, rendered where the press would land it — so the canvas
+    /// says what the brush would do before the brush is put down, and says where the
+    /// hand is while it is at it.
+    ///
+    /// What the report *contains* is `stark_ui::input::Hovering`, shared with the web
+    /// canvas — the reach, and the full pressure a hovering hand does not report — and
+    /// the window its heading is read from is the engine's (`Session::hover_to`). What
+    /// is left here is where the pointer is and what this chrome has promised the press
+    /// to.
+    ///
+    /// **Nothing on the paint path takes the mark down**, and that is a rule rather
+    /// than an omission: a press takes the engine's hover window as the stroke's run-up
+    /// (§6.2), and clearing the mark drops the window with it — the evidence the
+    /// stroke's entry is smoothed through.
+    ///
+    /// **The mouse's alone so far.** `stark-pen` reports contact only, and over the
+    /// claimed rectangle a hovering stylus's compatibility mouse message is swallowed
+    /// (§11.3) — so a hovering pen lays no mark here yet. `pen` is threaded through
+    /// rather than assumed away, because the lean a hovering pen would give the mark is
+    /// owed rather than unwanted.
+    fn hover_to(
+        &mut self,
+        at: Point<Pixels>,
+        pen: Option<&Pose>,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // Everything a press here would mean instead, in [`press`](Self::press)'s own
+        // order: a column is not the picture, a menu and the modal cover it, and a live
+        // transform owns it. The mark comes *down* rather than merely not being
+        // renewed — the one standing is the promise.
+        if self.over_chrome(window, at)
+            || self.menu_open.is_some()
+            || self.editor.is_some()
+            || self.mode.is_some()
+        {
+            return self.clear_hover_mark(cx);
+        }
+        let hand = chrome_input::Hovering {
+            panning: self.space,
+            // The table's shadowing acts — the eyedropper, the layer carry — are not
+            // answered by this frontend's press ladder yet (§11.2), and a mark that
+            // vanished under a modifier the press then painted through would be lying
+            // about which of the two is coming. These are the lines that change on the
+            // day either lands, and the day playback does.
+            shadowed: false,
+            sampling: false,
+            playing: false,
+        };
+        let (scale, now) = (window.scale_factor(), self.elapsed());
+        let origin = self.origin();
+        let Some(r) = self.renderer.as_ref() else {
+            return;
+        };
+        let view = r.view();
+        let sample = sample_at(view, at, origin, scale, now, pen);
+        match hand.report(sample, chrome_input::tolerance(view, resolution(pen))) {
+            Some(report) => self.send_hover(Some(report), cx),
+            None => self.clear_hover_mark(cx),
+        }
+    }
+
+    /// Watch for the pointer leaving the window, which is the one thing the mark needs
+    /// and wgpui offers no element hook for (§18.1.10).
+    ///
+    /// A mark left standing under a cursor that is no longer there promises a press
+    /// nobody is about to make — the web canvas takes it down on `pointerleave`, and a
+    /// docked chrome catches most of the same cases by the move that lands on a column
+    /// ([`hover_to`](Self::hover_to)). What is left over is the canvas's own edges,
+    /// which is what this covers.
+    ///
+    /// A `canvas` of no size, because it draws nothing and is only somewhere to
+    /// register from: `Window::on_mouse_event` is spent during *paint* and lasts one
+    /// frame, so what it needs is a place in the tree that paints on every one.
+    fn leaving(cx: &Context<'_, Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        canvas(
+            |_, _, _| (),
+            move |_, (), window: &mut Window, _| {
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                    // Once per event, not once per phase.
+                    if phase == DispatchPhase::Bubble {
+                        this.update(cx, |canvas, cx| canvas.clear_hover_mark(cx))
+                            .ok();
+                    }
+                });
+            },
+        )
+        .w_0()
+        .h_0()
+        .into_any_element()
+    }
+
+    /// Take the mark down, if one is up (§18.1.10).
+    ///
+    /// The peek is what makes this callable from anywhere: it runs on every move that
+    /// lands on a column and on space's auto-repeat, and an idle call must spend
+    /// neither a command nor a frame.
+    fn clear_hover_mark(&mut self, cx: &mut Context<'_, Self>) {
+        if self.renderer.as_ref().is_some_and(Renderer::hover_held) {
+            self.send_hover(None, cx);
+        }
+    }
+
+    /// The hover mark's own door, beside [`send`](Self::send) rather than through it
+    /// (§18.1.10).
+    ///
+    /// The two things it does *not* do are the reason it exists. The projection cannot
+    /// have moved — a hypothesis commits nothing — and presence never carries the mark
+    /// (§17.9), so refreshing `obs` and broadcasting at pointer rate would be work for
+    /// nobody. The frame is owed either way, because the mark is paint.
+    fn send_hover(&mut self, report: Option<HoverReport>, cx: &mut Context<'_, Self>) {
+        if let Some(r) = self.renderer.as_mut() {
+            r.process(ViewCommand::PreviewHover(report));
+        }
+        self.repaint(cx);
     }
 
     /// Whether a position is over either column at all.
@@ -2171,6 +2309,10 @@ impl Canvas {
     /// preview is by definition the one already on screen.
     fn hold(&mut self, ui: TransformUi, cx: &mut Context<'_, Self>) {
         self.mode = Some(ui);
+        // Entering is the one edge that puts a widget over a canvas the hand may be
+        // resting on, so it is where the mark comes down (§18.1.10) — every later
+        // `compose` is behind a press that has already crossed this line.
+        self.clear_hover_mark(cx);
         self.repaint(cx);
     }
 
@@ -2634,6 +2776,10 @@ impl Canvas {
         // the shared reading so this app and that rule cannot come apart.
         if stark_ui::keys::is_space(&stroke) {
             self.space = true;
+            // Space arms the pan, and a hover mark left standing would promise paint
+            // the press will not make (§18.1.10). Self-guarding, so the key's
+            // auto-repeat costs a peek and nothing else.
+            self.clear_hover_mark(cx);
             return;
         }
         let Some(command) = self.bindings.lookup(&stroke) else {
@@ -2757,6 +2903,10 @@ impl Canvas {
         editor.lay_reference();
         editor.restroke(&self.brush);
         self.editor = Some(editor);
+        // The modal is over the whole window, so anything the canvas was promising is
+        // no longer on offer — including the mark, which a chord can leave standing
+        // under the scrim with no move to notice it (§18.1.10).
+        self.clear_hover_mark(cx);
         self.repaint(cx);
     }
 
@@ -3437,7 +3587,7 @@ impl Render for Canvas {
             Some(ui) => (
                 Some(transform::bar(ui, &self.bindings, &self.bar_regions)),
                 self.view()
-                    .map(|view| transform::overlay(ui, view, window.scale_factor(), self.hover)),
+                    .map(|view| transform::overlay(ui, view, window.scale_factor(), self.hint)),
             ),
             None => (None, None),
         };
@@ -3493,6 +3643,7 @@ impl Render for Canvas {
                             .relative()
                             .flex_1()
                             .h_full()
+                            .child(Self::leaving(cx))
                             .child(wgpu_surface(r.surface()).size_full())
                             // Over the surface rather than beside it: the widget is drawn in
                             // canvas space and the surface is what canvas space maps onto, so
