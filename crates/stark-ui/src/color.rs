@@ -105,6 +105,15 @@ const RIM_N: usize = 512;
 /// has.
 const GAMUT_BRIDGE: f32 = 0.001;
 
+/// Nearer the achromatic axis than this and there is no hue to read: every direction
+/// is the same grey, so the direction in hand is kept rather than spun to zero.
+///
+/// Spent on two things that are the same question asked from either side — the
+/// chroma of a color in [`on_wheel`], the radius of a pointer in [`wheel_at`] — where
+/// three thresholds in three places used to disagree by two orders of magnitude. No
+/// pointer resolves anywhere near this, so what it names is the exact centre.
+const ACHROMATIC: f32 = 1e-6;
+
 /// Whether Oklab `(l, a, b)` is a color `gamut` can show, give or take
 /// [`GAMUT_BRIDGE`] on that gamut's own channels.
 fn in_gamut(gamut: Gamut, l: f32, a: f32, b: f32) -> bool {
@@ -114,6 +123,13 @@ fn in_gamut(gamut: Gamut, l: f32, a: f32, b: f32) -> bool {
 /// The color `lin` (linear sRGB) held inside `gamut`, as **extended sRGB**: clamped
 /// in the gamut's own coordinates rather than in sRGB's, since those are the channels
 /// the display actually has.
+///
+/// A P3 hold leaves sRGB, so a channel can come back **negative**, and
+/// [`linear_to_srgb`] is *odd* — mirrored through zero rather than continued along
+/// the linear toe. **What decodes this output is `decode_extended`** in
+/// `lib/display.wesl`, not the identically named `srgb_to_linear` in
+/// `lib/color.wesl`, which is not odd: at −0.735 the two answer −0.5 and −0.057
+/// (§6.5, §6.10).
 fn hold_to(gamut: Gamut, lin: [f32; 3]) -> [f32; 3] {
     let held = match gamut {
         Gamut::Srgb => lin.map(|c| c.clamp(0.0, 1.0)),
@@ -182,12 +198,20 @@ fn rim_at(rim: &[f32], hue: f32) -> f32 {
 pub fn on_wheel(gamut: Gamut, rgb: [f32; 3], keep: f32) -> (f32, f32, f32) {
     let [l, a, b, _] = srgb_to_oklab([rgb[0], rgb[1], rgb[2], 1.0]);
     let c = (a * a + b * b).sqrt();
-    if c <= 1e-6 {
+    if c <= ACHROMATIC {
         return (l, keep, 0.0);
     }
     let hue = b.atan2(a);
     let rim = max_chroma(gamut, l, hue);
-    (l, hue, if rim > 1e-6 { (c / rim).min(1.0) } else { 0.0 })
+    (
+        l,
+        hue,
+        if rim > ACHROMATIC {
+            (c / rim).min(1.0)
+        } else {
+            0.0
+        },
+    )
 }
 
 /// The color a wheel position *is*, as extended sRGB — outside the cube where the
@@ -214,11 +238,73 @@ pub fn wheel_xy(hue: f32, sat: f32) -> (f32, f32) {
 }
 
 /// The wheel position a point in the control's box names — [`wheel_xy`] inverted,
-/// with the saturation held inside the rim.
-pub fn wheel_at(x: f32, y: f32) -> (f32, f32) {
+/// with the saturation held inside the rim: a press past the rim lands *on* it, which
+/// is what makes the most saturated colors reachable at the edge of a fast drag.
+///
+/// `keep` is the hue to hold on to at the exact centre, which has no direction to
+/// read — [`on_wheel`]'s rule for a grey, asked of a pointer instead of of a color.
+/// It is the same rule and it belongs in one place: crossing the middle is how a
+/// painter *desaturates*, and a hue that spun to zero on the way through would be a
+/// different color coming out.
+pub fn wheel_at(keep: f32, x: f32, y: f32) -> (f32, f32) {
     let (dx, dy) = (2.0 * x - 1.0, 1.0 - 2.0 * y);
     let r = (dx * dx + dy * dy).sqrt();
-    (dy.atan2(dx), r.min(1.0))
+    (if r > ACHROMATIC { dy.atan2(dx) } else { keep }, r.min(1.0))
+}
+
+/// Where the picker stands: a lightness, a hue, and how much of the chroma available
+/// at that lightness and hue it spends.
+///
+/// **This is the picker's state, and the color is what it produces.** The picker is
+/// *seeded*, not driven: a grey is every hue at once, so a triple coming back through
+/// sRGB cannot say which one the artist was on, and a picker that read the brush back
+/// every frame would spin its marker to hue zero under the hand the moment a drag
+/// crossed the centre. So `(l, hue, sat)` is authoritative and the RGB is derived —
+/// which is *what the state is*, not how a toolkit stores it, and is why this is here
+/// rather than three signals in one frontend and a struct in the other, each
+/// re-arguing the seeding rule.
+///
+/// A caller that sets the color from outside the picker — the eyedropper, the hex
+/// field — says so by building a new one through [`of`](Self::of), handing it the hue
+/// in hand for the color to keep if it turns out to have none.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Wheel {
+    pub l: f32,
+    pub hue: f32,
+    pub sat: f32,
+}
+
+impl Default for Wheel {
+    /// The color a session starts on, put on the sRGB wheel — the gamut both of the
+    /// picture carriers that draw one have (§6.5). A frontend on a wider carrier
+    /// seeds with [`of`](Self::of) instead.
+    fn default() -> Self {
+        Self::of(Gamut::Srgb, INITIAL_COLOR, 0.0)
+    }
+}
+
+impl Wheel {
+    /// Where `rgb` sits, keeping `keep` for a color that has no hue.
+    pub fn of(gamut: Gamut, rgb: [f32; 3], keep: f32) -> Self {
+        let (l, hue, sat) = on_wheel(gamut, rgb, keep);
+        Self { l, hue, sat }
+    }
+
+    /// The color this position *is*, as extended sRGB.
+    pub fn rgb(self, gamut: Gamut) -> [f32; 3] {
+        wheel_color(gamut, self.l, self.hue, self.sat)
+    }
+
+    /// Where the fraction `(x, y)` of the wheel's box points, at the lightness in
+    /// hand — the wheel is one lightness, and moving `L` is the track's job.
+    ///
+    /// No gamut: which colors exist has nothing to do with where a pointer is. The
+    /// hue to keep at the centre is this wheel's own, so a press through the middle
+    /// desaturates rather than turning.
+    pub fn at(self, x: f32, y: f32) -> Self {
+        let (hue, sat) = wheel_at(self.hue, x, y);
+        Self { hue, sat, ..self }
+    }
 }
 
 /// How much of the pointer's travel a fine drag spends. A fifth: the whole width of
@@ -297,6 +383,13 @@ pub fn hex_of(rgb: [f32; 3]) -> String {
 /// either without the hash, and `color(srgb …)` / `color(display-p3 …)` with three
 /// numbers. `None` for anything else — including a half-typed one, which is what a
 /// field holds most of the time it is being used.
+///
+/// **The one place untyped color enters the app**, so the `color(…)` branch goes
+/// through [`Srgb`](stark_model::Srgb)'s funnel — the same door a file and a peer
+/// come through (§8). A wide color is still a color, so it is *bounded* rather than
+/// refused: `color(srgb 1e30 0 0)` is finite and parsed happily, and what it did
+/// downstream was give the brush a lightness [`max_chroma`] bisects to zero, leaving
+/// the picker on a black wheel with no way back but retyping.
 pub fn parse_color(s: &str) -> Option<[f32; 3]> {
     let s = s.trim();
     if let Some(inner) = s
@@ -312,11 +405,14 @@ pub fn parse_color(s: &str) -> Option<[f32; 3]> {
         if parts.next().is_some() || !n.iter().all(|c| c.is_finite()) {
             return None;
         }
-        return match space {
-            "srgb" => Some(n),
-            "display-p3" => Some(stark_model::color::display_p3_to_srgb(n)),
-            _ => None,
+        let rgb = match space {
+            "srgb" => n,
+            "display-p3" => stark_model::color::display_p3_to_srgb(n),
+            _ => return None,
         };
+        // Funnelled after the conversion, which is where the number the document
+        // would carry actually appears.
+        return Some(stark_model::Srgb::new(rgb).get());
     }
     let s = s.strip_prefix('#').unwrap_or(s);
     if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -364,24 +460,36 @@ fn quantize(gamut: Gamut, rgb: [f32; 3]) -> [u8; 3] {
 /// way round.
 pub fn wheel_rgb(gamut: Gamut, l: f32) -> Vec<u8> {
     let rim = rim_table(gamut, l);
+    (0..FIELD_N * FIELD_N)
+        .flat_map(|i| quantize(gamut, wheel_texel(&rim, l, i % FIELD_N, i / FIELD_N)))
+        .collect()
+}
+
+/// Where the texel at `(x, y)` sits in the wheel's box, as the ±1 square the picture
+/// is drawn over.
+fn texel_xy(x: usize, y: usize) -> (f32, f32) {
     let last = (FIELD_N - 1) as f32;
-    let mut out = Vec::with_capacity(FIELD_N * FIELD_N * 3);
-    for y in 0..FIELD_N {
-        for x in 0..FIELD_N {
-            let dx = 2.0 * x as f32 / last - 1.0;
-            let dy = 1.0 - 2.0 * y as f32 / last;
-            let r = (dx * dx + dy * dy).sqrt();
-            let (ux, uy) = if r > 1e-6 {
-                (dx / r, dy / r)
-            } else {
-                (1.0, 0.0)
-            };
-            let c = rim_at(&rim, dy.atan2(dx)) * r.min(1.0);
-            let rgba = oklab_to_srgb([l, c * ux, c * uy, 1.0]);
-            out.extend_from_slice(&quantize(gamut, [rgba[0], rgba[1], rgba[2]]));
-        }
-    }
-    out
+    (2.0 * x as f32 / last - 1.0, 1.0 - 2.0 * y as f32 / last)
+}
+
+/// One texel of [`wheel_rgb`], as extended sRGB and **before [`quantize`] holds it**.
+///
+/// Split out because a clamp is exactly what would hide the answer to the only
+/// question worth asking of this picture — whether what it draws is in gamut. The
+/// chroma comes off [`rim_at`], which interpolates, where every color the picker
+/// *reports* asks [`max_chroma`] directly; a test that went through the reported path
+/// would be checking the wrong one of the two.
+fn wheel_texel(rim: &[f32], l: f32, x: usize, y: usize) -> [f32; 3] {
+    let (dx, dy) = texel_xy(x, y);
+    let r = (dx * dx + dy * dy).sqrt();
+    let (ux, uy) = if r > ACHROMATIC {
+        (dx / r, dy / r)
+    } else {
+        (1.0, 0.0)
+    };
+    let c = rim_at(rim, dy.atan2(dx)) * r.min(1.0);
+    let rgba = oklab_to_srgb([l, c * ux, c * uy, 1.0]);
+    [rgba[0], rgba[1], rgba[2]]
 }
 
 /// The `L` slider's track, [`RAMP_N`] wide and one tall: this hue at this fraction of
@@ -616,6 +724,14 @@ mod tests {
 
         // The other spelling of the same thing, and the ones that are not colors.
         assert_eq!(parse_color("color(srgb 0 0.5 1)"), Some([0.0, 0.5, 1.0]));
+        // An unbounded one is a color *bounded* rather than no color: the field is
+        // the app's only untrusted color input and it goes through the same funnel a
+        // file does (`stark_model::Srgb`). Without it the brush took a lightness the
+        // rim search bisects to zero and the picker locked to a black wheel.
+        assert_eq!(
+            parse_color("color(srgb 1e30 0 -1e30)"),
+            Some([stark_model::Srgb::EXTENT, 0.0, -stark_model::Srgb::EXTENT])
+        );
         for bad in [
             "color(display-p3 1 0)",
             "color(display-p3 1 0 0 0)",
@@ -628,18 +744,90 @@ mod tests {
         }
     }
 
-    /// The marker's place and the position it is read back from are inverses.
+    /// The marker's place and the position it is read back from are inverses —
+    /// including at the centre, where there is no direction to read and the hue in
+    /// hand is what comes back. That is the same rule [`on_wheel`] follows for a
+    /// grey, and it used to be re-added by each frontend at a threshold of its own.
     #[test]
     fn a_wheel_position_and_its_marker_are_inverses() {
-        for (hue, sat) in [(0.0, 1.0), (1.5, 0.5), (-2.0, 0.25)] {
+        for (hue, sat) in [(0.0, 1.0), (1.5, 0.5), (-2.0, 0.25), (1.234, 0.0)] {
             let (x, y) = wheel_xy(hue, sat);
-            let (h2, s2) = wheel_at(x, y);
+            let (h2, s2) = wheel_at(hue, x, y);
             assert!((s2 - sat).abs() < 1e-5, "{sat} came back as {s2}");
-            if sat > 1e-3 {
-                let d = (h2 - hue).rem_euclid(TAU);
-                assert!(d < 1e-4 || (TAU - d) < 1e-4, "{hue} came back as {h2}");
+            let d = (h2 - hue).rem_euclid(TAU);
+            assert!(d < 1e-4 || (TAU - d) < 1e-4, "{hue} came back as {h2}");
+        }
+        // And a press at the exact centre keeps the hue whatever it was holding,
+        // rather than snapping to zero under the hand.
+        assert_eq!(wheel_at(1.234, 0.5, 0.5), (1.234, 0.0));
+    }
+
+    /// A color goes onto the wheel and comes back the same color, and a press outside
+    /// the rim lands on it — the two things [`Wheel`] is for, from a frontend's side.
+    #[test]
+    fn a_wheel_holds_a_color_and_a_press() {
+        let w = Wheel::of(Gamut::Srgb, [0.2, 0.45, 0.7], 0.0);
+        let back = w.rgb(Gamut::Srgb);
+        assert!(
+            back.iter()
+                .zip([0.2, 0.45, 0.7])
+                .all(|(a, b)| (a - b).abs() < 1.0 / 255.0),
+            "{back:?}"
+        );
+        // Past the rim there is no more chroma to mean, so the press slides along it.
+        assert_eq!(w.at(1.0, 0.0).sat, 1.0);
+        // The lightness is the track's, not the wheel's: a press on the wheel leaves
+        // it exactly where it stood.
+        assert_eq!(w.at(1.0, 0.0).l, w.l);
+        // And the session's own seed is a real position on the wheel.
+        assert_eq!(Wheel::default(), Wheel::of(Gamut::Srgb, INITIAL_COLOR, 0.0));
+    }
+
+    /// **The drawn wheel is in gamut**, which is the module's whole claim — and the
+    /// two tests above check the color the picker *reports*, which asks [`max_chroma`]
+    /// directly. The picture does not: it takes its chroma off [`rim_at`], and a
+    /// straight line between two samples of a rim that is concave in hue **overshoots
+    /// it**. Where that happens the texel is outside the gamut before [`quantize`]
+    /// ever sees it, and what pulls it back is a *per-channel* clamp, which moves the
+    /// hue — so the clamp is the thing this test has to look past
+    /// ([`wheel_texel`]).
+    ///
+    /// Stated as the **worst overshoot** rather than as a pass, because the number is
+    /// what says the crease costs nothing: 0.0012 of a linear channel, over both
+    /// gamuts and every lightness. That is 0.0002 past [`GAMUT_BRIDGE`] — the rim is
+    /// fitted to the bridge, so a texel on it is out by that much on purpose — and a
+    /// twentieth of the 1/255 the picture is quantized to. So the clamp does act, and
+    /// what it moves is under a tenth of a code.
+    #[test]
+    fn every_drawn_texel_is_a_color_the_display_has() {
+        let mut worst = 0.0f32;
+        for gamut in [Gamut::Srgb, Gamut::DisplayP3] {
+            for li in 0..=20 {
+                let l = li as f32 / 20.0;
+                let rim = rim_table(gamut, l);
+                for i in 0..FIELD_N * FIELD_N {
+                    let (x, y) = (i % FIELD_N, i / FIELD_N);
+                    let (dx, dy) = texel_xy(x, y);
+                    // The corners past the rim wear the rim's own color and the
+                    // control clips them away, so they are not the wheel.
+                    if dx * dx + dy * dy > 1.0 {
+                        continue;
+                    }
+                    // In the *gamut's* linear channels, which is where the clamp acts
+                    // and what `contains` measures.
+                    let lin = wheel_texel(&rim, l, x, y).map(stark_model::color::srgb_to_linear);
+                    let own = match gamut {
+                        Gamut::Srgb => lin,
+                        Gamut::DisplayP3 => linear_srgb_to_linear_p3(lin),
+                    };
+                    worst = own.iter().fold(worst, |w, c| w.max((-c).max(c - 1.0)));
+                }
             }
         }
+        assert!(
+            worst <= GAMUT_BRIDGE + 1.0 / 255.0,
+            "the drawn wheel leaves the gamut by {worst}, which the display would see"
+        );
     }
 
     /// A fine drag spends a fifth of the pointer's travel and picks nothing on the

@@ -13,8 +13,8 @@ use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
 use stark_model::color::Gamut;
 use stark_ui::color::{
-    FIELD_N, Grab, RAMP_N, ab_field_rgb, notation_of, on_wheel, parse_color, ramp_rgb, wheel_color,
-    wheel_rgb, wheel_xy,
+    FIELD_N, Grab, RAMP_N, Wheel, ab_field_rgb, notation_of, parse_color, ramp_rgb, wheel_rgb,
+    wheel_xy,
 };
 
 /// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
@@ -96,12 +96,11 @@ fn grab(e: &Event<PointerData>, held: (f32, f32)) -> Grab {
 /// caller whose color is not historized at all — the brush's, which is view state.
 ///
 /// `seed` re-seeds the markers from `init`. The picker is *seeded* rather than
-/// driven — it holds a hue that survives a trip to the achromatic axis, and `init`
-/// comes back through sRGB, which cannot say what hue a grey is — so a caller that
-/// sets the color some other way (the eyedropper) has to say so. Keyed on a counter
-/// rather than on `init` itself, and deliberately: reseeding whenever the color
-/// changed would spin a marker the user has dragged to the centre back to hue zero,
-/// under their own cursor.
+/// driven, which is a rule about what its state **is** and so is stated once, on
+/// [`Wheel`]. What is left here is the cue: a caller that sets the color some other
+/// way (the eyedropper) has to say so. Keyed on a counter rather than on `init`
+/// itself, and deliberately: reseeding whenever the color changed would spin a marker
+/// the user has dragged to the centre back to hue zero, under their own cursor.
 #[component]
 pub fn OklabPicker(
     init: [f32; 3],
@@ -109,10 +108,9 @@ pub fn OklabPicker(
     #[props(default)] oncommit: Option<EventHandler<[f32; 3]>>,
     #[props(default)] seed: u64,
 ) -> Element {
-    let (il, ih, is) = on_wheel(WHEEL_GAMUT, init, 0.0);
-    let mut l = use_signal(|| il);
-    let mut hue = use_signal(|| ih);
-    let mut sat = use_signal(|| is);
+    // One signal, because the three are one value: `(l, hue, sat)` is the picker's
+    // state and the color is what it produces (`stark_ui::color::Wheel`).
+    let mut wheel = use_signal(|| Wheel::of(WHEEL_GAMUT, init, 0.0));
     let mut wheel_grab = use_signal(|| None::<Grab>);
     let mut l_grab = use_signal(|| None::<Grab>);
     // What is in the hex field while it is being typed in. `None` — the resting
@@ -129,24 +127,30 @@ pub fn OklabPicker(
             return;
         }
         seeded.set(seed);
-        let (nl, nh, ns) = on_wheel(WHEEL_GAMUT, init, *hue.peek());
-        l.set(nl);
-        hue.set(nh);
-        sat.set(ns);
+        let keep = wheel.peek().hue;
+        wheel.set(Wheel::of(WHEEL_GAMUT, init, keep));
     }));
 
     // The wheel is the gamut at the current `L`, so it only depends on `L` — memoize
     // it, and no drag on the wheel itself rebuilds it. The ramp is the other way
     // round: it is this hue at this chroma fraction, drawn through every lightness,
     // so it follows the wheel and not the slider.
-    let wheel = use_memo(move || wheel_data_url(l()));
-    let ramp = use_memo(move || l_ramp_data_url(hue(), sat()));
+    //
+    // Each picture is memoized on a memo of the part it is *of*, rather than read off
+    // the wheel directly. One signal holds all three now, so a hue drag notifies
+    // everything that reads it — and a wheel is `FIELD_N²` gamut lookups, spent per
+    // pointer move if a picture rebuilds when the value it does not depend on moves.
+    // The inner memo settles to the same number and the outer one never runs.
+    let lightness = use_memo(move || wheel().l);
+    let picture = use_memo(move || wheel_data_url(lightness()));
+    let ray = use_memo(move || (wheel().hue, wheel().sat));
+    let ramp = use_memo(move || l_ramp_data_url(ray().0, ray().1));
 
     // Percentages of each control's own box, whatever size the stylesheet gave it.
-    let (mx, my) = wheel_xy(hue(), sat());
+    let (mx, my) = wheel_xy(wheel().hue, wheel().sat);
     let (wx, wy) = (mx * 100.0, my * 100.0);
-    let lx = l() * 100.0; // L: 0→left, 1→right
-    let rgb = wheel_color(WHEEL_GAMUT, l(), hue(), sat());
+    let lx = wheel().l * 100.0; // L: 0→left, 1→right
+    let rgb = wheel().rgb(WHEEL_GAMUT);
     let well = format!(
         "background: rgb({:.2}% {:.2}% {:.2}%);",
         rgb[0] * 100.0,
@@ -159,7 +163,7 @@ pub fn OklabPicker(
         div { class: "color-pick",
             div {
                 class: "color-wheel",
-                style: "background-image: {wheel()};",
+                style: "background-image: {picture()};",
                 // The cursor goes away for the duration of a drag: it is an arrow
                 // sitting on the one pixel the whole control is about. Under pointer
                 // capture the hand cannot lose the wheel, so there is nothing left
@@ -169,15 +173,15 @@ pub fn OklabPicker(
                 // even outside the wheel (picks past the rim slide along it).
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    let g = grab(&e, wheel_xy(hue(), sat()));
+                    let g = grab(&e, wheel_xy(wheel().hue, wheel().sat));
                     wheel_grab.set(Some(g));
-                    pick_wheel(onchange, hue, sat, l, g, &e);
+                    pick_wheel(onchange, wheel, g, &e);
                 },
                 onpointermove: move |e| {
-                    if let Some(g) = wheel_grab() { pick_wheel(onchange, hue, sat, l, g, &e); }
+                    if let Some(g) = wheel_grab() { pick_wheel(onchange, wheel, g, &e); }
                 },
-                onpointerup: move |_| end_pick(oncommit, wheel_grab, l, hue, sat),
-                onpointercancel: move |_| end_pick(oncommit, wheel_grab, l, hue, sat),
+                onpointerup: move |_| end_pick(oncommit, wheel_grab, wheel),
+                onpointercancel: move |_| end_pick(oncommit, wheel_grab, wheel),
                 div { class: "wheel-marker", style: "left:{wx}%; top:{wy}%;" }
             }
             div {
@@ -186,15 +190,15 @@ pub fn OklabPicker(
                 "data-picking": "{l_grab().is_some()}",
                 onpointerdown: move |e| {
                     capture_pointer(&e);
-                    let g = grab(&e, (l(), 0.5));
+                    let g = grab(&e, (wheel().l, 0.5));
                     l_grab.set(Some(g));
-                    pick_l(onchange, l, hue, sat, g, &e);
+                    pick_l(onchange, wheel, g, &e);
                 },
                 onpointermove: move |e| {
-                    if let Some(g) = l_grab() { pick_l(onchange, l, hue, sat, g, &e); }
+                    if let Some(g) = l_grab() { pick_l(onchange, wheel, g, &e); }
                 },
-                onpointerup: move |_| end_pick(oncommit, l_grab, l, hue, sat),
-                onpointercancel: move |_| end_pick(oncommit, l_grab, l, hue, sat),
+                onpointerup: move |_| end_pick(oncommit, l_grab, wheel),
+                onpointercancel: move |_| end_pick(oncommit, l_grab, wheel),
                 div { class: "l-marker", style: "left:{lx}%;" }
             }
             // What was picked, said twice: as a patch big enough to judge, and as the
@@ -216,9 +220,9 @@ pub fn OklabPicker(
                 // parse is abandoned the same way — the field goes back to showing
                 // the color the moment it stops being typed in, which says *no*
                 // without a second control to say it with.
-                onblur: move |_| commit_hex(onchange, oncommit, draft, l, hue, sat),
+                onblur: move |_| commit_hex(onchange, oncommit, draft, wheel),
                 onkeydown: move |e| match e.key() {
-                    Key::Enter => commit_hex(onchange, oncommit, draft, l, hue, sat),
+                    Key::Enter => commit_hex(onchange, oncommit, draft, wheel),
                     Key::Escape => draft.set(None),
                     _ => {}
                 },
@@ -228,13 +232,8 @@ pub fn OklabPicker(
 }
 
 /// Report the current wheel position through `handler` as straight sRGB.
-fn apply_color(
-    handler: EventHandler<[f32; 3]>,
-    l: Signal<f32>,
-    hue: Signal<f32>,
-    sat: Signal<f32>,
-) {
-    handler.call(wheel_color(WHEEL_GAMUT, l(), hue(), sat()));
+fn apply_color(handler: EventHandler<[f32; 3]>, wheel: Signal<Wheel>) {
+    handler.call(wheel().rgb(WHEEL_GAMUT));
 }
 
 /// End a drag on `grab`, reporting the settled color through `oncommit` once —
@@ -248,25 +247,25 @@ fn apply_color(
 fn end_pick(
     oncommit: Option<EventHandler<[f32; 3]>>,
     mut grab: Signal<Option<Grab>>,
-    l: Signal<f32>,
-    hue: Signal<f32>,
-    sat: Signal<f32>,
+    wheel: Signal<Wheel>,
 ) {
     if grab.write().take().is_none() {
         return;
     }
     if let Some(oncommit) = oncommit {
-        apply_color(oncommit, l, hue, sat);
+        apply_color(oncommit, wheel);
     }
 }
 
-/// Set hue and chroma from a pointer position over the wheel, then apply. Past the
-/// rim the pick slides along it: there is no more chroma out there to mean.
+/// Set hue and chroma from a pointer position over the wheel, then apply.
+///
+/// Where the point lands is `Wheel::at`'s: past the rim the pick slides along it,
+/// and crossing the centre keeps the hue in hand rather than spinning it, which is
+/// what makes a pass through the middle a way to *desaturate*. Both used to be
+/// written out here, at a threshold of this panel's own.
 fn pick_wheel(
     onchange: EventHandler<[f32; 3]>,
-    mut hue: Signal<f32>,
-    mut sat: Signal<f32>,
-    l: Signal<f32>,
+    mut wheel: Signal<Wheel>,
     grab: Grab,
     e: &Event<PointerData>,
 ) {
@@ -274,33 +273,24 @@ fn pick_wheel(
         return;
     };
     let (fx, fy) = grab.place(p);
-    let (dx, dy) = (fx * 2.0 - 1.0, 1.0 - fy * 2.0);
-    let r = (dx * dx + dy * dy).sqrt();
-    // Crossing the centre must not spin the hue. There is no direction to read
-    // there, every direction is the same grey, and the one the artist came in on is
-    // the one they keep — which is what makes a pass through the middle a way to
-    // *desaturate* rather than a way to lose the hue.
-    if r > 1e-4 {
-        hue.set(dy.atan2(dx));
-    }
-    sat.set(r.min(1.0));
-    apply_color(onchange, l, hue, sat);
+    let at = wheel.peek().at(fx, fy);
+    wheel.set(at);
+    apply_color(onchange, wheel);
 }
 
 /// Set `L` from a pointer position over the vertical slider (top = light), then apply.
 fn pick_l(
     onchange: EventHandler<[f32; 3]>,
-    mut l: Signal<f32>,
-    hue: Signal<f32>,
-    sat: Signal<f32>,
+    mut wheel: Signal<Wheel>,
     grab: Grab,
     e: &Event<PointerData>,
 ) {
     let Some(p) = pointer_fraction(e) else {
         return;
     };
-    l.set(grab.place(p).0.clamp(0.0, 1.0));
-    apply_color(onchange, l, hue, sat);
+    let l = grab.place(p).0.clamp(0.0, 1.0);
+    wheel.write().l = l;
+    apply_color(onchange, wheel);
 }
 
 /// Take what has been typed in the hex field as the whole color, previewing and
@@ -313,9 +303,7 @@ fn commit_hex(
     onchange: EventHandler<[f32; 3]>,
     oncommit: Option<EventHandler<[f32; 3]>>,
     mut draft: Signal<Option<String>>,
-    mut l: Signal<f32>,
-    mut hue: Signal<f32>,
-    mut sat: Signal<f32>,
+    mut wheel: Signal<Wheel>,
 ) {
     // Taken out of the signal in its own statement: a `let … else` over a borrow of
     // the signal would keep that borrow alive across the `else`, and the writes
@@ -324,13 +312,11 @@ fn commit_hex(
     let Some(rgb) = typed.as_deref().and_then(parse_color) else {
         return;
     };
-    let (nl, nh, ns) = on_wheel(WHEEL_GAMUT, rgb, hue());
-    l.set(nl);
-    hue.set(nh);
-    sat.set(ns);
-    apply_color(onchange, l, hue, sat);
+    let keep = wheel.peek().hue;
+    wheel.set(Wheel::of(WHEEL_GAMUT, rgb, keep));
+    apply_color(onchange, wheel);
     if let Some(oncommit) = oncommit {
-        apply_color(oncommit, l, hue, sat);
+        apply_color(oncommit, wheel);
     }
 }
 

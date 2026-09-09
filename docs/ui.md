@@ -994,10 +994,20 @@ the exit criterion is an act, not a diff.
   nothing here was a decision.
 
   What a row *is* — which are folded away, which can be removed, what Carry and
-  Release would each mean — is `layer_tree::Row` answering, so a row's two tree
-  buttons are a `Some` each rather than a rule the panel writes. `layer_label`
-  joined it: the web copy already said it was "a way of *presenting* a stack, not
-  a fact about the document", which is the definition of this crate's contents.
+  Release would each mean, and whether its blend and its clip have anything to say
+  at all — is `layer_tree::Row` answering, so a row's two tree buttons are a `Some`
+  each and each of its two relational controls a `bool`, rather than a rule the
+  panel writes. Carry and Release hand back the whole `MoveLayer` for the same
+  reason: the ingredients were being reassembled once per frontend. `layer_label`
+  joined it too: the web copy already said it was "a way of *presenting* a stack,
+  not a fact about the document", which is the definition of this crate's contents.
+
+  The order the rows are *drawn* in is the tree's as well (`layer_tree::display`),
+  and that one is not a tidying. `landing` is written against the displayed order —
+  top-first, folded rows gone, a base *after* what it carries — and `rows` produces
+  the engine's, which is the reverse; while both were `&[Row]` the whole difference
+  between a correct drag and a silently inverted one was a line each frontend wrote
+  for itself. The native panel had not written it, because it has no layer drag yet.
 
   Two things the native panel did that the web one does not, and both were
   admissions. The blend picker was a **cycle** through four modes rather than a
@@ -1198,13 +1208,20 @@ the exit criterion is an act, not a diff.
   **Color was the gap.** N2 deferred it — "a colour well is its own design rather
   than a fifth slider" — and the native app could paint in one colour until now.
   It is also the best Tier B move left in the tree: `stark_ui::color` is the
-  gamut's rim by bisection, the fit that makes the wheel a wheel, the two pictures
-  and what a fine drag spends, and **every constant in it was measured** — a
-  bisection bracket, a `GAMUT_BRIDGE` priced at 4/255 in one channel, a rim
-  resolution justified against a crease at the blue primary. A second copy of those
-  is a second answer to *which colors exist*, and the two apps would draw different
-  wheels for one document. The web panel went 802 lines to 391; what stayed is a
-  BMP `data:` URL, and the native carrier is a texture.
+  gamut's rim by bisection, the fit that makes the wheel a wheel, the two pictures,
+  what a fine drag spends and the picker's own state, and **every constant in it
+  was measured** — a bisection bracket, a `GAMUT_BRIDGE` priced at 4/255 in one
+  channel, a rim resolution justified against a crease at the blue primary. A second
+  copy of those is a second answer to *which colors exist*, and the two apps would
+  draw different wheels for one document. The web panel went 802 lines to 391; what
+  stayed is a BMP `data:` URL, and the native carrier is a texture.
+
+  The **state** joined them late and belongs with them for the same reason. That the
+  picker holds `(l, hue, sat)` and *produces* the colour — rather than reading the
+  brush back, which cannot say what hue a grey was — is a claim about what the
+  picker is, not about how a toolkit stores it; it was a struct on one side, three
+  signals on the other, and the seeding rule argued afresh in three places
+  (`stark_ui::color::Wheel`).
 
   Two things the native picker does differently, both because it is not a DOM. The
   wheel **cuts itself to a circle** in the picture's alpha rather than being clipped

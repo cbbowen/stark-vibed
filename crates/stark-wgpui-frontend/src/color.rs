@@ -2,15 +2,9 @@
 //! chosen lightness, and the lightness beside it (§6.7, §11.2 N8).
 //!
 //! **Nothing about which colors exist is decided here.** The gamut's rim, the fit that
-//! makes the wheel a wheel, the pictures of both and what a fine drag spends are
-//! `stark_ui::color`, measured constants and all. What is here is a toolkit's
-//! half: two textures, two hit regions, and a marker.
-//!
-//! The picker is **seeded, not driven**. It holds a hue that survives a trip to the
-//! achromatic axis, and a color coming back through sRGB cannot say what hue a grey
-//! was — so the wheel's `(l, hue, sat)` is the state, and the brush's color is what
-//! that state *produces*. Reading the brush back every frame would spin the marker to
-//! hue zero under the hand the moment a drag crossed the centre.
+//! makes the wheel a wheel, the pictures of both, what a fine drag spends and the
+//! picker's own state ([`Wheel`]) are `stark_ui::color`, measured constants and all.
+//! What is here is a toolkit's half: two textures, two hit regions, and a marker.
 
 use std::sync::Arc;
 
@@ -33,7 +27,7 @@ use crate::style;
 /// A wide color is reachable meanwhile by typing it
 /// (`stark_ui::color::parse_color`); a wide carrier is what would move this
 /// (§11.2, the wide-gamut wheel).
-const WHEEL_GAMUT: stark_model::color::Gamut = stark_model::color::Gamut::Srgb;
+pub const WHEEL_GAMUT: stark_model::color::Gamut = stark_model::color::Gamut::Srgb;
 
 /// The wheel's side, logical px — and the ramp's width, and the hex row's, so the
 /// three controls are one edge-to-edge column.
@@ -51,37 +45,13 @@ const TRACK: f32 = 16.0;
 /// The marker's radius, logical px.
 const MARK: f32 = 5.0;
 
-/// Where the picker stands: a lightness, a hue and how much of the chroma available
-/// at that lightness and hue it spends.
+/// The picker's state, which is the crate's (`stark_ui::color::Wheel`): a lightness,
+/// a hue, and how much of the chroma available at that lightness and hue it spends.
 ///
-/// The three the crate's wheel is parametrized by, held rather than derived — see the
-/// module note on why a grey has to keep its hue.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Wheel {
-    pub l: f32,
-    pub hue: f32,
-    pub sat: f32,
-}
-
-impl Default for Wheel {
-    /// The color a session starts on, put on the wheel.
-    fn default() -> Self {
-        Self::of(color::INITIAL_COLOR, 0.0)
-    }
-}
-
-impl Wheel {
-    /// Where `rgb` sits, keeping `hue` for a color that has none.
-    pub fn of(rgb: [f32; 3], hue: f32) -> Self {
-        let (l, hue, sat) = color::on_wheel(WHEEL_GAMUT, rgb, hue);
-        Self { l, hue, sat }
-    }
-
-    /// The straight-sRGB color this position *is*.
-    pub fn rgb(self) -> [f32; 3] {
-        color::wheel_color(WHEEL_GAMUT, self.l, self.hue, self.sat)
-    }
-}
+/// Re-exported rather than wrapped, so the one thing this frontend adds — which gamut
+/// its picture carrier has — stays a constant the call sites pass rather than a second
+/// type with the same three fields.
+pub use stark_ui::color::Wheel;
 
 /// Which of the picker's two controls a press landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,22 +102,6 @@ pub fn fraction_at(regions: &Regions, region: Region, at: Point<Pixels>) -> Opti
             ((f32::from(at.y) - f32::from(bounds.origin.y)) / h).clamp(0.0, 1.0),
         )
     })
-}
-
-/// The wheel the fraction `(x, y)` names, at the lightness in hand.
-///
-/// Only hue and saturation: the wheel is one lightness, and moving `L` is the track's
-/// job. A press outside the rim lands *on* it rather than off the control, which is
-/// what makes the most saturated colors reachable at the edge of a fast drag.
-pub fn wheel_at(held: Wheel, x: f32, y: f32) -> Wheel {
-    let (hue, sat) = color::wheel_at(x, y);
-    Wheel {
-        // A press at the exact centre has no direction, so it keeps the one in hand
-        // rather than snapping to zero — `on_wheel`'s rule, on the other side.
-        hue: if sat > 1e-4 { hue } else { held.hue },
-        sat,
-        ..held
-    }
 }
 
 /// The picker's own cached pictures.
@@ -254,7 +208,7 @@ pub fn color_panel(
     regions: &Regions,
 ) -> impl IntoElement + use<> {
     let (mx, my) = color::wheel_xy(wheel.hue, wheel.sat);
-    let rgb_now = wheel.rgb();
+    let rgb_now = wheel.rgb(WHEEL_GAMUT);
     let swatch = ((rgb_now[0] * 255.0) as u32) << 16
         | ((rgb_now[1] * 255.0) as u32) << 8
         | (rgb_now[2] * 255.0) as u32;
@@ -334,39 +288,6 @@ fn marker(x: f32, y: f32) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A press at the exact centre keeps the hue in hand rather than snapping to
-    /// zero — the same rule `on_wheel` follows for a grey, on the other side of the
-    /// same problem.
-    #[test]
-    fn the_centre_keeps_the_hue_it_had() {
-        let held = Wheel {
-            l: 0.5,
-            hue: 1.25,
-            sat: 0.8,
-        };
-        let at_centre = wheel_at(held, 0.5, 0.5);
-        assert_eq!(at_centre.hue, 1.25);
-        assert!(at_centre.sat < 1e-4);
-    }
-
-    /// A press outside the rim lands on it, so the most saturated colors are reachable
-    /// at the edge of a fast drag rather than only by stopping exactly on the line.
-    #[test]
-    fn a_press_outside_the_rim_lands_on_it() {
-        let held = Wheel::default();
-        assert_eq!(wheel_at(held, 1.0, 0.0).sat, 1.0);
-    }
-
-    /// The wheel a color puts the picker on produces that color back.
-    #[test]
-    fn a_color_and_its_wheel_agree() {
-        let w = Wheel::of([0.2, 0.45, 0.7], 0.0);
-        let back = w.rgb();
-        for i in 0..3 {
-            assert!((back[i] - [0.2, 0.45, 0.7][i]).abs() < 1.0 / 255.0);
-        }
-    }
 
     /// The pictures are rebuilt when what they are a picture of moves, and not
     /// otherwise — a wheel is `FIELD_N²` gamut lookups, spent per frame if this is

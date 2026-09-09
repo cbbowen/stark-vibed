@@ -391,7 +391,7 @@ impl Canvas {
         // would not lay (`stark_ui::color::INITIAL_COLOR`).
         let wheel = color::Wheel::default();
         let mut brush = Brush::new(crate::assets::builtin_shapes());
-        brush.tune.color = wheel.rgb();
+        brush.tune.color = wheel.rgb(color::WHEEL_GAMUT);
         if let Some(r) = renderer.as_mut() {
             r.process(brush.set());
         }
@@ -1246,7 +1246,7 @@ impl Canvas {
         // produce is the difference between picking the mixture back up and picking a
         // display color.
         self.brush.tune.color = rgb;
-        self.wheel = color::Wheel::of(rgb, self.wheel.hue);
+        self.wheel = color::Wheel::of(color::WHEEL_GAMUT, rgb, self.wheel.hue);
         self.send_brush(cx);
     }
 
@@ -1861,7 +1861,7 @@ impl Canvas {
     ) {
         let (x, y) = grab.place(at);
         self.wheel = match region {
-            color::Region::Wheel => color::wheel_at(self.wheel, x, y),
+            color::Region::Wheel => self.wheel.at(x, y),
             color::Region::Track => color::Wheel {
                 l: x.clamp(0.0, 1.0),
                 ..self.wheel
@@ -1869,7 +1869,7 @@ impl Canvas {
         };
         // The color is the hand's rather than the tool's (§18.1.8), so this moves the
         // transient half and leaves the preset's name on the brush.
-        self.brush.tune.color = self.wheel.rgb();
+        self.brush.tune.color = self.wheel.rgb(color::WHEEL_GAMUT);
         self.send_brush(cx);
     }
 
@@ -2241,8 +2241,8 @@ impl Canvas {
         };
         // Through the wheel, so the picker and the brush agree about what was typed
         // — and the hue survives a grey, which is why the wheel keeps one.
-        self.wheel = color::Wheel::of(rgb, self.wheel.hue);
-        self.brush.tune.color = self.wheel.rgb();
+        self.wheel = color::Wheel::of(color::WHEEL_GAMUT, rgb, self.wheel.hue);
+        self.brush.tune.color = self.wheel.rgb(color::WHEEL_GAMUT);
         self.send_brush(cx);
     }
 
