@@ -63,18 +63,6 @@ use crate::render::{Preview, Renderer};
 use crate::select;
 use crate::transform;
 
-/// The effects the panel offers, with the word each wears.
-///
-/// All four of the model's, minus nothing: an eraser is a brush whose effect is
-/// `Erase` and a blur is one with `bleed` up (§6.12), so this is the whole tool
-/// vocabulary rather than a selection from it.
-const EFFECTS: &[(BrushEffectType, &str)] = &[
-    (BrushEffectType::Paint, "Paint"),
-    (BrushEffectType::Wet, "Wet"),
-    (BrushEffectType::Erase, "Erase"),
-    (BrushEffectType::Liquify, "Liquify"),
-];
-
 /// How far one press of the bracket keys moves the brush's size, as a factor.
 ///
 /// A ratio rather than a step, because size is perceived logarithmically: a pixel
@@ -646,14 +634,6 @@ impl Canvas {
 
         // Then the brush panel: its column is where a press stops being paint.
         match panel::hit(&self.regions, ev.position) {
-            Some(Region::Effect(i)) => {
-                if let Some((effect, _)) = EFFECTS.get(i) {
-                    self.brush.config.effect = *effect;
-                    self.brush.tuned_off_preset();
-                    self.send_brush(cx);
-                }
-                return;
-            }
             Some(Region::Fold(what)) => {
                 self.fold(what, cx);
                 return;
@@ -2602,14 +2582,27 @@ impl Canvas {
     ) {
         match region {
             gallery::Region::Shape(i) => {
+                let Some(row) = assets::SHIPPED_SHAPES.get(i) else {
+                    return;
+                };
+                // The procedural one is a shape rather than an asset and needs no
+                // image (§6.2) — the substrate arm below says the same of the smooth
+                // canvas.
+                //
+                // **A stamp carries no hardness**, so leaving the round tip loses it
+                // and coming back gives whatever the dial would have been reading
+                // meanwhile (`Knob::Hardness::get`, which answers the renderer's own
+                // fallback for a stamp). That is `BrushShape` being a sum rather than a
+                // record — the hardness lives on the round arm — and the web app loses
+                // it the same way.
+                let Some(path) = row.path else {
+                    let hardness = stark_ui::brush_editor::Knob::Hardness.get(&self.brush.config);
+                    return self.wear_shape(BrushShape::Round { hardness }, cx);
+                };
                 // A shipped stamp's id is known without importing anything, and the
                 // bytes went in at startup — so wearing one is a brush write and
                 // nothing else (`crate::assets`).
-                if let Some(id) = assets::SHIPPED_SHAPES
-                    .get(i)
-                    .and_then(|row| row.path)
-                    .and_then(assets::shipped_id)
-                {
+                if let Some(id) = assets::shipped_id(path) {
                     self.wear_shape(BrushShape::Stamp(id), cx);
                 }
             }
@@ -3520,13 +3513,13 @@ impl Render for Canvas {
                 .and_then(|r| r.asset_bytes(id))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
-        // Built for whichever surface can actually be pressed: the dialog while one is
-        // up, and the Brush shelf the rest of the time. One element rather than two,
-        // and that is not only tidiness — a card's bytes are asked of the engine per
-        // row per frame, so a second copy behind a scrim would be a real bill for a
-        // gallery nobody can reach.
+        // The stamp gallery is the **editor's**, so it is built only while one is open:
+        // what a shape *is* is the tool, and the shelf beside the canvas is where a
+        // brush is worked rather than made (`crate::brush_editor`). Worth the test
+        // here rather than inside, because a card's bytes are asked of the engine per
+        // row per frame.
         let editor_open = self.editor.is_some();
-        let shapes = (editor_open || self.panel_drawn(PanelId::Brush)).then(|| {
+        let shapes = editor_open.then(|| {
             gallery::gallery::<assets::Shapes>(
                 gallery::Which::Shapes,
                 "Shapes",
@@ -3645,15 +3638,8 @@ impl Render for Canvas {
             let body: Option<AnyElement> = match what {
                 VisibilityToggle::Panel(PanelId::Brush) => {
                     self.panel_drawn(PanelId::Brush).then(|| {
-                        panel::brush_body(
-                            &self.brush,
-                            &self.controls,
-                            EFFECTS,
-                            &self.regions,
-                            // `None` while the dialog holds it — see where it is built.
-                            (!editor_open).then(|| shapes.take()).flatten(),
-                        )
-                        .into_any_element()
+                        panel::brush_body(&self.brush, &self.controls, &self.regions)
+                            .into_any_element()
                     })
                 }
                 VisibilityToggle::Panel(PanelId::Select) => {

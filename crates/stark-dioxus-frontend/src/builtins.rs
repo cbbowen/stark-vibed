@@ -101,6 +101,10 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<stark_
     let renderer = state.renderer.read();
     assets::SHIPPED_SHAPES
         .iter()
+        // The catalog's procedural row is not a built-in *stamp* and never resolves to
+        // an id (`assets::ROUND`); the gallery draws it as its own first card, since
+        // choosing it is a brush write rather than an import.
+        .filter(|b| b.path.is_some())
         .map(|b| (b, renderer.as_ref().and_then(|r| r.builtin(b.name))))
         .collect()
 }

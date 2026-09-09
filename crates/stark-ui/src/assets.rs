@@ -296,8 +296,13 @@ pub struct Shipped {
     /// one is a cosmetic change.
     pub name: &'static str,
     /// The file's path under the assets directory, which is how a build knows the
-    /// asset's content id without reading it. `None` for one that is procedural and
-    /// needs no image, which is [`SMOOTH`] and only ever `SMOOTH`.
+    /// asset's content id without reading it.
+    ///
+    /// `None` for the one entry in each catalog that is **procedural** — [`ROUND`] and
+    /// [`SMOOTH`] — and there is exactly one either way: a procedural entry is what the
+    /// gallery shows when the brush or the document is on *no asset at all*, which is a
+    /// single state. It has no content id, so nothing hashes it, no document can name
+    /// it by hash, and a picker asked to draw it has no field to draw.
     pub path: Option<&'static str>,
     /// The picker's one-line description. Empty for a shape: the shape gallery shows
     /// the name alone, and writing three sentences no surface renders would be
@@ -305,6 +310,14 @@ pub struct Shipped {
     pub blurb: &'static str,
 }
 
+/// The procedural tip: a disc whose edge falls away over the Hardness dial (§6.2),
+/// and the shape a brush wears when it is on no stamp — `BrushShape::Round`.
+///
+/// In the catalog rather than hard-coded beside it for [`SMOOTH`]'s reason: a gallery
+/// offering "no asset" is offering something, and what it is called is a fact about the
+/// app rather than about a frontend. It carries no path, so it costs the id table and
+/// the append-only rule nothing.
+pub const ROUND: &str = "Round";
 /// The worn bristle shape: a dry, broken-edged tip.
 pub const BRISTLES: &str = "Worn Bristles";
 /// The flat shape.
@@ -314,6 +327,11 @@ pub const PENCIL: &str = "Pencil";
 
 /// Every brush shape that ships with the app, in gallery order.
 pub const SHIPPED_SHAPES: &[Shipped] = &[
+    Shipped {
+        name: ROUND,
+        path: None,
+        blurb: "",
+    },
     Shipped {
         name: BRISTLES,
         path: Some("shape/Worn_Bristles.png"),
@@ -623,18 +641,37 @@ mod tests {
         assert!(substrate_png(short).is_err());
     }
 
-    /// Exactly one shipped row is procedural, and it is a substrate: a brush shape
-    /// with no image would be a stamp with nothing to stamp.
+    /// **Exactly one row in each catalog is procedural**, and it is the first.
+    ///
+    /// A procedural row is what a gallery offers for "on no asset at all" — the round
+    /// tip and the smooth canvas — which is a single state, so a second one would be a
+    /// picker with two cards for one answer and no way to say which you are on. First,
+    /// because it is where a shape or a surface starts.
+    ///
+    /// This read `only_a_substrate_may_be_procedural` until the brush editor: a shape
+    /// row meant a stamp then, and "a brush shape with no image would be a stamp with
+    /// nothing to stamp" was true of the catalog as it stood. The round tip is a shape
+    /// this app ships and is not a stamp, so what the rule was really about is the
+    /// *count*.
     #[test]
-    fn only_a_substrate_may_be_procedural() {
-        assert!(SHIPPED_SHAPES.iter().all(|s| s.path.is_some()));
-        assert_eq!(
-            SHIPPED_SUBSTRATES
+    fn exactly_one_row_of_each_catalog_is_procedural() {
+        for catalog in [SHIPPED_SHAPES, SHIPPED_SUBSTRATES] {
+            let procedural: Vec<&str> = catalog
                 .iter()
                 .filter(|s| s.path.is_none())
-                .count(),
-            1
-        );
+                .map(|s| s.name)
+                .collect();
+            assert_eq!(
+                procedural.len(),
+                1,
+                "one procedural row, not {procedural:?}"
+            );
+            assert_eq!(
+                catalog[0].name, procedural[0],
+                "and it leads the gallery it is in"
+            );
+        }
+        assert_eq!(shipped(ROUND).and_then(|s| s.path), None);
         assert_eq!(shipped(SMOOTH).and_then(|s| s.path), None);
     }
 

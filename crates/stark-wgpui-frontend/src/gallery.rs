@@ -106,6 +106,12 @@ fn probe(regions: &Regions, region: Region) -> impl IntoElement {
     .bottom_0()
 }
 
+/// The letter a procedural card wears — its name's first, in whatever case the catalog
+/// wrote it.
+fn initial_of(name: &str) -> Option<char> {
+    name.chars().next()
+}
+
 /// Which card a press landed on.
 pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
     // Reversed, so the remove mark on top of a card wins over the card under it: the
@@ -196,42 +202,79 @@ pub fn gallery<K: Kind>(
                 .flex_wrap()
                 .gap_1()
                 .children(shown.rows.iter().enumerate().map(|(i, (row, id))| {
-                    // A shipped row with no file is the procedural one, which has no
-                    // field to draw: it wears its initial rather than a blank card.
+                    // A shipped row with no file is the **procedural** one, which has
+                    // no field to draw (`stark_ui::assets::Shipped::path`) — so it
+                    // wears its initial, which is what tells a blank card apart from a
+                    // picture that failed to arrive.
                     let picture = id
                         .filter(|_| row.path.is_some())
                         .and_then(|id| bytes(id).and_then(|png| card::<K>(id, &png)));
-                    face(
-                        probe(regions, shipped_region(i)),
+                    let initial = row.path.is_none().then_some(row.name).and_then(initial_of);
+                    // ...and it is chosen exactly when nothing else is, which is the
+                    // only way it *can* be said: it has no id for `current` to equal.
+                    // Without this arm the round tip and the smooth canvas were the two
+                    // states the galleries could not show you were in.
+                    let chosen = match (row.path, id) {
+                        (None, _) => shown.current.is_none(),
+                        (Some(_), Some(id)) => Some(*id) == shown.current,
+                        (Some(_), None) => false,
+                    };
+                    face(Card {
+                        probe: probe(regions, shipped_region(i)).into_any_element(),
                         picture,
-                        row.name,
-                        *id == shown.current && id.is_some(),
-                        None,
-                    )
+                        initial,
+                        name: row.name,
+                        chosen,
+                        remove: None,
+                    })
                 }))
                 .children(shown.own.iter().map(|entry| {
                     let picture = card::<K>(entry.id, &entry.png);
-                    face(
-                        probe(regions, own_region(entry.id)),
+                    face(Card {
+                        probe: probe(regions, own_region(entry.id)).into_any_element(),
                         picture,
-                        &entry.name,
-                        Some(entry.id) == shown.current,
-                        Some(probe(regions, Region::Remove(which, entry.id)).into_any_element()),
-                    )
+                        initial: None,
+                        name: &entry.name,
+                        chosen: Some(entry.id) == shown.current,
+                        remove: Some(
+                            probe(regions, Region::Remove(which, entry.id)).into_any_element(),
+                        ),
+                    })
                 })),
         )
         .into_any_element()
 }
 
+/// What one card is, gathered by the loop above.
+///
+/// A struct rather than five arguments: three of them are `Option`s and two of those
+/// are pictures, so a caller that shuffled a pair would draw the wrong thing with
+/// nothing for the compiler to say.
+struct Card<'a> {
+    probe: wgpui::AnyElement,
+    /// The field this entry names, once its bytes are in hand.
+    picture: Option<Arc<RenderImage>>,
+    /// The letter a **procedural** entry wears instead, there being no field to draw.
+    /// Only ever set for one row per gallery (`stark_ui::assets::Shipped::path`), which
+    /// is what keeps it from standing in for a picture that is merely late.
+    initial: Option<char>,
+    name: &'a str,
+    chosen: bool,
+    /// For an entry the user owns: the mark that drops it.
+    remove: Option<wgpui::AnyElement>,
+}
+
 /// One card: the picture, the name under it, and — for an entry the user owns — the
 /// mark that drops it.
-fn face(
-    probe: impl IntoElement,
-    picture: Option<Arc<RenderImage>>,
-    name: &str,
-    chosen: bool,
-    remove: Option<wgpui::AnyElement>,
-) -> impl IntoElement {
+fn face(card: Card<'_>) -> impl IntoElement {
+    let Card {
+        probe,
+        picture,
+        initial,
+        name,
+        chosen,
+        remove,
+    } = card;
     div()
         .relative()
         .w(px(CARD))
@@ -252,6 +295,15 @@ fn face(
                 .border_1()
                 .border_color(rgb(if chosen { style::ACCENT } else { style::EDGE }))
                 .children(picture.map(|image| img(ImageSource::Render(image)).size(px(CARD - 2.))))
+                .children(initial.map(|letter| {
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(style::INK_MARK))
+                        .child(letter.to_string())
+                }))
                 .children(remove.map(|mark| {
                     div()
                         .absolute()

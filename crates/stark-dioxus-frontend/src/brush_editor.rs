@@ -749,7 +749,7 @@ fn ShapeGallery() -> Element {
             div { class: card(is_round),
                 onclick: move |_| set_shape(state, BrushShape::default()),
                 div { class: "asset-thumb round" }
-                div { class: "asset-name", "Round" }
+                div { class: "asset-name", "{stark_ui::assets::ROUND}" }
             }
             for (name, url, active) in builtins {
                 div {

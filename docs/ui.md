@@ -1415,6 +1415,15 @@ the exit criterion is an act, not a diff.
   web app already drew, arrived at from the other side: over there the shelf was never
   the place a brush was *made*, and here it had been for want of anywhere else.
 
+  The shelf kept the two tracks and lost the rest: the four **effect chips** and the
+  **stamp gallery** went with them, both being statements about what the tool *is*, and
+  both now sit beside the stroke that shows what they do. The gallery gained the row it
+  had been missing — the catalog carries the **round tip** as its procedural entry now,
+  which is `SHIPPED_SUBSTRATES`' smooth canvas read across (`Shipped::path` is `None`
+  for exactly one row of each), so "on no asset at all" is a card a person can press
+  and see lit rather than a state the gallery could not show. Which fixed the smooth
+  canvas too: it had never lit either, for want of an id to compare.
+
   What came down is the **rows**: `stark_ui::brush_editor` is which parameter sits in
   which group, over what range, where its value lives on the brush, and which mapping
   slot belongs to it — plus the test stroke's own geometry. Two apps disagreeing about

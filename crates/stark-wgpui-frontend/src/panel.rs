@@ -23,7 +23,7 @@
 
 use std::collections::HashSet;
 
-use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_config::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Command, VisibilityToggle};
 use stark_ui::icons::Icon;
 use wgpui::{
@@ -164,20 +164,6 @@ impl Knob {
     }
 }
 
-/// The mark for a brush effect.
-///
-/// Three of the four are marks the catalog already holds and the sharing is the claim
-/// each time (`stark_ui::icons::LIQUIFY` carries the argument); only the smear had no
-/// picture.
-fn effect_mark(effect: BrushEffectType) -> Icon {
-    match effect {
-        BrushEffectType::Paint => stark_ui::icons::BRUSH,
-        BrushEffectType::Wet => stark_ui::icons::WET,
-        BrushEffectType::Erase => stark_ui::icons::ERASER,
-        BrushEffectType::Liquify => stark_ui::icons::LIQUIFY,
-    }
-}
-
 /// One track: its mark, the track itself, and the figure it stands at.
 ///
 /// One line rather than the two the labelled version took, which is where a marked
@@ -292,23 +278,19 @@ fn readout(knob: Knob, v: f32) -> String {
     }
 }
 
-/// The Brush shelf's body: the four dials, the effect the brush is in, the stamp
-/// gallery and the preset library.
+/// The Brush shelf's body: the two dials a hand works, the way into the editor, and
+/// the preset library.
+///
+/// **What is *not* here is the point.** The effect chips and the stamp gallery were
+/// both on this shelf until the editor existed, and both say what the tool *is* — so
+/// they went where the rest of that lives, beside a stroke that shows what they do
+/// (`crate::brush_editor`). What is left is the two transient knobs (§18.1.8), one
+/// button, and the artist's own names.
 ///
 /// A free function taking the pieces rather than a `Render` impl, because the shelf
 /// has no state of its own: everything it shows is the brush's and everything it does
 /// is the canvas view's (`crate::canvas`), which owns the engine the changes go to.
-pub fn brush_body(
-    brush: &Brush,
-    controls: &Controls,
-    effects: &[(BrushEffectType, &'static str)],
-    regions: &Regions,
-    // An `Option` because the view builds it once and hands it to whichever shelf
-    // wants it — `None` cannot happen here, and drawing nothing is the right answer if
-    // it ever does.
-    shapes: Option<AnyElement>,
-) -> impl IntoElement {
-    let effect = brush.config.effect;
+pub fn brush_body(brush: &Brush, controls: &Controls, regions: &Regions) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -319,38 +301,10 @@ pub fn brush_body(
                 .zip(&controls.knobs)
                 .map(|(knob, state)| Slider::knob(*knob, brush, state.clone())),
         )
-        .child(
-            div()
-                .flex()
-                .gap_1()
-                .pt_1()
-                .children(effects.iter().enumerate().map(|(i, (kind, label))| {
-                    let chip = div()
-                        .id(*label)
-                        .chip()
-                        .child(probe(regions, Region::Effect(i)))
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .py_1p5()
-                        .lit(*kind == effect)
-                        .child(crate::icons::icon(
-                            effect_mark(*kind),
-                            if *kind == effect {
-                                style::INK_LIT
-                            } else {
-                                style::INK_MARK
-                            },
-                        ));
-                    style::tip(chip, effect_tip(*kind))
-                })),
-        )
         // The way to everything the two tracks above no longer carry. A full-width
-        // button rather than a chip in the run beside it: the effect chips choose
-        // between four states of one brush, and this opens a surface — the same
-        // distinction the menu bar draws between a row that toggles and one that
-        // raises a dialog.
+        // button rather than a chip: what it opens is a *surface*, which is the
+        // distinction the menu bar already draws between a row that toggles and one
+        // that raises a dialog.
         .child(style::tip(
             div()
                 .id("edit-brush")
@@ -370,13 +324,6 @@ pub fn brush_body(
                 .child(Command::EditBrush.word()),
             Command::EditBrush.hint(),
         ))
-        // The stamp gallery sits with the brush rather than with the presets: what a
-        // shape *is* is the tool, and a preset is a way of arriving at one.
-        //
-        // `None` while the editor is up: the element is built once by the view and goes
-        // to whichever surface can be pressed, which is the dialog then rather than
-        // this shelf behind its scrim.
-        .children(shapes)
         .child(div().pt_2().heading().child("Presets"))
         .children(brush.library.iter().enumerate().map(|(i, e)| PresetRow {
             name: e.name.clone().into(),
@@ -384,17 +331,6 @@ pub fn brush_body(
             regions: regions.clone(),
             index: i,
         }))
-}
-
-/// What the hover says an effect chip does — the word it used to wear, and then what
-/// the word never had room to say.
-fn effect_tip(effect: BrushEffectType) -> &'static str {
-    match effect {
-        BrushEffectType::Paint => "Paint \u{2014} lay the colour in hand",
-        BrushEffectType::Wet => "Wet \u{2014} move and mix the paint already on the canvas",
-        BrushEffectType::Erase => "Erase \u{2014} take paint away where the tip passes",
-        BrushEffectType::Liquify => "Liquify \u{2014} push the paint about without adding any",
-    }
 }
 
 /// One column of shelves, built by the view.
@@ -511,7 +447,6 @@ fn title(regions: &Regions, what: VisibilityToggle, open: bool) -> impl IntoElem
 /// Which control a measured rectangle belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    Effect(usize),
     Preset(usize),
     /// The button that opens the brush editor (`crate::brush_editor`).
     Edit,
@@ -669,13 +604,13 @@ mod tests {
     #[test]
     fn a_press_finds_the_control_it_is_inside() {
         let regions = measured(&[
-            (Region::Effect(0), 60.0, 18.0),
-            (Region::Effect(1), 110.0, 18.0),
+            (Region::Edit, 60.0, 18.0),
+            (Region::Preset(0), 110.0, 18.0),
             (Region::Preset(3), 300.0, 26.0),
         ]);
         let x = LEFT_WIDTH / 2.0;
-        assert_eq!(hit(&regions, at(x, 66.0)), Some(Region::Effect(0)));
-        assert_eq!(hit(&regions, at(x, 118.0)), Some(Region::Effect(1)));
+        assert_eq!(hit(&regions, at(x, 66.0)), Some(Region::Edit));
+        assert_eq!(hit(&regions, at(x, 118.0)), Some(Region::Preset(0)));
         assert_eq!(hit(&regions, at(x, 310.0)), Some(Region::Preset(3)));
         assert_eq!(
             hit(&regions, at(x, 95.0)),
@@ -722,18 +657,6 @@ mod tests {
         for knob in KNOBS {
             assert!(knob.glyph().svg().is_some(), "{knob:?} has no glyph");
             assert!(!knob.tip().is_empty(), "{knob:?} says nothing on hover");
-        }
-        for effect in [
-            BrushEffectType::Paint,
-            BrushEffectType::Wet,
-            BrushEffectType::Erase,
-            BrushEffectType::Liquify,
-        ] {
-            assert!(
-                effect_mark(effect).svg().is_some(),
-                "{effect:?} has no glyph"
-            );
-            assert!(!effect_tip(effect).is_empty());
         }
     }
 }
