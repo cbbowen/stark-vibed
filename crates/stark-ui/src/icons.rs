@@ -43,11 +43,29 @@ include!(concat!(env!("OUT_DIR"), "/icon_files.rs"));
 /// wrong on the HDR switch. The name is the catalog constant's own, which is what
 /// this module's whole opening claim is about: a name says what the *control* means,
 /// and two controls that share a picture are still two controls.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)]
 pub struct Icon {
     name: &'static str,
     stem: &'static str,
     svg: &'static str,
+}
+
+/// Written out rather than derived, so the claim above is the code rather than a
+/// remark beside it — and because a derive would compare the `svg`, which is a whole
+/// file. An `Icon` is a Dioxus prop in three components, and props are compared per
+/// render.
+impl PartialEq for Icon {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Icon {}
+
+impl std::hash::Hash for Icon {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
 impl Icon {
@@ -669,6 +687,9 @@ mod tests {
                 "{stem}.svg carries a hard-coded color; icons take their color from \
                  the control around them"
             );
+            // A `&#8212;` entity or an `xlink:href="#id"` would trip that too. The
+            // set has neither, and the day one arrives is the day to loosen this to
+            // the color literals rather than the day to discover it was too loose.
         }
     }
 

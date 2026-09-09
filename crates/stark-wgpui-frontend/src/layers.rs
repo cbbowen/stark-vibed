@@ -44,9 +44,9 @@ use crate::style::{self, StyleExt};
 ///
 /// The row-bound acts name their **layer**, not a position: the panel draws the rows
 /// in display order (`layer_tree::display`) and [`act`] reads them in the engine's,
-/// and an index would have meant one of the two orders without saying which. It also
-/// keeps Remove working on a layer folded away under a shut group, which is not in
-/// the displayed list at all.
+/// so an index would have meant one of the two orders without saying which. The three
+/// acts on the whole stack carry nothing — they read the selection, which is why
+/// Remove answers for a layer folded away under a shut group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
     /// The row's body: select this layer to paint on.
@@ -108,6 +108,29 @@ struct Chip {
     tip: SharedString,
 }
 
+impl Region {
+    /// A short id for the element a chip draws into, stable across a reorder because
+    /// it names the layer. `{:?}` would spell a `LayerId`'s three nested fields out —
+    /// sixty-odd characters allocated per chip per frame.
+    fn key(self) -> SharedString {
+        let (act, id) = match self {
+            Region::Row(id) => ("row", Some(id)),
+            Region::Visible(id) => ("visible", Some(id)),
+            Region::Fold(id) => ("fold", Some(id)),
+            Region::Carry(id) => ("carry", Some(id)),
+            Region::Release(id) => ("release", Some(id)),
+            Region::Clip(id) => ("clip", Some(id)),
+            Region::Add => ("add", None),
+            Region::Duplicate => ("duplicate", None),
+            Region::Remove => ("remove", None),
+        };
+        match id {
+            Some(id) => SharedString::from(format!("{act}-{id}")),
+            None => SharedString::from(act),
+        }
+    }
+}
+
 impl Chip {
     /// A chip that is simply a chip: lit by nothing, refused by nothing.
     fn plain(glyph: Icon, region: Region, regions: &Regions, tip: impl Into<SharedString>) -> Self {
@@ -126,7 +149,7 @@ impl RenderOnce for Chip {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let chip = div()
             // The region is the chip's identity already; a hover needs it as an id.
-            .id(SharedString::from(format!("{:?}", self.region)))
+            .id(self.region.key())
             .relative()
             .w(px(20.))
             .h(px(18.))
@@ -432,12 +455,12 @@ mod tests {
                 },
                 k: 0,
             },
-            // Derived from the depth, which is all these fixtures ever nest: a row
-            // one level down is carried by the row before it.
             blend: BlendMode::Normal,
             clip: false,
             opacity: 1.0,
             visible: true,
+            // Derived from the depth, which is all these fixtures ever nest: a row
+            // one level down is carried by the row before it.
             carrier: (depth > 0).then(|| LayerId {
                 action: ActionId {
                     lamport: id - 1,
@@ -559,8 +582,8 @@ mod tests {
     }
 
     /// A layer folded away under a shut group is still a layer, and Remove still
-    /// answers for it — which is what naming a **layer** rather than a display index
-    /// buys, since a hidden row is not in the list the panel draws.
+    /// answers for it: [`act`] reads the engine's whole list, not the one the panel
+    /// draws, and a hidden row is not in the second.
     #[test]
     fn a_folded_away_layer_can_still_be_removed() {
         let layers = vec![info(1, 0, true), info(2, 1, false)];

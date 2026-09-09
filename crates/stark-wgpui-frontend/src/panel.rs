@@ -691,7 +691,7 @@ mod tests {
     /// A glyph is the type's own guarantee now (`stark_ui::icons::Icon::svg`), so
     /// what is left to check is the word behind the hover.
     #[test]
-    fn every_control_that_lost_its_word_has_a_mark() {
+    fn every_control_that_lost_its_word_says_what_it_does() {
         for knob in KNOBS {
             assert!(!knob.tip().is_empty(), "{knob:?} says nothing on hover");
         }

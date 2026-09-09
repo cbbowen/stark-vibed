@@ -108,10 +108,10 @@ const GAMUT_BRIDGE: f32 = 0.001;
 /// Nearer the achromatic axis than this and there is no hue to read: every direction
 /// is the same grey, so the direction in hand is kept rather than spun to zero.
 ///
-/// Spent on two things that are the same question asked from either side — the
-/// chroma of a color in [`on_wheel`], the radius of a pointer in [`wheel_at`] — where
-/// three thresholds in three places used to disagree by two orders of magnitude. No
-/// pointer resolves anywhere near this, so what it names is the exact centre.
+/// One question, asked of a color's chroma in [`on_wheel`] and of a radius in
+/// [`wheel_at`] and [`wheel_texel`] — where three thresholds in three places used to
+/// disagree by two orders of magnitude. No pointer resolves anywhere near it, so what
+/// it names is the exact centre.
 const ACHROMATIC: f32 = 1e-6;
 
 /// Whether Oklab `(l, a, b)` is a color `gamut` can show, give or take
@@ -203,15 +203,10 @@ pub fn on_wheel(gamut: Gamut, rgb: [f32; 3], keep: f32) -> (f32, f32, f32) {
     }
     let hue = b.atan2(a);
     let rim = max_chroma(gamut, l, hue);
-    (
-        l,
-        hue,
-        if rim > ACHROMATIC {
-            (c / rim).min(1.0)
-        } else {
-            0.0
-        },
-    )
+    // A division guard rather than a second reading of `ACHROMATIC`: this asks
+    // whether there is a rim to spend a fraction of, which is a different question
+    // from whether a direction can be read, and at `l` of 0 or 1 there is not.
+    (l, hue, if rim > 1e-6 { (c / rim).min(1.0) } else { 0.0 })
 }
 
 /// The color a wheel position *is*, as extended sRGB — outside the cube where the
@@ -246,7 +241,7 @@ pub fn wheel_xy(hue: f32, sat: f32) -> (f32, f32) {
 /// It is the same rule and it belongs in one place: crossing the middle is how a
 /// painter *desaturates*, and a hue that spun to zero on the way through would be a
 /// different color coming out.
-pub fn wheel_at(keep: f32, x: f32, y: f32) -> (f32, f32) {
+pub fn wheel_at(x: f32, y: f32, keep: f32) -> (f32, f32) {
     let (dx, dy) = (2.0 * x - 1.0, 1.0 - 2.0 * y);
     let r = (dx * dx + dy * dy).sqrt();
     (if r > ACHROMATIC { dy.atan2(dx) } else { keep }, r.min(1.0))
@@ -278,6 +273,9 @@ impl Default for Wheel {
     /// The color a session starts on, put on the sRGB wheel — the gamut both of the
     /// picture carriers that draw one have (§6.5). A frontend on a wider carrier
     /// seeds with [`of`](Self::of) instead.
+    ///
+    /// Not free, unusually for a `Default`: putting a color on the wheel is a
+    /// bisection ([`max_chroma`]). Once at startup.
     fn default() -> Self {
         Self::of(Gamut::Srgb, INITIAL_COLOR, 0.0)
     }
@@ -302,7 +300,7 @@ impl Wheel {
     /// hue to keep at the centre is this wheel's own, so a press through the middle
     /// desaturates rather than turning.
     pub fn at(self, x: f32, y: f32) -> Self {
-        let (hue, sat) = wheel_at(self.hue, x, y);
+        let (hue, sat) = wheel_at(x, y, self.hue);
         Self { hue, sat, ..self }
     }
 }
@@ -752,14 +750,14 @@ mod tests {
     fn a_wheel_position_and_its_marker_are_inverses() {
         for (hue, sat) in [(0.0, 1.0), (1.5, 0.5), (-2.0, 0.25), (1.234, 0.0)] {
             let (x, y) = wheel_xy(hue, sat);
-            let (h2, s2) = wheel_at(hue, x, y);
+            let (h2, s2) = wheel_at(x, y, hue);
             assert!((s2 - sat).abs() < 1e-5, "{sat} came back as {s2}");
             let d = (h2 - hue).rem_euclid(TAU);
             assert!(d < 1e-4 || (TAU - d) < 1e-4, "{hue} came back as {h2}");
         }
         // And a press at the exact centre keeps the hue whatever it was holding,
         // rather than snapping to zero under the hand.
-        assert_eq!(wheel_at(1.234, 0.5, 0.5), (1.234, 0.0));
+        assert_eq!(wheel_at(0.5, 0.5, 1.234), (1.234, 0.0));
     }
 
     /// A color goes onto the wheel and comes back the same color, and a press outside

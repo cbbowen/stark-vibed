@@ -75,9 +75,10 @@ impl Row {
     /// with the answer is spell §14.2's rule, and two frontends spelling it apart is
     /// two apps. A row with nothing to carry onto simply has no button.
     pub fn carry(&self) -> Option<DocCommand> {
+        let onto = self.carry_onto?;
         Some(DocCommand::MoveLayer {
             id: self.info.id,
-            carrier: Some(self.carry_onto?),
+            carrier: Some(onto),
             at: Place::Top,
         })
     }
@@ -378,15 +379,20 @@ pub fn landing(display: &Display<'_>, drag: &Grab) -> Option<Landing> {
 ///
 /// One `Vec` answers both, indexed by depth — a stack of cursors, which is how the
 /// walk that *builds* this list keeps its place (`observe`'s `Cursor`). Entry `d` is
-/// the last row seen at depth `d`, **truncated on
-/// the way out** of a subtree, and that truncation is what makes it the current row's
-/// ancestor chain as well as its stack: the sibling below is entry `depth`, and what
-/// carries this row's group is entry `depth - 2`. Leaving a stack means passing
-/// through a shallower row, which drops everything deeper than it.
+/// the last row seen at depth `d`, **truncated on the way out** of a subtree, and
+/// that truncation is what makes it the current row's ancestor chain as well as its
+/// stack: the sibling below is entry `depth`, and what carries this row's group is
+/// entry `depth - 2`. Leaving a stack means passing through a shallower row, which
+/// drops everything deeper than it.
 ///
-/// So the whole projection is one pass with two hash maps and a per-row scan of the
-/// list fewer than it was — which is worth the paragraph because it runs on both
-/// frontends' render path, once a frame.
+/// So the whole projection is one pass — two hash maps and a per-row scan of the list
+/// fewer than it was, which is worth the paragraph because it runs on both frontends'
+/// render path, once a frame.
+///
+/// **It reads `layers` as the engine projects it** and nothing else does: `depth` is
+/// the length of the carrier chain and a base is immediately followed by its own
+/// stack (`Layer::visit`). The old maps were keyed by carrier and tolerated any
+/// order; an index by depth does not.
 pub fn rows(layers: &[LayerInfo], collapsed: &HashSet<LayerId>) -> Vec<Row> {
     let mut out = Vec::with_capacity(layers.len());
     let mut shut_at: Option<usize> = None;

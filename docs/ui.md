@@ -1262,6 +1262,13 @@ the exit criterion is an act, not a diff.
   the shipped images, so the two frontends cannot come to `include_str!` different
   ones.
 
+  That build script emits an arm per shipped stem as well as the file table, so a
+  catalog entry naming a file `assets/icons` does not hold is a **compile error**
+  rather than a `None` both carriers throw away — one drew an empty span, the other
+  nothing at all, and neither said which name was wrong. `Icon::svg` is infallible,
+  and an `Icon`'s identity is its catalog name rather than its file, since nine pairs
+  of controls share a drawing on purpose.
+
   **And a menu bar**, which is the first surface this frontend has that the web app
   does not want: a browser tab already has a menu bar above it, and the web answers
   the same need with the search palette (§25.4). wgpui carries a `Menu` type and a
