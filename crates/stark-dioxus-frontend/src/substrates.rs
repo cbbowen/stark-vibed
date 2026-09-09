@@ -587,7 +587,7 @@ pub fn SubstrateWell() -> Element {
             // absence rather than leaving an empty box, exactly as its card does.
             div {
                 class: if thumb.is_some() { "asset-thumb" } else { "asset-thumb flat" },
-                style: library::thumb_style(thumb.as_deref()),
+                style: crate::cards::thumb_style(thumb.as_deref()),
             }
             // The name is blank for the one moment it is unknown rather than
             // guessed at: a built-in whose map has not landed is a substrate this
@@ -697,7 +697,7 @@ pub fn SubstrateGallery() -> Element {
                     // the absence rather than leaving an empty box.
                     div {
                         class: if thumb.is_some() { "asset-thumb" } else { "asset-thumb flat" },
-                        style: library::thumb_style(thumb.as_deref()),
+                        style: crate::cards::thumb_style(thumb.as_deref()),
                     }
                     div { class: "asset-name", "{name}" }
                 }
@@ -707,7 +707,7 @@ pub fn SubstrateGallery() -> Element {
                     key: "{id.to_hex()}",
                     class: card(current == SubstrateId::Image(id)),
                     onclick: move |_| select(state, Pick::Custom(id)),
-                    div { class: "asset-thumb", style: library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                     button {
                         class: "asset-remove",
@@ -725,7 +725,7 @@ pub fn SubstrateGallery() -> Element {
                     key: "{id.to_hex()}",
                     class: "asset-card selected",
                     title: "A surface this document came with — not in your library.",
-                    div { class: "asset-thumb", style: library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
                     div { class: "asset-name", "From the document" }
                 }
             }

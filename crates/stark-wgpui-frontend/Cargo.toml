@@ -92,6 +92,9 @@ image = { version = "0.25", default-features = false, features = [
 # The backend behind it is synchronous file I/O (`crate::store`), so this parks on
 # nothing — it is an adapter, not an executor.
 pollster = "0.4"
+# `stark_ui`'s registries answer with `VariantArray::VARIANTS`, and an associated const
+# needs its trait in scope at the call site.
+strum = { workspace = true }
 
 [dev-dependencies]
 # Round-tripping a record in a test. The format is `stark-ui`'s at run time,

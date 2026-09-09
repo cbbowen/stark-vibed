@@ -177,7 +177,7 @@ mod tests {
 
     /// The shipped patches are ordered by how much canvas each takes in, which is
     /// what makes the row one question rather than four buttons — the same claim
-    /// `PickScope::ALL`'s ordering makes.
+    /// `PickScope::VARIANTS`'s ordering makes.
     #[test]
     fn the_patches_widen() {
         assert!(PATCHES.windows(2).all(|w| w[0] < w[1]));

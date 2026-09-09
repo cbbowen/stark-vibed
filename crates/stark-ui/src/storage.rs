@@ -1,15 +1,14 @@
 //! This browser's local store: the one door to `localStorage`, and the one format
 //! everything behind it is kept in.
 //!
-//! Ten records live here — the shape, preset, gradient and quick-brush libraries,
-//! the ⚙ dialog's settings, the chord table, the drag table, what is on screen, what
-//! the tour has seen, and this client's identity.
-//! There were six formats
-//! between them once: JSON for two, a base64 field table for three, bare
-//! space-separated panel names, a tagged `deed|key|count` row for the tour, `"1"`
-//! versus `""` for the navigator's one bit, and hex for the identity. Each was
-//! defensible where it was written and none of them was worth a reader having to learn
-//! it, so they are one format now.
+//! [`Store`] is the whole list of records — the shape, substrate, preset, gradient and
+//! quick-brush libraries, the ⚙ dialog's settings, the chord table, the drag table,
+//! what is on screen, what the tour has seen, this client's identity, and where the
+//! native frontend's window was. There were six formats between them once: JSON for
+//! two, a base64 field table for three, bare space-separated panel names, a tagged
+//! `deed|key|count` row for the tour, `"1"` versus `""` for the navigator's one bit,
+//! and hex for the identity. Each was defensible where it was written and none of them
+//! was worth a reader having to learn it, so they are one format now.
 //!
 //! # One format: JSON, through one typed door
 //!
@@ -38,8 +37,8 @@
 //!
 //! # Bytes are not kept here at all
 //!
-//! `localStorage` is text, and **~5 MB of it per origin shared across all ten
-//! records**. A brush shape's PNG went in it once, base64'd inline in the shape
+//! `localStorage` is text, and **~5 MB of it per origin shared across every record
+//! here**. A brush shape's PNG went in it once, base64'd inline in the shape
 //! library's rows: two of the app's own stamps are 408 KB and 226 KB on disk, half as
 //! much again as base64, and twice *that* against the quota in an engine that counts
 //! a JS string's UTF-16. Five or ten imports filled the origin — and what a full
@@ -66,11 +65,11 @@
 //! [`Store`] is the whole authority on where a record lives and what a warning calls
 //! it. Both facts sit on one row, so a new record is one row, one serde type and the
 //! one-line impl that pairs them — never a `const KEY` beside a matching string at each
-//! call site, which is what the eleven keys used to be (§25.6).
+//! call site, which is what every one of these keys used to be (§25.6).
 //!
 //! The impls name a variant rather than restating its strings, which is what keeps the
-//! map readable in one place: eleven impls each spelling their own key would scatter the
-//! answer to "what does this browser keep?" across ten modules, and nothing would
+//! map readable in one place: an impl per record spelling its own key would scatter the
+//! answer to "what does this browser keep?" across as many modules, and nothing would
 //! notice two of them colliding. `every_record_claims_one_store` does.
 //!
 //! # A damaged entry costs that entry
@@ -131,7 +130,12 @@ use stark_model::AssetId;
 /// A variant per record rather than a `const KEY` per module, because the key and the
 /// name a warning calls the record by are two halves of one fact that used to be two
 /// constants three lines apart — see [`Store::named`] and §25.6.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///
+/// The list is `VariantArray::VARIANTS`, derived rather than kept beside the enum —
+/// which is what the check that every row is actually *claimed* walks. That check
+/// cannot live here: most record types are a frontend's, so it is
+/// `stark-dioxus-frontend`'s `records`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, strum::VariantArray)]
 pub enum Store {
     /// The key this client's `ActorId` derives from, and its run counter
     /// (`crate::identity`).
@@ -190,30 +194,8 @@ pub enum Store {
 }
 
 impl Store {
-    /// Every row, and the only place the list is written down.
-    ///
-    /// Public because the check that every row is *claimed* cannot live here any
-    /// more: most record types are a frontend's, so that test is too — see
-    /// `stark-dioxus-frontend`'s `records`.
-    pub const ALL: [Store; 12] = [
-        Store::Identity,
-        Store::Prefs,
-        Store::Bindings,
-        Store::Drags,
-        Store::Visible,
-        Store::Tutor,
-        Store::Shapes,
-        Store::Substrates,
-        Store::Presets,
-        Store::Slots,
-        Store::Gradients,
-        Store::Window,
-    ];
-}
-
-impl Store {
     /// The key, and the name a warning calls this record by — "the gradient library",
-    /// "the settings" — so a full quota says which of the eleven ran out of room.
+    /// "the settings" — so a full quota says which record ran out of room.
     ///
     /// One key, both stores: a record that keeps bytes as well as rows spells its blob
     /// keys `stark.shapes/<hex>` (see [`Blob`]), so there is still exactly one place
@@ -265,7 +247,7 @@ pub trait Record {
 ///
 /// A second trait rather than a flag on [`Record`], because the two are read
 /// differently and the difference is not one a caller should be able to get wrong:
-/// nine of the eleven records are lists, and `load::<StoredVisible>()` under one trait
+/// most records are lists, and `load::<StoredVisible>()` under one trait
 /// would compile and quietly answer `None` — an array is not an object — leaving a
 /// screen that silently forgot itself. A type is one or the other, and the
 /// compiler says which functions it is for.
@@ -585,8 +567,9 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use std::collections::HashSet;
+    use strum::VariantArray;
 
-    const ALL: [Store; 12] = Store::ALL;
+    const ALL: &[Store] = Store::VARIANTS;
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]
     struct Item {

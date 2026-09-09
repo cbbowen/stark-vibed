@@ -9804,6 +9804,7 @@ dependencies = [
  "stark-model",
  "stark-net",
  "stark-ui",
+ "strum",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
@@ -9837,6 +9838,7 @@ dependencies = [
  "stark-model",
  "stark-shaders",
  "stark-testdata",
+ "strum",
  "thiserror 2.0.20",
  "tracing",
  "tracing-subscriber",
@@ -9929,6 +9931,7 @@ dependencies = [
  "stark-assetid",
  "stark-engine",
  "stark-model",
+ "strum",
  "tracing",
 ]
 
@@ -9947,6 +9950,7 @@ dependencies = [
  "stark-net",
  "stark-pen",
  "stark-ui",
+ "strum",
  "tokio",
  "wgpu",
  "wgpui",

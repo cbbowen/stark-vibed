@@ -756,7 +756,7 @@ fn ShapeGallery() -> Element {
                     key: "{name}",
                     class: card(active),
                     onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "asset-thumb", style: stark_ui::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                 }
             }
@@ -765,7 +765,7 @@ fn ShapeGallery() -> Element {
                     key: "{key}",
                     class: card(brush_shape == BrushShape::Stamp(id)),
                     onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "asset-thumb", style: stark_ui::library::thumb_style(url.as_deref()) }
+                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
                     div { class: "asset-name", title: "{name}", "{name}" }
                     // `stark_ui::icons::REMOVE`, as on every other row the application lets you
                     // take something out of — the library of stamps is one more roster.

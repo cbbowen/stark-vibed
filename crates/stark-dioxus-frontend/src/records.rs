@@ -11,6 +11,7 @@ mod tests {
     use std::collections::HashSet;
 
     use stark_ui::storage::{Blob, Entry, Record, Store};
+    use strum::VariantArray;
 
     /// Rows of the registry that are some **other** frontend's, and so have no type
     /// here to claim them.
@@ -33,7 +34,7 @@ mod tests {
     /// convention and the second invisible entirely.
     ///
     /// A record added without a line here fails on the count, not on a reviewer
-    /// remembering: `ALL` grows and the claims do not.
+    /// remembering: `VARIANTS` grows and the claims do not.
     #[test]
     fn every_record_claims_one_store() {
         let claimed = [
@@ -62,7 +63,7 @@ mod tests {
         );
         assert_eq!(
             distinct.union(&elsewhere).copied().collect::<HashSet<_>>(),
-            Store::ALL.iter().copied().collect::<HashSet<_>>(),
+            Store::VARIANTS.iter().copied().collect::<HashSet<_>>(),
             "every row of the registry is some type's, and every type has a row"
         );
 

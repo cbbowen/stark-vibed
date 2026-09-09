@@ -17,6 +17,9 @@ flate2 = { workspace = true }
 png = { workspace = true }
 jpeg-encoder = { workspace = true }
 blake3 = { workspace = true }
+# The tile pool's census is an array indexed by allocation source, so its length is the
+# variant count — derived rather than restated (`gpu::tile`).
+strum = { workspace = true }
 tracing = { workspace = true }
 # Where a frame's time goes (`timing`, §7.1). A regular dependency, not a dev one:
 # the histograms are collected in the shipped app, because a profile you have to

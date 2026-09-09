@@ -136,7 +136,27 @@ impl ChordKey {
 /// variant exactly as `Debug` does, so the stored name and this enum are one
 /// word by construction, and a variant renamed costs that browser's binding
 /// rather than quietly mis-matching it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+///
+/// **The declaration order is the row's order**, which is a claim rather than an
+/// accident: the three are ordered by how much each lets in — one layer, the layers
+/// beneath it too, then all of them — so the bar reads as one question, *how far does
+/// this sample see*, rather than as three unrelated buttons (§18.0.2). The default
+/// sits where that puts it rather than at the head of the row, which is what an
+/// ordering worth having costs. Both surfaces draw from `VariantArray::VARIANTS`, and
+/// `commands::ALL` is still kept by hand, so `tests::every_pick_scope_has_a_row` walks
+/// the derived list to say that a reach added here arrives in the palette with a chord
+/// of its own.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::VariantArray,
+)]
 pub enum PickScope {
     /// The selected layer alone, ignoring anything over or under it.
     ThisLayer,
@@ -146,24 +166,6 @@ pub enum PickScope {
     /// Every visible layer.
     #[default]
     AllLayers,
-}
-
-impl PickScope {
-    /// Every reach, ordered by how much each one lets in — one layer, the layers
-    /// beneath it too, then all of them. The ordering is the claim that the three
-    /// are one question — *how far does this sample see* — rather than three
-    /// unrelated buttons (§18.0.2), and the default sits where that puts it rather
-    /// than at the head of the row, which is what an ordering worth having costs.
-    ///
-    /// Written once here because the bar's row is drawn from it and the registry
-    /// must agree with the bar: `commands::ALL` is kept by hand, so
-    /// `commands::tests::every_pick_scope_has_a_row` walks this array to say that a
-    /// reach added to the bar arrives in the palette with a chord of its own.
-    pub const ALL: [PickScope; 3] = [
-        PickScope::ThisLayer,
-        PickScope::AndBelow,
-        PickScope::AllLayers,
-    ];
 }
 
 /// One nameable thing the chrome can ask for whole: no argument at the call
@@ -178,7 +180,17 @@ impl PickScope {
 /// `{"TogglePanel":"Layers"}` without anything here writing a name down twice.
 /// Renaming a variant orphans its stored binding, which is dropped on load
 /// (`storage::load_list`) rather than being an error.
+///
+/// The fieldless mirror the two `strum_discriminants` lines make is what
+/// `tests::all_lists_every_command` accounts for [`ALL`] against, a kind at a time.
+/// Test-only, as `variant_count` was before it: nothing the app runs asks what *kind*
+/// of command it is holding, only which one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(strum::EnumDiscriminants))]
+#[cfg_attr(
+    test,
+    strum_discriminants(name(CommandKind), derive(strum::VariantArray))
+)]
 pub enum Command {
     Undo,
     Redo,
@@ -268,7 +280,7 @@ pub enum Command {
     ///
     /// The registry's second payload, and it keeps the module's rule for
     /// [`TogglePanel`](Self::TogglePanel)'s reason — `PickScope` is a closed set
-    /// the *chrome* enumerates (`state::PickScope::ALL`), not a row of the
+    /// the *chrome* enumerates (`PickScope::VARIANTS`), not a row of the
     /// document — so each of the three is one nameable act: listed in [`ALL`],
     /// searchable, and bound to a chord of its own. One variant rather than
     /// three because the three are one question with three answers, which is
@@ -721,7 +733,7 @@ pub const BASIC: &[Command] = &[
 ///
 /// Which is what this enum is for. They arrive one at a time, and the first two
 /// came in as rows appended by hand, each with its focus index counted off
-/// `PanelId::ALL.len()`: bookkeeping the loop beside them was already doing,
+/// `PanelId::VARIANTS.len()`: bookkeeping the loop beside them was already doing,
 /// restated where nothing would catch it going wrong, and a third addition would
 /// have been a third copy of the arithmetic. [`ALL`](Self::ALL) is the map
 /// written down instead, and the menu is one loop over it
@@ -735,7 +747,16 @@ pub const BASIC: &[Command] = &[
 /// Serde, because an entry is named in the record of what this browser last had on
 /// screen (`crate::visibility`) — and the derive spells a variant exactly as `Debug`
 /// does, so the stored word and the enum's are one by construction.
+///
+/// The fieldless mirror is [`Command`]'s, and for its reason: the menu's list is kept
+/// by hand, so `tests::the_visibility_menu_is_the_stack_plus_three` accounts for it a
+/// kind at a time.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(strum::EnumDiscriminants))]
+#[cfg_attr(
+    test,
+    strum_discriminants(name(VisibilityKind), derive(strum::VariantArray))
+)]
 pub enum VisibilityToggle {
     /// One of the floating tool panels (§11).
     Panel(PanelId),
@@ -764,13 +785,13 @@ pub enum VisibilityToggle {
 
 impl VisibilityToggle {
     /// Every entry, in menu order: the panel stack first, in the order it stacks
-    /// ([`PanelId::ALL`]), then the three that are not panels — last, and in
+    /// (`PanelId::VARIANTS`), then the three that are not panels — last, and in
     /// increasing order of how much of the window they take.
     ///
-    /// The panel half is written out rather than folded in from `PanelId::ALL`,
+    /// The panel half is written out rather than folded in from `PanelId::VARIANTS`,
     /// so this list is the one a reader has to trust and it says what it holds;
-    /// `tests::the_visibility_menu_is_the_stack_plus_three` is what keeps the two
-    /// in step when a panel is added.
+    /// `tests::the_visibility_menu_is_the_stack_plus_three` is what keeps it in step
+    /// with both of the enums it is a list over.
     pub const ALL: [VisibilityToggle; 9] = [
         VisibilityToggle::Panel(PanelId::Color),
         VisibilityToggle::Panel(PanelId::Brush),
@@ -1296,6 +1317,7 @@ fn chord_label(chord: &Chord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strum::VariantArray;
 
     /// A keystroke that types `s`, at position `code`.
     fn key(s: &str, code: &'static str) -> Keystroke<'static> {
@@ -1427,8 +1449,13 @@ mod tests {
         // reach added to the bar must arrive in the palette with it, named for
         // the act and then the reach, and bound under the modifier its own bar
         // comes up on.
+        // The reach that lets in least leads, which is what makes the row one
+        // question read left to right (§18.0.2). Declaration order says it now, and
+        // moving `#[default] AllLayers` to the head is exactly the edit that reads
+        // like a tidy-up and is not.
+        assert_eq!(PickScope::VARIANTS.first(), Some(&PickScope::ThisLayer));
         let b = stock();
-        for scope in PickScope::ALL {
+        for &scope in PickScope::VARIANTS {
             let command = Command::SetPickScope(scope);
             assert!(ALL.contains(&command), "{scope:?} has no row in ALL");
             assert!(
@@ -1444,7 +1471,7 @@ mod tests {
             // this far" unavailable, so nothing greys these.
             assert!(command.enabled(None));
         }
-        assert_eq!(search("pick from").len(), PickScope::ALL.len());
+        assert_eq!(search("pick from").len(), PickScope::VARIANTS.len());
     }
 
     #[test]
@@ -1910,23 +1937,66 @@ mod tests {
     /// > List it in `ALL` — by hand, and nothing will remind you: a variant left
     /// > out compiles clean and is simply unfindable in the palette.
     ///
-    /// This is the reminder. `variant_count` is a compile-time property of the
-    /// enum, so adding a variant moves the expected total and fails here — and
-    /// the only edit that fixes it is the row that was forgotten.
+    /// This is the reminder. The kinds of command are a compile-time property of the
+    /// enum, so adding a variant moves the expected total and fails here — and the
+    /// only edit that fixes it is the row that was forgotten.
     ///
     /// The arithmetic is the one thing worth reading twice. Two variants carry a
-    /// payload drawn from the chrome's own closed set, and each stands for as
-    /// many acts as that set has members — so they count once as variants and
-    /// once per member as rows. That the members really are all present is
-    /// `every_panel_has_a_toggle_row` and `every_pick_scope_has_a_row`, which
-    /// check the two families by name; this checks the total, and between them
-    /// there is nowhere for a missing row to hide.
+    /// payload drawn from the chrome's own closed set, and each stands for as many
+    /// acts as that set has members — so they count once as a kind and once per
+    /// member as rows. The acts that take no argument are spelled out rather than
+    /// waved through by a wildcard so that the match stays **total**: a third payload
+    /// family then stops the build here, at the accounting it has to join, instead of
+    /// failing a subtraction whose line says nothing about it.
+    ///
+    /// That the members really are all present is `every_panel_has_a_toggle_row` and
+    /// `every_pick_scope_has_a_row`, which check the two families by name; this checks
+    /// the total, and between them there is nowhere for a missing row to hide.
     #[test]
     fn all_lists_every_command() {
-        let payload_families = 2; // TogglePanel, SetPickScope
-        let expected = std::mem::variant_count::<Command>() - payload_families
-            + PanelId::ALL.len()
-            + PickScope::ALL.len();
+        use CommandKind as Kind;
+        let expected: usize = Kind::VARIANTS
+            .iter()
+            .map(|kind| match kind {
+                Kind::TogglePanel => PanelId::VARIANTS.len(),
+                Kind::SetPickScope => PickScope::VARIANTS.len(),
+                Kind::Undo
+                | Kind::Redo
+                | Kind::Deselect
+                | Kind::InvertSelection
+                | Kind::SelectRect
+                | Kind::SelectEllipse
+                | Kind::SelectLasso
+                | Kind::MirrorView
+                | Kind::ToggleHdr
+                | Kind::BrushSmaller
+                | Kind::BrushLarger
+                | Kind::NewDocument
+                | Kind::OpenDocument
+                | Kind::SaveDocument
+                | Kind::ImportImage
+                | Kind::ExportImage
+                | Kind::Share
+                | Kind::Join
+                | Kind::ToggleTimeline
+                | Kind::TimingStats
+                | Kind::Credits
+                | Kind::ToggleNavigator
+                | Kind::ToggleQuickBrushes
+                | Kind::Settings
+                | Kind::EditBrush
+                | Kind::SavePreset
+                | Kind::Transform
+                | Kind::FloatSelection
+                | Kind::FillSelection
+                | Kind::GradientFill
+                | Kind::AddLayer
+                | Kind::AddFrame
+                | Kind::AddPerspective
+                | Kind::CancelMode
+                | Kind::FinishMode => 1,
+            })
+            .sum();
         assert_eq!(
             ALL.len(),
             expected,
@@ -1960,7 +2030,7 @@ mod tests {
         // panel added to the stack must arrive in the palette with it, wearing
         // a name that still says which panel it is — and saying "panel", which
         // is how a query for the word lists the whole stack.
-        for id in PanelId::ALL {
+        for &id in PanelId::VARIANTS {
             let command = Command::TogglePanel(id);
             assert!(ALL.contains(&command), "{id:?} has no row in ALL");
             assert!(
@@ -1971,15 +2041,33 @@ mod tests {
                 "{id:?}'s command is not named after its panel"
             );
         }
-        assert_eq!(search("panel").len(), PanelId::ALL.len());
+        assert_eq!(search("panel").len(), PanelId::VARIANTS.len());
     }
 
+    /// The menu holds the panel stack and the three entries that are not panels, and
+    /// nothing else.
+    ///
+    /// [`VisibilityToggle::ALL`] is kept by hand — the panel rows written out rather
+    /// than folded in — so the list is accounted for a *kind* at a time against the
+    /// enum's own. The match is total, which is what makes a fourth kind of entry stop
+    /// the build here instead of going quietly missing from the menu.
     #[test]
     fn the_visibility_menu_is_the_stack_plus_three() {
-        // The menu's panel half is `PanelId::ALL` in the order it stacks —
-        // the claim that the list reads as a picture of the stack. It is
-        // written out in `VisibilityToggle::ALL` rather than folded in from
-        // there, so this is what holds the two together when a panel arrives.
+        use VisibilityKind as Kind;
+        let expected: usize = Kind::VARIANTS
+            .iter()
+            .map(|kind| match kind {
+                Kind::Panel => PanelId::VARIANTS.len(),
+                Kind::Navigator | Kind::QuickBrushes | Kind::Timeline => 1,
+            })
+            .sum();
+        assert_eq!(
+            VisibilityToggle::ALL.len(),
+            expected,
+            "an entry of the menu has no row in VisibilityToggle::ALL",
+        );
+        // And the panel half is `PanelId::VARIANTS` in the order it stacks — the
+        // claim that the list reads as a picture of the stack.
         let panels: Vec<PanelId> = VisibilityToggle::ALL
             .into_iter()
             .filter_map(|entry| match entry {
@@ -1989,7 +2077,7 @@ mod tests {
             .collect();
         assert_eq!(
             panels,
-            PanelId::ALL.to_vec(),
+            PanelId::VARIANTS.to_vec(),
             "the visibility menu's panel rows are not the stack, in order"
         );
         for (i, entry) in VisibilityToggle::ALL.into_iter().enumerate() {

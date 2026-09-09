@@ -1250,7 +1250,7 @@ hr {
    The ends are named by `.stack-first` / `.stack-last` rather than by `:first-child` /
    `:last-child`, because the stack's DOM children are in a fixed sequence and its visible
    order is a flex `order` on each panel (`layout::PanelStack`) — the first child is
-   whichever panel leads `PanelId::ALL`, which is not where the column starts. One panel
+   whichever panel leads `PanelId::VARIANTS`, which is not where the column starts. One panel
    open wears both, and rounds all four corners. */
 .app-root.minimal .panel-stack {
   gap: 0;

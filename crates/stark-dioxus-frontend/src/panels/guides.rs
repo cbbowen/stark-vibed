@@ -505,8 +505,8 @@ fn GuideRow(
     let seed = guide.name.as_deref().unwrap_or_default().to_string();
     let visible = guide.visible;
     // The row's transform, written by `Motion` so every declaration is stated on
-    // every render — including the ones that are "off" (see `reorder::Motion::css`).
-    let shift = motion.css();
+    // every render — including the ones that are "off" (see `super::reorder::css`).
+    let shift = super::reorder::css(motion);
 
     rsx! {
         div {

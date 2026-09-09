@@ -121,6 +121,7 @@ use stark_ui::brush_editor::Section;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::ChromeHiding;
 use stark_ui::storage::Store;
+use strum::{EnumCount, VariantArray};
 
 /// How long a gap between two reports of the same deed makes them two deeds, in
 /// seconds.
@@ -159,7 +160,21 @@ const LONG_PAN: f32 = 1200.0;
 /// wrote last week, so a deed may be added, removed or reordered freely, and only
 /// editing the string forgets a tally. A name this build no longer knows costs its own
 /// row (`storage::load_list`) — a deed nothing counts has no lesson to feed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+///
+/// **Declaration order is the tally's slot order** ([`Deed::slot`]), which costs
+/// nothing to move: the ledger is keyed by the stored name, so reordering here
+/// renumbers an in-memory array and no browser notices.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::VariantArray,
+    strum::EnumCount,
+)]
 pub enum Deed {
     /// A brush stroke laid on the canvas and committed. A selection drag is not a
     /// stroke: it shares the gesture and produces a mask rather than paint (§6.8).
@@ -257,39 +272,16 @@ pub enum Deed {
 }
 
 impl Deed {
-    /// Every deed. The order **is** the tally's slot order, so this is
-    /// [`Deed::slot`]'s only authority.
-    const ALL: [Deed; 16] = [
-        Deed::Stroke,
-        Deed::TunedBrush,
-        Deed::LongPan,
-        Deed::ChangedColor,
-        Deed::Redo,
-        Deed::AppliedPreset,
-        Deed::Undo,
-        Deed::ClosedPanel,
-        Deed::AssistedStroke,
-        Deed::GuidedLine,
-        Deed::Selection,
-        Deed::OpenedBrushEditor,
-        Deed::WokePanels,
-        Deed::PickedColor,
-        Deed::AddedLayer,
-        Deed::UsedNavigator,
-    ];
-
-    /// How many there are, so the tally can be an array rather than a map.
-    const COUNT: usize = Deed::ALL.len();
-
     /// This deed's slot in the tally.
     ///
-    /// A linear scan of a dozen, at deed rate. It reads [`Deed::ALL`] rather than
-    /// restating the order as a `match` that could come to disagree with it.
+    /// A linear scan of a dozen, at deed rate. It reads the derived variant list
+    /// rather than restating the order as a `match` that could come to disagree
+    /// with it.
     fn slot(self) -> usize {
-        Deed::ALL
+        Deed::VARIANTS
             .iter()
             .position(|d| *d == self)
-            .expect("every Deed is in Deed::ALL")
+            .expect("every Deed is a variant of Deed")
     }
 }
 
@@ -482,7 +474,7 @@ impl Anchor {
             Anchor::PanelColumn => {
                 let asleep = (state.panels_asleep)();
                 let hidden = layout.hidden.read();
-                asleep && PanelId::ALL.iter().any(|id| !hidden.contains(id))
+                asleep && PanelId::VARIANTS.iter().any(|id| !hidden.contains(id))
             }
             Anchor::QuickSlots => (state.slots.pinned)(),
             Anchor::Navigator => (state.navigator)(),
@@ -1716,7 +1708,7 @@ fn stored() -> Ledger {
 /// [`COALESCE`] and only while the app is being used.
 fn save(state: AppState) {
     let book = state.tutor.ledger.peek().clone();
-    let deeds = Deed::ALL.into_iter().filter_map(|deed| {
+    let deeds = Deed::VARIANTS.iter().copied().filter_map(|deed| {
         let count = book.tally[deed.slot()];
         // A deed nobody has done is the absence of a row rather than a row saying
         // zero, so the record only ever holds what actually happened.
@@ -2004,7 +1996,7 @@ mod tests {
     /// does once they already know.
     #[test]
     fn the_deeds_and_the_lessons_account_for_each_other() {
-        for deed in Deed::ALL {
+        for &deed in Deed::VARIANTS {
             let earns = LESSONS.iter().any(|l| l.deed == deed);
             let answers = LESSONS.iter().any(|l| l.answer.dismisses().contains(&deed));
             assert!(
@@ -2173,19 +2165,20 @@ mod tests {
         );
     }
 
-    /// [`Deed::slot`] and the stored name both have to be total and one-to-one — the
-    /// first indexes the tally, the second is what a stored row is found by.
+    /// Every deed is stored under a name of its own — what a stored row is found by.
     ///
     /// The names are `rename` attributes, so serde round-trips them by construction;
     /// what it does *not* check is that no two variants were given the same string,
     /// which would silently merge two tallies.
+    ///
+    /// [`Deed::slot`] used to be checked here too. It is a position in the derived
+    /// variant list now, so "total and one-to-one" is what the derive means, and an
+    /// assertion of it could not fail.
     #[test]
-    fn every_deed_has_its_own_slot_and_its_own_name() {
-        let slots: HashSet<usize> = Deed::ALL.into_iter().map(Deed::slot).collect();
-        assert_eq!(slots.len(), Deed::COUNT);
-        let names: HashSet<String> = Deed::ALL
-            .into_iter()
-            .map(|d| serde_json::to_string(&d).unwrap())
+    fn every_deed_has_its_own_stored_name() {
+        let names: HashSet<String> = Deed::VARIANTS
+            .iter()
+            .map(|d| serde_json::to_string(d).unwrap())
             .collect();
         assert_eq!(
             names.len(),

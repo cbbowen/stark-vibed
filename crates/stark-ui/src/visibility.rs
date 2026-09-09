@@ -20,6 +20,7 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 
 use crate::commands::VisibilityToggle;
 use crate::panels::PanelId;
@@ -93,8 +94,9 @@ pub fn stored_screen() -> Option<HashSet<VisibilityToggle>> {
 /// panel, for a browser that has never been here or whose record will not read.
 pub fn stored_hidden() -> HashSet<PanelId> {
     let open = stored_open().unwrap_or_default();
-    PanelId::ALL
-        .into_iter()
+    PanelId::VARIANTS
+        .iter()
+        .copied()
         .filter(|id| !open.contains(id))
         .collect()
 }
@@ -228,8 +230,9 @@ mod tests {
         );
         assert_eq!(
             stored_hidden_from(rows),
-            PanelId::ALL
-                .into_iter()
+            PanelId::VARIANTS
+                .iter()
+                .copied()
                 .filter(|id| *id != PanelId::Layers)
                 .collect::<HashSet<_>>(),
             "and the surviving panel row is still the only one open"
@@ -276,7 +279,7 @@ mod tests {
         );
         assert_eq!(
             stored_hidden(),
-            PanelId::ALL.into_iter().collect::<HashSet<_>>(),
+            PanelId::VARIANTS.iter().copied().collect::<HashSet<_>>(),
             "and a floating stack still reads that as every panel closed"
         );
     }
@@ -290,8 +293,9 @@ mod tests {
                 _ => None,
             })
             .collect();
-        PanelId::ALL
-            .into_iter()
+        PanelId::VARIANTS
+            .iter()
+            .copied()
             .filter(|id| !open.contains(id))
             .collect()
     }

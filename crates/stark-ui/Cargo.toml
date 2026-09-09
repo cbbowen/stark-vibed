@@ -30,6 +30,11 @@ serde_json = "1"
 # Damage is reported and carried on from, never returned: a warning is the whole of
 # what a caller could do about a record it cannot read.
 tracing = { workspace = true }
+# The registries here are lists of variants, and a list kept beside its enum by hand is
+# a list that drifts. `VariantArray` derives it, and `EnumDiscriminants` gives the two
+# payload-carrying registries — which still keep their lists by hand, for the order —
+# a mirror their tests can account for a variant at a time (§25.2).
+strum = { workspace = true }
 
 # The shared lint set (root Cargo.toml).
 [lints]

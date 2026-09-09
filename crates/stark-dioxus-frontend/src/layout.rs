@@ -52,6 +52,7 @@ use crate::platform;
 use crate::state::{AppState, root_signal};
 use stark_ui::panels::PanelId;
 use stark_ui::reorder::{Grab, Motion, Slide};
+use strum::VariantArray;
 
 /// The panel's mark, worn by its title bar and by the entry that reopens it in the
 /// visibility menu (`stark_ui::commands::VisibilityToggle`) — `PanelId::glyph`
@@ -116,7 +117,7 @@ impl PanelLayout {
     /// default heights — is stated beside the fields that hold it.
     pub(crate) fn new() -> Self {
         Self {
-            order: root_signal(|| PanelId::ALL.to_vec()),
+            order: root_signal(|| PanelId::VARIANTS.to_vec()),
             // Every panel starts closed and what this browser last had open comes
             // back — read here, before the first render, so the stack the artist
             // left is the first one drawn rather than one that assembles itself a
@@ -208,7 +209,7 @@ impl PanelLayout {
     /// the layout already knows (and the grip responds on the first pixel of the
     /// drag, with no async measurement to wait for).
     pub fn default_heights() -> HashMap<PanelId, f32> {
-        PanelId::ALL
+        PanelId::VARIANTS
             .iter()
             .filter_map(|id| id.default_height().map(|h| (*id, h)))
             .collect()
@@ -485,7 +486,7 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 }
 
 /// The floating tool panels, top-right. Renders the open panels in a **fixed** sequence —
-/// [`PanelId::ALL`], always — and states the user's order as a flex `order` on each one.
+/// `PanelId::VARIANTS`, always — and states the user's order as a flex `order` on each one.
 ///
 /// So the stack's order is not in the DOM: slot *k* renders panel *k* for the life of the
 /// app, and a reorder changes an integer rather than moving anything. What that buys is
@@ -494,7 +495,7 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 /// would rebuild whichever panels changed slots.
 ///
 /// It costs the stack `:first-child` / `:last-child`, since the first child is now
-/// whichever panel leads `PanelId::ALL` rather than the top of the column; `Panel` names
+/// whichever panel leads `PanelId::VARIANTS` rather than the top of the column; `Panel` names
 /// the ends with `.stack-first` / `.stack-last` instead.
 ///
 /// A stack no taller than its panels, and a stack taller than the window scrolls: both
@@ -605,7 +606,7 @@ pub fn PanelStack() -> Element {
             // grew while nobody was looking.
             onscroll: move |_| measure_scroll(layout),
             onpointerenter: move |_| measure_scroll(layout),
-            for id in PanelId::ALL {
+            for id in PanelId::VARIANTS.iter().copied() {
                 if let Some(slot) = open.iter().position(|p| *p == id) {
                     Panel {
                         id,
@@ -721,7 +722,7 @@ const PANEL_INSET: f32 = 4.0;
 /// flex `order`, which is the whole of how the stack is ordered ([`PanelStack`]); the two
 /// together name the ends of the column, which minimal mode rounds. Those have to be
 /// classes rather than `:first-child` / `:last-child` — the DOM child order is the fixed
-/// one now, so the first child is whichever panel happens to lead `PanelId::ALL`.
+/// one now, so the first child is whichever panel happens to lead `PanelId::VARIANTS`.
 ///
 /// `motion` is the drag preview — where this panel is drawn relative to where it
 /// belongs, and whether it is the one in flight (`panels::reorder`). The panel is
@@ -755,13 +756,16 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
     //
     // The rule is easy to break by adding a conditional declaration here, and the breakage
     // is invisible until some *other* state change makes the stale value wrong. The
-    // `transform`/`transition` pair is `Motion::css`'s, which holds the same rule for
+    // `transform`/`transition` pair is `panels::reorder::css`'s, which holds the same rule for
     // the layer tree and the guide list — and has the test that pins it.
     let h = match height {
         Some(h) => format!("{h}px"),
         None => "auto".to_string(),
     };
-    let style = format!("order: {slot}; height: {h}; {}", motion.css());
+    let style = format!(
+        "order: {slot}; height: {h}; {}",
+        crate::panels::reorder::css(motion)
+    );
     rsx! {
         div {
             class: "panel",
@@ -1159,7 +1163,7 @@ mod tests {
     /// stack that silently forgets itself between visits rather than an error.
     #[test]
     fn a_panel_is_one_name_in_the_dom_and_in_the_store() {
-        for id in PanelId::ALL {
+        for &id in PanelId::VARIANTS {
             let stored = serde_json::to_string(&id).unwrap();
             assert_eq!(stored, format!("\"{}\"", panel_key(id)));
             assert_eq!(serde_json::from_str::<PanelId>(&stored).unwrap(), id);

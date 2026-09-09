@@ -17,8 +17,10 @@
 //!   (`stark-dioxus-frontend`'s `layout::ThumbGrab`).
 //! - [`Slide`](crate::reorder::Slide) is the column arithmetic: given the block of rows that travels and
 //!   how far the hand has taken it, which rows yield and by how much.
-//! - [`Motion`](crate::reorder::Motion) is what one row does about it, written as the two CSS declarations
-//!   that say so.
+//! - [`Motion`](crate::reorder::Motion) is what one row does about it: where the row
+//!   sits relative to where it belongs, whether it is the one being carried, and
+//!   whether it should ease there. How that is *drawn* is each frontend's — the web
+//!   one writes it as two CSS declarations (`panels::reorder::css`).
 //!
 //! A row that is *both* pressable and draggable has one problem this module also
 //! owns: the browser sends a `click` after the release, and that click belongs to
@@ -30,10 +32,6 @@
 /// neither survives being mistaken for a drag; large enough that the hand's own
 /// tremor on a pen does not move anything.
 const GRAB_SLOP: f32 = 4.0;
-
-/// How long a displaced row takes to reach its new place. Long enough to be followed
-/// by eye, short enough that the list has settled by the time the hand arrives.
-const SLIDE_MS: u32 = 180;
 
 /// A press on a row, which may or may not have become a drag yet.
 ///
@@ -279,27 +277,6 @@ pub struct Motion {
     pub live: bool,
 }
 
-impl Motion {
-    /// The row's own two declarations — **both of them, every render, including the
-    /// ones that are "off"**.
-    ///
-    /// Inline styles are applied property by property rather than by replacing the
-    /// attribute, so a declaration left out of a render is not cleared: it keeps
-    /// whatever the last render that *did* mention it gave it. That is how a dropped
-    /// row was once left wearing a preview's transform over a list that had since
-    /// reordered (`layout::Panel` carries the same scar). Writing the pair from one
-    /// place is one place for the rule to hold rather than one per panel.
-    pub fn css(self) -> String {
-        let (dx, dy) = self.shift;
-        let ease = if self.live && !self.lifted {
-            format!("transform {SLIDE_MS}ms ease")
-        } else {
-            "none".to_string()
-        };
-        format!("transform: translate({dx}px, {dy}px); transition: {ease};")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,14 +407,5 @@ mod tests {
             g.resolve(&keys(&["b"])).is_none(),
             "the grabbed row is gone"
         );
-    }
-
-    /// Every row's transform is written on every render, including at rest — the
-    /// declaration a render leaves out is the one that goes stale.
-    #[test]
-    fn a_resting_row_still_states_its_transform() {
-        let css = Motion::default().css();
-        assert!(css.contains("translate(0px, 0px)"), "{css}");
-        assert!(css.contains("transition: none"), "{css}");
     }
 }

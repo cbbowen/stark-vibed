@@ -23,6 +23,7 @@
 
 use stark_ui::commands::{Bindings, Command, PickScope};
 use stark_ui::pick::{PATCHES, Sampler, patch_word};
+use strum::VariantArray;
 use wgpui::{
     Bounds, HitboxBehavior, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb,
     rgba,
@@ -40,7 +41,7 @@ const GROUP_TIP: &str = "Only the selected layer's group answers \u{2014} its si
 /// Which of the bar's controls a press landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    /// One of [`PickScope::ALL`], by index.
+    /// One of `PickScope::VARIANTS`, by index.
     Scope(usize),
     /// The group fence.
     Group,
@@ -89,7 +90,10 @@ pub fn act(sampler: &mut Sampler, region: Region) -> Option<Command> {
     match region {
         // The reach is the registry's act rather than a write here: the chip, the
         // Alt+Q/A/Z chord and the palette row must not describe one reach three ways.
-        Region::Scope(i) => PickScope::ALL.get(i).copied().map(Command::SetPickScope),
+        Region::Scope(i) => PickScope::VARIANTS
+            .get(i)
+            .copied()
+            .map(Command::SetPickScope),
         Region::Group => {
             sampler.group_only = !sampler.group_only;
             None
@@ -141,14 +145,14 @@ pub fn bar(sampler: Sampler, bindings: &Bindings, regions: &Regions) -> impl Int
                 ))
                 .child("Eyedropper"),
         )
-        // How far the sample sees. `PickScope::ALL` is the ordering — one layer, the
+        // How far the sample sees. `PickScope::VARIANTS` is the ordering — one layer, the
         // layers beneath it, then all of them — so the run reads as one question
         // rather than as three unrelated chips.
         .child(
             div()
                 .flex()
                 .gap_1()
-                .children(PickScope::ALL.iter().enumerate().map(|(i, scope)| {
+                .children(PickScope::VARIANTS.iter().enumerate().map(|(i, scope)| {
                     let command = Command::SetPickScope(*scope);
                     // Whole off the registry: the mark, the terse word, the sentence
                     // in the hover and the chord it advertises — Alt+Q / Alt+A /
@@ -256,7 +260,7 @@ mod tests {
     #[test]
     fn a_reach_is_the_registrys_act() {
         let mut sampler = Sampler::default();
-        for (i, scope) in PickScope::ALL.iter().enumerate() {
+        for (i, scope) in PickScope::VARIANTS.iter().enumerate() {
             assert_eq!(
                 act(&mut sampler, Region::Scope(i)),
                 Some(Command::SetPickScope(*scope))

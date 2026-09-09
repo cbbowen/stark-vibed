@@ -18,6 +18,7 @@ use stark_ui::drags::{
     capture, chord_label,
 };
 use stark_ui::keys::Mods;
+use strum::VariantArray;
 
 /// The three modifiers as a DOM event reports them — the one translation from
 /// [`Modifiers`], shared by the press path and the key tracker so the two cannot read
@@ -227,7 +228,7 @@ pub fn DragBindingSection() -> Element {
     // disarms the first.
     let capturing: Signal<Option<DragAction>> = use_signal(|| None);
     let table = state.drags.read().clone();
-    let known = DragPreset::ALL.iter().any(|p| p.matches(&table));
+    let known = DragPreset::VARIANTS.iter().any(|p| p.matches(&table));
 
     rsx! {
         div { class: "setting-row",
@@ -248,7 +249,7 @@ pub fn DragBindingSection() -> Element {
                 // the condition the rule turns on; a seventh preset is the cue
                 // to re-measure and, failing that, to become a `.select`.
                 div { class: "drag-presets segmented",
-                    for preset in DragPreset::ALL.iter().copied() {
+                    for preset in DragPreset::VARIANTS.iter().copied() {
                         button {
                             key: "{preset:?}",
                             class: if preset.matches(&table) { "chip active" } else { "chip" },
@@ -266,7 +267,7 @@ pub fn DragBindingSection() -> Element {
                 }
             }
         }
-        for action in DragAction::ALL.iter().copied() {
+        for action in DragAction::VARIANTS.iter().copied() {
             DragBindingRow { key: "{action:?}", action, capturing }
         }
     }
@@ -375,7 +376,7 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
             }
 
             div { class: "drag-preset-list",
-                for preset in DragPreset::ALL.iter().copied() {
+                for preset in DragPreset::VARIANTS.iter().copied() {
                     button {
                         key: "{preset:?}",
                         class: "drag-preset",
@@ -389,7 +390,7 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
                             span { class: "drag-preset-blurb", "{preset.blurb()}" }
                         }
                         div { class: "drag-preset-rows",
-                            for action in DragAction::ALL.iter().copied() {
+                            for action in DragAction::VARIANTS.iter().copied() {
                                 div { key: "{action:?}", class: "drag-preset-row",
                                     span { class: "drag-preset-act", "{action.word()}" }
                                     span { class: "menu-shortcut",

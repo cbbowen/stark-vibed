@@ -51,6 +51,10 @@ serde_json = "1"
 # an alpha channel the source may not have had. Already in the wasm build under
 # `stark-assetid`, which is where the matching decode lives.
 png = { workspace = true }
+# The tour's deed tally is an array indexed by variant, and `stark_ui`'s registries
+# answer with `VariantArray::VARIANTS` — an associated const needs its trait in scope
+# at the call site.
+strum = { workspace = true }
 
 # Web platform glue (the crate targets wasm32 via `dx serve --platform web`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

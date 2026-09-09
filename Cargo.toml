@@ -125,6 +125,13 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "registry",
     "std",
 ] }
+# Compile-time reflection over an enum. `VariantArray` derives the list of variants a
+# registry would otherwise keep by hand beside the enum, and
+# `EnumCount`/`EnumDiscriminants` let a test state a total the compiler checks instead
+# of a magic number. A list written twice is a list that drifts, and the drift shows up
+# as a row missing from a menu rather than as a build failure (§25.2). Nothing reaches
+# the wasm build but a proc macro that ran on the host and three trait declarations.
+strum = { version = "0.28", features = ["derive"] }
 
 # stark-shaders is consumed by stark-engine.
 stark-assetid = { path = "crates/stark-assetid" }

@@ -32,7 +32,8 @@
 //! Carry and Release stay — they are the two moves worth having a one-click name for,
 //! and they say what they do without being tried — but reordering *within* a stack
 //! had no control at all before this, because it is the one move neither of them can
-//! express. See [`landing`] for what a drop means and [`Motion`] for how it is drawn.
+//! express. See [`landing`] for what a drop means and [`Motion`] for what a row does
+//! about it.
 
 use std::collections::HashSet;
 
@@ -659,8 +660,8 @@ pub fn LayerRow(
     // whatever is selected.
     // The row's transform, written by `Motion` so that every declaration is stated on
     // every render — including the ones that are "off", which is the whole of that
-    // rule (see `reorder::Motion::css`).
-    let shift = motion.css();
+    // rule (see `super::reorder::css`).
+    let shift = super::reorder::css(motion);
 
     rsx! {
         // The indent is padding on the wrapper rather than a margin on the row,

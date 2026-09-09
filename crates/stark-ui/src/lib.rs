@@ -1,9 +1,3 @@
-// `variant_count` counts `Command`'s arms so that a command added without a row in
-// `commands::ALL` fails the build with the row it is missing (§25.2). Test-only, which
-// is what keeps a nightly feature out of the shipped crate — the toolchain here is
-// nightly either way (`rust-toolchain.toml`), and this is the one thing that needs it.
-#![cfg_attr(test, feature(variant_count))]
-
 //! The **frontend's model** — what a chrome is written in, below any toolkit
 //! (§11.2).
 //!
@@ -26,9 +20,11 @@
 //!
 //! **This crate names no toolkit type at all** — no `dioxus`, no `wgpui`, no
 //! `web-sys`, no `winit` — which is `stark-net`'s bargain applied one level up, and
-//! which `tests::no_toolkit_types` holds by reading the source rather than by
+//! which `tests/no_toolkit_types.rs` holds by reading the source rather than by
 //! trusting the manifest: a type can arrive through a re-export the dependency list
-//! does not show.
+//! does not show. It lives outside `src` so that the strings it bans are not in the
+//! tree it walks — this file used to be exempted from its own check for naming all
+//! five of them, and an exemption is a hole shaped like whatever grows into it.
 //!
 //! It compiles to wasm, because the web app is one of its two consumers.
 //!
@@ -53,7 +49,7 @@
 //!   what the list is. Two panels are rosters; this is the gesture they share.
 //! - [`library`] — the gallery thumbnails a browser-held asset library shows
 //!   (§6.4, §6.6).
-//! - [`storage`] — the ten records a client keeps between visits, the one JSON format
+//! - [`storage`] — the records a client keeps between visits, the one JSON format
 //!   they are kept in, and the [`Backend`](storage::Backend) a frontend installs to
 //!   say where they actually go (§25.6).
 //! - [`identity`] — the key this client's `ActorId` derives from, and the run counter
@@ -68,6 +64,34 @@
 //! - [`pick`] — the eyedropper's options and its arming (§18.0.2): what a sample is
 //!   taken with, how a reach resolves against the layer selected *now*, and whether
 //!   a press would sample rather than paint.
+//! - [`commands`] — the command registry (§11, §25): every simple act the chrome can
+//!   ask for, with its name, mark, hint and greying on the variant, and the chord
+//!   table a rebinding writes over.
+//! - [`drags`] — that registry for the pointer (§25): which chord and button opens
+//!   which canvas drag, and the preset tables a hand arrives from another app with.
+//! - [`keys`] — one keystroke as both binding tables read it, and the three modifiers
+//!   they start from (§25).
+//! - [`panels`] — the register vocabulary a chrome is arranged in (§11): which
+//!   floating tool panels there are, what each is called and what mark it wears.
+//! - [`visibility`] — what a client last had on screen, as one record over the
+//!   visibility menu's own list (§11, §25.6).
+//! - [`nav`] — what a press, a drag and a wheel notch do to the **view**, at the
+//!   rates both apps travel at (§18.1.7).
+//! - [`selection`] — what a shape gesture is about to do (§6.8, §18.0.4): which tool
+//!   draws the region, and what the region it encloses lands on.
+//! - [`slots`] — the ten brushes under the hand (§18.1.8): what a digit holds, what a
+//!   hold's release keeps and hands back, and when two presses are a pick.
+//! - [`presets`] — the brush preset library (§6.2, §18.1.8): named `BrushConfig`
+//!   snapshots, and the ones the app ships.
+//! - [`assets`] — what an imported image *becomes*, and what a client's asset library
+//!   is made of (§6.4, §6.6, §19, §25.6).
+//! - [`color`] — the Oklab picker's geometry (§6.7, §11.2): the display gamut's rim,
+//!   the wheel fitted to it, and the pictures of both.
+//! - [`icons`] — which glyph each control wears, and why (§11, §25).
+//! - [`bounds`] — the canvas-space rectangles a frontend asks the document for, and
+//!   the one way it grows them.
+//! - [`files`] — what a document file is called, and whether closing it would lose
+//!   work (§8, §15.6).
 
 pub mod assets;
 pub mod bounds;
@@ -95,45 +119,3 @@ pub mod slots;
 pub mod storage;
 pub mod transform;
 pub mod visibility;
-
-#[cfg(test)]
-mod tests {
-    /// **No toolkit type reaches this crate.**
-    ///
-    /// Read off the source rather than the manifest, because the manifest is the
-    /// weaker claim: a `dioxus::` path can arrive through a dependency's re-export
-    /// without ever appearing in `[dependencies]`, and what would go wrong is not a
-    /// build failure but a module that quietly stops being movable.
-    ///
-    /// The check a reviewer would do, made a thing that runs.
-    #[test]
-    fn no_toolkit_types() {
-        // Path-shaped, so that *naming the frontend crate* in prose stays legal while
-        // naming one of its types does not: `stark-dioxus-frontend` is a neighbour worth
-        // pointing at, `dioxus::Event` is the thing this crate must not know.
-        const BANNED: &[&str] = &["dioxus::", "wgpui::", "web_sys::", "winit::", "gpui::"];
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut found = Vec::new();
-        for entry in std::fs::read_dir(&src).expect("the crate has a src directory") {
-            let path = entry.expect("a readable directory entry").path();
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            // This file names all five, which is the one legitimate mention.
-            if path.file_name().is_some_and(|n| n == "lib.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            for (n, line) in text.lines().enumerate() {
-                if let Some(name) = BANNED.iter().find(|b| line.contains(**b)) {
-                    found.push(format!("{}:{}: {name}", path.display(), n + 1));
-                }
-            }
-        }
-        assert!(
-            found.is_empty(),
-            "a toolkit type reached stark-ui, which is what it exists not to name (§11.2):\n{}",
-            found.join("\n")
-        );
-    }
-}

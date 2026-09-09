@@ -115,20 +115,6 @@ pub fn reduce(field: stark_assetid::Canonical) -> stark_assetid::Canonical {
     }
 }
 
-/// A card's `background-image` declaration — written out as `none` when there is no
-/// picture yet (a built-in still fetching, bytes that would not decode) rather than
-/// omitted.
-///
-/// An inline style merges per property, so a declaration left off a reused node is
-/// stranded at its last value instead of cleared — which would leave one card wearing
-/// another's picture.
-pub fn thumb_style(url: Option<&str>) -> String {
-    match url {
-        Some(url) => format!("background-image: url({url});"),
-        None => "background-image: none;".to_string(),
-    }
-}
-
 /// A human name from a picked file's name: the stem, tidied. `fallback` is what an
 /// empty one becomes, and it is the caller's because it says which library was being
 /// added to.

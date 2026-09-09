@@ -22,6 +22,7 @@ use crate::widgets::CommandButton;
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
 use stark_ui::pick::{Hand, PATCHES, patch_word};
+use strum::VariantArray;
 
 #[component]
 pub fn PickBar() -> Element {
@@ -70,13 +71,13 @@ pub fn PickBar() -> Element {
             // differently from the palette. Which is also what buys these three
             // a keyboard — Alt+Q / Alt+A / Alt+Z reach the same act the chip
             // does, held under the very modifier that raised this bar, and each
-            // chip advertises the key that reaches it. `PickScope::ALL` is the
+            // chip advertises the key that reaches it. `PickScope::VARIANTS` is the
             // ordering: how much each one lets in, one layer to all of them, so
             // the row reads as one question — *how far does this sample see* —
             // rather than as three unrelated buttons.
             div {
                 class: "segmented",
-                for want in PickScope::ALL {
+                for want in PickScope::VARIANTS.iter().copied() {
                     CommandButton { key: "{want:?}", command: Command::SetPickScope(want) }
                 }
             }

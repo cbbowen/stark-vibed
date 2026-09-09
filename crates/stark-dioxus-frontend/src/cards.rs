@@ -2,12 +2,26 @@
 //!
 //! What the picture *is* — the canonical field an id names, reduced to a card's size,
 //! and whether it is coverage or height — is `stark_ui::assets::card`. All that is
-//! left here is the encoding, and it is a DOM idiom: a `background-image` takes a URL,
-//! so the texels become a PNG and the PNG becomes base64. The native frontend hands
-//! the same numbers to a texture instead, which is exactly why the numbers and not the
-//! encoding are what moved down.
+//! left here is the encoding and the declaration that carries it, and both are DOM
+//! idioms: a `background-image` takes a URL, so the texels become a PNG and the PNG
+//! becomes base64. The native frontend hands the same numbers to a texture instead,
+//! which is exactly why the numbers and not the encoding are what moved down.
 
 use stark_ui::assets::{Card, Ink};
+
+/// A card's `background-image` declaration — written out as `none` when there is no
+/// picture yet (a built-in still fetching, bytes that would not decode) rather than
+/// omitted.
+///
+/// An inline style merges per property, so a declaration left off a reused node is
+/// stranded at its last value instead of cleared — which would leave one card wearing
+/// another's picture.
+pub fn thumb_style(url: Option<&str>) -> String {
+    match url {
+        Some(url) => format!("background-image: url({url});"),
+        None => "background-image: none;".to_string(),
+    }
+}
 
 /// A `data:` URL for `card`, or `None` if the encode failed.
 ///

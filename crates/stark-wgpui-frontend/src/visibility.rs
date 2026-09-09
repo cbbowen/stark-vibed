@@ -58,7 +58,7 @@ pub const LEFT: [VisibilityToggle; 4] = [
 ///
 /// The reading column: where you are in the piece, what the next stroke is made of,
 /// and what it will land on. Color leads the panels here for the reason it leads
-/// `PanelId::ALL` — it is reached for between nearly every pair of strokes — and the
+/// `PanelId::VARIANTS` — it is reached for between nearly every pair of strokes — and the
 /// overview leads the column because it is glanceable rather than operated.
 pub const RIGHT: [VisibilityToggle; 3] = [
     VisibilityToggle::Navigator,

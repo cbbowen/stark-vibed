@@ -164,6 +164,7 @@ fn contained(root: &std::path::Path, path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strum::VariantArray;
 
     fn files(dir: &std::path::Path) -> Files {
         Files {
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     fn no_key_escapes_its_directory() {
         let f = files(std::path::Path::new("/tmp/x"));
-        for store in stark_ui::storage::Store::ALL {
+        for &store in stark_ui::storage::Store::VARIANTS {
             let (key, _) = store.named();
             let path = f.path(key);
             assert!(

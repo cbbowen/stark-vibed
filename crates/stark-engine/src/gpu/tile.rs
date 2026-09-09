@@ -23,6 +23,8 @@
 
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use strum::{EnumCount, VariantArray};
+
 use crate::gpu::context::GpuContext;
 use crate::unpoisoned;
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
@@ -98,7 +100,11 @@ pub const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
 /// What it must not be is a cost. The census it feeds is an array indexed by
 /// discriminant ([`Census`]), not a map: incrementing it is an add, on a path that
 /// runs thousands of times a second and that §6.2's allocation-rate argument is about.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+///
+/// **Declaration order is the census's slot order**, since a slot is the discriminant
+/// — which is what `tests::a_census_slot_belongs_to_the_source_that_indexes_it` holds
+/// against the derived variant list.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, VariantArray, EnumCount)]
 pub enum AllocSource {
     #[default]
     Unknown,
@@ -125,28 +131,6 @@ pub enum AllocSource {
 }
 
 impl AllocSource {
-    /// Every variant, in discriminant order — what [`Census`] indexes by.
-    ///
-    /// [`Self::name`] below has no wildcard, so adding a variant is a compile error
-    /// there; extend this array too, and
-    /// `a_census_slot_belongs_to_the_source_that_indexes_it` checks the two agree. A
-    /// variant that slipped past both would go uncounted rather than out of bounds —
-    /// telemetry degrading is the right failure for telemetry.
-    const ALL: [Self; 12] = [
-        Self::Unknown,
-        Self::IntegrateDestination,
-        Self::DynamicsWriteback,
-        Self::SelectionMask,
-        Self::TransformScratch,
-        Self::TransformDestination,
-        Self::TransformMask,
-        Self::FillDestination,
-        Self::MergeDestination,
-        Self::MergeScratch,
-        Self::PlacedImage,
-        Self::LiquifyField,
-    ];
-
     const fn name(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
@@ -171,11 +155,15 @@ impl AllocSource {
 /// every acquire *and* every release, both under the pool's lock, to serve one
 /// `tracing::debug!`. Indexing by discriminant makes the census an increment.
 #[derive(Default)]
-struct Census([usize; AllocSource::ALL.len()]);
+struct Census([usize; AllocSource::COUNT]);
 
 impl Census {
-    /// The slot for `source`, or `None` for a variant missing from
-    /// [`AllocSource::ALL`] — see there for why that degrades rather than panics.
+    /// The slot for `source`. `None` is unreachable while the array is
+    /// [`AllocSource::COUNT`] long and the discriminants are the positions
+    /// (`tests::a_census_slot_belongs_to_the_source_that_indexes_it`), and it is left
+    /// as the answer rather than an index because the failure this runs into would be
+    /// a miscount in a `tracing::debug!` — telemetry degrading is the right failure
+    /// for telemetry, and this is called from `Drop`.
     fn slot(&mut self, source: AllocSource) -> Option<&mut usize> {
         self.0.get_mut(source as usize)
     }
@@ -200,7 +188,7 @@ impl std::fmt::Debug for Census {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
             .entries(
-                AllocSource::ALL
+                AllocSource::VARIANTS
                     .iter()
                     .zip(self.0)
                     .filter(|(_, live)| *live > 0)
@@ -1061,23 +1049,23 @@ impl TilePool {
 mod tests {
     use super::*;
 
-    /// [`Census`] indexes by discriminant, so a slot only means anything if
-    /// [`AllocSource::ALL`] lists the variants in that order. Reordering the enum
-    /// without reordering the array would silently attribute every acquire to the
-    /// wrong subsystem, and nothing else would contradict it.
+    /// [`Census`] indexes by discriminant, and the array it indexes is as long as the
+    /// variant count — so what is left to check is that a discriminant really is a
+    /// position in the derived list. A `#[repr]` or an explicit discriminant would
+    /// break that silently, attributing every acquire to the wrong subsystem, and
+    /// nothing else would contradict it.
     #[test]
     fn a_census_slot_belongs_to_the_source_that_indexes_it() {
-        for (i, source) in AllocSource::ALL.iter().enumerate() {
+        for (i, source) in AllocSource::VARIANTS.iter().enumerate() {
             assert_eq!(
                 *source as usize, i,
                 "{source:?} is listed at {i} but indexes {}",
                 *source as usize,
             );
         }
-        // And every variant has a slot to land in: a new one missing from `ALL`
-        // would index past the end and go uncounted.
+        // And every variant has a slot to land in.
         let mut census = Census::default();
-        for source in AllocSource::ALL {
+        for &source in AllocSource::VARIANTS {
             assert!(
                 census.slot(source).is_some(),
                 "{source:?} has no census slot",

@@ -16,7 +16,21 @@
 /// variant exactly as `Debug` does. So the stored name, the `data-panel` attribute and
 /// the drag key (a frontend's `panel_key`) are one word by construction, and a variant renamed
 /// costs the stored row rather than mis-matching it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+///
+/// **Declared in the default top-to-bottom order**, which is what `VariantArray::VARIANTS`
+/// hands the stack. Color leads: it is what the next stroke is made of, and the one
+/// panel an artist reaches for between nearly every pair of them.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::VariantArray,
+)]
 pub enum PanelId {
     Color,
     Brush,
@@ -27,18 +41,6 @@ pub enum PanelId {
 }
 
 impl PanelId {
-    /// Every panel, in the default top-to-bottom order. Color leads: it is what the
-    /// next stroke is made of, and the one panel an artist reaches for between
-    /// nearly every pair of them.
-    pub const ALL: [PanelId; 6] = [
-        PanelId::Color,
-        PanelId::Brush,
-        PanelId::Select,
-        PanelId::Layers,
-        PanelId::Guides,
-        PanelId::Lighting,
-    ];
-
     /// The mark the panel's title bar wears, and the one its menu entry does.
     ///
     /// A stack of panels is read down its left edge, and a column of seven words is

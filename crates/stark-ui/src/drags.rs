@@ -18,6 +18,7 @@
 //! *through* it, but a drag types nothing, so the trap has nothing to spring on.
 
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 
 use crate::keys::Mods;
 use crate::storage::{Entry, Store};
@@ -83,7 +84,11 @@ pub fn chord_label(chord: DragChord) -> String {
 /// each variant is a gesture the canvas already knows how to drive, so adding
 /// one is a variant, a row in [`defaults`], and an arm in the canvas's press
 /// handler; the routing itself never grows another case.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+///
+/// `VariantArray::VARIANTS` is the action set the settings rows and the preset tables
+/// are written against — derived, so it cannot be the place a fourth action is left
+/// out of.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, strum::VariantArray)]
 pub enum DragAction {
     /// The brush-tuning drag (`input::Tune`, §18.1.9): Size sideways, Flow up
     /// and down, under the hand that is already on the painting.
@@ -218,7 +223,7 @@ impl DragBindings {
         if preset == DragPreset::Stark {
             return;
         }
-        self.overrides = DragAction::ALL
+        self.overrides = DragAction::VARIANTS
             .iter()
             .map(|&action| (action, preset.chord(action)))
             .collect();
@@ -284,15 +289,6 @@ pub fn armed(bindings: &DragBindings, held: Mods) -> Option<DragAction> {
 /// Which button `e` presses, as a chord names buttons — `None` for one no chord
 /// can hold: the middle button is the pan's, and a hold is not a row (§25.3).
 impl DragAction {
-    /// Every action, which is what the settings rows and the presets are written
-    /// against. By hand, and `tests::all_is_every_action` is what notices a
-    /// variant left out of it.
-    pub const ALL: &'static [DragAction] = &[
-        DragAction::TuneBrush,
-        DragAction::PickColor,
-        DragAction::PickAndTranslate,
-    ];
-
     /// What the act is called where it has a row to itself — the settings
     /// dialog's label.
     pub fn name(self) -> &'static str {
@@ -358,7 +354,12 @@ impl DragAction {
 /// are a starting point rather than a fidelity claim, and the surfaces say so:
 /// every row stays separately rebindable the moment a preset lands, which is the
 /// only honest shape for a table transcribed out of somebody else's manual.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// **Declared in the order both surfaces list them**, which is what
+/// `VariantArray::VARIANTS` hands them: Stark first, because it is the table the app
+/// starts on and the one a reader has to recognise as "what I have now"
+/// (`tests::the_shipped_table_leads_the_list`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray)]
 pub enum DragPreset {
     /// What Stark ships — and therefore stored as no overrides at all
     /// ([`DragBindings::take`]).
@@ -379,17 +380,6 @@ const fn chord(ctrl: bool, shift: bool, alt: bool, button: DragButton) -> DragCh
 }
 
 impl DragPreset {
-    /// Every preset, in the order both surfaces list them: Stark first, because
-    /// it is the table the app starts on and the one a reader has to recognise
-    /// as "what I have now".
-    pub const ALL: &'static [DragPreset] = &[
-        DragPreset::Stark,
-        DragPreset::Photoshop,
-        DragPreset::ClipStudio,
-        DragPreset::Rebelle,
-        DragPreset::Krita,
-    ];
-
     /// The app's name, as its own users spell it.
     pub fn name(self) -> &'static str {
         match self {
@@ -476,7 +466,7 @@ impl DragPreset {
     /// truth: the table is what both apps do, and lighting only the first would
     /// make clicking the second look like it had done nothing.
     pub fn matches(self, bindings: &DragBindings) -> bool {
-        DragAction::ALL
+        DragAction::VARIANTS
             .iter()
             .all(|&action| bindings.of(action) == self.chord(action))
     }
@@ -604,23 +594,29 @@ mod tests {
         assert!(DragAction::PickAndTranslate.shadows_paint());
     }
 
-    /// `ALL` is the action set and nothing else is. The match is exhaustive, so
-    /// a variant added without a line here does not compile; the count is what
-    /// notices one added to the match and forgotten in `ALL`.
+    /// The shipped table leads the list, which is what makes the row a reader
+    /// recognises as "what I have now" the first one.
+    ///
+    /// Declaration order is now the list's order, so this is the one thing about it
+    /// still worth stating: a preset inserted above `Stark` would compile clean and
+    /// quietly demote it.
     #[test]
-    fn all_is_every_action() {
-        let mut seen = HashSet::new();
-        for action in DragAction::ALL.iter().copied() {
-            assert!(seen.insert(action), "{action:?} is listed twice");
-            match action {
-                DragAction::TuneBrush | DragAction::PickColor | DragAction::PickAndTranslate => {}
-            }
+    fn the_shipped_table_leads_the_list() {
+        assert_eq!(DragPreset::VARIANTS.first(), Some(&DragPreset::Stark));
+    }
+
+    /// The shipped table binds **every** action, which is the claim the deleted
+    /// count was really making: [`defaults`] reads Stark's rows and nothing else, so
+    /// an action missing from that one table is an act no press can reach, wearing a
+    /// settings row that advertises nothing.
+    #[test]
+    fn the_shipped_table_binds_every_action() {
+        for &action in DragAction::VARIANTS {
+            assert!(
+                DragPreset::Stark.chord(action).is_some(),
+                "{action:?} has no shipped chord, so no press opens it",
+            );
         }
-        assert_eq!(
-            DragAction::ALL.len(),
-            3,
-            "a new action needs a line in the match above and a row in `ALL`",
-        );
     }
 
     /// A rebind is the action's **whole** binding, and it steals the chord from
@@ -659,7 +655,7 @@ mod tests {
     /// function would make the press path's answer depend on row order.
     #[test]
     fn every_preset_is_a_function() {
-        for preset in DragPreset::ALL.iter().copied() {
+        for preset in DragPreset::VARIANTS.iter().copied() {
             let mut chords = HashSet::new();
             let mut actions = HashSet::new();
             for &(action, c) in preset.rows() {
@@ -682,10 +678,10 @@ mod tests {
     /// action, including the ones a preset deliberately leaves unbound.
     #[test]
     fn taking_a_preset_gives_its_table() {
-        for preset in DragPreset::ALL.iter().copied() {
+        for preset in DragPreset::VARIANTS.iter().copied() {
             let mut b = stock();
             b.take(preset);
-            for &action in DragAction::ALL {
+            for &action in DragAction::VARIANTS {
                 let want = preset.chord(action);
                 assert_eq!(b.of(action), want, "{}: {action:?}", preset.name());
                 if let Some(c) = want {
