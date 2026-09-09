@@ -13,7 +13,7 @@
 //! fitting on a chip, in place of the cycle that stood in for it.
 
 use stark_engine::ObservableState;
-use stark_model::document::{BlendMode, PerspectiveGuide};
+use stark_model::document::{BlendMode, Modulation, PerspectiveGuide};
 use stark_ui::prefs::Hdr;
 use wgpui::{Context, Entity, Focusable, SharedString, Subscription, Window, prelude::*};
 use wgpui_component::IndexPath;
@@ -21,7 +21,10 @@ use wgpui_component::input::{InputEvent, InputState};
 use wgpui_component::select::{SelectEvent, SelectState};
 use wgpui_component::slider::{SliderEvent, SliderState};
 
+use stark_ui::brush_editor::{self, Knob, ModRow, Shown};
+
 use crate::brush::Brush;
+use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
 use crate::guides;
 use crate::lighting;
@@ -54,8 +57,27 @@ pub struct Controls {
     pub hex: Entity<InputState>,
     /// The menu bar's command search (`crate::palette`).
     pub search: Entity<InputState>,
+    /// The brush editor's modulatable tracks, in `brush_editor::MOD_ROWS`' order.
+    editor_mods: [Entity<SliderState>; brush_editor::MOD_ROWS.len()],
+    /// Its plain ones, in `brush_editor::KNOBS`' order.
+    editor_knobs: [Entity<SliderState>; brush_editor::KNOBS.len()],
+    /// The open mapping's two shape knobs — one pair rather than a pair per row,
+    /// because only ever one mapping is open at a time (`crate::brush_editor::Editor`).
+    pub mod_floor: Entity<SliderState>,
+    pub mod_curve: Entity<SliderState>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// **Every editor track runs 0..=1**, whatever the parameter under it does.
+///
+/// A `SliderState`'s bounds are set when it is built and there is no way to move them
+/// on a live one — and two of the editor's ranges are not constants: the Flow row's top
+/// is the in-force effect's, and the Stretch row's is what the renderer can draw at the
+/// size in hand (`stark_ui::brush_editor::ModRow::range`). So the trough is a fraction
+/// and the *view* maps it, which is the shape `Canvas::turn` already had for the
+/// panel's knobs. The figure beside the track prints the real value, so none of this
+/// reaches the artist.
+const EDITOR_STEP: f32 = 0.005;
 
 impl Controls {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Canvas>) -> Self {
@@ -175,6 +197,49 @@ impl Controls {
                 InputEvent::Change | InputEvent::Focus => {}
             },
         ));
+        // The brush editor's tracks. Fractions rather than the parameters' own ranges
+        // (see `EDITOR_STEP`), so the view is what maps a drag onto whichever range the
+        // row has *this* frame.
+        let editor_mods = brush_editor::MOD_ROWS.map(|row| {
+            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
+            subs.push(
+                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+                    if let SliderEvent::Change(v) = event {
+                        this.turn_mod_row(row, v.start(), cx);
+                    }
+                }),
+            );
+            state
+        });
+        let editor_knobs = brush_editor::KNOBS.map(|knob| {
+            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
+            subs.push(
+                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+                    if let SliderEvent::Change(v) = event {
+                        this.turn_editor_knob(knob, v.start(), cx);
+                    }
+                }),
+            );
+            state
+        });
+        let mod_floor = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
+        subs.push(
+            cx.subscribe(&mod_floor, |this, _, event: &SliderEvent, cx| {
+                if let SliderEvent::Change(v) = event {
+                    this.turn_mapping(Shape::Floor, v.start(), cx);
+                }
+            }),
+        );
+        // The response is quoted −1..=1 — late, linear, early — and the track is a
+        // fraction like every other here, so the view spends the one mapping.
+        let mod_curve = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
+        subs.push(
+            cx.subscribe(&mod_curve, |this, _, event: &SliderEvent, cx| {
+                if let SliderEvent::Change(v) = event {
+                    this.turn_mapping(Shape::Curve, v.start(), cx);
+                }
+            }),
+        );
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a command\u{2026}"));
         subs.push(cx.subscribe_in(
             &search,
@@ -199,6 +264,10 @@ impl Controls {
             environment,
             hex,
             search,
+            editor_mods,
+            editor_knobs,
+            mod_floor,
+            mod_curve,
             _subscriptions: subs,
         }
     }
@@ -219,6 +288,24 @@ impl Controls {
             .position(|d| *d == dial)
             .expect("every guide dial has a state");
         &self.guide_dials[i]
+    }
+
+    /// The state behind one of the brush editor's modulatable tracks.
+    pub fn editor_mod(&self, row: ModRow) -> &Entity<SliderState> {
+        let i = brush_editor::MOD_ROWS
+            .iter()
+            .position(|r| *r == row)
+            .expect("every modulatable row has a state");
+        &self.editor_mods[i]
+    }
+
+    /// The state behind one of its plain ones.
+    pub fn editor_knob(&self, knob: Knob) -> &Entity<SliderState> {
+        let i = brush_editor::KNOBS
+            .iter()
+            .position(|k| *k == knob)
+            .expect("every editor knob is in `stark_ui::brush_editor::KNOBS`");
+        &self.editor_knobs[i]
     }
 
     /// The state behind one of the Select section's dials.
@@ -242,6 +329,8 @@ impl Controls {
             blend,
             hdr,
             guide,
+            editor,
+            mapping,
         } = what;
         for (knob, state) in KNOBS.iter().zip(&self.knobs) {
             settle(state, knob.read(brush), window, cx);
@@ -261,6 +350,29 @@ impl Controls {
             for (dial, state) in guides::DIALS.iter().zip(&self.guide_dials) {
                 settle(state, dial.read(&g), window, cx);
             }
+        }
+        // Only while the dialog is up: two dozen settles a frame is real work, and with
+        // no editor open every one of them would be writing a control nobody can see.
+        if let Some(shown) = editor {
+            for (row, state) in brush_editor::MOD_ROWS.iter().zip(&self.editor_mods) {
+                let (lo, hi) = row.range(&shown.brush, shown.tune);
+                settle(
+                    state,
+                    fraction(row.get(&shown.brush, shown.tune), lo, hi),
+                    window,
+                    cx,
+                );
+            }
+            for (knob, state) in brush_editor::KNOBS.iter().zip(&self.editor_knobs) {
+                let (lo, hi) = knob.range();
+                settle(state, fraction(knob.get(&shown.brush), lo, hi), window, cx);
+            }
+        }
+        // The shape knobs follow whichever mapping is open, so opening a second row's
+        // shows that row's floor and response rather than the last one's.
+        if let Some(mapping) = mapping {
+            settle(&self.mod_floor, mapping.floor, window, cx);
+            settle(&self.mod_curve, (mapping.curve + 1.0) * 0.5, window, cx);
         }
         settle(&self.opacity, opacity, window, cx);
         let want = obs
@@ -307,10 +419,21 @@ pub struct Sync<'a> {
     pub hdr: Hdr,
     /// The camera the Guides shelf's tracks are about, where one is in hand.
     pub guide: Option<PerspectiveGuide>,
+    /// The brush being edited, while the editor is open — what its two dozen tracks are
+    /// settled from, and `None` the rest of the time so they cost nothing.
+    pub editor: Option<&'a Shown>,
+    /// The mapping whose two shape knobs are showing, if any.
+    pub mapping: Option<Modulation>,
 }
 
 /// Where `v` stands in `lo..=hi`, which is what the view's handlers speak.
 fn fraction(v: f32, lo: f32, hi: f32) -> f32 {
+    // A zero-width range is not a mistake here: `ModRow::Stretch`'s top is what the
+    // renderer can draw at the size in hand, and a large enough brush leaves it at
+    // zero (§6.2). The track then stands at its left end rather than at NaN.
+    if (hi - lo).abs() < f32::EPSILON {
+        return 0.0;
+    }
     ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 

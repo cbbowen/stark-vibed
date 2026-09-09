@@ -23,9 +23,8 @@
 
 use std::collections::HashSet;
 
-use stark_model::document::BrushShape;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::VisibilityToggle;
+use stark_ui::commands::{Command, VisibilityToggle};
 use stark_ui::icons::Icon;
 use wgpui::{
     AnyElement, App, Bounds, Entity, IntoElement, Pixels, Point, RenderOnce, SharedString, Window,
@@ -87,16 +86,21 @@ impl Side {
 }
 
 /// The knobs the Brush shelf offers, in the order it draws them.
-pub const KNOBS: [Knob; 4] = [Knob::Size, Knob::Flow, Knob::Hardness, Knob::Opacity];
+///
+/// **Two, and they are the transient's** (§18.1.8). The shelf is where a brush is
+/// *worked* — the size and the flow are what a hand moves all day without the tool
+/// becoming a different tool — and everything that says what the tool *is* moved into
+/// the brush editor, which has a live stroke to show its work on
+/// (`crate::brush_editor`). Hardness and the opacity ceiling were here until it
+/// existed, which is the same reason the web app's Brush panel carries the same two.
+pub const KNOBS: [Knob; 2] = [Knob::Size, Knob::Flow];
 
-/// One of the brush's four dials — what a track stands for, and how its value is
+/// One of the brush's two shelf dials — what a track stands for, and how its value is
 /// read off the brush and written back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
     Size,
     Flow,
-    Hardness,
-    Opacity,
 }
 
 impl Knob {
@@ -106,8 +110,6 @@ impl Knob {
         match self {
             Knob::Size => stark_ui::icons::SIZE,
             Knob::Flow => stark_ui::icons::FLOW,
-            Knob::Hardness => stark_ui::icons::HARDNESS,
-            Knob::Opacity => stark_ui::icons::OPACITY,
         }
     }
 
@@ -119,8 +121,6 @@ impl Knob {
             Knob::Flow => {
                 "Flow \u{2014} how much a pass lays, and how hard a wet one works the canvas"
             }
-            Knob::Hardness => "Hardness \u{2014} how abruptly a round tip's edge falls away",
-            Knob::Opacity => "Opacity \u{2014} how much of the paint this stroke may show",
         }
     }
 
@@ -131,7 +131,6 @@ impl Knob {
         match self {
             Knob::Size => (MIN_RADIUS, MAX_RADIUS),
             Knob::Flow => (0.0, MAX_FLOW),
-            Knob::Hardness | Knob::Opacity => (0.0, 1.0),
         }
     }
 
@@ -139,7 +138,7 @@ impl Knob {
     pub fn step(self) -> f32 {
         match self {
             Knob::Size => 1.0,
-            Knob::Flow | Knob::Hardness | Knob::Opacity => 0.01,
+            Knob::Flow => 0.01,
         }
     }
 
@@ -148,39 +147,19 @@ impl Knob {
         match self {
             Knob::Size => brush.tune.size,
             Knob::Flow => brush.tune.flow,
-            Knob::Hardness => match brush.config.shape {
-                BrushShape::Round { hardness } => hardness,
-                // A stamp has no hardness of its own; the dial shows the fallback the
-                // renderer would use if the asset failed to resolve (§6.6).
-                BrushShape::Stamp(_) => BrushShape::DEFAULT_HARDNESS,
-            },
-            Knob::Opacity => brush.config.opacity(),
         }
     }
 
-    /// Move the knob, and say whether the tool itself changed.
+    /// Move the knob.
     ///
-    /// The distinction is the durable/transient split: size and flow are the hand's,
-    /// so working them keeps the preset's name on the brush, while hardness and
-    /// opacity are what the tool *is* and take it off (§18.1.8).
-    fn write(self, brush: &mut Brush, v: f32) -> bool {
+    /// Neither of the two takes a preset's name off the brush, which is the whole of
+    /// why they are the two that stayed: the durable/transient split says working a
+    /// brush at another size is the same tool (§18.1.8). Everything that does take the
+    /// name off is the editor's now (`crate::brush_editor`).
+    fn write(self, brush: &mut Brush, v: f32) {
         match self {
-            Knob::Size => {
-                brush.tune.size = v;
-                false
-            }
-            Knob::Flow => {
-                brush.tune.flow = v;
-                false
-            }
-            Knob::Hardness => {
-                brush.config.shape = BrushShape::Round { hardness: v };
-                true
-            }
-            Knob::Opacity => {
-                brush.config.set_opacity(v);
-                true
-            }
+            Knob::Size => brush.tune.size = v,
+            Knob::Flow => brush.tune.flow = v,
         }
     }
 }
@@ -367,8 +346,36 @@ pub fn brush_body(
                     style::tip(chip, effect_tip(*kind))
                 })),
         )
+        // The way to everything the two tracks above no longer carry. A full-width
+        // button rather than a chip in the run beside it: the effect chips choose
+        // between four states of one brush, and this opens a surface — the same
+        // distinction the menu bar draws between a row that toggles and one that
+        // raises a dialog.
+        .child(style::tip(
+            div()
+                .id("edit-brush")
+                .chip()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .py_1p5()
+                .mt_1()
+                .resting()
+                .child(probe(regions, Region::Edit))
+                .child(crate::icons::icon(
+                    stark_ui::icons::EDIT_BRUSH,
+                    style::INK_MARK,
+                ))
+                .child(Command::EditBrush.word()),
+            Command::EditBrush.hint(),
+        ))
         // The stamp gallery sits with the brush rather than with the presets: what a
         // shape *is* is the tool, and a preset is a way of arriving at one.
+        //
+        // `None` while the editor is up: the element is built once by the view and goes
+        // to whichever surface can be pressed, which is the dialog then rather than
+        // this shelf behind its scrim.
         .children(shapes)
         .child(div().pt_2().heading().child("Presets"))
         .children(brush.library.iter().enumerate().map(|(i, e)| PresetRow {
@@ -506,6 +513,8 @@ fn title(regions: &Regions, what: VisibilityToggle, open: bool) -> impl IntoElem
 pub enum Region {
     Effect(usize),
     Preset(usize),
+    /// The button that opens the brush editor (`crate::brush_editor`).
+    Edit,
     /// A shelf's title bar — pressing it folds the shelf away.
     Fold(VisibilityToggle),
 }
@@ -560,10 +569,9 @@ pub fn value_at(knob: Knob, fraction: f32) -> f32 {
     lo + fraction.clamp(0.0, 1.0) * (hi - lo)
 }
 
-/// Move `knob` to `fraction` of its range. Answers whether the *tool* changed, so the
-/// caller can take the preset's name off the brush.
-pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) -> bool {
-    knob.write(brush, value_at(knob, fraction))
+/// Move `knob` to `fraction` of its range.
+pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) {
+    knob.write(brush, value_at(knob, fraction));
 }
 
 #[cfg(test)]
@@ -676,15 +684,17 @@ mod tests {
         );
     }
 
-    /// Size and flow are the hand's, hardness and opacity are the tool's — so only
-    /// the second pair takes a preset's name off the brush (§18.1.8).
+    /// Every knob the shelf offers is the *hand's* rather than the tool's (§18.1.8) —
+    /// which is what makes the two of them the ones that did not move into the editor,
+    /// and what lets a drag on either keep the preset's name on the brush.
     #[test]
-    fn only_the_durable_knobs_change_the_tool() {
+    fn the_shelf_keeps_only_the_transient_knobs() {
         let mut brush = Brush::new(Default::default());
-        assert!(!drag_knob(&mut brush, Knob::Size, 0.5));
-        assert!(!drag_knob(&mut brush, Knob::Flow, 0.5));
-        assert!(drag_knob(&mut brush, Knob::Hardness, 0.5));
-        assert!(drag_knob(&mut brush, Knob::Opacity, 0.5));
+        let tool = brush.config;
+        for knob in KNOBS {
+            drag_knob(&mut brush, knob, 0.5);
+        }
+        assert_eq!(brush.config, tool, "a shelf dial changed what the tool is");
     }
 
     /// A knob reads back what a drag wrote, through the range it declares — the round

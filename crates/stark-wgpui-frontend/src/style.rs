@@ -50,6 +50,15 @@ pub const FILL: u32 = 0x40474e;
 /// spent on the single thing the hand is doing.
 pub const ACCENT: u32 = 0x5b9dd9;
 
+/// What a modal dims the window with (`crate::brush_editor`) — a near-black at
+/// three-quarters, so the painting still reads through it. `rgba`, like the ground
+/// below: the low byte is the alpha.
+///
+/// Dimmed rather than covered because of what the dialog is *for*. A brush editor is
+/// about the next stroke, and the canvas it will land on staying visible is the point
+/// — the same argument the transform bar makes one control down.
+pub const SCRIM: u32 = 0x0b0d_10c0;
+
 /// [`PANEL`] laid *over* the canvas rather than beside it, for the transform bar:
 /// the same ground with the painting showing through, so the bar costs no painting
 /// room it was not already costing. `rgba` reads the alpha out of the low byte.

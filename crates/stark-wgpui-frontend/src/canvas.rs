@@ -42,6 +42,7 @@ use wgpui_component::notification::Notification;
 use wgpui_component::{Root, WindowExt};
 
 use crate::brush::Brush;
+use crate::brush_editor::{self, Editor};
 use crate::collab::{self, Collab};
 use crate::color;
 use crate::controls::Controls;
@@ -54,7 +55,7 @@ use crate::menu;
 use crate::navigator;
 use crate::palette;
 use crate::panel::{self, Knob, Region, Regions, Side};
-use crate::render::Renderer;
+use crate::render::{Preview, Renderer};
 use crate::select;
 use crate::transform;
 
@@ -143,6 +144,10 @@ enum Held {
     /// piece. Carries nothing — where the view goes is a pure function of where the
     /// pointer is over the picture (`crate::navigator`), so there is no start to hold.
     Overview,
+    /// A stroke on the brush editor's test canvas (`crate::brush_editor`). Carries
+    /// nothing: the sibling engine holds the gesture, exactly as the main one holds a
+    /// stroke, and where the pointer is is read off the measured surface each move.
+    PreviewStroke,
     /// A **bound modifier drag** over the canvas (§18.1.9): the size sideways, the
     /// flow up and down, from where the press landed.
     Tune {
@@ -307,6 +312,14 @@ pub struct Canvas {
     /// What it has reported and this frame has not yet spent. A field so the drain
     /// costs no allocation per frame (`pump_pen`); empty between frames.
     pen: Vec<Report>,
+    /// The brush editor, while it is open (`crate::brush_editor`).
+    ///
+    /// **The dialog is this one `Option`**, which is `mode`'s rule again one control
+    /// down: closing it drops the sibling engine and its surface with it, so a dialog
+    /// nobody has open costs no GPU memory rather than costing a texture pair for the
+    /// session.
+    editor: Option<Editor>,
+    editor_regions: brush_editor::Regions,
     /// The shared session, if any, and where it stands (§12.4, `crate::collab`).
     ///
     /// One value rather than a phase beside a session, because they are one fact and a
@@ -419,6 +432,8 @@ impl Canvas {
             epoch,
             tablet,
             pen: Vec::new(),
+            editor: None,
+            editor_regions: brush_editor::Regions::default(),
             collab: Collab::default(),
         }
     }
@@ -433,7 +448,16 @@ impl Canvas {
             alt: ev.modifiers.alt,
         };
 
-        // The menu bar first, and *before* the mode below: an open menu is over the
+        // **A modal first, before even the menu bar.** The scrim is over the whole
+        // window — the bar is dimmed under it — so a menu that opened there would be a
+        // control on a surface that is not supposed to be reachable. Which is the same
+        // two lines the menu itself spends below, one layer up.
+        if self.editor.is_some() {
+            self.press_editor(ev.position, window, cx);
+            return;
+        }
+
+        // The menu bar next, and *before* the mode below: an open menu is over the
         // whole window, so a press it does not want is a press that closes it rather
         // than one that reaches the canvas. That is the whole of what "modal" means
         // here, and it is two lines rather than a catcher.
@@ -597,6 +621,13 @@ impl Canvas {
                     self.brush.wear(&name);
                     self.send_brush(cx);
                 }
+                return;
+            }
+            // Its own words and the registry's act (§25.1): a button here and a row in
+            // the palette reach one command, so the two cannot come to mean different
+            // things.
+            Some(Region::Edit) => {
+                self.run(Command::EditBrush, window, cx);
                 return;
             }
             None if self.over_chrome(window, ev.position) => {
@@ -798,6 +829,21 @@ impl Canvas {
             // what makes the view follow the pointer instead of jumping to wherever it
             // is let go.
             Some(Held::Overview) => self.overview_to(at, cx),
+            // A hand on the brush editor's test canvas, which is not on the document at
+            // all: the sibling engine holds the gesture and the main one hears nothing
+            // about it. Reachable by mouse only — the tablet is claimed to the canvas
+            // rectangle, so a stylus never arrives over a dialog (`pen_claim`).
+            Some(Held::PreviewStroke) => {
+                let Some(pos) =
+                    brush_editor::preview_at(&self.editor_regions, at, window.scale_factor())
+                else {
+                    return;
+                };
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.stroke_to(pos);
+                }
+                self.repaint(cx);
+            }
             Some(Held::Tune { from, size, flow }) => {
                 // Both knobs from the press rather than from the last move, so a long
                 // drag is one map and rounding cannot walk over its length.
@@ -872,6 +918,18 @@ impl Canvas {
                 // momentary rule hold under a modifier-drag.
                 if let Some(action) = restore {
                     self.send(ViewCommand::SetShapeAction(action), cx);
+                }
+            }
+            // A stroke on the test canvas commits to the sibling document and
+            // becomes the stroke every later edit replays — the artist's own hand in
+            // place of the seeded one (`crate::brush_editor`). A press that went
+            // nowhere is not a stroke, and the one it interrupted has to be put back:
+            // opening the gesture is what took it off the canvas.
+            Some(Held::PreviewStroke) => {
+                if self.editor.as_mut().is_some_and(Editor::end_stroke) {
+                    self.repaint(cx);
+                } else {
+                    self.restroke(cx);
                 }
             }
             // A transform is *not* committed on release: the gesture goes on being
@@ -2053,6 +2111,12 @@ impl Canvas {
     /// raster editor shares — and the rate is the crate's, so a notch is worth the
     /// same in both apps.
     fn wheel(&mut self, ev: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // Nothing reaches the picture under a modal — the same claim the press ladder
+        // makes, and owed here for a sharper reason: a wheel that zoomed the canvas
+        // behind the brush editor would move the view a person cannot see moving.
+        if self.editor.is_some() {
+            return;
+        }
         // A wheel over a column scrolls it; only the canvas zooms. Asked the way
         // every press is (`over_chrome`), so the two columns and the surface agree
         // about where each begins.
@@ -2643,16 +2707,265 @@ impl Canvas {
             Command::SelectEllipse => self.arm_tool(Tool::SelectEllipse, cx),
             Command::SelectLasso => self.arm_tool(Tool::SelectLasso, cx),
             Command::Transform => self.begin_transform(cx),
+            // Both put the dialog away while one is up, and neither reaches the
+            // transform mode then: a modal is what the keyboard is addressing, which
+            // is the same claim the press ladder makes two screens up. There is no
+            // "cancel" of a brush edit to distinguish them by — every track writes
+            // straight through, so Escape and Done are one act (`open_editor`).
+            Command::CancelMode if self.editor.is_some() => self.close_editor(cx),
+            Command::FinishMode if self.editor.is_some() => self.close_editor(cx),
             Command::CancelMode => self.cancel_mode(cx),
             Command::FinishMode => self.finish_mode(cx),
             Command::ToggleHdr => self.toggle_hdr(window, cx),
             Command::TogglePanel(id) => self.toggle_shelf(VisibilityToggle::Panel(id), cx),
             Command::ToggleNavigator => self.toggle_shelf(VisibilityToggle::Navigator, cx),
             Command::AddPerspective => self.guide_act(guides::Region::Add, cx),
+            Command::EditBrush => self.open_editor(window, cx),
             _ => {}
         }
         if let Some(doc) = doc {
             self.send(doc, cx);
+        }
+    }
+
+    // --- the brush editor (§6.2, `crate::brush_editor`) -----------------------
+
+    /// Raise the dialog, building its test canvas on the main engine's own device.
+    ///
+    /// Nothing is stashed and nothing is restored on close: every track writes straight
+    /// through to the brush in hand, so the dialog *is* the brush being edited and Done
+    /// has nothing to commit. That is the web app's bargain too, and it is what makes
+    /// the preview honest — what is on the test canvas is what the next stroke lays.
+    fn open_editor(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.editor.is_some() {
+            return;
+        }
+        // A nominal size: the element resizes the surface from its own laid-out bounds
+        // one frame later, and the stroke is re-laid then (`refresh_editor`). Guessing
+        // the layout here would be the arithmetic §11.2 N2 deleted.
+        let scale = window.scale_factor();
+        let px = |v: f32| ((v * scale).round() as u32).max(1);
+        let preview = self.renderer.as_ref().and_then(|r| {
+            Preview::new(
+                r,
+                window,
+                px(brush_editor::PREVIEW_WIDTH),
+                px(brush_editor::SHEET_HEIGHT),
+            )
+        });
+        let mut editor = Editor::new(preview);
+        editor.lay_reference();
+        editor.restroke(&self.brush);
+        self.editor = Some(editor);
+        self.repaint(cx);
+    }
+
+    /// Put it away, and give the test canvas's surface and document back with it.
+    fn close_editor(&mut self, cx: &mut Context<'_, Self>) {
+        self.editor = None;
+        self.repaint(cx);
+    }
+
+    /// What the editor's rows are built from: the brush, and the two document facts
+    /// they depend on — the color space its channels are in (§6.7) and whether the
+    /// canvas has a tooth to catch on (§6.4).
+    fn editor_shown(&self) -> stark_ui::brush_editor::Shown {
+        stark_ui::brush_editor::Shown {
+            brush: self.brush.config,
+            tune: self.brush.tune,
+            space: self
+                .obs
+                .as_ref()
+                .map_or(stark_model::ColorSpaceId::Oklab, |o| o.color_space),
+            substrate: self.substrate,
+        }
+    }
+
+    /// A press anywhere while the dialog is up.
+    fn press_editor(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // The stamp gallery is inside the dialog while one is open — the shelf that
+        // usually holds it is behind the scrim — so its own list is asked first, its
+        // cards being nested inside the sheet's rectangle either way.
+        if let Some(region) = gallery::hit(&self.gallery_regions, at) {
+            self.gallery_act(region, window, cx);
+            self.restroke(cx);
+            return;
+        }
+        let Some(region) = brush_editor::hit(&self.editor_regions, at) else {
+            // The scrim: outside the sheet is out of the dialog, which is the answer
+            // every overlay in this toolkit gives (`wgpui_component::dialog`).
+            return self.close_editor(cx);
+        };
+        match region {
+            brush_editor::Region::Done => self.close_editor(cx),
+            // A press on the panel that hit no control. Not paint, and not a close
+            // either — this is the whole of what makes the dialog modal.
+            brush_editor::Region::Sheet => {}
+            brush_editor::Region::Preview => {
+                let Some(pos) =
+                    brush_editor::preview_at(&self.editor_regions, at, window.scale_factor())
+                else {
+                    return;
+                };
+                let rope = self
+                    .editor
+                    .as_ref()
+                    .and_then(|e| e.preview.as_ref())
+                    .map_or(0.0, |p| {
+                        stark_ui::input::rope(p.view(), self.brush.config.smoothing)
+                    });
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.start_stroke(pos, rope);
+                }
+                self.held = Some(Held::PreviewStroke);
+                self.repaint(cx);
+            }
+            brush_editor::Region::Reset => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.reset_stroke();
+                }
+                self.restroke(cx);
+            }
+            brush_editor::Region::Fold(section) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.fold(section);
+                }
+                self.repaint(cx);
+            }
+            brush_editor::Region::More(section) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.toggle_more(section);
+                }
+                self.repaint(cx);
+            }
+            brush_editor::Region::Mapping(row) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.toggle_mapping(row);
+                }
+                self.repaint(cx);
+            }
+            // One field moves and nothing is forgotten: the configuration carries every
+            // effect (`BrushConfig`), so switching to Erase and back costs a tuned
+            // smudge none of its axes.
+            brush_editor::Region::Effect(effect) => {
+                self.brush.config.effect = effect;
+                self.edited(cx);
+            }
+            brush_editor::Region::Orientation(orientation) => {
+                self.brush.config.orientation = orientation;
+                self.edited(cx);
+            }
+            brush_editor::Region::Noise(noise) => {
+                self.brush.config.color_dynamics.noise = noise;
+                self.edited(cx);
+            }
+            brush_editor::Region::Source(row, source) => {
+                stark_ui::brush_editor::set_source(&mut self.brush.config, row, source);
+                self.edited(cx);
+            }
+        }
+    }
+
+    /// Move one of the editor's modulatable rows, `fraction` along whatever range it
+    /// has *this* frame (`crate::controls`).
+    pub(crate) fn turn_mod_row(
+        &mut self,
+        row: stark_ui::brush_editor::ModRow,
+        fraction: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (lo, hi) = row.range(&self.brush.config, self.brush.tune);
+        let value = lo + fraction.clamp(0.0, 1.0) * (hi - lo);
+        let mut tune = self.brush.tune;
+        row.set(&mut self.brush.config, &mut tune, value);
+        self.brush.tune = tune;
+        // Only the durable rows take the preset's name off: the size and the flow are
+        // the hand's, and working a brush at another size is the same tool (§18.1.8).
+        if row.durable() {
+            self.brush.tuned_off_preset();
+        }
+        self.send_brush(cx);
+        self.restroke(cx);
+    }
+
+    /// Move one of its plain ones.
+    pub(crate) fn turn_editor_knob(
+        &mut self,
+        knob: stark_ui::brush_editor::Knob,
+        fraction: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (lo, hi) = knob.range();
+        knob.set(
+            &mut self.brush.config,
+            lo + fraction.clamp(0.0, 1.0) * (hi - lo),
+        );
+        self.edited(cx);
+    }
+
+    /// Move one of the open mapping's two shape knobs.
+    ///
+    /// Which mapping that is, is resolved here rather than captured by the track: a
+    /// subscription is `'static` and the row it writes into is whichever one is open on
+    /// the frame the drag lands.
+    pub(crate) fn turn_mapping(
+        &mut self,
+        shape: brush_editor::Shape,
+        v: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(row) = self.editor.as_ref().and_then(Editor::open_mapping) else {
+            return;
+        };
+        let Some(mapping) = row.slot(&mut self.brush.config) else {
+            return;
+        };
+        shape.set(mapping, v);
+        self.edited(cx);
+    }
+
+    /// A durable edit: the tool is no longer *the* preset, the engine is told, and the
+    /// test canvas is re-stroked.
+    fn edited(&mut self, cx: &mut Context<'_, Self>) {
+        self.brush.tuned_off_preset();
+        self.send_brush(cx);
+        self.restroke(cx);
+    }
+
+    /// Re-render the test stroke with the brush as it now stands, if a dialog is up.
+    ///
+    /// Unthrottled, unlike the web app's: a track emits at most one change per frame
+    /// and the replay is one commit, so the frame loop already is the throttle
+    /// (`crate::brush_editor`).
+    fn restroke(&mut self, cx: &mut Context<'_, Self>) {
+        let brush = &self.brush;
+        if let Some(editor) = self.editor.as_mut() {
+            editor.restroke(brush);
+        }
+        self.repaint(cx);
+    }
+
+    /// Draw the test canvas, and re-lay the seeded stroke if the element has resized
+    /// the surface out from under it.
+    ///
+    /// The resize happens in prepaint, so the frame that caused it drew the old picture
+    /// stretched — and a resized surface is two *new* textures rather than a stretch, so
+    /// what was on it is gone. Nothing else would ask for it back, which is the same
+    /// clause the navigator's miniature owes (`Renderer::overview_resized`).
+    fn refresh_editor(&mut self) {
+        let brush = &self.brush;
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let Some(p) = editor.preview.as_mut() else {
+            return;
+        };
+        if p.paint() {
+            editor.relay_after_resize();
+            editor.restroke(brush);
+            if let Some(p) = editor.preview.as_mut() {
+                p.paint();
+            }
         }
     }
 
@@ -2688,9 +3001,7 @@ impl Canvas {
 
     /// Move a knob and put the changed brush in the engine's hand.
     pub(crate) fn turn(&mut self, knob: Knob, fraction: f32, cx: &mut Context<'_, Self>) {
-        if panel::drag_knob(&mut self.brush, knob, fraction) {
-            self.brush.tuned_off_preset();
-        }
+        panel::drag_knob(&mut self.brush, knob, fraction);
         self.send_brush(cx);
     }
 
@@ -2852,6 +3163,7 @@ impl Render for Canvas {
         self.lighting_regions.borrow_mut().clear();
         self.guide_regions.borrow_mut().clear();
         self.nav_regions.borrow_mut().clear();
+        self.editor_regions.borrow_mut().clear();
         // The miniature, before anything is built: it is a *second render* rather
         // than an element, and what it produces — the box it fills — is what the
         // shelf below is laid out to. Put away, its surface goes with it, which is
@@ -2866,6 +3178,11 @@ impl Render for Canvas {
             // holding was let go.
             self.overview_when = f64::NEG_INFINITY;
         }
+        // The test canvas, before anything is built and for the miniature's reason: it
+        // is a *second render* rather than an element, and the frame after the dialog
+        // opens is the one that learns how large the element actually laid its surface
+        // out (`refresh_editor`).
+        self.refresh_editor();
         let shape_rows = Self::shipped(assets::SHIPPED_SHAPES);
         let substrate_rows = Self::shipped(assets::SHIPPED_SUBSTRATES);
         let held_shape = match self.brush.config.shape {
@@ -2885,10 +3202,13 @@ impl Render for Canvas {
                 .and_then(|r| r.asset_bytes(id))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
-        // Built only for a shelf that is drawing, like every other body below — and
-        // worth the test here rather than there, because a card's bytes are asked of
-        // the engine per row per frame.
-        let shapes = self.panel_drawn(PanelId::Brush).then(|| {
+        // Built for whichever surface can actually be pressed: the dialog while one is
+        // up, and the Brush shelf the rest of the time. One element rather than two,
+        // and that is not only tidiness — a card's bytes are asked of the engine per
+        // row per frame, so a second copy behind a scrim would be a real bill for a
+        // gallery nobody can reach.
+        let editor_open = self.editor.is_some();
+        let shapes = (editor_open || self.panel_drawn(PanelId::Brush)).then(|| {
             gallery::gallery::<assets::Shapes>(
                 gallery::Which::Shapes,
                 "Shapes",
@@ -2966,6 +3286,14 @@ impl Render for Canvas {
         let rows = self.rows();
         let active = self.obs.as_ref().map(|o| o.active_layer);
         let chosen = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
+        // What the editor's two dozen tracks are settled from — `None` with no dialog
+        // up, which is what keeps them free the rest of the time (`crate::controls`).
+        let shown = editor_open.then(|| self.editor_shown());
+        let mapping = self
+            .editor
+            .as_ref()
+            .and_then(Editor::open_mapping)
+            .and_then(|row| row.of(&self.brush.config));
         self.controls.sync(
             crate::controls::Sync {
                 brush: &self.brush,
@@ -2974,6 +3302,8 @@ impl Render for Canvas {
                 blend: chosen.map_or(stark_model::document::BlendMode::Normal, |r| r.info.blend),
                 hdr: self.hdr,
                 guide: self.held_guide().map(|(_, camera)| camera),
+                editor: shown.as_ref(),
+                mapping,
             },
             window,
             cx,
@@ -3002,7 +3332,8 @@ impl Render for Canvas {
                             &self.controls,
                             EFFECTS,
                             &self.regions,
-                            shapes.take(),
+                            // `None` while the dialog holds it — see where it is built.
+                            (!editor_open).then(|| shapes.take()).flatten(),
                         )
                         .into_any_element()
                     })
@@ -3118,6 +3449,22 @@ impl Render for Canvas {
         let select_bar = (mode.is_none() && select::bar_mounted(self.obs.as_ref()))
             .then(|| select::selection_bar(&self.bindings, &self.select_bar_regions));
 
+        // Built while `self` is still borrowable, like the mode's two pieces above: the
+        // surface below takes a mutable borrow of the renderer that outlives the rest
+        // of the tree.
+        let editor = self.editor.as_ref().zip(shown.as_ref()).map(|(e, shown)| {
+            brush_editor::modal(
+                brush_editor::Dressing {
+                    shown,
+                    editor: e,
+                    controls: &self.controls,
+                    shapes: shapes.take(),
+                    from: self.brush.from.as_deref(),
+                },
+                &self.editor_regions,
+            )
+        });
+
         let Some(r) = self.renderer.as_mut() else {
             return unavailable();
         };
@@ -3156,6 +3503,11 @@ impl Render for Canvas {
                     )
                     .children(roster),
             )
+            // Over both columns and the surface between them, because it is over the
+            // *window*: the dialog is about the brush rather than about the picture, and
+            // a modal that left a column pressable would be one whose Done is not the
+            // only way out (`crate::brush_editor`).
+            .children(editor)
             // The widget layer's own layers — sheets, dialogs, notifications — over
             // everything this view draws. `Root` holds them but leaves their place
             // in the tree to the view it wraps, which is the one thing that knows

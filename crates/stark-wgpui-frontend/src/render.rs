@@ -433,10 +433,30 @@ impl Renderer {
         self.overview = None;
     }
 
-    /// The format both surfaces are configured in — the engine's own, since its texels
-    /// are composited unconverted (§6.5).
-    fn format(&self) -> wgpu::TextureFormat {
+    /// The format every surface built on this device is configured in — the engine's
+    /// own, since its texels are composited unconverted (§6.5).
+    pub fn format(&self) -> wgpu::TextureFormat {
         self.surface.format()
+    }
+
+    // --- the brush editor's test canvas (§11) ---------------------------------
+
+    /// The expensive half of this engine, on its own (`stark_engine::EngineShared`) —
+    /// the device, the compiled pipelines, the brush assets and the decoded substrates.
+    ///
+    /// What a [`Preview`] stands on, and the reason it costs a handful of refcount
+    /// bumps rather than a second device: sharing the machinery is a *correctness*
+    /// argument as much as an economy, since a test stroke has to render exactly as the
+    /// canvas would.
+    pub fn engine_shared(&self) -> stark_engine::EngineShared {
+        self.engine.shared()
+    }
+
+    /// What the document's own substrate is tinted (§6.4) — the one piece of the
+    /// canvas's look a preview has to be *told*, everything else riding in on
+    /// [`engine_shared`](Self::engine_shared).
+    pub fn substrate_color(&self) -> stark_model::Srgb {
+        self.engine.observe().substrate_color
     }
 
     // --- lighting (§6.3) ------------------------------------------------------
@@ -481,6 +501,108 @@ impl Renderer {
         }
         self.engine.render(&target);
         self.surface.swap_buffers();
+    }
+}
+
+/// The brush editor's test canvas: a **third** surface, and a sibling engine on the
+/// canvas's own device (§11, §6.2).
+///
+/// Built by *sharing* the main engine's expensive half (`Engine::on_shared`): the same
+/// compiled pipelines, the same content-addressed brush assets, the same decoded
+/// substrate and environment, around a fresh document of its own. So a stroke here
+/// reads exactly as it will on the real canvas — which is a correctness argument
+/// before it is an economy — and opening the dialog fetches and decodes nothing.
+///
+/// The one thing that does *not* ride in on the shared half is the substrate's tint,
+/// which is document state and so is set once at construction
+/// (`Renderer::substrate_color`).
+///
+/// It is the navigator's second surface again with one difference: that one is a
+/// picture of the document this engine already holds, and this is a document of its
+/// own — so it takes an engine rather than a render target.
+pub struct Preview {
+    surface: WgpuSurfaceHandle,
+    engine: Engine,
+    /// The viewport the engine was last told about, in device px. Corrected in
+    /// [`paint`](Self::paint) for [`Renderer::paint`]'s reason: the buffer is what the
+    /// render lands in, so a view that disagreed with it would put the test stroke
+    /// somewhere other than under the pointer.
+    viewport: (u32, u32),
+}
+
+impl Preview {
+    /// Bind a surface `width`×`height` device px and build a sibling engine on it.
+    ///
+    /// `None` where wgpui is not on its wgpu renderer — the same answer the canvas's
+    /// own surface gives, reported the same way: there is nothing to draw with, so
+    /// nothing is drawn.
+    pub fn new(donor: &Renderer, window: &Window, width: u32, height: u32) -> Option<Self> {
+        let (width, height) = (width.max(1), height.max(1));
+        let surface = window.create_wgpu_surface(width, height, donor.format())?;
+        let mut engine = Engine::on_shared(donor.engine_shared(), Extent2::new(width, height));
+        engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
+            donor.substrate_color(),
+        ));
+        Some(Self {
+            surface,
+            engine,
+            viewport: (width, height),
+        })
+    }
+
+    /// Send a command to the sibling engine — the only door, for
+    /// [`Renderer::process`]'s reason (§4).
+    pub fn process(&mut self, command: impl Into<InputCommand>) {
+        self.engine.process(command);
+    }
+
+    /// The surface's size in device px, which is what the test stroke is laid out
+    /// against.
+    pub fn size(&self) -> (u32, u32) {
+        self.viewport
+    }
+
+    /// The view a pointer position on this surface is mapped through.
+    pub fn view(&self) -> ViewTransform {
+        self.engine.view()
+    }
+
+    /// Replay a whole recorded stroke as one commit, with the jitter seed pinned
+    /// (`Engine::replay_stroke_seeded`) so only the edited parameter moves between
+    /// renders. `rope` is the §6.11 smoothing string, because the preview replays a
+    /// recorded hand and has to show what the smoothing slider would do to it.
+    pub fn replay_stroke(
+        &mut self,
+        samples: &[stark_engine::command::InputSample],
+        seed: u64,
+        rope: f32,
+    ) -> bool {
+        self.engine
+            .replay_stroke_seeded(stark_engine::command::Tool::Brush, samples, seed, rope)
+            .is_some()
+    }
+
+    /// The handle the element composites.
+    pub fn surface(&self) -> WgpuSurfaceHandle {
+        self.surface.clone()
+    }
+
+    /// Render into the back buffer and swap it to the front. Answers whether the
+    /// viewport moved under it, which is what tells the caller the stroke has to be
+    /// laid out again.
+    pub fn paint(&mut self) -> bool {
+        let Some((target, size)) = self.surface.back_view_with_size() else {
+            return false;
+        };
+        let moved = size != self.viewport;
+        if moved {
+            self.viewport = size;
+            self.engine
+                .process(ViewCommand::Resize(Extent2::new(size.0, size.1)));
+        }
+        self.engine.render(&target);
+        self.surface.swap_buffers();
+        moved
     }
 }
 

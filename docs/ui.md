@@ -833,6 +833,13 @@ markup, `layout.rs`, `widgets.rs`, `rail.rs`, `overlays.rs`, `navigator.rs`,
 `brush_editor.rs`, `settings.rs`, `canvas.rs`, `main.rs`, each `render.rs`, each
 `platform.rs`, and `tutor.rs` by decision.
 
+`brush_editor.rs` was read too generously here, and the native dialog is what found
+it. The *markup* is Tier C and stayed; the **rows** never were — which parameter is in
+which group, over what range, where its value lives and which mapping slot is its own
+are facts about the engine, and they are `stark_ui::brush_editor` now (see N8). The
+rule the miss suggests: a module is Tier C because of what it *draws*, and a
+markup module that also answers "what does this thing have" is two modules.
+
 #### The two abstractions this needs, and no more
 
 Both already have a shape in the tree, which is the argument that they are the
@@ -1400,9 +1407,51 @@ the exit criterion is an act, not a diff.
   names one would leave four tracks pointed at nothing; falling back to the newest
   is the same bargain the Layers shelf's active row makes.
 
+  **And the brush editor**, which is the first *modal* this frontend has drawn and
+  the first thing on it with a picture of its own that is not the canvas. The Brush
+  shelf keeps the two knobs a hand moves all day — the size and the flow, which are
+  the transient's (§18.1.8) — and everything that says what the tool *is* moved into
+  the dialog, where there is a live stroke to show its work on. Which is the line the
+  web app already drew, arrived at from the other side: over there the shelf was never
+  the place a brush was *made*, and here it had been for want of anywhere else.
+
+  What came down is the **rows**: `stark_ui::brush_editor` is which parameter sits in
+  which group, over what range, where its value lives on the brush, and which mapping
+  slot belongs to it — plus the test stroke's own geometry. Two apps disagreeing about
+  what a brush *has* would be two apps, and the ranges are the sharp end of that: each
+  is either the model's own bound or a ceiling the slider owns, and a second copy of
+  the second kind drifts silently. The web dialog is a loop over the same table now,
+  and 250 lines of its markup went with the move. The two `Section::mounted` questions
+  are the reason it is worth a table at all: a liquify brush has no opacity ceiling and
+  no colour dynamics (§6.13), an eraser no colour dynamics either (§6.12), and each of
+  those is a fact about the *engine*.
+
+  The preview is a **third `WgpuSurface`** and a sibling engine on the canvas's own
+  device (`Engine::on_shared`) — the navigator's trick again with one difference: that
+  one is a picture of the document this engine already holds, and this is a document of
+  its own. Same pipelines, same stamps, same substrate under the same light, so a test
+  stroke reads exactly as it will on the real canvas, which is a correctness argument
+  before it is an economy. Only the substrate's *tint* has to be handed across, being
+  document state. And it needs **no throttle**, where the web app batches its edits to
+  one per 50 ms: a track here emits at most one change per frame and the replay is one
+  commit, so the frame loop already is the throttle.
+
+  Two bugs worth recording, because both are the same bug at two scales. The dialog's
+  reset mark and its hint were `.absolute()` with two insets, which N6 already knew
+  places a child *wherever the flow had reached* — so both were laid out below the
+  column, invisible, and the probe went with them: pressing Reset drew a one-point
+  stroke on the test canvas instead. And that stroke was then **marked committed**,
+  though a tap commits nothing — so the next edit's undo reached past it into the
+  reference band, and two taps emptied the canvas with nothing on screen saying why.
+  A tap is not a stroke, which is what `Engine::replay_stroke_seeded` had been saying
+  all along by answering `None` for a hand that never left its first point.
+
   **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
   mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
   overlay of its own, which is why they sequence after the stack that holds them.
+  Saving a brush is the editor's own gap: this frontend has no preset *record* and no
+  dialog to name one in, so the way out is Done and there is no "Save new preset"
+  beside it.
 - **N9 — collaboration.** `collab`'s two pumps move down; the ticket is pasted
   rather than linked. *Exit:* the two frontends paint on one document. **Done**,
   and the half of the plan that was wrong is the more useful half.

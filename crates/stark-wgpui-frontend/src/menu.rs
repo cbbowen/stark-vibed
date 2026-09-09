@@ -107,7 +107,15 @@ pub const MENUS: &[Menu] = &[
     },
     Menu {
         title: "Brush",
-        rows: &[Some(Command::BrushSmaller), Some(Command::BrushLarger)],
+        // The two the shelf's tracks answer, and then the way to everything they no
+        // longer carry (`crate::brush_editor`). The rule is where a step on the size
+        // stops and a surface begins.
+        rows: &[
+            Some(Command::BrushSmaller),
+            Some(Command::BrushLarger),
+            None,
+            Some(Command::EditBrush),
+        ],
     },
     Menu {
         title: "Window",

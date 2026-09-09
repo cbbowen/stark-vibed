@@ -27,6 +27,14 @@
 //! parameter the engine actually reads — a knob that moves but changes nothing is
 //! worse than no knob, and a knob the engine reads but that hides behind "Show
 //! more" (as `drain` did) may as well not exist.
+//!
+//! **Which knobs those are is `stark_ui::brush_editor`'s** (§11.2). Which parameter
+//! sits in which group, over what range, and which rows a liquify brush does not get
+//! are facts about the engine rather than about a toolkit — so the rows are a shared
+//! table both frontends render, and what is left here is the markup, the throttle and
+//! the `<canvas>`. The test stroke's own geometry came down with them, for the same
+//! reason: a preview whose stroke ran a different way in the two apps would be two
+//! previews of two brushes.
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
@@ -35,18 +43,14 @@ use stark_ui::icons::Icon;
 
 use stark_engine::command::InputSample;
 use stark_model::ColorSpaceId;
-use stark_model::SubstrateId;
-use stark_model::document::{
-    BrushEffect, BrushParams, BrushShape, ModSource, Modulation, NoiseKind, OrientationSource,
-    PenState,
-};
+use stark_model::document::{BrushShape, ModSource, Modulation, OrientationSource};
 use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
 
 use crate::commands;
 use crate::icons::icon;
-use crate::panels::brush::{MAX_TAPER, MAX_TOOTH_SOFTNESS, set_orientation, set_shape};
+use crate::panels::brush::{set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
 use crate::render::Renderer;
@@ -54,24 +58,14 @@ use crate::state::{AppState, update_brush};
 use crate::widgets::{Modal, Slider};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
-use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_editor::{
+    ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown, noise_label,
+    source_label,
+};
 use stark_ui::commands::Command;
 
 /// The preview `<canvas>`'s DOM id (the main canvas is `render::CANVAS_ID`).
 const PREVIEW_CANVAS_ID: &str = "brush-preview-canvas";
-
-/// The test stroke's fixed RGB (straight sRGB): a pleasant blue, so it reads
-/// clearly over the red reference stroke beneath it — the preview is about the
-/// brush's *behaviour*, not its color. Only the color is forced; the effect's
-/// own opacity (the Opacity slider) still applies.
-const PREVIEW_STROKE_COLOR: [f32; 3] = [0.852, 0.645, 0.125];
-
-/// Fixed jitter seed for the previewed test stroke. Every edit re-strokes, and
-/// a stroke's seed is normally the document clock — which advances with each
-/// replay's commit, re-rolling the color dynamics and dither each time and
-/// hiding the parameter change behind fresh noise. Pinning it means only the
-/// edited setting moves between renders. Arbitrary value; it just never changes.
-const PREVIEW_STROKE_SEED: u64 = 0x5747_1CED_57A2_4B11;
 
 /// Minimum gap between slider edits taking effect. Each edit dispatches to the
 /// engine, repaints the main canvas, refreshes `obs` (re-rendering this whole
@@ -84,203 +78,11 @@ const EDIT_THROTTLE_MS: i32 = 50;
 /// A deferred brush mutation: the latest slider edit during a throttle window.
 type BrushEdit = Box<dyn FnOnce(&mut BrushConfig, &mut Transient)>;
 
-/// The parameters the pen can drive (§6.2) — one variant per modulation
-/// target the brush carries, and the addressing for the one open mapping row.
-///
-/// It carries everything about a row that differs: its word, its range, where its
-/// base value lives on the brush, and which mapping slot belongs to it. That is what
-/// lets [`mod_slider`] take a `ModRow` and nothing else, and it is why the rows
-/// cannot drift out of step with the engine's set — adding a target to any of the
-/// modulation tables (`BrushModulations`, `PaintModulations`, `EraseModulations`)
-/// and not here fails to compile at [`Self::slot`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum ModRow {
-    Size,
-    Opacity,
-    Flow,
-    Stretch,
-    ToothGive,
-    Add,
-    Lift,
-    Deposit,
-    Bleed,
-}
-
-impl ModRow {
-    /// The word on the row, which is also the word the section already used for
-    /// the parameter. Takes the brush because the Flow row *is* the in-force
-    /// effect's rate, and the liquify effect's rate is not a flow of anything:
-    /// it is how hard the paint follows (§6.13).
-    fn label(self, b: &BrushConfig) -> &'static str {
-        match self {
-            Self::Size => "Size",
-            Self::Opacity => "Opacity",
-            Self::Flow => match b.effect {
-                BrushEffectType::Liquify => "Strength",
-                _ => "Flow",
-            },
-            Self::Stretch => "Stretch",
-            Self::ToothGive => "Tooth give",
-            Self::Add => "Add",
-            Self::Lift => "Lift",
-            Self::Deposit => "Deposit",
-            Self::Bleed => "Bleed",
-        }
-    }
-
-    /// The glyph beside the row's word, where the parameter has one it wears
-    /// everywhere else — the opacity's, which the layer and selection panels
-    /// show against their own opacity sliders.
-    fn glyph(self) -> Option<Icon> {
-        match self {
-            Self::Opacity => Some(stark_ui::icons::OPACITY),
-            _ => None,
-        }
-    }
-
-    /// The base slider's range, for the brush being edited. The three wet fluxes
-    /// stop at 0.95 for the reason they always did — λ diverges at 1 (§6.2).
-    ///
-    /// Takes both halves because one row's top is not a constant: the Flow
-    /// row's is the in-force effect's, and `Stretch`'s asks the engine about
-    /// the tip the transient sizes.
-    fn range(self, b: &BrushConfig, t: Transient) -> (f32, f32) {
-        match self {
-            Self::Size => (MIN_RADIUS, MAX_RADIUS),
-            // A ceiling: the fraction of a full stroke (§6.2, §6.12).
-            Self::Opacity => (0.0, 1.0),
-            // The in-force effect's own range (`BrushConfig::max_flow`) — the
-            // liquify strength stops at its quoted 1, the rates at the slider's
-            // own top.
-            Self::Flow => (0.0, b.max_flow()),
-            // The knob is `1 − 1/s`, so its own top is an infinitely long tip. Two
-            // things stop it short, and the smaller wins: the elongation saturates
-            // at `MAX_ELONGATION`, past which the slider stops meaning anything
-            // (§6.6) — and the *renderer* cannot draw a tip reaching further than
-            // one region holds, which for a large brush bites first
-            // (`stark_engine::max_stretch`, §6.2).
-            //
-            // Asking the engine rather than restating its arithmetic is the whole
-            // point: a tip past that limit does not draw a coarser stroke, it
-            // silently stops lifting and depositing altogether. A slider that
-            // offered one would be offering a broken brush, and no note beside it
-            // would make that better than not offering it.
-            Self::Stretch => (0.0, stark_engine::max_stretch(&b.params(t))),
-            // Full range, and it reads right-to-left: 1 is all the give there is, so
-            // the substrate gates nothing, and 0 is the driest tip (§6.4). Quoted that
-            // way round for the pen's sake — see `BrushParams::tooth_give`.
-            Self::ToothGive => (0.0, 1.0),
-            // The full share (`BrushDynamics::add`): 1 is a wet brush laying
-            // exactly what a paint brush at the same flow would.
-            Self::Add => (0.0, 1.0),
-            Self::Lift | Self::Deposit | Self::Bleed => (0.0, 0.95),
-        }
-    }
-
-    fn get(self, b: &BrushConfig, t: Transient) -> f32 {
-        match self {
-            Self::Size => t.size,
-            // The ceiling of whichever effect is in force — the laying side's
-            // or the eraser's own (`BrushConfig::opacity`).
-            Self::Opacity => b.opacity(),
-            // The overall rate of whichever effect is in force (§6.2, §6.12)
-            // — the transient's, like the size beside it.
-            Self::Flow => t.flow,
-            Self::Stretch => b.stretch,
-            Self::ToothGive => b.tooth.give,
-            Self::Add => b.wet.add,
-            Self::Lift => b.wet.lift,
-            Self::Deposit => b.wet.deposit,
-            Self::Bleed => b.wet.bleed,
-        }
-    }
-
-    /// The three wet-only rows write the wet half directly: the configuration
-    /// holds every effect, so a write racing the pen's eraser end (§18.1.8) —
-    /// [`edit`] defers its closure a throttle window — lands on the remembered
-    /// wet half instead of being dropped. The effect switch is the user's own
-    /// and never moves under an edit (`BrushConfig::effect`).
-    fn set(self, b: &mut BrushConfig, t: &mut Transient, v: f32) {
-        match self {
-            Self::Size => t.size = v,
-            Self::Opacity => b.set_opacity(v),
-            Self::Flow => t.flow = v,
-            Self::Stretch => b.stretch = v,
-            Self::ToothGive => b.tooth.give = v,
-            Self::Add => b.wet.add = v,
-            Self::Lift => b.wet.lift = v,
-            Self::Deposit => b.wet.deposit = v,
-            Self::Bleed => b.wet.bleed = v,
-        }
-    }
-
-    /// Where this row's mapping lives on the brush: the tip's own table
-    /// (`BrushModulations`), or the effect's — which for Flow is whichever
-    /// effect is in force, that being the row's whole point (§6.12).
-    fn slot(self, b: &mut BrushConfig) -> &mut Option<Modulation> {
-        match self {
-            Self::Size => &mut b.modulation.size,
-            Self::Stretch => &mut b.modulation.stretch,
-            Self::ToothGive => &mut b.modulation.tooth_give,
-            Self::Flow => match b.effect {
-                BrushEffectType::Paint | BrushEffectType::Wet => &mut b.flow_modulation,
-                BrushEffectType::Erase => &mut b.erase.flow_modulation,
-                BrushEffectType::Liquify => &mut b.liquify.strength_modulation,
-            },
-            // The laying side's or the eraser's, like the dial itself. A liquify
-            // brush shows no Opacity row at all (§6.13), so its arm is never
-            // reached; the laying side's slot is what the dial would write if it
-            // were.
-            Self::Opacity => match b.effect {
-                BrushEffectType::Erase => &mut b.erase.opacity_modulation,
-                BrushEffectType::Paint | BrushEffectType::Wet | BrushEffectType::Liquify => {
-                    &mut b.opacity_modulation
-                }
-            },
-            Self::Add => &mut b.wet.add_modulation,
-            Self::Lift => &mut b.wet.lift_modulation,
-            Self::Deposit => &mut b.wet.deposit_modulation,
-            Self::Bleed => &mut b.wet.bleed_modulation,
-        }
-    }
-
-    fn of(self, b: &BrushConfig) -> Option<Modulation> {
-        match self {
-            Self::Size => b.modulation.size,
-            Self::Stretch => b.modulation.stretch,
-            Self::ToothGive => b.modulation.tooth_give,
-            Self::Flow => match b.effect {
-                BrushEffectType::Paint | BrushEffectType::Wet => b.flow_modulation,
-                BrushEffectType::Erase => b.erase.flow_modulation,
-                BrushEffectType::Liquify => b.liquify.strength_modulation,
-            },
-            Self::Opacity => match b.effect {
-                BrushEffectType::Erase => b.erase.opacity_modulation,
-                BrushEffectType::Paint | BrushEffectType::Wet | BrushEffectType::Liquify => {
-                    b.opacity_modulation
-                }
-            },
-            Self::Add => b.wet.add_modulation,
-            Self::Lift => b.wet.lift_modulation,
-            Self::Deposit => b.wet.deposit_modulation,
-            Self::Bleed => b.wet.bleed_modulation,
-        }
-    }
-}
-
 /// The class a two-state chip wears. Shared by every chip row in the dialog, so a
 /// selected shape, a selected noise kind and a selected pen source all light the
 /// same way.
 fn chip(active: bool) -> &'static str {
     if active { "chip active" } else { "chip" }
-}
-
-/// The word a source wears on its chip.
-fn source_label(s: ModSource) -> &'static str {
-    match s {
-        ModSource::Pressure => "Pressure",
-        ModSource::Tilt => "Tilt",
-    }
 }
 
 /// Shared `Copy` handle to the preview's signals.
@@ -323,17 +125,19 @@ struct Preview {
 ///
 /// Only the parts a lesson names are here. The dialog has more boxes than this and
 /// they are none of the tour's business.
+///
+/// The four groups are **not** among them as variants of their own: a group's key is
+/// `stark_ui::brush_editor::Section::key`, which the native frontend writes into its
+/// own markup too, so a lesson pointing at "the tip group" and a native dialog naming
+/// one cannot come apart.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum BrushPart {
     /// The dialog itself.
     Dialog,
     /// The live test stroke down the right-hand column.
     Preview,
-    /// The four folding parameter groups, in the order they are laid out.
-    Tip,
-    Paint,
-    Color,
-    Wet,
+    /// One of the four folding parameter groups.
+    Group(Section),
 }
 
 impl BrushPart {
@@ -342,10 +146,7 @@ impl BrushPart {
         match self {
             BrushPart::Dialog => "dialog",
             BrushPart::Preview => "preview",
-            BrushPart::Tip => "tip",
-            BrushPart::Paint => "paint",
-            BrushPart::Color => "color",
-            BrushPart::Wet => "wet",
+            BrushPart::Group(section) => section.key(),
         }
     }
 }
@@ -386,14 +187,16 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         restroke(state, preview);
     });
 
-    // Section fold state: the everyday groups start open, the specialised ones closed.
-    let tip_open = use_signal(|| true);
-    let paint_open = use_signal(|| true);
-    let color_open = use_signal(|| false);
-    let wet_open = use_signal(|| false);
-    let _surface_open = use_signal(|| false);
-    // Per-section "Show more" for the rarely-touched knobs.
-    let wet_more = use_signal(|| false);
+    // Section fold state, one signal per group in `SECTIONS`' order: the everyday
+    // groups start open, the specialised ones closed (`Section::open_by_default`).
+    // `use_signal` in a fixed-length loop rather than four named signals, because the
+    // hooks have to run in the same order every render and an array of a constant
+    // length does exactly that.
+    let folds: [Signal<bool>; SECTIONS.len()] =
+        std::array::from_fn(|i| use_signal(|| SECTIONS[i].open_by_default()));
+    // Per-section "Show more" for the rarely-touched knobs. Only Wet has any today;
+    // the run is per group so a second one costs no signal of its own.
+    let mores: [Signal<bool>; SECTIONS.len()] = std::array::from_fn(|_| use_signal(|| false));
     // Which parameter's pen mapping is open, at most one at a time — so the dialog
     // grows by one sub-row while a mapping is being edited and by nothing otherwise
     // (see [`mod_slider`]). Held here rather than per row because the rows are plain
@@ -405,38 +208,12 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     // else.
     let brush = (state.brush)();
     let tune = (state.transient)();
-    let is_round = matches!(brush.shape, BrushShape::Round { .. });
-    // Which effect the brush is (§6.2, §6.12) — what gates the laying-only
-    // sections below, what the effect chips read, and what the effect section
-    // calls itself.
-    let erases = brush.effect == BrushEffectType::Erase;
-    let liquifies = brush.effect == BrushEffectType::Liquify;
-    // Whether the effect in force lays pigment at all — what gates the sections
-    // that are properties of laying it: the color dynamics, and the opacity
-    // ceiling on the amount laid (§6.12, §6.13).
-    let lays = !erases && !liquifies;
-    let (effect_title, effect_desc) = match brush.effect {
-        BrushEffectType::Paint => (
-            "Paint",
-            "The brush's own paint: how much goes down and how far it lasts.",
-        ),
-        BrushEffectType::Wet => (
-            "Wet",
-            "The paint mixes with what is on the canvas: lift, deposit, bleed.",
-        ),
-        BrushEffectType::Erase => (
-            "Erase",
-            "The stroke removes what the eye sees, instead of laying paint.",
-        ),
-        BrushEffectType::Liquify => (
-            "Liquify",
-            "The stroke drags the picture with it — paint warps instead of mixing.",
-        ),
-    };
-    let charge = brush.wet.charge;
-    let cd = brush.color_dynamics;
-    // The jitter channels are the *color space's* channels — label them for
-    // whatever space the document is in.
+    // Which effect the brush is in, which group is named for it, which rows it does
+    // and does not get: all of that is `Section::mounted` and `Section::rows` now, and
+    // the two dozen locals that used to answer it went with them.
+    //
+    // The jitter channels are the *color space's* channels, so the space is one of the
+    // two document facts the table has to be told.
     let space = state
         .renderer
         .read()
@@ -450,9 +227,13 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|r| r.substrate())
         .unwrap_or_default();
-    let ch_labels = match space {
-        ColorSpaceId::Mixbox => ["Pigment 1", "Pigment 2", "Pigment 3"],
-        _ => ["Lightness", "Green \u{2194} red", "Blue \u{2194} yellow"],
+    // The brush and the two document facts its rows depend on, in the one shape the
+    // shared table takes (`stark_ui::brush_editor::Shown`).
+    let shown = Shown {
+        brush,
+        tune,
+        space,
+        substrate,
     };
 
     // What the header's "Overwrite preset" can do (`stark_ui::presets::overwrite`), asked
@@ -584,260 +365,148 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
             }
 
             div { class: "be-sections",
-                Section {
-                    part: BrushPart::Tip,
-                    title: "Tip", desc: "The footprint the stroke sweeps along the path.",
-                    glyph: stark_ui::icons::TIP,
-                    open: tip_open,
-                    ShapeGallery {}
-                    // Orientation is what aims the footprint (§6.6), and there
-                    // are two ways for that to matter: a non-round tip has a
-                    // silhouette to turn, and **any** tip that stretches has an
-                    // axis to draw out along. A round tip that does neither is the
-                    // one case where the chips would decide nothing, so it is the
-                    // one case that does not show them. Hardness stays the
-                    // procedural tip's alone.
-                    if !is_round || brush.stretch > 0.0 {
-                        div { class: "brush-shapes",
-                            button { class: chip(brush.orientation == OrientationSource::FollowStroke),
-                                onclick: move |_| { set_orientation(state, OrientationSource::FollowStroke); restroke(state, preview); },
-                                "Follow stroke" }
-                            button { class: chip(brush.orientation == OrientationSource::Pen),
-                                onclick: move |_| { set_orientation(state, OrientationSource::Pen); restroke(state, preview); },
-                                "Pen angle" }
+                // **The rows are the shared table's** (`stark_ui::brush_editor`).
+                // Which parameter sits in which group, over what range, and which
+                // rows an eraser or a liquify brush does not get are facts about the
+                // engine — so this is a loop over them rather than a second copy of
+                // the list, and the native dialog draws the same one (§11.2).
+                for section in SECTIONS.into_iter().filter(|s| s.mounted(&brush)) {
+                    Group {
+                        key: "{section.key()}",
+                        part: BrushPart::Group(section),
+                        title: section.title(&brush),
+                        desc: section.desc(&brush),
+                        glyph: section.glyph(),
+                        open: fold(&folds, section),
+                        for (i, row) in section.rows(&shown).into_iter().enumerate() {
+                            {row_element(state, preview, mod_open, &shown, i, row)}
                         }
-                    }
-                    {mod_slider(state, preview, mod_open, ModRow::Size, brush, tune)}
-                    // How far the footprint is drawn out along the axis above
-                    // (§6.6). Pointed at Tilt with "Pen angle" this is the pencil:
-                    // lean the pen and the contact patch elongates along the lean,
-                    // the way a real conical tip's does. Held at a value with no
-                    // mapping it is a chisel nib, off a plain round tip.
-                    {mod_slider(state, preview, mod_open, ModRow::Stretch, brush, tune)}
-                    // Stretching along the *tangent* is a coherent thing to ask
-                    // for — the tip lays more paint per unit travel — but it is not
-                    // the one people reach for this slider wanting, and the
-                    // difference is invisible until the pen is leaned. So say
-                    // which axis is in force rather than second-guess the setting.
-                    if brush.stretch > 0.0 && brush.orientation == OrientationSource::FollowStroke {
-                        div { class: "be-note",
-                            "Stretching along the stroke, so the mark gets heavier rather                                  than wider. Switch to Pen angle for a tip that broadens as                                  the pen leans." }
-                    }
-                    // Why the slider stopped short of where it stops on a smaller
-                    // brush. Said only when it actually did: below ~110 px the
-                    // whole range is there and there is nothing to explain.
-                    if stark_engine::max_stretch(&brush.params(tune)) < BrushParams::MAX_STRETCH {
-                        div { class: "be-note",
-                            "This tip is too big to draw out any further — a stroke                                  that lifts and deposits works over a copy of the canvas                                  beneath it, and that has a size limit. Lower Size to                                  stretch it more." }
-                    }
-                    if let BrushShape::Round { hardness } = brush.shape {
-                        Slider { label: "Hardness", min: 0.0, max: 1.0, value: hardness,
-                            oninput: move |v| edit(state, preview, move |b, _| {
-                                if let BrushShape::Round { hardness } = &mut b.shape {
-                                    *hardness = v;
-                                }
-                            }) }
-                    }
-                    // The two tapers — the run over which the tip widens from a
-                    // point (§6.2). In *radii*, so a taper keeps its shape as the
-                    // brush is resized, which is why the labels say so.
-                    Slider { label: "Start taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.start_taper_length,
-                        oninput: move |v| edit(state, preview, move |b, _| b.start_taper_length = v) }
-                    Slider { label: "End taper (radii)", min: 0.0, max: MAX_TAPER, value: brush.end_taper_length,
-                        oninput: move |v| edit(state, preview, move |b, _| b.end_taper_length = v) }
-                    // Stroke smoothing (§6.11): the towed tip. The one
-                    // slider here whose knob never reaches the engine — the
-                    // stored path already embodies it, so the amount is the
-                    // frontend's own (`BrushConfig::smoothing`), riding
-                    // presets and the rack with the rest of the brush.
-                    Slider { label: "Smoothing", min: 0.0, max: 1.0, value: brush.smoothing,
-                        oninput: move |v| edit(state, preview, move |b, _| b.smoothing = v) }
-                }
-
-                Section {
-                    part: BrushPart::Paint,
-                    title: effect_title,
-                    desc: effect_desc,
-                    glyph: stark_ui::icons::PAINT,
-                    open: paint_open,
-                    // What a stroke of this brush **does** (§6.2, §6.12):
-                    // paint, wet paint, or erase. Chips rather than a dial,
-                    // because it is the tool's identity and not an amount — the
-                    // sections below come and go with it, which a slider
-                    // position would not say. The user's own choice: no slider
-                    // moves this switch (`BrushConfig::effect`).
-                    div { class: "brush-shapes",
-                        button { class: chip(brush.effect == BrushEffectType::Paint),
-                            onclick: move |_| set_effect(state, preview, BrushEffectType::Paint),
-                            "Paint" }
-                        button { class: chip(brush.effect == BrushEffectType::Wet),
-                            onclick: move |_| set_effect(state, preview, BrushEffectType::Wet),
-                            "Wet" }
-                        button { class: chip(erases),
-                            onclick: move |_| set_effect(state, preview, BrushEffectType::Erase),
-                            "Erase" }
-                        button { class: chip(liquifies),
-                            onclick: move |_| set_effect(state, preview, BrushEffectType::Liquify),
-                            "Liquify" }
-                    }
-                    // The effect's ceiling (§6.2, §6.12), whichever it is: the
-                    // fraction of a full stroke this stroke lays — or, erasing,
-                    // removes. 0.5 really shows (or leaves) half, however hard
-                    // the spot is scrubbed. Not a rate: the rate is Flow below.
-                    // The pen can drive it like the rate — a light touch lays a
-                    // faint mark a heavy one fills in — which is the chip on the
-                    // row. A liquify brush has no such ceiling — scrubbing keeps
-                    // carrying (§6.13) — so the row is not shown rather than
-                    // shown and vetoed (`BrushConfig::set_opacity`).
-                    if !liquifies {
-                        {mod_slider(state, preview, mod_open, ModRow::Opacity, brush, tune)}
-                    }
-                    // The effect's overall rate (§6.2): how much a pass lays — and,
-                    // wet, how hard it works the canvas; erasing, how fast the bite
-                    // builds toward its ceiling (§6.12). Not a wet axis: what the
-                    // tool *does* per unit of this is the Wet section's business.
-                    {mod_slider(state, preview, mod_open, ModRow::Flow, brush, tune)}
-                    // How finely a liquify drag is stepped (§6.13): at 1 every
-                    // step is a contraction and a hard tip steps by the texel;
-                    // lower is the same field from fewer steps, faster, with the
-                    // paint ahead of a hard edge squashed rather than carried. A
-                    // cost dial, not a rate, so no pen chip.
-                    if liquifies {
-                        Slider { label: "Quality", min: 0.0, max: 1.0, value: brush.liquify.quality,
-                            oninput: move |v| edit(state, preview, move |b, _| b.liquify.quality = v) }
-                    }
-                    // How far the tip settles into the canvas's own tooth (§6.4):
-                    // at 1 it follows every fall, the substrate is irrelevant and the
-                    // mark is solid; turned *down* the paint catches on the
-                    // substrate's peaks and skips its valleys, which is what a dry
-                    // brush leaves.
-                    //
-                    // The one slider here whose interesting end is the left, and that
-                    // is the model rather than an oversight: a modulation only scales
-                    // down, so quoting the knob as the give is what makes a pressure
-                    // mapping the charcoal — light touch dry, borne down solid —
-                    // instead of its opposite (`ToothParams::give`).
-                    {mod_slider(state, preview, mod_open, ModRow::ToothGive, brush, tune)}
-                    // ...and how *abruptly* it meets the grain, which is the other
-                    // half of contact and a different question (§6.4). Narrow and the mark is
-                    // a level set of the grain — the faces print and the valleys do
-                    // not, which is paint sitting on the substrate. Wide and the tip
-                    // crumbles into the valleys instead of spanning them, so the grain
-                    // reads as a tone rather than a pattern: the charcoal.
-                    //
-                    // Not a `mod_slider`, and that is the model rather than an
-                    // omission: the pen presses a tip harder, it does not make it out
-                    // of something else (`BrushModulations::tooth_give`).
-                    Slider { label: "Tooth softness", min: 0.0, max: MAX_TOOTH_SOFTNESS, value: brush.tooth.softness,
-                        oninput: move |v| edit(state, preview, move |b, _| b.tooth.softness = v) }
-                    // The substrate is the *document's*, not the brush's — a pencil
-                    // and a loaded brush on one canvas see one tooth — so on a
-                    // smooth canvas this knob has nothing to bite and says so,
-                    // rather than moving and changing nothing.
-                    if brush.tooth.give < 1.0 && substrate == SubstrateId::Flat {
-                        div { class: "be-note",
-                            "This canvas is smooth, so there is no tooth to catch on. \
-                             Pick a substrate in the Lighting panel."
-                        }
-                    }
-                    // The deposit jitter (§6.2): every texel scales the paint it
-                    // takes by its own factor in (1 − j, 1 + j), fixed for the
-                    // stroke — what keeps the wet loop's accumulation from banding,
-                    // at the 1% default; the rest of the track is grain as a look.
-                    // The slider stops at 0.2 where the field runs to 1
-                    // (`BrushParams::jitter`): past strong grain the gate
-                    // is only noise, and a ceiling the model does not own belongs to
-                    // the slider's end rather than to the quantity.
-                    Slider { label: "Jitter", min: 0.0, max: 0.2, value: brush.jitter,
-                        oninput: move |v| edit(state, preview, move |b, _| b.jitter = v) }
-                    // Depletion per *radius* travelled — the stroke runs dry. 0 is
-                    // what a pen or a digital brush wants; not behind "Show more",
-                    // because it is the only knob that decides whether a tool runs
-                    // out. In radii, so this slider's top means the same thing at
-                    // every brush size (§6.2): dry two radii past the press. Quoted
-                    // per canvas px it did not — the same setting was a gentle fade
-                    // on a small tip and a stub on a large one, which is the whole
-                    // of why `radius` had to be read as something other than scale.
-                    Slider { label: "Drain", min: 0.0, max: 0.5, value: brush.drain,
-                        oninput: move |v| edit(state, preview, move |b, _| b.drain = v) }
-                }
-
-                // Pigment wander is a property of laying pigment, so the whole
-                // section is the laying side's (§6.12, §6.13) — an eraser or a
-                // liquify brush shows no rows that reach nothing. The closures
-                // write the paint side directly: it is always there to take them
-                // (`BrushConfig`), even when the pen's eraser end swaps the
-                // effect inside `edit`'s throttle window (§18.1.8).
-                if lays {
-                    Section {
-                        part: BrushPart::Color,
-                        title: "Color dynamics", desc: "The color wanders across the brush and along the stroke, following a noise field.",
-                        glyph: stark_ui::icons::COLOR,
-                        open: color_open,
-                        div { class: "brush-shapes",
-                            for kind in [NoiseKind::Simplex, NoiseKind::White, NoiseKind::Voronoi, NoiseKind::Mosaic] {
-                                button {
-                                    key: "{noise_label(kind)}",
-                                    class: chip(cd.noise == kind),
-                                    onclick: move |_| edit(state, preview, move |b, _| b.color_dynamics.noise = kind),
-                                    "{noise_label(kind)}"
+                        if !section.more(&shown).is_empty() {
+                            More { open: fold(&mores, section),
+                                for (i, row) in section.more(&shown).into_iter().enumerate() {
+                                    {row_element(state, preview, mod_open, &shown, 1000 + i, row)}
                                 }
                             }
                         }
-                        // How far each color channel wanders (± in the channel's units).
-                        for i in 0..3 {
-                            Slider { label: ch_labels[i].to_string(), min: 0.0, max: 0.5, value: cd.amplitude[i],
-                                oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.amplitude[i] = v) }
-                        }
-                        // How fast it wanders along each lookup axis; the modulation
-                        // sliders live only while some channel is active (no effect at 0).
-                        if cd.amplitude.iter().any(|a| *a > 0.0) {
-                            div { class: "be-sub",
-                                Slider { label: "Scale \u{2192} across stroke", min: 0.0, max: 8.0, value: cd.frequency[0],
-                                    oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.frequency[0] = v) }
-                                Slider { label: "Scale \u{2192} along stroke", min: 0.0, max: 8.0, value: cd.frequency[1],
-                                    oninput: move |v| edit(state, preview, move |b, _| b.color_dynamics.frequency[1] = v) }
-                            }
-                        }
                     }
                 }
-
-                // The fluxes are the wet effect's own (§6.2), so the section
-                // goes with the chip that names it: a paint brush lays and an
-                // eraser removes, and neither has an axis here to show.
-                if brush.effect == BrushEffectType::Wet {
-                    Section {
-                        part: BrushPart::Wet,
-                        title: "Wet", desc: "Canvas paint on the move — smudge, knife, blur.",
-                        glyph: stark_ui::icons::WET,
-                        open: wet_open,
-                        // The source axis (§6.2): how much of the brush's own paint
-                        // is in the mix, as a share the shared Flow scales. At 0 the
-                        // tool only works what is there — the blender — and the Flow
-                        // slider strengthens the blend instead of laying paint.
-                        {mod_slider(state, preview, mod_open, ModRow::Add, brush, tune)}
-                        // The three fluxes a palette knife is built out of, and the
-                        // three most worth mapping onto the pen: a knife that lifts
-                        // with pressure and lays back with tilt is those two chips
-                        // (§6.2).
-                        {mod_slider(state, preview, mod_open, ModRow::Lift, brush, tune)}
-                        {mod_slider(state, preview, mod_open, ModRow::Deposit, brush, tune)}
-                        // The lateral axis: the paint under the tip diffuses towards its
-                        // neighbours (§6.2). Alone it is a blur brush; under `add` it
-                        // melts the ridges of the strokes being painted over. Capped at
-                        // 0.95 like the two vertical rates — the λ diverges at 1.
-                        {mod_slider(state, preview, mod_open, ModRow::Bleed, brush, tune)}
-                        More { open: wet_more,
-                            // The finite glob pre-loaded on the tool (palette knife, §6.2).
-                            Slider { label: "Charge", min: 0.0, max: 2.0, value: charge,
-                                oninput: move |v| edit(state, preview, move |b, _| b.wet.charge = v) }
-                        }
-                    }
-                }
-
             }
         }
     }
+}
+
+/// One row of a group, as the web app draws it.
+///
+/// `nth` is the row's place in its group, and it is here for one reason: `rsx!`'s
+/// `for` wants a key, and two rows of a group can otherwise carry the same one — a
+/// section with three amplitude tracks is three `Row::Knob`s whose `Debug` differs
+/// only in an index the enum does carry, but a `Note` and a chip run do not differ at
+/// all across groups.
+fn row_element(
+    state: AppState,
+    preview: Preview,
+    mod_open: Signal<Option<ModRow>>,
+    shown: &Shown,
+    nth: usize,
+    row: Row,
+) -> Element {
+    let (brush, tune) = (shown.brush, shown.tune);
+    match row {
+        Row::Shapes => rsx! { ShapeGallery { key: "{nth}" } },
+        Row::Orientation => rsx! {
+            div { key: "{nth}", class: "brush-shapes",
+                for source in [OrientationSource::FollowStroke, OrientationSource::Pen] {
+                    button {
+                        key: "{source:?}",
+                        class: chip(brush.orientation == source),
+                        onclick: move |_| {
+                            set_orientation(state, source);
+                            restroke(state, preview);
+                        },
+                        match source {
+                            OrientationSource::FollowStroke => "Follow stroke",
+                            OrientationSource::Pen => "Pen angle",
+                        }
+                    }
+                }
+            }
+        },
+        // What a stroke of the brush **does** (§6.2, §6.12). Chips rather than a dial,
+        // because it is the tool's identity and not an amount — the sections below come
+        // and go with it, which a slider position would not say. The user's own choice:
+        // no slider moves this switch (`BrushConfig::effect`).
+        Row::Effects => rsx! {
+            div { key: "{nth}", class: "brush-shapes",
+                for kind in [
+                    BrushEffectType::Paint,
+                    BrushEffectType::Wet,
+                    BrushEffectType::Erase,
+                    BrushEffectType::Liquify,
+                ] {
+                    button {
+                        key: "{kind:?}",
+                        class: chip(brush.effect == kind),
+                        onclick: move |_| set_effect(state, preview, kind),
+                        "{effect_label(kind)}"
+                    }
+                }
+            }
+        },
+        Row::Noise => rsx! {
+            div { key: "{nth}", class: "brush-shapes",
+                for kind in stark_ui::brush_editor::NOISE_KINDS {
+                    button {
+                        key: "{noise_label(kind)}",
+                        class: chip(brush.color_dynamics.noise == kind),
+                        onclick: move |_| edit(state, preview, move |b, _| b.color_dynamics.noise = kind),
+                        "{noise_label(kind)}"
+                    }
+                }
+            }
+        },
+        Row::Note(note) => rsx! {
+            div { key: "{nth}", class: "be-note", "{note.text()}" }
+        },
+        Row::Knob(knob) => {
+            let (min, max) = knob.range();
+            rsx! {
+                Slider {
+                    key: "{nth}",
+                    label: knob.label(shown.space).to_string(),
+                    glyph: knob.glyph(),
+                    min, max,
+                    value: knob.get(&brush),
+                    oninput: move |v| edit(state, preview, move |b, _| knob.set(b, v)),
+                }
+            }
+        }
+        Row::Mod(m) => mod_slider(state, preview, mod_open, m, brush, tune),
+    }
+}
+
+/// The word an effect chip wears. The *marks* are the panels' — a chip in a docked
+/// column has no room for a word — and here the word leads, because the chip is what
+/// names the group under it.
+fn effect_label(effect: BrushEffectType) -> &'static str {
+    match effect {
+        BrushEffectType::Paint => "Paint",
+        BrushEffectType::Wet => "Wet",
+        BrushEffectType::Erase => "Erase",
+        BrushEffectType::Liquify => "Liquify",
+    }
+}
+
+/// The fold signal for one group, out of the run the dialog keeps.
+///
+/// A slice indexed by the group's place in [`SECTIONS`] rather than four named
+/// signals: the groups are a table now, and four names beside a table is the second
+/// list that comes apart from it.
+fn fold(signals: &[Signal<bool>; SECTIONS.len()], section: Section) -> Signal<bool> {
+    let i = SECTIONS
+        .iter()
+        .position(|s| *s == section)
+        .expect("every group is in the table it came from");
+    signals[i]
 }
 
 /// A parameter slider with its **pen mapping** hung off the end (§6.2): the base
@@ -938,16 +607,6 @@ fn mod_slider(
     }
 }
 
-/// The word a noise kind wears on its chip.
-fn noise_label(kind: NoiseKind) -> &'static str {
-    match kind {
-        NoiseKind::Simplex => "Simplex",
-        NoiseKind::White => "White",
-        NoiseKind::Voronoi => "Voronoi",
-        NoiseKind::Mosaic => "Mosaic",
-    }
-}
-
 /// Switch what the brush does (§6.2, §6.12). One field moves and nothing is
 /// forgotten: the brush carries every effect's configuration (`BrushConfig`),
 /// so switching to Erase and back costs a tuned smudge none of its axes —
@@ -961,11 +620,7 @@ fn set_effect(state: AppState, preview: Preview, kind: BrushEffectType) {
 /// switching pressure → tilt is one edit rather than three.
 fn set_source(state: AppState, preview: Preview, row: ModRow, source: Option<ModSource>) {
     edit(state, preview, move |b, _| {
-        let held = row.of(b);
-        *row.slot(b) = source.map(|source| Modulation {
-            source,
-            ..held.unwrap_or(Modulation::linear(source))
-        });
+        stark_ui::brush_editor::set_source(b, row, source);
     });
 }
 
@@ -977,17 +632,12 @@ fn set_source(state: AppState, preview: Preview, row: ModRow, source: Option<Mod
 /// about the clamps. Both sources are fed the same sweep, which is what makes one
 /// plot serve either.
 fn curve_plot(m: Modulation) -> Element {
-    const N: usize = 25;
     const W: f32 = 56.0;
     const H: f32 = 30.0;
     let pad = 1.5;
-    let pts: String = (0..N)
-        .map(|i| {
-            let x = i as f32 / (N - 1) as f32;
-            let f = m.factor(PenState {
-                pressure: x,
-                tilt: x,
-            });
+    let pts: String = stark_ui::brush_editor::curve_points(m)
+        .into_iter()
+        .map(|(x, f)| {
             let px = pad + x * (W - 2.0 * pad);
             let py = H - pad - f * (H - 2.0 * pad);
             format!("{px:.2},{py:.2} ")
@@ -1154,6 +804,10 @@ fn ShapeGallery() -> Element {
 
 /// A collapsible settings group: a chevron header (click toggles) over the body.
 ///
+/// Named for what it *draws* rather than for what it draws: `Section` is
+/// `stark_ui::brush_editor`'s word for the group itself, and the two would be one
+/// name for a table and its markup.
+///
 /// `glyph` says what the group is *about* — the same job the `desc` sentence does,
 /// except that the sentence is inside the fold and the mark is not. A shut section
 /// is a word on a line, and four words in a column are read one at a time; four
@@ -1164,7 +818,7 @@ fn ShapeGallery() -> Element {
 /// borrowing the Layers panel's would put the glyph that deliberately refuses to
 /// rotate (`stark_ui::icons::FOLD_OPEN`) into a control that must.
 #[component]
-fn Section(
+fn Group(
     part: BrushPart,
     title: String,
     desc: String,
@@ -1258,24 +912,7 @@ async fn init_preview(state: AppState, mut preview: Preview) {
 /// is across the short one.
 fn default_stroke(r: &Renderer) -> Vec<InputSample> {
     let (w, h) = r.size();
-    let (w, h) = (w as f32, h as f32);
-    let view = r.view();
-    const N: usize = 64;
-    (0..N)
-        .map(|i| {
-            let t = i as f32 / (N - 1) as f32;
-            let x = w * 0.5 + (t * std::f32::consts::TAU).sin() * w * 0.26;
-            let y = h * 0.06 + t * h * 0.88;
-            InputSample {
-                pos: view.screen_to_canvas(Vec2::new(x, y)),
-                pressure: (t * std::f32::consts::PI).sin().clamp(0.08, 1.0),
-                // Lean along the (mostly +y) travel direction, growing over the
-                // stroke, so tilt→deposit reads as a knife laying down more and more.
-                tilt: Vec2::new(0.0, 0.65 * t),
-                time: (t * 0.7) as f64,
-            }
-        })
-        .collect()
+    stark_ui::brush_editor::default_stroke(w as f32, h as f32, r.view())
 }
 
 /// The fixed reference stroke laid on the preview canvas before any test
@@ -1289,32 +926,10 @@ fn default_stroke(r: &Renderer) -> Vec<InputSample> {
 /// edges so the crossing is never near an end of it.
 fn paint_reference_stroke(r: &mut Renderer) {
     let (w, h) = r.size();
-    let (w, h) = (w as f32, h as f32);
-    let view = r.view();
-    let y = h * 0.5;
-    const N: usize = 8;
-    let samples: Vec<InputSample> = (0..N)
-        .map(|i| {
-            let t = i as f32 / (N - 1) as f32;
-            let x = w * -0.25 + t * w * 1.5;
-            InputSample {
-                pos: view.screen_to_canvas(Vec2::new(x, y)),
-                pressure: 1.0,
-                ..Default::default()
-            }
-        })
-        .collect();
-    const REFERENCE_COLOR: [f32; 3] = [0.82, 0.15, 0.12];
-    let brush = BrushParams {
-        size: 75.0,
-        shape: BrushShape::Round { hardness: 0.9 },
-        drain: 0.0,
-        effect: BrushEffect::painted(REFERENCE_COLOR),
-        ..BrushParams::default()
-    };
+    let samples = stark_ui::brush_editor::reference_stroke(w as f32, h as f32, r.view());
     r.process(ViewCommand::SetBrush {
-        brush,
-        color: REFERENCE_COLOR,
+        brush: stark_ui::brush_editor::reference_brush(),
+        color: stark_ui::brush_editor::REFERENCE_COLOR,
     });
     r.replay_stroke(Tool::Brush, &samples);
 }

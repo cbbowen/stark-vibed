@@ -117,6 +117,7 @@ use crate::state::{AppState, root_signal};
 use stark_engine::command::InputCommand;
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_model::document::BrushParams;
+use stark_ui::brush_editor::Section;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::ChromeHiding;
 use stark_ui::storage::Store;
@@ -1072,7 +1073,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::OpenedBrushEditor,
         after: 1,
         answer: Answer::Button,
-        anchor: Anchor::BrushEditor(BrushPart::Tip),
+        anchor: Anchor::BrushEditor(BrushPart::Group(Section::Tip)),
         side: Side::RightAtTop,
         title: "Tip \u{2014} the footprint",
         body: "The shape swept along the path. A round tip has hardness; any image \
@@ -1085,7 +1086,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::OpenedBrushEditor,
         after: 1,
         answer: Answer::Button,
-        anchor: Anchor::BrushEditor(BrushPart::Paint),
+        anchor: Anchor::BrushEditor(BrushPart::Group(Section::Effect)),
         side: Side::RightAtTop,
         title: "Paint \u{2014} how much, and how long it lasts",
         body: "Flow is how much goes down per unit travelled. Drain is the brush \
@@ -1098,7 +1099,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::OpenedBrushEditor,
         after: 1,
         answer: Answer::Button,
-        anchor: Anchor::BrushEditor(BrushPart::Color),
+        anchor: Anchor::BrushEditor(BrushPart::Group(Section::Color)),
         side: Side::RightAtTop,
         title: "Color dynamics \u{2014} the wobble that reads as pigment",
         body: "The color wanders across the width of the tip and along the stroke, \
@@ -1117,7 +1118,7 @@ static LESSONS: &[Lesson] = &[
         deed: Deed::OpenedBrushEditor,
         after: 1,
         answer: Answer::Button,
-        anchor: Anchor::BrushEditor(BrushPart::Paint),
+        anchor: Anchor::BrushEditor(BrushPart::Group(Section::Effect)),
         side: Side::RightAtTop,
         title: "Wet \u{2014} moving paint that is already there",
         body: "A Paint brush lays paint; a Wet brush also moves what is on the \

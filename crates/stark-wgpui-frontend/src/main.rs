@@ -30,6 +30,7 @@
 
 mod assets;
 mod brush;
+mod brush_editor;
 mod canvas;
 mod collab;
 mod color;

@@ -41,6 +41,9 @@
 //! - [`brush_config`] — the brush as a frontend carries it: the durable half (what
 //!   the tool *is*) beside the transient one (the size, flow and colour in hand),
 //!   and `params()`, the one projection down to the engine's `BrushParams` (§6.2).
+//! - [`brush_editor`] — what the full brush editor shows (§6.2): every parameter it
+//!   offers, the range each is offered over, which group it belongs to, and the test
+//!   stroke the preview lays. The rows are here and the markup is each frontend's.
 //! - [`transform`] — the transform mode's algebra (§16.6, §16.8, §16.9). Named for
 //!   what it computes; it was `gesture` next to five *input* gestures that are not
 //!   this, and the name would have been read as those here.
@@ -66,6 +69,7 @@
 pub mod assets;
 pub mod bounds;
 pub mod brush_config;
+pub mod brush_editor;
 pub mod collab;
 pub mod color;
 pub mod commands;

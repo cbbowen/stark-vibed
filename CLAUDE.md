@@ -95,8 +95,10 @@ crates/
                    what a pen is on Windows — and it lifts it on one `mod`, so every
                    other module of this crate is as covered as every other crate
   stark-ui/    the **frontend's model** (§11.2): what a chrome is written in, below
-                   any toolkit. The brush's durable/transient halves, the whole of a
-                   transform gesture — the algebra, what a press takes hold of and what
+                   any toolkit. The brush's durable/transient halves, the rows the brush
+                   editor shows — which parameter is in which group, over what range,
+                   which mapping slot is its own, and the test stroke its preview lays —
+                   the whole of a transform gesture — the algebra, what a press takes hold of and what
                    a drag makes of it, what switching families costs — what a shape
                    gesture is about to do to the selection or to the paint, the canvas
                    rectangles a frontend asks the document for, the layer tree's
