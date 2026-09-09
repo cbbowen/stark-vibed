@@ -56,7 +56,7 @@ pub struct Menu {
 
 /// The bar, left to right.
 ///
-/// Every row is a command this frontend actually answers (`Canvas::run`) — a menu
+/// Every row is a command this frontend actually answers (`canvas::answers`) — a menu
 /// that offers a dead act is worse than one that is short, because the act looks
 /// available and does nothing. The absences are therefore real: no New, no Import, and
 /// a View menu of one row, because one is what this frontend answers.
@@ -390,24 +390,18 @@ mod tests {
     /// is worse than a short menu: the row looks available and does nothing, and
     /// nothing on screen says which.
     ///
-    /// Checked against `Canvas::run`'s own arms by name, which is the closest a test
-    /// can get to "this does something" without a window — and it is enough, since a
-    /// command reaching `run` with no arm is exactly the failure.
+    /// Asked of `canvas::answers`, which is the same total classifier `Canvas::run`
+    /// turns a press away with and the palette dims on. It used to read `canvas.rs`
+    /// as *text* and look for the arm — which passes on an arm in `Canvas::active`, a
+    /// method that says which rows wear a tick and nothing at all about whether a
+    /// press does anything.
     #[test]
     fn every_row_is_an_act_this_frontend_answers() {
-        let answered = include_str!("canvas.rs");
         for menu in MENUS {
             for command in menu.rows.iter().flatten() {
-                // The variant, not the value: an arm for a command that carries a
-                // payload *binds* the payload rather than spelling it, so a menu of
-                // four `TogglePanel` rows shares one arm and this is what they share.
-                let debug = format!("{command:?}");
-                let head = debug.split('(').next().unwrap_or(&debug);
-                let arm = format!("Command::{head}");
                 assert!(
-                    answered.contains(&format!("{arm} =>"))
-                        || answered.contains(&format!("{arm}(")),
-                    "{} offers {command:?}, which `Canvas::run` has no arm for",
+                    crate::canvas::answers(*command),
+                    "{} offers {command:?}, which this frontend does not answer",
                     menu.title
                 );
             }

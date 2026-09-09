@@ -21,7 +21,8 @@ use crate::state::AppState;
 use crate::widgets::CommandButton;
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
-use stark_ui::pick::{Hand, PATCHES, patch_word};
+use stark_ui::drags::Hand;
+use stark_ui::pick::{PATCHES, patch_word};
 use strum::VariantArray;
 
 #[component]

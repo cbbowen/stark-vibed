@@ -111,7 +111,7 @@ pub fn Canvas() -> Element {
     // `is_playing` peeks, and that is right here rather than merely cheap: this
     // whole answer is recomputed when the held modifiers change, which is the
     // moment a cursor could start promising anything at all.
-    let hand = stark_ui::pick::Hand {
+    let hand = stark_ui::drags::Hand {
         panning: (state.space_down)(),
         selecting: tool.is_selection(),
         playing: crate::panels::timeline::is_playing(state),
@@ -123,8 +123,8 @@ pub fn Canvas() -> Element {
     let table = state.drags.read();
     let held = (state.held_mods)();
     let sampling = hand.armed(&table, held);
-    let carrying =
-        stark_ui::drags::armed(&table, held) == Some(DragAction::PickAndTranslate) && hand.free();
+    let carrying = stark_ui::drags::armed(&table, held)
+        .is_some_and(|a| a == DragAction::PickAndTranslate && a.claims(hand));
     // Whether a tuning drag is in flight (§18.1.9) — the crosshair goes while it is,
     // because the crosshair is a promise of paint *at a point* and this gesture is
     // about a number: nothing will land where it is pointing, and a crosshair sitting

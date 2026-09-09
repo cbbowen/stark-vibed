@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::keys::Mods;
-use crate::storage::{Entry, Store};
+use crate::storage::{self, Entry, Store};
 
 /// Which button a drag binding means, named the way the hand knows it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -140,7 +140,12 @@ pub struct DragBindings {
     /// The actions the user has taken over, each with the chord that is now its
     /// **whole** binding, or `None` for an action whose chord a later rebind
     /// stole or whose binding was erased outright.
-    pub overrides: Vec<(DragAction, Option<DragChord>)>,
+    ///
+    /// **Private for `commands::Bindings::overrides`' reason**: two rows on one chord
+    /// would make [`lookup`](Self::lookup) and [`of`](Self::of) answer by vector
+    /// position, and a record is where such a pair arrives from.
+    /// [`from_stored`](Self::from_stored) is the only other way to fill it.
+    overrides: Vec<(DragAction, Option<DragChord>)>,
 }
 
 impl DragBindings {
@@ -210,6 +215,21 @@ impl DragBindings {
         }
     }
 
+    /// The table a record's rows describe, laid down **one rebind at a time** —
+    /// `commands::Bindings::from_stored`'s twin, and for its reason: a record carrying
+    /// two rows on one chord resolves by the steal rule rather than by vector order.
+    #[must_use]
+    pub fn from_stored(rows: impl IntoIterator<Item = (DragAction, Option<DragChord>)>) -> Self {
+        let mut bindings = Self::default();
+        for (action, chord) in rows {
+            match chord {
+                Some(chord) => bindings.rebind(action, chord),
+                None => bindings.unbind(action),
+            }
+        }
+        bindings
+    }
+
     /// Take `preset`'s table whole.
     ///
     /// The shipped preset is applied by **clearing** the overrides rather than
@@ -257,6 +277,48 @@ impl Entry for DragRow {
     const STORE: Store = Store::Drags;
 }
 
+/// This client's stored drag table and the mark saying whether it has been offered a
+/// preset, or `None` where it has never kept the record.
+///
+/// Both halves through one door because they are one record ([`DragRow`]): a reader
+/// that took only the bindings would leave the offer to be made again next launch.
+pub fn stored_drags() -> Option<(DragBindings, Offer)> {
+    let rows: Vec<DragRow> = storage::load_list()?;
+    let mut bound = Vec::new();
+    let mut offered = false;
+    for row in rows {
+        match row {
+            DragRow::Bound { action, chord } => bound.push((action, chord)),
+            DragRow::Offered { offered: seen } => offered |= seen,
+        }
+    }
+    let offer = if offered {
+        Offer::Offered
+    } else {
+        Offer::Unoffered
+    };
+    Some((DragBindings::from_stored(bound), offer))
+}
+
+/// Write the whole record: the override rows, then the offer's mark.
+///
+/// **One writer for both row kinds**, which is what the untagged shape is for — a
+/// rebind, a preset and the offer being made all come through here, so neither half
+/// can be written without the other beside it (§25.6's fourth step).
+pub fn persist_drags(bindings: &DragBindings, offer: Offer) {
+    let rows: Vec<DragRow> = bindings
+        .overrides
+        .iter()
+        .map(|&(action, chord)| DragRow::Bound { action, chord })
+        // `Due` is a press waiting for the hand to come off the canvas, not an offer
+        // made: only `Offered` is the mark (§25.8).
+        .chain(std::iter::once(DragRow::Offered {
+            offered: offer == Offer::Offered,
+        }))
+        .collect();
+    storage::save_list(&rows);
+}
+
 /// Whether this browser has been shown the preset offer, and whether one is
 /// waiting to be shown (§25.8).
 ///
@@ -275,6 +337,45 @@ pub enum Offer {
     Offered,
 }
 
+impl Offer {
+    /// What a canvas press makes of the offer (§25.8): `found` is what
+    /// [`DragBindings::lookup`] answered, and `mods` what the hand was holding.
+    ///
+    /// The whole of the trigger and its three exclusions, which are a rule over this
+    /// triple and nothing else — a frontend keeps only the signal write:
+    ///
+    /// - **Asked of `lookup`, not of `find`'s answer.** A bound chord that *declines*
+    ///   — Shift over a selection tool, where it is the union marquee — is not an
+    ///   unbound one, and offering a table of presets there answers a question nobody
+    ///   asked. So `found` is the table's answer before [`DragAction::claims`].
+    /// - **Modified presses only.** A bare contact is painting, and a bare right press
+    ///   is a chord nobody arrives holding.
+    /// - **Once ever**, which is what makes [`Offered`](Self::Offered) absorbing.
+    #[must_use]
+    pub fn on_press(self, mods: Mods, found: Option<DragAction>) -> Offer {
+        if self != Offer::Unoffered || found.is_some() || mods.bare() {
+            return self;
+        }
+        Offer::Due
+    }
+
+    /// The offer coming off the canvas: the state to keep, and whether to show the
+    /// dialog now.
+    ///
+    /// Due and shown are two steps for the tour's reason (§24): the press that found
+    /// nothing bound goes on to paint a stroke, so the dialog waits until
+    /// `end_interaction` takes the hand off the canvas. The mark is written *here*,
+    /// on the way up — dismissing the dialog is an answer, and one that came back
+    /// until it got the one it wanted would be a dialog nobody forgives.
+    #[must_use]
+    pub fn settle(self) -> (Offer, bool) {
+        match self {
+            Offer::Due => (Offer::Offered, true),
+            held => (held, false),
+        }
+    }
+}
+
 /// The action a **left press** under `held` would open — what the resting
 /// cursor and the options bar advertise ([`armed`]'s callers), asked of the same
 /// table the press will ask, so the promise and the press cannot disagree.
@@ -286,8 +387,62 @@ pub fn armed(bindings: &DragBindings, held: Mods) -> Option<DragAction> {
     bindings.lookup(held, DragButton::Left)
 }
 
-/// Which button `e` presses, as a chord names buttons — `None` for one no chord
-/// can hold: the middle button is the pan's, and a hold is not a row (§25.3).
+/// What the chrome knows about the hand that the drag table does not (§18.0.2).
+///
+/// A fact about **presses** rather than about sampling, which is why it sits with the
+/// table that reads them: [`DragAction::claims`] is what asks it, and the eyedropper
+/// is only one of the acts that stand down.
+///
+/// [`Hovering`](crate::input::Hovering)'s shape, and for its reason: the five are
+/// spellings of one question — *is this press already promised* — and a caller handing
+/// them over positionally could transpose two and arm the eyedropper for something
+/// else's reason.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Hand {
+    /// Space is down, so the press pans (§18.1.7) — which is what leaves space+Alt a
+    /// pan rather than a sample.
+    pub panning: bool,
+    /// A shape tool is in hand, where Alt is already the subtract marquee (§6.8): the
+    /// selection gesture is what the press is *for* there, so the sampler stands
+    /// down whichever chord it happens to wear.
+    pub selecting: bool,
+    /// The timeline is playing. The picture under the pointer is the playhead's
+    /// rather than the painting's, so a sample would read the replay mid-flight.
+    pub playing: bool,
+    /// The eyedropper is already down — a drag in hand, or a held touch that resolved
+    /// into one (§18.1.11).
+    pub sampling: bool,
+    /// Some other gesture already has the canvas: a stroke, a pan, a knob.
+    pub busy: bool,
+}
+
+impl Hand {
+    /// Whether a press right now would **sample rather than paint** — what the cursor
+    /// promises, and what the press path then answers.
+    ///
+    /// [`armed`] plus the act's own claim: the free function says which act the chord
+    /// opens, and [`DragAction::claims`] says whether this hand may have it.
+    pub fn armed(self, bindings: &DragBindings, held: Mods) -> bool {
+        armed(bindings, held) == Some(DragAction::PickColor) && DragAction::PickColor.claims(self)
+    }
+
+    /// Whether the press is still going begging — nothing with a stronger claim on
+    /// it already holds it. The whole of what [`DragAction::claims`] stands the two
+    /// canvas-reading acts down for.
+    pub fn free(self) -> bool {
+        !self.panning && !self.selecting && !self.playing
+    }
+
+    /// Whether the eyedropper's options bar is up: armed, and **not yet in use**.
+    ///
+    /// It goes away again the moment the drag starts, because from then on the thing
+    /// to look at is the canvas and the color coming off it — and a chord pressed
+    /// mid-stroke must not pop a bar up over the painting.
+    pub fn shows_options(self, bindings: &DragBindings, held: Mods) -> bool {
+        self.armed(bindings, held) && !self.sampling && !self.busy
+    }
+}
+
 impl DragAction {
     /// What the act is called where it has a row to itself — the settings
     /// dialog's label.
@@ -327,10 +482,37 @@ impl DragAction {
         }
     }
 
-    /// Whether this action claims a press right now — the act's own gate,
-    /// asked by a frontend's `find` where the canvas's ladder used to encode it in
-    /// ordering, for `Command::run`'s reason: which question an act must ask
-    /// is a fact about the act, not about the call site.
+    /// Whether this action claims a press from `hand` right now — the act's own gate
+    /// (§25.3), asked by a frontend's `find` where the canvas's ladder used to encode
+    /// it in ordering. `Command::gate`'s lesson restated for presses: which question
+    /// an act must ask is a fact about the act, not about the call site.
+    ///
+    /// A declined press falls through to the paint path, which is usually exactly
+    /// right — the modifiers then mean whatever the paint gesture says they mean.
+    ///
+    /// The two canvas-reading acts stand down for the same three, arriving from
+    /// opposite sides: over a selection tool PickColor's Alt is the subtract marquee
+    /// and PickAndTranslate's Shift is the union one (§6.8), and the selection
+    /// gesture is what the press is *for* there; during playback a sample would read
+    /// the replay rather than the painting, and a carry *commits*, which the playhead
+    /// forbids. Tuning declines nothing: the brush is view state, and the sliders it
+    /// shadows are not refused mid-playback either.
+    pub fn claims(self, hand: Hand) -> bool {
+        match self {
+            DragAction::TuneBrush => true,
+            DragAction::PickColor | DragAction::PickAndTranslate => hand.free(),
+        }
+    }
+
+    /// Whether a press under this binding takes the canvas away from the brush — so
+    /// the chrome that *promises* paint stands down while the chord is held: the brush
+    /// circle, and the hover mark under it (§18.1.10).
+    ///
+    /// A property of the act rather than a list kept at each of those call sites, for
+    /// [`claims`](Self::claims)' reason. The mark is the sharper half of the bill: it
+    /// is a preview folded into the shown document, so a press that *reads* the canvas
+    /// back would read the hypothesis as paint — the wrong color for the eyedropper,
+    /// the wrong layer for the hit test.
     pub fn shadows_paint(self) -> bool {
         match self {
             // Tuning *is* about the brush, and draws its own picture of it (the
@@ -799,17 +981,29 @@ mod tests {
             .chain(std::iter::once(DragRow::Offered { offered: true }))
             .collect();
         let json = serde_json::to_string(&rows).unwrap();
-        let back: Vec<DragRow> = serde_json::from_str(&json).unwrap();
-        let mut read = DragBindings::default();
+        let (read, offer) = read_record(&json);
+        assert_eq!(offer, Offer::Offered);
+        assert_eq!(read, b);
+    }
+
+    /// [`stored_drags`]' reading, without a store behind it — no backend is installed
+    /// in this binary, so the real door answers `None` and this is the half worth
+    /// testing.
+    fn read_record(json: &str) -> (DragBindings, Offer) {
+        let mut bound = Vec::new();
         let mut offered = false;
-        for row in back {
+        for row in serde_json::from_str::<Vec<DragRow>>(json).unwrap() {
             match row {
-                DragRow::Bound { action, chord } => read.overrides.push((action, chord)),
+                DragRow::Bound { action, chord } => bound.push((action, chord)),
                 DragRow::Offered { offered: seen } => offered |= seen,
             }
         }
-        assert!(offered);
-        assert_eq!(read, b);
+        let offer = if offered {
+            Offer::Offered
+        } else {
+            Offer::Unoffered
+        };
+        (DragBindings::from_stored(bound), offer)
     }
 
     /// A row for an action this build no longer has costs that row and not the
@@ -828,6 +1022,277 @@ mod tests {
             .filter_map(|v| serde_json::from_value::<DragRow>(v).ok())
             .count();
         assert_eq!(rows, 2, "the two readable rows survive the one that is not");
+    }
+
+    /// Every action's **advertised** chord is the chord that opens it — the chord
+    /// table's `what_a_row_advertises_is_what_the_keyboard_answers`, over this table.
+    ///
+    /// [`DragBindings::of`] and [`DragBindings::lookup`] are two independent walks of
+    /// [`defaults`] under two different filters, and the whole module rests on their
+    /// agreeing. The tables are every shape an override can leave the pair in, plus
+    /// each shipped preset.
+    #[test]
+    fn what_a_row_advertises_is_what_a_press_opens() {
+        let mut tables: Vec<(String, DragBindings)> = vec![
+            ("stock".into(), stock()),
+            ("one rebind".into(), {
+                let mut b = stock();
+                b.rebind(DragAction::TuneBrush, left(false, true, true));
+                b
+            }),
+            ("a steal from a default".into(), {
+                let mut b = stock();
+                b.rebind(DragAction::TuneBrush, left(false, false, true));
+                b
+            }),
+            ("an unbind".into(), {
+                let mut b = stock();
+                b.unbind(DragAction::PickColor);
+                b
+            }),
+            ("two contested rebinds".into(), {
+                let mut b = stock();
+                b.rebind(DragAction::PickColor, left(true, true, false));
+                b.rebind(DragAction::PickAndTranslate, left(true, true, false));
+                b
+            }),
+        ];
+        tables.extend(DragPreset::VARIANTS.iter().map(|&preset| {
+            let mut b = stock();
+            b.take(preset);
+            (preset.name().to_string(), b)
+        }));
+        for (what, table) in &tables {
+            for &action in DragAction::VARIANTS {
+                let Some(chord) = table.of(action) else {
+                    continue;
+                };
+                assert_eq!(
+                    table.lookup(chord.mods, chord.button),
+                    Some(action),
+                    "{what}: {action:?} advertises {}, which opens something else",
+                    chord_label(chord),
+                );
+            }
+        }
+    }
+
+    /// A record whose rows put two actions on one chord still reads as a **function**
+    /// — resolved by the steal rule, not by vector order (`DragBindings::from_stored`).
+    #[test]
+    fn a_record_with_two_rows_on_one_chord_still_reads_as_a_function() {
+        let clash = left(true, true, false);
+        let b = DragBindings::from_stored([
+            (DragAction::PickColor, Some(clash)),
+            (DragAction::PickAndTranslate, Some(clash)),
+        ]);
+        assert_eq!(
+            b.lookup(clash.mods, clash.button),
+            Some(DragAction::PickAndTranslate),
+            "the later row wins, as a live rebind would",
+        );
+        assert_eq!(
+            b.of(DragAction::PickColor),
+            None,
+            "and the loser is left unbound rather than back on its default",
+        );
+    }
+
+    /// The offer comes due for a **modified** press the table has nothing bound to,
+    /// and for nothing else (§25.8).
+    ///
+    /// A bare contact is painting, and a bare right press is a chord nobody arrives
+    /// holding — neither is evidence of a hand reaching for a binding it knows from
+    /// another app.
+    #[test]
+    fn a_bare_press_never_brings_the_offer_due() {
+        let bare = m(false, false, false);
+        assert_eq!(Offer::Unoffered.on_press(bare, None), Offer::Unoffered);
+        // And the same press with a modifier is exactly what it is for.
+        assert_eq!(
+            Offer::Unoffered.on_press(m(false, true, true), None),
+            Offer::Due,
+        );
+    }
+
+    /// A chord this table **does** bind never brings the offer due, whether or not the
+    /// act then takes the press.
+    ///
+    /// The exclusion that has to be asked of `lookup` rather than of a frontend's
+    /// `find`: Shift over a selection tool is the union marquee, so the carry declines
+    /// — and offering a table of presets to somebody whose Shift is busy would be
+    /// answering a question they did not ask.
+    #[test]
+    fn a_bound_chord_that_declines_never_brings_the_offer_due() {
+        let shift = m(false, true, false);
+        let found = stock().lookup(shift, DragButton::Left);
+        assert_eq!(found, Some(DragAction::PickAndTranslate));
+        assert!(
+            !DragAction::PickAndTranslate.claims(Hand {
+                selecting: true,
+                ..Hand::default()
+            }),
+            "the premise: over a selection tool this press is the marquee's",
+        );
+        assert_eq!(Offer::Unoffered.on_press(shift, found), Offer::Unoffered);
+    }
+
+    /// Made is made: the mark absorbs everything afterwards, which is what "once ever,
+    /// per browser" means.
+    #[test]
+    fn the_offer_is_made_once() {
+        let modified = m(false, false, true);
+        assert_eq!(Offer::Offered.on_press(modified, None), Offer::Offered);
+        assert_eq!(Offer::Offered.settle(), (Offer::Offered, false));
+        // Due is the one state that shows a dialog, and showing it spends it.
+        assert_eq!(Offer::Due.settle(), (Offer::Offered, true));
+        assert_eq!(Offer::Unoffered.settle(), (Offer::Unoffered, false));
+        // A second press while one is already waiting changes nothing either — the
+        // dialog is owed once, not once per press.
+        assert_eq!(Offer::Due.on_press(modified, None), Offer::Due);
+    }
+
+    /// Tuning claims every hand; the two acts that read the canvas back stand down for
+    /// the same three (§25.3).
+    ///
+    /// One list rather than two byte-identical ones, which is what the frontends had:
+    /// the drags differ in which chord reaches them, not in what outranks them.
+    #[test]
+    fn the_two_canvas_reading_acts_stand_down_together() {
+        let promised = [
+            Hand {
+                panning: true,
+                ..Hand::default()
+            },
+            Hand {
+                selecting: true,
+                ..Hand::default()
+            },
+            Hand {
+                playing: true,
+                ..Hand::default()
+            },
+        ];
+        for hand in promised {
+            assert!(
+                DragAction::TuneBrush.claims(hand),
+                "{hand:?} declined the tuning drag, which refuses nothing",
+            );
+            assert!(!DragAction::PickColor.claims(hand), "{hand:?} sampled");
+            assert!(
+                !DragAction::PickAndTranslate.claims(hand),
+                "{hand:?} carried a layer",
+            );
+        }
+        // A free hand takes all three — measured against the above, so none of them
+        // can pass by the door being shut on everything.
+        for &action in DragAction::VARIANTS {
+            assert!(action.claims(Hand::default()), "{action:?}");
+        }
+    }
+
+    /// A stored **unbind** survives the round trip rather than resurrecting the row it
+    /// erased — Krita's, since it is the preset that writes a null chord (§25.8), and
+    /// the row shape `from_stored`'s other arm is for.
+    #[test]
+    fn a_stored_unbind_is_not_a_reset() {
+        let mut b = stock();
+        b.take(DragPreset::Krita);
+        let rows: Vec<DragRow> = b
+            .overrides
+            .iter()
+            .map(|&(action, chord)| DragRow::Bound { action, chord })
+            .collect();
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(
+            json.contains(r#""chord":null"#),
+            "Krita leaves the carry unbound, and the record has to say so: {json}",
+        );
+        let (read, offer) = read_record(&json);
+        assert_eq!(read, b);
+        assert_eq!(
+            read.of(DragAction::PickAndTranslate),
+            None,
+            "an erased row must not come back on the next load",
+        );
+        assert_eq!(offer, Offer::Unoffered, "no mark in the record is no offer");
+    }
+
+    /// The chord arms the sampler, and a free hand takes the press.
+    #[test]
+    fn the_chord_arms_the_sampler() {
+        let table = stock();
+        assert!(Hand::default().armed(&table, m(false, false, true)));
+        assert!(Hand::default().shows_options(&table, m(false, false, true)));
+        assert!(!Hand::default().armed(&table, Mods::default()));
+    }
+
+    /// Each stand-down is a press already promised elsewhere, and each takes the
+    /// arming with it — measured against the free hand above, so none of them can
+    /// pass by the door being shut on everything.
+    #[test]
+    fn a_press_promised_elsewhere_samples_nothing() {
+        let table = stock();
+        let promised = [
+            Hand {
+                panning: true,
+                ..Hand::default()
+            },
+            Hand {
+                selecting: true,
+                ..Hand::default()
+            },
+            Hand {
+                playing: true,
+                ..Hand::default()
+            },
+        ];
+        for hand in promised {
+            assert!(
+                !hand.armed(&table, m(false, false, true)),
+                "{hand:?} armed the sampler",
+            );
+            assert!(
+                !hand.shows_options(&table, m(false, false, true)),
+                "{hand:?} raised the bar",
+            );
+        }
+    }
+
+    /// A sampler in use is still armed — the cursor and the press path go on meaning
+    /// the eyedropper — and its bar is down, because the answer is on the canvas now.
+    #[test]
+    fn the_bar_goes_down_the_moment_the_gesture_starts() {
+        let table = stock();
+        for hand in [
+            Hand {
+                sampling: true,
+                ..Hand::default()
+            },
+            Hand {
+                busy: true,
+                ..Hand::default()
+            },
+        ] {
+            assert!(
+                hand.armed(&table, m(false, false, true)),
+                "{hand:?} disarmed the sampler",
+            );
+            assert!(
+                !hand.shows_options(&table, m(false, false, true)),
+                "{hand:?} kept the bar up",
+            );
+        }
+    }
+
+    /// The arming follows a rebinding rather than the shipped chord: the bar comes up
+    /// on whatever chord the pick actually wears.
+    #[test]
+    fn the_arming_follows_the_table() {
+        let mut table = stock();
+        table.rebind(DragAction::PickColor, left(true, false, false));
+        assert!(Hand::default().armed(&table, m(true, false, false)));
+        assert!(!Hand::default().armed(&table, m(false, false, true)));
     }
 
     /// A chord written before a fourth modifier existed reads as not holding it

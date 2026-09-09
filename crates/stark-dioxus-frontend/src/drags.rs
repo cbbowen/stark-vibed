@@ -1,9 +1,10 @@
 //! Reading *this browser's* pointer events against the drag table (§25).
 //!
-//! The table itself is `stark_ui::drags` — the actions, the chords, the presets,
-//! the stored rows. What is here is the half that could not travel: which button a
-//! DOM event presses, whether an action stands down given the app's state, the four
-//! doors that write signals, and the settings UI that draws the rows.
+//! The table itself is `stark_ui::drags` — the actions, the chords, the presets, the
+//! stored rows, the gate an act puts on a press (`DragAction::claims`) and the offer's
+//! own policy (`Offer`). What is here is the half that could not travel: which button
+//! a DOM event presses, what this app knows about the hand that the table does not,
+//! the doors that write signals, and the settings UI that draws the rows.
 
 use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
@@ -14,8 +15,8 @@ use crate::input::{accel, is_contact};
 use crate::state::AppState;
 use crate::widgets::Modal;
 use stark_ui::drags::{
-    DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, DragRow, Offer,
-    capture, chord_label,
+    DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, Hand, capture,
+    chord_label, persist_drags, stored_drags,
 };
 use stark_ui::keys::Mods;
 use strum::VariantArray;
@@ -47,122 +48,77 @@ fn button_of(e: &Event<PointerData>) -> Option<DragButton> {
 
 /// The action `e` asks for, if any — the one reader on the canvas's press path.
 /// A row that matches may still decline the *press*
-/// ([`claims`]), and a declined press falls through to the
+/// ([`DragAction::claims`]), and a declined press falls through to the
 /// paint path exactly as an unbound chord does: over a selection tool, Alt+drag
 /// *is* the subtract marquee.
 ///
 /// It also **notices** a modified press the table has nothing for, which is what
-/// brings the preset offer due ([`Offer`]). Here rather than in the canvas's
-/// ladder because it is the table's own observation — "somebody reached for a
-/// binding I do not have" — and because this is the one place that has already
+/// brings the preset offer due ([`on_press`](stark_ui::drags::Offer::on_press)). Here rather
+/// than in the
+/// canvas's ladder because it is the table's own observation — "somebody reached for
+/// a binding I do not have" — and because this is the one place that has already
 /// asked the question.
 pub fn find(state: AppState, e: &Event<PointerData>) -> Option<DragAction> {
     let button = button_of(e)?;
     let mods = mods_of(e.modifiers());
     let found = state.drags.peek().lookup(mods, button);
-    if found.is_none() {
-        note_unbound(state, mods);
+    // Asked of `lookup`'s answer and not of this function's, which is `Offer::on_press`'
+    // first exclusion and the reason the two lines are apart.
+    let mut offer = state.drag_offer;
+    let held = *offer.peek();
+    let next = held.on_press(mods, found);
+    if next != held {
+        offer.set(next);
     }
-    // Asked of the *action*, not folded into the line above: a bound chord that
-    // declines is not an unbound one, and offering a table of presets to
-    // somebody whose Shift is busy being the union marquee would be answering a
-    // question they did not ask.
-    found.filter(|a| claims(*a, state))
+    found.filter(|a| a.claims(hand(state)))
 }
 
-/// A modified press landed on a chord this table does not bind: bring the preset
-/// offer due, if this browser has never had it.
+/// What this app knows about the hand that the drag table does not
+/// ([`Hand`]) — the press path's half, which is the three stand-downs and
+/// nothing about a gesture already in flight: a press that is asking this
+/// question is by definition the one arriving.
 ///
-/// **Modified only.** A bare contact is painting, and a bare right press is a
-/// chord nobody arrives with from anywhere, so neither is evidence of a hand
-/// reaching for a binding it knows from another app.
-fn note_unbound(state: AppState, mods: Mods) {
-    let mut offer = state.drag_offer;
-    if mods.bare() || *offer.peek() != Offer::Unoffered {
-        return;
+/// `peek` throughout: this runs inside a pointer handler, and nothing here is
+/// mounted on the answer.
+fn hand(state: AppState) -> Hand {
+    Hand {
+        panning: (state.space_down)(),
+        selecting: crate::panels::select::current_tool(state).is_selection(),
+        playing: crate::panels::timeline::is_playing(state),
+        ..Default::default()
     }
-    offer.set(Offer::Due);
 }
 
 /// Show an offer that has come due, now the canvas is out of the artist's hand —
 /// called from [`end_interaction`](crate::input::end_interaction), which is
 /// where every canvas gesture is put down.
 ///
-/// Due and shown are two steps for `tutor`'s reason: the press that brings this
-/// due goes on to paint a stroke, and a modal over a live stroke would take the
-/// canvas away mid-mark. Marked offered on the way *up*, so it is one offer
-/// whatever the answer is — including no answer at all, which is what dismissing
-/// it is.
+/// Why it waits, and why the mark goes down here rather than on the answer, are
+/// [`settle`](stark_ui::drags::Offer::settle)'s; what is left is raising the dialog and
+/// writing the record.
 pub fn settle_offer(state: AppState) {
     let mut offer = state.drag_offer;
-    if *offer.peek() != Offer::Due {
+    let (next, show) = (*offer.peek()).settle();
+    if !show {
         return;
     }
-    offer.set(Offer::Offered);
+    offer.set(next);
     save(state);
     let mut showing = state.dialogs.drag_presets;
     showing.set(true);
 }
 
-fn claims(action: DragAction, state: AppState) -> bool {
-    match action {
-        // Tuning edits no document — the brush is view state, and the
-        // sliders this drag shadows are not refused mid-playback either
-        // (`commands::step_radius` makes the same argument).
-        DragAction::TuneBrush => true,
-        // Two stand-downs. Over a selection tool Alt already means
-        // subtract (§6.8), and whichever chord this action wears, a
-        // marquee's combine modifiers outrank a sample — the selection
-        // gesture is what the press is *for* there. And during playback a
-        // sample would read the replay mid-flight: the picture under the
-        // pointer is the playhead's, not the painting's, so the press
-        // falls through to the guard that refuses paint for the same
-        // reason.
-        DragAction::PickColor => {
-            !crate::panels::select::current_tool(state).is_selection()
-                && !crate::panels::timeline::is_playing(state)
-        }
-        // The same two stand-downs, arrived at from the other side. Over a
-        // selection tool **Shift** is the union marquee (§6.8) — the chord
-        // this action wears is the marquee's own combine modifier there, and
-        // a gesture that is what the press is *for* outranks one that
-        // reaches past it. And this one *commits*: the ladder's playback
-        // guard sits below the table (§25.4), so an action that would lay an
-        // undo step down has to refuse the playhead itself.
-        DragAction::PickAndTranslate => {
-            !crate::panels::select::current_tool(state).is_selection()
-                && !crate::panels::timeline::is_playing(state)
-        }
-    }
-}
-
-/// Whether a press under this binding takes the canvas away from the brush
-/// — so the chrome that *promises* paint stands down while the chord is
-/// held: the brush circle, and the hover mark under it (§18.1.10).
-///
-/// A property of the act rather than a list kept at each of those call
-/// sites, for [`claims`]' reason. The mark is the sharper half
-/// of the bill: it is a preview folded into the shown document, so a press
-/// that *reads* the canvas back would read the hypothesis as paint — which
-/// is a wrong color for the eyedropper and a wrong layer for the hit test.
+/// Put this browser's stored table and offer mark where the chrome reads them. The
+/// reading and the row shapes are the registry's ([`stored_drags`]); what is left here
+/// is the two signals.
 pub fn load(state: AppState) {
-    let Some(rows) = stark_ui::storage::load_list::<DragRow>() else {
+    let Some((bindings, offer)) = stored_drags() else {
         return;
     };
-    let mut overrides = Vec::new();
-    let mut offered = false;
-    for row in rows {
-        match row {
-            DragRow::Bound { action, chord } => overrides.push((action, chord)),
-            DragRow::Offered { offered: seen } => offered |= seen,
-        }
-    }
-    let mut bindings = state.drags;
-    bindings.set(DragBindings { overrides });
-    if offered {
-        let mut offer = state.drag_offer;
-        offer.set(Offer::Offered);
-    }
+    let mut table = state.drags;
+    table.set(bindings);
+    let mut mark = state.drag_offer;
+    mark.set(offer);
 }
 
 /// Give `action` the captured chord, and persist the table — written through
@@ -194,22 +150,10 @@ fn edit(state: AppState, change: impl FnOnce(&mut DragBindings)) {
     save(state);
 }
 
-/// Write the whole record: the override rows, then the offer's mark.
-///
-/// One writer for both, called by everything that changes either (§25.6's fourth
-/// step) — a rebind, a preset, and the offer being made.
+/// Write the whole record — the override rows and the offer's mark, through the one
+/// writer both kinds of row have ([`persist_drags`]).
 fn save(state: AppState) {
-    let rows: Vec<DragRow> = state
-        .drags
-        .peek()
-        .overrides
-        .iter()
-        .map(|&(action, chord)| DragRow::Bound { action, chord })
-        .chain(std::iter::once(DragRow::Offered {
-            offered: *state.drag_offer.peek() == Offer::Offered,
-        }))
-        .collect();
-    stark_ui::storage::save_list(&rows);
+    persist_drags(&state.drags.peek(), *state.drag_offer.peek());
 }
 
 /// The ⚙ dialog's drag section (§25.8): the presets as a run of chips, then a

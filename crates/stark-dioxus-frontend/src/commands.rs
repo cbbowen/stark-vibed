@@ -4,10 +4,12 @@
 //! The registry itself is `stark_ui::commands` — the variants, the chords, the
 //! words, the tables. What is here is the half that could not travel:
 //!
-//! - **`run`** dispatches, opens dialogs, writes signals and asks gates that are the
-//!   app's. A free function rather than a method, because `Command` belongs to
-//!   another crate now and the orphan rule says so (CLAUDE.md) — which is the
-//!   boundary reporting itself: every arm reaches `AppState`.
+//! - **`run`** dispatches, opens dialogs and writes signals, and *answers* the gate
+//!   the registry asks (`Command::gate`) — whether the playhead is moving and whether
+//!   a mode is composing are the app's facts, and the classification is not. A free
+//!   function rather than a method, because `Command` belongs to another crate now
+//!   and the orphan rule says so (CLAUDE.md) — which is the boundary reporting
+//!   itself: every arm reaches `AppState`.
 //! - **`active`** reads this frontend's own state rather than the engine's
 //!   projection, so it cannot be a rule over `ObservableState` the way `enabled` is.
 //! - **`icon`** is inline SVG (`crate::icons`), which is a DOM idiom.
@@ -23,19 +25,18 @@ use crate::input::accel;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::{Bindings, Chord, Command, StoredBinding};
+use stark_ui::commands::{Bindings, Chord, Command, Gate};
 use stark_ui::keys::{Keystroke, Mods, Role};
 
+/// Put this browser's stored table where the chrome reads it. The reading and the
+/// row shape are the registry's ([`Bindings::stored`]); what is left here is the
+/// signal.
 pub fn load(state: AppState) {
-    let Some(stored) = stark_ui::storage::load_list::<StoredBinding>() else {
+    let Some(stored) = Bindings::stored() else {
         return;
     };
-    let overrides = stored
-        .into_iter()
-        .map(|row| (row.command, row.chord))
-        .collect();
     let mut bindings = state.bindings;
-    bindings.set(Bindings { overrides });
+    bindings.set(stored);
 }
 
 /// Give `command` the captured chord, and persist the table — the palette's
@@ -58,17 +59,8 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
     let mut bindings = state.bindings;
     let mut next = bindings.peek().clone();
     change(&mut next);
+    next.persist();
     bindings.set(next);
-    let stored: Vec<StoredBinding> = bindings
-        .peek()
-        .overrides
-        .iter()
-        .map(|(command, chord)| StoredBinding {
-            command: *command,
-            chord: chord.clone(),
-        })
-        .collect();
-    stark_ui::storage::save_list(&stored);
 }
 
 /// This browser's keydown, as the shared tables read it (`stark_ui::keys`).
@@ -154,39 +146,59 @@ pub fn active(command: Command, state: AppState) -> Option<bool> {
     }
 }
 
-/// Whether the chrome should offer this command right now — the menu's
-/// greyed rows and a bar's greyed chips (`widgets::CommandButton`), read
-/// off the projection so a disabled entry is a fact about the document
-/// ("nothing to undo", "nothing selected") rather than a mood.
+/// Do what a command means here — the act's own half, after its gate.
 ///
-/// **Presentation only.** The act's own gate lives on [`run`]
-/// and asks different questions, deliberately: undo during playback is
-/// *enabled* — nothing on screen says otherwise — and resolves what is in
-/// flight rather than refusing (see [`edit_history`]). A caller must not
-/// skip `run`'s gate because this said yes.
+/// **The gate is asked once, off the registry** ([`Command::gate`]), where it used to
+/// be an `if may_edit` in eight arms, a bespoke half-gate in a ninth and an
+/// `edit_history` in the last two: which question an act must ask is a fact about the
+/// act, not about the arm that happens to answer it (§25.2). What is left to an arm is
+/// a question about this frontend's own surfaces — FinishMode's open dialog — which is
+/// not a class the registry has anything to say about.
 ///
-/// `None` is startup — no engine yet, so no document: the commands that ask
-/// the projection answer no, and everything else (a dialog, a file pick)
-/// needs nothing from it.
+/// Never gated on [`Command::enabled`], which is presentation and may grow a rule
+/// that has nothing to do with whether the act may run.
 pub fn run(command: Command, state: AppState) {
+    match command.gate() {
+        // Ungated: tuning the brush, moving the view and toggling a panel commit
+        // nothing (§25.2).
+        Gate::Free => {}
+        Gate::Edit => {
+            if !may_edit(state) {
+                return;
+            }
+        }
+        // Half of `may_edit`, and the halves are asked separately on purpose: a guide
+        // is a document edit (§20.5) and the playhead refuses it like any other, but
+        // the composing half is deliberately not asked — the act puts down whatever
+        // was composing (`modes::leave`), so it replaces a mode rather than being
+        // refused by one.
+        Gate::EditReplacingMode => {
+            if crate::panels::timeline::is_playing(state) {
+                return;
+            }
+        }
+        // Undo and redo *resolve* rather than refuse: nothing on screen says they are
+        // unavailable — no bar stood down to carry the message — so a shortcut that
+        // silently did nothing would read as a broken keyboard rather than as a rule.
+        // Editing the history is instead an unambiguous statement that the
+        // composition in flight is over, so it ends the way scrubbing ends one: the
+        // preview dropped, nothing committed. Playback stops for the reason it stops
+        // when the transport is touched — the hand has taken the playhead back off
+        // the loop that was moving it.
+        Gate::History => {
+            crate::panels::timeline::stop(state);
+            crate::modes::leave(state);
+        }
+    }
     match command {
-        Command::Undo => edit_history(state, DocCommand::Undo),
-        Command::Redo => edit_history(state, DocCommand::Redo),
-        Command::Deselect => {
-            if may_edit(state) {
-                dispatch(state, DocCommand::Select(SelectionOp::select_all()));
-            }
-        }
-        Command::InvertSelection => {
-            if may_edit(state) {
-                dispatch(state, DocCommand::InvertSelection);
-            }
-        }
+        Command::Undo => dispatch(state, DocCommand::Undo),
+        Command::Redo => dispatch(state, DocCommand::Redo),
+        Command::Deselect => dispatch(state, DocCommand::Select(SelectionOp::select_all())),
+        Command::InvertSelection => dispatch(state, DocCommand::InvertSelection),
         Command::SelectRect => arm_tool(state, Tool::SelectRect),
         Command::SelectEllipse => arm_tool(state, Tool::SelectEllipse),
         Command::SelectLasso => arm_tool(state, Tool::SelectLasso),
         Command::MirrorView => dispatch(state, ViewCommand::MirrorH),
-        // Ungated: a view act, which commits nothing (§25.2).
         Command::ToggleHdr => {
             let on = !state.hdr.peek().on;
             crate::panels::lighting::set_hdr(state, |h| h.on = on);
@@ -226,11 +238,10 @@ pub fn run(command: Command, state: AppState) {
             let pinned = *state.slots.pinned.peek();
             crate::slots::set_pinned(state, !pinned);
         }
-        // Ungated like the other toggles: which panels are up is chrome,
-        // not document. The two halves an entry must not forget — waking a
-        // sleeping stack on open, telling the tour on close — live in
-        // `layout`'s own functions, which is why this goes through
-        // `toggle_panel` rather than writing `hidden`.
+        // The two halves an entry must not forget — waking a sleeping stack on
+        // open, telling the tour on close — live in `layout`'s own functions,
+        // which is why this goes through `toggle_panel` rather than writing
+        // `hidden`.
         Command::TogglePanel(id) => {
             crate::layout::toggle_panel(state, state.panels, id);
         }
@@ -243,59 +254,21 @@ pub fn run(command: Command, state: AppState) {
             crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
         }
         Command::SavePreset => open_dialog(state.preset_save_open),
-        // Ungated, with the view and brush acts: how far a sample reaches is
-        // an argument to a *request* (`Engine::pick_color`), read at the
-        // moment of the sample and committing nothing — and the bar's own
-        // chips have never been refused mid-playback either. The gate that
+        // How far a sample reaches is an argument to a *request*
+        // (`Engine::pick_color`), read at the moment of the sample. The gate that
         // matters is the sample's, and it is the drag table's
         // (`DragAction::claims`).
         Command::SetPickScope(scope) => {
             let mut want = state.pick.scope;
             want.set(scope);
         }
-        Command::Transform => {
-            if may_edit(state) {
-                crate::panels::transform::begin_transform(state);
-            }
-        }
-        Command::FloatSelection => {
-            if may_edit(state) {
-                crate::panels::select::float_selection(state);
-            }
-        }
-        Command::FillSelection => {
-            if may_edit(state) {
-                crate::panels::select::fill_selection(state);
-            }
-        }
-        Command::GradientFill => {
-            if may_edit(state) {
-                crate::panels::gradient_bar::begin_fill(state);
-            }
-        }
-        Command::AddLayer => {
-            if may_edit(state) {
-                crate::panels::layer::add_layer(state);
-            }
-        }
-        Command::AddFrame => {
-            if may_edit(state) {
-                crate::panels::frame::add_frame(state);
-            }
-        }
-        // Half of [`may_edit`], and the halves are asked separately on purpose.
-        // Adding a guide *is* a document edit now (§20.5), so it is refused
-        // while the timeline is playing back, like every other one: what is on
-        // screen then is a historical state, and editing it would be editing
-        // the wrong document. The composing half is deliberately not asked —
-        // this command puts down whatever was composing itself
-        // (`modes::leave`), so it replaces a mode rather than being refused by
-        // one, which is the behaviour it has always had.
-        Command::AddPerspective => {
-            if !crate::panels::timeline::is_playing(state) {
-                crate::panels::guides::add_perspective(state);
-            }
-        }
+        Command::Transform => crate::panels::transform::begin_transform(state),
+        Command::FloatSelection => crate::panels::select::float_selection(state),
+        Command::FillSelection => crate::panels::select::fill_selection(state),
+        Command::GradientFill => crate::panels::gradient_bar::begin_fill(state),
+        Command::AddLayer => crate::panels::layer::add_layer(state),
+        Command::AddFrame => crate::panels::frame::add_frame(state),
+        Command::AddPerspective => crate::panels::guides::add_perspective(state),
         Command::CancelMode => escape(state),
         // Gated on the dialogs where CancelMode ladders through them:
         // Enter under a dialog belongs to the dialog's form, and a commit
@@ -411,7 +384,8 @@ fn armed(state: AppState, tool: Tool) -> bool {
     state.obs.read().as_ref().is_some_and(|o| o.tool == tool)
 }
 
-/// Whether a **document edit** may be accepted right now.
+/// Whether a **document edit** may be accepted right now — this frontend's answer to
+/// [`Gate::Edit`], which is the registry's question.
 ///
 /// The two questions the canvas already asks of a press, asked of every other
 /// door into the document — the keyboard shortcuts and the chrome's own rows,
@@ -517,20 +491,4 @@ fn close_dialogs(state: AppState) -> bool {
         }
         None => false,
     }
-}
-
-/// Undo or redo, having first put down whatever was in hand.
-///
-/// Not [`may_edit`]'s flat refusal, because these two are not refusable in the
-/// same sense. Nothing on screen says undo is unavailable — no bar stood down to
-/// carry the message — so a shortcut that silently did nothing would read as a
-/// broken keyboard rather than as a rule. Editing the history is instead an
-/// unambiguous statement that the composition in flight is over, so it ends the
-/// way scrubbing ends one: the preview dropped, nothing committed. Playback
-/// stops for the same reason it stops when the transport is touched — the hand
-/// has taken the playhead back off the loop that was moving it.
-fn edit_history(state: AppState, command: DocCommand) {
-    crate::panels::timeline::stop(state);
-    crate::modes::leave(state);
-    dispatch(state, command);
 }

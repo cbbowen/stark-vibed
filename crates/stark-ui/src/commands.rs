@@ -38,7 +38,7 @@ use crate::icons::Icon;
 use crate::keys::{Keystroke, Mods, Role};
 use crate::panels::PanelId;
 use crate::slots;
-use crate::storage::{Entry, Store};
+use crate::storage::{self, Entry, Store};
 
 /// The key half of a binding: which modifiers, and which key.
 ///
@@ -333,6 +333,44 @@ pub enum Command {
     FinishMode,
 }
 
+/// What an act asks of the app before it runs (§25.2).
+///
+/// The classification is pure data about [`Command`] — no toolkit type, no signal,
+/// no frontend state — and it is the one fact about a command that never travelled:
+/// the web `run` spelled it out arm by arm and the native one substituted
+/// [`Command::enabled`], which is presentation and says so. The two happen to
+/// overlap today; the day `enabled` gains a purely presentational rule, a `run` that
+/// asked it would silently refuse an act.
+///
+/// **Total** — a new command must say which class it is in, so a gate cannot be
+/// forgotten by being left off a list. What a frontend still owes is the *answers*:
+/// whether its playhead is moving, whether a mode is composing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gate {
+    /// The act asks nothing of the app before it runs. Mostly because it commits
+    /// nothing — a view act, a brush step, a panel — and an ungated arm with no
+    /// comment reads as a missing gate, so this is the arm that says it on purpose.
+    ///
+    /// **Not a claim that the document is untouched.** Open, New and Import all reach
+    /// it, and none of them has ever asked a gate: the first two *replace* the
+    /// document rather than editing one, and the paste import rides an event that
+    /// arrives before anything here is consulted (§23). Whether that is still right is
+    /// a question this enum makes askable rather than one it answers.
+    Free,
+    /// A document edit: refused while the playhead is moving — a commit truncates the
+    /// withheld timeline (§18.2.4) — and while a mode is composing, whose preview is
+    /// computed against the committed document.
+    Edit,
+    /// A document edit that **replaces** a composing mode rather than being refused by
+    /// one: it puts down whatever was composing, so only the playhead refuses it.
+    /// [`Command::AddPerspective`]'s, and so far only its (§20.5).
+    EditReplacingMode,
+    /// Undo and redo, which **resolve** rather than refuse: stop playback, put the
+    /// composition down, then act. Nothing on screen says they are unavailable, so a
+    /// silent refusal would read as a broken keyboard rather than as a rule.
+    History,
+}
+
 /// The chord table Stark ships with. **A command's first row is the one the
 /// chrome advertises** ([`Bindings::of`]): Ctrl+Y above Ctrl+Shift+Z because
 /// the menu has always said Ctrl+Y, and Ctrl+D above Ctrl+A because the entry
@@ -442,7 +480,14 @@ pub struct Bindings {
     /// its **whole** binding — a rebind replaces every default row the command
     /// had, secondary spellings included — or `None` for a command whose chord
     /// was stolen by a later rebind and has nothing left.
-    pub overrides: Vec<(Command, Option<Chord>)>,
+    ///
+    /// **Private, because the table's one invariant lives on the way in.** Two rows
+    /// on one chord make [`lookup`](Self::lookup) and [`of`](Self::of) answer by
+    /// vector position — the table would silently stop being a function — and a
+    /// record is exactly where such a pair arrives from: a hand-edited store, a
+    /// merged profile, a sync. [`from_stored`](Self::from_stored) is the only other
+    /// way to fill this, and it goes through [`rebind`](Self::rebind).
+    overrides: Vec<(Command, Option<Chord>)>,
 }
 
 impl Bindings {
@@ -524,6 +569,51 @@ impl Bindings {
             Some((_, held)) => *held = chord,
             None => self.overrides.push((command, chord)),
         }
+    }
+
+    /// The table a record's rows describe, laid down **one rebind at a time**.
+    ///
+    /// Not a collect: a record carrying two rows on one chord resolves by the same
+    /// steal rule a live rebind would ([`rebind`](Self::rebind)) rather than by
+    /// vector order, so a table read off disk is a function for the same reason one
+    /// built by hand is. A row with no chord is an unbind, which is what it meant
+    /// when it was written.
+    #[must_use]
+    pub fn from_stored(rows: impl IntoIterator<Item = (Command, Option<Chord>)>) -> Self {
+        let mut bindings = Self::default();
+        for (command, chord) in rows {
+            match chord {
+                Some(chord) => bindings.rebind(command, chord),
+                None => bindings.unbind(command),
+            }
+        }
+        bindings
+    }
+
+    /// This client's stored table, or `None` where it has never kept one.
+    ///
+    /// The reader *and* the writer are here for `crate::visibility`'s reason: the
+    /// record shape is shared, so where it is read and written must be too. What is
+    /// left to each frontend is putting the answer where its chrome reads it.
+    pub fn stored() -> Option<Self> {
+        let rows: Vec<StoredBinding> = storage::load_list()?;
+        Some(Self::from_stored(
+            rows.into_iter().map(|row| (row.command, row.chord)),
+        ))
+    }
+
+    /// Write this table back — the whole of it, since an override removed is a row
+    /// that must not survive.
+    pub fn persist(&self) {
+        let rows: Vec<StoredBinding> = self
+            .overrides
+            .iter()
+            .map(|(command, chord)| StoredBinding {
+                command: *command,
+                chord: chord.clone(),
+            })
+            .collect();
+        storage::save_list(&rows);
     }
 }
 
@@ -1225,6 +1315,59 @@ impl Command {
         !matches!(self, Command::ImportImage)
     }
 
+    /// What this act asks of the app before it runs (§25.2) — the gate, which is a
+    /// fact about the *act* rather than about whichever control reached it.
+    ///
+    /// Never [`enabled`](Self::enabled), which is presentation: a caller must not skip
+    /// `run` because `enabled` said yes, and `run` must not assume it was consulted.
+    /// An arm may still ask a question of its own on top of this one — FinishMode
+    /// defers to an open dialog — but that is about the *frontend's* surfaces, and
+    /// there is nothing here for it to be a class of.
+    pub fn gate(self) -> Gate {
+        match self {
+            Command::Undo | Command::Redo => Gate::History,
+            Command::Deselect
+            | Command::InvertSelection
+            | Command::Transform
+            | Command::FloatSelection
+            | Command::FillSelection
+            | Command::GradientFill
+            | Command::AddLayer
+            | Command::AddFrame => Gate::Edit,
+            Command::AddPerspective => Gate::EditReplacingMode,
+            // Arming a tool, stepping the brush, moving the view, opening a dialog,
+            // showing a panel, choosing how far the next sample sees: none of them
+            // reaches the document, and the panels they shadow are not refused
+            // mid-playback either.
+            Command::SelectRect
+            | Command::SelectEllipse
+            | Command::SelectLasso
+            | Command::MirrorView
+            | Command::ToggleHdr
+            | Command::BrushSmaller
+            | Command::BrushLarger
+            | Command::NewDocument
+            | Command::OpenDocument
+            | Command::SaveDocument
+            | Command::ImportImage
+            | Command::ExportImage
+            | Command::Share
+            | Command::Join
+            | Command::ToggleTimeline
+            | Command::TimingStats
+            | Command::Credits
+            | Command::ToggleNavigator
+            | Command::ToggleQuickBrushes
+            | Command::TogglePanel(_)
+            | Command::Settings
+            | Command::EditBrush
+            | Command::SavePreset
+            | Command::SetPickScope(_)
+            | Command::CancelMode
+            | Command::FinishMode => Gate::Free,
+        }
+    }
+
     /// Whether a control for this command is **live**, read off the engine's own
     /// projection — so a greyed row and a refused act cannot disagree.
     ///
@@ -1702,13 +1845,12 @@ mod tests {
             json.contains(r#"{"TogglePanel":"Layers"}"#),
             "a command is its variant's name: {json}"
         );
-        let restored = Bindings {
-            overrides: serde_json::from_str::<Vec<StoredBinding>>(&json)
+        let restored = Bindings::from_stored(
+            serde_json::from_str::<Vec<StoredBinding>>(&json)
                 .unwrap()
                 .into_iter()
-                .map(|row| (row.command, row.chord))
-                .collect(),
-        };
+                .map(|row| (row.command, row.chord)),
+        );
         assert_eq!(restored, b);
         // A name from a build that knew commands this one does not is unreadable as a
         // row, which is what puts it in reach of the drop `load_list` does.
@@ -2187,6 +2329,301 @@ mod tests {
                 Command::ExportImage
             ]
         );
+    }
+
+    /// A record whose rows put two commands on one chord yields a table that is still
+    /// a **function** — resolved by the steal rule, not by vector order.
+    ///
+    /// The half of the load that could go wrong and that nothing watched: `lookup` and
+    /// `of` both answer by position, so a duplicate would make the table answer one
+    /// way from the keyboard and another way in the shortcut column. A hand-edited
+    /// store, a merged profile or a sync is where such a pair arrives from, and
+    /// [`Bindings::from_stored`] is the only door it can arrive through.
+    #[test]
+    fn a_record_with_two_rows_on_one_chord_still_reads_as_a_function() {
+        let clash = chord(true, false, 'q');
+        let b = Bindings::from_stored([
+            (Command::Undo, Some(clash.clone())),
+            (Command::Redo, Some(clash.clone())),
+        ]);
+        assert_eq!(
+            b.lookup(&key("q", "KeyQ").with(mods(true, false, false))),
+            Some(Command::Redo),
+            "the later row wins, as a live rebind would",
+        );
+        assert_eq!(
+            b.of(Command::Undo),
+            None,
+            "and the loser is left explicitly unbound rather than back on Ctrl+Z",
+        );
+        assert_eq!(b.of(Command::Redo), Some(clash));
+        // Which is the whole point: what the keyboard answers and what the row shows
+        // are one answer.
+        for &command in ALL {
+            assert!(round_trips(&b, command), "{command:?}");
+        }
+    }
+
+    /// Every command's **advertised** chord is the chord that reaches it.
+    ///
+    /// [`Bindings::of`] and [`Bindings::lookup`] are two independent walks of
+    /// [`defaults`] under two different filters — `of` asks `!taken`, `lookup` asks
+    /// `!overridden && !taken` — and the whole module rests on their agreeing. The
+    /// tables below are the shapes an override can leave the pair in.
+    #[test]
+    fn what_a_row_advertises_is_what_the_keyboard_answers() {
+        let tables: [(&str, Bindings); 6] = [
+            ("stock", stock()),
+            ("one rebind", {
+                let mut b = stock();
+                b.rebind(Command::SaveDocument, chord(true, false, 's'));
+                b
+            }),
+            ("a steal from a default", {
+                let mut b = stock();
+                b.rebind(Command::SaveDocument, chord(true, false, 'z'));
+                b
+            }),
+            ("an unbind", {
+                let mut b = stock();
+                b.unbind(Command::Undo);
+                b
+            }),
+            ("two contested rebinds", {
+                let mut b = stock();
+                b.rebind(Command::Undo, chord(false, true, 'q'));
+                b.rebind(Command::Redo, chord(false, true, 'q'));
+                b
+            }),
+            ("an Alt row moved onto another key", {
+                let mut b = stock();
+                b.rebind(
+                    Command::SetPickScope(PickScope::ThisLayer),
+                    alt_chord(false, false, "KeyW"),
+                );
+                b
+            }),
+        ];
+        for (what, table) in &tables {
+            for &command in ALL {
+                // Import's advertisement is the browser's paste, written by hand and
+                // no row of this table (§25.1). Skipped deliberately rather than
+                // passing vacuously, so a row ever added for it is somebody's
+                // decision here.
+                if command == Command::ImportImage {
+                    continue;
+                }
+                assert!(
+                    round_trips(table, command),
+                    "{what}: {command:?} advertises a chord that answers with something else",
+                );
+            }
+        }
+    }
+
+    /// Whether `command`'s advertised chord looks the command up again — vacuously
+    /// true for a command the keyboard cannot reach.
+    #[must_use]
+    fn round_trips(table: &Bindings, command: Command) -> bool {
+        let Some(chord) = table.of(command) else {
+            return true;
+        };
+        with_keystroke(&chord, |stroke| table.lookup(stroke) == Some(command))
+    }
+
+    /// The keystroke a platform would report for `chord`, on a US layout — the inverse
+    /// each frontend already performs, as a test can spell it.
+    ///
+    /// A keystroke carries **both** names, always: a key that types a character has a
+    /// position too, and a position that types one does not stop doing so because a
+    /// row named it spatially. Getting that wrong is what
+    /// [`every_shipped_chord_but_three_can_be_captured_back`] is about, so the
+    /// synthesis has to be as complete as the event.
+    ///
+    /// A closure rather than a return, because a [`Keystroke`] borrows its code.
+    fn with_keystroke<R>(chord: &Chord, f: impl FnOnce(&Keystroke<'_>) -> R) -> R {
+        let code = match &chord.key {
+            ChordKey::Char(c) => us_code(*c),
+            ChordKey::Code(code) => code.clone(),
+        };
+        let typed = match &chord.key {
+            ChordKey::Char(c) => Some(*c),
+            ChordKey::Code(_) => us_char(&code),
+        };
+        let role = match code.as_str() {
+            "Escape" => Role::Escape,
+            "Backspace" => Role::Backspace,
+            _ => Role::Ordinary,
+        };
+        let stroke = Keystroke {
+            mods: Mods {
+                ctrl: chord.ctrl,
+                shift: chord.shift,
+                alt: chord.alt,
+            },
+            typed,
+            code: &code,
+            role,
+        };
+        f(&stroke)
+    }
+
+    /// The W3C `code` a US layout puts a character on, or empty where it is not one of
+    /// the two families a keycap is named after.
+    fn us_code(c: char) -> String {
+        match c {
+            'a'..='z' => format!("Key{}", c.to_ascii_uppercase()),
+            'A'..='Z' => format!("Key{c}"),
+            '0'..='9' => format!("Digit{c}"),
+            _ => String::new(),
+        }
+    }
+
+    /// What a US layout types at `code`, where it types anything — the fact
+    /// [`capture`] prefers over the position, and so the whole of why three shipped
+    /// rows are one-way.
+    fn us_char(code: &str) -> Option<char> {
+        match code {
+            "BracketLeft" => Some('['),
+            "BracketRight" => Some(']'),
+            _ => code
+                .strip_prefix("Key")
+                .and_then(|k| k.chars().next())
+                .map(|c| c.to_ascii_lowercase())
+                .or_else(|| code.strip_prefix("Digit").and_then(|d| d.chars().next())),
+        }
+    }
+
+    /// Every shipped chord can be **captured back** — except three, named here so the
+    /// set is pinned at three.
+    ///
+    /// [`capture`] names a key by its *character* wherever the platform reports one
+    /// and Alt is not held, so a row shipped as a position comes back as a character
+    /// and the two do not compare equal. What that costs is a user who rebinds such a
+    /// row away and cannot put it back on the same key — a one-way door, and the
+    /// bracket pair's is the more surprising of the two because both print `[` and `]`
+    /// in the shortcut column with nothing saying they are not the letters.
+    ///
+    /// The point is the *list*: a fourth entry is then a regression rather than a
+    /// discovery.
+    #[test]
+    fn every_shipped_chord_but_three_can_be_captured_back() {
+        for (chord, command) in defaults() {
+            let one_way = match &chord.key {
+                // Escape is spent on calling the capture off, which is documented on
+                // its own row in [`defaults`] — an escape key a capture could take
+                // would be an escape key that could not end one.
+                ChordKey::Code(code) if code == "Escape" => true,
+                // The brush's two steps are `Code` for the spatial reason §25.2 gives
+                // — `[` and `]` step down and up because they are side by side — and a
+                // US keyboard types `[` on that key, so a capture names it `Char('[')`.
+                // Deliberate on both sides and unreconcilable: the shipped row wants
+                // the position, and a *captured* row can only honestly claim the
+                // character the platform just reported.
+                ChordKey::Code(code) if code == "BracketLeft" || code == "BracketRight" => true,
+                _ => false,
+            };
+            let taken = with_keystroke(&chord, capture);
+            let recaptured = taken == Capture::Chord(chord);
+            assert_eq!(
+                recaptured, !one_way,
+                "{command:?} disagrees with the one-way list \u{2014} a capture made {taken:?}",
+            );
+        }
+    }
+
+    /// Every command a **selection** gates is a document edit.
+    ///
+    /// The one class the two lists must not disagree about (§25.2). They answer
+    /// different questions on purpose — `enabled` greys a row because there is nothing
+    /// to act on, `gate` refuses the act because the document may not be moved right
+    /// now — but a command that read `has_selection` and answered anything but
+    /// [`Gate::Edit`] would be a chip greyed for the right reason and an act run for
+    /// the wrong one.
+    ///
+    /// Read off `enabled` itself rather than off a second list of the same commands,
+    /// which is the whole point: a seventh selection act joins one arm and this asks
+    /// the other.
+    #[test]
+    fn what_a_selection_greys_is_a_document_edit() {
+        let (held, none) = (projection(true), projection(false));
+        let reads: Vec<Command> = ALL
+            .iter()
+            .copied()
+            .filter(|c| c.enabled(Some(&held)) != c.enabled(Some(&none)))
+            .collect();
+        assert!(
+            reads.contains(&Command::Deselect) && reads.contains(&Command::InvertSelection),
+            "the two projections are not moving `enabled` at all: {reads:?}",
+        );
+        for command in reads {
+            assert_eq!(
+                command.gate(),
+                Gate::Edit,
+                "{command:?} greys with nothing selected but is not a document edit",
+            );
+        }
+    }
+
+    /// The two small classes are exactly the commands their docs name.
+    ///
+    /// [`Gate`]'s `match` is total, so a command *added* has to be classified — but one
+    /// **moved** between arms is caught by nothing, and these two are where a move
+    /// would be silent: History is a pair by argument (§25.2) and EditReplacingMode
+    /// exists for one act.
+    #[test]
+    fn the_two_small_gates_hold_what_they_say() {
+        let of = |gate| {
+            ALL.iter()
+                .copied()
+                .filter(|c| c.gate() == gate)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(of(Gate::History), vec![Command::Undo, Command::Redo]);
+        assert_eq!(
+            of(Gate::EditReplacingMode),
+            vec![Command::AddPerspective],
+            "an act that replaces a composing mode rather than being refused by one",
+        );
+    }
+
+    /// A projection differing from its twin in exactly one field.
+    ///
+    /// Written out because `ObservableState` is the engine's and has no `Default` —
+    /// which is the right way round: it is a *snapshot*, and there is no such thing as
+    /// a default document. The tax is that a field added there stops this test
+    /// building, and the compiler says where.
+    fn projection(has_selection: bool) -> ObservableState {
+        ObservableState {
+            can_undo: false,
+            can_redo: false,
+            is_stroking: false,
+            tool: Default::default(),
+            view: stark_engine::ViewTransform::identity(stark_engine::Extent2::new(1, 1)),
+            bounds: Default::default(),
+            doc_revision: 0,
+            edited: false,
+            active_layer: stark_model::document::LayerId::ROOT,
+            layers: Default::default(),
+            has_selection,
+            selection_hull: None,
+            shape_action: Default::default(),
+            selection_feather: 0.0,
+            shape_opacity: 1.0,
+            selection_opacity: 1.0,
+            show_peer_selections: false,
+            history_budget: 0,
+            fast_commit: false,
+            guides: Default::default(),
+            media: Default::default(),
+            output: Default::default(),
+            environment: Default::default(),
+            color_space: stark_model::ColorSpaceId::Oklab,
+            substrate: Default::default(),
+            substrate_scale: Default::default(),
+            substrate_color: Default::default(),
+            gpu_failure: None,
+        }
     }
 
     #[test]

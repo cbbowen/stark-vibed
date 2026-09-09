@@ -4,7 +4,7 @@
 //! registry's answers under it (`stark_ui::commands::search`) — each a row that runs
 //! on a press, the first on Enter. It reaches every act the registry names, which is
 //! more than the menus beside it list; what this frontend cannot yet do with one is
-//! `Canvas::run`'s to decline, and a row for such an act is dimmed rather than gone.
+//! `canvas::answers`' to say, and a row for such an act is dimmed rather than gone.
 //!
 //! The rows act on the **press**, for §25.7's reason: the field loses focus on the
 //! same press, and the drop-down goes with the focus. Acting on the press is how a
@@ -85,8 +85,14 @@ pub fn field(search: Search<'_>) -> impl IntoElement {
         })
 }
 
-/// One answer: the act's name, its chord beside it, dimmed when there is nothing
-/// for it to act on — the menu's rows, minus the tick.
+/// One answer: the act's name, its chord beside it, dimmed when there is nothing for
+/// it to act on **or nothing here to act with** — the menu's rows, minus the tick.
+///
+/// The second half is what makes the palette honest. It reaches all of
+/// `commands::ALL`, where the menus are hand-picked lists of what this window answers
+/// (`crate::menu`), so `Command::enabled` alone would light a row whose press does
+/// nothing — the dead act the menus' own rule forbids, arrived at from the one
+/// surface that could not be protected by choosing its rows.
 fn row(
     i: usize,
     command: Command,
@@ -94,7 +100,7 @@ fn row(
     bindings: &Bindings,
     run: Run,
 ) -> impl IntoElement {
-    let live = command.enabled(obs);
+    let live = command.enabled(obs) && crate::canvas::answers(command);
     div()
         .id(("search", i))
         .chip()
@@ -122,10 +128,13 @@ fn row(
                     .child(chord),
             )
         })
-        .when(live, |el| {
-            el.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                cx.stop_propagation();
+        // The listener is registered whatever the row's state: the drop-down hangs
+        // over the canvas and the right-hand column, so a press a dead row let through
+        // would open a stroke or work a control underneath it (the module note).
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            if live {
                 run(command, window, cx);
-            })
+            }
         })
 }

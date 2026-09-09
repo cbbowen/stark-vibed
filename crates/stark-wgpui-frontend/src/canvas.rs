@@ -24,7 +24,7 @@ use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::{Bindings, Command, VisibilityToggle};
+use stark_ui::commands::{Bindings, Command, Gate, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input as chrome_input;
 use stark_ui::keys::Mods;
@@ -165,8 +165,12 @@ pub struct Canvas {
     /// The widget layer's dials and picker for the panels (§11.1), and the
     /// subscriptions that make them heard.
     controls: Controls,
-    /// This browser's chord table, and the drag table beside it — both shipped
-    /// defaults for now: rebinding needs a settings surface, which is N8's.
+    /// This client's chord table, and the drag table beside it — both read off the
+    /// store at start (§25.6), so a table this client has kept is the one its chords
+    /// and its presses answer. Rebinding *from here* still needs a settings surface,
+    /// which is N8's; what the load buys today is that the two windows read one
+    /// record the same way, and that the day the surface lands durability is already
+    /// structural.
     bindings: Bindings,
     drags: DragBindings,
     /// The keyboard needs somewhere to be focused, or nothing is dispatched at all.
@@ -424,8 +428,14 @@ impl Canvas {
             slot_regions: crate::slots::Regions::default(),
             held: None,
             controls,
-            bindings: Bindings::default(),
-            drags: DragBindings::default(),
+            bindings: Bindings::stored().unwrap_or_default(),
+            // The offer's mark rides in the same record and is deliberately dropped:
+            // this window makes no preset offer (there is no dialog for it), and a
+            // field no surface reads would be a second authority over the one bit
+            // §25.8 says is written when the dialog is *shown*.
+            drags: stark_ui::drags::stored_drags()
+                .map(|(table, _offer)| table)
+                .unwrap_or_default(),
             focus,
             // The first frame has a canvas nobody has painted yet.
             dirty: true,
@@ -765,7 +775,7 @@ impl Canvas {
             // the same answer the cursor and the bar were mounted on, asked of the
             // same value ([`pick_hand`](Self::pick_hand)). A declined press falls
             // through to the paint path exactly as an unbound chord does.
-            Some(DragAction::PickColor) if self.pick_hand().free() => {
+            Some(DragAction::PickColor) if DragAction::PickColor.claims(self.pick_hand()) => {
                 self.held = Some(Held::Sample);
                 // The press is not paint, so the mark promising it goes down with it
                 // (§18.1.10).
@@ -773,7 +783,17 @@ impl Canvas {
                 self.sample(at, window, cx);
                 return;
             }
-            _ => {}
+            // A sample this hand may not take falls through to the paint path exactly
+            // as an unbound chord does — the arm above declined it, not the table.
+            Some(DragAction::PickColor) => {}
+            // The layer carry is a gesture this window has not got (§11.2, §16.11),
+            // so its chord falls through to paint. Written out rather than left to a
+            // `_`, because a fourth action added to the table has to be answered or
+            // declined *here* — and because the chrome that stands down for this one
+            // (`DragAction::shadows_paint`, the hover mark) is already promising
+            // something this arm cannot yet deliver.
+            Some(DragAction::PickAndTranslate) => {}
+            None => {}
         }
 
         let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
@@ -1146,14 +1166,14 @@ impl Canvas {
     }
 
     /// What this frontend knows about the hand that the drag table does not
-    /// (`stark_ui::pick::Hand`).
+    /// (`stark_ui::drags::Hand`).
     ///
     /// One place it is assembled, because three surfaces ask it — the cursor's
     /// promise, the bar's mounting and the press's own answer — and a promise made
     /// against one reading and kept against another is exactly the drift the shared
     /// predicate exists to stop.
-    fn pick_hand(&self) -> stark_ui::pick::Hand {
-        stark_ui::pick::Hand {
+    fn pick_hand(&self) -> stark_ui::drags::Hand {
+        stark_ui::drags::Hand {
             panning: self.space,
             selecting: self.obs.as_ref().is_some_and(|o| o.tool.is_selection()),
             // No timeline in this frontend yet (§11.2) — the line that changes the day
@@ -2233,9 +2253,12 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // The first row the drop-down shows as **live**, which is both halves of what
+        // dims one (`crate::palette`): a row this window cannot answer is skipped
+        // here as well, or Enter would reach past what the eye was offered.
         let first = stark_ui::commands::search(query)
             .into_iter()
-            .find(|c| c.enabled(self.obs.as_ref()));
+            .find(|c| c.enabled(self.obs.as_ref()) && answers(*c));
         if let Some(command) = first {
             self.pick_result(command, window, cx);
         }
@@ -2560,10 +2583,26 @@ impl Canvas {
 
     /// Leave the mode keeping nothing — the bar's Cancel, and Escape's.
     fn cancel_mode(&mut self, cx: &mut Context<'_, Self>) {
+        self.leave_mode(cx);
+        self.held = None;
+    }
+
+    /// Put down whatever is composing, dropping its preview and committing nothing —
+    /// the web app's `modes::leave`, and the half of a cancel that is about the *mode*
+    /// rather than about the hand.
+    ///
+    /// Split out for the callers that are not a cancel: the two gates that must not
+    /// run under a composing mode ([`Canvas::run`]). Guarded, unlike
+    /// [`cancel_mode`](Self::cancel_mode), which lets go of the pointer whatever it is
+    /// holding: an undo pressed by the other hand mid-stroke must not orphan the
+    /// gesture. The grab *is* dropped where there was a mode, because the only thing
+    /// the pointer can hold while one composes is that mode's own grab
+    /// ([`press`](Self::press)) — and it now grabs a mode that is gone.
+    fn leave_mode(&mut self, cx: &mut Context<'_, Self>) {
         if self.mode.take().is_some() {
             self.send(ViewCommand::PreviewTransform(None), cx);
+            self.held = None;
         }
-        self.held = None;
     }
 
     /// Hand back a shape tool without naming one.
@@ -3041,20 +3080,44 @@ impl Canvas {
         }
     }
 
-    /// Do what a command means here.
+    /// Do what a command means here, if this window can and may.
     ///
     /// A short list, and short *honestly*: the registry has thirty-odd acts and this
-    /// frontend answers the handful below. What the rest need is a surface — a
-    /// selection, a gradient bar, a settings page — and each arrives with its own
-    /// stage (§11.2). An act with nothing to act on is left alone rather than given a
-    /// no-op arm, so the day it lands the compiler has nothing to say and the reader
-    /// does.
+    /// frontend answers the handful below. Which those are is [`answers`]', so the
+    /// list is a total function rather than a match that quietly ends in `_ => {}` —
+    /// which is what let the palette offer a dead act undimmed.
     fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<'_, Self>) {
-        // The registry's own gate, asked once for every door — the button, the chord
-        // and the palette this frontend has not got yet (§25). A row that dimmed
-        // itself but let its chord through would be two answers to one question.
-        if !command.enabled(self.obs.as_ref()) {
+        // An act this window has no answer for is refused at the door rather than
+        // falling off the end of the match, so the palette's dimming and this are one
+        // question asked once (`answers`).
+        if !answers(command) {
             return;
+        }
+        // **The act's own gate, off the registry** (§25.2) — not `Command::enabled`,
+        // which is presentation and says so: a row greys because there is nothing to
+        // undo, and the day it greys for a reason that is only about the screen, a
+        // `run` that asked it would silently refuse the act.
+        match command.gate() {
+            // View, brush and chrome acts, which commit nothing.
+            Gate::Free => {}
+            Gate::Edit => {
+                if !self.may_edit() {
+                    return;
+                }
+            }
+            // The composing half is not *refused* — the act replaces the mode rather
+            // than being turned away by it (§20.5) — so the replacing is done here.
+            // The web app gets it for free, since its guide edit is itself a mode and
+            // `modes::enter` leaves the last one; `guide_act` composes nothing, so
+            // without this the commit would land under a preview computed against the
+            // document it moves. The playhead half has nothing to refuse on: no
+            // timeline yet (§11.2).
+            Gate::EditReplacingMode => self.leave_mode(cx),
+            // These two *resolve* rather than refuse — nothing on screen says undo is
+            // unavailable, so a silent refusal would read as a broken keyboard. There
+            // is no playback to stop, so putting the composition down is the whole of
+            // it, and it has to happen for the same reason as above.
+            Gate::History => self.leave_mode(cx),
         }
         let doc = match command {
             Command::Undo => Some(DocCommand::Undo),
@@ -3110,11 +3173,33 @@ impl Canvas {
                 self.repaint(cx);
             }
             Command::EditBrush => self.open_editor(window, cx),
+            // The acts whose whole answer is the `doc` command above, written out so
+            // that a command turned `true` in [`answers`] and given no arm falls off
+            // the end of a list a reader can check rather than into a silent `_`.
+            Command::Undo
+            | Command::Redo
+            | Command::Deselect
+            | Command::InvertSelection
+            | Command::FloatSelection
+            | Command::FillSelection => {}
+            // Turned away by [`answers`] before the match was reached.
             _ => {}
         }
         if let Some(doc) = doc {
             self.send(doc, cx);
         }
+    }
+
+    /// Whether a **document edit** may be accepted right now — this window's answer to
+    /// [`Gate::Edit`], which is the registry's question (§25.2).
+    ///
+    /// One of the two halves so far. A transform's preview is computed against the
+    /// committed document, so an edit laid under one would move the wrong region on
+    /// Done — which is the bug §25.2 names, and which this window had until the
+    /// classification came down. The other half is the playhead, and there is no
+    /// timeline here yet (§11.2): it arrives as one more `&&`.
+    fn may_edit(&self) -> bool {
+        self.mode.is_none()
     }
 
     // --- the brush editor (§6.2, `crate::brush_editor`) -----------------------
@@ -4232,6 +4317,68 @@ fn canvas_at(
     scale: f32,
 ) -> Vec2 {
     view.screen_to_canvas(screen_at(position, origin, scale))
+}
+
+/// Which acts this frontend answers ([`Canvas::run`]).
+///
+/// **Total** — a new command does not compile until somebody says whether this window
+/// can do it, which is what the palette needs and a hand-kept list could not give it:
+/// the palette reaches all of `commands::ALL`, so it was offering acts that ran
+/// nothing, undimmed. The menus are short *because* of this list rather than beside
+/// it (`crate::menu`).
+///
+/// An act with nothing to act on is `false` rather than given a no-op arm, so the day
+/// its surface lands (§11.2) the compiler has nothing to say and the reader does.
+pub fn answers(command: Command) -> bool {
+    match command {
+        // The document acts this window sends to the engine, and the history pair.
+        Command::Undo
+        | Command::Redo
+        | Command::Deselect
+        | Command::InvertSelection
+        | Command::FloatSelection
+        | Command::FillSelection
+        | Command::Transform
+        // The three shape tools, and the two steps on the brush.
+        | Command::SelectRect
+        | Command::SelectEllipse
+        | Command::SelectLasso
+        | Command::BrushSmaller
+        | Command::BrushLarger
+        // The document in and out of this window (§12.4, `crate::menu`).
+        | Command::OpenDocument
+        | Command::SaveDocument
+        | Command::ExportImage
+        | Command::Share
+        | Command::Join
+        // The chrome: what is on screen, what a sample sees, and the two ladders.
+        | Command::ToggleHdr
+        | Command::TogglePanel(_)
+        | Command::ToggleNavigator
+        | Command::ToggleQuickBrushes
+        | Command::SetPickScope(_)
+        | Command::EditBrush
+        | Command::AddPerspective
+        | Command::CancelMode
+        | Command::FinishMode => true,
+        // A surface this window has not got: no new-document dialog, no clipboard or
+        // file import (§23), no gradient bar, no layer or frame stack to add to, no
+        // preset-name dialog, no settings page, no timing readout, no credits — and no
+        // timeline at all, which is why `ToggleTimeline` is not a Window-menu row
+        // either (`crate::menu`). `MirrorView` is the one that is merely not written
+        // yet.
+        Command::NewDocument
+        | Command::ImportImage
+        | Command::MirrorView
+        | Command::GradientFill
+        | Command::AddLayer
+        | Command::AddFrame
+        | Command::SavePreset
+        | Command::Settings
+        | Command::ToggleTimeline
+        | Command::TimingStats
+        | Command::Credits => false,
+    }
 }
 
 /// What the window shows when there is no wgpu device to paint with.
