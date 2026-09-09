@@ -22,23 +22,55 @@
 //!
 //! The files themselves are Phosphor, MIT (`assets/icons/LICENSE-phosphor`), and are
 //! embedded by the build script — one table, rather than an `include_str!` list per
-//! frontend that could come to name different files.
+//! frontend that could come to name different files. It also emits an arm per shipped
+//! stem, so a name here that no file answers to does not compile; what a `.svg()` used
+//! to hand back for one was a `None` every call site threw away.
+//!
+//! Some shipped files are worn by nothing yet. `tests::STAGED` names them, which is
+//! what tells a glyph waiting for its control from the orphan of one that was deleted.
 
 include!(concat!(env!("OUT_DIR"), "/icon_files.rs"));
 
-/// One icon, named by the file it is drawn from.
+/// One icon: what the control means, the file it is drawn from, and that file.
 ///
-/// A newtype over the stem rather than an enum of a hundred variants: what a consumer
-/// does with it is look the bytes up, and the constants below are the vocabulary.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Icon(pub &'static str);
+/// A struct over the two names rather than an enum of a hundred variants: what a
+/// consumer does with it is draw the source, and the constants below are the
+/// vocabulary.
+///
+/// **Its identity is the name, not the file.** Nine pairs of controls share a
+/// drawing — [`EXPOSURE`] and [`HDR`] are one file, deliberately — so equality over
+/// the stem would call those two the same icon, which is right in every test and
+/// wrong on the HDR switch. The name is the catalog constant's own, which is what
+/// this module's whole opening claim is about: a name says what the *control* means,
+/// and two controls that share a picture are still two controls.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Icon {
+    name: &'static str,
+    stem: &'static str,
+    svg: &'static str,
+}
 
 impl Icon {
-    /// The SVG source, or `None` for a stem this build ships no file for — which
-    /// the tests below rule out — so a caller may treat it as unreachable rather
-    /// than drawing a hole.
-    pub fn svg(self) -> Option<&'static str> {
-        by_stem(self.0)
+    /// The file this is drawn from, without its extension — what a frontend that
+    /// serves icons *by path* names one under.
+    pub fn stem(self) -> &'static str {
+        self.stem
+    }
+
+    /// The SVG source. **Infallible**: the catalog's stems are checked against the
+    /// shipped directory by the compiler (`icon_svg!`), so there is no missing file
+    /// for a call site to discard — which every one of them used to do, and the hole
+    /// it drew said nothing about which name was wrong.
+    pub fn svg(self) -> &'static str {
+        self.svg
+    }
+}
+
+/// The name, so a failure message says which *control* this is rather than printing
+/// the file — or, since the source is a field, the whole drawing.
+impl std::fmt::Debug for Icon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
     }
 }
 
@@ -47,14 +79,25 @@ impl Icon {
 /// Takes a borrowed name where [`Icon`] holds a `'static` one, which is what a
 /// frontend serving icons *by path* needs: the path arrives from the renderer with a
 /// lifetime of its own, and what comes back is the embedded text either way.
+///
+/// A binary search, which the build script's own sort is what makes available.
 pub fn by_stem(stem: &str) -> Option<&'static str> {
-    ICON_FILES.iter().find(|(s, _)| *s == stem).map(|(_, t)| *t)
+    let i = ICON_FILES.binary_search_by_key(&stem, |(s, _)| *s).ok()?;
+    Some(ICON_FILES[i].1)
 }
 
 /// `NAME => "file"` for each icon, and the roster of them.
+///
+/// `$file` is a `tt` rather than a `literal` so it can be handed on to `icon_svg!`,
+/// which is where a stem the shipped directory does not hold stops being a name in a
+/// string and becomes a compile error.
 macro_rules! icons {
-    ($($(#[$meta:meta])* $name:ident => $file:literal),* $(,)?) => {
-        $($(#[$meta])* pub const $name: Icon = Icon($file);)*
+    ($($(#[$meta:meta])* $name:ident => $file:tt),* $(,)?) => {
+        $($(#[$meta])* pub const $name: Icon = Icon {
+            name: stringify!($name),
+            stem: $file,
+            svg: icon_svg!($file),
+        };)*
 
         /// Every icon this catalog names, for the tests that check it against the
         /// directory it is drawn from.
@@ -544,14 +587,58 @@ icons! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
-    /// Every icon in the catalog has a file, so a call site can draw without asking.
-    #[test]
-    fn every_icon_has_its_file() {
-        for icon in ALL {
-            assert!(icon.svg().is_some(), "{} names no file", icon.0);
-        }
-    }
+    /// Shipped glyphs no control wears yet.
+    ///
+    /// The build script embeds the **directory** rather than the catalog's rows, so a
+    /// file is checked from the commit that adds it rather than from whenever a
+    /// control first wears it. What that costs is that nothing tells a glyph waiting
+    /// for its control from the orphan of one that was deleted. This list is that
+    /// difference: a file leaving the catalog has to be named here or taken out of the
+    /// directory.
+    ///
+    /// Several are a family's other weight — the chrome wears `unite-square-bold` and
+    /// `subtract-square-bold` ([`SELECTION_ADD`]), and the circle-weight originals sit
+    /// here with `exclude`, the set operation the selection row has no control for.
+    ///
+    /// Sorted, because the test compares it against the table whole.
+    const STAGED: &[&str] = &[
+        "aperture-bold",
+        "arrow-up-bold",
+        "arrows-out-bold",
+        "camera-bold",
+        "cube-bold",
+        "cube-transparent-bold",
+        "dots-three-bold",
+        "dots-three-vertical-bold",
+        "exclude-bold",
+        "exclude-square-bold",
+        "folder-simple-minus-bold",
+        "folder-simple-plus-bold",
+        "function-bold",
+        "keyhole-bold",
+        "lifebuoy-bold",
+        "list-bold",
+        "list-plus-bold",
+        "lock-open-bold",
+        "magnifying-glass-minus-bold",
+        "magnifying-glass-plus-bold",
+        "placeholder-bold",
+        "push-pin-simple-bold",
+        "push-pin-simple-slash-bold",
+        "selection-all-bold",
+        "selection-foreground-bold",
+        "selection-plus-bold",
+        "shield-bold",
+        "shield-check-bold",
+        "shield-chevron-bold",
+        "shield-slash-bold",
+        "subtract-bold",
+        "swap-bold",
+        "unite-bold",
+        "waveform-bold",
+    ];
 
     /// **Every icon paints with `currentColor`.** A Phosphor download arrives with
     /// `fill="#000000"` baked in, and an icon that keeps it looks right in a file
@@ -559,17 +646,48 @@ mod tests {
     /// tints an alpha mask, silently the right shape at the wrong weight. Checked
     /// against the *directory* rather than the table, so a file added and not yet
     /// wired up is caught before it is ever drawn.
+    ///
+    /// It reads bytes rather than parsing SVG on purpose, and rejects a `#`
+    /// **anywhere** rather than only in a root `fill=`: a `#` in one of these files is
+    /// a hex color and nothing else — the paths are numbers and letters, and the set
+    /// has no `url(#…)` and no gradient — so the strict predicate cannot be fooled by
+    /// a color further down a path.
     #[test]
     fn every_icon_inherits_its_color() {
+        // The build script returns an empty table for a directory it cannot read, and
+        // says so through a `cargo::warning` that a dependency's build script does not
+        // get to display. Nothing else would notice.
+        assert!(!ICON_FILES.is_empty(), "no icons were embedded at all");
         for (stem, svg) in ICON_FILES {
             assert!(
                 svg.contains("fill=\"currentColor\""),
-                "{stem}.svg does not paint with currentColor"
+                "{stem}.svg does not paint with currentColor, so it will ignore the \
+                 color of the control it sits in"
             );
             assert!(
-                !svg.contains("fill=\"#"),
-                "{stem}.svg has a color baked into it"
+                !svg.contains('#'),
+                "{stem}.svg carries a hard-coded color; icons take their color from \
+                 the control around them"
             );
         }
+    }
+
+    /// The directory and the catalog agree, up to [`STAGED`] — so a glyph nothing
+    /// wears is a decision written down rather than a file nobody can account for.
+    ///
+    /// One comparison catches it from both ends: a staged glyph that has since found
+    /// its control, and a control that lost its glyph.
+    #[test]
+    fn every_shipped_icon_is_worn_or_staged() {
+        let worn: HashSet<&str> = ALL.iter().map(|i| i.stem()).collect();
+        let spare: Vec<&str> = ICON_FILES
+            .iter()
+            .map(|(stem, _)| *stem)
+            .filter(|stem| !worn.contains(stem))
+            .collect();
+        assert_eq!(
+            spare, STAGED,
+            "the shipped glyphs no control wears are not the ones STAGED names"
+        );
     }
 }

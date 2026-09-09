@@ -46,22 +46,23 @@ impl AssetSource for Icons {
             return Ok(None);
         };
         // `None` rather than an error for an unknown stem: the renderer treats a
-        // missing asset as nothing to draw, and the catalog's own test is what rules
-        // out a name with no file behind it.
+        // missing asset as nothing to draw. Nothing the catalog names arrives here
+        // that way — an `Icon` cannot hold a stem the directory lacks — but a path is
+        // a string by the time it reaches an `AssetSource`.
         Ok(stark_ui::icons::by_stem(stem).map(|text| Cow::Borrowed(text.as_bytes())))
     }
 
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
         Ok(stark_ui::icons::ALL
             .iter()
-            .map(|icon| SharedString::from(format!("{PREFIX}{}", icon.0)))
+            .map(|icon| SharedString::from(format!("{PREFIX}{}", icon.stem())))
             .collect())
     }
 }
 
 /// The path the renderer asks for an icon under.
 fn path(icon: Icon) -> SharedString {
-    SharedString::from(format!("{PREFIX}{}", icon.0))
+    SharedString::from(format!("{PREFIX}{}", icon.stem()))
 }
 
 /// The size a glyph is drawn at beside a word, logical px.
@@ -99,7 +100,7 @@ mod tests {
                 .load(&path(*mark))
                 .expect("the source does not fail")
                 .expect("every catalogued icon is served");
-            assert_eq!(served.as_ref(), mark.svg().unwrap().as_bytes());
+            assert_eq!(served.as_ref(), mark.svg().as_bytes());
         }
     }
 

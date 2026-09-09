@@ -22,19 +22,12 @@
 use dioxus::prelude::*;
 use stark_ui::icons::Icon;
 
-/// The SVG source for a mark. Empty for a name this build ships no file for, which
-/// `stark_ui::icons::tests::every_icon_has_its_file` rules out — so what a missing
-/// one costs is a blank span rather than a panic in a render.
-fn svg(mark: Icon) -> &'static str {
-    mark.svg().unwrap_or_default()
-}
-
 /// One icon, sized and colored by whatever it sits in (`.icon` in `stark.css`).
 ///
 /// `dangerous_inner_html` is what the module doc is about: the markup is ours,
 /// compiled in from a file in this repo, so no untrusted string comes near it.
 pub fn icon(mark: Icon) -> Element {
-    rsx! { span { class: "icon", dangerous_inner_html: svg(mark) } }
+    rsx! { span { class: "icon", dangerous_inner_html: mark.svg() } }
 }
 
 /// A control's word, marked as the half that minimal mode may take away (§11).
@@ -78,7 +71,7 @@ pub fn label(text: &str) -> Element {
 /// rather than a second `icons!` table: it is the *setting*, not the glyph, that is
 /// different here.
 pub fn icon_large(mark: Icon) -> Element {
-    rsx! { span { class: "icon icon-lg", dangerous_inner_html: svg(mark) } }
+    rsx! { span { class: "icon icon-lg", dangerous_inner_html: mark.svg() } }
 }
 
 /// The same icon holding a paint color rather than the color of its control — for
@@ -99,59 +92,11 @@ pub fn icon_large(mark: Icon) -> Element {
 pub fn icon_tinted(mark: Icon, color: [f32; 4]) -> Element {
     let c = |i: usize| (color[i] * 255.0).round().clamp(0.0, 255.0) as u8;
     let paint = format!("color: rgba({}, {}, {}, {})", c(0), c(1), c(2), color[3]);
-    let svg = svg(mark);
+    let svg = mark.svg();
     rsx! {
         span { class: "icon tinted",
             span { dangerous_inner_html: svg }
             span { class: "icon-paint", style: "{paint}", dangerous_inner_html: svg }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// Every file in `assets/icons` paints with `currentColor` — the one property the
-    /// module is built on (see the module docs).
-    ///
-    /// The *directory*, not the table above, and that is the whole value: the table
-    /// only holds icons someone has already wired up, and an icon is at its most
-    /// fixable in the commit that adds the file. Checking the table would move the
-    /// failure to whenever the glyph first got a call site, which may be a different
-    /// change by a different hand.
-    ///
-    /// It reads bytes rather than parsing SVG on purpose. A hard fill is the one way
-    /// these files go wrong — Phosphor exports `fill="#000000"` — and the check that
-    /// catches it is "no color literal anywhere in the file", which is stricter than
-    /// "the root fill is right" and cannot be fooled by a color further down a path.
-    #[test]
-    fn every_icon_inherits_its_color() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
-        let mut checked = 0;
-        for entry in std::fs::read_dir(&dir).expect("assets/icons is readable") {
-            let path = entry.expect("directory entry").path();
-            if path.extension().is_none_or(|e| e != "svg") {
-                continue;
-            }
-            let svg = std::fs::read_to_string(&path).expect("icon is UTF-8");
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            assert!(
-                svg.contains(r#"fill="currentColor""#),
-                "{name} does not paint with currentColor, so it will ignore the color \
-                 of the control it sits in"
-            );
-            // A `#` in one of these files is a hex color and nothing else — the paths
-            // are numbers and letters, and there is no `url(#…)` or gradient in the set.
-            // Whatever it painted would be worn *instead* of the control's color, which
-            // on Stark's dark chrome is usually a black mark on a near-black chip.
-            assert!(
-                !svg.contains('#'),
-                "{name} carries a hard-coded color; icons take their color from the \
-                 control around them"
-            );
-            checked += 1;
-        }
-        // A rename or a moved directory must fail loudly rather than pass by finding
-        // nothing to check.
-        assert!(checked > 0, "no icons found in {}", dir.display());
     }
 }

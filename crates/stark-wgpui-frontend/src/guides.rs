@@ -511,12 +511,14 @@ mod tests {
         ]
     }
 
-    /// Both dials wear a mark and say what they do — what a column with no labels
-    /// stands on (`crate::panel`).
+    /// Both dials say what they do — what a column with no labels stands on
+    /// (`crate::panel`).
+    ///
+    /// A glyph is the type's own guarantee now (`stark_ui::icons::Icon::svg`), so
+    /// what is left to check is the word behind the hover.
     #[test]
     fn every_dial_is_marked_and_says_what_it_does() {
         for dial in DIALS {
-            assert!(dial.glyph().svg().is_some(), "{dial:?} has no glyph");
             assert!(!dial.tip().is_empty());
             let (lo, hi) = dial.range();
             assert!(hi > lo);

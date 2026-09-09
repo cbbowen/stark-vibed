@@ -685,13 +685,14 @@ mod tests {
         );
     }
 
-    /// Every knob and every effect wears a mark, which is the whole of what a column
-    /// with no labels stands on: a control whose glyph went missing would be a blank
-    /// square with a tooltip.
+    /// Every knob and every effect says something on hover, which is the whole of
+    /// what a column with no labels stands on.
+    ///
+    /// A glyph is the type's own guarantee now (`stark_ui::icons::Icon::svg`), so
+    /// what is left to check is the word behind the hover.
     #[test]
     fn every_control_that_lost_its_word_has_a_mark() {
         for knob in KNOBS {
-            assert!(knob.glyph().svg().is_some(), "{knob:?} has no glyph");
             assert!(!knob.tip().is_empty(), "{knob:?} says nothing on hover");
         }
     }
