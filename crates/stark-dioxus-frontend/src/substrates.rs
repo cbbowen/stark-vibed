@@ -277,18 +277,18 @@ pub fn ensure(state: AppState, id: AssetId) -> Option<SubstrateId> {
     if actual != surface
         && let SubstrateId::Image(healed) = actual
     {
-        // The stored id predates a canonicalization change; heal it in place, in the
-        // order `storage::blob_save` states — bytes under the new name, then the row,
-        // then the old name dropped. `crate::shapes::ensure` has the whole argument.
+        // The stored id predates a canonicalization change; heal it in place. The
+        // write ordering that keeps a row from naming bytes that are not there is
+        // `assets::heal`'s, not this module's — `crate::shapes::ensure` has the whole
+        // argument, and this was the one copy of it left.
         let mut entries = state.substrates.entries;
         if let Some(e) = entries.write().iter_mut().find(|e| e.id == id) {
             e.id = healed;
         }
         let bytes = entry.png;
         spawn_forever(async move {
-            assets::store_bytes::<assets::Substrates>(healed, &bytes).await;
-            persist(&entries.read());
-            assets::drop_bytes::<assets::Substrates>(id).await;
+            let rows = entries.read().clone();
+            assets::heal::<assets::Substrates>(&rows, id, healed, &bytes).await;
         });
     }
     Some(actual)

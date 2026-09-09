@@ -12,13 +12,16 @@
 //! written whole on every change ([`Backend::set`]), so separate files mean a preset
 //! save cannot corrupt the shortcuts, and a file that goes bad costs its own record
 //! and reads as "nothing stored" — which is the failure the format is already built
-//! around.
+//! around. The containment stops at the file, though: a record torn in half is a
+//! record lost, so a write is staged beside its target and renamed over it rather
+//! than truncated in place ([`Files::write`]).
 //!
 //! A key is a filename. Every key is `stark.`-prefixed and a blob's is
 //! `stark.shapes/<hex>`, so the `/` becomes a directory and the layout on disk is the
 //! namespacing the keys already had.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use stark_ui::storage::{Backend, Stored};
 
@@ -68,13 +71,73 @@ impl Files {
     }
 
     /// Write `bytes` to `key`'s file, making its parent if a blob record is new.
+    ///
+    /// **A scratch file, flushed, then renamed over the target.** `fs::write`
+    /// truncates and then writes, so a kill or a power loss between the two leaves
+    /// half a record — and half a record is not half a library, it is none: `load`
+    /// reads it as damage and answers "nothing stored", which costs every preset, or
+    /// every shortcut, at once. `save_list` runs on every library change, so that
+    /// window is entered often. `localStorage.setItem` is atomic, so this is also
+    /// what stops the two backends promising different things with only one of them
+    /// written down.
+    ///
+    /// **A failure leaves the previous record whole**, which is the property the
+    /// whole arrangement is for: nothing touches `path` until bytes that are all
+    /// there are renamed onto it. There is deliberately no remove-then-retry —
+    /// `fs::rename` replaces an existing destination on Windows as well as on POSIX
+    /// (`MOVEFILE_REPLACE_EXISTING`), so a rename that fails here failed for a reason
+    /// unlinking the target would not fix — a scanner holding the file open, most
+    /// likely — and removing it first would answer a write this process could not
+    /// finish by deleting the copy the user still has.
     fn write(&self, key: &str, bytes: &[u8]) -> bool {
         let path = self.path(key);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(path, bytes).is_ok()
+        let Some(temp) = scratch(&path) else {
+            return false;
+        };
+        if !flushed(&temp, bytes) || std::fs::rename(&temp, &path).is_err() {
+            let _ = std::fs::remove_file(&temp);
+            return false;
+        }
+        true
     }
+}
+
+/// Write `bytes` to `path` and get them onto the disk before returning.
+///
+/// The flush is what makes this about **power loss** and not only about a kill: the
+/// rename is ordered after the data, so the name can never come to point at a file
+/// whose contents never landed. What is still the filesystem's business is whether
+/// the rename itself survives — losing it costs the new value, which is the failure
+/// this whole path is built to leave behind.
+fn flushed(path: &std::path::Path, bytes: &[u8]) -> bool {
+    use std::io::Write;
+    let Ok(mut file) = std::fs::File::create(path) else {
+        return false;
+    };
+    file.write_all(bytes).is_ok() && file.sync_all().is_ok()
+}
+
+/// Where [`Files::write`] stages a record before renaming it into place.
+///
+/// Beside the target, because a rename is only atomic within one filesystem and the
+/// config and cache directories need not be on the same one as the OS temp dir.
+///
+/// Named per process *and* per call: `path.with_extension("tmp")` would map
+/// `stark.prefs` and `stark.presets` onto one scratch file, and two threads saving one
+/// record would interleave their bytes into it and rename the result into place.
+///
+/// A crash between the write and the rename strands one of these. Nothing reads it —
+/// a key is a whole filename, never a glob — so what it costs is a few bytes in the
+/// config directory, which is the same thing a stranded blob costs and is the side of
+/// the trade this ordering deliberately takes.
+fn scratch(path: &std::path::Path) -> Option<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    Some(path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id())))
 }
 
 impl Backend for Files {
@@ -184,6 +247,113 @@ mod tests {
         assert!(contained(&f.config, &row), "a row is a setting");
         assert!(contained(&f.cache, &blob), "a blob is rebuildable");
         assert!(!contained(&f.config, &blob));
+    }
+
+    /// A directory that this test owns and takes away with it, so a run leaves the
+    /// machine as it found it whether it passed or not.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("stark-store-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A record written over an existing one reads back as the new one, and the
+    /// staging file it went through is gone.
+    ///
+    /// The half a `fs::write` could not promise: the old bytes are whole until the
+    /// rename, so a kill mid-write costs the *new* value rather than the record.
+    /// What a test can see of that is the two properties below — a leaked `.tmp`
+    /// would mean the rename never happened, and a short read would mean it happened
+    /// against a truncated file.
+    #[test]
+    fn a_rewritten_record_replaces_the_old_one_and_leaves_no_scratch() {
+        let dir = Scratch::new("rewrite");
+        let f = files(&dir.0);
+        assert!(f.set("stark.prefs", "{\"tips\":true}"));
+        assert!(f.set("stark.prefs", "{\"tips\":false}"));
+        assert_eq!(f.get("stark.prefs").as_deref(), Some("{\"tips\":false}"));
+        let strays: Vec<_> = std::fs::read_dir(&f.config)
+            .expect("the config directory")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "a staged write was left behind: {strays:?}"
+        );
+    }
+
+    /// **A write that cannot finish leaves the record it was replacing whole.**
+    ///
+    /// The property the staging file is for, and the only half of it a test can see
+    /// without killing a process: nothing touches the target until bytes that are all
+    /// there are renamed onto it, so a failure costs the *new* value. The write is
+    /// made to fail by putting a directory where the record's file goes — the same
+    /// answer `set` gives for a full disk or a store it may not write.
+    #[test]
+    fn a_write_that_fails_leaves_the_stored_record_whole() {
+        let dir = Scratch::new("failure");
+        let f = files(&dir.0);
+        assert!(f.set("stark.prefs", "settings"));
+        let staged = f.path("stark.presets");
+        std::fs::create_dir_all(&staged).expect("something in the record's way");
+        assert!(!f.set("stark.presets", "brushes"), "the write cannot land");
+        assert_eq!(
+            f.get("stark.prefs").as_deref(),
+            Some("settings"),
+            "and the record beside it is untouched",
+        );
+    }
+
+    /// Two records whose keys share a stem stage into different files.
+    ///
+    /// `path.with_extension("tmp")` — the obvious spelling — maps `stark.prefs` and
+    /// `stark.presets` onto one `stark.tmp`, and a rename would then land the wrong
+    /// bytes under whichever key finished second. Asserted as "each staging name
+    /// carries its own key", which is what that spelling loses; two names merely
+    /// *differing* is what the per-call counter gives whatever the key.
+    #[test]
+    fn records_that_share_a_stem_do_not_share_a_staging_file() {
+        let dir = Scratch::new("stems");
+        let f = files(&dir.0);
+        assert!(f.set("stark.prefs", "settings"));
+        assert!(f.set("stark.presets", "brushes"));
+        assert_eq!(f.get("stark.prefs").as_deref(), Some("settings"));
+        assert_eq!(f.get("stark.presets").as_deref(), Some("brushes"));
+        for key in ["stark.prefs", "stark.presets"] {
+            let staged = scratch(&f.path(key)).expect("a staging name");
+            let name = staged.file_name().expect("a file name").to_string_lossy();
+            assert!(
+                name.starts_with(&format!("{key}.")),
+                "{name} does not say which record it is staging",
+            );
+        }
+    }
+
+    /// A blob record's directory is made on the way in, staging file and all — the
+    /// first import writes into a directory that does not exist yet.
+    #[test]
+    fn a_blobs_directory_is_made_before_it_is_staged_into() {
+        let dir = Scratch::new("blobs");
+        let f = files(&dir.0);
+        assert!(f.write("stark.shapes/00ff", b"png"));
+        assert_eq!(
+            std::fs::read(f.path("stark.shapes/00ff")).ok(),
+            Some(b"png".to_vec())
+        );
     }
 
     /// Every key the registry can produce stays inside the directory it was sent to.

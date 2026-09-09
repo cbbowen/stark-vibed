@@ -81,6 +81,12 @@
 //! call an error — a preset naming a brush field that has since gone, a binding for a
 //! retired command, a panel this build no longer has.
 //!
+//! **The drop is counted and named.** It is the visible symptom of every mistake a
+//! record can make here, and while it was silent the symptom pointed at nothing: the
+//! user's library opened empty and the log said so nowhere. What rules the mistake
+//! out rather than reporting it is [`every_field_may_be_absent`], which each frontend
+//! runs over the records it keeps.
+//!
 //! Records that are not lists ([`load`]) are all-or-nothing, and want to be: a
 //! half-read `Prefs` is a worse answer than the defaults.
 //!
@@ -280,11 +286,37 @@ pub fn load<T: Record + DeserializeOwned>() -> Option<T> {
 /// an untouched quick-brush rack is seeded from the preset library, while one the user
 /// has emptied is left empty.
 pub fn load_list<T: Entry + DeserializeOwned>() -> Option<Vec<T>> {
-    let list = entries(&get(T::STORE)?);
-    if list.is_none() {
+    let Some((list, dropped)) = entries(&get(T::STORE)?) else {
         tracing::warn!("could not read {}", T::STORE.named().1);
+        return None;
+    };
+    if let Some(first) = dropped.first {
+        // Named and counted, because the drop is the visible symptom of every mistake
+        // this format can make (§25.6) and it used to be silent — a library that
+        // opens empty with nothing in the log to attribute it to. `assets::load`
+        // reports its own dropped rows this way for the same reason.
+        tracing::warn!(
+            "{} of {} could not be read and were dropped ({first})",
+            match dropped.count {
+                1 => "one entry".to_string(),
+                n => format!("{n} entries"),
+            },
+            T::STORE.named().1,
+        );
     }
-    list
+    Some(list)
+}
+
+/// What [`entries`] could not read on its way through a list: how many, and why the
+/// first of them would not.
+///
+/// The first reason rather than all of them: a list damaged in one way is damaged in
+/// it throughout — a field added without a default drops every row with the same
+/// error — so the second message onwards is the first repeated per entry.
+#[derive(Default, Debug, PartialEq)]
+struct Dropped {
+    count: usize,
+    first: Option<String>,
 }
 
 /// [`load_list`]'s reading, without the store — the half worth testing.
@@ -292,14 +324,20 @@ pub fn load_list<T: Entry + DeserializeOwned>() -> Option<Vec<T>> {
 /// A value that is not a list at all is `None` rather than an empty one: an unreadable
 /// record and an absent one are the same case, and the emptied-versus-never-set
 /// distinction above must not be decided by damage.
-fn entries<T: DeserializeOwned>(json: &str) -> Option<Vec<T>> {
+fn entries<T: DeserializeOwned>(json: &str) -> Option<(Vec<T>, Dropped)> {
     let values: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
-    Some(
-        values
-            .into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect(),
-    )
+    let mut kept = Vec::with_capacity(values.len());
+    let mut dropped = Dropped::default();
+    for value in values {
+        match serde_json::from_value(value) {
+            Ok(entry) => kept.push(entry),
+            Err(e) => {
+                dropped.count += 1;
+                dropped.first.get_or_insert_with(|| e.to_string());
+            }
+        }
+    }
+    Some((kept, dropped))
 }
 
 /// Store `value` as the whole of its record. A store that will not take it warns and
@@ -319,6 +357,177 @@ fn write<T: Serialize + ?Sized>(store: Store, value: &T) {
         Ok(json) => set(store, &json),
         Err(e) => tracing::warn!("could not encode {} ({e})", store.named().1),
     }
+}
+
+// --- the compatibility gate ------------------------------------------------
+
+/// Every field of a record may be absent — the property `#[serde(default)]` buys.
+/// `exempt` names the fields whose absence is deliberately fatal, and is the one
+/// place such an exception is written down.
+///
+/// # What it is for
+///
+/// The module's bargain is that a field added later reads as its default out of every
+/// value stored before it existed. Nothing enforced that but a reviewer remembering,
+/// and it has been forgotten four times. The symptom is always the same and never
+/// points at the cause: [`load_list`] drops the entry, [`load`] drops the record, and
+/// the user opens Stark with an empty library.
+///
+/// **Every field at every depth**, named by path (`modulation.size.floor`), because
+/// the field that gets added is as likely to be on a type a record *holds* as on the
+/// record — and a check of the top level alone would have to keep a hand-written list
+/// of what to recurse into, which is the reviewer's memory again under a new name.
+/// Array elements are walked too (`stops[0].t`), so a list a record carries is not a
+/// hole either.
+///
+/// `exempt` cuts a whole subtree: exempting `what` covers `what.Panel` under it. So an
+/// exemption is also a **hole where the type below it is not walked**, which is the
+/// cost of granting one and is worth saying at the call site.
+///
+/// The walk sees what the sample holds and nothing else — an `Option` left `None` is a
+/// type that goes unchecked, and a `Vec` left empty likewise. **Fill a sample**: it is
+/// what makes the difference between covering a record and covering the shape of one.
+///
+/// # Panics
+///
+/// Listing **every** path whose absence is fatal, not the first — a record is usually
+/// wrong in one way throughout, and one round of the test should say so. Also when
+/// `T` is not stored as a JSON object, when an `exempt` path is not in `sample` (so an
+/// exception cannot outlive a rename), and when an `exempt` path turns out to be
+/// readable after all — an exemption that has stopped being necessary is coverage the
+/// record silently lost.
+///
+/// # Why it is compiled rather than `#[cfg(test)]`
+///
+/// Three of the records live in a frontend (`tutor::Row`, `gradients::GradientEntry`,
+/// `window::Placement`), and a `#[cfg(test)]` item is not visible across a crate
+/// boundary — a test-only spelling here would leave exactly the records this crate
+/// cannot see unchecked. It is generic, so a build that never calls it never
+/// instantiates it, and the wasm bundle carries nothing.
+#[track_caller]
+pub fn every_field_may_be_absent<T: Serialize + DeserializeOwned>(sample: &T, exempt: &[&str]) {
+    let of = std::any::type_name::<T>();
+    let value =
+        serde_json::to_value(sample).unwrap_or_else(|e| panic!("{of} does not encode: {e}"));
+    assert!(
+        value.is_object(),
+        "{of} is not stored as a JSON object, so there is no field here to drop",
+    );
+    let mut paths = Vec::new();
+    walk(&value, &mut Vec::new(), &mut paths);
+
+    for name in exempt {
+        let steps = paths
+            .iter()
+            .find(|(path, _)| path == name)
+            .map(|(_, steps)| steps.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{of} has no field `{name}` for its exemption to be about — a renamed \
+                     field leaves its exemption behind, still passing"
+                )
+            });
+        assert!(
+            serde_json::from_value::<T>(dropping(&value, &steps)).is_err(),
+            "{of} reads without `{name}`, so exempting it costs the coverage and buys \
+             nothing. Drop the exemption.",
+        );
+    }
+
+    let fatal: Vec<String> = paths
+        .iter()
+        .filter(|(path, _)| !exempt.iter().any(|e| covers(e, path)))
+        .filter_map(|(path, steps)| {
+            let e = serde_json::from_value::<T>(dropping(&value, steps)).err()?;
+            Some(format!("  {path} ({e})"))
+        })
+        .collect();
+    assert!(
+        fatal.is_empty(),
+        "{of} is unreadable without these, so every row a build that predates one of \
+         them wrote is dropped whole:\n{}\nGive each #[serde(default)] — or exempt it \
+         at this call, if its absence is meant to be fatal.",
+        fatal.join("\n"),
+    );
+}
+
+/// One hop down a JSON value: an object's key, or an array's index.
+#[derive(Clone, Debug)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// Every removable field under `value`, deepest last, as a path and the hops to it.
+///
+/// Only object keys are removable — an array's *length* is not a compatibility
+/// question, and a missing element is a shorter list rather than an older one.
+fn walk(value: &serde_json::Value, at: &mut Vec<Step>, out: &mut Vec<(String, Vec<Step>)>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                at.push(Step::Key(key.clone()));
+                out.push((spell(at), at.clone()));
+                walk(child, at, out);
+                at.pop();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, child) in items.iter().enumerate() {
+                at.push(Step::Index(i));
+                walk(child, at, out);
+                at.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// How a path reads in a failure and in an exemption: `modulation.size.floor`,
+/// `stops[0].t`.
+fn spell(steps: &[Step]) -> String {
+    let mut out = String::new();
+    for step in steps {
+        match step {
+            Step::Key(k) if out.is_empty() => out.push_str(k),
+            Step::Key(k) => {
+                out.push('.');
+                out.push_str(k);
+            }
+            Step::Index(i) => out.push_str(&format!("[{i}]")),
+        }
+    }
+    out
+}
+
+/// Whether exempting `exempt` covers `path` — the path itself, and everything under it.
+fn covers(exempt: &str, path: &str) -> bool {
+    path == exempt
+        || path
+            .strip_prefix(exempt)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// `value` with the field at `steps` taken out. The last hop is always an object key
+/// ([`walk`] pushes no other), so there is always a field to remove.
+fn dropping(value: &serde_json::Value, steps: &[Step]) -> serde_json::Value {
+    let mut out = value.clone();
+    let mut at = &mut out;
+    let (last, above) = steps.split_last().expect("a path has at least one hop");
+    for step in above {
+        at = match step {
+            Step::Key(k) => at.get_mut(k),
+            Step::Index(i) => at.get_mut(i),
+        }
+        .expect("the path was walked out of this very value");
+    }
+    let Step::Key(key) = last else {
+        unreachable!("only an object key is removable")
+    };
+    at.as_object_mut()
+        .expect("a key's parent is an object")
+        .remove(key);
+    out
 }
 
 /// A future this crate can hold without knowing whose executor will poll it.
@@ -361,10 +570,16 @@ static BACKEND: std::sync::OnceLock<Box<dyn Backend>> = std::sync::OnceLock::new
 ///
 /// A second call is ignored rather than a panic: the loser is a store nothing has
 /// read through yet, and taking the app down over it would trade a bug that costs
-/// nothing for one that costs the session. It answers whether this call was the one
-/// that installed, so a caller that cares can say so.
-pub fn install(backend: impl Backend) -> bool {
-    BACKEND.set(Box::new(backend)).is_ok()
+/// nothing for one that costs the session. It is still a bug, so it is said here —
+/// the `bool` this used to answer was one no `main` could act on, and both discarded
+/// it.
+pub fn install(backend: impl Backend) {
+    if BACKEND.set(Box::new(backend)).is_err() {
+        tracing::warn!(
+            "a second store was installed and ignored; every record this process keeps \
+             goes to the first one"
+        );
+    }
 }
 
 fn backend() -> Option<&'static dyn Backend> {
@@ -486,6 +701,41 @@ pub mod hex {
             *byte = u8::from_str_radix(pair, 16).map_err(D::Error::custom)?;
         }
         Ok(T::from(bytes))
+    }
+}
+
+/// An `f32` that survives a value JSON cannot spell, for
+/// `#[serde(with = "crate::storage::finite")]`.
+///
+/// JSON has no NaN and no infinity: `serde_json` writes one as `null`, and `null`
+/// will not read back into an `f32`. In a list that costs the entry, which is the
+/// bargain the format already makes — but a whole record ([`load`]) is
+/// all-or-nothing, so one float that ever went non-finite makes **every field beside
+/// it** unreadable on the next launch. `#[serde(default)]` does not reach it: that is
+/// about a field that is *missing*, and this one is present and `null`.
+///
+/// The read is made total rather than the write made lossy: `null` arrives as the NaN
+/// it was written from, so the stored bytes are what they always were and the record
+/// is readable whatever is in it. **What a non-finite value means is then the
+/// record's own to say**, at the one place that knows what the number is for —
+/// `Hdr::clamped_headroom` for the settings, `Placement::usable` for the window,
+/// which answer differently. A stand-in invented here would be a second opinion about
+/// both.
+///
+/// The cost is that a loaded record may hold a NaN until something funnels it, which
+/// makes a derived `PartialEq` non-reflexive. Both records that use this are read and
+/// compared only through those funnels; a third should check.
+pub mod finite {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Unchanged from the derive — `serde_json` writes a non-finite float as `null`,
+    /// and it is the *read* that has to cope. Here so the field can say `with`.
+    pub fn serialize<S: Serializer>(value: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f32(*value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
     }
 }
 
@@ -611,7 +861,9 @@ mod tests {
         assert!(ALL.iter().all(|s| !s.named().0.ends_with(".v1")));
     }
 
-    /// The rule the list format exists for: an entry nobody can read costs that entry.
+    /// The rule the list format exists for: an entry nobody can read costs that entry
+    /// — **and is counted**, since the drop is the symptom every stored-record mistake
+    /// shows up as and a silent one attributes to nothing.
     #[test]
     fn a_damaged_entry_costs_one_entry_and_not_the_list() {
         let json = r#"[
@@ -622,9 +874,10 @@ mod tests {
             {"n":4},
             {"name":"d","n":4}
         ]"#;
+        let (kept, dropped) = entries::<Item>(json).expect("the list reads");
         assert_eq!(
-            entries::<Item>(json),
-            Some(vec![
+            kept,
+            vec![
                 Item {
                     name: "a".into(),
                     n: 1
@@ -637,18 +890,114 @@ mod tests {
                     name: "d".into(),
                     n: 4
                 },
-            ]),
+            ],
             "the three readable entries survive the three that are not"
         );
+        assert_eq!(dropped.count, 3, "and the three that are not are counted");
+        assert!(
+            dropped.first.is_some_and(|e| !e.is_empty()),
+            "with a reason for the first, which is what a warning has to print"
+        );
+    }
+
+    /// A list nothing is wrong with reports nothing — so the warning above means
+    /// something when it appears.
+    #[test]
+    fn a_whole_list_drops_nothing() {
+        let (kept, dropped) = entries::<Item>(r#"[{"name":"a","n":1}]"#).expect("the list reads");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(dropped, Dropped::default());
     }
 
     /// A record that is not a list at all is nothing stored, not an empty list — the
     /// distinction the quick-brush rack seeds itself on.
     #[test]
     fn damage_is_not_an_empty_list() {
-        assert_eq!(entries::<Item>("{}"), None);
-        assert_eq!(entries::<Item>("garbage"), None);
-        assert_eq!(entries::<Item>("[]"), Some(vec![]));
+        assert!(entries::<Item>("{}").is_none());
+        assert!(entries::<Item>("garbage").is_none());
+        assert_eq!(entries::<Item>("[]"), Some((vec![], Dropped::default())));
+    }
+
+    /// What [`every_field_may_be_absent`] said when it refused `f` — and nothing on
+    /// stderr, since a panic this test *wants* would otherwise read as a failure in
+    /// the log beside the ones that are.
+    fn refused(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let out = std::panic::catch_unwind(f);
+        std::panic::set_hook(hook);
+        let e = out.expect_err("the gate let this through");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .expect("a panic message")
+    }
+
+    /// A tune, standing in for the half of a brush a preset stores: one field that
+    /// falls back and one that does not.
+    #[derive(Serialize, Deserialize)]
+    struct Tune {
+        #[serde(default)]
+        flow: f32,
+        size: f32,
+    }
+
+    /// A record holding one — and holding it by a field that *does* default, so the
+    /// only way to reach `size` is to walk into it.
+    #[derive(Serialize, Deserialize)]
+    struct Held {
+        name: String,
+        #[serde(default)]
+        tune: Tune,
+    }
+
+    impl Default for Tune {
+        fn default() -> Self {
+            Self {
+                flow: 1.0,
+                size: 8.0,
+            }
+        }
+    }
+
+    fn held() -> Held {
+        Held {
+            name: "Wet Oil".into(),
+            tune: Tune::default(),
+        }
+    }
+
+    /// The gate's own claim: a field that cannot be absent is named, **at whatever
+    /// depth it sits**. `tune.size` is the case a top-level check passes green on,
+    /// and it is the shape a stored preset really has — a `stark_model` type three
+    /// levels below the record (§25.6).
+    #[test]
+    fn the_gate_names_a_field_that_cannot_be_absent_at_any_depth() {
+        let said = refused(|| every_field_may_be_absent(&held(), &["name"]));
+        assert!(said.contains("tune.size"), "{said}");
+        assert!(
+            !said.contains("tune.flow"),
+            "a field that does fall back is not a finding: {said}",
+        );
+        // And with it exempted, the record passes: `name` and `tune.size` are the
+        // whole of what its absence is fatal about.
+        every_field_may_be_absent(&held(), &["name", "tune.size"]);
+    }
+
+    /// An exemption is a claim, and a claim is checked: one that has stopped being
+    /// necessary is coverage the record lost without saying so.
+    #[test]
+    fn an_exemption_that_buys_nothing_is_refused() {
+        let said = refused(|| every_field_may_be_absent(&held(), &["name", "tune.size", "tune"]));
+        assert!(said.contains("`tune`"), "{said}");
+    }
+
+    /// And one that names no field at all — what a rename leaves behind, still
+    /// passing.
+    #[test]
+    fn an_exemption_that_names_nothing_is_refused() {
+        let said = refused(|| every_field_may_be_absent(&held(), &["title", "tune.size"]));
+        assert!(said.contains("`title`"), "{said}");
     }
 
     #[derive(Debug, PartialEq, Deserialize, Serialize)]

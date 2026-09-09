@@ -526,12 +526,19 @@ pub fn overwrite(
 /// A type of its own rather than [`PresetEntry`] with two fields skipped, because
 /// provenance is the point: everything storage holds is the user's by definition, so
 /// `builtin: false` is settled where the entry is *made* rather than carried in the
-/// record and trusted. No `#[serde(default)]` on `transient`: a stored preset
-/// that lacks its tune is a damaged entry, which the store already skips.
+/// record and trusted.
+///
+/// `#[serde(default)]` on both halves of the brush, for the reason each of them
+/// carries one internally: the store has no version, so a half a row lacks is a half
+/// a *later build added*, and dropping the row over it costs the whole library
+/// (§25.6). `name` deliberately has none — a preset is reached by it, and a quick
+/// slot binds to it (`slots::QuickBrush`).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StoredPreset {
     name: String,
+    #[serde(default)]
     brush: BrushConfig,
+    #[serde(default)]
     transient: Transient,
 }
 

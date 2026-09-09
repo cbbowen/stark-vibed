@@ -175,10 +175,19 @@ impl Default for WetDynamics {
 /// carries is simply the color the hand held when the snapshot was taken;
 /// nothing reads it back.
 ///
-/// Serde because the rack and the preset store keep it; no `#[serde(default)]`,
-/// since a stored entry that lacks part of its tune is a damaged entry and not
-/// a tune at some size.
+/// Serde because the rack and the preset store keep it, and `#[serde(default)]`
+/// for [`BrushConfig`]'s reason: the store skips a damaged entry outright, so a
+/// field a stored tune lacks falling back to the default is strictly more of it
+/// surviving. This used to argue the other way — that a tune missing part of
+/// itself is damage rather than a tune at some size — which conflates *damaged*
+/// with *written by a build that predates the field*, and the store carries no
+/// version to tell those two apart. What that cost is the whole of both
+/// libraries: this type sits in `presets::StoredPreset` and is flattened into
+/// `slots::StoredSlot`, so one field added without this empties the preset
+/// library and the quick-brush rack at once — and the rack then reads as
+/// `Some(empty)`, which is "set to nothing" and never re-seeds (§25.6).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Transient {
     /// Stamp radius in canvas pixels at full pressure (`BrushParams::size`).
     pub size: f32,

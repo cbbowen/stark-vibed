@@ -89,7 +89,12 @@ fn icon_table(assets: &Path, out: &Path) {
     let dir = assets.join("icons");
     println!("cargo::rerun-if-changed={}", dir.display());
     let mut rows = Vec::new();
-    for entry in read_ext(&dir, "svg") {
+    // Tolerant where the two asset directories are fatal, and the difference is what
+    // each absence costs: a build with no shipped ids is wrong about the document and
+    // about the wire, where a build with no icons is a chrome wearing no glyphs — a
+    // cosmetic loss, and one `icons::tests` fails on anyway. No warning: this crate is
+    // always a dependency, and a dependency's `cargo::warning` is not displayed.
+    for entry in read_ext(&dir, "svg").unwrap_or_default() {
         let stem = entry
             .file_stem()
             .and_then(|n| n.to_str())
@@ -119,24 +124,43 @@ enum Kind {
     Height,
 }
 
-/// Every `.png` directly under `dir`.
+/// Every `.png` directly under `dir` — **and finding none is fatal**.
+///
+/// It used to be empty with a warning, on the grounds that a checkout without the
+/// assets should still build the crate. There is no such checkout: the native
+/// frontend `include_bytes!`es these very files and fails without them. What the
+/// leniency actually bought was a build that succeeds with an empty `SHIPPED_IDS`,
+/// and that build is broken in ways no compiler reports — `resolvable` promises a
+/// peer nothing (§12.4), `shipped_id` answers `None` so every preset's stamp falls
+/// back to the round tip, and every gallery card draws blank. And `cargo::warning`
+/// from a *dependency's* build script is not displayed, so the one thing that would
+/// have said so was invisible in exactly the case that mattered.
+///
+/// About the **rows** rather than about the directory, which is what makes it one
+/// check instead of three: a missing directory, a checkout that materialized the
+/// directories and not the files, and an extension filter that stopped matching all
+/// arrive here the same way.
 fn read_pngs(dir: &Path) -> Vec<PathBuf> {
-    read_ext(dir, "png")
+    let found = read_ext(dir, "png").unwrap_or_default();
+    assert!(
+        !found.is_empty(),
+        "no shipped assets under {} — the ids of the bundled shapes and substrates are \
+         computed from those files, and a build without them ships a table that names \
+         nothing (§19)",
+        dir.display(),
+    );
+    found
 }
 
-/// Every file with this extension directly under `dir`, sorted — a missing directory
-/// is empty rather than fatal, so a checkout without the assets still builds the
-/// crate.
-fn read_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        println!("cargo::warning=no assets under {}", dir.display());
-        return Vec::new();
-    };
+/// Every file with this extension directly under `dir`, sorted — `None` where the
+/// directory is not there, which each caller answers for itself.
+fn read_ext(dir: &Path, ext: &str) -> Option<Vec<PathBuf>> {
+    let entries = std::fs::read_dir(dir).ok()?;
     let mut out: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)))
         .collect();
     out.sort();
-    out
+    Some(out)
 }

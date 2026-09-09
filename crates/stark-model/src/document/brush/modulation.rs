@@ -62,7 +62,15 @@ pub(super) fn pen(x: f32) -> PenState {
 ///
 /// It costs nothing in expressiveness: a pencil that widens as the pen leans over is
 /// the widest radius on the slider with `source = Tilt` and `floor` at the narrow end.
+///
+/// `#[serde(default)]` because a whole [`BrushParams`](super::BrushParams) is kept
+/// outside the log as well as in it — a browser-stored preset and a quick-brush slot
+/// each hold one (§25.6), in a format with no schema to reconcile by. A field added
+/// here without it would empty both libraries rather than cost itself, and the
+/// fallback is the value the editor already hands a freshly mapped row
+/// ([`linear`](Self::linear)).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+#[serde(default)]
 pub struct Modulation {
     /// Which pen axis drives it.
     pub source: ModSource,
@@ -85,6 +93,14 @@ pub struct Modulation {
 /// by [`BrushParams::max_slope`](super::BrushParams::max_slope) to keep a modulated ramp
 /// from drawing as a staircase — and unbounded steepness would be an unbounded bill.
 const MIN_BIAS: f32 = 0.1;
+
+impl Default for Modulation {
+    /// [`linear`](Self::linear) off the default source — not a new opinion, but the
+    /// value a row already takes the moment it is mapped (`brush_editor::set_source`).
+    fn default() -> Self {
+        Self::linear(ModSource::default())
+    }
+}
 
 impl Modulation {
     /// A plain linear modulation from `source`, scaling the parameter all the way to

@@ -147,7 +147,13 @@ pub enum NoiseKind {
 /// canvas under it. The three noise channels offset the three color channels *of the
 /// current color space* (Oklab `L, a, b`; Mixbox pigment concentrations), from the
 /// per-stroke seed.
+///
+/// `#[serde(default)]` for [`Modulation`]'s reason: a whole brush is kept outside the
+/// log too — a stored preset and a quick-brush slot each hold one, in a format with no
+/// schema (§25.6) — so a field added here without it would empty both libraries
+/// instead of costing itself.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+#[serde(default)]
 pub struct ColorDynamics {
     /// Which noise field to sample.
     pub noise: NoiseKind,

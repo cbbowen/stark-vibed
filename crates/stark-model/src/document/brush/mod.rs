@@ -44,7 +44,14 @@ pub enum BrushShape {
     /// Procedural soft disc. Edge softness in [0, 1]: 0 = very soft, 1 = the hard
     /// edge (supported, and what a shipped preset uses) — meaningful only here,
     /// since it is what shapes this tip's falloff.
-    Round { hardness: f32 },
+    ///
+    /// Defaulted for [`Modulation`]'s reason: a whole brush is kept in a
+    /// schema-less store as well as in the log (§25.6), so a second knob added
+    /// beside this one must not drop every preset that predates it.
+    Round {
+        #[serde(default = "round_hardness")]
+        hardness: f32,
+    },
     /// A sampled coverage mask, referenced by content id (an imported image).
     Stamp(crate::AssetId),
 }
@@ -55,6 +62,12 @@ impl Default for BrushShape {
             hardness: Self::DEFAULT_HARDNESS,
         }
     }
+}
+
+/// [`BrushShape::DEFAULT_HARDNESS`] as a path, which is the only spelling
+/// `#[serde(default = …)]` takes.
+fn round_hardness() -> f32 {
+    BrushShape::DEFAULT_HARDNESS
 }
 
 impl BrushShape {

@@ -337,6 +337,19 @@ pub fn picture(png_bytes: &[u8]) -> Result<Picture> {
     Ok(downsample_rgba(pixels, w, h, MAX_PICTURE_DIM))
 }
 
+/// The grey of an 8-bit sRGB triple: `(77·r + 150·g + 29·b) >> 8`, integer
+/// throughout, so the answer is the same on every target rather than the same to
+/// within a rounding mode.
+///
+/// Exported because two readings must not drift apart. [`coverage`] takes it to
+/// decide the id a shape's bytes hash to (§19), and the import that *produces* those
+/// bytes takes it to decide whether the ink is dark-on-light and must be inverted
+/// (`stark_ui::assets::shape_png`). Two copies of three weights would settle the
+/// inversion against a different field from the one the id then names.
+pub const fn luminance8(r: u8, g: u8, b: u8) -> u32 {
+    (77 * r as u32 + 150 * g as u32 + 29 * b as u32) >> 8
+}
+
 /// Decode a brush shape to its canonical coverage field.
 ///
 /// Coverage = luminance × alpha, so white-on-black masks (luminance) and
@@ -363,8 +376,6 @@ pub fn coverage(png_bytes: &[u8]) -> Result<Canonical> {
 
     let n = (info.width * info.height) as usize;
     let mut texels = vec![0u8; n];
-    let lum =
-        |r: u8, g: u8, b: u8| -> u32 { (77 * r as u32 + 150 * g as u32 + 29 * b as u32) >> 8 };
     match info.color_type {
         png::ColorType::Grayscale => texels.copy_from_slice(&buf[..n]),
         png::ColorType::GrayscaleAlpha => {
@@ -376,12 +387,12 @@ pub fn coverage(png_bytes: &[u8]) -> Result<Canonical> {
         }
         png::ColorType::Rgb => {
             for i in 0..n {
-                texels[i] = lum(buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]) as u8;
+                texels[i] = luminance8(buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]) as u8;
             }
         }
         png::ColorType::Rgba => {
             for i in 0..n {
-                let l = lum(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]);
+                let l = luminance8(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]);
                 let a = buf[i * 4 + 3] as u32;
                 texels[i] = (l * a / 255) as u8;
             }

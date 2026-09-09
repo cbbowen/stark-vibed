@@ -86,10 +86,14 @@ impl Decoded {
     }
 }
 
-/// The luminance weights the whole app reads grey by, so "grey" means one thing
-/// across it — the same three the engine's coverage read uses.
+/// One straight-alpha texel's grey, by [`stark_assetid::luminance8`].
+///
+/// **The weights are not written here.** They decide the id these bytes will hash to
+/// (§19), and they decide — below — whether the ink is inverted on the way in, so a
+/// second copy that drifted would settle the inversion against a different grey from
+/// the field it becomes.
 fn luminance(p: [u8; 4]) -> u32 {
-    (77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8
+    stark_assetid::luminance8(p[0], p[1], p[2])
 }
 
 /// Turn a decoded image into a **brush shape**'s PNG, and say whether its ink was
@@ -463,9 +467,18 @@ pub struct Entry {
 ///
 /// The kind rides in a `PhantomData` that is skipped, so the JSON is `{name, id}` for
 /// both libraries — the shape every already-stored library is written in.
+///
+/// **One type, two records** (`stark.shapes` and `stark.grounds`), which is why a
+/// field added here without `#[serde(default)]` would drop *both* libraries at once
+/// and strand every blob they named. `name` carries one: an unnamed row still names
+/// its bytes, and the gallery draws a card titled `""` where it would otherwise draw
+/// nothing at all. `id` deliberately does not — a row without it is not a reference to
+/// anything, and the default would be an id no blob is under. That exception is
+/// written down where the rest are (`records`).
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Row<K> {
+    #[serde(default)]
     name: String,
     #[serde(with = "storage::hex")]
     id: AssetId,
@@ -821,5 +834,21 @@ mod tests {
         // tells them apart.
         let back: Row<Substrates> = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "Bristles");
+
+        // A row with no name is still a row: it names its bytes, which is the whole
+        // of the reference, and the gallery draws a card titled "". Dropping it would
+        // cost the asset and strand the blob it was the only pointer to.
+        let unnamed: Row<Shapes> =
+            serde_json::from_str(&format!(r#"{{"id":"{}"}}"#, "ab".repeat(32)))
+                .expect("a row that predates `name` still reads");
+        assert_eq!(unnamed.name, "");
+        assert_eq!(unnamed.id, AssetId([0xab; 32]));
+
+        // The id is the exception, and stays one: a row without it points at nothing,
+        // and a defaulted id would point at bytes no library holds.
+        assert!(
+            serde_json::from_str::<Row<Shapes>>(r#"{"name":"Bristles"}"#).is_err(),
+            "a row with no id is not a reference to an asset",
+        );
     }
 }

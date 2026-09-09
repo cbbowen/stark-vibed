@@ -20,17 +20,46 @@ use wgpui::{App, Bounds, WindowBounds, px, size};
 /// version that happens to be linked, and reconciling it by name (§25.6) is what
 /// lets a field be added later. `#[serde(default)]` so a record written before a
 /// field existed still reads.
+///
+/// The four numbers go through `storage::finite` for the reason `Prefs` does: JSON
+/// cannot spell a non-finite number, so one written as `null` would make the *whole*
+/// record unreadable and lose the flag beside it. What arrives instead is the NaN it
+/// was written from, and [`usable`](Self::usable) is where that stops — a window has
+/// nowhere to be put at a NaN, so this record's repair is to decline to answer rather
+/// than to answer with a number of its own.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Placement {
+    #[serde(with = "storage::finite")]
     x: f32,
+    #[serde(with = "storage::finite")]
     y: f32,
+    #[serde(with = "storage::finite")]
     width: f32,
+    #[serde(with = "storage::finite")]
     height: f32,
     /// Restored as maximized, with the four above as the size to restore *to* — which
     /// is what `WindowBounds::Maximized` already means, so nothing is lost by keeping
     /// one record instead of two.
     maximized: bool,
+}
+
+impl Placement {
+    /// Whether this is a rectangle a window can actually be put at.
+    ///
+    /// The funnel [`Hdr::clamped_headroom`](stark_ui::prefs::Hdr::clamped_headroom) is
+    /// for the settings: the one place that knows what these numbers are *for*, and so
+    /// the one that can say what a value outside them means. Here the answer is
+    /// nothing — a stored rectangle is the only thing this record has to say, and a
+    /// degenerate one is worse than not having said it, since [`opening`]'s centred
+    /// fallback is a good answer and a zero-width window is not.
+    fn usable(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|v| v.is_finite())
+            && self.width > 0.0
+            && self.height > 0.0
+    }
 }
 
 impl Record for Placement {
@@ -61,7 +90,9 @@ impl Default for Placement {
 /// `Windowed` (`vendor/wgpui/VENDORING.md`, patch 3). What it still does not do is
 /// *report* a restore rect, which is [`remember`]'s problem rather than this one's.
 pub fn opening(cx: &mut App) -> WindowBounds {
-    match storage::load::<Placement>() {
+    // A stored rectangle a window cannot be put at is the same answer as none — the
+    // centred fallback below is a good one (`Placement::usable`).
+    match storage::load::<Placement>().filter(Placement::usable) {
         Some(p) => {
             let bounds = Bounds {
                 origin: wgpui::point(px(p.x), px(p.y)),
@@ -105,7 +136,7 @@ pub fn remember(bounds: WindowBounds) {
         // the display's too, so it keeps the stored rect for the same reason.
         WindowBounds::Fullscreen(_) => (None, false),
     };
-    let previous = previous.unwrap_or_default();
+    let previous = previous.filter(Placement::usable).unwrap_or_default();
     storage::save(&Placement {
         x: rect.map_or(previous.x, |b| f32::from(b.origin.x)),
         y: rect.map_or(previous.y, |b| f32::from(b.origin.y)),
@@ -140,5 +171,47 @@ mod tests {
             serde_json::from_str(r#"{"x":1.0,"y":2.0,"width":3.0,"height":4.0}"#)
                 .expect("a record written before `maximized` still reads");
         assert!(!older.maximized, "and reads as the default it was given");
+    }
+
+    /// The same property stated once for every field rather than for the one that was
+    /// added last — the gate the other records go through in the web frontend's
+    /// `records`, which cannot see this one because a page has no window to remember.
+    #[test]
+    fn every_field_of_a_placement_may_be_absent() {
+        stark_ui::storage::every_field_may_be_absent(&Placement::default(), &[]);
+    }
+
+    /// A rectangle JSON cannot spell **costs no other field**, and then declines to be
+    /// a window.
+    ///
+    /// `serde_json` writes a non-finite float as `null`, and a `null` that would not
+    /// read back as an `f32` takes the whole record with it — so a window that once
+    /// reported a NaN frame would lose its `maximized` flag too, on every launch
+    /// after. What arrives instead is the NaN, and [`Placement::usable`] is where it
+    /// stops: `opening` centres, which is the right answer for "the store has nothing
+    /// to say".
+    #[test]
+    fn a_rectangle_no_window_can_sit_at_costs_no_other_field() {
+        let broken = Placement {
+            x: f32::NAN,
+            ..Placement::default()
+        };
+        let json = serde_json::to_string(&broken).expect("a placement encodes");
+        assert!(
+            json.contains("\"x\":null"),
+            "the write is what it always was: {json}",
+        );
+        let back: Placement = serde_json::from_str(&json).expect("and the record still reads");
+        assert!(back.x.is_nan());
+        assert!(!back.usable(), "but it is not somewhere to put a window");
+        assert!(
+            !Placement {
+                width: 0.0,
+                ..Placement::default()
+            }
+            .usable(),
+            "nor is a window with no width",
+        );
+        assert!(Placement::default().usable());
     }
 }

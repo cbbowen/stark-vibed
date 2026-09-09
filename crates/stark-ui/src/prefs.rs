@@ -15,7 +15,10 @@
 //! A field on [`Prefs`], a default in its `Default`, and a control in whichever
 //! frontend offers it. `#[serde(default)]` on the struct is what makes that safe
 //! across versions: a field added later reads as its default out of every value
-//! stored before it existed, and one removed is ignored.
+//! stored before it existed, and one removed is ignored. That this record is a
+//! *record* — that the whole of it is refused where one field will not read — is why
+//! forgetting it costs all eight settings rather than one, and why the property is a
+//! test rather than a habit ([`storage::every_field_may_be_absent`](crate::storage::every_field_may_be_absent)).
 
 use serde::{Deserialize, Serialize};
 
@@ -102,7 +105,12 @@ impl From<ChromeHiding> for String {
 #[serde(default)]
 pub struct Hdr {
     pub on: bool,
-    /// Times SDR white; a stored value outside the slider's range reads back clamped.
+    /// Times SDR white; a stored value outside the slider's range — or one JSON could
+    /// not spell (`storage::finite`) — reads back inside it
+    /// ([`clamped_headroom`](Self::clamped_headroom)). Both are the same leniency
+    /// [`ChromeHiding`] argues for two fields up: [`Prefs`] is one record, so a value
+    /// this build cannot use must cost its own field rather than all eight.
+    #[serde(with = "crate::storage::finite")]
     pub headroom: f32,
 }
 
@@ -264,5 +272,33 @@ mod tests {
         // A record stored before the field existed reads as the default.
         let old: Prefs = serde_json::from_str("{}").expect("an empty record reads");
         assert_eq!(old.hdr, Hdr::default());
+    }
+
+    /// A headroom that went non-finite costs **its own value and nothing else**.
+    ///
+    /// JSON has no NaN, so `serde_json` writes `null` — and a `null` that would not
+    /// read back as an `f32` takes the whole record with it, because [`Prefs`] is
+    /// all-or-nothing: all eight settings back to their defaults, silently, on the
+    /// launch after the one that stored it. What arrives instead is the non-finite
+    /// value the funnel already knows what to do with.
+    #[test]
+    fn a_non_finite_headroom_does_not_cost_the_other_seven_settings() {
+        let mut broken = Prefs {
+            tips: false,
+            ..Prefs::default()
+        };
+        broken.hdr.headroom = f32::NAN;
+        let json = serde_json::to_string(&broken).expect("a record encodes");
+        assert!(
+            json.contains("\"headroom\":null"),
+            "the write is what it always was: {json}",
+        );
+        let back: Prefs = serde_json::from_str(&json).expect("and the record still reads");
+        assert!(!back.tips, "the settings beside it are the ones stored");
+        assert_eq!(
+            back.hdr.clamped_headroom(),
+            Hdr::default().headroom,
+            "and the broken one is repaired where its range is known",
+        );
     }
 }

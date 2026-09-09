@@ -54,20 +54,39 @@ impl<T: Clone> Thumbs<T> {
     /// The remembered picture of `id`, as a value — so a caller's miss path is not
     /// holding the lock while it decodes.
     pub fn get(&self, id: AssetId) -> Option<T> {
-        let thumbs = self.0.lock().ok()?;
+        let thumbs = self.entries();
         thumbs
             .iter()
             .find(|(k, _)| *k == id)
             .map(|(_, u)| u.clone())
     }
 
-    /// Remember `picture` as the picture of `id`. A poisoned lock simply forgets it:
-    /// the cache is a saving, and re-encoding a thumbnail is cheaper than taking a
-    /// panel down over one.
+    /// Remember `picture` as the picture of `id`, replacing whatever was under it.
+    ///
+    /// Replace rather than push: a caller's miss path is a decode, a reduce and an
+    /// encode, and the web frontend's runs inside a render body — so two renders that
+    /// both miss both arrive here with the same id, and an unconditional push would
+    /// grow the list a duplicate per frame until the first copy shadowed the rest.
     pub fn put(&self, id: AssetId, picture: T) {
-        if let Ok(mut thumbs) = self.0.lock() {
-            thumbs.push((id, picture));
+        let mut thumbs = self.entries();
+        match thumbs.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, held)) => *held = picture,
+            None => thumbs.push((id, picture)),
         }
+    }
+
+    /// The list, **poisoning ignored**.
+    ///
+    /// There is no invariant here for a panic to have broken: a thumbnail is a pure
+    /// function of the id and of which library is drawing it (see the type doc), so
+    /// the worst a torn write leaves is a picture that is still correct. Honouring
+    /// the poison would disable the cache permanently — every gallery card a full
+    /// decode-plus-reduce-plus-encode on every render, for the rest of the run, from
+    /// one panic anywhere else in the process.
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(AssetId, T)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -177,5 +196,38 @@ mod tests {
             display_name(".png", "Imported substrate"),
             "Imported substrate"
         );
+    }
+
+    /// One id, one entry, however many times it is remembered — the gallery's miss
+    /// path is a render body, so the same id arrives here again before the first
+    /// answer has been shown.
+    #[test]
+    fn remembering_a_picture_twice_keeps_one_of_it() {
+        let thumbs: Thumbs<u8> = Thumbs::new();
+        let id = AssetId([1; 32]);
+        thumbs.put(id, 7);
+        thumbs.put(id, 9);
+        assert_eq!(thumbs.get(id), Some(9), "the later picture is the one held");
+        assert_eq!(thumbs.entries().len(), 1, "and it did not grow a duplicate");
+    }
+
+    /// A panic elsewhere in the process does not cost the cache. There is no
+    /// invariant a torn write could have broken — see [`Thumbs::entries`] — and
+    /// honouring the poison would mean re-encoding every card on every render for
+    /// the rest of the run.
+    #[test]
+    fn a_poisoned_lock_still_answers() {
+        let thumbs: Thumbs<u8> = Thumbs::new();
+        let id = AssetId([2; 32]);
+        thumbs.put(id, 3);
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = thumbs.0.lock().expect("not poisoned yet");
+            panic!("something else went wrong while the lock was held");
+        }));
+        assert!(poisoned.is_err(), "the panic was the point");
+        assert!(thumbs.0.is_poisoned());
+        assert_eq!(thumbs.get(id), Some(3));
+        thumbs.put(AssetId([4; 32]), 5);
+        assert_eq!(thumbs.get(AssetId([4; 32])), Some(5));
     }
 }

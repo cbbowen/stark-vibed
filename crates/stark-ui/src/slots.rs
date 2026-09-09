@@ -82,6 +82,12 @@ pub struct QuickBrush {
     /// The size and flow the number keeps of its own. The color the tune also carries
     /// is dead weight here — a slot never changes the color you are painting with,
     /// and a color picked mid-hold does not rebind ([`Held::settle`]).
+    ///
+    /// Defaulted, unlike [`preset`](Self::preset): the name is what the slot *is* a
+    /// binding to, where a tune a stored row lacks is a tune a later build added a
+    /// field to — and a rack that drops its rows reads as `Some(empty)`, which never
+    /// re-seeds ([`read_storage`]).
+    #[serde(default)]
     pub transient: Transient,
 }
 
