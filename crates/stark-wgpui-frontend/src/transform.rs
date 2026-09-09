@@ -10,20 +10,24 @@
 //!
 //! # Drawing the widget
 //!
-//! wgpui has a path builder, so the shapes are paths: the affine's **ellipse** — the
-//! image of the reference circle under the accumulated linear map, so its eccentricity
-//! *is* the distortion — the perspective's **quad** with its receding grid, and the
-//! warp's **mesh**. The same three the web frontend draws in SVG, from the same
-//! numbers, which is the point: two drawings of one geometry is not duplication, two
-//! *derivations* of it would be.
+//! wgpui has a path builder, so the shapes are paths — but *which* polylines is not
+//! this file's answer any more. `stark_ui::transform::{outline, grid, handles}` gives
+//! them in canvas px and what is left here is the stroking: a weight, a colour, and
+//! the canvas → screen mapping through the live [`ViewTransform`], so a pan or a zoom
+//! mid-gesture moves the widget with the paint rather than away from it.
 //!
-//! Every point is mapped canvas → screen through the live [`ViewTransform`], so a pan
-//! or a zoom mid-gesture moves the widget with the paint rather than away from it.
+//! That is a correction, not a tidy-up. This file drew the mesh through the control
+//! points — where the hand grabs — and §16.9 says the opposite: the curves are
+//! sampled from the surface the paint resamples through, so a straight grid means
+//! untouched, and a mesh bent between its points drew here as if nothing had
+//! happened. The perspective grid had the milder version, a line count and a sampling
+//! of its own for a map whose lines are straight by definition. Two drawings of one
+//! geometry is not duplication; two *derivations* of it is how they came to disagree.
 
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
 use stark_ui::commands::{Bindings, Command};
-use stark_ui::transform::{Family, Hint, TransformUi, WARP_GRID};
+use stark_ui::transform::{Family, Hint, TransformUi};
 use wgpui::{
     Bounds, HitboxBehavior, IntoElement, PathBuilder, Pixels, Point, SharedString, canvas, div,
     prelude::*, px, rgb, rgba,
@@ -162,71 +166,20 @@ pub fn overlay(ui: TransformUi, view: ViewTransform, scale: f32, hint: Hint) -> 
                 let s = view.canvas_to_screen(p) / scale;
                 wgpui::point(bounds.origin.x + px(s.x), bounds.origin.y + px(s.y))
             };
-            match ui {
-                TransformUi::Affine { ts, .. } => {
-                    // The image of the reference circle. Sampled rather than fitted
-                    // with arcs: under a shear it is an ellipse at an angle, which no
-                    // axis-aligned arc primitive can state.
-                    let ring: Vec<_> = (0..ELLIPSE_STEPS)
-                        .map(|i| {
-                            let t = i as f32 / ELLIPSE_STEPS as f32 * std::f32::consts::TAU;
-                            at(ts.center + ts.linear * (ts.radius * Vec2::new(t.cos(), t.sin())))
-                        })
-                        .collect();
-                    stroke(window, &ring, true, LINE, RIM);
-                    // The centre, so a translate has something to aim at.
-                    let c = at(ts.center);
-                    handle(window, c);
-                }
-                TransformUi::Perspective(p) => {
-                    let quad: Vec<_> = p.corners.iter().map(|c| at(*c)).collect();
-                    stroke(window, &quad, true, LINE, RIM);
-                    // The receding grid: the transformed space itself, so the lines
-                    // say what the map is doing *between* the corners rather than
-                    // only at them. Absent while the quad is unusable — a concave one
-                    // has no homography to draw, which the corners already show.
-                    if let Some(h) = p.map().forward() {
-                        let span = p.rect.1 - p.rect.0;
-                        for i in 1..GRID_LINES {
-                            let f = i as f32 / GRID_LINES as f32;
-                            for axis in 0..2 {
-                                let run: Vec<_> = (0..=GRID_STEPS)
-                                    .map(|j| {
-                                        let g = j as f32 / GRID_STEPS as f32;
-                                        let uv = if axis == 0 {
-                                            Vec2::new(f, g)
-                                        } else {
-                                            Vec2::new(g, f)
-                                        };
-                                        at(h.apply(p.rect.0 + span * uv))
-                                    })
-                                    .collect();
-                                stroke(window, &run, false, HAIR, GRID);
-                            }
-                        }
-                    }
-                    for c in quad {
-                        handle(window, c);
-                    }
-                }
-                TransformUi::Warp(w) => {
-                    // The mesh's own rows and columns, through the control points —
-                    // which is where the hand grabs, so it is what should be drawn.
-                    for i in 0..WARP_GRID {
-                        for axis in 0..2 {
-                            let run: Vec<_> = (0..WARP_GRID)
-                                .map(|j| {
-                                    let (r, c) = if axis == 0 { (i, j) } else { (j, i) };
-                                    at(w.points[r * WARP_GRID + c])
-                                })
-                                .collect();
-                            stroke(window, &run, false, HAIR, GRID);
-                        }
-                    }
-                    for p in w.points {
-                        handle(window, at(p));
-                    }
-                }
+            let run = |window: &mut wgpui::Window, points: &[Vec2], w: f32, color: u32| {
+                let screen: Vec<_> = points.iter().copied().map(at).collect();
+                stroke(window, &screen, w, color);
+            };
+            // The lines that say what the map does between the handles first, so the
+            // boundary and the handles read over them.
+            for line in stark_ui::transform::grid(&ui) {
+                run(window, &line, HAIR, GRID);
+            }
+            for line in stark_ui::transform::outline(&ui) {
+                run(window, &line, LINE, RIM);
+            }
+            for h in stark_ui::transform::handles(&ui) {
+                handle(window, at(h));
             }
         },
     )
@@ -240,17 +193,6 @@ pub fn overlay(ui: TransformUi, view: ViewTransform, scale: f32, hint: Hint) -> 
     .right_0()
     .bottom_0()
 }
-
-/// How many points the affine's ellipse is sampled at. Enough that the polygon reads
-/// as a curve at any zoom the widget is usable at.
-const ELLIPSE_STEPS: usize = 96;
-
-/// Interior lines drawn through the perspective quad, per axis.
-const GRID_LINES: usize = 4;
-
-/// How finely one of those is sampled — a homography is not linear in the plane, so a
-/// straight segment between its ends would not lie on it.
-const GRID_STEPS: usize = 16;
 
 const LINE: f32 = 1.5;
 const HAIR: f32 = 1.0;
@@ -272,13 +214,14 @@ const _: () = assert!(
     "a handle must be grabbable at least as far out as it is drawn"
 );
 
-/// Stroke a polyline, closing it when `closed`.
-fn stroke(window: &mut wgpui::Window, points: &[Point<Pixels>], closed: bool, w: f32, color: u32) {
+/// Stroke a polyline. A run that closes says so by repeating its first point, which
+/// is `stark_ui::transform`'s contract — so there is no flag here to get wrong.
+fn stroke(window: &mut wgpui::Window, points: &[Point<Pixels>], w: f32, color: u32) {
     if points.len() < 2 {
         return;
     }
     let mut path = PathBuilder::stroke(px(w));
-    path.add_polygon(points, closed);
+    path.add_polygon(points, false);
     // A path that will not build is a degenerate one — a widget collapsed to a
     // sliver, which the shaping clamps make transient. Dropping the frame's line is
     // the whole of what a frontend can do about it, and better than a panic.

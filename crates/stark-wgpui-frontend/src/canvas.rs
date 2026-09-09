@@ -32,7 +32,7 @@ use stark_ui::nav;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
 use stark_ui::slots::{self, Grip};
-use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
+use stark_ui::transform::{Bands, Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
     AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
@@ -119,9 +119,10 @@ enum Held {
         last: Point<Pixels>,
     },
     /// A drag on the transform widget. The whole of what it does is
-    /// `Grab::follow` — see `crate::transform`. Boxed: a warp grab carries the whole
-    /// 4×4 mesh and its solved basis, which would otherwise be the size of every
-    /// other thing a press can hold.
+    /// `Grab::follow` — see `crate::transform`. Boxed: a warp grab carries two whole
+    /// 4×4 meshes — where the drag started and the last shape the mesh could take —
+    /// and a solved basis, which would otherwise be the size of every other thing a
+    /// press can hold put together.
     Transform(Box<Grab>),
     /// The eyedropper (§18.0.2): the press samples the canvas instead of painting on
     /// it, and the drag keeps sampling — so a color is picked up without putting the
@@ -556,7 +557,8 @@ impl Canvas {
                 && let Some(view) = self.view()
             {
                 let at = canvas_at(view, ev.position, self.origin(), window.scale_factor());
-                self.held = Some(Held::Transform(Box::new(grab_at(ui, at, view))));
+                let grab = Grab::take(ui, at, Bands::at(view.zoom));
+                self.held = Some(Held::Transform(Box::new(grab)));
                 return;
             }
         }
@@ -900,6 +902,9 @@ impl Canvas {
         // [`open_canvas`](Self::open_canvas)'s reason, and one more: three of the arms
         // below want it, and a second reading is a second place to get it from.
         let origin = self.origin();
+        // Once, before the match: the transform arm borrows `self.held` mutably and
+        // so cannot ask `self` for it, and the resting arm wants the same value.
+        let view = self.view();
         match self.held {
             Some(Held::Navigate { mode, last }) => {
                 if let Some(command) = mode.moved(
@@ -913,16 +918,15 @@ impl Canvas {
                 // is where the pointer was last seen.
                 self.held = Some(Held::Navigate { mode, last: at });
             }
-            Some(Held::Transform(ref grab)) => {
-                let grab = **grab;
-                let (Some(ui), Some(view)) = (self.mode, self.view()) else {
-                    return;
-                };
+            Some(Held::Transform(ref mut grab)) => {
+                // The view is read before the match (`view`), because the grab is
+                // borrowed mutably here: it holds both the drag's start and the last
+                // shape the family could express, so a long drag stays one map and
+                // nothing outside has to hand either of them back
+                // (`stark_ui::transform`).
+                let Some(view) = view else { return };
                 let held = canvas_at(view, at, origin, window.scale_factor());
-                // `ui` is what the validity clamps hold at — the last shape the
-                // family could express — and the *start* is inside the grab, so a
-                // long drag stays one map (`stark_ui::transform`).
-                let next = grab.follow(ui, held, stark_ui::transform::SNAP_PX / view.zoom);
+                let next = grab.follow(held, Bands::at(view.zoom));
                 self.compose(next, cx);
             }
             Some(Held::Pick { region, grab }) => {
@@ -980,9 +984,12 @@ impl Canvas {
             // offering at this point — the affine's rim, inside and outside are one
             // shape with three meanings, and nothing else distinguishes them.
             None => {
-                if let (Some(ui), Some(view)) = (self.mode, self.view()) {
+                if let (Some(ui), Some(view)) = (self.mode, view) {
                     let over = canvas_at(view, at, origin, window.scale_factor());
-                    let hint = grab_at(ui, over, view).hint();
+                    // `hint_at`, not a grab: a press on a warp surface solves a
+                    // least-norm basis, and a hovering pointer asked for one of those
+                    // per move to read three bits of it.
+                    let hint = stark_ui::transform::hint_at(&ui, over, Bands::at(view.zoom));
                     if hint != self.hint {
                         self.hint = hint;
                         // The cursor is set during *paint*, so a changed hint owes a
@@ -2479,7 +2486,12 @@ impl Canvas {
         let Some(entry) = stark_ui::transform::entry(o) else {
             return;
         };
-        let ui = stark_ui::transform::mount(entry.layer, Family::Free, entry.hull, o.view.zoom);
+        let ui = stark_ui::transform::mount(
+            entry.layer,
+            Family::Free,
+            entry.hull,
+            Bands::at(o.view.zoom),
+        );
         self.hold(ui, cx);
     }
 
@@ -2541,8 +2553,8 @@ impl Canvas {
     /// Switch which family is composing — carrying the deformation when the new
     /// family holds it exactly, and committing it first when it cannot.
     fn switch_family(&mut self, ui: TransformUi, to: Family, cx: &mut Context<'_, Self>) {
-        let zoom = self.obs.as_ref().map_or(1.0, |o| o.view.zoom);
-        match stark_ui::transform::switch(ui, to, zoom) {
+        let bands = Bands::at(self.obs.as_ref().map_or(1.0, |o| o.view.zoom));
+        match stark_ui::transform::switch(ui, to, bands) {
             Switch::Nothing => {}
             Switch::Carried(next) => self.compose(next, cx),
             Switch::Fresh(next) => self.hold(next, cx),
@@ -4264,17 +4276,6 @@ fn resolution(pen: Option<&Pose>) -> f32 {
     } else {
         chrome_input::MOUSE_RESOLUTION
     }
-}
-
-/// What a press at `at` would take hold of, with both grab radii converted out of
-/// screen px by the zoom — so a handle is equally grabbable at any magnification.
-fn grab_at(ui: TransformUi, at: Vec2, view: ViewTransform) -> Grab {
-    Grab::take(
-        ui,
-        at,
-        stark_ui::transform::RIM_BAND_PX / view.zoom,
-        stark_ui::transform::HANDLE_PX / view.zoom,
-    )
 }
 
 /// A window position in the **screen** px the view is denominated in — logical px

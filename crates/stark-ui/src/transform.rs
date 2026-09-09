@@ -11,16 +11,26 @@
 //!
 //! That is why it is a file of its own. It lived in the web frontend's `state`, which is about
 //! the app's signals and the one door to the engine, and this is the part of that
-//! file that could be tested — 18 of the crate's tests are here, and they are the
-//! ones that can say a rim drag really does carry the grabbed point to the pointer
-//! and that four mirrors really do cancel bit-exactly. Sitting inside the state
+//! file that could be tested — most of the crate's transform tests are here, and they
+//! are the ones that can say a rim drag really does carry the grabbed point to the
+//! pointer and that four mirrors really do cancel bit-exactly. Sitting inside the state
 //! module, they were the tests hardest to find and the code most likely to be read
 //! as UI plumbing.
 //!
 //! Three shapes, one rule: **the grabbed point follows the pointer exactly**,
 //! within whatever family is composing. A drag the family cannot express — a
-//! perspective quad turned concave, a warp mesh folded over itself — holds at the
-//! last valid shape rather than tearing through it.
+//! perspective quad turned concave, a warp mesh folded over itself, an affine
+//! collapsed onto a line — holds at the last valid shape rather than tearing through
+//! it. That rule is written **once**, in `shaped`, and every gesture below is only
+//! its own edit.
+//!
+//! Two things a frontend would otherwise have to derive for itself live here as well,
+//! because deriving them twice is how the two drawings came to disagree:
+//!
+//! - [`Bands`] — the grab widths, in canvas px. Every one of them is a screen-px
+//!   figure over the zoom, and the division is the part a call site can forget.
+//! - [`outline`] / [`grid`] / [`handles`] — the widget's geometry, in canvas px. A
+//!   frontend is left with the stroking, which is the only part its toolkit owns.
 
 use stark_model::document::{LayerId, PerspectiveMap, TransformMap, WarpMap, rect_corners};
 use stark_model::geom::{Affine2, Mat2, Vec2};
@@ -54,7 +64,7 @@ pub enum TransformRegion {
 /// that were never used leave their factors out entirely — a pure move keeps
 /// `linear` bit-exactly the identity, which is what keeps it a pure translation
 /// through the engine's exactness invariants (§16.4).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TransformState {
     /// The layer whose selected paint is being transformed.
     pub layer: LayerId,
@@ -75,13 +85,19 @@ pub struct TransformState {
 }
 
 impl TransformState {
+    /// Mount around `hull`, with `min_radius` the canvas-px floor on the circle.
+    ///
+    /// An inverted hull mounts the same circle as its normalized twin: the radius is a
+    /// length, and `bounds::inflate` already answers "what is a backwards rectangle"
+    /// by normalizing it rather than collapsing it. Two answers to that would be two
+    /// widgets for one selection.
     pub fn begin(layer: LayerId, hull: (Vec2, Vec2), min_radius: f32) -> Self {
         let anchor = (hull.0 + hull.1) * 0.5;
         let half = (hull.1 - hull.0) * 0.5;
         Self {
             layer,
             anchor,
-            radius: half.max(Vec2::ZERO).length().max(min_radius),
+            radius: half.length().max(min_radius),
             center: anchor,
             linear: Mat2::IDENTITY,
         }
@@ -107,8 +123,8 @@ impl TransformState {
     /// Classify a canvas-space pointer against the widget
     /// (§16.6): pull it back through the linear map into the reference circle's own
     /// space, where the test is a radius. `band` is the rim's grab half-width in
-    /// canvas px, converted to circle units by the widget's local radius along
-    /// the pointer's direction.
+    /// canvas px (a [`Bands`]'s rim), converted to circle units by the widget's local
+    /// radius along the pointer's direction.
     pub fn region(&self, pointer: Vec2, band: f32) -> TransformRegion {
         let det = self.linear.determinant();
         if det.abs() < 1e-6 {
@@ -133,39 +149,30 @@ impl TransformState {
         }
     }
 
-    /// An inside drag: translate. `eps` (canvas px) snaps a jiggle back to the
-    /// start, so touching the widget without meaning to never resamples.
-    pub fn translated(self, from: Vec2, to: Vec2, eps: f32) -> Self {
-        if to.distance(from) < eps {
-            return self;
-        }
-        Self {
-            center: self.center + (to - from),
-            ..self
-        }
+    /// An inside drag: translate.
+    pub fn translated(start: Self, current: Self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        shaped(start, current, to - from, eps, |next| {
+            next.center = start.center + (to - from);
+        })
     }
 
     /// A rim drag: the similarity (rotation + uniform scale about the centre)
     /// that carries the grabbed point `from` exactly to the pointer `to` — the
     /// complex ratio `(to − c)/(from − c)`. Tangential motion is thereby pure
     /// rotation and radial motion pure scale, with no mode to pick.
-    pub fn turned_scaled(self, from: Vec2, to: Vec2, eps: f32) -> Self {
-        if to.distance(from) < eps {
-            return self;
-        }
-        let v0 = from - self.center;
-        let v = to - self.center;
-        let n = v0.length_squared();
-        if n < 1e-6 {
-            return self;
-        }
-        // Keep the widget grabbable: never scale below 5% in one gesture.
-        let v = clamp_len(v, 0.05 * n.sqrt());
-        let (a, b) = (v.dot(v0) / n, v0.perp_dot(v) / n);
-        Self {
-            linear: Mat2::from_cols(Vec2::new(a, b), Vec2::new(-b, a)) * self.linear,
-            ..self
-        }
+    pub fn turned_scaled(start: Self, current: Self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        shaped(start, current, to - from, eps, |next| {
+            let v0 = from - start.center;
+            let v = to - start.center;
+            let n = v0.length_squared();
+            if n < 1e-6 {
+                return;
+            }
+            // Keep the widget grabbable: never scale below 5% in one gesture.
+            let v = clamp_len(v, 0.05 * n.sqrt());
+            let (a, b) = (v.dot(v0) / n, v0.perp_dot(v) / n);
+            next.linear = Mat2::from_cols(Vec2::new(a, b), Vec2::new(-b, a)) * start.linear;
+        })
     }
 
     /// An outside drag: the rank-1 update `I + (Δ ⊗ d̂)/λ` that carries the
@@ -173,32 +180,30 @@ impl TransformState {
     /// perpendicular to the grab** — radial pull scales along the grab
     /// direction, tangential drag shears, and everything on the pinned axis
     /// stays put, which is what makes the gesture predictable.
-    pub fn stretched(self, from: Vec2, to: Vec2, eps: f32) -> Self {
-        if to.distance(from) < eps {
-            return self;
-        }
-        let v0 = from - self.center;
-        let lambda = v0.length();
-        if lambda < 1e-3 {
-            return self;
-        }
-        let dir = v0 / lambda;
-        let mut delta = to - from;
-        // Pulling in past the pinned axis would run the determinant through
-        // zero (the paint would vanish into a line, and the engine would refuse
-        // the commit); floor the radial component at 90% pulled-in.
-        let radial = delta.dot(dir) / lambda;
-        if radial < -0.9 {
-            delta += dir * ((-0.9 - radial) * lambda);
-        }
-        let g = Mat2::from_cols(
-            Vec2::new(1.0 + delta.x * dir.x / lambda, delta.y * dir.x / lambda),
-            Vec2::new(delta.x * dir.y / lambda, 1.0 + delta.y * dir.y / lambda),
-        );
-        Self {
-            linear: g * self.linear,
-            ..self
-        }
+    pub fn stretched(start: Self, current: Self, from: Vec2, to: Vec2, eps: f32) -> Self {
+        shaped(start, current, to - from, eps, |next| {
+            let v0 = from - start.center;
+            let lambda = v0.length();
+            if lambda < 1e-3 {
+                return;
+            }
+            let dir = v0 / lambda;
+            let mut delta = to - from;
+            // Pulling in past the pinned axis would run the determinant through
+            // zero (the paint would vanish into a line, and the engine would refuse
+            // the commit); floor the radial component at 90% pulled-in. That bounds
+            // *this* gesture; what bounds a run of them is `shaped`'s own check,
+            // since each press starts from what the last one accumulated.
+            let radial = delta.dot(dir) / lambda;
+            if radial < -0.9 {
+                delta += dir * ((-0.9 - radial) * lambda);
+            }
+            let g = Mat2::from_cols(
+                Vec2::new(1.0 + delta.x * dir.x / lambda, delta.y * dir.x / lambda),
+                Vec2::new(delta.x * dir.y / lambda, 1.0 + delta.y * dir.y / lambda),
+            );
+            next.linear = g * start.linear;
+        })
     }
 
     /// Mirror left↔right, about the vertical axis through the centre.
@@ -228,13 +233,71 @@ fn clamp_len(v: Vec2, min: f32) -> Vec2 {
     }
 }
 
+/// A gesture shape that can say whether the map it stands for may be applied.
+///
+/// Private, and one method, because its whole job is to let [`shaped`] state the
+/// module's headline promise **once**. It was stated six times; a rule written six
+/// times is a rule that can be left out a seventh, and the affine family is where it
+/// had been.
+trait Shapeable: Copy {
+    fn usable(&self) -> bool;
+}
+
+impl Shapeable for TransformState {
+    fn usable(&self) -> bool {
+        stark_model::document::affine_usable(self.affine())
+    }
+}
+
+impl Shapeable for PerspectiveUi {
+    fn usable(&self) -> bool {
+        self.map().usable()
+    }
+}
+
+impl Shapeable for WarpUi {
+    fn usable(&self) -> bool {
+        self.map().usable()
+    }
+}
+
+/// The shape `edit` makes of `start`, or the last shape that was allowed.
+///
+/// Three outcomes, and every gesture in the module has all three:
+///
+/// - a travel under `eps` — or a pointer that is not a number at all — is a jiggle,
+///   and returns `start` untouched, so an accidental touch never resamples (§16.6).
+///   Non-finite has to be named: `NaN < eps` is *false*, so the snap alone would wave
+///   a NaN pointer through into the map, where `is_identity` reads false and "Done"
+///   commits something the engine refuses;
+/// - an edit the family can express is the answer;
+/// - one it cannot **holds at `current`**, the last valid shape, rather than tearing
+///   through the horizon or the fold (§16.8, §16.9).
+///
+/// `edit` may bail by returning without touching `next`, which is the degenerate-grab
+/// case: an untouched `next` is `start`, which is where those want to end up anyway.
+fn shaped<T: Shapeable>(
+    start: T,
+    current: T,
+    delta: Vec2,
+    eps: f32,
+    edit: impl FnOnce(&mut T),
+) -> T {
+    if !delta.is_finite() || delta.length() < eps {
+        return start;
+    }
+    let mut next = start;
+    edit(&mut next);
+    if next.usable() { next } else { current }
+}
+
 /// The transform mode's whole in-flight state (§16.6, §16.8, §16.9): which of
 /// the three families the bar has selected, with that family's own gesture
 /// state. One value in one signal, because the mode is *modal* — there is
 /// always exactly one family composing, and switching families is an explicit
 /// act on the bar (which carries the deformation along when the new family
 /// contains the old one exactly, and commits it first when it cannot).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum TransformUi {
     /// The ellipse widget over the whole affine group — `rect` is the hull the
     /// mode was entered around, kept so a switch to a rect-scoped family knows
@@ -302,9 +365,7 @@ impl TransformUi {
             TransformMap::Affine(a) => {
                 let rect = self.rect();
                 let corners = rect_corners(rect.0, rect.1).map(|c| a.transform_point2(c));
-                let lo = corners.iter().fold(corners[0], |m, p| m.min(*p));
-                let hi = corners.iter().fold(corners[0], |m, p| m.max(*p));
-                (lo, hi)
+                crate::bounds::aabb(corners).unwrap_or(rect)
             }
             TransformMap::Perspective(p) => p.image_aabb().unwrap_or((p.min, p.max)),
             TransformMap::Warp(w) => w.image_aabb().unwrap_or((w.min, w.max)),
@@ -312,24 +373,76 @@ impl TransformUi {
     }
 }
 
-/// Half-width of the rim's / an edge's grab band, screen px — divided by the zoom to
-/// reach canvas px, so it is equally grabbable at any magnification.
-pub const RIM_BAND_PX: f32 = 10.0;
+/// Half-width of the rim's / an edge's grab band, screen px.
+const RIM_BAND_PX: f32 = 10.0;
 
 /// Grab radius of a corner or control-point handle, screen px.
+///
+/// The one figure of the five that is public, and for one reader: the native
+/// frontend *draws* a handle smaller than this and asserts the pair at compile time,
+/// so a target stays easier to hit than it looks. A drawn size is the frontend's and
+/// the grab radius is this module's, which is exactly why the relation between them
+/// has to be stated somewhere both can see.
 pub const HANDLE_PX: f32 = 14.0;
 
 /// Screen-px floor for the widget's radius at entry, so a hairline selection still
 /// mounts a circle with an inside to translate by.
-pub const MIN_RADIUS_PX: f32 = 28.0;
+const MIN_RADIUS_PX: f32 = 28.0;
 
 /// Screen-px floor for a perspective/warp source rect's extent at entry — a hairline
 /// hull still mounts a quad with corners apart enough to grab.
-pub const MIN_RECT_PX: f32 = 56.0;
+const MIN_RECT_PX: f32 = 56.0;
 
 /// Pointer travel below which a gesture reads as a jiggle and snaps back to its start
 /// (screen px): an accidental touch must never resample the paint.
-pub const SNAP_PX: f32 = 2.0;
+const SNAP_PX: f32 = 2.0;
+
+/// The widths a gesture is measured against, in **canvas** px (§16.6).
+///
+/// One value rather than loose arguments, because every one of them is a screen-px
+/// constant over the zoom and the division is the part a call site can forget. It was
+/// spelled at six call sites across two frontends — each of which grew a private
+/// helper for it — while [`mount`] took the raw zoom and divided internally, so the
+/// interface disagreed with itself in the one place a mix-up makes no noise: a band
+/// left in screen px is a widget that is merely hard to grab at some magnifications.
+///
+/// Fields are private and there is one constructor, so screen px cannot arrive here
+/// by accident.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Bands {
+    /// The rim's / an edge's grab half-width.
+    rim: f32,
+    /// A corner's or control point's grab radius.
+    handle: f32,
+    /// Travel below which a gesture is a jiggle.
+    snap: f32,
+    /// Floor on the affine widget's radius at entry.
+    min_radius: f32,
+    /// Floor on a rect-scoped family's source extent at entry.
+    min_rect: f32,
+}
+
+impl Bands {
+    /// The bands at `zoom`, so a handle is equally grabbable at any magnification.
+    ///
+    /// A zoom that is not a positive number divides into bands that are infinite,
+    /// negative or NaN, and an infinite rim band reads the *whole plane* as the rim —
+    /// a gesture nobody asked for, which is worse than one that misses.
+    pub fn at(zoom: f32) -> Self {
+        let zoom = if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+        Self {
+            rim: RIM_BAND_PX / zoom,
+            handle: HANDLE_PX / zoom,
+            snap: SNAP_PX / zoom,
+            min_radius: MIN_RADIUS_PX / zoom,
+            min_rect: MIN_RECT_PX / zoom,
+        }
+    }
+}
 
 /// The three families, as a selector.
 ///
@@ -376,56 +489,92 @@ pub fn entry(o: &stark_engine::ObservableState) -> Option<Entry> {
     Some(Entry { layer, hull })
 }
 
-/// Mount a fresh gesture of `family` around `rect`, at `zoom`.
-pub fn mount(layer: LayerId, family: Family, rect: (Vec2, Vec2), zoom: f32) -> TransformUi {
+/// Mount a fresh gesture of `family` around `rect`.
+pub fn mount(layer: LayerId, family: Family, rect: (Vec2, Vec2), bands: Bands) -> TransformUi {
     match family {
         Family::Free => TransformUi::Affine {
             rect,
-            ts: TransformState::begin(layer, rect, MIN_RADIUS_PX / zoom),
+            ts: TransformState::begin(layer, rect, bands.min_radius),
         },
         Family::Perspective => TransformUi::Perspective(PerspectiveUi::begin(
             layer,
-            crate::bounds::inflate(rect, MIN_RECT_PX / zoom),
+            crate::bounds::inflate(rect, bands.min_rect),
         )),
         Family::Warp => TransformUi::Warp(WarpUi::begin(
             layer,
-            crate::bounds::inflate(rect, MIN_RECT_PX / zoom),
+            crate::bounds::inflate(rect, bands.min_rect),
         )),
     }
 }
 
-/// What a press on the widget is about to move, and everything the drag needs from
-/// the moment it landed.
+/// What a press on the warp mesh took hold of (§16.9), with the solve the one region
+/// that needs it carries.
+///
+/// Not [`MeshRegion`], which is where the pointer *is*: this is what the press
+/// **decided**, and the difference is the basis. Folding it into the surface arm is
+/// what keeps a point drag and a whole-mesh translate from carrying a basis they must
+/// never read — a fabricated `[0.0; 16]` was two regions' worth of state that could
+/// only ever be wrong, and 64 bytes of it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MeshGrab {
+    /// A control point, by index: it follows the pointer exactly.
+    Point(usize),
+    /// The surface itself, with the least-norm solve at the grabbed spot — see
+    /// [`WarpUi::grab`]. Solved once at the press, because it is a property of *where
+    /// the paint was grabbed*; re-solving per move would let the grabbed point slide
+    /// out from under the pointer.
+    Surface {
+        basis: [f32; WARP_GRID * WARP_GRID],
+        /// `Σ B²`, the divisor of the least-norm move.
+        norm_sq: f32,
+    },
+    /// Outside the mesh: the whole thing translates.
+    Translate,
+}
+
+/// What a press on the widget took hold of, and everything the drag needs from the
+/// moment it landed.
 ///
 /// **The whole of a transform drag is this type plus [`follow`](Self::follow).** Each
-/// arm carries the gesture's *start* — which family, which part of it, where the
-/// pointer was, and the state it was in — because every shaping function below takes
-/// the start rather than the previous step (see the module note), so a drag is one
-/// accumulated map instead of a chain of them.
+/// arm carries two shapes of its family. `start` is where the gesture began — every
+/// shaping function takes the start rather than the previous step (see the module
+/// note), so a drag is one accumulated map instead of a chain of them. `held` is the
+/// last shape the family could express, which is a fact about *what the drag has
+/// reached*: a pull past the horizon or into a fold stops there and stays there.
 ///
-/// The mesh arm carries two more: the least-norm basis a surface drag moves along and
-/// its norm, both solved once at the press. Solved once because they are a property
-/// of *where the paint was grabbed*, and re-solving them per move would let the
-/// grabbed point slide out from under the pointer.
-#[derive(Clone, Copy, PartialEq)]
+/// The grab owns `held` rather than being handed it, the way `nav::Mode` owns what
+/// its press decided. It was an argument, and an argument of a type that could name
+/// another family — a mismatch the callee quietly repaired, and which cost both
+/// frontends a second read of live state on every pointer move.
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the arms are the three families, and a mesh's two shapes are sixteen \
+              control points each. Boxing that arm would buy back 250 bytes at the \
+              cost of an allocation per press and of `Copy`, which is what makes a \
+              grab a value both frontends can hold in a signal or a field; and there \
+              is exactly one of these alive at a time, boxed already where a frontend \
+              cares (the native `Held::Transform`)"
+)]
 pub enum Grab {
     Affine {
         region: TransformRegion,
         from: Vec2,
         rect: (Vec2, Vec2),
         start: TransformState,
+        held: TransformState,
     },
     Quad {
         region: QuadRegion,
         from: Vec2,
         start: PerspectiveUi,
+        held: PerspectiveUi,
     },
     Mesh {
-        region: MeshRegion,
+        region: MeshGrab,
         from: Vec2,
         start: WarpUi,
-        basis: [f32; WARP_GRID * WARP_GRID],
-        norm: f32,
+        held: WarpUi,
     },
 }
 
@@ -445,134 +594,131 @@ pub enum Hint {
     Shape,
 }
 
+/// What a press at `at` would do, without deciding it.
+///
+/// **The resting pointer's answer**, and it is a separate function because taking a
+/// grab is not free: a warp press solves the least-norm basis, which is 231 surface
+/// evaluations, and a hovering mouse asked for one of those per move and then read
+/// three bits of it. This calls only the region tests.
+pub fn hint_at(ui: &TransformUi, at: Vec2, bands: Bands) -> Hint {
+    match ui {
+        TransformUi::Affine { ts, .. } => match ts.region(at, bands.rim) {
+            TransformRegion::Inside => Hint::Move,
+            TransformRegion::Rim => Hint::Hold,
+            TransformRegion::Outside => Hint::Shape,
+        },
+        TransformUi::Perspective(p) => match p.region(at, bands.handle, bands.rim) {
+            QuadRegion::Corner(_) | QuadRegion::Edge(..) => Hint::Hold,
+            QuadRegion::Inside | QuadRegion::Outside => Hint::Move,
+        },
+        TransformUi::Warp(w) => match w.region(at, bands.handle) {
+            MeshRegion::Point(_) | MeshRegion::Inside => Hint::Hold,
+            MeshRegion::Outside => Hint::Move,
+        },
+    }
+}
+
 impl Grab {
-    /// Classify a press at `at` (canvas px).
-    ///
-    /// `band` is the rim's / an edge's grab half-width and `handle` a corner's or
-    /// control point's grab radius, both in **canvas** px — the caller divides its
-    /// own screen-px figures ([`RIM_BAND_PX`], [`HANDLE_PX`]) by the zoom, so a handle
-    /// is equally grabbable at any magnification.
-    pub fn take(ui: TransformUi, at: Vec2, band: f32, handle: f32) -> Self {
+    /// Classify a press at `at` (canvas px) and take hold.
+    pub fn take(ui: TransformUi, at: Vec2, bands: Bands) -> Self {
         match ui {
             TransformUi::Affine { rect, ts } => Grab::Affine {
-                region: ts.region(at, band),
+                region: ts.region(at, bands.rim),
                 from: at,
                 rect,
                 start: ts,
+                held: ts,
             },
             TransformUi::Perspective(p) => Grab::Quad {
-                region: p.region(at, handle, band),
+                region: p.region(at, bands.handle, bands.rim),
                 from: at,
                 start: p,
+                held: p,
             },
-            TransformUi::Warp(w) => {
-                let region = w.region(at, handle);
-                // Only a surface drag has a basis to solve; a point drag moves one
-                // control point and a translate moves all of them.
-                let (basis, norm) = match region {
+            TransformUi::Warp(w) => Grab::Mesh {
+                region: match w.region(at, bands.handle) {
+                    MeshRegion::Point(i) => MeshGrab::Point(i),
+                    // The one region with a solve, and the only one that pays for it.
                     MeshRegion::Inside => {
-                        let (_, basis, norm) = w.grab(at);
-                        (basis, norm)
+                        let g = w.grab(at);
+                        MeshGrab::Surface {
+                            basis: g.basis,
+                            norm_sq: g.norm_sq,
+                        }
                     }
-                    _ => ([0.0; WARP_GRID * WARP_GRID], 1.0),
-                };
-                Grab::Mesh {
-                    region,
-                    from: at,
-                    start: w,
-                    basis,
-                    norm,
-                }
-            }
+                    MeshRegion::Outside => MeshGrab::Translate,
+                },
+                from: at,
+                start: w,
+                held: w,
+            },
         }
     }
 
-    /// What the gesture stands for with the pointer at `at`.
-    ///
-    /// `current` is the state the *validity clamps* hold at — a drag the family
-    /// cannot express (a quad turned concave, a mesh folded over itself) holds at the
-    /// last valid shape rather than tearing through it, and "last valid" is a fact
-    /// about what the drag has reached rather than about where it began. It is
-    /// ignored by the affine family, which has no shape to be invalid.
-    ///
-    /// `snap` is the travel below which the gesture reads as a jiggle and returns its
-    /// start ([`SNAP_PX`] over the zoom): an accidental touch must never resample.
-    pub fn follow(self, current: TransformUi, at: Vec2, snap: f32) -> TransformUi {
+    /// What the gesture stands for with the pointer at `at`, advancing the shape the
+    /// validity clamps hold at.
+    pub fn follow(&mut self, at: Vec2, bands: Bands) -> TransformUi {
+        let snap = bands.snap;
         match self {
             Grab::Affine {
                 region,
                 from,
                 rect,
                 start,
+                held,
             } => {
                 let ts = match region {
-                    TransformRegion::Inside => start.translated(from, at, snap),
-                    TransformRegion::Rim => start.turned_scaled(from, at, snap),
-                    TransformRegion::Outside => start.stretched(from, at, snap),
+                    TransformRegion::Inside => {
+                        TransformState::translated(*start, *held, *from, at, snap)
+                    }
+                    TransformRegion::Rim => {
+                        TransformState::turned_scaled(*start, *held, *from, at, snap)
+                    }
+                    TransformRegion::Outside => {
+                        TransformState::stretched(*start, *held, *from, at, snap)
+                    }
                 };
-                TransformUi::Affine { rect, ts }
+                *held = ts;
+                TransformUi::Affine { rect: *rect, ts }
             }
             Grab::Quad {
                 region,
                 from,
                 start,
+                held,
             } => {
-                let cur = match current {
-                    TransformUi::Perspective(p) => p,
-                    _ => start,
-                };
-                let delta = at - from;
-                TransformUi::Perspective(match region {
+                let delta = at - *from;
+                let next = match *region {
                     QuadRegion::Corner(i) => {
-                        PerspectiveUi::corner_dragged(start, cur, i, delta, snap)
+                        PerspectiveUi::corner_dragged(*start, *held, i, delta, snap)
                     }
                     QuadRegion::Edge(a, b) => {
-                        PerspectiveUi::edge_dragged(start, cur, (a, b), delta, snap)
+                        PerspectiveUi::edge_dragged(*start, *held, (a, b), delta, snap)
                     }
                     QuadRegion::Inside | QuadRegion::Outside => {
-                        PerspectiveUi::translated(start, cur, delta, snap)
+                        PerspectiveUi::translated(*start, *held, delta, snap)
                     }
-                })
+                };
+                *held = next;
+                TransformUi::Perspective(next)
             }
             Grab::Mesh {
                 region,
                 from,
                 start,
-                basis,
-                norm,
+                held,
             } => {
-                let cur = match current {
-                    TransformUi::Warp(w) => w,
-                    _ => start,
-                };
-                let delta = at - from;
-                TransformUi::Warp(match region {
-                    MeshRegion::Point(i) => WarpUi::point_dragged(start, cur, i, delta, snap),
-                    MeshRegion::Inside => {
-                        WarpUi::surface_dragged(start, cur, &basis, norm, delta, snap)
+                let delta = at - *from;
+                let next = match region {
+                    MeshGrab::Point(i) => WarpUi::point_dragged(*start, *held, *i, delta, snap),
+                    MeshGrab::Surface { basis, norm_sq } => {
+                        WarpUi::surface_dragged(*start, *held, basis, *norm_sq, delta, snap)
                     }
-                    MeshRegion::Outside => WarpUi::translated(start, cur, delta, snap),
-                })
+                    MeshGrab::Translate => WarpUi::translated(*start, *held, delta, snap),
+                };
+                *held = next;
+                TransformUi::Warp(next)
             }
-        }
-    }
-
-    /// What a press that took this hold would do.
-    pub fn hint(self) -> Hint {
-        match self {
-            Grab::Affine { region, .. } => match region {
-                TransformRegion::Inside => Hint::Move,
-                TransformRegion::Rim => Hint::Hold,
-                TransformRegion::Outside => Hint::Shape,
-            },
-            Grab::Quad { region, .. } => match region {
-                QuadRegion::Corner(_) | QuadRegion::Edge(..) => Hint::Hold,
-                QuadRegion::Inside | QuadRegion::Outside => Hint::Move,
-            },
-            Grab::Mesh { region, .. } => match region {
-                MeshRegion::Point(_) | MeshRegion::Inside => Hint::Hold,
-                MeshRegion::Outside => Hint::Move,
-            },
         }
     }
 }
@@ -600,7 +746,7 @@ pub enum Switch {
     },
 }
 
-/// Decide what switching `ui` to `to` should do, at `zoom`.
+/// Decide what switching `ui` to `to` should do.
 ///
 /// Three outcomes, and which one is a fact about the two families rather than a
 /// preference:
@@ -609,14 +755,16 @@ pub enum Switch {
 ///   exactly a mesh whose smooth surface reproduces it — cubic interpolation
 ///   reproduces affine functions. So it carries, and the artist keeps composing.
 /// - A **mirrored or degenerate** affine has no image in either: both of those maps
-///   preserve orientation. So it commits first.
+///   preserve orientation. So it commits first. So does anything leaving a
+///   rect-scoped family with a deformation on it — a homography is not reproducible
+///   by a cubic mesh, nor a mesh by a homography, nor either by an affine.
 /// - Nothing composed yet carries trivially, whichever way it is going: there is no
 ///   deformation to lose, so the switch is free and spends no undo step.
 ///
 /// The last case is why this cannot be "carry when you can, commit otherwise": a
 /// perspective quad nobody has dragged has to reach the warp family without an undo
 /// step appearing for it, and `is_identity` is what says so.
-pub fn switch(ui: TransformUi, to: Family, zoom: f32) -> Switch {
+pub fn switch(ui: TransformUi, to: Family, bands: Bands) -> Switch {
     if ui.family() == to {
         return Switch::Nothing;
     }
@@ -625,7 +773,7 @@ pub fn switch(ui: TransformUi, to: Family, zoom: f32) -> Switch {
         && ts.affine().matrix2.determinant() > 0.0
     {
         let affine = ts.affine();
-        let inflated = crate::bounds::inflate(rect, MIN_RECT_PX / zoom);
+        let inflated = crate::bounds::inflate(rect, bands.min_rect);
         let carried = match to {
             Family::Free => unreachable!("the same family returned above"),
             Family::Perspective => {
@@ -646,11 +794,11 @@ pub fn switch(ui: TransformUi, to: Family, zoom: f32) -> Switch {
         }
     }
     if ui.is_identity() {
-        return Switch::Fresh(mount(layer, to, ui.rect(), zoom));
+        return Switch::Fresh(mount(layer, to, ui.rect(), bands));
     }
     Switch::Commit {
         map: ui.map(),
-        then: mount(layer, to, ui.image_rect(), zoom),
+        then: mount(layer, to, ui.image_rect(), bands),
     }
 }
 
@@ -710,8 +858,7 @@ impl PerspectiveUi {
     }
 
     /// Classify a canvas-space pointer: corner handles win, then edges, then
-    /// the quad's inside. `grab` and `band` are canvas-px radii (screen px
-    /// over the zoom).
+    /// the quad's inside. `grab` and `band` are canvas-px radii ([`Bands`]).
     pub fn region(&self, p: Vec2, grab: f32, band: f32) -> QuadRegion {
         let mut best: Option<(usize, f32)> = None;
         for (i, c) in self.corners.iter().enumerate() {
@@ -736,16 +883,11 @@ impl PerspectiveUi {
     }
 
     /// A corner drag, recomputed from the drag's start: the corner follows the
-    /// pointer exactly while the shape stays convex; a pull past validity
-    /// holds at `current` (the last valid shape) instead of tearing through
-    /// the horizon. `eps` snaps a jiggle back to the start (§16.6).
+    /// pointer exactly while the shape stays convex.
     pub fn corner_dragged(start: Self, current: Self, i: usize, delta: Vec2, eps: f32) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        next.corners[i] = start.corners[i] + delta;
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            next.corners[i] = start.corners[i] + delta;
+        })
     }
 
     /// An edge drag: both of its corners follow together.
@@ -756,25 +898,19 @@ impl PerspectiveUi {
         delta: Vec2,
         eps: f32,
     ) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        next.corners[a] = start.corners[a] + delta;
-        next.corners[b] = start.corners[b] + delta;
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            next.corners[a] = start.corners[a] + delta;
+            next.corners[b] = start.corners[b] + delta;
+        })
     }
 
     /// An inside (or outside) drag: the whole quad translates.
     pub fn translated(start: Self, current: Self, delta: Vec2, eps: f32) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        for c in &mut next.corners {
-            *c += delta;
-        }
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            for c in &mut next.corners {
+                *c += delta;
+            }
+        })
     }
 }
 
@@ -842,6 +978,21 @@ pub struct WarpUi {
     pub points: [Vec2; WARP_GRID * WARP_GRID],
 }
 
+/// Where the warp surface was grabbed, and the solve that carries it (§16.9).
+///
+/// A named value rather than a triple: every caller outside a test wants two of the
+/// three, and which two was decided by position.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SurfaceGrab {
+    /// The grid fraction whose surface point is nearest the press.
+    pub at: Vec2,
+    /// Per-control-point influence there — how far the surface moves per unit move
+    /// of each control point.
+    pub basis: [f32; WARP_GRID * WARP_GRID],
+    /// `Σ B²`, the divisor of the least-norm move. Floored, so it can be divided by.
+    pub norm_sq: f32,
+}
+
 impl WarpUi {
     pub fn begin(layer: LayerId, rect: (Vec2, Vec2)) -> Self {
         // The engine's own base points, not a re-derivation: identity is "the
@@ -867,8 +1018,9 @@ impl WarpUi {
     }
 
     pub fn is_identity(&self) -> bool {
-        let base = WarpMap::identity(self.rect.0, self.rect.1, WARP_GRID as u32, WARP_GRID as u32);
-        self.points[..] == base.points[..]
+        // Against the points `begin` laid, which are the model's own — the same
+        // comparison, without a second mesh built to make it.
+        self.points == Self::begin(self.layer, self.rect).points
     }
 
     /// Classify a canvas-space pointer: the nearest control point within
@@ -912,15 +1064,17 @@ impl WarpUi {
         out
     }
 
-    /// The grid fraction whose surface point is nearest `p`, with the surface
-    /// basis there and its squared norm — everything a surface drag needs,
-    /// computed once at the press. Coarse scan plus local refinement; the
-    /// surface is smooth and unfolded, so nearest-on-a-grid converges fast.
-    pub fn grab(&self, p: Vec2) -> (Vec2, [f32; WARP_GRID * WARP_GRID], f32) {
+    /// Everything a surface drag needs, computed once at the press: the grid fraction
+    /// whose surface point is nearest `p`, the basis there and its squared norm.
+    /// Coarse scan plus local refinement; the surface is smooth and unfolded, so
+    /// nearest-on-a-grid converges fast.
+    ///
+    /// **Not on the hover path** — this is 81 coarse probes plus six refinement passes
+    /// of 25, and a resting pointer wants [`hint_at`] instead.
+    pub fn grab(&self, p: Vec2) -> SurfaceGrab {
         let map = self.map();
-        // The delta grid hoisted out of the search: this is 81 coarse probes plus
-        // six refinement passes of 25, each of which would otherwise rebuild it.
-        // `WARP_GRID` is 4, so the mesh is always well-shaped.
+        // The delta grid hoisted out of the search: every probe would otherwise
+        // rebuild it. `WARP_GRID` is 4, so the mesh is always well-shaped.
         let surface = map.prepared().expect("a WARP_GRID mesh is well-shaped");
         let mut best = (Vec2::splat(0.5), f32::INFINITY);
         let scan = |from: Vec2, step: f32, best: &mut (Vec2, f32)| {
@@ -950,63 +1104,60 @@ impl WarpUi {
             scan(from, step, &mut best);
             step *= 0.5;
         }
-        let basis = surface.basis(best.0);
-        let mut b = [0.0f32; WARP_GRID * WARP_GRID];
-        b.copy_from_slice(&basis);
-        let norm: f32 = b.iter().map(|w| w * w).sum();
-        (best.0, b, norm.max(1e-6))
+        let mut basis = [0.0f32; WARP_GRID * WARP_GRID];
+        basis.copy_from_slice(&surface.basis(best.0));
+        let norm_sq: f32 = basis.iter().map(|w| w * w).sum();
+        SurfaceGrab {
+            at: best.0,
+            basis,
+            norm_sq: norm_sq.max(1e-6),
+        }
     }
 
-    /// A control-point drag, recomputed from the drag's start; a fold holds at
-    /// `current`, the last valid shape.
+    /// A control-point drag, recomputed from the drag's start.
     pub fn point_dragged(start: Self, current: Self, i: usize, delta: Vec2, eps: f32) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        next.points[i] = start.points[i] + delta;
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            next.points[i] = start.points[i] + delta;
+        })
     }
 
     /// A surface drag: the least-norm control move that carries the grabbed
     /// surface point exactly with the pointer — the hand holds the paint, not
-    /// a handle (§16.9). `basis`/`norm` come from [`grab`](Self::grab) at the
+    /// a handle (§16.9). `basis`/`norm_sq` come from [`grab`](Self::grab) at the
     /// press.
     pub fn surface_dragged(
         start: Self,
         current: Self,
         basis: &[f32; WARP_GRID * WARP_GRID],
-        norm: f32,
+        norm_sq: f32,
         delta: Vec2,
         eps: f32,
     ) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        for (pt, w) in next.points.iter_mut().zip(basis) {
-            *pt += delta * (*w / norm);
-        }
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            for (pt, w) in next.points.iter_mut().zip(basis) {
+                *pt += delta * (*w / norm_sq);
+            }
+        })
     }
 
     /// An outside drag: the whole mesh translates.
     pub fn translated(start: Self, current: Self, delta: Vec2, eps: f32) -> Self {
-        if delta.length() < eps {
-            return start;
-        }
-        let mut next = start;
-        for pt in &mut next.points {
-            *pt += delta;
-        }
-        if next.map().usable() { next } else { current }
+        shaped(start, current, delta, eps, |next| {
+            for pt in &mut next.points {
+                *pt += delta;
+            }
+        })
     }
 }
 
 /// Even-odd point-in-polygon over an arbitrary boundary walk.
 fn point_in_polygon(poly: &[Vec2], p: Vec2) -> bool {
+    // An empty walk encloses nothing — and the wrap-around index below underflows on
+    // one, which is a panic rather than an answer.
+    let Some(mut j) = poly.len().checked_sub(1) else {
+        return false;
+    };
     let mut inside = false;
-    let mut j = poly.len() - 1;
     for i in 0..poly.len() {
         let (a, b) = (poly[i], poly[j]);
         if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
@@ -1015,6 +1166,127 @@ fn point_in_polygon(poly: &[Vec2], p: Vec2) -> bool {
         j = i;
     }
     inside
+}
+
+/// How many points the affine's ellipse is sampled at. Enough that the polygon reads
+/// as a curve at any zoom the widget is usable at.
+const ELLIPSE_STEPS: usize = 96;
+
+/// How many parts the perspective grid divides the source rect into: its thirds, so
+/// two interior lines per axis.
+const GRID_DIVISIONS: usize = 3;
+
+/// How finely one warp curve is sampled. Enough that the cubic reads as a curve at
+/// any deformation, and this is `WARP_GRID * 2 * (MESH_SAMPLES + 1)` evaluations on
+/// every frame of a drag, so not much more.
+const MESH_SAMPLES: usize = 24;
+
+/// The widget's own boundary, canvas px — one polyline per run, **closed by repeating
+/// its first point**, so a frontend strokes every run the same way and no run carries
+/// a flag saying which.
+///
+/// Here rather than in a frontend because it was in both, and the two had drifted:
+/// the native app drew the warp mesh as straight lines through the control points and
+/// the perspective grid at a different line count from the web's. Which is not a
+/// style difference — §16.9 makes the drawing a claim about the paint, and a claim
+/// derived twice is two claims.
+pub fn outline(ui: &TransformUi) -> Vec<Vec<Vec2>> {
+    match ui {
+        TransformUi::Affine { ts, .. } => {
+            // Sampled rather than fitted with arcs: under a shear it is an ellipse at
+            // an angle, which no axis-aligned arc primitive can state.
+            let mut ring: Vec<Vec2> = (0..ELLIPSE_STEPS)
+                .map(|i| {
+                    let t = i as f32 / ELLIPSE_STEPS as f32 * std::f32::consts::TAU;
+                    ts.center + ts.linear * (ts.radius * Vec2::new(t.cos(), t.sin()))
+                })
+                .collect();
+            ring.push(ring[0]);
+            vec![ring]
+        }
+        TransformUi::Perspective(p) => {
+            let c = p.corners;
+            vec![vec![c[0], c[1], c[3], c[2], c[0]]]
+        }
+        // The mesh has no boundary of its own: every curve `grid` draws is draggable
+        // paint, and a heavier border would say one of them is not.
+        TransformUi::Warp(_) => Vec::new(),
+    }
+}
+
+/// The lines drawn *through* the widget, canvas px — what says what the map does
+/// between the handles.
+///
+/// **Sampled from the very maps the paint resamples through** (§16.8, §16.9), which
+/// is the whole point of them: a straight mesh grid says "untouched", and every bend
+/// is a bend the paint has taken. A perspective's lines need two points each and no
+/// sampling at all — a line stays a line under a homography, so the run between the
+/// images of its ends *is* the image of the line.
+///
+/// Empty when the map cannot be built: a concave quad has no homography to draw, and
+/// the corners already show that.
+pub fn grid(ui: &TransformUi) -> Vec<Vec<Vec2>> {
+    match ui {
+        // The affine's whole shape is its rim; there is nothing between handles it
+        // does not already say.
+        TransformUi::Affine { .. } => Vec::new(),
+        TransformUi::Perspective(p) => {
+            let Some(h) = p.map().forward() else {
+                return Vec::new();
+            };
+            let (lo, hi) = p.rect;
+            let mut runs = Vec::with_capacity(2 * (GRID_DIVISIONS - 1));
+            for i in 1..GRID_DIVISIONS {
+                let t = i as f32 / GRID_DIVISIONS as f32;
+                let x = lo.x + (hi.x - lo.x) * t;
+                let y = lo.y + (hi.y - lo.y) * t;
+                runs.push(vec![
+                    h.apply(Vec2::new(x, lo.y)),
+                    h.apply(Vec2::new(x, hi.y)),
+                ]);
+                runs.push(vec![
+                    h.apply(Vec2::new(lo.x, y)),
+                    h.apply(Vec2::new(hi.x, y)),
+                ]);
+            }
+            runs
+        }
+        TransformUi::Warp(w) => {
+            let map = w.map();
+            // Prepared once for the whole overlay rather than once per sample.
+            let Some(surface) = map.prepared() else {
+                return Vec::new();
+            };
+            let mut runs = Vec::with_capacity(2 * WARP_GRID);
+            for k in 0..WARP_GRID {
+                let t = k as f32 / (WARP_GRID - 1) as f32;
+                runs.push(
+                    (0..=MESH_SAMPLES)
+                        .map(|s| surface.eval(Vec2::new(s as f32 / MESH_SAMPLES as f32, t)))
+                        .collect(),
+                );
+                runs.push(
+                    (0..=MESH_SAMPLES)
+                        .map(|s| surface.eval(Vec2::new(t, s as f32 / MESH_SAMPLES as f32)))
+                        .collect(),
+                );
+            }
+            runs
+        }
+    }
+}
+
+/// Where the widget's handles sit, canvas px — the same points [`Grab::take`]
+/// classifies against, so a mark can never be drawn where a press would miss it.
+///
+/// The affine's is its centre: the ellipse is grabbed anywhere along its rim, so the
+/// only thing worth marking is what a translate aims at.
+pub fn handles(ui: &TransformUi) -> Vec<Vec2> {
+    match ui {
+        TransformUi::Affine { ts, .. } => vec![ts.center],
+        TransformUi::Perspective(p) => p.corners.to_vec(),
+        TransformUi::Warp(w) => w.points.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -1038,7 +1310,8 @@ mod transform_tests {
 
     #[test]
     fn translation_alone_keeps_the_linear_part_exact() {
-        let ts = state().translated(Vec2::ZERO, Vec2::new(37.5, -12.0), 0.5);
+        let s = state();
+        let ts = TransformState::translated(s, s, Vec2::ZERO, Vec2::new(37.5, -12.0), 0.5);
         assert_eq!(ts.linear, Mat2::IDENTITY);
         let a = ts.affine();
         assert_eq!(a.matrix2, Mat2::IDENTITY);
@@ -1049,9 +1322,10 @@ mod transform_tests {
     fn a_sub_epsilon_jiggle_changes_nothing() {
         let ts = state();
         let from = Vec2::new(100.0, 0.0);
-        assert!(ts.turned_scaled(from, from + Vec2::splat(0.1), 0.5) == ts);
-        assert!(ts.stretched(from, from + Vec2::splat(0.1), 0.5) == ts);
-        assert!(ts.translated(from, from + Vec2::splat(0.1), 0.5) == ts);
+        let to = from + Vec2::splat(0.1);
+        assert!(TransformState::turned_scaled(ts, ts, from, to, 0.5) == ts);
+        assert!(TransformState::stretched(ts, ts, from, to, 0.5) == ts);
+        assert!(TransformState::translated(ts, ts, from, to, 0.5) == ts);
     }
 
     #[test]
@@ -1060,7 +1334,7 @@ mod transform_tests {
         let ts = state();
         let from = ts.center + Vec2::new(100.0, 0.0);
         let to = ts.center + Vec2::new(0.0, 200.0);
-        let turned = ts.turned_scaled(from, to, 0.5);
+        let turned = TransformState::turned_scaled(ts, ts, from, to, 0.5);
         let moved = turned.linear * (from - ts.center);
         assert!((moved - (to - ts.center)).length() < 1e-3, "got {moved:?}");
         assert!(turned.linear.determinant() > 0.0);
@@ -1072,7 +1346,7 @@ mod transform_tests {
         let ts = state();
         let from = ts.center + Vec2::new(300.0, 0.0);
         let to = from + Vec2::new(80.0, 55.0);
-        let stretched = ts.stretched(from, to, 0.5);
+        let stretched = TransformState::stretched(ts, ts, from, to, 0.5);
         let moved = stretched.linear * (from - ts.center);
         assert!((moved - (to - ts.center)).length() < 1e-3, "got {moved:?}");
         let pinned = stretched.linear * Vec2::new(0.0, 1.0);
@@ -1090,13 +1364,28 @@ mod transform_tests {
         assert!(back.is_identity(), "four mirrors must cancel bit-exactly");
     }
 
+    /// The reference circle **circumscribes** the hull — the hypotenuse of its
+    /// half-extents, not the inscribed ellipse's radius — so the widget encloses
+    /// every corner of what it is holding. A circle rather than the hull's own
+    /// aspect because the shape carries meaning: a circle says "no distortion yet"
+    /// (§16.6), and an ellipse-shaped reference would say "distorted" before the hand
+    /// had done anything.
     #[test]
-    fn the_reference_is_a_circle_matching_the_hull_ellipses_area() {
-        // A 200×100 hull: the circle's area equals the inscribed ellipse's
-        // (π·100·50), i.e. r = √(100·50) — not the ellipse itself, because a
-        // circle is what says "no distortion yet" (§16.6).
+    fn the_reference_circle_circumscribes_the_hull() {
         let r = state().radius;
         assert!((r - 100.0f32.hypot(50.0)).abs() < 1e-3, "got {r}");
+    }
+
+    /// A hull given back to front is the same widget as the one given the right way
+    /// round: the radius is a length, and `bounds::inflate` answers the same way.
+    #[test]
+    fn an_inverted_hull_mounts_the_same_circle() {
+        let hull = (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0));
+        let flipped = (hull.1, hull.0);
+        assert_eq!(
+            TransformState::begin(LayerId::ROOT, hull, 10.0).radius,
+            TransformState::begin(LayerId::ROOT, flipped, 10.0).radius
+        );
     }
 
     #[test]
@@ -1116,7 +1405,13 @@ mod transform_tests {
         );
 
         // Stretch the widget to 2× along x: the rim moves with it.
-        let wide = ts.stretched(c + Vec2::new(r, 0.0), c + Vec2::new(2.0 * r, 0.0), 0.5);
+        let wide = TransformState::stretched(
+            ts,
+            ts,
+            c + Vec2::new(r, 0.0),
+            c + Vec2::new(2.0 * r, 0.0),
+            0.5,
+        );
         assert_eq!(
             wide.region(c + Vec2::new(2.0 * r, 0.0), 4.0),
             TransformRegion::Rim
@@ -1125,6 +1420,41 @@ mod transform_tests {
             wide.region(c + Vec2::new(r, 0.0), 4.0),
             TransformRegion::Inside
         );
+    }
+
+    /// A NaN pointer coordinate is not a gesture. `NaN < eps` is false, so before
+    /// [`shaped`] named it the snap waved one through into `linear`, `is_identity`
+    /// read false, and "Done" committed a map the engine refuses — nothing happening,
+    /// with nothing said about why.
+    #[test]
+    fn a_pointer_that_is_not_a_number_moves_nothing() {
+        let ts = state();
+        let nan = Vec2::new(f32::NAN, 0.0);
+        for got in [
+            TransformState::translated(ts, ts, Vec2::ZERO, nan, 0.5),
+            TransformState::turned_scaled(ts, ts, Vec2::new(100.0, 0.0), nan, 0.5),
+            TransformState::stretched(ts, ts, Vec2::new(300.0, 0.0), nan, 0.5),
+        ] {
+            assert_eq!(got, ts);
+            assert!(got.usable());
+        }
+    }
+
+    /// A run of pull-ins cannot collapse the paint onto a line. The radial floor
+    /// bounds one *gesture* to a 10× shrink of the determinant, but every press
+    /// starts from what the last one left, so ten of them would take it under
+    /// `f32::EPSILON` — and the engine would then refuse a commit the widget had
+    /// shown no sign of trouble with.
+    #[test]
+    fn a_chain_of_pull_ins_holds_at_the_last_usable_shape() {
+        let mut ts = state();
+        for _ in 0..10 {
+            let from = ts.center + Vec2::new(300.0, 0.0);
+            // Maximal: past the pinned axis, so the floor is what decides.
+            let to = from - Vec2::new(600.0, 0.0);
+            ts = TransformState::stretched(ts, ts, from, to, 0.5);
+            assert!(ts.usable(), "det {}", ts.linear.determinant());
+        }
     }
 }
 
@@ -1201,12 +1531,12 @@ mod gesture_tests {
     fn a_surface_drag_carries_the_grabbed_paint_exactly() {
         let w = WarpUi::begin(LayerId::ROOT, rect());
         let grab_at = Vec2::new(20.0, -10.0);
-        let (t, basis, norm) = w.grab(grab_at);
-        let before = w.map().prepared().expect("well-shaped").eval(t);
+        let g = w.grab(grab_at);
+        let before = w.map().prepared().expect("well-shaped").eval(g.at);
         assert!(before.distance(grab_at) < 1.0, "grab missed: {before:?}");
         let delta = Vec2::new(18.0, 12.0);
-        let dragged = WarpUi::surface_dragged(w, w, &basis, norm, delta, 0.5);
-        let after = dragged.map().prepared().expect("well-shaped").eval(t);
+        let dragged = WarpUi::surface_dragged(w, w, &g.basis, g.norm_sq, delta, 0.5);
+        let after = dragged.map().prepared().expect("well-shaped").eval(g.at);
         assert!(
             after.distance(before + delta) < 0.1,
             "the paint under the finger moved {:?}, the finger moved {delta:?}",
@@ -1241,6 +1571,285 @@ mod gesture_tests {
         assert_eq!(WarpUi::point_dragged(w, w, 5, Vec2::splat(0.1), 0.5), w);
         assert_eq!(WarpUi::translated(w, w, Vec2::splat(0.1), 0.5), w);
     }
+
+    /// An empty boundary walk encloses nothing. Unreachable through [`WarpUi`], whose
+    /// mesh always has one — but this is a free function over a slice, and the
+    /// wrap-around index underflows rather than answering.
+    #[test]
+    fn an_empty_polygon_encloses_nothing() {
+        assert!(!point_in_polygon(&[], Vec2::ZERO));
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    fn rect() -> (Vec2, Vec2) {
+        (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0))
+    }
+
+    fn bands() -> Bands {
+        Bands::at(1.0)
+    }
+
+    /// Where the map this gesture stands for carries `p`.
+    fn carried(ui: &TransformUi, p: Vec2) -> Vec2 {
+        match ui.map() {
+            TransformMap::Affine(a) => a.transform_point2(p),
+            TransformMap::Perspective(m) => m.forward().expect("a usable quad").apply(p),
+            TransformMap::Warp(m) => {
+                // The mesh's own surface, at the grid fraction `p` sits at in the
+                // source rect — the mesh is the map, so this is what "carried" means.
+                let (lo, hi) = (m.min, m.max);
+                let t = (p - lo) / (hi - lo);
+                let prepared = m.prepared().expect("a usable mesh");
+                prepared.eval(t)
+            }
+        }
+    }
+
+    /// **The path both frontends actually use, end to end.** Every other test here
+    /// calls a shaping function directly, so swapping the rim's gesture for the
+    /// outside's passed the whole suite: take a grab where the widget offers each of
+    /// its regions, follow it to a target, and the grabbed point has to arrive there.
+    #[test]
+    fn a_grab_carries_the_grabbed_point_to_the_pointer() {
+        let ui = mount(LayerId::ROOT, Family::Free, rect(), bands());
+        let TransformUi::Affine { ts, .. } = ui else {
+            unreachable!()
+        };
+        let r = ts.radius;
+        // One press per region of the affine widget, each with somewhere to be
+        // dragged to that the family can express.
+        let table = [
+            (
+                "inside",
+                ts.center + Vec2::new(0.2 * r, 0.0),
+                Vec2::new(40.0, -25.0),
+            ),
+            ("rim", ts.center + Vec2::new(r, 0.0), Vec2::new(-30.0, 60.0)),
+            (
+                "outside",
+                ts.center + Vec2::new(1.8 * r, 0.0),
+                Vec2::new(55.0, 35.0),
+            ),
+        ];
+        for (what, from, delta) in table {
+            let mut grab = Grab::take(ui, from, bands());
+            let next = grab.follow(from + delta, bands());
+            let landed = carried(&next, from);
+            assert!(
+                landed.distance(from + delta) < 0.05,
+                "{what}: the grab landed at {landed:?}, the pointer at {:?}",
+                from + delta
+            );
+        }
+    }
+
+    /// The same for the two rect-scoped families, over every region each offers.
+    #[test]
+    fn every_region_of_every_family_follows_the_pointer() {
+        for family in [Family::Perspective, Family::Warp] {
+            let ui = mount(LayerId::ROOT, family, rect(), bands());
+            // A handle, the surface between handles, and outside the shape.
+            let handle = handles(&ui)[0];
+            let table = [
+                ("handle", handle, Vec2::new(-18.0, -14.0)),
+                ("surface", Vec2::new(10.0, 6.0), Vec2::new(-20.0, 12.0)),
+            ];
+            for (what, from, delta) in table {
+                let mut grab = Grab::take(ui, from, bands());
+                let next = grab.follow(from + delta, bands());
+                let landed = carried(&next, from);
+                assert!(
+                    landed.distance(from + delta) < 0.2,
+                    "{family:?}/{what}: landed {landed:?}, pointer {:?}",
+                    from + delta
+                );
+            }
+        }
+    }
+
+    /// A translate arm moves everything by exactly the pointer's travel — the whole
+    /// shape, not the part under the hand.
+    #[test]
+    fn the_translate_arms_move_everything_by_the_delta() {
+        let delta = Vec2::new(33.0, -21.0);
+        for family in [Family::Free, Family::Perspective, Family::Warp] {
+            let ui = mount(LayerId::ROOT, family, rect(), bands());
+            // Well outside the widget for the two rect-scoped families (which
+            // translate from outside) and inside it for the affine.
+            let from = match family {
+                Family::Free => Vec2::ZERO,
+                _ => Vec2::new(900.0, 900.0),
+            };
+            let mut grab = Grab::take(ui, from, bands());
+            let next = grab.follow(from + delta, bands());
+            for (before, after) in handles(&ui).into_iter().zip(handles(&next)) {
+                assert!(
+                    (after - before - delta).length() < 1e-3,
+                    "{family:?}: {before:?} moved to {after:?}, not by {delta:?}"
+                );
+            }
+        }
+    }
+
+    /// A press outside the mesh carries no basis to read. The two regions that never
+    /// use one used to be handed a fabricated `[0.0; 16]`, which is a value that can
+    /// only be wrong if anything ever looked at it.
+    #[test]
+    fn only_a_surface_press_solves_a_basis() {
+        let ui = mount(LayerId::ROOT, Family::Warp, rect(), bands());
+        let TransformUi::Warp(w) = ui else {
+            unreachable!()
+        };
+        let cases = [
+            (w.points[0], MeshGrab::Point(0)),
+            (Vec2::new(900.0, 900.0), MeshGrab::Translate),
+        ];
+        for (at, want) in cases {
+            let Grab::Mesh { region, .. } = Grab::take(ui, at, bands()) else {
+                unreachable!()
+            };
+            assert_eq!(region, want);
+        }
+        let Grab::Mesh { region, .. } = Grab::take(ui, Vec2::new(10.0, 6.0), bands()) else {
+            unreachable!()
+        };
+        assert!(matches!(region, MeshGrab::Surface { .. }));
+    }
+
+    /// A hover asks what a press would do without taking one — which for the warp is
+    /// the difference between three region tests and 231 surface evaluations. Three
+    /// points each: on a handle, on the surface between handles, and well outside.
+    #[test]
+    fn the_hover_hint_names_what_a_press_would_do() {
+        // The affine's outside is its *shaping* gesture; the two rect-scoped
+        // families translate from outside, which is why the third column differs.
+        let table = [
+            (Family::Free, Hint::Move, Hint::Move, Hint::Shape),
+            (Family::Perspective, Hint::Hold, Hint::Move, Hint::Move),
+            (Family::Warp, Hint::Hold, Hint::Hold, Hint::Move),
+        ];
+        for (family, on_handle, between, outside) in table {
+            let ui = mount(LayerId::ROOT, family, rect(), bands());
+            let cases = [
+                ("handle", handles(&ui)[0], on_handle),
+                ("between", Vec2::new(10.0, 6.0), between),
+                ("outside", Vec2::new(900.0, 900.0), outside),
+            ];
+            for (what, at, want) in cases {
+                assert_eq!(hint_at(&ui, at, bands()), want, "{family:?} {what}");
+            }
+        }
+    }
+
+    /// The clamp is the grab's own now: a fold reached mid-drag stays where the last
+    /// valid shape was, without the frontend handing the state back in.
+    #[test]
+    fn a_grab_holds_its_own_last_valid_shape() {
+        let ui = mount(LayerId::ROOT, Family::Warp, rect(), bands());
+        let TransformUi::Warp(w) = ui else {
+            unreachable!()
+        };
+        let from = w.points[5];
+        let mut grab = Grab::take(ui, from, bands());
+        // Far enough to bend, not far enough to fold.
+        let bent = grab.follow(from + Vec2::new(20.0, 0.0), bands());
+        assert!(bent.map().usable());
+        // Now past the fold: the answer is the shape before it, not the one it began
+        // at and not the folded one.
+        let held = grab.follow(from + Vec2::new(400.0, 0.0), bands());
+        assert_eq!(held, bent);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    fn rect() -> (Vec2, Vec2) {
+        (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0))
+    }
+
+    /// **The rule the native app broke** (§16.9): the curves are sampled from the
+    /// surface the paint resamples through, so a mesh bent between its control points
+    /// draws bent. A polyline through the control points would draw this one straight.
+    #[test]
+    fn the_mesh_curves_come_off_the_surface_not_the_control_net() {
+        let w = WarpUi::begin(LayerId::ROOT, rect());
+        // Pull one interior point off the net. Its row's *midpoints* now bulge, even
+        // where the control points on that row have not moved.
+        let bent = WarpUi::point_dragged(w, w, 5, Vec2::new(0.0, 12.0), 0.5);
+        let ui = TransformUi::Warp(bent);
+        let runs = grid(&ui);
+        assert_eq!(runs.len(), 2 * WARP_GRID, "one curve per row and column");
+        let straight = runs.iter().all(|run| {
+            let (a, b) = (run[0], run[run.len() - 1]);
+            run.iter()
+                .all(|p| (*p - a).perp_dot(b - a).abs() < 1e-2 * (b - a).length())
+        });
+        assert!(!straight, "a bent mesh drew as an untouched one");
+    }
+
+    /// Every run is closed by repeating its first point, so a frontend strokes them
+    /// all the same way and no run needs a flag saying which.
+    #[test]
+    fn boundary_runs_close_by_repeating_their_first_point() {
+        for family in [Family::Free, Family::Perspective] {
+            let ui = mount(LayerId::ROOT, family, rect(), Bands::at(1.0));
+            for run in outline(&ui) {
+                assert!(run.len() > 2);
+                assert_eq!(run[0], run[run.len() - 1], "{family:?} left its run open");
+            }
+        }
+    }
+
+    /// The perspective grid is straight two-point runs, because a line stays a line
+    /// under a homography — the run between the images of its ends *is* the image of
+    /// the line, and sampling it would be sampling a straight edge.
+    #[test]
+    fn the_perspective_grid_is_the_images_of_the_rects_thirds() {
+        let mut p = PerspectiveUi::begin(LayerId::ROOT, rect());
+        p.corners[1] += Vec2::new(-40.0, 25.0);
+        let runs = grid(&TransformUi::Perspective(p));
+        assert_eq!(runs.len(), 2 * (GRID_DIVISIONS - 1));
+        assert!(runs.iter().all(|r| r.len() == 2));
+    }
+
+    /// Handles are drawn where a press is classified, which is the only thing
+    /// stopping a mark from sitting where a grab would miss it.
+    #[test]
+    fn every_handle_is_where_a_press_takes_hold_of_it() {
+        let bands = Bands::at(1.0);
+        for family in [Family::Perspective, Family::Warp] {
+            let ui = mount(LayerId::ROOT, family, rect(), bands);
+            for h in handles(&ui) {
+                assert_eq!(hint_at(&ui, h, bands), Hint::Hold, "{family:?} at {h:?}");
+                // And the press agrees with the cursor. The hover path and the press
+                // path classify separately now, so this is the seam between them.
+                let took_it = match Grab::take(ui, h, bands) {
+                    Grab::Quad { region, .. } => matches!(region, QuadRegion::Corner(_)),
+                    Grab::Mesh { region, .. } => matches!(region, MeshGrab::Point(_)),
+                    Grab::Affine { .. } => unreachable!("no affine in the table"),
+                };
+                assert!(took_it, "{family:?} drew a handle a press misses at {h:?}");
+            }
+        }
+    }
+
+    /// A quad with no homography draws its corners and nothing between them — a
+    /// concave one has no map to sample, and the corners already say so.
+    #[test]
+    fn an_unusable_quad_draws_no_grid() {
+        let mut p = PerspectiveUi::begin(LayerId::ROOT, rect());
+        p.corners[0] += Vec2::new(500.0, 300.0);
+        let ui = TransformUi::Perspective(p);
+        assert!(!p.map().usable());
+        assert!(grid(&ui).is_empty());
+        assert_eq!(handles(&ui).len(), 4);
+    }
 }
 
 #[cfg(test)]
@@ -1251,15 +1860,22 @@ mod switch_tests {
         (Vec2::new(-100.0, -50.0), Vec2::new(100.0, 50.0))
     }
 
+    fn bands() -> Bands {
+        Bands::at(1.0)
+    }
+
     fn free() -> TransformUi {
-        mount(LayerId::ROOT, Family::Free, rect(), 1.0)
+        mount(LayerId::ROOT, Family::Free, rect(), bands())
     }
 
     /// Switching to the family already composing is not a re-mount: a bar that took
     /// the lit chip as an instruction would throw the gesture away on a stray press.
     #[test]
     fn the_lit_family_is_left_alone() {
-        assert!(matches!(switch(free(), Family::Free, 1.0), Switch::Nothing));
+        assert!(matches!(
+            switch(free(), Family::Free, bands()),
+            Switch::Nothing
+        ));
     }
 
     /// An orientation-preserving affine *is* a parallelogram perspective, so it rides
@@ -1269,14 +1885,19 @@ mod switch_tests {
         let TransformUi::Affine { rect, ts } = free() else {
             unreachable!()
         };
+        let turned = TransformState::turned_scaled(
+            ts,
+            ts,
+            Vec2::new(100.0, 0.0),
+            Vec2::new(0.0, 100.0),
+            0.5,
+        );
         let turned = TransformUi::Affine {
             rect,
-            ts: ts
-                .turned_scaled(Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0), 0.5)
-                .translated(Vec2::ZERO, Vec2::new(20.0, -5.0), 0.5),
+            ts: TransformState::translated(turned, turned, Vec2::ZERO, Vec2::new(20.0, -5.0), 0.5),
         };
         for to in [Family::Perspective, Family::Warp] {
-            let Switch::Carried(next) = switch(turned, to, 1.0) else {
+            let Switch::Carried(next) = switch(turned, to, bands()) else {
                 panic!("an ordinary affine should carry into {to:?}");
             };
             assert_eq!(next.family(), to);
@@ -1301,13 +1922,18 @@ mod switch_tests {
         let TransformUi::Affine { rect, ts } = free() else {
             unreachable!()
         };
+        let flipped = ts.flipped_h();
         let mirrored = TransformUi::Affine {
             rect,
-            ts: ts
-                .flipped_h()
-                .translated(Vec2::ZERO, Vec2::new(500.0, 0.0), 0.5),
+            ts: TransformState::translated(
+                flipped,
+                flipped,
+                Vec2::ZERO,
+                Vec2::new(500.0, 0.0),
+                0.5,
+            ),
         };
-        let Switch::Commit { map, then } = switch(mirrored, Family::Perspective, 1.0) else {
+        let Switch::Commit { map, then } = switch(mirrored, Family::Perspective, bands()) else {
             panic!("a mirrored affine cannot carry");
         };
         assert!(matches!(map, TransformMap::Affine(_)));
@@ -1323,12 +1949,41 @@ mod switch_tests {
     /// what happened.
     #[test]
     fn an_untouched_gesture_switches_free() {
-        let fresh = mount(LayerId::ROOT, Family::Perspective, rect(), 1.0);
+        let fresh = mount(LayerId::ROOT, Family::Perspective, rect(), bands());
         assert!(fresh.is_identity());
-        let Switch::Fresh(next) = switch(fresh, Family::Warp, 1.0) else {
+        let Switch::Fresh(next) = switch(fresh, Family::Warp, bands()) else {
             panic!("an identity should never spend an undo step");
         };
         assert_eq!(next.family(), Family::Warp);
         assert!(next.is_identity());
+    }
+
+    /// **The four transitions that rested on a fall-through.** A homography is not
+    /// reproducible by a cubic mesh and a mesh is not reproducible by a homography,
+    /// and neither is an affine, so every one of these commits — the honest undo step
+    /// rather than a silent approximation of what "Done" would have produced.
+    #[test]
+    fn a_deformed_rect_family_commits_whichever_way_it_leaves() {
+        let mut p = PerspectiveUi::begin(LayerId::ROOT, rect());
+        p.corners[1] += Vec2::new(-40.0, 25.0);
+        let perspective = TransformUi::Perspective(p);
+
+        let w = WarpUi::begin(LayerId::ROOT, rect());
+        let warp = TransformUi::Warp(WarpUi::point_dragged(w, w, 5, Vec2::new(0.0, 12.0), 0.5));
+
+        for (ui, to) in [
+            (perspective, Family::Warp),
+            (perspective, Family::Free),
+            (warp, Family::Perspective),
+            (warp, Family::Free),
+        ] {
+            assert!(!ui.is_identity());
+            let Switch::Commit { map, then } = switch(ui, to, bands()) else {
+                panic!("{:?} → {to:?} must commit, not carry", ui.family());
+            };
+            assert!(map.usable());
+            assert_eq!(then.family(), to);
+            assert!(then.is_identity(), "the reopened gesture starts fresh");
+        }
     }
 }

@@ -15,6 +15,11 @@
 //!   the surface anywhere: the least-norm control move keeps the grabbed
 //!   *paint* under the pointer — the hand holds the painting, not a handle.
 //!
+//! Which polylines those are is `stark_ui::transform::{outline, grid, handles}`,
+//! in canvas px; what is left here is the SVG. The affine keeps its own drawing,
+//! because a CSS `matrix()` on a round div is a different *technique* rather than a
+//! second derivation of the same geometry.
+//!
 //! The bar selects the family. A switch **carries** the deformation when the
 //! new family contains the old one exactly (affine ⊂ perspective, and the
 //! smooth mesh reproduces any affine); otherwise it **commits** first — one
@@ -45,10 +50,7 @@ use crate::widgets::CommandButton;
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
-use stark_ui::transform::{
-    Family, Grab, HANDLE_PX, Hint, PerspectiveUi, RIM_BAND_PX, SNAP_PX, Switch, TransformState,
-    TransformUi, WARP_GRID, WarpUi,
-};
+use stark_ui::transform::{Bands, Family, Grab, Hint, Switch, TransformState, TransformUi};
 
 /// Enter transform mode around the current selection, in the Free (affine)
 /// family.
@@ -82,7 +84,7 @@ pub fn begin_transform(state: AppState) {
             entry.layer,
             Family::Free,
             entry.hull,
-            zoom,
+            Bands::at(zoom),
         )),
     );
 }
@@ -106,7 +108,7 @@ fn switch_family(state: AppState, ui: TransformUi, to: Family) {
         .as_ref()
         .map(|o| o.view.zoom)
         .unwrap_or(1.0);
-    match stark_ui::transform::switch(ui, to, zoom) {
+    match stark_ui::transform::switch(ui, to, Bands::at(zoom)) {
         Switch::Nothing => {}
         // `update`: the carried map is the new family's own, exact to within a
         // resample, and the preview owes that rather than the one it replaced.
@@ -243,10 +245,9 @@ pub fn TransformBar() -> Element {
 
 /// The transform widget: a full-viewport catcher that owns every pointer event
 /// and classifies it against the current family's control surface (the maths
-/// lives on [`TransformState`] / [`PerspectiveUi`] / [`WarpUi`]), plus the
-/// purely visual chrome — the affine's ellipse, or an SVG of the quad/mesh
-/// whose lines are the deformation itself. No per-handle DOM: the whole
-/// viewport is the control surface.
+/// lives in `stark_ui::transform`), plus the purely visual chrome — the affine's
+/// ellipse, or an SVG of the quad/mesh whose lines are the deformation itself. No
+/// per-handle DOM: the whole viewport is the control surface.
 #[component]
 pub fn TransformOverlay() -> Element {
     let state = use_context::<AppState>();
@@ -270,21 +271,19 @@ pub fn TransformOverlay() -> Element {
     };
 
     let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
-    let band = RIM_BAND_PX / view.zoom;
-    let grab = HANDLE_PX / view.zoom;
-    let snap = SNAP_PX / view.zoom;
+    // The grab widths in canvas px — one value, and the division by the zoom is
+    // inside it (`stark_ui::transform::Bands`).
+    let bands = Bands::at(view.zoom);
 
-    // What a press here would take hold of, and how this frontend spells the cursor
-    // for it. The classification is `stark_ui::transform`'s — the CSS below is a
-    // spelling of it, and a spelling is all a frontend owes (§11.2).
-    let classify = move |pc: Vec2| -> (Grab, &'static str) {
-        let grabbed = Grab::take(ui, pc, band, grab);
-        let cursor = match grabbed.hint() {
+    // How this frontend spells the cursor a resting pointer has earned. The
+    // classification is `stark_ui::transform`'s — the CSS is a spelling of it, and a
+    // spelling is all a frontend owes (§11.2).
+    let cursor_at = move |pc: Vec2| -> &'static str {
+        match stark_ui::transform::hint_at(&ui, pc, bands) {
             Hint::Move => "cursor: move;",
             Hint::Hold => "cursor: grab;",
             Hint::Shape => "cursor: crosshair;",
-        };
-        (grabbed, cursor)
+        }
     };
 
     let mut follow = move |e: &Event<PointerData>| {
@@ -292,16 +291,20 @@ pub fn TransformOverlay() -> Element {
             return;
         }
         let pc = to_canvas(e);
-        let Some(d) = drag() else {
-            // Resting: report what a press here would do, for the cursor.
-            hover.set(classify(pc).1);
+        // Resting: report what a press here would do, for the cursor. Asked with a
+        // `peek` and answered before the write below, because a `with_mut` dirties
+        // the signal whether or not it changed anything — which on a hovering
+        // pointer is a re-render of the overlay per move, for nothing.
+        if drag.peek().is_none() {
+            hover.set(cursor_at(pc));
             return;
-        };
-        // The current state, for the validity clamps to hold at.
-        let current = crate::modes::composing_now(state)
-            .and_then(Composing::transform)
-            .unwrap_or(ui);
-        update(state, d.follow(current, pc, snap));
+        }
+        // The grab carries the drag's start *and* the last shape the family could
+        // express, so this is the whole of a move: no second read of live state, and
+        // nothing that could hand back a shape from another family.
+        if let Some(next) = drag.with_mut(|d| d.as_mut().map(|g| g.follow(pc, bands))) {
+            update(state, next);
+        }
     };
     let mut finish = move |e: &Event<PointerData>| {
         follow(e);
@@ -342,7 +345,7 @@ pub fn TransformOverlay() -> Element {
                 e.stop_propagation();
                 crate::platform::capture_pointer(&e);
                 let pc = to_canvas(&e);
-                drag.set(Some(classify(pc).0));
+                drag.set(Some(Grab::take(ui, pc, bands)));
             },
             onpointermove: move |e| follow(&e),
             // Fingers still on the glass mean the gesture is not over — see the
@@ -354,8 +357,7 @@ pub fn TransformOverlay() -> Element {
 
         {match ui {
             TransformUi::Affine { ts, .. } => affine_ellipse(state, ts, view),
-            TransformUi::Perspective(p) => quad_overlay(state, p, view),
-            TransformUi::Warp(w) => mesh_overlay(state, w, view),
+            TransformUi::Perspective(_) | TransformUi::Warp(_) => shape_overlay(state, ui, view),
         }}
     }
 }
@@ -366,9 +368,7 @@ pub fn TransformOverlay() -> Element {
 /// stays a circle exactly as long as the transform is a similarity;
 /// eccentricity *is* the distortion.
 ///
-/// Plain functions rather than `#[component]`s, all three: they are chosen by
-/// a `match` (a component would be conditionally-mounted hooks) and their
-/// inputs are the parent's already-read state, not props to diff.
+/// A plain function rather than a `#[component]`, for [`shape_overlay`]'s reason.
 fn affine_ellipse(state: AppState, ts: TransformState, view: ViewTransform) -> Element {
     let cs = view.canvas_to_screen(ts.center);
     let r = ts.radius * view.zoom;
@@ -412,40 +412,33 @@ fn polyline(points: impl Iterator<Item = Vec2>) -> String {
     d
 }
 
-/// The perspective family's widget: the quad, the receding grid inside it
-/// (the images of the source rect's thirds — straight under a homography, so
-/// two endpoints each), and the four corner handles.
-fn quad_overlay(state: AppState, p: PerspectiveUi, view: ViewTransform) -> Element {
+/// The two rect-scoped families' widget: the outline, the lines drawn through it,
+/// and the handles — all three straight off `stark_ui::transform`, in canvas px.
+///
+/// One function for both because the only difference is a word: a perspective's
+/// interior lines are context (`transform-grid`) and a warp's are draggable paint
+/// (`transform-mesh`), which the stylesheet says at two weights. Everything else —
+/// which runs there are, how finely they are sampled, where the handles sit — is the
+/// same question, and it was answered here twice before it was answered once (§16.9).
+///
+/// A plain function rather than a `#[component]`: it is chosen by a `match` (a
+/// component would be conditionally-mounted hooks) and its inputs are the parent's
+/// already-read state, not props to diff.
+fn shape_overlay(state: AppState, ui: TransformUi, view: ViewTransform) -> Element {
     let to_screen = move |c: Vec2| view.canvas_to_screen(c);
     let (w, h) = (view.viewport.width, view.viewport.height);
-
-    // The quad boundary, in corner order 0 → 1 → 3 → 2.
-    let b = [p.corners[0], p.corners[1], p.corners[3], p.corners[2]];
-    let outline = polyline(b.iter().copied().chain([b[0]]).map(to_screen)) + "Z";
-
-    // The receding grid: the images of the rect's thirds. Under a homography a
-    // line stays a line, so endpoints on opposite edges suffice — and because
-    // the map is exact, the grid converging toward its vanishing points is not
-    // an illustration of the transform; it is the transform.
-    let mut grid = String::new();
-    if let Some(f) = p.map().forward() {
-        let (lo, hi) = p.rect;
-        for i in 1..3 {
-            let t = i as f32 / 3.0;
-            let x = lo.x + (hi.x - lo.x) * t;
-            let y = lo.y + (hi.y - lo.y) * t;
-            grid += &polyline(
-                [Vec2::new(x, lo.y), Vec2::new(x, hi.y)]
-                    .into_iter()
-                    .map(|c| to_screen(f.apply(c))),
-            );
-            grid += &polyline(
-                [Vec2::new(lo.x, y), Vec2::new(hi.x, y)]
-                    .into_iter()
-                    .map(|c| to_screen(f.apply(c))),
-            );
-        }
-    }
+    let path = |runs: Vec<Vec<Vec2>>| -> String {
+        runs.into_iter()
+            .map(|run| polyline(run.into_iter().map(to_screen)))
+            .collect()
+    };
+    let grid = path(stark_ui::transform::grid(&ui));
+    let outline = path(stark_ui::transform::outline(&ui));
+    let grid_class = if ui.family() == Family::Warp {
+        "transform-mesh"
+    } else {
+        "transform-grid"
+    };
 
     rsx! {
         svg {
@@ -454,65 +447,13 @@ fn quad_overlay(state: AppState, p: PerspectiveUi, view: ViewTransform) -> Eleme
             width: "{w}",
             height: "{h}",
             view_box: "0 0 {w} {h}",
-            path { class: "transform-grid", d: "{grid}" }
+            path { class: "{grid_class}", d: "{grid}" }
             path { class: "transform-outline", d: "{outline}" }
-            for c in p.corners.iter() {
+            for c in stark_ui::transform::handles(&ui) {
                 circle {
                     class: "transform-handle",
-                    cx: "{to_screen(*c).x}",
-                    cy: "{to_screen(*c).y}",
-                    r: "5",
-                }
-            }
-        }
-    }
-}
-
-/// The warp family's widget: the mesh curves sampled from the engine's own
-/// smooth surface — the very map the paint resamples through — plus the 16
-/// control points. A straight grid says "untouched"; every bend in the drawn
-/// curves is a bend the paint has taken.
-fn mesh_overlay(state: AppState, w: WarpUi, view: ViewTransform) -> Element {
-    let to_screen = move |c: Vec2| view.canvas_to_screen(c);
-    let (vw, vh) = (view.viewport.width, view.viewport.height);
-    let map = w.map();
-
-    // One curve per control row and column, sampled densely enough that the
-    // cubic reads as a curve at any deformation.
-    const SAMPLES: usize = 24;
-    let mut lines = String::new();
-    // Once for the whole overlay rather than once per sample: this is
-    // `WARP_GRID * 2 * (SAMPLES + 1)` evaluations — 400 at an 8-wide grid — and
-    // it redraws every frame of a drag. `WarpUi` builds a `WARP_GRID` mesh, which
-    // is well-shaped by construction.
-    let Some(surface) = map.prepared() else {
-        return rsx! {};
-    };
-    for k in 0..WARP_GRID {
-        let t = k as f32 / (WARP_GRID - 1) as f32;
-        lines += &polyline((0..=SAMPLES).map(|s| {
-            let u = s as f32 / SAMPLES as f32;
-            to_screen(surface.eval(Vec2::new(u, t)))
-        }));
-        lines += &polyline((0..=SAMPLES).map(|s| {
-            let u = s as f32 / SAMPLES as f32;
-            to_screen(surface.eval(Vec2::new(t, u)))
-        }));
-    }
-
-    rsx! {
-        svg {
-            class: "transform-svg chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            width: "{vw}",
-            height: "{vh}",
-            view_box: "0 0 {vw} {vh}",
-            path { class: "transform-mesh", d: "{lines}" }
-            for pt in w.points.iter() {
-                circle {
-                    class: "transform-handle",
-                    cx: "{to_screen(*pt).x}",
-                    cy: "{to_screen(*pt).y}",
+                    cx: "{to_screen(c).x}",
+                    cy: "{to_screen(c).y}",
                     r: "5",
                 }
             }
