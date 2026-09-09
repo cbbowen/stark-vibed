@@ -219,6 +219,20 @@ impl Renderer {
         )
     }
 
+    /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
+    ///
+    /// A **request**, not a command (§4): it has to answer. The render happens now and
+    /// the future is the readback alone, so it borrows nothing — which is what lets
+    /// the window go on painting while the copy is in flight, exactly as
+    /// [`export`](Self::export) does.
+    pub fn pick_color(
+        &mut self,
+        at: stark_model::geom::Vec2,
+        options: stark_engine::PickOptions,
+    ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
+        self.engine.pick_color(at, options)
+    }
+
     /// Take a picture's bytes under the id that asked for them (§23) — the third
     /// store an arriving asset can belong in, beside a shape and a substrate.
     ///

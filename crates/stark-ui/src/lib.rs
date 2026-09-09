@@ -65,6 +65,9 @@
 //! - [`collab`] — a shared session as a *link* (§12.4): the address a peer opens,
 //!   and the ticket read back out of one. The whole of what both frontends say
 //!   about sharing that is not the network.
+//! - [`pick`] — the eyedropper's options and its arming (§18.0.2): what a sample is
+//!   taken with, how a reach resolves against the layer selected *now*, and whether
+//!   a press would sample rather than paint.
 
 pub mod assets;
 pub mod bounds;
@@ -83,6 +86,7 @@ pub mod layer_tree;
 pub mod library;
 pub mod nav;
 pub mod panels;
+pub mod pick;
 pub mod prefs;
 pub mod presets;
 pub mod reorder;

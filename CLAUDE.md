@@ -100,7 +100,9 @@ crates/
                    which mapping slot is its own, and the test stroke its preview lays —
                    the whole of a transform gesture — the algebra, what a press takes hold of and what
                    a drag makes of it, what switching families costs — what a shape
-                   gesture is about to do to the selection or to the paint, the canvas
+                   gesture is about to do to the selection or to the paint, what the
+                   eyedropper's next sample is taken with and whether the chord that
+                   arms it is free to take the press at all, the canvas
                    rectangles a frontend asks the document for, the layer tree's
                    arithmetic, the Oklab picker's gamut geometry, the icon catalog — which
                    glyph each control wears, and why — the view-navigation bindings, the

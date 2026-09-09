@@ -45,11 +45,10 @@ use crate::state::{
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, PeerCommand, ViewCommand};
-use stark_engine::{PickOptions, PickSource};
 use stark_model::document::{LayerId, ShapeAction};
 use stark_model::geom::Vec2;
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
-use stark_ui::commands::PickScope;
+use stark_ui::pick::Sampler;
 
 mod carry;
 mod keys;
@@ -257,32 +256,17 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     if *busy.peek() {
         return;
     }
-    // The *choice* is what the bar holds; which layer it means is resolved here,
-    // against whichever layer is selected at the moment of the sample — and a
-    // document with no layer selected falls back to the whole document rather
-    // than sampling nothing. The canvas color stands behind the sample exactly
-    // when the group fence is down (`PickState::group_only`): a group is paint,
-    // and the whole document is a picture on a canvas.
-    let scope = *state.pick.scope.peek();
-    let group_only = *state.pick.group_only.peek();
-    let active = state.obs.peek().as_ref().map(|o| o.active_layer);
-    let options = PickOptions {
-        source: match (scope, active) {
-            (PickScope::ThisLayer, Some(id)) => PickSource::Layer(id),
-            (PickScope::AndBelow, Some(id)) if group_only => PickSource::Group {
-                layer: id,
-                below: true,
-            },
-            (PickScope::AndBelow, Some(id)) => PickSource::Below(id),
-            (PickScope::AllLayers, Some(id)) if group_only => PickSource::Group {
-                layer: id,
-                below: false,
-            },
-            _ if group_only => PickSource::Composite,
-            _ => PickSource::CompositeOverSubstrate,
-        },
+    // The *choice* is what the bar holds; which layer it means is resolved by
+    // `stark_ui::pick`, against whichever layer is selected at the moment of the
+    // sample. Three signals here and one field natively, because how a frontend
+    // *stores* the options is its own; what they mean is not (§11.2).
+    let sampler = Sampler {
+        scope: *state.pick.scope.peek(),
+        group_only: *state.pick.group_only.peek(),
         radius: *state.pick.radius.peek(),
     };
+    let active = state.obs.peek().as_ref().map(|o| o.active_layer);
+    let options = sampler.options(active);
 
     // Render now and **drop the guard before awaiting** — the readback future owns
     // everything it needs, so nothing holds the renderer while the browser's event

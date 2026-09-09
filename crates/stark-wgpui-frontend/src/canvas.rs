@@ -25,7 +25,7 @@ use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Bindings, Command, VisibilityToggle};
-use stark_ui::drags::{DragAction, DragBindings, DragButton, DragChord};
+use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input as chrome_input;
 use stark_ui::keys::Mods;
 use stark_ui::nav;
@@ -33,9 +33,10 @@ use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
 use stark_ui::transform::{Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
-    AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent, MouseButton,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, rgb, wgpu_surface,
+    AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Window, canvas, div, point,
+    prelude::*, px, rgb, wgpu_surface,
 };
 use wgpui_component::button::{Button, ButtonVariants};
 use wgpui_component::dialog::{DialogAction, DialogClose, DialogFooter};
@@ -57,6 +58,7 @@ use crate::menu;
 use crate::navigator;
 use crate::palette;
 use crate::panel::{self, Knob, Region, Regions, Side};
+use crate::pick;
 use crate::render::{Preview, Renderer};
 use crate::select;
 use crate::transform;
@@ -142,6 +144,11 @@ enum Held {
     /// 4×4 mesh and its solved basis, which would otherwise be the size of every
     /// other thing a press can hold.
     Transform(Box<Grab>),
+    /// The eyedropper (§18.0.2): the press samples the canvas instead of painting on
+    /// it, and the drag keeps sampling — so a color is picked up without putting the
+    /// brush down. Carries nothing: where a sample is taken is where the pointer is,
+    /// and what it is taken with is the bar's ([`Canvas::sampler`]).
+    Sample,
     /// A drag on the navigator's miniature: the view follows the pointer around the
     /// piece. Carries nothing — where the view goes is a pure function of where the
     /// pointer is over the picture (`crate::navigator`), so there is no start to hold.
@@ -189,6 +196,18 @@ pub struct Canvas {
     /// Where the picker stands (`crate::color`) — held rather than read back off the
     /// brush, because a color coming through sRGB cannot say what hue a grey was.
     wheel: color::Wheel,
+    /// What the eyedropper's next sample is taken with (§18.0.2): how far it sees,
+    /// what the reach runs through, and how much canvas it averages.
+    ///
+    /// A field where the web app keeps three signals, which is the same value either
+    /// way — how a frontend *stores* the options is its own, what they mean is
+    /// `stark_ui::pick`'s (§11.2).
+    sampler: stark_ui::pick::Sampler,
+    /// Whether a sample is in flight. **One at a time**: a pick is a render plus an
+    /// asynchronous readback and a picking drag asks for one per pointer move, so a
+    /// move arriving while the last is still settling is dropped rather than queued
+    /// ([`sample`](Canvas::sample)).
+    sampling: bool,
     /// Its two pictures, kept between frames: a wheel is `FIELD_N²` gamut lookups.
     pictures: color::Pictures,
     /// Which shelves this client has folded to their title bar, remembered across
@@ -233,6 +252,7 @@ pub struct Canvas {
     lighting_regions: lighting::Regions,
     guide_regions: guides::Regions,
     nav_regions: navigator::Regions,
+    pick_regions: pick::Regions,
     /// The guide the Guides shelf's dressing acts on, if this client has taken one up.
     /// Resolved against the roster every frame (`guides::chosen`), so a guide removed
     /// under an undo leaves the tracks pointed at the newest rather than at nothing.
@@ -399,6 +419,8 @@ impl Canvas {
             regions: Regions::default(),
             layer_regions: layers::Regions::default(),
             wheel,
+            sampler: stark_ui::pick::Sampler::default(),
+            sampling: false,
             pictures: color::Pictures::default(),
             folded: crate::visibility::stored_folded(),
             hidden: crate::visibility::stored(),
@@ -413,6 +435,7 @@ impl Canvas {
             lighting_regions: lighting::Regions::default(),
             guide_regions: guides::Regions::default(),
             nav_regions: navigator::Regions::default(),
+            pick_regions: pick::Regions::default(),
             guide: None,
             overview: None,
             overview_at: 0,
@@ -445,13 +468,8 @@ impl Canvas {
 
     fn press(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<'_, Self>) {
         // Read once, at the top: three of the branches below want it — the drag
-        // table, the marquee's combine mode, and the picker's fine drag — and a
-        // second reading is a second chance to spell `platform` wrong.
-        let mods = Mods {
-            ctrl: ev.modifiers.control || ev.modifiers.platform,
-            shift: ev.modifiers.shift,
-            alt: ev.modifiers.alt,
-        };
+        // table, the marquee's combine mode, and the picker's fine drag.
+        let mods = mods_of(&ev.modifiers);
 
         // **A modal first, before even the menu bar.** The scrim is over the whole
         // window — the bar is dimmed under it — so a menu that opened there would be a
@@ -534,6 +552,16 @@ impl Canvas {
             // that missed a chip is still not a press on the picture.
             Some(_) => return,
             None => {}
+        }
+
+        // The eyedropper's bar takes the same edge as the selection's and is asked
+        // beside it. The two are never up at once (`Canvas::render`), so the order
+        // between these two tests carries no meaning.
+        if let Some(region) = pick::hit(&self.pick_regions, ev.position) {
+            if let Some(command) = pick::act(&mut self.sampler, region) {
+                self.run(command, window, cx);
+            }
+            return self.repaint(cx);
         }
 
         // Every shelf of both columns, then the columns themselves. Order between the
@@ -692,22 +720,37 @@ impl Canvas {
         // The drag table before the paint path, exactly as the web canvas asks it:
         // a modified press is a *gesture*, and which one is the table's answer rather
         // than a ladder of modifier tests here (§25.3).
-        let chord = DragChord {
-            mods,
-            button: DragButton::Left,
-        };
-        if self.drags.lookup(mods, DragButton::Left) == Some(DragAction::TuneBrush) {
-            let _ = chord;
-            self.held = Some(Held::Tune {
-                from: at,
-                size: self.brush.tune.size,
-                flow: self.brush.tune.flow,
-            });
-            // The other one: the brush is moving rather than the pointer meaning
-            // anything on the canvas (§18.1.9), so the mark under it stops being a
-            // picture of the next stroke.
-            self.clear_hover_mark(cx);
-            return;
+        match self.drags.lookup(mods, DragButton::Left) {
+            Some(DragAction::TuneBrush) => {
+                self.held = Some(Held::Tune {
+                    from: at,
+                    size: self.brush.tune.size,
+                    flow: self.brush.tune.flow,
+                });
+                // The other one: the brush is moving rather than the pointer meaning
+                // anything on the canvas (§18.1.9), so the mark under it stops being a
+                // picture of the next stroke.
+                self.clear_hover_mark(cx);
+                return;
+            }
+            // The press samples the canvas instead of painting on it, and the drag
+            // keeps sampling — the binding Clip Studio Paint and Rebelle both put on
+            // Alt, so a color is picked up without putting the brush down (§18.0.2).
+            //
+            // `free` is what stands it down over a selection tool, where Alt is
+            // already the subtract marquee (§6.8) and the press is *for* the shape —
+            // the same answer the cursor and the bar were mounted on, asked of the
+            // same value ([`pick_hand`](Self::pick_hand)). A declined press falls
+            // through to the paint path exactly as an unbound chord does.
+            Some(DragAction::PickColor) if self.pick_hand().free() => {
+                self.held = Some(Held::Sample);
+                // The press is not paint, so the mark promising it goes down with it
+                // (§18.1.10).
+                self.clear_hover_mark(cx);
+                self.sample(at, window, cx);
+                return;
+            }
+            _ => {}
         }
 
         let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
@@ -838,6 +881,10 @@ impl Canvas {
                     self.pick(region, grab, f, cx);
                 }
             }
+            // The drag goes on sampling, which is what makes this one gesture rather
+            // than a press: `sample` drops a move that arrives while the last answer
+            // is still settling.
+            Some(Held::Sample) => self.sample(at, window, cx),
             // Held-and-dragged is one continuous request — "show me here" — which is
             // what makes the view follow the pointer instead of jumping to wherever it
             // is let go.
@@ -951,6 +998,10 @@ impl Canvas {
                     self.restroke(cx);
                 }
             }
+            // The sampler comes off the canvas and the answer to its last press does
+            // not: the readback is detached, so a release cannot cancel the color the
+            // press asked for ([`sample`](Self::sample)).
+            Some(Held::Sample) => self.repaint(cx),
             // A transform is *not* committed on release: the gesture goes on being
             // composed until Done, which is what makes it one undo step however many
             // drags built it (§16.6).
@@ -999,13 +1050,17 @@ impl Canvas {
         }
         let hand = chrome_input::Hovering {
             panning: self.space,
-            // The table's shadowing acts — the eyedropper, the layer carry — are not
-            // answered by this frontend's press ladder yet (§11.2), and a mark that
-            // vanished under a modifier the press then painted through would be lying
-            // about which of the two is coming. These are the lines that change on the
-            // day either lands, and the day playback does.
-            shadowed: false,
+            // A held chord arms an act that reads the *shown* canvas back — the
+            // eyedropper, and the layer carry on the day it lands. The mark is a
+            // hypothesis about paint, so it has to be off the canvas before a press
+            // can read one: the wrong color for the sample.
+            shadowed: stark_ui::drags::armed(&self.drags, mods_of(&window.modifiers()))
+                .is_some_and(DragAction::shadows_paint),
+            // Reachable with **nothing held** — this is `move_to`'s resting arm — so a
+            // sampler that is down cannot get here. The line that changes the day a
+            // held touch resolves into one (§18.1.11).
             sampling: false,
+            // No timeline in this frontend yet (§11.2).
             playing: false,
         };
         let (scale, now) = (window.scale_factor(), self.elapsed());
@@ -1050,6 +1105,84 @@ impl Canvas {
         .w_0()
         .h_0()
         .into_any_element()
+    }
+
+    /// What this frontend knows about the hand that the drag table does not
+    /// (`stark_ui::pick::Hand`).
+    ///
+    /// One place it is assembled, because three surfaces ask it — the cursor's
+    /// promise, the bar's mounting and the press's own answer — and a promise made
+    /// against one reading and kept against another is exactly the drift the shared
+    /// predicate exists to stop.
+    fn pick_hand(&self) -> stark_ui::pick::Hand {
+        stark_ui::pick::Hand {
+            panning: self.space,
+            selecting: self.obs.as_ref().is_some_and(|o| o.tool.is_selection()),
+            // No timeline in this frontend yet (§11.2) — the line that changes the day
+            // there is one, and `Hand` carries the field so that day is one word.
+            playing: false,
+            sampling: matches!(self.held, Some(Held::Sample)),
+            // Anything else the press already opened: a stroke, a pan, a knob, a
+            // widget. The sampler is deliberately not among them — its own bar is
+            // what `sampling` takes down, and the Color panel stays legible while it
+            // is in use.
+            busy: self.held.is_some() && !matches!(self.held, Some(Held::Sample)),
+        }
+    }
+
+    /// Sample the canvas color under `at` and load the brush with it — the eyedropper
+    /// (§18.0.2).
+    ///
+    /// **One sample at a time.** A pick is a render plus an asynchronous readback, and
+    /// a picking drag asks for one per pointer move, so a move arriving while one is
+    /// still in flight is *dropped rather than queued*: queueing would spend a GPU
+    /// submit per move and let an older answer land after a newer one, and for a
+    /// sampler being dragged only the latest answer matters anyway.
+    fn sample(&mut self, at: Point<Pixels>, window: &Window, cx: &mut Context<'_, Self>) {
+        if self.sampling {
+            return;
+        }
+        // The *choice* is what the bar holds; which layer it means is resolved now,
+        // against whichever layer is selected at the moment of the sample
+        // (`stark_ui::pick::Sampler::options`).
+        let options = self
+            .sampler
+            .options(self.obs.as_ref().map(|o| o.active_layer));
+        let (origin, scale) = (self.origin(), window.scale_factor());
+        let Some(r) = self.renderer.as_mut() else {
+            return;
+        };
+        let view = r.view();
+        let readback = r.pick_color(canvas_at(view, at, origin, scale), options);
+        self.sampling = true;
+        // Detached, which is the bargain `Renderer::pick_color` is shaped for: the
+        // future holds no borrow of the renderer, so the window goes on painting
+        // while the copy is in flight — and a release does not cancel the answer to
+        // the press that asked for it.
+        cx.spawn(async move |this, cx| {
+            let picked = readback.await;
+            let _ = this.update(cx, |this, cx| this.settle_sample(picked, cx));
+        })
+        .detach();
+    }
+
+    /// Take a finished sample into the brush.
+    fn settle_sample(&mut self, picked: Option<[f32; 3]>, cx: &mut Context<'_, Self>) {
+        self.sampling = false;
+        // Nothing under the sampler leaves the brush as it was: bare canvas is the
+        // substrate, not paint to pick up (§18.0.2).
+        let Some(rgb) = picked else {
+            return self.repaint(cx);
+        };
+        // The brush takes the sample **whole**, and the picker is only *seeded* from
+        // it (`crate::color`) — the other way round from a typed color, which is a
+        // wheel position being asked for. What comes off the canvas is paint that
+        // exists, and in a Mixbox document (§6.7) rounding it to what a wheel can
+        // produce is the difference between picking the mixture back up and picking a
+        // display color.
+        self.brush.tune.color = rgb;
+        self.wheel = color::Wheel::of(rgb, self.wheel.hue);
+        self.send_brush(cx);
     }
 
     /// Take the mark down, if one is up (§18.1.10).
@@ -2203,6 +2336,7 @@ impl Canvas {
             Command::TogglePanel(id) => Some(self.shown(VisibilityToggle::Panel(id))),
             Command::ToggleNavigator => Some(self.shown(VisibilityToggle::Navigator)),
             Command::ToggleHdr => Some(self.hdr.on),
+            Command::SetPickScope(scope) => Some(self.sampler.scope == scope),
             _ => None,
         }
     }
@@ -2794,6 +2928,29 @@ impl Canvas {
         self.run(command, window, cx);
     }
 
+    /// The modifiers moved under a hand that is holding nothing.
+    ///
+    /// The eyedropper's bar and its cursor are mounted on the chord being *held*
+    /// (§18.0.2), and that is the whole discoverability of a modifier binding — so a
+    /// modifier going down or coming up owes the window a frame. Unconditional,
+    /// because a modifier is pressed at the rate a hand moves: the frame it costs is
+    /// the frame the bar needs, and noticing a *change* instead would mean this view
+    /// keeping a second copy of what `Window::modifiers` already holds.
+    fn modifiers(
+        &mut self,
+        ev: &ModifiersChangedEvent,
+        _window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        // The mark under the cursor is a promise of paint, and a chord that arms the
+        // sampler has just taken it back (§18.1.10) — the same thing space does one
+        // handler down, and self-guarding for its reason.
+        if self.pick_hand().armed(&self.drags, mods_of(&ev.modifiers)) {
+            self.clear_hover_mark(cx);
+        }
+        self.repaint(cx);
+    }
+
     /// Space going up, and the one other thing that ends a hold: losing focus.
     ///
     /// A key-up is not a chord — the table answers presses — so this reaches nothing
@@ -2866,6 +3023,12 @@ impl Canvas {
             Command::TogglePanel(id) => self.toggle_shelf(VisibilityToggle::Panel(id), cx),
             Command::ToggleNavigator => self.toggle_shelf(VisibilityToggle::Navigator, cx),
             Command::AddPerspective => self.guide_act(guides::Region::Add, cx),
+            // Setting, never cycling — so the chip the bar lights, the chord held
+            // under the modifier that raised it and the palette row are one act.
+            Command::SetPickScope(scope) => {
+                self.sampler.scope = scope;
+                self.repaint(cx);
+            }
             Command::EditBrush => self.open_editor(window, cx),
             _ => {}
         }
@@ -3220,12 +3383,7 @@ impl Canvas {
         // window is the one place that knows. A chord released mid-stroke therefore
         // reads as held for that stroke, which is what the mouse path does too — the
         // press is where a gesture is decided (§25.3).
-        let held = window.modifiers();
-        let mods = Mods {
-            ctrl: held.control || held.platform,
-            shift: held.shift,
-            alt: held.alt,
-        };
+        let mods = mods_of(&window.modifiers());
         for report in reports.drain(..) {
             // A tablet measures in the device's px and the chrome is laid out in
             // logical ones. The scale factor is the whole of the difference and this
@@ -3313,6 +3471,7 @@ impl Render for Canvas {
         self.lighting_regions.borrow_mut().clear();
         self.guide_regions.borrow_mut().clear();
         self.nav_regions.borrow_mut().clear();
+        self.pick_regions.borrow_mut().clear();
         self.editor_regions.borrow_mut().clear();
         // The miniature, before anything is built: it is a *second render* rather
         // than an element, and what it produces — the box it fills — is what the
@@ -3591,13 +3750,30 @@ impl Render for Canvas {
             ),
             None => (None, None),
         };
+        // The eyedropper's own bar, and the cursor that goes with it (§18.0.2). Both
+        // stand on the chord being *held* rather than on anything the document says,
+        // so both come and go with the modifier — which is the whole discoverability
+        // of a binding nobody could otherwise find.
+        let hand = self.pick_hand();
+        let held = mods_of(&window.modifiers());
+        let armed = mode.is_none() && hand.armed(&self.drags, held);
+        let pick_bar = (mode.is_none() && hand.shows_options(&self.drags, held))
+            .then(|| pick::bar(self.sampler, &self.bindings, &self.pick_regions));
+        let pick_cursor = armed.then(pick::cursor);
         // The selection's own bar takes the same edge, and stands down rather than
         // stacking under the mode's: a transform owns the canvas, and an act on the
         // whole selection reaching under one would move the wrong region on Done.
         // (The web app recedes its bar instead — dimmed and inert, so the place Done
         // returns to stays visible — which is a design this frontend has not got.)
-        let select_bar = (mode.is_none() && select::bar_mounted(self.obs.as_ref()))
-            .then(|| select::selection_bar(&self.bindings, &self.select_bar_regions));
+        //
+        // It yields the edge to the sampler's bar too, and that one is the other way
+        // round from the mode: not "a press here means something else" but "a press
+        // here has not happened yet" — a bar about the next press outranks one about
+        // paint that is already there, and it is gone again the instant the modifier
+        // is.
+        let select_bar =
+            (mode.is_none() && pick_bar.is_none() && select::bar_mounted(self.obs.as_ref()))
+                .then(|| select::selection_bar(&self.bindings, &self.select_bar_regions));
 
         // Built while `self` is still borrowable, like the mode's two pieces above: the
         // surface below takes a mutable borrow of the renderer that outlives the rest
@@ -3631,6 +3807,7 @@ impl Render for Canvas {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
+            .on_modifiers_changed(cx.listener(Self::modifiers))
             .child(menubar)
             .child(
                 div()
@@ -3645,12 +3822,17 @@ impl Render for Canvas {
                             .h_full()
                             .child(Self::leaving(cx))
                             .child(wgpu_surface(r.surface()).size_full())
+                            // Under everything else on the canvas, so a bar's own
+                            // chips keep the pointer they ask for where the two
+                            // overlap.
+                            .children(pick_cursor)
                             // Over the surface rather than beside it: the widget is drawn in
                             // canvas space and the surface is what canvas space maps onto, so
                             // the overlay's own bounds are the frame the mapping lands in.
                             .children(overlay)
                             .children(bar)
-                            .children(select_bar),
+                            .children(select_bar)
+                            .children(pick_bar),
                     )
                     .children(roster),
             )
@@ -3679,6 +3861,18 @@ impl Render for Canvas {
             // the engine never closes and a knob that keeps following the mouse.
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::release))
             .into_any_element()
+    }
+}
+
+/// The held modifiers as the shared tables spell a chord.
+///
+/// One reading, because four callers want it — the press, the stylus pump, the hover
+/// and the frame — and a second is a second chance to spell `platform` wrong.
+fn mods_of(m: &wgpui::Modifiers) -> Mods {
+    Mods {
+        ctrl: m.control || m.platform,
+        shift: m.shift,
+        alt: m.alt,
     }
 }
 

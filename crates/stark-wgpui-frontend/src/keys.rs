@@ -43,6 +43,14 @@ fn accel(m: &wgpui::Modifiers) -> bool {
 /// anything a keycap says.
 fn code_of(key: &str) -> &'static str {
     match key {
+        // The eyedropper's three reaches, which are the table's one Alt column
+        // (§18.0.2) — and spatial for the reason every Alt chord is: under Alt a key
+        // does not type its own character, so the position is the only honest name.
+        // Letters here rather than in `one_char` below: the two names are read
+        // independently, so Ctrl+Z still matches the character it is bound by.
+        "q" => "KeyQ",
+        "a" => "KeyA",
+        "z" => "KeyZ",
         "[" => "BracketLeft",
         "]" => "BracketRight",
         "escape" => "Escape",

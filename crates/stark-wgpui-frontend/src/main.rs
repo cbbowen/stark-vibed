@@ -47,6 +47,7 @@ mod menu;
 mod navigator;
 mod palette;
 mod panel;
+mod pick;
 mod render;
 mod select;
 mod store;

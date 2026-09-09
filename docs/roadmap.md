@@ -170,6 +170,23 @@ a sample stops being an opacity-weighted mean: with the substrate behind it ever
 texel is opaque, so a patch half-covered by a stroke reads as a mixture of paint
 and canvas instead of as the stroke alone.
 
+**Both frontends sample** (§11.2, N8). What moved down to `stark_ui::pick` is the
+half that must not differ: `Sampler` is how a reach and the group fence resolve to a
+`PickSource` against the layer selected at the moment of the sample, and `Hand` is
+whether the chord is armed at all — the drag table's answer plus the three
+stand-downs a chrome alone knows (a pan has the press, a marquee's combine modifiers
+outrank a sample, the playhead's picture is not the painting's). One value answers
+for the cursor, the bar and the press together, which is what keeps a promised sample
+and a taken one the same act.
+
+What each app keeps is the bar. The web one floats beside the cursor, where a
+modifier binding is discovered; the native one takes the top of the canvas, which is
+where its other two bars go and the one edge with nothing above it — and it takes
+that edge from the selection bar while the chord is held, a bar about a press that
+has not happened outranking one about paint that is already there. The native cursor
+is the platform's crosshair rather than a drawn dropper, which is the fallback the
+web rule already names behind its inline SVG.
+
 The **sample-one-layer** source drops that layer's composite params entirely —
 blend, clip and opacity (§14.4.3). All three say how the layer meets what is beneath
 it, which is exactly what this source is asked to ignore: the first two decide how

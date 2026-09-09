@@ -21,34 +21,26 @@ use crate::state::AppState;
 use crate::widgets::CommandButton;
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
-use stark_ui::drags::DragAction;
-
-/// The eyedropper's sampled patch, as the prior art names it: a point sample, or the
-/// mean of an N×N square around it. A radius is what the engine takes
-/// (`PickOptions::radius`), and `2r + 1` is the square it describes.
-const PATCHES: [(&str, u32); 4] = [
-    ("Point", 0),
-    ("3\u{00D7}3", 1),
-    ("5\u{00D7}5", 2),
-    ("11\u{00D7}11", 5),
-];
+use stark_ui::pick::{Hand, PATCHES, patch_word};
 
 #[component]
 pub fn PickBar() -> Element {
     let state = use_context::<AppState>();
-    // Armed, but not yet in use — the drag table's own answer to the held
-    // modifiers, so the bar comes up on whatever chord the pick actually wears.
-    // `canvas_active` covers a stroke or a pan already in hand — the chord pressed
-    // mid-stroke must not pop a bar up over the painting — and `dragging` covers
-    // the pick itself, which deliberately leaves `canvas_active` alone so the
+    // Armed, but not yet in use — `stark_ui::pick` over the drag table's own answer
+    // to the held modifiers, so the bar comes up on whatever chord the pick actually
+    // wears and stands down for exactly what the press stands down for.
+    // `canvas_active` is the `busy` half: a stroke or a pan already in hand, since a
+    // chord pressed mid-stroke must not pop a bar up over the painting. `dragging`
+    // is the pick itself, which deliberately leaves `canvas_active` alone so the
     // Color panel stays legible while sampling.
-    let armed = stark_ui::drags::armed(&state.drags.read(), (state.held_mods)())
-        == Some(DragAction::PickColor)
-        && !(state.pick.dragging)()
-        && !(state.canvas_active)()
-        && !(state.space_down)()
-        && !current_tool(state).is_selection();
-    if !armed {
+    let hand = Hand {
+        panning: (state.space_down)(),
+        selecting: current_tool(state).is_selection(),
+        playing: crate::panels::timeline::is_playing(state),
+        sampling: (state.pick.dragging)(),
+        busy: (state.canvas_active)(),
+    };
+    if !hand.shows_options(&state.drags.read(), (state.held_mods)()) {
         return rsx! {};
     }
 
@@ -111,12 +103,12 @@ pub fn PickBar() -> Element {
 
             div {
                 class: "segmented",
-                for (label, want) in PATCHES {
+                for want in PATCHES {
                     button {
                         class: chip(r == want),
                         title: "How much canvas one sample averages",
                         onclick: move |_| radius.set(want),
-                        "{label}"
+                        {patch_word(want)}
                     }
                 }
             }

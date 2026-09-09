@@ -104,14 +104,27 @@ pub fn Canvas() -> Element {
     //
     // The layer carry announces itself the same way and owes it for the same
     // reason (§16.11): Shift+drag is a secret without a cursor that says so
-    // before it is used. It stands down over a selection tool for the reason the
-    // pick does — Shift is the union marquee there (§6.8) — which is the gate the
-    // action itself declares, restated here because `armed` answers the table
-    // about a chord and this is a question about the tool in hand.
-    let armed = stark_ui::drags::armed(&state.drags.read(), (state.held_mods)());
-    let over_paint = !(state.space_down)() && !tool.is_selection();
-    let sampling = armed == Some(DragAction::PickColor) && over_paint;
-    let carrying = armed == Some(DragAction::PickAndTranslate) && over_paint;
+    // before it is used. It stands down over exactly what the pick does — Shift is
+    // the union marquee there (§6.8) — which is why both read one `Hand::free`
+    // rather than each spelling the same three tests out.
+    //
+    // `is_playing` peeks, and that is right here rather than merely cheap: this
+    // whole answer is recomputed when the held modifiers change, which is the
+    // moment a cursor could start promising anything at all.
+    let hand = stark_ui::pick::Hand {
+        panning: (state.space_down)(),
+        selecting: tool.is_selection(),
+        playing: crate::panels::timeline::is_playing(state),
+        // Neither of the last two is about a *cursor*: a sampler already down still
+        // wears this one, and any other gesture in hand has captured the pointer.
+        // Both are the bar's question rather than this one (`panels::pick`).
+        ..Default::default()
+    };
+    let table = state.drags.read();
+    let held = (state.held_mods)();
+    let sampling = hand.armed(&table, held);
+    let carrying =
+        stark_ui::drags::armed(&table, held) == Some(DragAction::PickAndTranslate) && hand.free();
     // Whether a tuning drag is in flight (§18.1.9) — the crosshair goes while it is,
     // because the crosshair is a promise of paint *at a point* and this gesture is
     // about a number: nothing will land where it is pointing, and a crosshair sitting

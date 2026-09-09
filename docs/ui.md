@@ -1467,14 +1467,50 @@ the exit criterion is an act, not a diff.
   offers no element hook for. That is a `Window::on_mouse_event` off a zero-sized
   `canvas`, registered per frame because that is the lifetime such a listener has.
 
-  Two things this frontend does not do, both deliberate. There is no size **circle**
-  over the mark: the web app draws one because it hides the cursor and needs to say
-  how far a soft tip reaches, and this window keeps the system cursor, so the mark is
-  the whole of the answer. And the shadowing-chord clause is `false` rather than the
-  table's answer, because this frontend's press ladder does not yet honour the acts
-  that shadow the brush — a mark that vanished under a modifier the press then painted
-  through would be lying about which of the two is coming. It is one line on the day
-  the eyedropper lands.
+  One thing this frontend deliberately does not do: there is no size **circle** over
+  the mark. The web app draws one because it hides the cursor and needs to say how far
+  a soft tip reaches; this window keeps the system cursor, so the mark is the whole of
+  the answer. The shadowing-chord clause was `false` for one stage, the press ladder
+  not yet honouring the acts that shadow the brush — it is the drag table's answer
+  now, the eyedropper having landed below.
+
+  **The eyedropper** (§18.0.2), which is the first *drag*-table row this frontend
+  honours beyond the tuning drag, and the first bar it raises on a **chord** rather
+  than on something the document says. Alt+drag samples the canvas and keeps sampling;
+  the options come up on the modifier and go down again the moment the gesture starts,
+  which is the whole discoverability of a binding a person would otherwise have to be
+  told about.
+
+  What came down is `stark_ui::pick`, and it is two values. The **`Sampler`** is the
+  three options plus the one thing about them that is not a preference: how a reach
+  and the group fence resolve to a `PickSource` against the layer selected *at the
+  moment of the sample*, so no bar can be left holding the id of a layer that has since
+  been deleted. The **`Hand`** is the arming — the drag table's answer to the held
+  modifiers, plus the stand-downs only a chrome knows: a pan already has the press, a
+  marquee's combine modifiers outrank a sample (§6.8), and the playhead's picture is
+  not the painting's. Three surfaces ask it and one value answers, which is what stops
+  the cursor promising a sample the press then declines — the drift §25 opens by
+  naming, and the reason the web app's own bar and cursor now read this rather than
+  their own ladder.
+
+  The bar takes the **top of the canvas** where the web app floats one beside the
+  cursor: that is where this frontend's other two bars go, and the one edge with
+  nothing above it. It yields to a transform's bar as the selection's does, and takes
+  the edge *from* the selection's while it is up — this one is about a press that has
+  not happened, and it is gone again with the modifier. The three reaches are chips
+  worn whole off the registry (`Command::SetPickScope`), so a chip, the Alt+Q/A/Z
+  chord held under the very modifier that raised the bar, and the palette row cannot
+  describe one reach three ways; the fence and the four patches are the bar's own,
+  being settings rather than nameable acts.
+
+  Two smaller things came with it. The cursor is the platform's **crosshair** rather
+  than a drawn dropper — this toolkit offers no custom bitmap, and the crosshair is the
+  fallback the web app's own rule already names behind its inline SVG. And
+  `keys::code_of` learnt three rows: the shipped table's one Alt column is spatial
+  (`KeyQ`, `KeyA`, `KeyZ`, on §25.2's argument that a key held through Alt does not
+  type its own character), and a frontend that reconstructs W3C codes from wgpui's key
+  *names* had nothing to answer them with — so those three chords reached nothing here
+  at all.
 
   **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
   mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
