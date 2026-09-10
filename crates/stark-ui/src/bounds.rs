@@ -1,10 +1,16 @@
 //! The canvas-space rectangles a frontend asks the document for, and the one way it
 //! grows them.
 //!
-//! Three functions, and what they have in common is that each answers *where on the
-//! canvas* with no reference to any surface: they read `ObservableState` and return
-//! canvas px. A frontend that wanted them in its own units would convert at the edge,
-//! which is `PointerReport`'s rule read the other way (§11.2).
+//! What they have in common is that each answers *where on the canvas* with no
+//! reference to any surface: they read `ObservableState` and return canvas px. A
+//! frontend that wanted them in its own units would convert at the edge, which is
+//! `PointerReport`'s rule read the other way (§11.2).
+//!
+//! Two are not rectangles and are here for the same reason all the same.
+//! [`piece_frame`] is a *reading of the layer roster* rather than a rect, and
+//! [`Overview`] carries the size its rect is drawn at — but both answer a question
+//! about the document that no surface is party to, which is the line this module is
+//! actually drawn on.
 //!
 //! They collected here because two different features want the same fallback ladder.
 //! Framing a piece (§15.7) and mounting the transform widget (§16.6) both have to

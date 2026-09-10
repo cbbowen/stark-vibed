@@ -1290,6 +1290,42 @@ the exit criterion is an act, not a diff.
   belonged — the panel row existed because the shipped chord table binds no file acts
   and this frontend had nowhere else to put them (N5).
 
+  **Then the shelves themselves were read back**, which is the part of N8 worth
+  recording because it is the stage's own rule turned on its output. Each shelf that
+  landed here re-derived the panel it was modelled on, and each said so in a comment
+  where a `use` should have been — "the same ceiling the web panel's slider carries",
+  "the web app's own figures … because a rung has to be the same grid in both apps",
+  "The list is this frontend's copy of the web app's". A comment admitting a
+  duplication is still a duplication; it just names itself.
+
+  So `stark_ui::lighting` and `stark_ui::guides` exist, the selection shelf's dials
+  joined `stark_ui::selection`, and the navigator's `Overview` joined `bounds`. Four
+  things came out of that which the moves themselves did not promise:
+
+  - **The one that mattered was the navigator's.** Both frontends worked out where the
+    viewport falls inside the miniature, by two different routes — four corners through
+    the view's own `canvas_delta` here, a screen rect over the zoom turned by a CSS
+    matrix there. The native module's doc already said why that is the worst thing to
+    duplicate ("a second spelling of that map is the one thing an overview must not
+    have — it would put the marker somewhere the pointer does not agree with"), while
+    describing its sibling. The map is shared now and the web *encodes* it: the four
+    corners describe a parallelogram whose half-axes are exactly the `width`/`height`
+    and `matrix()` CSS wants, so the geometry has one spelling and the encoding is
+    still each frontend's. Its four tests passed unchanged, which is the evidence the
+    two agreed where it counted.
+  - **A default that only one app had.** `DEFAULT_ENVIRONMENT` was the web's, so the
+    native window opened on whatever the engine happened to boot with. Sharing the list
+    made the gap visible, and a test now ties the constant to the list's first row.
+  - **The careful half of a disagreement travels, not the average.** The native guides
+    shelf guarded `octave` against a degenerate lattice and the web's did not — a
+    lattice a peer can send, which the web's `log2()` would have answered `-inf` for,
+    placing the track's handle off its own end. The guard is what moved.
+  - **A number can stay in a stylesheet without living there.** The quick-brush trash's
+    600 ms was `CLEAR_HOLD` natively and an `animation` duration in the web's CSS. The
+    fill *is* the clock over there, so the rule keeps the curve and takes its duration
+    inline from the constant — which is the shape to reach for whenever a frontend's
+    own dialect holds a number the other frontend also needs.
+
   **A Window menu came next**, which is the visibility menu (§25.5) as a menu bar
   draws one: a row per panel, each wearing its own title-bar mark and a tick saying
   whether it is up. Only the shelves this frontend has, by the rule above — a row
