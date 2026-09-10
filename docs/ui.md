@@ -155,7 +155,7 @@ surrounds it.
   Enter stay the palette's, where a text field withholds that window binding —
   and every act in the map is in the palette by name.
 - **A chord names its key the way the binding means it.** A chord names the
-  accelerator tier (Ctrl or Command, `input::accel`), the Shift bit, and a key
+  accelerator tier (Ctrl or Command, `stark_ui::keys::accel`), the Shift bit, and a key
   that is either the *character* it types — a mnemonic follows the layout,
   because Z undoes wherever the layout puts the Z — or the *position* it sits
   at — a spatial pair is about adjacency, and `[`/`]` step the brush precisely
@@ -825,7 +825,7 @@ two things one week apart is exactly what the glossary rule exists to stop.
 | `drags.rs` | 1343 | everything but `Mods::of(dioxus::html::Modifiers)`, which becomes a constructor each frontend feeds |
 | `icons.rs` | 607 | the `include_str!` table goes down; the `Element`-returning helper stays |
 | `presets.rs`, `slots.rs`, `prefs.rs`, `visibility.rs`, `modes.rs` | 3133 | each is a record plus a policy plus a signal-shaped shell; the shell stays |
-| `input/` + `input.rs` | 3017 | the thresholds and the decisions go down — `TOUCH_SLOP`, `nav::MIN_SPAN`, the tune commit distance, the tolerance and rope maps, `is_contact`/`is_eraser`, the tap/pinch/hold discrimination. The five `Copy` hook carriers stay: they *are* signals |
+| `input/` + `input.rs` | 3017 | the thresholds and the decisions went down — `input::TOUCH_SLOP`, `DWELL` and the held press, `nav::Touch` and `MIN_SPAN`, `carry`, `tune`, the tolerance and rope maps; `is_contact`/`is_eraser` read DOM events and stay. The five `Copy` hook carriers stay: they *are* signals |
 | `panels/brush.rs`'s bounds | — | `MIN_RADIUS`, `MAX_RADIUS`, `MAX_FLOW` sit in a markup module and are read by `input::Tune` and `BrushConfig::max_flow`. They are brush vocabulary and belong beside `brush_config` (their doc comments still say `BrushParams::radius`, renamed to `size` — the move is when that gets fixed) |
 
 **Tier C — stays in each frontend, twice**: everything under `panels/` that is
@@ -1376,7 +1376,10 @@ the exit criterion is an act, not a diff.
   `Signal`; the native app has a mouse, a wheel and one `Held`. **Touch is the web's
   alone** until wgpui reports fingers, so `TWIST_DEADZONE`, `MIN_SPAN` and the tap
   discrimination stayed where they are — moving a rule with one consumer would be
-  moving it for the shape of the thing rather than for a second reader.
+  moving it for the shape of the thing rather than for a second reader. They came
+  down later all the same, as `stark_ui::nav::Touch`, with the held press whose slop
+  a tap is measured against: the test that a tap never painted needs both halves in
+  one crate.
 
   One thing the move settled that neither app had right. The registry claims space
   before any binding can have it, and says so in a comment — "a frontend's keydown

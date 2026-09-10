@@ -92,7 +92,7 @@ pub fn Canvas() -> Element {
             .any(|l| l.id == o.active_layer && l.is_paintable());
         (paintable, o.tool)
     });
-    let (paintable, tool) = look().unwrap_or((false, stark_engine::command::Tool::Brush));
+    let paintable = look().is_some_and(|(paintable, _)| paintable);
     // The pick chord (Alt by default) arms the eyedropper over the brush, and the
     // cursor says so before it is used — the only thing that makes a modifier
     // binding discoverable. Asked of the drag table (`stark_ui::drags::armed`), the same
@@ -108,23 +108,22 @@ pub fn Canvas() -> Element {
     // the union marquee there (§6.8) — which is why both read one `Hand::free`
     // rather than each spelling the same three tests out.
     //
-    // `is_playing` peeks, and that is right here rather than merely cheap: this
-    // whole answer is recomputed when the held modifiers change, which is the
-    // moment a cursor could start promising anything at all.
-    let hand = stark_ui::drags::Hand {
-        panning: (state.space_down)(),
-        selecting: tool.is_selection(),
-        playing: crate::panels::timeline::is_playing(state),
-        // Neither of the last two is about a *cursor*: a sampler already down still
-        // wears this one, and any other gesture in hand has captured the pointer.
-        // Both are the bar's question rather than this one (`panels::pick`).
-        ..Default::default()
-    };
-    let table = state.drags.read();
-    let held = (state.held_mods)();
-    let sampling = hand.armed(&table, held);
-    let carrying = stark_ui::drags::armed(&table, held)
-        .is_some_and(|a| a == DragAction::PickAndTranslate && a.claims(hand));
+    // Both read the one hand the press path and the eyedropper's bar read
+    // (`input::hand`), through a memo — so the canvas re-renders when either promise
+    // would change, not on every fact a hand is made of (a press flips two of them).
+    // `is_playing` peeks, and that is right here rather than merely cheap: the
+    // answer is recomputed when the held modifiers change, which is the moment a
+    // cursor could start promising anything at all.
+    let promised = use_memo(move || {
+        let tool = look().map_or(stark_engine::command::Tool::Brush, |(_, tool)| tool);
+        let hand = input::hand(state, tool);
+        let table = state.drags.read();
+        let held = (state.held_mods)();
+        let carrying = stark_ui::drags::armed(&table, held)
+            .is_some_and(|a| a == DragAction::PickAndTranslate && a.claims(hand));
+        (hand.armed(&table, held), carrying)
+    });
+    let (sampling, carrying) = promised();
     // Whether a tuning drag is in flight (§18.1.9) — the crosshair goes while it is,
     // because the crosshair is a promise of paint *at a point* and this gesture is
     // about a number: nothing will land where it is pointing, and a crosshair sitting

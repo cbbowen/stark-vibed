@@ -12,8 +12,9 @@
 //! four questions in their own vocabulary, and translating is the frontend's one job
 //! here — deliberately, because the answers are not the same:
 //!
-//! - **`accel`** is Ctrl on Windows and Linux and Command on a Mac, and only a
-//!   frontend knows which machine it is on.
+//! - **`ctrl`** is the accelerator, which is Ctrl *or* Command on every machine
+//!   ([`accel`]); what the frontend owes is which of its toolkit's modifiers those two
+//!   are.
 //! - **`typed`** is the character the key produces *under the current layout*, which
 //!   is a fact the platform reports and nothing here can derive.
 //! - **`code`** is the physical position, W3C-named. Both toolkits speak it.
@@ -123,9 +124,52 @@ pub fn is_space(stroke: &Keystroke<'_>) -> bool {
     stroke.code == "Space" || stroke.typed == Some(' ')
 }
 
+/// Whether the **accelerator** is held, from the two keys that can be it: `control`,
+/// and `platform` — Command, or the Windows key.
+///
+/// Either, on every OS, rather than asking which machine this is: a binding that insisted
+/// on Ctrl would be unreachable on the one platform where Ctrl+click is how a secondary
+/// click is reported, and one that insisted on Command would be unreachable on keyboards
+/// without one.
+pub fn accel(control: bool, platform: bool) -> bool {
+    control || platform
+}
+
+/// `s` as a `char` when it is exactly one, else `None`.
+///
+/// What a key *types* has to be a single character to be a chord: a dead key or an IME
+/// composition reports a longer string, and neither is one.
+pub fn one_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Either key is the accelerator, and only neither is not.
+    #[test]
+    fn ctrl_or_command_is_the_accelerator_everywhere() {
+        assert!(accel(true, false));
+        assert!(accel(false, true));
+        assert!(accel(true, true));
+        assert!(!accel(false, false));
+    }
+
+    /// Exactly one `char` types that char; nothing, a composed sequence or two
+    /// characters type nothing a chord can name.
+    #[test]
+    fn only_a_single_char_is_typed() {
+        assert_eq!(one_char("z"), Some('z'));
+        assert_eq!(one_char("ß"), Some('ß'));
+        assert_eq!(one_char(""), None);
+        assert_eq!(one_char("e\u{301}"), None);
+        assert_eq!(one_char("ab"), None);
+    }
 
     /// Nothing held is bare, and any one modifier is not — the whole of what the
     /// drag table's "this press is painting" rests on.

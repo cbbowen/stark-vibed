@@ -599,44 +599,18 @@ pub struct GuideEdit {
     pub locked: [bool; 3],
 }
 
-/// The drag-and-hold drawing assist's signals (§6.9).
+/// The drag-and-hold drawing assist's setting (§6.9).
 ///
-/// The engine owns what a hold *means* ([`GestureCommand::Hold`](stark_engine::command::GestureCommand));
-/// what lives here is the other half — noticing that the pointer has stopped, which is
-/// gesture feel and needs a clock the engine deliberately does not have (§7).
+/// The engine owns what a hold *means* ([`GestureCommand::Hold`](stark_engine::command::GestureCommand)),
+/// and noticing that the pointer has stopped is the paint gesture's own state
+/// (`input::Paint`, over `stark_ui::input::Dwell`). What is left here is whether to
+/// notice at all.
 #[derive(Clone, Copy)]
 pub struct AssistState {
     /// Whether a held pointer snaps the stroke at all. On by default, and off is a
     /// real answer: assist changes what an ordinary stroke does, so somebody who wants
     /// their line left crooked has to be able to say so (`crate::settings`).
     pub enabled: Signal<bool>,
-    /// The dwell being watched — `Some` for exactly as long as a paint gesture is in
-    /// flight, and clearing it is what stops the watcher below.
-    pub dwell: Signal<Option<Dwell>>,
-    /// The watcher counting it down. Cancelled and replaced per gesture, like the
-    /// collaboration pumps.
-    pub task: Signal<Option<Task>>,
-}
-
-/// A pointer that has stopped moving, as the assist watcher reads it.
-#[derive(Clone, Copy, PartialEq)]
-pub struct Dwell {
-    /// Where it stopped, in **element (CSS) pixels**.
-    ///
-    /// Screen space and not canvas space, because holding still is a fact about the
-    /// hand: measured on the canvas, the same tremor would count as a hold at one zoom
-    /// level and as movement at another, and the threshold would mean something
-    /// different every time the view changed.
-    pub at: Vec2,
-    /// When it got there, on the monotonic clock (`crate::collab::now_seconds`).
-    pub since: f64,
-    /// Whether this dwell has already been reported.
-    ///
-    /// A latch rather than an exit, because a gesture may earn several holds: the
-    /// pause a pen makes on touching down before the hand starts moving is one, and
-    /// giving up there would disarm the assist for the stroke that followed it. So the
-    /// watcher latches, and movement past the slop is what clears it.
-    pub fired: bool,
 }
 
 /// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
@@ -869,8 +843,6 @@ impl AssistState {
             // Seeded from the preference defaults rather than written out again:
             // `prefs::load` overwrites it at app start (`crate::prefs`).
             enabled: root_signal(|| Prefs::default().assist),
-            dwell: root_signal(|| None),
-            task: root_signal(|| None),
         }
     }
 }

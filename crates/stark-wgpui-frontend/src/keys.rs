@@ -22,19 +22,7 @@
 //! below, which stores as `Code("")` and would never fire. The list is where that
 //! stops being true, one row at a time — and a wgpui that grows a `code` deletes it.
 
-use stark_ui::keys::{Keystroke, Mods, Role};
-
-/// The accelerator: Ctrl on Windows and Linux, Command on a Mac.
-///
-/// wgpui reports both — `control` and `platform` — and which one a chord means is
-/// exactly the fact only a frontend holds (`stark_ui::keys`).
-fn accel(m: &wgpui::Modifiers) -> bool {
-    if cfg!(target_os = "macos") {
-        m.platform
-    } else {
-        m.control
-    }
-}
+use stark_ui::keys::{Keystroke, Mods, Role, accel, one_char};
 
 /// The ten digit-row codes, indexed by the digit — what the quick-brush rack is read
 /// off (`stark_ui::slots::of_code`, §18.1.8).
@@ -105,24 +93,13 @@ pub fn stroke(k: &wgpui::Keystroke) -> Keystroke<'static> {
     let typed = one_char(&k.key).or_else(|| k.key_char.as_deref().and_then(one_char));
     Keystroke {
         mods: Mods {
-            ctrl: accel(&k.modifiers),
+            ctrl: accel(k.modifiers.control, k.modifiers.platform),
             shift: k.modifiers.shift,
             alt: k.modifiers.alt,
         },
         typed,
         code: code_of(&k.key),
         role,
-    }
-}
-
-/// A string that is exactly one `char`, as that char.
-///
-/// A dead key or an IME composition reports a longer one, and neither is a chord.
-fn one_char(s: &str) -> Option<char> {
-    let mut chars = s.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) => Some(c),
-        _ => None,
     }
 }
 
@@ -164,6 +141,21 @@ mod tests {
             table.lookup(&stroke(&press("Z", true, false))),
             Some(Command::Undo)
         );
+    }
+
+    /// Either Ctrl or the platform key is the accelerator, on every OS
+    /// (`stark_ui::keys::accel`), so a chord reads the same whichever the hand used.
+    #[test]
+    fn either_key_is_the_accelerator() {
+        for (control, platform) in [(true, false), (false, true)] {
+            let mut k = press("z", false, false);
+            k.modifiers.control = control;
+            k.modifiers.platform = platform;
+            assert!(
+                stroke(&k).mods.ctrl,
+                "control {control}, platform {platform}"
+            );
+        }
     }
 
     /// A spatial row answers too, over the reconstructed code — the half of the

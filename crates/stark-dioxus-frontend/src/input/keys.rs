@@ -13,6 +13,7 @@
 //! because the table has no vocabulary for a release (`crate::commands`, §25.3).
 
 use super::*;
+use stark_ui::keys::{Mods, is_space};
 
 /// Bind the app's keyboard shortcuts, once, for the life of the page.
 ///
@@ -88,7 +89,7 @@ pub fn bind_pen(state: AppState) {
 ///
 /// A pen held still is a **gesture** here, not a request for a menu: the drawing
 /// assist snaps a stroke to the shape it resembles after 0.45s of dwell (§6.9,
-/// [`DWELL`]), which is inside the half-second Windows spends deciding that a
+/// [`DWELL`](stark_ui::input::DWELL)), which is inside the half-second Windows spends deciding that a
 /// held stylus meant a right-click. So the menu arrives on top of the assist,
 /// over the canvas, mid-stroke. The same hold ends the same way on a slider
 /// being dragged, a preset row, a layer being reordered, a transform handle —
@@ -127,24 +128,29 @@ pub fn bind_context_menu() {
 /// event, so propagation is halted inside the virtual tree only and the real event
 /// reaches the window regardless.
 fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
-    match e.key() {
-        Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
-            let mut space_down = state.space_down;
-            space_down.set(true);
-            // Space arms the pan: a hover mark left standing would promise
-            // paint the press will not make (§18.1.10). Self-guarding, so the
-            // key's auto-repeat costs a peek and nothing else.
-            clear_hover_mark(state);
-            e.prevent_default();
-        }
+    // One reading of the keystroke, which every rung below asks — the modifiers
+    // included, so the rack, the table and the tracked triple cannot read them
+    // three ways.
+    let code = e.code();
+    let stroke = commands::stroke(e, &code);
+    // By either of the key's names (`stark_ui::keys::is_space`): a modifier that
+    // consumes the character leaves only the code, and Ctrl+Space is the scrubby
+    // zoom (§18.1.9).
+    if is_space(&stroke) {
+        let mut space_down = state.space_down;
+        space_down.set(true);
+        // Space arms the pan: a hover mark left standing would promise
+        // paint the press will not make (§18.1.10). Self-guarding, so the
+        // key's auto-repeat costs a peek and nothing else.
+        clear_hover_mark(state);
+        e.prevent_default();
+    } else if matches!(e.key(), Key::Alt) {
         // Alt on its own focuses the browser's menu bar on Windows and Linux, which
         // would take the keyboard away the moment the eyedropper is reached for.
-        Key::Alt => e.prevent_default(),
-        _ => {}
+        e.prevent_default();
     }
 
-    let m = e.modifiers();
-    track_mods(state, m);
+    track_mods(state, stroke.mods);
     // The quick-brush rack, claimed before the chord table is consulted so a
     // future row on a digit could never shadow it. A digit is not a row there:
     // it is a *hold*, owning both edges of its key (§18.1.8); it reads the
@@ -156,9 +162,9 @@ fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     // harmless, and it is what counts a digit pressed twice in a beat
     // (`slots::Taps`), so nothing here keeps time. Alt is not tolerated: bare
     // Alt is the eyedropper's, and only a bare digit is ours.
-    if !accel(m)
-        && !m.contains(Modifiers::ALT)
-        && let Some(slot) = stark_ui::slots::of_code(&e.code())
+    if !stroke.mods.ctrl
+        && !stroke.mods.alt
+        && let Some(slot) = stark_ui::slots::of_code(stroke.code)
     {
         slots::hold(state, slot, Grip::Key);
         e.prevent_default();
@@ -170,30 +176,29 @@ fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     // browser's own Ctrl+A would select the page's text, and a refusal that
     // let that through would answer a declined command with a highlighted
     // user interface.
-    if let Some(command) = commands::find(state, e) {
+    if let Some(command) = commands::find(state, &stroke) {
         commands::run(command, state);
         e.prevent_default();
     }
 }
 
 fn handle_keyup(state: AppState, e: &platform::KeyEvent) {
-    match e.key() {
-        Key::Character(c) if c.eq_ignore_ascii_case(" ") => {
-            let mut space_down = state.space_down;
-            space_down.set(false);
-            e.prevent_default();
-        }
-        _ => {}
+    let code = e.code();
+    let stroke = commands::stroke(e, &code);
+    if is_space(&stroke) {
+        let mut space_down = state.space_down;
+        space_down.set(false);
+        e.prevent_default();
     }
     // The rack's release, named by the slot it lets go of — so a hand rolling
     // from 3 to 4 and off 4 first does not end the hold 3 still has (§18.1.8).
     // Unguarded by `KeyEvent::on_text_entry` like the two above, and for the same
     // reason: focus can move between a press and its release, and a release that
     // never arrived would leave the brush swapped.
-    if let Some(slot) = stark_ui::slots::of_code(&e.code()) {
+    if let Some(slot) = stark_ui::slots::of_code(stroke.code) {
         slots::release(state, slot, Grip::Key);
     }
-    track_mods(state, e.modifiers());
+    track_mods(state, stroke.mods);
 }
 
 /// Record which modifiers are held, so the resting cursor can say what a press
@@ -204,8 +209,7 @@ fn handle_keyup(state: AppState, e: &platform::KeyEvent) {
 /// window was not focused then corrects the triple, instead of leaving it stuck on
 /// a press whose release never came. Written only on a change, since every write
 /// re-renders the canvas component.
-fn track_mods(state: AppState, m: Modifiers) {
-    let now = crate::drags::mods_of(m);
+fn track_mods(state: AppState, now: Mods) {
     let mut held = state.held_mods;
     if *held.peek() != now {
         held.set(now);

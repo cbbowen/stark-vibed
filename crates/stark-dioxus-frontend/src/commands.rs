@@ -21,12 +21,11 @@ use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
 
-use crate::input::accel;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_ui::brush_config::{SIZE_STEP, step_size};
 use stark_ui::commands::{Bindings, Chord, Command, Gate};
-use stark_ui::keys::{Keystroke, Mods, Role};
+use stark_ui::keys::{Keystroke, Role};
 
 /// Put this browser's stored table where the chrome reads it. The reading and the
 /// row shape are the registry's ([`Bindings::stored`]); what is left here is the
@@ -65,13 +64,9 @@ fn edit(state: AppState, change: impl FnOnce(&mut Bindings)) {
 
 /// This browser's keydown, as the shared tables read it (`stark_ui::keys`).
 ///
-/// **The one translation this frontend owes the registry**, and the reason the
-/// registry could travel at all: `accel` is Ctrl here and Command on a Mac, `typed`
-/// is whatever the layout produces, and the three keys a capture spends on itself
-/// have DOM names. None of that is derivable a crate down.
-///
-/// `Key::Character` is taken only when it is exactly one `char`: a dead key or an IME
-/// composition reports a longer string, and neither is a chord.
+/// **The one translation this frontend owes the registry**: the modifiers as the DOM
+/// names them, `typed` as the layout produces it, and the DOM's names for the three
+/// keys a capture spends on itself. None of that is derivable a crate down.
 ///
 /// `code` is a parameter because the event hands it back as an owned `String` and a
 /// keystroke borrows it — the caller keeps it alive for the length of the lookup.
@@ -89,36 +84,25 @@ pub fn stroke_of<'a>(m: Modifiers, key: &Key, code: &'a str) -> Keystroke<'a> {
         _ => Role::Ordinary,
     };
     let typed = match key {
-        Key::Character(c) => {
-            let mut chars = c.chars();
-            match (chars.next(), chars.next()) {
-                (Some(k), None) => Some(k),
-                _ => None,
-            }
-        }
+        Key::Character(c) => stark_ui::keys::one_char(c),
         _ => None,
     };
     Keystroke {
-        mods: Mods {
-            ctrl: accel(m),
-            shift: m.contains(Modifiers::SHIFT),
-            alt: m.contains(Modifiers::ALT),
-        },
+        mods: crate::drags::mods_of(m),
         typed,
         code,
         role,
     }
 }
 
-/// The command `e` asks for, if any — the one reader on the dispatch path, asking
-/// this browser's own table. `peek`: a keydown is no reason for anything to
+/// The command `stroke` asks for, if any — the one reader on the dispatch path,
+/// asking this browser's own table. `peek`: a keydown is no reason for anything to
 /// re-render.
-pub fn find(state: AppState, e: &platform::KeyEvent) -> Option<Command> {
-    let code = e.code();
+pub fn find(state: AppState, stroke: &Keystroke<'_>) -> Option<Command> {
     state
         .bindings
         .peek()
-        .lookup(&stroke(e, &code))
+        .lookup(stroke)
         // A row that matches may still decline the *keystroke* — today only
         // FinishMode's bare Enter ([`claims`]). Filtered here rather
         // than in `run`, because the caller `prevent_default`s whatever this
@@ -483,6 +467,7 @@ fn close_dialogs(state: AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_ui::keys::Mods;
 
     fn character(s: &str) -> Key {
         Key::Character(s.to_owned())

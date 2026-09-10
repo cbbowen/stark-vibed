@@ -20,9 +20,9 @@
 //! release that ends whatever was in flight ([`end_interaction`], which is the
 //! one place all five are named together).
 //!
-//! [`TOUCH_SLOP`] is the clearest case and says so at its own declaration: two
-//! gestures read it, and the test that they agree cannot be written if there are
-//! two of it.
+//! The thresholds and the decisions under those gestures — the touch slop, the hold,
+//! the pinch and the tap, the carry — are `stark_ui`'s (§11.2), so the native frontend
+//! reads the same ones; what is left here is the DOM's side of each.
 
 use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::html::geometry::ElementPoint;
@@ -39,14 +39,14 @@ use crate::platform::{
     on_window_pointer, sleep_ms,
 };
 use crate::slots;
-use crate::state::{
-    AppState, BrushRing, Dwell, FlowBar, TowUi, TuneReadout, dispatch, update_brush,
-};
+use crate::state::{AppState, BrushRing, FlowBar, TowUi, TuneReadout, dispatch, update_brush};
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, PeerCommand, ViewCommand};
 use stark_model::document::{LayerId, ShapeAction};
 use stark_model::geom::Vec2;
+use stark_ui::drags::Hand;
+use stark_ui::input::PointerKind;
 use stark_ui::pick::Sampler;
 use stark_ui::slots::Grip;
 
@@ -62,39 +62,14 @@ pub use nav::Nav;
 pub use paint::{Landing, Paint};
 pub use tune::Tune;
 
-/// How far a touch may travel and still mean **nothing yet**, in page px
-/// (§18.1.11).
-///
-/// One number for three questions, which is the point of there being one: how far
-/// a lone finger must go before its press is a stroke rather than a held question
-/// ([`Landing`]), how far it may stray and still count as *held* for the
-/// eyedropper, and how far a pair may stray and still count as a tap rather than a
-/// pinch. Those are one question asked from three sides — *has this touch meant
-/// anything yet?* — so a single constant is what keeps the three answers from
-/// overlapping. It also makes the two-finger tap safe to spend on undo by
-/// construction rather than by care: a pair that stayed inside this never opened a
-/// stroke, because the same threshold is what would have opened one.
-///
-/// `carry::carry_deadzone`'s figure for a finger, for its reason: a fingertip rolls
-/// several px on its way onto and off the glass, and of the two mistakes it is the
-/// one that leaves a mark that has to be protected against.
-pub(super) const TOUCH_SLOP: f32 = 10.0;
-//
-// **Here rather than with either gesture that reads it**, which is the whole
-// point of the constant: `Nav` measures a tap against it and `Landing` opens a
-// stroke on it, and `nav::tests::a_tap_can_never_have_painted` is the assertion
-// that those are the same number. Two copies could not fail that test — they
-// would simply both be right about different thresholds — so there is one, and
-// it lives where neither gesture owns it.
-
-/// How close to a quarter turn a turn has to land to be pulled onto it, radians
-/// (about 5°).
-///
-/// The frontend's to decide, like the fitting tolerance: it is a property of turning
-/// something with a hand rather than of the view. Without it a canvas that has been
-/// turned could only be *approximately* straightened, and a piece left a degree off
-/// square reads as an accident rather than as a choice.
-pub const TURN_SNAP: f32 = 0.09;
+/// Which kind of pointer `e` came from, in the shared rules' vocabulary.
+pub(crate) fn pointer_kind(e: &Event<PointerData>) -> PointerKind {
+    match e.pointer_type().as_str() {
+        "pen" => PointerKind::Pen,
+        "touch" => PointerKind::Touch,
+        _ => PointerKind::Mouse,
+    }
+}
 
 /// Whether `e` came from a finger — the one pointer type that arrives in pairs.
 ///
@@ -102,7 +77,7 @@ pub const TURN_SNAP: f32 = 0.09;
 /// reports a single contact, and the whole point of the two-finger gesture is to be
 /// able to move the canvas *without* putting the pen down.
 fn is_finger(e: &Event<PointerData>) -> bool {
-    e.pointer_type() == "touch"
+    pointer_kind(e) == PointerKind::Touch
 }
 
 /// Whether `e` puts the tool **on** the canvas: the primary button, or the pen's
@@ -116,14 +91,11 @@ pub fn is_contact(e: &Event<PointerData>) -> bool {
     e.trigger_button() == Some(MouseButton::Primary) || is_eraser(e)
 }
 
-/// Whether `m` holds the platform's **accelerator** — Ctrl, or Command on a Mac.
-///
-/// Either, everywhere, rather than asking which platform this is: the keyboard
-/// shortcuts have always accepted both, and a binding that insisted on Ctrl would be
-/// unreachable on the one platform where Ctrl+drag is how the browser reports a
-/// secondary click in the first place.
+/// Whether `m` holds the **accelerator** — Ctrl or Command, on every OS, which is
+/// `stark_ui::keys::accel`'s policy. What is this frontend's is that the DOM calls
+/// Command `META`.
 pub(crate) fn accel(m: Modifiers) -> bool {
-    m.contains(Modifiers::CONTROL) || m.contains(Modifiers::META)
+    stark_ui::keys::accel(m.contains(Modifiers::CONTROL), m.contains(Modifiers::META))
 }
 
 /// Whether `e` is the pen's **eraser end** — the tail of the stylus, reported as
@@ -218,23 +190,6 @@ fn tail_says(report: PenReport, raw: &RawPointer) -> Option<Tail> {
     }
 }
 
-/// `to` pulled onto the nearest quarter turn if it is within [`TURN_SNAP`] of one.
-pub fn snap_quarter(to: f32) -> f32 {
-    let quarter = (to / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
-    if (to - quarter).abs() <= TURN_SNAP {
-        quarter
-    } else {
-        to
-    }
-}
-
-/// The signed turn from `from` to `to`, the short way round — so easing between two
-/// angles never takes the long way about, and 1° short of a full circle is 1°.
-pub fn shortest_turn(from: f32, to: f32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-    (to - from + PI).rem_euclid(TAU) - PI
-}
-
 /// Pointer position in page coordinates — the frame that stays still while
 /// absolutely-positioned chrome (frame handles, the transform box) moves under
 /// the pointer mid-drag.
@@ -324,107 +279,6 @@ pub fn move_loupe(state: AppState, at: Vec2) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The hold, for the drawing assist (§6.9)
-// ---------------------------------------------------------------------------
-
-/// How long a pointer has to hold still to have **held** — before the stroke in
-/// flight snaps to the shape it resembles (§6.9), and before a finger's press that
-/// never became a stroke becomes the eyedropper instead ([`Landing`], §18.1.11).
-///
-/// One figure for both, deliberately, and not because the two acts are related: a
-/// hold is a hold, and a wait that meant one length of time before a stroke and
-/// another during one would be a hand having to learn the app twice. What the two
-/// share is a threshold, not a mechanism — the assist watches for a pointer that
-/// *stopped*, this one for a press that never *started*.
-///
-/// The cost of the two mistakes is asymmetric, and that is what sets it. Too short and
-/// the natural pause before lifting the pen turns considered strokes into shapes; too
-/// long and the gesture just feels unresponsive and gets tried again. So it sits at the
-/// long end of what still reads as immediate — the same figure Procreate settled on.
-const DWELL: f64 = 0.45;
-
-/// How far the pointer may drift and still count as held, in **CSS px**: a hand's own
-/// tremor on a pen resting against the glass, plus the digitizer's noise.
-const DWELL_SLOP: f32 = 4.0;
-
-/// How often the watcher looks. Well under a tenth of [`DWELL`], so the snap lands
-/// within a frame or two of the hold being earned, and far too rare to cost anything.
-const DWELL_POLL_MS: i32 = 60;
-
-/// Begin watching a stroke gesture for a hold (§6.9). A no-op when the assist is off.
-///
-/// `at` is the press position in element (CSS) px — the frame the dwell is measured in;
-/// see [`Dwell::at`].
-pub fn watch_for_hold(state: AppState, at: Vec2) {
-    if !*state.assist.enabled.peek() {
-        return;
-    }
-    let mut dwell = state.assist.dwell;
-    dwell.set(Some(Dwell {
-        at,
-        since: now_seconds(),
-        fired: false,
-    }));
-    // `spawn_forever` for the reason `request_paint` uses it: this is started from a
-    // component's event handler and must not be tied to that scope's lifetime. Every
-    // signal it touches is root-owned (see `state::root_signal`).
-    let task = spawn_forever(async move {
-        let mut dwell = state.assist.dwell;
-        loop {
-            sleep_ms(DWELL_POLL_MS).await;
-            // Cleared means the gesture is over, and that is the only way out: the
-            // watcher runs for as long as the pointer is down, because a hold that was
-            // declined (or that snapped a shape now being steered) may be followed by
-            // another worth reporting.
-            let Some(held) = *dwell.peek() else { return };
-            if held.fired || now_seconds() - held.since < DWELL {
-                continue;
-            }
-            // Latch *before* dispatching, so a pointer that simply stays put does not
-            // report the same hold thirty times a second.
-            dwell.set(Some(Dwell {
-                fired: true,
-                ..held
-            }));
-            dispatch(state, GestureCommand::Hold);
-        }
-    });
-    let mut watcher = state.assist.task;
-    if let Some(old) = watcher.write().replace(task) {
-        old.cancel();
-    }
-}
-
-/// Report a pointer move against the hold being watched, in element (CSS) px.
-///
-/// Restarts the clock only when the pointer has actually gone somewhere: a pen resting
-/// on glass reports continuously, so treating every report as movement would mean the
-/// dwell never completed on the one device the feature exists for.
-pub fn pointer_moved(state: AppState, at: Vec2) {
-    let mut dwell = state.assist.dwell;
-    let Some(held) = *dwell.peek() else { return };
-    if held.at.distance(at) > DWELL_SLOP {
-        dwell.set(Some(Dwell {
-            at,
-            since: now_seconds(),
-            fired: false,
-        }));
-    }
-}
-
-/// Stop watching for a hold. Harmless when nothing is being watched.
-pub fn stop_watching(state: AppState) {
-    let mut dwell = state.assist.dwell;
-    if dwell.peek().is_some() {
-        dwell.set(None);
-    }
-    let mut task = state.assist.task;
-    if let Some(task) = task.write().take() {
-        task.cancel();
-    }
-}
-
 /// The engine's current view, or `None` before WebGPU init has finished.
 ///
 /// Fallible rather than `expect`ing, because the canvas element is in the DOM and
@@ -451,12 +305,7 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 /// `1 / devicePixelRatio` CSS px is its floor; a pen or a finger comes off a
 /// digitizer that resolves well below the screen it sits under.
 fn input_resolution(e: &Event<PointerData>) -> f32 {
-    let dpr = platform::device_pixel_ratio();
-    let physical = match e.pointer_type().as_str() {
-        "pen" | "touch" => stark_ui::input::PEN_RESOLUTION,
-        _ => stark_ui::input::MOUSE_RESOLUTION,
-    };
-    physical / dpr
+    stark_ui::input::resolution(pointer_kind(e)) / platform::device_pixel_ratio()
 }
 
 /// The fitting tolerance to declare for a gesture starting with `e`, in canvas px.
@@ -550,6 +399,25 @@ pub fn point_at(state: AppState, at: Option<Vec2>) {
     }
 }
 
+/// What this app knows about the hand that the drag table does not ([`Hand`]) — one
+/// reading, for the press path (`drags::find`), the canvas cursor, the eyedropper's
+/// bar and the hover mark, so what a cursor promises and what the press does cannot be
+/// read two ways.
+///
+/// Reads rather than peeks: a render body that asks subscribes to what it shows, and
+/// in an event handler a read subscribes nothing. `tool` is an argument because the
+/// canvas takes it from its own memo, where a read of the projection would re-render
+/// it on every engine write.
+pub fn hand(state: AppState, tool: Tool) -> Hand {
+    Hand {
+        panning: (state.space_down)(),
+        selecting: tool.is_selection(),
+        playing: crate::panels::timeline::is_playing(state),
+        sampling: (state.pick.dragging)(),
+        busy: (state.canvas_active)(),
+    }
+}
+
 /// Feed the hover mark one report (§18.1.10): the engine appends `s` to its
 /// trailing window and folds the probe — the stroke a drag begun this instant
 /// would open, carrying the hover's heading forward from the cursor — the
@@ -561,17 +429,13 @@ pub fn point_at(state: AppState, at: Option<Vec2>) {
 /// other than paint. What is here is only this frontend's reading of each — the
 /// signals it keeps them in, and the drag table asked of the modifiers held.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
-    let hand = stark_ui::input::Hovering {
-        panning: *state.space_down.peek(),
-        shadowed: stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
-            .is_some_and(stark_ui::drags::DragAction::shadows_paint),
-        sampling: *state.pick.dragging.peek(),
-        playing: crate::panels::timeline::is_playing(state),
-    };
+    let shadowed = stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
+        .is_some_and(stark_ui::drags::DragAction::shadows_paint);
+    let hovering = hand(state, crate::panels::select::current_tool(state)).hovering(shadowed);
     let Some(tolerance) = input_tolerance(state, e) else {
         return;
     };
-    let Some(report) = hand.report(s, tolerance) else {
+    let Some(report) = hovering.report(s, tolerance) else {
         return;
     };
     crate::state::dispatch_hover(state, ViewCommand::PreviewHover(Some(report)));
@@ -693,7 +557,7 @@ pub fn end_interaction(state: AppState, landing: Landing, nav: Nav, tune: Tune, 
     // Gated on the fade having actually been in force. `end_interaction` runs on every
     // release the canvas sees, including the ones that deliberately keep the chrome up
     // — an eyedropper sample reads its answer off the Color panel, brush tuning off the
-    // Brush panel (see the two `canvas_active` comments in `main.rs`) — and putting the
+    // Brush panel (see the two `canvas_active` comments in `lib.rs`) — and putting the
     // stack to sleep on the way out of those would hide the panel the gesture was for.
     // Read before the clear, since the clear is what makes it false.
     //

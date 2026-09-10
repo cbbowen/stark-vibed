@@ -15,8 +15,8 @@ use crate::input::{accel, is_contact};
 use crate::state::AppState;
 use crate::widgets::Modal;
 use stark_ui::drags::{
-    DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, Hand, capture,
-    chord_label, persist_drags, stored_drags,
+    DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, capture, chord_label,
+    persist_drags, stored_drags,
 };
 use stark_ui::keys::Mods;
 use strum::VariantArray;
@@ -70,23 +70,8 @@ pub fn find(state: AppState, e: &Event<PointerData>) -> Option<DragAction> {
     if next != held {
         offer.set(next);
     }
-    found.filter(|a| a.claims(hand(state)))
-}
-
-/// What this app knows about the hand that the drag table does not
-/// ([`Hand`]) — the press path's half, which is the three stand-downs and
-/// nothing about a gesture already in flight: a press that is asking this
-/// question is by definition the one arriving.
-///
-/// `peek` throughout: this runs inside a pointer handler, and nothing here is
-/// mounted on the answer.
-fn hand(state: AppState) -> Hand {
-    Hand {
-        panning: (state.space_down)(),
-        selecting: crate::panels::select::current_tool(state).is_selection(),
-        playing: crate::panels::timeline::is_playing(state),
-        ..Default::default()
-    }
+    let hand = crate::input::hand(state, crate::panels::select::current_tool(state));
+    found.filter(|a| a.claims(hand))
 }
 
 /// Show an offer that has come due, now the canvas is out of the artist's hand —
@@ -221,7 +206,7 @@ pub fn DragBindingSection() -> Element {
 /// that captures a new one.
 ///
 /// Click, then press the chord you want *with the button you want* — the same
-/// gesture as using it, which is `main::BindChip`'s bargain restated for
+/// gesture as using it, which is `crate::BindChip`'s bargain restated for
 /// presses. The press is read by [`capture`], so a plain click calls the capture
 /// off and the ✕ beside the chip is what erases the binding.
 #[component]

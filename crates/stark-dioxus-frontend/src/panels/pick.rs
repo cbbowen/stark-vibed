@@ -21,7 +21,6 @@ use crate::state::AppState;
 use crate::widgets::CommandButton;
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
-use stark_ui::drags::Hand;
 use stark_ui::pick::{PATCHES, patch_word};
 use strum::VariantArray;
 
@@ -35,13 +34,7 @@ pub fn PickBar() -> Element {
     // chord pressed mid-stroke must not pop a bar up over the painting. `dragging`
     // is the pick itself, which deliberately leaves `canvas_active` alone so the
     // Color panel stays legible while sampling.
-    let hand = Hand {
-        panning: (state.space_down)(),
-        selecting: current_tool(state).is_selection(),
-        playing: crate::panels::timeline::is_playing(state),
-        sampling: (state.pick.dragging)(),
-        busy: (state.canvas_active)(),
-    };
+    let hand = crate::input::hand(state, current_tool(state));
     if !hand.shows_options(&state.drags.read(), (state.held_mods)()) {
         return rsx! {};
     }

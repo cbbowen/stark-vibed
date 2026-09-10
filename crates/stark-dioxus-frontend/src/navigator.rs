@@ -67,10 +67,8 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-// The snap and the shortest way round are shared with the two-finger gesture
-// (§18.1.7): "how square is square enough" has to mean one thing however the canvas
-// is being turned.
-use crate::input::{elem_xy, shortest_turn, snap_quarter};
+use crate::collab::now_seconds;
+use crate::input::elem_xy;
 use crate::layout::chrome_dimmed;
 use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, sleep_ms};
@@ -80,7 +78,7 @@ use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
 use stark_model::geom::Vec2;
-use stark_ui::bounds::Overview;
+use stark_ui::bounds::{Overview, Refresh};
 
 /// The box the miniature is fitted into, in CSS px — the largest it is ever drawn,
 /// on whichever axis the piece runs out of first.
@@ -219,32 +217,6 @@ enum Drag {
     Turn { from: Vec2, was: f32 },
 }
 
-/// How far the turn-drag has to be pulled before the canvas follows the pointer
-/// exactly, in miniature px.
-///
-/// Short of it the canvas eases toward where the drag points, in proportion to how
-/// far it has been pulled — because near the press the *direction* of a two-pixel
-/// vector is almost pure noise, and following it exactly makes the canvas snap to a
-/// wild angle the instant the button goes down. Easing in means the first few pixels
-/// barely move it, and by the time the pointer is a thumb's width out it is doing
-/// exactly what it is told.
-const TURN_FOLLOW_PX: f32 = 64.0;
-
-/// The angle a turn-drag of `v` (miniature px, measured from the press) asks the
-/// canvas to be at, having started the drag at `was`.
-///
-/// `None` when the drag has gone nowhere, which asks for nothing. The snap is applied
-/// to the *target* rather than to the eased result, so a long pull lands exactly
-/// square while a short one still eases smoothly toward that.
-fn turn_to(view: stark_engine::ViewTransform, v: Vec2, was: f32) -> Option<f32> {
-    // The miniature is an upright, uniformly scaled picture of canvas space, so a
-    // direction in its pixels *is* a direction in canvas px — no mapping needed, and
-    // the pull length stays in the screen units the feel constants are written in.
-    let target = snap_quarter(view.rotation_for_up(v)?);
-    let ease = (v.length() / TURN_FOLLOW_PX).clamp(0.0, 1.0);
-    Some(was + ease * shortest_turn(was, target))
-}
-
 /// The Navigator's miniature, down in the bottom-left corner (see the module docs).
 #[component]
 pub fn NavigatorOverlay() -> Element {
@@ -257,6 +229,9 @@ pub fn NavigatorOverlay() -> Element {
     // checks this after its settle delay so all but the last stand down — the
     // debounce, in one integer.
     let mut ticket = use_signal(|| 0u64);
+    // What the surface last drew, and when — the refresh policy the native navigator
+    // asks too (`stark_ui::bounds::Refresh`).
+    let mut refresh = use_signal(Refresh::default);
     // The press in flight, if any. Declared here, above every early return, because
     // hooks are positional.
     let mut dragging = use_signal(|| None::<Drag>);
@@ -302,25 +277,31 @@ pub fn NavigatorOverlay() -> Element {
         if !(state.navigator)() {
             return;
         }
-        let Some((_, frame)) = subject() else { return };
+        let Some((revision, frame)) = subject() else {
+            return;
+        };
         let mine = *ticket.peek() + 1;
         ticket.set(mine);
         spawn(async move {
-            // Wait out the burst, then wait out the gesture: a render that lands
-            // mid-stroke would spend its cost exactly where it is least affordable.
+            // Wait out the burst, then ask the policy — which waits out a gesture:
             // `canvas_active` is the frontend's own "the canvas is in hand" flag, so
-            // this covers strokes, marquees, pans and runs of wheel zoom alike.
+            // that covers strokes, marquees, pans and runs of wheel zoom alike.
             loop {
                 sleep_ms(SETTLE_MS).await;
                 if *ticket.peek() != mine {
                     return; // superseded by a later change
                 }
-                if !*state.canvas_active.peek() {
+                let drawn = *refresh.peek();
+                if drawn.due(revision, now_seconds(), *state.canvas_active.peek()) {
                     break;
+                }
+                if !drawn.stale(revision) {
+                    return; // already a picture of this revision
                 }
             }
             if let Some(next) = draw_overview(state, frame) {
                 over.set(Some(next));
+                refresh.write().drawn(revision, now_seconds());
             }
         });
     });
@@ -343,11 +324,13 @@ pub fn NavigatorOverlay() -> Element {
     let placed = over().map(|o| viewport_style(o, view));
 
     // Where a press in the miniature points, in canvas space. The surface is
-    // presented 1:1, so the element's own coordinates are the picture's.
+    // presented 1:1, so the element's own coordinates are the picture's — and a
+    // drag that leaves the box is held to the piece's edge, as it is natively
+    // (`Overview::target`).
     let target = move |e: &Event<PointerData>| {
         let o = over.peek().as_ref().copied()?;
         let f = elem_xy(e) / Vec2::new(o.width.max(1.0), o.height.max(1.0));
-        Some(o.min + (o.max - o.min) * f)
+        Some(o.target(f.x, f.y))
     };
 
     rsx! {
@@ -416,7 +399,7 @@ pub fn NavigatorOverlay() -> Element {
                             }
                         }
                         Drag::Turn { from, was } => {
-                            if let Some(to) = turn_to(view, elem_xy(&e) - from, was) {
+                            if let Some(to) = stark_ui::nav::turn_to(view, elem_xy(&e) - from, was) {
                                 dispatch(state, ViewCommand::SetRotation(to));
                             }
                         }
@@ -441,8 +424,13 @@ pub fn NavigatorOverlay() -> Element {
                         if let Some(canvas) = crate::platform::canvas_of(&e) {
                             crate::state::with_engine_quiet(state, |r| r.attach_overview(canvas));
                         }
-                        if let Some(next) = subject().and_then(|(_, f)| draw_overview(state, f)) {
+                        // A fresh surface holds no picture, whatever the last one held.
+                        refresh.set(Refresh::default());
+                        if let Some((revision, frame)) = subject()
+                            && let Some(next) = draw_overview(state, frame)
+                        {
                             over.set(Some(next));
+                            refresh.write().drawn(revision, now_seconds());
                         }
                     },
                 }
@@ -479,61 +467,76 @@ mod tests {
             .unwrap_or_else(|| panic!("no {name} in {style}"))
     }
 
-    /// The marker is placed by the view's **centre**, in percentages of the
-    /// piece — so a view looking at the middle of the piece puts it in the
-    /// middle of the miniature.
-    ///
-    /// Percentages rather than px because the miniature is laid out by the
-    /// artwork's aspect, and pinning that here is what keeps the marker from
-    /// needing to know how large the browser drew it.
+    /// The four numbers of the style's `matrix()`.
+    fn matrix(style: &str) -> [f32; 4] {
+        let inner = style
+            .split_once("matrix(")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inner, _)| inner)
+            .unwrap_or_else(|| panic!("no matrix in {style}"));
+        let n: Vec<f32> = inner
+            .split(',')
+            .map(|v| {
+                v.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{v:?} in {style}"))
+            })
+            .collect();
+        [n[0], n[1], n[2], n[3]]
+    }
+
+    /// Where the corners fall is `stark_ui::bounds::marker`'s; what is this
+    /// frontend's is the CSS for them — a box placed by its centre and sized by its
+    /// two axes, in percentages of the miniature, turned by a `matrix()` of the
+    /// axes' directions. A quarter turn is the case that says so: the screen's width
+    /// runs down the piece, so the box's width is measured along its height.
     #[test]
-    fn the_marker_sits_where_the_view_is_centred() {
-        let view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+    fn the_style_is_the_markers_turned_box() {
+        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
+        view.set_rotation(std::f32::consts::FRAC_PI_2);
         let style = viewport_style(piece(), view);
         assert!((css(&style, "left") - 50.0).abs() < 1e-2, "{style}");
         assert!((css(&style, "top") - 50.0).abs() < 1e-2, "{style}");
-        // 200 screen px at zoom 1 over a 400 px piece is half of it.
-        assert!((css(&style, "width") - 50.0).abs() < 1e-2, "{style}");
-        assert!((css(&style, "height") - 50.0).abs() < 1e-2, "{style}");
+        // 200 screen px down a 200 px-tall piece is all of it; 100 across a 400
+        // px-wide one is a quarter.
+        assert!((css(&style, "width") - 100.0).abs() < 1e-2, "{style}");
+        assert!((css(&style, "height") - 25.0).abs() < 1e-2, "{style}");
+        let [a, b, c, d] = matrix(&style);
+        assert!(a.abs() < 1e-5 && d.abs() < 1e-5, "{style}");
+        assert!(
+            (b.abs() - 1.0).abs() < 1e-5 && (c.abs() - 1.0).abs() < 1e-5,
+            "{style}"
+        );
     }
 
-    /// Zooming in shrinks the marker, because the marker is how much of the
-    /// piece the window covers — the one thing an overview is for.
+    /// A degenerate marker — a frame dragged to nothing, a viewport with no width —
+    /// is still a style: numbers and an honest matrix, never a run of NaNs the
+    /// browser silently drops.
     #[test]
-    fn zooming_in_shrinks_the_marker() {
-        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
-        let wide = css(&viewport_style(piece(), view), "width");
-        view.zoom_about(Vec2::ZERO, 2.0);
-        let close = css(&viewport_style(piece(), view), "width");
-        assert!(close < wide, "{close} should be less than {wide}");
-        assert!((close - wide * 0.5).abs() < 1e-2, "2x should halve it");
-    }
-
-    /// Panning off the piece slides the marker **out of the frame** rather than
-    /// pinning it to an edge (§11). Pinned because clamping is the obvious-looking
-    /// edit and it would have the overview claim you are still on the painting.
-    #[test]
-    fn panning_off_the_piece_takes_the_marker_with_it() {
-        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
-        view.center_on(Vec2::new(4_000.0, 0.0));
-        let style = viewport_style(piece(), view);
-        assert!(css(&style, "left") > 100.0, "{style}");
-    }
-
-    /// A degenerate overview — a frame dragged to nothing — divides by a floor
-    /// rather than by zero, so the style is still a style and not a run of NaNs
-    /// the browser silently drops.
-    #[test]
-    fn a_collapsed_piece_still_yields_numbers() {
+    fn a_degenerate_marker_never_emits_nan() {
         let flat = Overview {
             min: Vec2::ZERO,
             max: Vec2::ZERO,
             width: 200.0,
             height: 100.0,
         };
-        let view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
-        let style = viewport_style(flat, view);
-        assert!(!style.contains("NaN"), "{style}");
-        assert!(css(&style, "width").is_finite(), "{style}");
+        let cases = [
+            (
+                flat,
+                stark_engine::ViewTransform::identity(Extent2::new(200, 100)),
+            ),
+            (
+                piece(),
+                stark_engine::ViewTransform::identity(Extent2::new(0, 100)),
+            ),
+        ];
+        for (over, view) in cases {
+            let style = viewport_style(over, view);
+            assert!(!style.contains("NaN"), "{style}");
+            for name in ["left", "top", "width", "height"] {
+                assert!(css(&style, name).is_finite(), "{style}");
+            }
+            assert!(matrix(&style).iter().all(|v| v.is_finite()), "{style}");
+        }
     }
 }

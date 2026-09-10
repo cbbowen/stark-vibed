@@ -441,6 +441,17 @@ impl Hand {
     pub fn shows_options(self, bindings: &DragBindings, held: Mods) -> bool {
         self.armed(bindings, held) && !self.sampling && !self.busy
     }
+
+    /// This hand as a hovering move reports it (§18.1.10), with `shadowed` — whether the
+    /// held chord arms an act that reads the canvas back — which only the table can say.
+    pub fn hovering(self, shadowed: bool) -> crate::input::Hovering {
+        crate::input::Hovering {
+            panning: self.panning,
+            shadowed,
+            sampling: self.sampling,
+            playing: self.playing,
+        }
+    }
 }
 
 impl DragAction {
@@ -531,7 +542,7 @@ impl DragAction {
 /// by recognising a name, and a list that had merged them would offer neither.
 ///
 /// The tables are each app's defaults for these three gestures, on Windows, with
-/// the accelerator standing in for Ctrl and Command alike (`input::accel`). They
+/// the accelerator standing in for Ctrl and Command alike ([`accel`](crate::keys::accel)). They
 /// are a starting point rather than a fidelity claim, and the surfaces say so:
 /// every row stays separately rebindable the moment a preset lands, which is the
 /// only honest shape for a table transcribed out of somebody else's manual.
@@ -680,7 +691,7 @@ pub enum DragCapture {
 ///
 /// It records **what the browser reported**, which is the only thing that keeps
 /// a capture and a press agreeing. The one place that shows: on a Mac, Ctrl and
-/// the trackpad arrive as the *secondary* button (`input::accel` says so from
+/// the trackpad arrive as the *secondary* button ([`accel`](crate::keys::accel) says so from
 /// the other side), so a chord captured that way is stored and labelled
 /// `Ctrl + right-drag`. The binding still works — the canvas press reports the
 /// same thing — and the alternative, guessing that a secondary press with Ctrl
@@ -1292,6 +1303,39 @@ mod tests {
         table.rebind(DragAction::PickColor, left(true, false, false));
         assert!(Hand::default().armed(&table, m(true, false, false)));
         assert!(!Hand::default().armed(&table, m(false, false, true)));
+    }
+
+    /// A hovering move reports the same hand, so the mark stands down for exactly what
+    /// a press is already promised to; the two facts only a press needs are dropped.
+    #[test]
+    fn a_hand_hovers_as_itself() {
+        let hand = Hand {
+            panning: true,
+            selecting: true,
+            playing: false,
+            sampling: true,
+            busy: true,
+        };
+        assert_eq!(
+            hand.hovering(true),
+            crate::input::Hovering {
+                panning: true,
+                shadowed: true,
+                sampling: true,
+                playing: false,
+            }
+        );
+        let playing = Hand {
+            playing: true,
+            ..Hand::default()
+        };
+        assert_eq!(
+            playing.hovering(false),
+            crate::input::Hovering {
+                playing: true,
+                ..Default::default()
+            }
+        );
     }
 
     /// A chord written before a fourth modifier existed reads as not holding it

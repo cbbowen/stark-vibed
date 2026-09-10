@@ -62,7 +62,8 @@
 //! - [`prefs`] — the standing preferences a settings dialog sets.
 //! - [`input`] — the two screen-denominated lengths a gesture declares, and the map
 //!   from a knob to each (§6.2, §6.11). The module this crate was built to prevent a
-//!   second copy of.
+//!   second copy of. Also what a pointer does before it has meant anything: the touch
+//!   slop, the hold, and a finger's held press (§6.9, §18.1.11).
 //! - [`collab`] — a shared session as a *link* (§12.4): the address a peer opens,
 //!   and the ticket read back out of one. The whole of what both frontends say
 //!   about sharing that is not the network.
@@ -81,7 +82,9 @@
 //! - [`visibility`] — what a client last had on screen, as one record over the
 //!   visibility menu's own list (§11, §25.6).
 //! - [`nav`] — what a press, a drag and a wheel notch do to the **view**, at the
-//!   rates both apps travel at (§18.1.7).
+//!   rates both apps travel at, and the two-finger pinch and tap (§18.1.7).
+//! - [`carry`] — the layer carry's decisions (§16.11): when a press engages, what it
+//!   previews, and what its release lays down.
 //! - [`tune`] — and what one does to the **brush** (§18.1.9): the size sideways, the
 //!   flow up and down, and the axis lock that keeps a gesture to one knob.
 //! - [`selection`] — what a shape gesture is about to do (§6.8, §18.0.4): which tool
@@ -113,6 +116,7 @@ pub mod assets;
 pub mod bounds;
 pub mod brush_config;
 pub mod brush_editor;
+pub mod carry;
 pub mod collab;
 pub mod color;
 pub mod commands;

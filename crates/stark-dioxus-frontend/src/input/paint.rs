@@ -14,18 +14,21 @@
 //! leaves out half of what a press means.
 
 use super::*;
+use stark_ui::input::{DWELL, Dwell, HeldPress};
+
+/// How often the hold watcher looks, in ms. Well under a tenth of [`DWELL`], so the
+/// snap lands within a frame or two of the hold being earned, and far too rare to
+/// cost anything.
+const DWELL_POLL_MS: i32 = 60;
 
 /// The canvas's **paint** gesture: a stroke or a marquee, from the press that
 /// starts one to the release that commits it (§6.8, §6.9, §6.11).
 ///
 /// A hook shaped like [`Nav`] and [`Tune`] and driven the same way, and it exists
-/// for the reason those two do — *one thing owns one gesture*. This one was
-/// spread over three places: the `drawing` flag and the stashed shape action were
-/// the `Canvas` component's, the tow string and the assist watcher were
-/// `AppState`'s, and the two teardown paths were free functions that took the
-/// component's halves by `&mut`. [`end_interaction`] therefore had five
-/// parameters and `abandon_gesture` had three, and between them they had to agree,
-/// by hand, about what "in flight" means — across four call sites.
+/// for the reason those two do — *one thing owns one gesture*, including the hold
+/// it watches for and the shape action a modifier borrowed, so "what counts as in
+/// flight" is not something [`end_interaction`] and its callers have to agree about
+/// by hand.
 ///
 /// What is *not* here is deliberate. Whether this press is navigation, brush
 /// tuning, an eyedropper sample or a stroke is **routing**, and routing stays at
@@ -36,17 +39,24 @@ use super::*;
 /// The signals that stay in [`AppState`] stay there for stated reasons and are
 /// unaffected: `pick.dragging` because the eyedropper's options bar reads it,
 /// `tune_readout` and `tow` because sibling overlays draw them, `canvas_active`
-/// because the whole chrome fades on it.
+/// because the whole chrome fades on it, `assist.enabled` because it is a setting.
 #[derive(Clone, Copy)]
 pub struct Paint {
     state: AppState,
     /// Whether a gesture is in flight — the thing the three entry points below
-    /// keep in step with the engine, and the whole of what used to be passed
-    /// around as `&mut Signal<bool>`.
+    /// keep in step with the engine.
     drawing: Signal<bool>,
     /// The panel's shape action, stashed while a gesture's modifier keys override
     /// it (§6.8) and put back when the gesture ends, however it ends.
     restore: Signal<Option<ShapeAction>>,
+    /// The hold being watched for (§6.9) — `Some` for exactly as long as a painting
+    /// gesture is in flight, and clearing it is what stops the watcher below.
+    ///
+    /// Root-owned (`state::root_signal`), because the watcher that latches it is a
+    /// detached task.
+    dwell: Signal<Option<Dwell>>,
+    /// The watcher counting the hold down, cancelled and replaced per gesture.
+    watcher: Signal<Option<Task>>,
 }
 
 impl Paint {
@@ -56,6 +66,8 @@ impl Paint {
             state,
             drawing: use_signal(|| false),
             restore: use_signal(|| None),
+            dwell: crate::state::root_signal(|| None),
+            watcher: crate::state::root_signal(|| None),
         }
     }
 
@@ -108,7 +120,7 @@ impl Paint {
     /// A pen's press comes through with a list of one, which is what it always was.
     ///
     /// `at` is where the pointer is *now*, in element (CSS) px — the frame the hold
-    /// watcher measures in ([`Dwell::at`]).
+    /// is measured in.
     fn open(
         self,
         tool: Tool,
@@ -151,7 +163,7 @@ impl Paint {
         // the same point for everything but a held press — and for that one the
         // hand has demonstrably just been moving, so the dwell starts here.
         if !tool.is_selection() {
-            watch_for_hold(state, at);
+            self.watch_for_hold(at);
         }
         true
     }
@@ -173,7 +185,7 @@ impl Paint {
         // In screen px, before the sample is mapped: whether the hand is holding
         // still is a fact about the hand (§6.9). Once the stroke has snapped this
         // stops watching and the same `To` steers the shape instead.
-        pointer_moved(state, elem_xy(e));
+        self.track_hold(elem_xy(e));
         // Every report the browser folded into this event reaches the fitter
         // (`samples`), not just the one it chose to deliver. `dispatch_sample`, not
         // `dispatch`: a sample changes pixels, not chrome, and the full dispatch's
@@ -223,7 +235,7 @@ impl Paint {
 
     /// The one teardown both ends share, so "what a finished gesture leaves behind"
     /// is stated once: the command, the shape action put back, the hold watcher
-    /// stopped, the string taken down. It was two copies that had to agree.
+    /// stopped, the string taken down.
     fn close(self, command: GestureCommand) {
         let state = self.state;
         let mut drawing = self.drawing;
@@ -235,9 +247,69 @@ impl Paint {
         if let Some(base) = restore.take() {
             dispatch(state, ViewCommand::SetShapeAction(base));
         }
-        stop_watching(state);
+        self.stop_watching();
         // The stroke the string belonged to is over, however it ended (§6.11).
         refresh_tow(state);
+    }
+
+    /// Begin watching the gesture for a hold at `at`, element (CSS) px (§6.9). A
+    /// no-op when the assist is off.
+    fn watch_for_hold(self, at: Vec2) {
+        let state = self.state;
+        if !*state.assist.enabled.peek() {
+            return;
+        }
+        let mut dwell = self.dwell;
+        dwell.set(Some(Dwell::new(at, now_seconds())));
+        // `spawn_forever` for the reason `request_paint` uses it: this is started from
+        // a component's event handler and must not be tied to that scope's lifetime.
+        let task = spawn_forever(async move {
+            let mut dwell = self.dwell;
+            loop {
+                sleep_ms(DWELL_POLL_MS).await;
+                // Cleared means the gesture is over, and that is the only way out: a
+                // hold that was declined (or that snapped a shape now being steered)
+                // may be followed by another worth reporting.
+                let Some(mut held) = *dwell.peek() else {
+                    return;
+                };
+                if !held.due(now_seconds()) {
+                    continue;
+                }
+                // Latched *before* dispatching, so a pointer that simply stays put
+                // does not report the same hold thirty times a second.
+                dwell.set(Some(held));
+                dispatch(state, GestureCommand::Hold);
+            }
+        });
+        let mut watcher = self.watcher;
+        if let Some(old) = watcher.write().replace(task) {
+            old.cancel();
+        }
+    }
+
+    /// Report a move against the hold being watched, in element (CSS) px. Written
+    /// only when the pointer has gone somewhere ([`Dwell::moved`]).
+    fn track_hold(self, at: Vec2) {
+        let mut dwell = self.dwell;
+        let Some(mut held) = *dwell.peek() else {
+            return;
+        };
+        if held.moved(at, now_seconds()) {
+            dwell.set(Some(held));
+        }
+    }
+
+    /// Stop watching for a hold. Harmless when nothing is being watched.
+    fn stop_watching(self) {
+        let mut dwell = self.dwell;
+        if dwell.peek().is_some() {
+            dwell.set(None);
+        }
+        let mut watcher = self.watcher;
+        if let Some(task) = watcher.write().take() {
+            task.cancel();
+        }
     }
 }
 
@@ -245,30 +317,22 @@ impl Paint {
 ///
 /// A mouse or a pen says what it is the moment it lands: there is one of it, it is
 /// aimed, and the only question left is which chord opened it. A finger says
-/// nothing. The same contact is the opening half of a pinch, the start of a stroke
-/// and the beginning of a hold, and which one it turns out to be is not knowable at
-/// the press — it becomes known when a second finger lands (navigation, §18.1.7),
-/// when this one travels ([`TOUCH_SLOP`]), or when it does neither for long enough
-/// ([`DWELL`], the eyedropper).
+/// nothing — the same contact is the opening half of a pinch, the start of a stroke
+/// and the beginning of a hold, and which one it turns out to be is
+/// `stark_ui::input::HeldPress`'s to say.
 ///
-/// So a finger's press is *held* rather than obeyed, and the three ways it resolves
-/// are the three touch gestures. That is what fixes the oldest complaint about
-/// painting by touch: reaching for the canvas with two fingers used to lay a stroke
-/// and then take it back, because the first finger had already been believed and
-/// fingers never land together. A held press has nothing to take back.
-///
-/// **Nothing is lost by waiting.** Every report the browser delivers while a press
-/// is held is kept — coalesced list and all, so the full input rate survives — and
-/// replayed into the stroke the instant it opens ([`Paint::open`]). The mark starts
-/// where the finger touched down and carries every sample since; what the wait costs
-/// is the first few milliseconds of *latency*, never a millimetre of the path.
+/// So a finger's press is *held* rather than obeyed. That is what fixes the oldest
+/// complaint about painting by touch: reaching for the canvas with two fingers used to
+/// lay a stroke and then take it back, because the first finger had already been
+/// believed and fingers never land together. A held press has nothing to take back —
+/// and nothing is lost by waiting, since every report is kept and replayed into the
+/// stroke the instant it opens ([`Paint::open`]).
 ///
 /// A hook shaped like [`Nav`] and [`Tune`] and driven the same way, and the one
 /// difference is where it sits: this stands **in front of** [`Paint`] rather than
 /// beside it. Every press the canvas would have handed the paint gesture comes here
 /// first, and a press that is not a finger is handed straight on — a pen is
-/// unaffected by every line of this, which is the point. The pen is what serious
-/// work is done with, and it has never needed to be second-guessed.
+/// unaffected by every line of this, which is the point.
 #[derive(Clone, Copy)]
 pub struct Landing {
     state: AppState,
@@ -278,11 +342,11 @@ pub struct Landing {
     /// The press being held, or `None`.
     ///
     /// Root-owned (`state::root_signal`) rather than the component's, for
-    /// [`PickMove::drag`]'s reason and not as a lifetime nicety: the hold that
-    /// resolves this into the eyedropper fires from a detached task.
+    /// [`PickMove`]'s reason and not as a lifetime nicety: the hold that resolves
+    /// this into the eyedropper fires from a detached task.
     held: Signal<Option<Held>>,
     /// That task, cancelled and replaced per press exactly as the assist watcher's
-    /// is ([`watch_for_hold`]).
+    /// is.
     watcher: Signal<Option<Task>>,
     /// How many presses have been held. A timer that outlives the press it was
     /// started for — the press resolved, the finger lifted, another landed — must
@@ -292,10 +356,6 @@ pub struct Landing {
 }
 
 /// A press being held, and everything the stroke it may become will need.
-///
-/// It carries the *fit's* parameters (`tolerance`, `rope`) as they were at the
-/// press, not as they are when it opens, for the reason `tune::TuneDrag::zoom` is
-/// latched: a gesture measures against the view it started in.
 #[derive(Clone)]
 struct Held {
     /// Which press this is ([`Landing::epoch`]).
@@ -303,22 +363,12 @@ struct Held {
     /// The finger holding it. A pen or a second finger arriving is a different
     /// pointer, and its reports must not be fed into this one's stroke.
     id: i32,
-    /// What the press would paint with. Read at the press like everything else
-    /// here, so a tool changed by the other hand mid-hold does not retroactively
-    /// change what this press was.
-    tool: Tool,
-    /// Where it landed and where it is now, element (CSS) px — the frame a stray is
-    /// measured in, for [`Dwell::at`]'s reason: holding still is a fact about the
-    /// hand, not about the canvas under it.
-    from: Vec2,
-    at: Vec2,
-    /// The furthest it has been from `from`. Monotone, so a finger that wandered
-    /// out and came back has still moved: it asked to paint, and the answer to that
-    /// cannot be withdrawn by holding still afterwards.
-    strayed: f32,
-    /// Every canvas-space sample since the press, oldest first — the press itself,
-    /// then the full coalesced list of every move ([`samples`]).
-    samples: Vec<InputSample>,
+    /// What the press has done so far — its tool, where it is, how far it has
+    /// strayed, and every sample since it landed.
+    press: HeldPress,
+    /// The fit's parameters as they were at the press, not as they are when it
+    /// opens, for the reason `tune::TuneDrag::zoom` is latched: a gesture measures
+    /// against the view it started in.
     tolerance: f32,
     rope: f32,
 }
@@ -356,7 +406,7 @@ impl Landing {
             return self.paint.begin(e, tool);
         }
         // A *primary* touch is the first contact of its type, so a press still held
-        // when one arrives is a finger whose release never came — `Nav::finger_down`
+        // when one arrives is a finger whose release never came — `nav::Touch`
         // clears its own set on exactly this fact and for exactly this reason
         // (§18.1.7). One stale record here would refuse every press after it, and
         // painting by touch would stop working for the rest of the session.
@@ -378,11 +428,7 @@ impl Landing {
         held.set(Some(Held {
             epoch: n,
             id: e.pointer_id(),
-            tool,
-            from: at,
-            at,
-            strayed: 0.0,
-            samples: vec![sample],
+            press: HeldPress::new(tool, at, sample),
             tolerance,
             rope: if tool.is_selection() {
                 0.0
@@ -418,10 +464,7 @@ impl Landing {
             let Some(h) = w.as_mut() else {
                 return true;
             };
-            h.at = at;
-            h.strayed = h.strayed.max(at.distance(h.from));
-            h.samples.extend(more);
-            h.strayed > TOUCH_SLOP
+            h.press.advance(at, &more)
         };
         // The press has asked to paint. Outside the borrow, because opening the
         // stroke re-enters the engine and rewrites the frontend's observable.
@@ -435,8 +478,13 @@ impl Landing {
     /// into it. Harmless when nothing is held.
     fn open(self) {
         let Some(h) = self.take() else { return };
-        self.paint
-            .open(h.tool, &h.samples, h.tolerance, h.rope, h.at);
+        self.paint.open(
+            h.press.tool(),
+            h.press.samples(),
+            h.tolerance,
+            h.rope,
+            h.press.at(),
+        );
     }
 
     /// Drop everything this press was going to be — what a second finger, a
@@ -479,17 +527,16 @@ impl Landing {
 
     /// Count this press down to the eyedropper (§18.1.11).
     ///
-    /// One sleep rather than the assist watcher's poll ([`watch_for_hold`]), and
-    /// the difference is what each is watching *for*. That one waits for the
-    /// pointer to stop and has to keep looking, because it may stop at any moment
-    /// and start again after. This one has exactly one moment worth checking: a
-    /// press that travelled far enough to be a stroke has already opened one and
-    /// left nothing here to find, so the only question is whether anything is still
-    /// held when the wait is up.
+    /// One sleep rather than the assist watcher's poll, and the difference is what
+    /// each is watching *for*. That one waits for the pointer to stop and has to keep
+    /// looking, because it may stop at any moment and start again after. This one has
+    /// exactly one moment worth checking: a press that travelled far enough to be a
+    /// stroke has already opened one and left nothing here to find, so the only
+    /// question is whether anything is still held when the wait is up.
     fn watch(self, epoch: u64) {
-        // `spawn_forever` for `watch_for_hold`'s reason: this is started from a
-        // component's event handler and must not be tied to that scope's lifetime.
-        // Every signal it touches is root-owned (see `state::root_signal`).
+        // `spawn_forever`: this is started from a component's event handler and must
+        // not be tied to that scope's lifetime. Every signal it touches is root-owned
+        // (see `state::root_signal`).
         let task = spawn_forever(async move {
             sleep_ms((DWELL * 1000.0) as i32).await;
             self.hold(epoch);
@@ -500,29 +547,27 @@ impl Landing {
         }
     }
 
-    /// The wait is up. If the press is still held and still still, it was never
-    /// paint at all — it was the eyedropper, asking for the color under the finger
-    /// (§18.1.11).
+    /// The wait is up. If the press is still held, it was never paint at all — it
+    /// was the eyedropper, asking for the color under the finger (§18.1.11).
     fn hold(self, epoch: u64) {
         // This timer is spent whatever it decides, and it must not be cancelled by
         // the take below: it is the task doing the cancelling.
         let mut watcher = self.watcher;
         watcher.set(None);
         // Still this press, and still a press the sampler is willing to take. Over
-        // a selection tool it stands down for `DragAction::PickColor`'s reason —
-        // there the press is *for* the marquee (§6.8) — and the press stays held
-        // rather than being resolved, so it can still become one.
+        // a selection tool the press stays held rather than being resolved, so it
+        // can still become the marquee it is for.
         let ready = self
             .held
             .peek()
             .as_ref()
-            .is_some_and(|h| h.epoch == epoch && !h.tool.is_selection());
+            .is_some_and(|h| h.epoch == epoch && h.press.resolves_to_pick());
         if !ready {
             return;
         }
         let mut held = self.held;
         let Some(h) = held.write().take() else { return };
-        let Some(last) = h.samples.last().copied() else {
+        let Some(last) = h.press.samples().last().copied() else {
             return;
         };
         let state = self.state;
@@ -536,13 +581,13 @@ impl Landing {
         // thing this differs from a stroke about. A sample's answer is read off the
         // Color panel, and a sample taken behind a hidden panel tells nobody
         // anything — `end_interaction` makes the same argument for the eyedropper's
-        // chord, and `main.rs` for the tuning drag.
+        // chord, and `lib.rs` for the tuning drag.
         let mut canvas_active = state.canvas_active;
         canvas_active.set(false);
         // Where the answer is shown, since a finger has neither a cursor nor a
         // clear view of the panel (`PickState::loupe`).
         let mut loupe = state.pick.loupe;
-        loupe.set(Some(h.at));
+        loupe.set(Some(h.press.at()));
         // The mark under the cursor is a promise of paint, and this press has just
         // stopped making one (§18.1.10). It cannot come back while the sampler is
         // down: `hover_stroke` is gated on exactly this flag.

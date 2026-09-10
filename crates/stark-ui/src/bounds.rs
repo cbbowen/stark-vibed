@@ -126,6 +126,39 @@ pub fn piece_frame(o: &ObservableState) -> Option<stark_model::document::LayerId
 /// while the artist is still looking at where it landed.
 pub const SETTLE: f64 = 0.18;
 
+/// When a navigator draws its miniature again — the whole of the refresh policy.
+///
+/// One refresh composites every tile in the document: nothing on an edit, ruinous per
+/// pointer sample. So the picture is of the **committed** document, due when that
+/// revision has moved since the last drawing; never under a live gesture; and at most
+/// once a [`SETTLE`], so a held undo is one render rather than one a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Refresh {
+    /// The revision last drawn and when, on the frontend's monotonic clock in seconds.
+    /// `None` before the first drawing, or once the surface it was on has gone.
+    drawn: Option<(u64, f64)>,
+}
+
+impl Refresh {
+    /// Whether what is on the surface is a picture of an older revision than `revision`,
+    /// or of nothing.
+    pub fn stale(&self, revision: u64) -> bool {
+        self.drawn.is_none_or(|(at, _)| at != revision)
+    }
+
+    /// Whether to draw `revision` at `now`.
+    pub fn due(&self, revision: u64, now: f64, in_gesture: bool) -> bool {
+        !in_gesture
+            && self.stale(revision)
+            && self.drawn.is_none_or(|(_, when)| now - when >= SETTLE)
+    }
+
+    /// `revision` was drawn at `now`.
+    pub fn drawn(&mut self, revision: u64, now: f64) {
+        self.drawn = Some((revision, now));
+    }
+}
+
 /// Where a miniature of the piece sits in canvas space, and how large it is drawn.
 ///
 /// All a navigator keeps: the picture itself lives on the GPU, in the surface behind
@@ -320,5 +353,40 @@ mod tests {
         assert_eq!(piece().target(0.5, 0.5), Vec2::ZERO);
         assert_eq!(piece().target(0.0, 0.0), Vec2::splat(-200.0));
         assert_eq!(piece().target(2.0, -1.0), Vec2::new(200.0, -200.0));
+    }
+
+    /// A navigator that has never drawn draws at once, whatever the clock says.
+    #[test]
+    fn a_miniature_never_drawn_is_due_at_once() {
+        assert!(Refresh::default().due(0, 0.0, false));
+    }
+
+    /// Due when the committed revision has moved since the drawing, and not otherwise.
+    #[test]
+    fn a_refresh_is_due_when_the_revision_moves() {
+        let mut refresh = Refresh::default();
+        refresh.drawn(5, 1.0);
+        assert!(
+            !refresh.due(5, 10.0, false),
+            "still a picture of this revision"
+        );
+        assert!(refresh.due(6, 10.0, false));
+    }
+
+    /// Never under a live gesture, however stale the picture.
+    #[test]
+    fn a_refresh_waits_out_a_gesture() {
+        let mut refresh = Refresh::default();
+        refresh.drawn(5, 1.0);
+        assert!(!refresh.due(6, 10.0, true));
+    }
+
+    /// At most once a settle, so a burst of revisions is one render.
+    #[test]
+    fn a_refresh_comes_at_most_once_a_settle() {
+        let mut refresh = Refresh::default();
+        refresh.drawn(5, 1.0);
+        assert!(!refresh.due(6, 1.0 + SETTLE * 0.5, false));
+        assert!(refresh.due(6, 1.0 + SETTLE * 2.0, false));
     }
 }

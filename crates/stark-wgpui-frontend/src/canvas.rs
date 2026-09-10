@@ -245,11 +245,9 @@ pub struct Canvas {
     /// drawn — four numbers, because the picture itself is a surface on the GPU
     /// (`crate::navigator`).
     overview: Option<stark_ui::bounds::Overview>,
-    /// The committed revision that miniature is a picture of, and when it was drawn.
-    /// Together they are the whole of the refresh policy: draw when the document has
-    /// moved, never under a live gesture, and at most once a settle.
-    overview_at: u64,
-    overview_when: f64,
+    /// When that miniature was drawn, and of which revision — the whole of the refresh
+    /// policy (`stark_ui::bounds::Refresh`).
+    overview_drawn: stark_ui::bounds::Refresh,
     /// The two asset libraries this client keeps (§25.6) — the stamps and the
     /// substrates a person brought in, read from the store at start.
     shapes: Vec<assets::Entry>,
@@ -456,10 +454,9 @@ impl Canvas {
             pick_regions: pick::Regions::default(),
             guide: None,
             overview: None,
-            overview_at: 0,
-            // Behind the first settle, so the opening frame draws a miniature rather
-            // than waiting a fifth of a second to admit there is a document.
-            overview_when: f64::NEG_INFINITY,
+            // Never drawn, so the opening frame draws a miniature rather than waiting
+            // a settle to admit there is a document.
+            overview_drawn: stark_ui::bounds::Refresh::default(),
             shapes,
             substrates,
             substrate: SubstrateId::Flat,
@@ -1107,21 +1104,15 @@ impl Canvas {
         {
             return self.clear_hover_mark(cx);
         }
-        let hand = input::Hovering {
-            panning: self.space,
-            // A held chord arms an act that reads the *shown* canvas back — the
-            // eyedropper, and the layer carry on the day it lands. The mark is a
-            // hypothesis about paint, so it has to be off the canvas before a press
-            // can read one: the wrong color for the sample.
-            shadowed: stark_ui::drags::armed(&self.drags, mods_of(&window.modifiers()))
-                .is_some_and(DragAction::shadows_paint),
-            // Reachable with **nothing held** — this is `move_to`'s resting arm — so a
-            // sampler that is down cannot get here. The line that changes the day a
-            // held touch resolves into one (§18.1.11).
-            sampling: false,
-            // No timeline in this frontend yet (§11.2).
-            playing: false,
-        };
+        // A held chord arms an act that reads the *shown* canvas back — the eyedropper,
+        // and the layer carry on the day it lands. The mark is a hypothesis about paint,
+        // so it has to be off the canvas before a press can read one: the wrong color
+        // for the sample.
+        let shadowed = stark_ui::drags::armed(&self.drags, mods_of(&window.modifiers()))
+            .is_some_and(DragAction::shadows_paint);
+        // The hand the cursor, the bar and the press read (`pick_hand`), so the mark
+        // cannot stand down for a different reading of it.
+        let hand = self.pick_hand().hovering(shadowed);
         let (scale, now) = (window.scale_factor(), self.elapsed());
         let origin = self.origin();
         let Some(r) = self.renderer.as_ref() else {
@@ -1572,15 +1563,12 @@ impl Canvas {
             .renderer
             .as_ref()
             .is_some_and(Renderer::overview_resized);
-        let moved = revision != self.overview_at || self.overview_when.is_infinite();
-        let due = lost || (moved && now - self.overview_when >= stark_ui::bounds::SETTLE);
+        let due = (lost && quiet) || self.overview_drawn.due(revision, now, !quiet);
         if due
-            && quiet
             && let Some(r) = self.renderer.as_mut()
             && r.paint_overview(window, &plan)
         {
-            self.overview_at = revision;
-            self.overview_when = now;
+            self.overview_drawn.drawn(revision, now);
         }
     }
 
@@ -3829,7 +3817,7 @@ impl Render for Canvas {
             // Back to "never drawn", so showing the navigator again renders rather
             // than deciding the document has not moved since the surface it was
             // holding was let go.
-            self.overview_when = f64::NEG_INFINITY;
+            self.overview_drawn = stark_ui::bounds::Refresh::default();
         }
         // The test canvas, before anything is built and for the miniature's reason: it
         // is a *second render* rather than an element, and the frame after the dialog
@@ -4226,7 +4214,7 @@ impl Render for Canvas {
 /// and the frame — and a second is a second chance to spell `platform` wrong.
 fn mods_of(m: &wgpui::Modifiers) -> Mods {
     Mods {
-        ctrl: m.control || m.platform,
+        ctrl: stark_ui::keys::accel(m.control, m.platform),
         shift: m.shift,
         alt: m.alt,
     }
@@ -4269,11 +4257,11 @@ fn sample_at(
 /// What the device that made a gesture resolves position to, in this surface's device
 /// px — the half of `stark_ui::input::tolerance` only a frontend can answer.
 fn resolution(pen: Option<&Pose>) -> f32 {
-    if pen.is_some() {
-        input::PEN_RESOLUTION
+    input::resolution(if pen.is_some() {
+        input::PointerKind::Pen
     } else {
-        input::MOUSE_RESOLUTION
-    }
+        input::PointerKind::Mouse
+    })
 }
 
 /// A window position in the **screen** px the view is denominated in — logical px

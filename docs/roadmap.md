@@ -927,7 +927,7 @@ existed, and neither the engine nor the panels learn anything.
   gesture's answer is read, and fading it out would hide the one thing the drag
   is for. The sliders move under the hand, which is the whole readout.
 - Both accept **Ctrl or Command**, everywhere, rather than asking which platform
-  this is (`input::accel`, already what the keyboard shortcuts did) — a binding
+  this is (`stark_ui::keys::accel`, already what the keyboard shortcuts did) — a binding
   that insisted on Ctrl would be unreachable on the one platform where Ctrl+drag
   is how the browser reports a secondary click.
 
