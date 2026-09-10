@@ -47,12 +47,12 @@
 //! to say they are **one vector** — the displacement from where the red end of the
 //! spectrum lands to where the blue end does (§21.10). [`fringe_pad`] draws that
 //! vector, and draws it as the thing it describes: a bar of the real dispersion
-//! spectrum, painted with the pass's own [`dispersion_weight`] at the pass's own
+//! spectrum, painted with the pass's own
+//! [`dispersion_weight`](stark_engine::filters::dispersion_weight) at the pass's own
 //! wavelengths, growing out of the centre in the direction the fringe will run.
 //! Dragging it *is* pulling the spectrum apart. Two tracks could not show that the
 //! two numbers are one arrow, and no slider can show what the fringe will look like.
 
-use stark_ui::icons::Icon;
 use std::sync::LazyLock;
 
 use dioxus::prelude::*;
@@ -65,312 +65,17 @@ use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::LayerInfo;
-use stark_engine::command::{DocCommand, PeerCommand};
-use stark_engine::filters::{CONTRAST_PIVOT, dispersion_weight};
-use stark_model::color::linear_to_srgb;
+use stark_engine::command::DocCommand;
 use stark_model::document::LayerId;
 use stark_model::document::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::gradient::Gradient;
 use stark_ui::commands::Command;
-
-/// One slider on the bar: what it is called, its range, and the two ends of the
-/// round trip through the filter's own parameter struct `F`.
-///
-/// A table rather than hand-written rows because the rows differ in nothing but
-/// these few things, and a hand-written row is a place for one of them to disagree
-/// with the value it displays. `get`/`set` are the pair that makes the whole filter
-/// travel on every edit (§21.6) — the bar reads the current settings off the
-/// projection, replaces one number, and sends the result back. Generic over the
-/// parameter struct so each filter kind is one more `const` table and no more
-/// bar code.
-///
-/// `glyph` is an `Option` on [`widgets::Slider`](crate::widgets::Slider)'s exact
-/// terms, and the same fact is read off it twice: a knob that has a mark wraps its
-/// word as hideable, and a knob that has none keeps it, because a row with neither
-/// would be an anonymous track. Reading the two off one field is what makes the wrong
-/// pair unrepresentable rather than merely unlikely.
-///
-/// The rule is about a bar, not about the set: one marked slider among unmarked ones
-/// reads worse than none marked. It is satisfied here — each bar draws one kind's
-/// table, and the color filter's, the only table with marks, is marked throughout.
-struct Knob<F: 'static> {
-    name: &'static str,
-    hint: &'static str,
-    /// The mark this knob wears, and — see above — whether its word may be hidden.
-    glyph: Option<Icon>,
-    /// The slider's span, in display units — derived from the core's own bounds
-    /// (`ColorAdjust::EXPOSURE` and friends) so the track and the sanitizer cannot
-    /// disagree about how far a knob goes.
-    range: (f32, f32),
-    /// What the track snaps to, in display units, or `None` for the continuous
-    /// default. It exists for the one knob here that **counts** rather than
-    /// measures — an iris's blades — and a count needs it twice over: the arrow
-    /// keys move a continuous range by a hundredth of its span, which for three to
-    /// twelve blades rounds back to the blade it started on and reads as a dead
-    /// key.
-    step: Option<f32>,
-    /// What the slider shows, in the unit the *hand* thinks in — degrees for an
-    /// angle, the number itself for the rest. The engine's unit is radians (§21.5),
-    /// and translating here is what keeps "how an angle is presented" out of the log.
-    scale: f32,
-    get: fn(&F) -> f32,
-    set: fn(F, f32) -> F,
-    /// How the number beside the track reads, in the slider's own unit — in the
-    /// table with everything else per-knob, so renaming a knob cannot silently
-    /// change how its value prints.
-    fmt: fn(f32) -> String,
-}
-
-/// Degrees per radian, for the knobs whose display unit is not the engine's.
-const DEG: f32 = 180.0 / std::f32::consts::PI;
-
-/// A whole number of degrees — an angle's readout to anyone dragging it; decimals
-/// of a degree are noise. Shared by the dial's hue and the dispersion pad's axis, so
-/// the two ways this application shows an angle cannot drift apart.
-fn fmt_degrees(v: f32) -> String {
-    format!("{}\u{00B0}", v.round() as i32)
-}
-
-/// The color filter's **lightness** knobs — the two the dial has nothing to say
-/// about, because they act on Oklab `L` and the dial is one slice of constant `L`.
-///
-/// That split is the whole reason the bar is a dial *and* two tracks rather than one
-/// or the other: a plane picture cannot show a move along the axis it is
-/// perpendicular to, and a track cannot show three coupled numbers at once.
-const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
-    Knob {
-        name: "Exposure",
-        hint: "Stops of light. +1 is twice as much, \u{2212}1 is half \u{2014} applied \
-               to the light itself, so it brightens the way an exposure does rather \
-               than the way a brightness slider does.",
-        glyph: Some(stark_ui::icons::EXPOSURE),
-        range: ColorAdjust::EXPOSURE,
-        step: None,
-        scale: 1.0,
-        get: |c| c.exposure,
-        set: |c, v| ColorAdjust { exposure: v, ..c },
-        // The `+` is worth the arm: a stop is a signed quantity centred on zero,
-        // and "0.50" and "+0.50" say different things.
-        fmt: |v| format!("{v:+.2}"),
-    },
-    Knob {
-        name: "Contrast",
-        hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
-               one tone. It moves lightness only \u{2014} the colors keep their \
-               saturation, which is not true of a contrast curve in sRGB.",
-        glyph: Some(stark_ui::icons::CONTRAST),
-        range: ColorAdjust::CONTRAST,
-        step: None,
-        scale: 1.0,
-        get: |c| c.contrast,
-        set: |c, v| ColorAdjust { contrast: v, ..c },
-        fmt: |v| format!("{v:.2}"),
-    },
-];
-
-/// The focal blur's **size** knob (§21.12) — the one every aperture has, and the
-/// one the run of shape buttons beside it does not change. A knob table rather than
-/// a picture, and honestly so: a radius is one number with no partner to be a vector
-/// or a map with, so a track is the right control — the same test that gave the
-/// chromatic pair a pad. No glyph, on [`Knob::glyph`]'s bar rule: this kind's bar
-/// has no marked row, and a lone mark would say less than the word.
-const BLUR_KNOBS: &[Knob<FocalBlur>] = &[Knob {
-    name: "Radius",
-    hint: "The circle of confusion's radius, in canvas pixels \u{2014} how far each \
-           point's light is spread. A true convolution with the aperture, so lights \
-           bloom into bokeh instead of washing out (\u{a7}21.12); stated on the \
-           canvas, so the blur scales with the painting rather than with the window.",
-    glyph: None,
-    range: FocalBlur::RADIUS,
-    step: None,
-    scale: 1.0,
-    get: |b| b.radius,
-    set: |b, v| FocalBlur { radius: v, ..b },
-    fmt: |v| format!("{v:.1} px"),
-}];
-
-/// The knobs an [`Aperture::Blades`] iris has: how many, and turned how far.
-///
-/// Every `set` here rebuilds its own variant field by field rather than reaching
-/// through an accessor, which is the enum's whole point read back (§21.12): the
-/// parameters a shape does not have are not there to be written, so the `_` arm is
-/// the shape having been changed underneath a row that is about to be unmounted,
-/// and leaving it alone is the only right answer.
-const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
-    Knob {
-        name: "Blades",
-        hint: "How many blades the iris has \u{2014} five, six and eight are the \
-               common ones, and each makes its own polygon out of every \
-               out-of-focus highlight. Wide open a lens shows none of this; it is \
-               stopping down that brings the blades into the bokeh.",
-        glyph: None,
-        range: (Aperture::BLADES.0 as f32, Aperture::BLADES.1 as f32),
-        // A count, so the track lands on one — see [`Knob::step`].
-        step: Some(1.0),
-        scale: 1.0,
-        get: |b| match b.aperture {
-            Aperture::Blades { count, .. } => count as f32,
-            // In range, like every sibling table's unreachable arm: a fallback
-            // outside `range` would print a readout the track cannot show.
-            _ => Aperture::BLADES.0 as f32,
-        },
-        set: |b, v| FocalBlur {
-            aperture: match b.aperture {
-                Aperture::Blades { angle, .. } => Aperture::Blades {
-                    count: v.round() as u32,
-                    angle,
-                },
-                other => other,
-            },
-            ..b
-        },
-        fmt: |v| format!("{v:.0}"),
-    },
-    Knob {
-        name: "Angle",
-        hint: "Which way the polygon points.",
-        glyph: None,
-        // In **degrees**, because [`Knob::range`] is in display units and this
-        // knob's are not the engine's — the pair with `scale` below, which is what
-        // carries the number back to radians.
-        range: (Aperture::ANGLE.0 * DEG, Aperture::ANGLE.1 * DEG),
-        step: None,
-        scale: 1.0 / DEG,
-        get: |b| match b.aperture {
-            Aperture::Blades { angle, .. } => angle,
-            _ => 0.0,
-        },
-        set: |b, v| FocalBlur {
-            aperture: match b.aperture {
-                Aperture::Blades { count, .. } => Aperture::Blades { count, angle: v },
-                other => other,
-            },
-            ..b
-        },
-        fmt: fmt_degrees,
-    },
-];
-
-/// The knob an [`Aperture::Disc`] has: how much of its middle is taken out.
-///
-/// This is also where the mirror lens is *advertised*, and deliberately so: the two
-/// are one shape, so the doughnut is not a chip on the run above but a place on this
-/// track — and a knob whose point cannot be guessed has to say what it is for.
-const DISC_KNOBS: &[Knob<FocalBlur>] = &[Knob {
-    name: "Obstruction",
-    hint: "How much of the aperture's middle is blocked, as a share of the radius. \
-           0 is a plain disc; wind it up and you have a mirror lens, whose \
-           secondary shadows the centre and pushes every highlight out into a \
-           doughnut.",
-    glyph: None,
-    range: Aperture::OBSTRUCTION,
-    step: None,
-    scale: 1.0,
-    get: |b| match b.aperture {
-        Aperture::Disc { obstruction } => obstruction,
-        _ => 0.0,
-    },
-    set: |b, v| FocalBlur {
-        aperture: match b.aperture {
-            Aperture::Disc { .. } => Aperture::Disc { obstruction: v },
-            other => other,
-        },
-        ..b
-    },
-    fmt: |v| format!("{v:.2}"),
-}];
-
-/// The knobs an [`Aperture::Oval`] has: how hard the squeeze, and along what.
-const OVAL_KNOBS: &[Knob<FocalBlur>] = &[
-    Knob {
-        name: "Squeeze",
-        hint: "The long axis over the short one \u{2014} 2\u{d7} is the anamorphic \
-               cinema means when it says the word. The long axis stays the radius, \
-               so squeezing narrows the bokeh rather than stretching it.",
-        glyph: None,
-        range: Aperture::SQUEEZE,
-        step: None,
-        scale: 1.0,
-        get: |b| match b.aperture {
-            Aperture::Oval { squeeze, .. } => squeeze,
-            _ => 1.0,
-        },
-        set: |b, v| FocalBlur {
-            aperture: match b.aperture {
-                Aperture::Oval { angle, .. } => Aperture::Oval { squeeze: v, angle },
-                other => other,
-            },
-            ..b
-        },
-        fmt: |v| format!("{v:.2}\u{d7}"),
-    },
-    Knob {
-        name: "Angle",
-        hint: "Which way the long axis runs.",
-        glyph: None,
-        // In **degrees**, because [`Knob::range`] is in display units and this
-        // knob's are not the engine's — the pair with `scale` below, which is what
-        // carries the number back to radians.
-        range: (Aperture::ANGLE.0 * DEG, Aperture::ANGLE.1 * DEG),
-        step: None,
-        scale: 1.0 / DEG,
-        get: |b| match b.aperture {
-            Aperture::Oval { angle, .. } => angle,
-            _ => 0.0,
-        },
-        set: |b, v| FocalBlur {
-            aperture: match b.aperture {
-                Aperture::Oval { squeeze, .. } => Aperture::Oval { squeeze, angle: v },
-                other => other,
-            },
-            ..b
-        },
-        fmt: fmt_degrees,
-    },
-];
-
-/// The knobs the chosen aperture adds under the radius — one or two, never none:
-/// every shape here is a family rather than a single figure, which is what the
-/// enum's own merges bought.
-fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
-    match aperture {
-        Aperture::Disc { .. } => DISC_KNOBS,
-        Aperture::Blades { .. } => BLADES_KNOBS,
-        Aperture::Oval { .. } => OVAL_KNOBS,
-    }
-}
-
-/// The mark a shape's chip wears — the bokeh itself, at the setting the chip hands
-/// out ([`stark_ui::icons::APERTURE_DISC`] and its two neighbours). What the shape *makes* is
-/// the whole content of the choice, so the picture says more than the word does, and
-/// the run is one of the few that reads with the words gone.
-fn aperture_glyph(aperture: &Aperture) -> Icon {
-    match aperture {
-        Aperture::Disc { .. } => stark_ui::icons::APERTURE_DISC,
-        Aperture::Blades { .. } => stark_ui::icons::APERTURE_BLADES,
-        Aperture::Oval { .. } => stark_ui::icons::APERTURE_OVAL,
-    }
-}
-
-/// The sentence a shape's chip carries — what the aperture *is*, since the picture
-/// it makes is the whole reason to pick one.
-fn aperture_hint(aperture: &Aperture) -> &'static str {
-    match aperture {
-        Aperture::Disc { .. } => {
-            "A circular aperture \u{2014} the lens wide open, and the circle of \
-             confusion at its most ideal. Obstruct the middle of it and you have a \
-             mirror lens, whose highlights come out as doughnuts."
-        }
-        Aperture::Blades { .. } => {
-            "The iris stopped down onto its blades: highlights take the shape of \
-             the polygon they were let through."
-        }
-        Aperture::Oval { .. } => {
-            "An anamorphic lens: the front element squeezes one axis, and \
-             highlights stretch into ovals with it."
-        }
-    }
-}
+use stark_ui::filter::{
+    ANGLE_STEP, BLUR_KNOBS, COLOR_KNOBS, DEG, DIAL_AB, DIAL_CHROMA, DIAL_GRAB, DIAL_L, DIAL_PX,
+    DIAL_SCALE, Knob, PAD_HANDLE, PAD_MID, PAD_PX, PAD_R, PAD_RINGS, SATURATION_STEP, SPREAD_STEP,
+    TINT_STEP, aperture_glyph, aperture_hint, aperture_knobs, dial_ab, dial_xy, fmt_degrees,
+    pad_radius, pad_spread, pad_xy, snapped, spectrum_stops,
+};
 
 /// The run of shape buttons: which aperture the light is spread through (§21.12).
 ///
@@ -495,17 +200,7 @@ fn done_grading(state: AppState) {
 /// click.
 fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, filter: Filter) {
     let (carrier, above) = at.unwrap_or((None, None));
-    // The ids that already exist, taken before the dispatch: `AddFilter` mints the
-    // new id engine-side, so the new layer is the one the projection gains — not
-    // "the topmost filter", which is somebody else's filter the moment one already
-    // sits above the insertion point.
-    let before: Vec<LayerId> = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| o.layers.iter().map(|l| l.id).collect())
-        .unwrap_or_default();
-    dispatch(
+    super::layer::add_and_select(
         state,
         DocCommand::AddFilter {
             carrier,
@@ -513,15 +208,6 @@ fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, f
             filter,
         },
     );
-    let new_id = state.obs.peek().as_ref().and_then(|o| {
-        o.layers
-            .iter()
-            .find(|l| l.filter.is_some() && !before.contains(&l.id))
-            .map(|l| l.id)
-    });
-    if let Some(id) = new_id {
-        dispatch(state, PeerCommand::SetActiveLayer(id));
-    }
 }
 
 /// The "+ Filter" button, for the Layers panel's header — a filter *is* a layer, so
@@ -618,7 +304,7 @@ fn knob_rows<F: Copy + 'static>(
                         None => rsx! { "{knob.name}" },
                     }
                 }
-                span { class: "filter-knob-value", "{readout(knob, &current)}" }
+                span { class: "filter-knob-value", "{knob.readout(&current)}" }
                 input {
                     class: "slider",
                     style: crate::widgets::slider_fill(
@@ -657,59 +343,6 @@ fn knob_rows<F: Copy + 'static>(
 
 // —— the chroma dial ————————————————————————————————————————————————————————
 
-/// The dial's field, on screen (px) — square, like the picker's.
-const DIAL_PX: f32 = 116.0;
-
-/// The Oklab chroma the rim stands for: the reference color whose whole hue circle
-/// the dial tracks, so a point of the drawn ring is *where a color of this chroma
-/// ends up*.
-///
-/// A moderately saturated color rather than the gamut's edge, so the ring at rest
-/// sits well inside the plane and has somewhere to grow when saturation is pushed
-/// past 1.
-const DIAL_CHROMA: f32 = 0.12;
-
-/// Half-extent of the `(a, b)` plane the dial draws, per axis.
-///
-/// Derived rather than chosen: as far as the centre can travel, plus as wide as the
-/// rim can get. That is what makes the box big enough to hold **every reachable
-/// setting**, and so what makes the rim handle always inside the element that
-/// receives the pointer — no combination of a strong cast and a strong saturation can
-/// carry a handle somewhere it cannot be grabbed back from. A hand-picked extent
-/// would be a bound that has to be re-checked every time the core's are edited.
-const DIAL_AB: f32 = ColorAdjust::TINT.1 + ColorAdjust::SATURATION.1 * DIAL_CHROMA;
-
-/// The Oklab lightness the dial's plane is drawn at: mid-grey, the very lightness the
-/// contrast knob pivots about.
-///
-/// One slice, and one is enough — what the dial shows is a map of `(a, b)` alone,
-/// identical at every `L`, so a second slice would draw the same circle over a
-/// different backdrop. Hence no slice control: it could not change a pixel.
-const DIAL_L: f32 = CONTRAST_PIVOT;
-
-/// px per unit of `a`/`b` in the box above — the one conversion every drawn radius
-/// goes through.
-const DIAL_SCALE: f32 = DIAL_PX * 0.5 / DIAL_AB;
-
-/// How near the pointer must come to the rim handle to take it rather than the centre
-/// (px). Wider than the drawn dot, as a pointer target should be, and small enough
-/// that the rest of the field — which is all the centre's — stays a big target.
-const DIAL_GRAB: f32 = 10.0;
-
-/// What Shift steps each axis by. Their whole job is to make the round numbers
-/// reachable by hand: 0°, a saturation of exactly 1, a tint of exactly nothing and a
-/// spread of a whole pixel are single points in a continuum a pointer will not land
-/// on twice.
-///
-/// One angle step for both pictures, because "the round angles" is a fact about
-/// hands and not about hue: the dial's rotation and the fringe's axis want the same
-/// dozen directions, and two constants of the same value would be two chances to
-/// disagree.
-const ANGLE_STEP: f32 = std::f32::consts::PI / 12.0; // 15°
-const SATURATION_STEP: f32 = 0.05;
-const TINT_STEP: f32 = 0.01;
-const SPREAD_STEP: f32 = 1.0; // one canvas px
-
 /// The plane itself, rendered once for the process. Unlike the picker's field there is
 /// nothing to invalidate — [`DIAL_L`] and [`DIAL_AB`] are constants — so this is a
 /// `LazyLock` rather than a memo per mount, and selecting a filter costs no BMP.
@@ -738,34 +371,6 @@ enum Grab {
     /// held, and that is the difference in kind: the rim is a handle to grab, the
     /// field is a place to put the grey.
     Centre,
-}
-
-/// Where an Oklab `(a, b)` lands in the dial's box, in px from its top-left. `a` runs
-/// left→right and `b` bottom→top — the picker's own orientation, warm at the top,
-/// because they are two pictures of the same plane.
-fn dial_xy(ab: [f32; 2]) -> (f32, f32) {
-    (
-        (ab[0] / DIAL_AB * 0.5 + 0.5) * DIAL_PX,
-        (0.5 - ab[1] / DIAL_AB * 0.5) * DIAL_PX,
-    )
-}
-
-/// The inverse: the `(a, b)` under a pointer at `(x, y)` in the box.
-///
-/// Unclamped, deliberately — [`Filter::sanitized`] is the single place a number is
-/// held to its range, and it is on the path every edit takes. A clamp here would be a
-/// second opinion about the stops, which is exactly how a slider comes to disagree
-/// with the value it displays.
-fn dial_ab(x: f32, y: f32) -> [f32; 2] {
-    [
-        (x / DIAL_PX * 2.0 - 1.0) * DIAL_AB,
-        (1.0 - y / DIAL_PX * 2.0) * DIAL_AB,
-    ]
-}
-
-/// `v` to the nearest multiple of `step` — see the `*_STEP` constants.
-fn snapped(v: f32, step: f32) -> f32 {
-    (v / step).round() * step
 }
 
 /// One pointer sample on the dial: the filter that sample means, previewed to the
@@ -973,112 +578,13 @@ fn DialRow(name: &'static str, value: String, hint: &'static str) -> Element {
 
 // —— the dispersion pad ——————————————————————————————————————————————————————
 
-/// The pad's field, on screen (px) — square, and the dial's size, because the two are
-/// the same bar's picture and a bar whose height changed with the kind of filter
-/// selected would jump under the pointer that selected it.
-const PAD_PX: f32 = DIAL_PX;
-
-/// The centre of the field, in its own px — where the picture stays put.
-const PAD_MID: f32 = PAD_PX * 0.5;
-
-/// The radius the widest reachable spread is drawn at (px): the field's half-width,
-/// less room for the handle itself.
-///
-/// Derived rather than picked, on [`DIAL_AB`]'s argument turned the other way round:
-/// what has to be true is that **no reachable setting puts a handle outside the
-/// element that receives the pointer**, so the margin is the handle's own radius plus
-/// its grab slop, and a fatter handle moves the stop rather than escaping it.
-const PAD_R: f32 = PAD_MID - PAD_HANDLE - 2.0;
-
-/// The handle's drawn radius (px) — the dot at the blue end of the fringe.
-const PAD_HANDLE: f32 = 5.0;
-
-/// The spreads the graduation rings stand for, in canvas px — 8 and 32, with the
-/// ceiling itself drawn as the stop beyond them.
-///
-/// Each is a quarter of the next, which under the square-root law below puts them at
-/// exactly half of each other's radius — so the ladder draws itself evenly and the
-/// picture states its own scale: rings that crowd outward *are* the compression. Two
-/// rungs and the rim rather than three and the rim, because a fourth would land 6px
-/// from the centre and its label on top of the one above it.
-const PAD_RINGS: &[f32] = &[
-    ChromaticAberration::SPREAD.1 / 16.0,
-    ChromaticAberration::SPREAD.1 / 4.0,
-];
-
-/// How many stops the drawn spectrum spends. Enough that the bar reads as a continuum
-/// at the widest it is ever drawn (`2 · PAD_R` px) rather than as bands — which is the
-/// same thing the pass's tap count buys, for the same reason.
-const PAD_STOPS: usize = 32;
-
-/// Where a spread is drawn, as a radius in the field (px).
-///
-/// **Square-root, not linear**, and this is the one place the pad is a scale rather
-/// than a picture. The interesting spreads are the small ones — a fringe of two or
-/// three canvas px is a lens, thirty is an effect — and `SPREAD`'s ceiling is 128, so
-/// a linear pad would spend nine tenths of its radius on settings nobody dials and
-/// leave "2" and "3" a pixel apart. Equal *area* per unit of spread is the standard
-/// fix and it costs nothing in honesty, because the law is stated by the rings and
-/// the number itself is in the readout: `d(spread)/d(radius)` goes to zero at the
-/// centre, so the fine end is the fine end.
-fn pad_radius(spread: f32) -> f32 {
-    PAD_R * (spread / ChromaticAberration::SPREAD.1).max(0.0).sqrt()
-}
-
-/// The inverse: the spread a handle at radius `r` means.
-///
-/// Unclamped, for [`dial_ab`]'s reason — [`Filter::sanitized`] is the single place a
-/// number is held to its range, and a second opinion here is how a control comes to
-/// disagree with the value it displays. Past the rim a drag simply pins at 128.
-fn pad_spread(r: f32) -> f32 {
-    let t = r / PAD_R;
-    ChromaticAberration::SPREAD.1 * t * t
-}
-
-/// Where the blue end of the fringe is drawn, in the field's px.
-///
-/// `+y` is **down**, unlike the dial's plane: this is a canvas direction, and the
-/// canvas is drawn on the screen with `y` down. So the bar in the pad runs the way the
-/// fringe runs in the painting, which is the whole claim the picture makes.
-fn pad_xy(c: ChromaticAberration) -> (f32, f32) {
-    let r = pad_radius(c.spread);
-    (PAD_MID + r * c.angle.cos(), PAD_MID + r * c.angle.sin())
-}
-
-/// The dispersion spectrum as SVG gradient stops: `(offset, css color)` from the red
-/// end at 0 to the blue end at 1.
-///
-/// **The pass's own weights, at the pass's own wavelengths** (§21.10) — this is what
-/// makes the bar a statement about the render rather than a rainbow someone drew. Two
-/// honest adjustments, both about *showing* a response rather than integrating one:
-/// the run is normalized so its strongest channel is full intensity (the weights are a
-/// response, and their absolute scale means nothing — the pass divides them out too),
-/// and the result is encoded to sRGB, because that is what a screen takes. The
-/// relative brightness along the run survives both, so the deep ends read dark exactly
-/// as the eye finds them.
-///
-/// A `LazyLock` for [`DIAL_FIELD`]'s reason: it is a fixed function of nothing, so a
-/// filter selection costs no arithmetic.
+/// The dispersion spectrum as SVG gradient stops, `(offset, css color)` —
+/// [`spectrum_stops`] in the form a `<stop>` takes. A `LazyLock` for [`DIAL_FIELD`]'s
+/// reason: it is a fixed function of nothing, so a filter selection costs no arithmetic.
 static PAD_SPECTRUM: LazyLock<Vec<(f32, String)>> = LazyLock::new(|| {
-    let weights: Vec<[f32; 3]> = (0..PAD_STOPS)
-        .map(|i| dispersion_weight(i as f32 / (PAD_STOPS - 1) as f32))
-        .collect();
-    let peak = weights
+    spectrum_stops()
         .iter()
-        .flatten()
-        .copied()
-        .fold(0.0f32, f32::max)
-        .max(1e-6);
-    weights
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let q = |v: f32| (linear_to_srgb(v / peak).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            (
-                i as f32 / (PAD_STOPS - 1) as f32,
-                format!("#{:02x}{:02x}{:02x}", q(w[0]), q(w[1]), q(w[2])),
-            )
-        })
+        .map(|(at, [r, g, b])| (*at, format!("#{r:02x}{g:02x}{b:02x}")))
         .collect()
 });
 
@@ -1464,137 +970,5 @@ pub fn FilterBar() -> Element {
                 {label("Done")}
             }
         }
-    }
-}
-
-/// What the number reads as beside its track: the knob's own `fmt`, on the value in
-/// the slider's unit — per-knob in the table, so a label edit cannot change how a
-/// value prints.
-fn readout<F>(knob: &Knob<F>, settings: &F) -> String {
-    (knob.fmt)((knob.get)(settings) / knob.scale)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// How close two px positions or two Oklab coordinates have to be to count
-    /// as the same point. Generous, because what is being pinned is that the two
-    /// halves of a mapping are *inverses*, not the last bit of an `f32`.
-    const EPS: f32 = 1e-4;
-
-    /// The dial's two halves are inverses.
-    ///
-    /// Worth pinning because getting it wrong is silent and looks like feel: the
-    /// handle drifts away from the pointer that is dragging it, which reads as a
-    /// slippery control rather than as a sign error. Both halves are written out
-    /// by hand — one flips `b`, the other flips `y` — so there is a sign in each
-    /// that only their composition checks.
-    #[test]
-    fn the_dial_maps_both_ways() {
-        for ab in [
-            [0.0, 0.0],
-            [DIAL_AB, 0.0],
-            [-DIAL_AB, 0.0],
-            [0.0, DIAL_AB],
-            [0.0, -DIAL_AB],
-            [DIAL_AB * 0.37, -DIAL_AB * 0.81],
-        ] {
-            let (x, y) = dial_xy(ab);
-            let back = dial_ab(x, y);
-            assert!(
-                (back[0] - ab[0]).abs() < EPS && (back[1] - ab[1]).abs() < EPS,
-                "{ab:?} went to ({x}, {y}) and came back {back:?}"
-            );
-        }
-    }
-
-    /// And the orientation those signs encode: `a` runs left→right, `b` runs
-    /// **bottom→top** — warm at the top, the picker's own plane (§21.5). A test
-    /// of the round trip alone would pass with both signs flipped.
-    #[test]
-    fn the_dial_is_warm_at_the_top() {
-        let (x0, y0) = dial_xy([0.0, 0.0]);
-        let (right, _) = dial_xy([DIAL_AB * 0.5, 0.0]);
-        let (_, up) = dial_xy([0.0, DIAL_AB * 0.5]);
-        assert!(right > x0, "+a should run rightward");
-        assert!(up < y0, "+b should run upward, which is a smaller y");
-    }
-
-    /// The centre of the box is the neutral, on both halves. The one point where
-    /// a scale error and an offset error cannot hide behind each other.
-    #[test]
-    fn the_dial_centre_is_the_grey() {
-        let (x, y) = dial_xy([0.0, 0.0]);
-        assert!((x - DIAL_PX * 0.5).abs() < EPS);
-        assert!((y - DIAL_PX * 0.5).abs() < EPS);
-        let back = dial_ab(DIAL_PX * 0.5, DIAL_PX * 0.5);
-        assert!(back[0].abs() < EPS && back[1].abs() < EPS);
-    }
-
-    /// The fringe pad's two halves are inverses too — and this pair is the one
-    /// that is *not* linear (§21.10): equal area per unit of spread, so the fine
-    /// end of the range gets the room it needs.
-    #[test]
-    fn the_fringe_pad_maps_both_ways() {
-        let (_, top) = ChromaticAberration::SPREAD;
-        for spread in [0.0, 1.0, 2.0, 3.0, 30.0, top * 0.5, top] {
-            let r = pad_radius(spread);
-            let back = pad_spread(r);
-            assert!(
-                (back - spread).abs() < 1e-3,
-                "{spread} went to radius {r} and came back {back}"
-            );
-        }
-    }
-
-    /// The law that pairing states: **equal area per unit of spread**, which is
-    /// the whole reason it is a square root rather than a line. Checked as the
-    /// property rather than as a constant, so the numbers may move and the claim
-    /// the doc makes cannot.
-    #[test]
-    fn the_fringe_pad_spends_equal_area_per_unit() {
-        let (_, top) = ChromaticAberration::SPREAD;
-        // Area inside the handle's radius, per unit of spread, at three points
-        // across the range. π cancels, so this is r² / spread.
-        let per_unit = |spread: f32| {
-            let r = pad_radius(spread);
-            r * r / spread
-        };
-        let (a, b, c) = (per_unit(top * 0.1), per_unit(top * 0.5), per_unit(top));
-        assert!(
-            (a - b).abs() < 1e-3 && (b - c).abs() < 1e-3,
-            "area per unit drifts across the range: {a}, {b}, {c}"
-        );
-        // And the rim is the top of the range, which is what makes the pad's
-        // edge mean something.
-        assert!((pad_radius(top) - PAD_R).abs() < EPS);
-        assert!((pad_radius(0.0)).abs() < EPS);
-    }
-
-    /// Neither half clamps, and that is deliberate: `Filter::sanitized` is the
-    /// one place a number is held to its range, and a second opinion here is how
-    /// a control comes to disagree with the value it displays. Pinned because
-    /// "add a clamp" is the obvious-looking edit.
-    #[test]
-    fn the_two_inverses_leave_the_clamping_to_the_sanitizer() {
-        let (_, top) = ChromaticAberration::SPREAD;
-        assert!(pad_spread(PAD_R * 2.0) > top, "the pad clamped a drag");
-        let past = dial_ab(DIAL_PX * 2.0, -DIAL_PX);
-        assert!(
-            past[0] > DIAL_AB && past[1] > DIAL_AB,
-            "the dial clamped one"
-        );
-    }
-
-    /// `snapped` is round-half-away-from-zero to a multiple, and symmetric about
-    /// zero — the Shift-held steps read the same on either side of neutral.
-    #[test]
-    fn snapping_is_symmetric_about_zero() {
-        assert_eq!(snapped(0.0, 0.25), 0.0);
-        assert_eq!(snapped(0.3, 0.25), 0.25);
-        assert_eq!(snapped(-0.3, 0.25), -0.25);
-        assert_eq!(snapped(0.13, 0.25), 0.25);
-        assert_eq!(snapped(-0.13, 0.25), -0.25);
     }
 }

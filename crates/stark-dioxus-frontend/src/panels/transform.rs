@@ -175,26 +175,15 @@ pub fn TransformBar() -> Element {
             // The three families. Switching carries the deformation when the new
             // family holds it exactly (free → perspective, free → warp), and
             // commits it first when it cannot — never a silent approximation.
-            button {
-                class: chip(family == Family::Free),
-                title: "Move, scale, rotate, shear — the ellipse widget",
-                onclick: move |_| switch_family(state, ui, Family::Free),
-                {icon(stark_ui::icons::TRANSFORM)}
-                {label("Free")}
-            }
-            button {
-                class: chip(family == Family::Perspective),
-                title: "Drag the corners into a perspective (§16.8)",
-                onclick: move |_| switch_family(state, ui, Family::Perspective),
-                {icon(stark_ui::icons::PERSPECTIVE)}
-                {label("Perspective")}
-            }
-            button {
-                class: chip(family == Family::Warp),
-                title: "Bend the paint through a mesh (§16.9)",
-                onclick: move |_| switch_family(state, ui, Family::Warp),
-                {icon(stark_ui::icons::WARP)}
-                {label("Warp")}
+            for to in <Family as strum::VariantArray>::VARIANTS.iter().copied() {
+                button {
+                    key: "{to.label()}",
+                    class: chip(family == to),
+                    title: to.tip(),
+                    onclick: move |_| switch_family(state, ui, to),
+                    {icon(to.glyph())}
+                    {label(to.label())}
+                }
             }
             if family == Family::Free {
                 span { class: "bar-sep" }

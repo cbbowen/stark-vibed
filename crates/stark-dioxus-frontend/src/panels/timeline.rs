@@ -29,51 +29,7 @@ use crate::layout::chrome_dimmed;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch, use_obs_opt};
 use stark_engine::command::DocCommand;
-
-/// Actions per second at 1×. Eight is about the rate at which a painting reads as
-/// being *made* rather than as a slideshow of states: fast enough that a session's
-/// worth of strokes lands in a minute or two, slow enough that a single one can be
-/// seen arriving. The speed chips scale it from a quarter of this to four times it.
-pub const BASE_RATE: f32 = 8.0;
-
-/// The shortest wait worth asking the browser for. Below one animation frame the
-/// timer stops being what paces playback — the browser clamps it, and the rate
-/// silently stops responding to the speed control — so past this point the *stride*
-/// grows instead of the interval shrinking.
-const MIN_TICK_MS: f32 = 16.0;
-
-/// Most ticks a track will draw. Past this they sit closer together than a hairline
-/// and stop being marks at all; the fill and the counter still say where the
-/// playhead is, and eight hundred `<div>`s to say it worse is not a trade.
-const MAX_TICKS: usize = 240;
-
-/// The playback rates the transport offers, as multiples of [`BASE_RATE`].
-const SPEEDS: [(f32, &str); 5] = [
-    (0.25, "\u{00BC}\u{00D7}"),
-    (0.5, "\u{00BD}\u{00D7}"),
-    (1.0, "1\u{00D7}"),
-    (2.0, "2\u{00D7}"),
-    (4.0, "4\u{00D7}"),
-];
-
-/// How long to wait between steps, and how many actions to cross each time, for a
-/// given speed multiplier.
-///
-/// One step per tick until a tick would be shorter than a frame; from there the
-/// interval is pinned and the stride takes over. Without that, "4×" past the
-/// browser's timer floor would be indistinguishable from "1×" — the control would
-/// still move and nothing would happen.
-fn pace(speed: f32) -> (i32, usize) {
-    let per_step = 1000.0 / (BASE_RATE * speed.max(0.01));
-    if per_step >= MIN_TICK_MS {
-        (per_step.round() as i32, 1)
-    } else {
-        (
-            MIN_TICK_MS as i32,
-            (MIN_TICK_MS / per_step).round().max(1.0) as usize,
-        )
-    }
-}
+use stark_ui::timeline::{MAX_TICKS, SPEEDS, pace};
 
 /// Where the playhead stands and how far it can travel, or `None` for a document
 /// whose history is not this client's alone to walk (a shared session).

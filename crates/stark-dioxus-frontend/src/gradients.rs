@@ -30,7 +30,7 @@ use stark_model::geom::Vec2;
 use stark_model::gradient::Gradient;
 
 use crate::state::{AppState, root_signal};
-use stark_ui::storage::{self, Store};
+use stark_ui::gradients::{GradientEntry, RenameRefused};
 
 /// How wide a patch each trace sample averages, in canvas px (radius 2 = 5×5).
 ///
@@ -43,20 +43,6 @@ const TRACE_RADIUS: u32 = 2;
 /// A trace shorter than this (canvas px of arc) is a click that wandered, not a
 /// gradient — release ends the mode without a capture.
 const MIN_TRACE_LEN: f32 = 8.0;
-
-/// One named gradient in the library — and, unchanged, one stored entry: both fields
-/// are durable, so a second struct to map it onto would be a copy with nothing to say.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct GradientEntry {
-    /// Display name; unique in the library ([`next_name`] proposes the first
-    /// free "Gradient N", and a capture never overwrites).
-    pub name: String,
-    pub gradient: Gradient,
-}
-
-impl storage::Entry for GradientEntry {
-    const STORE: Store = Store::Gradients;
-}
 
 /// The gradient library's signals (`crate::gradients`). Root-owned like every
 /// library here: the capture is spawned detached, and the trace overlay that
@@ -108,32 +94,23 @@ pub fn select(state: AppState, name: &str) {
 /// so a library with anything in it always answers, and the pop-out
 /// highlights the same row this resolves to.
 pub fn current(state: AppState) -> Option<Gradient> {
-    current_name(state).and_then(|name| {
-        state
-            .gradients
-            .entries
-            .read()
-            .iter()
-            .find(|e| e.name == name)
-            .map(|e| e.gradient.clone())
-    })
+    let entries = state.gradients.entries.read();
+    let selected = state.gradients.selected.read();
+    stark_ui::gradients::current(&entries, selected.as_deref()).map(|e| e.gradient.clone())
 }
 
 /// The name [`current`] resolves to, for the pop-out's highlight.
 pub fn current_name(state: AppState) -> Option<String> {
     let entries = state.gradients.entries.read();
-    let sel = state.gradients.selected.read();
-    sel.as_ref()
-        .filter(|n| entries.iter().any(|e| &e.name == *n))
-        .cloned()
-        .or_else(|| entries.first().map(|e| e.name.clone()))
+    let selected = state.gradients.selected.read();
+    stark_ui::gradients::current(&entries, selected.as_deref()).map(|e| e.name.clone())
 }
 
 /// Load what this browser has saved. Call once at app start, before the
 /// renderer exists — entries are pure data and the pop-out should be populated
 /// on first open.
 pub fn load(state: AppState) {
-    let Some(entries) = read_storage() else {
+    let Some(entries) = stark_ui::gradients::read_storage() else {
         return;
     };
     let mut list = state.gradients.entries;
@@ -242,14 +219,14 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
         let mut entries = state.gradients.entries;
         let name = {
             let mut list = entries.write();
-            let name = next_name(&list);
+            let name = stark_ui::gradients::next_name(&list);
             list.push(GradientEntry {
                 name: name.clone(),
                 gradient,
             });
             name
         };
-        persist(&entries.read());
+        stark_ui::gradients::persist(&entries.read());
         // And take it in hand. A trace is a *choosing* gesture — the line was
         // drawn to get this ramp — so the capture lands selected rather than at
         // the foot of the library with something else still the highlighted
@@ -265,26 +242,22 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
 pub fn remove(state: AppState, name: &str) {
     let mut entries = state.gradients.entries;
     entries.write().retain(|e| e.name != name);
-    persist(&entries.read());
+    stark_ui::gradients::persist(&entries.read());
 }
 
-/// Rename one gradient. Trimmed; an empty or unchanged result costs nothing.
+/// Rename one gradient, by the library's own rule ([`stark_ui::gradients::rename`]).
 ///
-/// Names are this library's identity — the selection, a removal and the row
-/// keys all speak them — so a name another entry already wears is refused, and
-/// the notice says so rather than a silent no-op leaving the field's text
-/// apparently ignored. A selection pointing at the old name follows the
-/// rename: falling back to the first entry would swap the ramp in hand as a
-/// side effect of relabelling it.
+/// A name another entry already wears is refused, and the notice says so rather than a
+/// silent no-op leaving the field's text apparently ignored. A selection pointing at the
+/// old name follows the rename: falling back to the first entry would swap the ramp in
+/// hand as a side effect of relabelling it.
 pub fn rename(state: AppState, from: &str, to: &str) {
-    let to = to.trim();
-    if to.is_empty() || to == from {
-        return;
-    }
     let mut entries = state.gradients.entries;
-    {
-        let mut list = entries.write();
-        if list.iter().any(|e| e.name == to) {
+    let renamed = stark_ui::gradients::rename(&mut entries.write(), from, to);
+    let to = to.trim();
+    match renamed {
+        Ok(()) => {}
+        Err(RenameRefused::Taken) => {
             let mut notice = state.gradients.notice;
             notice.set(Some(format!(
                 "There is already a gradient named \u{201c}{to}\u{201d} \u{2014} \
@@ -292,25 +265,14 @@ pub fn rename(state: AppState, from: &str, to: &str) {
             )));
             return;
         }
-        let Some(entry) = list.iter_mut().find(|e| e.name == from) else {
-            return;
-        };
-        entry.name = to.to_string();
+        // Nothing to rename to, or nothing to rename: it costs nothing and says nothing.
+        Err(RenameRefused::Empty | RenameRefused::Unchanged | RenameRefused::Missing) => return,
     }
-    persist(&entries.read());
+    stark_ui::gradients::persist(&entries.read());
     let mut sel = state.gradients.selected;
     if sel.peek().as_deref() == Some(from) {
         sel.set(Some(to.to_string()));
     }
-}
-
-/// The first free "Gradient N" name — captures are named by the machinery, so
-/// the artist traces twice without a dialog between.
-pub fn next_name(entries: &[GradientEntry]) -> String {
-    (1..)
-        .map(|i| format!("Gradient {i}"))
-        .find(|n| !entries.iter().any(|e| &e.name == n))
-        .unwrap()
 }
 
 /// The CSS that draws an entry's strip: a `linear-gradient(in oklab, …)` whose
@@ -337,23 +299,6 @@ pub fn css_strip(g: &Gradient) -> String {
         })
         .collect();
     format!("linear-gradient(in oklab to right, {})", stops.join(", "))
-}
-
-// --- persistence ----------------------------------------------------------
-//
-// [`GradientEntry`] is the stored entry, so there is nothing here but the two calls:
-// the format and the rule it exists for — one damaged entry is skipped rather than
-// poisoning the library — are stated in `stark_ui::storage`, once, for all four
-// libraries. What this library leans on it for is `Gradient`'s own deserialization
-// gate: a tampered entry is refused there and dropped here, rather than becoming an
-// unsampleable ramp.
-
-fn persist(entries: &[GradientEntry]) {
-    storage::save_list(entries);
-}
-
-fn read_storage() -> Option<Vec<GradientEntry>> {
-    storage::load_list()
 }
 
 /// Arc length of a traced polyline, for the "was that a trace or a click"
@@ -392,44 +337,5 @@ mod tests {
         let css = css_strip(&gradient());
         assert!(css.starts_with("linear-gradient(in oklab to right, oklab("));
         assert!(css.contains("0.00%") && css.contains("100.00%"));
-    }
-
-    #[test]
-    fn names_count_past_the_holes() {
-        let mut entries = vec![
-            GradientEntry {
-                name: "Gradient 1".into(),
-                gradient: gradient(),
-            },
-            GradientEntry {
-                name: "Gradient 3".into(),
-                gradient: gradient(),
-            },
-        ];
-        assert_eq!(next_name(&entries), "Gradient 2");
-        entries.remove(0);
-        assert_eq!(next_name(&entries), "Gradient 1");
-    }
-
-    #[test]
-    fn a_stored_entry_survives_the_round_trip_and_a_bad_one_is_repaired() {
-        let entry = GradientEntry {
-            name: "Dusk".into(),
-            gradient: gradient(),
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        let back: GradientEntry = serde_json::from_str(&json).expect("round trip");
-        assert_eq!(back.name, "Dusk");
-        assert_eq!(back.gradient, entry.gradient);
-
-        // One stop names no ramp, and the load path repairs it into one rather than
-        // refusing (§22.1) — so the row survives `storage::load_list` as a flat ramp of
-        // its own color, under the name the artist gave it. It used to be dropped, which
-        // is silent loss of a row the artist can see and delete.
-        let bad = r#"{"name":"Bad","gradient":[{"t":0.5,"color":[0.25,0.5,0.75]}]}"#;
-        let back: GradientEntry = serde_json::from_str(bad).expect("a row still reads");
-        assert_eq!(back.name, "Bad");
-        assert_eq!(back.gradient.sample(0.0), Srgb::new([0.25, 0.5, 0.75]));
-        assert_eq!(back.gradient.sample(1.0), Srgb::new([0.25, 0.5, 0.75]));
     }
 }

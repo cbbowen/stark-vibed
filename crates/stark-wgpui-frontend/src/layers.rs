@@ -230,11 +230,11 @@ pub fn layers_body(
                         .flex_1()
                         .child(Select::new(&controls.blend).w_full().disabled(blend_inert)),
                 ),
-            if blend_inert {
-                "Nothing composites under this layer, so every mode looks the same here"
-            } else {
-                "Blend \u{2014} how this layer meets what is under it"
-            },
+            // The selected mode's own description, as the web picker's hover gives it.
+            selected.map_or(
+                "Blend \u{2014} how this layer meets what is under it",
+                |r| layer_tree::blend_hint(r.info.blend, &r.info),
+            ),
         ))
         .child(crate::panel::Slider::new(
             stark_ui::icons::OPACITY,
@@ -366,15 +366,9 @@ pub fn layers_body(
                             inert: clip_inert,
                             region: Region::Clip(id),
                             regions: regions.clone(),
-                            tip: if clip_inert {
-                                "Nothing composites under this layer, so clipping it \
-                                 would leave nothing to show"
-                            } else if row.info.clip {
-                                "Unclip"
-                            } else {
-                                "Clip to the layer below"
-                            }
-                            .into(),
+                            // What clipping means *here*, off the same predicate that
+                            // makes the chip inert — the web chip's own hover.
+                            tip: layer_tree::clip_hint(&row.info).into(),
                         })
                 })),
         )

@@ -137,8 +137,8 @@ outlier ignored, the normalization refusals) is pinned CPU-side in
 
 A gradient is something the artist paints **with**, not part of what they have
 painted — the same classification call as brush presets and the shape library
-(§11), and the same consequences: entries live in the frontend
-(`stark-dioxus-frontend/src/gradients.rs`), follow this browser across documents
+(§11), and the same consequences: entries live in the frontend's model
+(`stark-ui/src/gradients.rs`), follow this browser across documents
 via `localStorage` (`stark.gradients`, a JSON list of `{name, gradient}` read
 entry by entry, so one damaged entry is skipped and the rest of the library
 still loads — §25.6), never enter the document, and never reach a peer. When the

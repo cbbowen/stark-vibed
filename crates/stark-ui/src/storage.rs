@@ -188,7 +188,7 @@ pub enum Store {
     /// (`slots::seed_defaults`). The old key is dropped at start
     /// ([`drop_retired`]).
     Slots,
-    /// The gradient library (§22.3, a frontend's `gradients`).
+    /// The gradient library (§22.3, `crate::gradients`).
     Gradients,
     /// Where the window was and how big — **the native frontend's alone** (§11.1).
     ///
@@ -399,9 +399,8 @@ fn write<T: Serialize + ?Sized>(store: Store, value: &T) {
 ///
 /// # Why it is compiled rather than `#[cfg(test)]`
 ///
-/// Three of the records live in a frontend (`tutor::Row`, `gradients::GradientEntry`,
-/// `window::Placement`), and a `#[cfg(test)]` item is not visible across a crate
-/// boundary — a test-only spelling here would leave exactly the records this crate
+/// Two of the records live in a frontend (`tutor::Row`, `window::Placement`), and a
+/// `#[cfg(test)]` item is not visible across a crate boundary — a test-only spelling here would leave exactly the records this crate
 /// cannot see unchecked. It is generic, so a build that never calls it never
 /// instantiates it, and the wasm bundle carries nothing.
 #[track_caller]

@@ -48,7 +48,7 @@ mod tests {
             <stark_ui::assets::Row<stark_ui::assets::Shapes> as Entry>::STORE,
             <stark_ui::presets::StoredPreset as Entry>::STORE,
             <stark_ui::slots::StoredSlot as Entry>::STORE,
-            <crate::gradients::GradientEntry as Entry>::STORE,
+            <stark_ui::gradients::GradientEntry as Entry>::STORE,
             <stark_ui::assets::Row<stark_ui::assets::Substrates> as Entry>::STORE,
         ];
         let distinct: HashSet<Store> = claimed.iter().copied().collect();
@@ -299,10 +299,10 @@ mod tests {
 
     /// A two-stop ramp under a name — the gradient library's row, which has no
     /// `Default` because a ramp needs at least two stops to be one (§22.2).
-    fn gradient_entry() -> crate::gradients::GradientEntry {
+    fn gradient_entry() -> stark_ui::gradients::GradientEntry {
         use stark_model::Srgb;
         use stark_model::gradient::{Gradient, GradientStop};
-        crate::gradients::GradientEntry {
+        stark_ui::gradients::GradientEntry {
             name: "Gradient 1".to_string(),
             gradient: Gradient::new(vec![
                 GradientStop {

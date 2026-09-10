@@ -24,8 +24,7 @@ use std::collections::HashSet;
 use crate::reorder::{Grab, Motion, Slide};
 use stark_engine::LayerInfo;
 use stark_engine::command::DocCommand;
-use stark_model::document::LayerId;
-use stark_model::document::Place;
+use stark_model::document::{BlendMode, DRAGO_K_RANGE, LayerId, Place};
 
 /// How far one level of membership indents a row, in pixels. Named because three
 /// things are measured in it: the row's own offset, the slot the indent leaves empty
@@ -119,9 +118,115 @@ impl Row {
     /// Whether the clip chip has anything to say about this layer — see
     /// [`blend_inert`](Self::blend_inert) for why the two are not one answer.
     pub fn clip_inert(&self) -> bool {
-        match self.info.filter {
-            Some(_) => !self.info.has_underlay,
-            None => !self.info.has_backdrop,
+        clip_inert(&self.info)
+    }
+}
+
+/// [`Row::clip_inert`], asked of the layer alone — so [`clip_hint`] explains a dead chip
+/// by the same predicate that killed it.
+fn clip_inert(info: &LayerInfo) -> bool {
+    match info.filter {
+        Some(_) => !info.has_underlay,
+        None => !info.has_backdrop,
+    }
+}
+
+/// What a blend mode does, in one line, for the picker's hover.
+///
+/// Here rather than beside [`BlendMode`] for [`layer_label`]'s reason: the mode's *name*
+/// travels with the document, but deciding that a painter wants to hear "cannot blow out"
+/// rather than "conjugate of addition under `x/(1+x)`" is a presentation call.
+pub fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
+    // The two cases where the control is not saying what it usually says come first,
+    // because they are about *this row* rather than about the mode.
+    if !layer.has_backdrop {
+        return "Nothing composites under this layer, so every mode looks the same here.";
+    }
+    if layer.is_group {
+        return match mode {
+            BlendMode::Normal => "This group sits on top of what is below it.",
+            _ => {
+                "How this group \u{2014} everything it carries, composited \u{2014} \
+                  meets what is below it."
+            }
+        };
+    }
+    match mode {
+        BlendMode::Normal => "The layer sits on top of what is below it.",
+        BlendMode::Reinhard => {
+            "Combines light instead of covering it \u{2014} softer than Screen, and it \
+             cannot blow out however deep you stack it. For glazes, mist and rim light."
+        }
+        BlendMode::Drago { .. } => {
+            "Combines light on a log curve \u{2014} hotter, and where two lights coincide \
+             it pushes past white into the highlight roll-off. For flame and speculars."
+        }
+        BlendMode::Multiply => {
+            "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
+             white leaves the layer below alone, black hides it. For shadows and tinting."
+        }
+    }
+}
+
+/// What the Bend slider does, in one line — written as its two ends, because the ends are
+/// what a painter acts on: one is where a specular reads as *hot*, the other is what to
+/// pull back to when it has started eating the drawing underneath.
+pub const BEND_HINT: &str = "How hard Radiance's curve bends. Left, coincident lights \
+                         barely add and the brighter one simply wins; right, they add \
+                         outright and reach the highlight roll-off sooner.";
+
+/// The Bend slider's ends, in **octaves** of the mode's `k` — [`DRAGO_K_RANGE`] in the
+/// unit the track travels in. The bend is a scale, so what it does to the curve is a
+/// matter of ratio: a linear track would cross the whole interesting range in its first
+/// few px.
+pub fn bend_ends() -> (f32, f32) {
+    (DRAGO_K_RANGE.0.log2(), DRAGO_K_RANGE.1.log2())
+}
+
+/// What the opacity slider fades, in one line.
+///
+/// On a group, opacity is the one property that could *not* be borrowed from the base the
+/// way blend and clip are (§14.3), so it fades the base and everything it carries as one.
+pub fn opacity_hint(layer: &LayerInfo) -> &'static str {
+    if layer.is_group {
+        "Fades this layer and everything it carries, as one"
+    } else if layer.filter.is_some() {
+        "How much of the adjustment lands \u{2014} at 0 the filter is the identity"
+    } else if layer.is_paintable() {
+        "Opacity of the selected layer"
+    } else {
+        "Frame opacity \u{2014} drag down to see through it while composing"
+    }
+}
+
+/// What clipping would do to *this* layer, in one line.
+///
+/// Different sentences because the control means different things depending on where the
+/// row sits, and the difference is the part users get wrong everywhere else (§14.4).
+pub fn clip_hint(layer: &LayerInfo) -> &'static str {
+    if clip_inert(layer) {
+        return "Nothing composites under this layer, so clipping it would leave nothing \
+                to show.";
+    }
+    // A filter's clip bounds where its *result* may land, since a filter has nothing of
+    // its own to show (§21.4) — what it bounds is a fringe rather than paint.
+    if layer.filter.is_some() {
+        return "Clip: keep this filter inside the paint it is filtering \u{2014} it may \
+                change the color that is there, never spread past its edge.";
+    }
+    if layer.is_group {
+        return "Clip: this group shows only where there is paint under the group.";
+    }
+    match layer.carrier {
+        // Inside a group the bound is the group, which is the whole reason groups and
+        // clipping are one feature rather than two.
+        Some(_) => {
+            "Clip: show only where there is paint under this layer *within its group* \
+             \u{2014} the whole stack below it, not just the one layer."
+        }
+        None => {
+            "Clip: show only where there is paint under this layer. To clip to one \
+             layer alone, Carry it onto that layer first."
         }
     }
 }
@@ -857,21 +962,7 @@ mod tests {
     /// answers agree (§21.4).
     #[test]
     fn a_filters_clip_outlives_its_blend() {
-        use stark_model::document::{ColorAdjust, Filter};
-
-        let row = |filter: bool, backdrop: bool, underlay: bool| Row {
-            info: LayerInfo {
-                filter: filter.then_some(Filter::Color(ColorAdjust::NEUTRAL)),
-                has_backdrop: backdrop,
-                has_underlay: underlay,
-                ..info(1, 0, None, false)
-            },
-            hidden: false,
-            collapsed: false,
-            carry_onto: None,
-            release_to: None,
-            removable: true,
-        };
+        let row = arranged;
 
         // A paint layer: one answer, twice, off `has_backdrop`.
         let paint = row(false, true, true);
@@ -892,6 +983,48 @@ mod tests {
         );
         let empty = row(true, true, false);
         assert!(empty.clip_inert(), "nothing under it in its own stack");
+    }
+
+    /// A row in one of the arrangements the clip predicates tell apart: a filter or not,
+    /// over a backdrop in its own stack or not, over anything the renderer counts as
+    /// beneath it or not.
+    fn arranged(filter: bool, backdrop: bool, underlay: bool) -> Row {
+        use stark_model::document::{ColorAdjust, Filter};
+
+        Row {
+            info: LayerInfo {
+                filter: filter.then_some(Filter::Color(ColorAdjust::NEUTRAL)),
+                has_backdrop: backdrop,
+                has_underlay: underlay,
+                ..info(1, 0, None, false)
+            },
+            hidden: false,
+            collapsed: false,
+            carry_onto: None,
+            release_to: None,
+            removable: true,
+        }
+    }
+
+    /// The clip chip's hover explains a dead chip by the predicate that killed it, in every
+    /// arrangement — including the two where a filter's underlay and its backdrop part, and
+    /// a hover reading `has_backdrop` would call a live chip dead and a dead one live.
+    #[test]
+    fn a_clip_hint_is_inert_exactly_where_its_chip_is() {
+        let dead = clip_hint(&arranged(false, false, false).info);
+        for filter in [false, true] {
+            for backdrop in [false, true] {
+                for underlay in [false, true] {
+                    let row = arranged(filter, backdrop, underlay);
+                    assert_eq!(
+                        clip_hint(&row.info) == dead,
+                        row.clip_inert(),
+                        "filter={filter} backdrop={backdrop} underlay={underlay}: the hover \
+                         and the chip disagree about whether it is live"
+                    );
+                }
+            }
+        }
     }
 
     /// Carry and Release come out of the row whole. Each was spelled twice — once per

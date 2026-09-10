@@ -49,10 +49,12 @@ use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
 use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
-use stark_model::document::{GuideId, Lens, PerspectiveGuide, PlaneTrace};
+use stark_model::document::{GuideId, Lens, PerspectiveGuide};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
-use stark_ui::guides::{AXIS_NAMES, CELL_OCTAVES, PAIR_AXES};
+use stark_ui::guides::{
+    AXIS_NAMES, CELL_OCTAVES, FOCAL_RANGE, GuideRegion, Handles, PAIR_AXES, anchor_at,
+};
 use stark_ui::reorder::{Grab, Motion, Slide};
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
@@ -75,17 +77,6 @@ const AXIS_CSS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
 /// (`stark_ui::guides::Dial::Opacity`) rather than spelled here three times as the
 /// fill, the `min` and the `max`.
 const OPACITY_RANGE: (f32, f32) = stark_ui::guides::Dial::Opacity.range();
-
-/// Grab radius of the center-of-view crosshair, screen px.
-const CENTER_GRAB_PX: f32 = 14.0;
-/// Half-width of the grab band around a drawn curve — a view-cone ring or a
-/// horizon — in screen px, so a handle is equally grabbable at any
-/// magnification. One number for both because the two are the same ask of the
-/// hand: put the pointer on a line about a pixel wide.
-const LINE_BAND_PX: f32 = 10.0;
-/// The lens's travel, canvas px: wide enough for any drawing, floored so the
-/// circle cannot be dragged through its own center into a degenerate camera.
-const FOCAL_RANGE: (f32, f32) = (120.0, 12000.0);
 
 /// The engine's guide roster, as this client sees it (§20.5) — the document's
 /// guides, each row carrying whether this client's eye on it is open.
@@ -205,7 +196,7 @@ pub fn add_perspective(state: AppState) {
         .map(|o| o.view.center)
         .unwrap_or(Vec2::ZERO);
     let after = guides_of(state).last().map(|g| g.id);
-    dispatch(
+    add_and_edit(
         state,
         DocCommand::AddGuide {
             guide: PerspectiveGuide {
@@ -216,11 +207,19 @@ pub fn add_perspective(state: AppState) {
             name: None,
         },
     );
-    // The engine mints no id for a guide — its identity is the id of the action
-    // that added it (§20.5) — so the new guide is *found* rather than returned.
-    // It was appended, so it is the tail; `dispatch` refreshes the projection
-    // inside the engine's own borrow, so the roster read here already has it.
-    if let Some(added) = guides_of(state).last().map(|g| g.id) {
+}
+
+/// Dispatch `add` — a command that adds one guide — and pick up the guide it added.
+///
+/// The engine mints no id to hand back — a guide's identity is the id of the action that
+/// added it (§20.5) — so the new guide is *found*, by comparing the roster before and
+/// after (`stark_ui::mint`). `dispatch` refreshes the projection inside the engine's own
+/// borrow, so the second read already has it.
+fn add_and_edit(state: AppState, add: DocCommand) {
+    let before: Vec<GuideId> = guides_of(state).iter().map(|g| g.id).collect();
+    dispatch(state, add);
+    let added = stark_ui::mint::minted(&before, guides_of(state).into_iter().map(|g| g.id));
+    if let Some(added) = added {
         begin_guide_edit(state, added);
     }
 }
@@ -288,26 +287,6 @@ fn move_guide(state: AppState, id: GuideId, to: usize) {
             after: anchor_at(&ids, from, to),
         },
     );
-}
-
-/// The guide a row taken from `from` and dropped at gap `to` lands **after** —
-/// `None` for the head of the roster.
-///
-/// Its own function, and pure, because it is the one piece of off-by-one
-/// arithmetic in this file: the gap is counted in the rows that *stay put*, so it
-/// is an index into the roster with the dragged row already removed, and the
-/// anchor is the entry one before it in that same shortened list. The engine
-/// resolves the anchor against exactly that list (`DocState::move_guide`), which
-/// is what makes the round trip exact — and what
-/// `tests::the_anchor_lands_the_row_where_it_was_dropped` pins.
-fn anchor_at(ids: &[GuideId], from: usize, to: usize) -> Option<GuideId> {
-    let rest: Vec<GuideId> = ids
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != from)
-        .map(|(_, id)| *id)
-        .collect();
-    to.min(rest.len()).checked_sub(1).map(|i| rest[i])
 }
 
 /// Remove a guide, and end the edit mode if it was the guide being shaped.
@@ -856,26 +835,6 @@ pub fn PerspectiveGuideBar() -> Element {
     }
 }
 
-/// What a press at a point would grab, nearest wins: the crosshair moves the
-/// construction, a ring is the lens, a horizon is a turn about one axis, and
-/// everywhere else is the world.
-#[derive(Copy, Clone, Debug, PartialEq)]
-enum GuideRegion {
-    Center,
-    /// A view-cone ring was grabbed; the payload is that ring's radius **per
-    /// unit focal length** ([`Lens::ring_factors`]), so the drag divides the
-    /// hand's distance back into a focal length. Carried in the drag because
-    /// the fisheye shows two rings and the one grabbed must stay the one held
-    /// — the 90° ring dragged inward must not hand off to the 45°.
-    Focal(f32),
-    /// A **horizon** was grabbed (§20.5): the vanishing line between two axes'
-    /// vanishing points, which is the plane normal to the third — so the
-    /// payload is that third axis, and the drag turns about it. Grab the line
-    /// between the X and Z vanishing points and the camera orbits Y.
-    Horizon(usize),
-    Orbit,
-}
-
 /// An in-flight guide drag: what it grabbed, where it started in canvas px,
 /// and the guide as it was then. Recomputed from the start on every move — the
 /// same discipline as the transform drag (§16.6), and here it is also what
@@ -887,70 +846,6 @@ struct Drag {
     region: GuideRegion,
     from: Vec2,
     start: PerspectiveGuide,
-}
-
-/// The guide's grabbable geometry, read out once when the overlay renders: all
-/// canvas-space, and `Copy`, so the pointer handlers can share the hit test
-/// without any of them holding the guide itself (which carries a name, and is
-/// not `Copy`).
-#[derive(Copy, Clone)]
-struct Handles {
-    center: Vec2,
-    focal: f32,
-    lens: Lens,
-    /// Horizon `n` is the one that turns about axis `n`, and it is `None`
-    /// where the guide does not draw it — you cannot grab a line that is not
-    /// on the screen ([`PerspectiveGuide::horizons`]).
-    horizons: [Option<PlaneTrace>; 3],
-}
-
-impl Handles {
-    fn of(g: &PerspectiveGuide) -> Self {
-        Self {
-            center: g.center,
-            focal: g.focal,
-            lens: g.lens,
-            horizons: g.horizons(),
-        }
-    }
-
-    /// What a press at canvas point `p` grabs, with the view at `zoom`.
-    ///
-    /// The crosshair is topmost, as it is drawn; below it the rings and the
-    /// horizons compete on **distance in screen px**, so a press between two
-    /// curves takes the one it is nearer and every handle is equally grabbable
-    /// at any magnification. A tie goes to the ring: under the fisheye a pair
-    /// trace can *be* a ring (in a 1-point pose the 90° ring is the X/Y
-    /// horizon, §20.8), and the lens drag is the older, more-reached-for
-    /// gesture to leave in the artist's hand where the two coincide.
-    fn at(self, p: Vec2, zoom: f32) -> GuideRegion {
-        if (p - self.center).length() * zoom < CENTER_GRAB_PX {
-            return GuideRegion::Center;
-        }
-        let dist = (p - self.center).length();
-        let (r45, r90) = self.lens.ring_factors();
-        let rings = [Some(r45), r90]
-            .into_iter()
-            .flatten()
-            .map(|factor| ((dist - self.focal * factor).abs() * zoom, factor));
-        let horizons = self
-            .horizons
-            .into_iter()
-            .enumerate()
-            .filter_map(|(n, trace)| Some((trace?.distance(p) * zoom, n)));
-        let ring = rings
-            .filter(|(err, _)| *err < LINE_BAND_PX)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        let horizon = horizons
-            .filter(|(err, _)| *err < LINE_BAND_PX)
-            .min_by(|a, b| a.0.total_cmp(&b.0));
-        match (ring, horizon) {
-            (Some((re, _)), Some((he, n))) if he < re => GuideRegion::Horizon(n),
-            (Some((_, factor)), _) => GuideRegion::Focal(factor),
-            (None, Some((_, n))) => GuideRegion::Horizon(n),
-            (None, None) => GuideRegion::Orbit,
-        }
-    }
 }
 
 /// The edit mode's catcher: a full-viewport surface that owns every pointer
@@ -1206,161 +1101,6 @@ mod tests {
             [x[0]; 3],
             "the axis hues are at different lightnesses"
         );
-    }
-
-    /// Where each of the default guide's horizons sits, as the one coordinate
-    /// it is a level set of.
-    ///
-    /// The default is 2-point at 30° of yaw, centred on the origin at a focal
-    /// length of 900, so all three horizons are canvas-aligned: a vertical
-    /// through each transverse vanishing point, and the level horizon through
-    /// the center of view. That is enough distinct geometry to press against
-    /// and simple enough to write the answers down — and it is asserted rather
-    /// than assumed, so a change to the default pose fails here instead of
-    /// quietly aiming every press below at empty canvas.
-    fn horizons_of(g: &PerspectiveGuide) -> [f32; 3] {
-        std::array::from_fn(|n| match g.horizons()[n] {
-            Some(PlaneTrace::Line { normal, offset }) => {
-                let axial = normal.x + normal.y;
-                assert!(
-                    (axial.abs() - 1.0).abs() < 1e-4,
-                    "horizon {n} is not canvas-aligned: {normal:?}"
-                );
-                -offset * axial
-            }
-            other => panic!("horizon {n} should be a straight line, got {other:?}"),
-        })
-    }
-
-    /// Grabbing a horizon asks to turn about **its own** axis (§20.5) — the
-    /// line between two axes' vanishing points belongs to the third, and the
-    /// press has to come back with that third one.
-    ///
-    /// The index is the whole risk here: every horizon is a line in the same
-    /// list and picking the wrong one is a gesture that turns the guide about
-    /// an axis the artist did not reach for — which looks like a bug in the
-    /// rotation, not in a subscript.
-    #[test]
-    fn a_press_on_a_horizon_grabs_the_axis_it_turns_about() {
-        let g = PerspectiveGuide::default();
-        let h = Handles::of(&g);
-        let [x_at, y_at, z_at] = horizons_of(&g);
-        // Axis 1's horizon is the level one through the center of view (the
-        // classical horizon); the other two are the verticals through the
-        // transverse vanishing points.
-        assert_eq!(h.at(Vec2::new(x_at, 400.0), 1.0), GuideRegion::Horizon(0));
-        assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));
-        assert_eq!(h.at(Vec2::new(z_at, 500.0), 1.0), GuideRegion::Horizon(2));
-    }
-
-    /// Everything else the press can land on still does, and the band is in
-    /// **screen** px: the same canvas point is a horizon grab zoomed out and
-    /// open world zoomed in, because what the hand can hit is a distance on the
-    /// screen, not on the canvas.
-    #[test]
-    fn the_other_regions_survive_the_horizons() {
-        let g = PerspectiveGuide::default();
-        let h = Handles::of(&g);
-        let [x_at, ..] = horizons_of(&g);
-        assert_eq!(h.at(Vec2::new(4.0, -3.0), 1.0), GuideRegion::Center);
-        assert_eq!(h.at(Vec2::new(0.0, g.focal), 1.0), GuideRegion::Focal(1.0));
-        assert_eq!(h.at(Vec2::new(100.0, 300.0), 1.0), GuideRegion::Orbit);
-
-        let near = Vec2::new(x_at + 50.0, 400.0);
-        assert_eq!(h.at(near, 1.0), GuideRegion::Orbit, "50px is a miss");
-        assert_eq!(
-            h.at(near, 0.1),
-            GuideRegion::Horizon(0),
-            "…and 5 screen px is a hit"
-        );
-    }
-
-    /// Two handles in reach: the nearer one wins, and an exact tie goes to the
-    /// ring. The tie is not hypothetical — a horizon crosses the 45° circle in
-    /// every pose, and under the fisheye a pair trace can *be* a ring (§20.8).
-    #[test]
-    fn the_nearer_handle_wins_and_a_tie_goes_to_the_ring() {
-        let g = PerspectiveGuide::default();
-        let h = Handles::of(&g);
-        let [_, y_at, _] = horizons_of(&g);
-        // Where the level horizon crosses the 45° ring, both errors are zero.
-        assert_eq!(
-            h.at(Vec2::new(g.focal, y_at), 1.0),
-            GuideRegion::Focal(1.0),
-            "a dead tie is the lens"
-        );
-        // 2px off the horizon and 8px outside the ring.
-        assert_eq!(
-            h.at(Vec2::new(g.focal + 8.0, y_at + 2.0), 1.0),
-            GuideRegion::Horizon(1)
-        );
-        // 4px off the horizon, all but on the ring.
-        assert_eq!(
-            h.at(Vec2::new(g.focal, y_at + 4.0), 1.0),
-            GuideRegion::Focal(1.0)
-        );
-    }
-
-    /// A horizon that is not drawn is not grabbable, and the press falls
-    /// through to the free world grab — the rule the guide states
-    /// ([`PerspectiveGuide::horizons`]) carried all the way to the hand.
-    /// Switching a plane off takes the one horizon that turns about its normal
-    /// and leaves the other two.
-    #[test]
-    fn an_undrawn_horizon_cannot_be_grabbed() {
-        let mut g = PerspectiveGuide::default();
-        let [x_at, y_at, _] = horizons_of(&g);
-        // Pair 1 is the Y/Z plane, normal to X.
-        g.pairs = [true, false, true];
-        let h = Handles::of(&g);
-        assert_eq!(h.at(Vec2::new(x_at, 400.0), 1.0), GuideRegion::Orbit);
-        assert_eq!(h.at(Vec2::new(300.0, y_at), 1.0), GuideRegion::Horizon(1));
-    }
-
-    /// [`anchor_at`] must name the guide that puts the dragged row exactly where it
-    /// was dropped, for **every** pair of positions — checked against the surgery
-    /// the engine performs, spelled out here rather than called, so the two are
-    /// held together by agreeing rather than by sharing code.
-    ///
-    /// Exhaustive rather than sampled, because this is off-by-one arithmetic over
-    /// two steps that shift indices in opposite directions, and the pair that is
-    /// wrong is never the one anyone would think to write down. It is worth the
-    /// certainty for a second reason now that the move is logged: an error here is
-    /// an undo step that rearranges the roster in a way the artist never asked for,
-    /// and it is replicated.
-    #[test]
-    fn the_anchor_lands_the_row_where_it_was_dropped() {
-        let id = |i: usize| {
-            GuideId(stark_model::document::ActionId {
-                lamport: i as u64,
-                actor: stark_model::document::ActorId(1),
-            })
-        };
-        for n in 1..7usize {
-            let ids: Vec<GuideId> = (0..n).map(id).collect();
-            for from in 0..n {
-                for to in 0..n {
-                    // What the panel sends…
-                    let after = anchor_at(&ids, from, to);
-                    // …and what `DocState::move_guide` does with it: take the row
-                    // out, then land it one past the anchor in what is left.
-                    let mut rest = ids.clone();
-                    let moved = rest.remove(from);
-                    let slot = after
-                        .and_then(|a| rest.iter().position(|g| *g == a))
-                        .map_or(0, |i| i + 1);
-                    rest.insert(slot, moved);
-                    // …against the list surgery the drag was drawn against.
-                    let mut want = ids.clone();
-                    let row = want.remove(from);
-                    want.insert(to.min(want.len()), row);
-                    assert_eq!(
-                        rest, want,
-                        "n={n} from={from} to={to}: the anchor landed the row elsewhere"
-                    );
-                }
-            }
-        }
     }
 
     /// A flat list's landing is an index, and the one the shared gesture reports is

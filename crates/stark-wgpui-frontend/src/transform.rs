@@ -35,16 +35,6 @@ use wgpui::{
 
 use crate::style::{self, StyleExt};
 
-/// The three families, in the order the bar draws them, with the word each wears.
-///
-/// The words are this frontend's rather than the registry's because a family is not a
-/// command — the bar sets which one is composing, and nothing else reaches them.
-pub const FAMILIES: [(Family, &str); 3] = [
-    (Family::Free, "Free"),
-    (Family::Perspective, "Perspective"),
-    (Family::Warp, "Warp"),
-];
-
 /// The two mirrors, offered only under the affine family — the other two maps
 /// preserve orientation, so there is nothing there for a mirror to be.
 /// Named by axis rather than by arrows: the system font this frontend renders with
@@ -59,7 +49,7 @@ pub const BAR_ACTS: [Command; 2] = [Command::CancelMode, Command::FinishMode];
 /// Which of the bar's controls a press landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    /// One of [`FAMILIES`], by index.
+    /// A family, by its index in `Family::VARIANTS` — the order the bar draws them in.
     Family(usize),
     /// One of [`FLIPS`], by index — 0 horizontal, 1 vertical.
     Flip(usize),
@@ -110,10 +100,22 @@ pub fn bar(ui: TransformUi, bindings: &Bindings, regions: &Regions) -> impl Into
         .text_color(rgb(style::INK_LIT))
         .child(div().py_1().px_2().caption().child("Transform"))
         .children(
-            FAMILIES
+            <Family as strum::VariantArray>::VARIANTS
                 .iter()
                 .enumerate()
-                .map(|(i, (f, word))| chip(probe(regions, Region::Family(i)), word, *f == family)),
+                .map(|(i, f)| {
+                    // A word, like the flips beside it; the hover says what the family
+                    // does to the paint.
+                    let chip = div()
+                        .id(SharedString::from(f.label()))
+                        .chip()
+                        .py_1()
+                        .px_2()
+                        .lit(*f == family)
+                        .child(probe(regions, Region::Family(i)))
+                        .child(f.label());
+                    style::tip(chip, f.tip())
+                }),
         )
         // Under the affine only, and mounted rather than dimmed: a mirror is not an
         // act that is unavailable in the other two families, it is one that has no
@@ -261,14 +263,5 @@ mod tests {
     fn the_bar_wears_the_registrys_acts() {
         assert_eq!(BAR_ACTS[0].word(), "Cancel");
         assert_eq!(BAR_ACTS[1].word(), "Done");
-    }
-
-    /// Every family the crate has is on the bar. A chip missing here would be a
-    /// family reachable by no gesture at all in this frontend.
-    #[test]
-    fn every_family_has_a_chip() {
-        for f in [Family::Free, Family::Perspective, Family::Warp] {
-            assert!(FAMILIES.iter().any(|(g, _)| *g == f), "{f:?} has no chip");
-        }
     }
 }

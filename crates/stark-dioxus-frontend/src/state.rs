@@ -1084,7 +1084,7 @@ pub struct TimelineState {
     /// that wants playback to end only has to clear this.
     pub playing: Signal<bool>,
     /// Playback rate, as a multiple of
-    /// [`BASE_RATE`](crate::panels::timeline::BASE_RATE).
+    /// [`BASE_RATE`](stark_ui::timeline::BASE_RATE).
     pub speed: Signal<f32>,
     /// The playback loop, so a second Play cannot start a second one and closing
     /// the mode can cancel it. Root-owned like everything here: the loop outlives

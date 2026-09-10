@@ -99,6 +99,15 @@
 //!   the one way it grows them.
 //! - [`files`] — what a document file is called, and whether closing it would lose
 //!   work (§8, §15.6).
+//! - [`frame`] — the frame bar's aspect presets, and the paint a new matte arrives in
+//!   (§15.5, §15.7).
+//! - [`filter`] — a filter bar's knob tables, and what a point on the chroma dial or the
+//!   dispersion pad means (§21.5, §21.6, §21.10).
+//! - [`timeline`] — the pace Timeline mode's transport walks the history at (§18.2.4).
+//! - [`gradients`] — the gradient library's record, its names and its rename rule
+//!   (§22.3).
+//! - [`mint`] — which row an add just made, found by comparing the roster before and
+//!   after (§4, §20.5).
 
 pub mod assets;
 pub mod bounds;
@@ -109,6 +118,9 @@ pub mod color;
 pub mod commands;
 pub mod drags;
 pub mod files;
+pub mod filter;
+pub mod frame;
+pub mod gradients;
 pub mod guides;
 pub mod icons;
 pub mod identity;
@@ -117,6 +129,7 @@ pub mod keys;
 pub mod layer_tree;
 pub mod library;
 pub mod lighting;
+pub mod mint;
 pub mod nav;
 pub mod panels;
 pub mod pick;
@@ -126,6 +139,7 @@ pub mod reorder;
 pub mod selection;
 pub mod slots;
 pub mod storage;
+pub mod timeline;
 pub mod transform;
 pub mod tune;
 pub mod visibility;

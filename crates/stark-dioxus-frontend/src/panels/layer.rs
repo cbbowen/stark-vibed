@@ -48,12 +48,12 @@ use crate::preview;
 use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, slider_fill};
-use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
-use stark_model::document::LayerId;
-use stark_model::document::{BlendMode, DRAGO_K_RANGE};
+use stark_model::document::{BlendMode, LayerId};
 use stark_ui::commands::Command;
-use stark_ui::layer_tree::{self, INDENT, Row, landing, rows};
+use stark_ui::layer_tree::{
+    self, BEND_HINT, INDENT, Row, bend_ends, blend_hint, clip_hint, landing, opacity_hint, rows,
+};
 use stark_ui::reorder::{Grab, Motion};
 
 /// Add a paint layer where the artist is working (`Command::AddLayer`): into
@@ -71,6 +71,29 @@ pub fn add_layer(state: AppState) {
         })
         .unwrap_or((None, None));
     dispatch(state, DocCommand::AddLayer { carrier, above });
+}
+
+/// Dispatch `add` — a command that adds one layer — and select the layer it added, so a
+/// new frame, backing or filter comes up with its bar and handles without a second click.
+///
+/// Found by comparing the roster before and after (`stark_ui::mint`) rather than by where
+/// the layer should have landed; `dispatch` refreshes the projection before it returns, so
+/// the second read already has it. [`add_layer`] needs none of this: the engine makes a
+/// new paint layer the active one itself.
+pub fn add_and_select(state: AppState, add: DocCommand) {
+    let ids = |state: AppState| -> Vec<LayerId> {
+        state
+            .obs
+            .peek()
+            .as_ref()
+            .map(|o| o.layers.iter().map(|l| l.id).collect())
+            .unwrap_or_default()
+    };
+    let before = ids(state);
+    dispatch(state, add);
+    if let Some(id) = stark_ui::mint::minted(&before, ids(state)) {
+        dispatch(state, PeerCommand::SetActiveLayer(id));
+    }
 }
 
 #[component]
@@ -410,115 +433,6 @@ pub fn LayerPanel() -> Element {
                     },
                 }
             }
-        }
-    }
-}
-
-/// What a blend mode does, in one line, for the picker's tooltip.
-///
-/// Here rather than beside [`BlendMode`] for the same reason [`layer_label`](stark_ui::layer_tree::layer_label) is: the
-/// mode's *name* is part of what it is and travels with the document, but how you
-/// explain it to someone hovering a drop-down is a frontend's business. The core
-/// says "Glow"; deciding that a painter wants to hear "cannot blow out" rather than
-/// "conjugate of addition under `x/(1+x)`" is a presentation call.
-fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
-    // The two cases where the control is not saying what it usually says come
-    // first, because they are about *this row* rather than about the mode.
-    if !layer.has_backdrop {
-        return "Nothing composites under this layer, so every mode looks the same here.";
-    }
-    if layer.is_group {
-        return match mode {
-            BlendMode::Normal => "This group sits on top of what is below it.",
-            _ => {
-                "How this group \u{2014} everything it carries, composited \u{2014} \
-                  meets what is below it."
-            }
-        };
-    }
-    match mode {
-        BlendMode::Normal => "The layer sits on top of what is below it.",
-        BlendMode::Reinhard => {
-            "Combines light instead of covering it \u{2014} softer than Screen, and it \
-             cannot blow out however deep you stack it. For glazes, mist and rim light."
-        }
-        BlendMode::Drago { .. } => {
-            "Combines light on a log curve \u{2014} hotter, and where two lights coincide \
-             it pushes past white into the highlight roll-off. For flame and speculars."
-        }
-        BlendMode::Multiply => {
-            "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
-             white leaves the layer below alone, black hides it. For shadows and tinting."
-        }
-    }
-}
-
-/// What the Bend slider does, in one line — a frontend's business for
-/// [`blend_hint`]'s reason.
-///
-/// Written as the two ends rather than as "the curve's `k`", because the ends are the
-/// part a painter can act on: one of them is the mode a painter reaches for when a
-/// specular should read as *hot*, and the other is what to pull back to when it has
-/// started eating the drawing underneath.
-const BEND_HINT: &str = "How hard Radiance's curve bends. Left, coincident lights \
-                         barely add and the brighter one simply wins; right, they add \
-                         outright and reach the highlight roll-off sooner.";
-
-/// The Bend slider's ends, in **octaves** of the mode's `k` — [`DRAGO_K_RANGE`] read
-/// in the unit the track travels in (see the row for why that unit).
-fn bend_ends() -> (f32, f32) {
-    (DRAGO_K_RANGE.0.log2(), DRAGO_K_RANGE.1.log2())
-}
-
-/// What the opacity slider fades, in one line.
-///
-/// Three answers, and the first is the one worth having: on a group, opacity is the
-/// property that could *not* be borrowed from the base the way blend and clip are
-/// (§14.3), so it fades the base and everything it carries as one unit.
-fn opacity_hint(layer: &LayerInfo) -> &'static str {
-    if layer.is_group {
-        "Fades this layer and everything it carries, as one"
-    } else if layer.filter.is_some() {
-        "How much of the adjustment lands \u{2014} at 0 the filter is the identity"
-    } else if layer.is_paintable() {
-        "Opacity of the selected layer"
-    } else {
-        "Frame opacity \u{2014} drag down to see through it while composing"
-    }
-}
-
-/// What clipping would do to *this* layer, in one line.
-///
-/// Three different sentences, because the control means three different things
-/// depending on where the row sits — and the difference is the part users get wrong
-/// everywhere else (§14.4).
-fn clip_hint(layer: &LayerInfo) -> &'static str {
-    if !layer.has_backdrop {
-        return "Nothing composites under this layer, so clipping it would leave nothing \
-                to show.";
-    }
-    // A filter's clip is about **where its result is allowed to land** rather than
-    // where the layer shows, because a filter has nothing of its own to show
-    // (§21.4). Worth its own sentence for exactly that reason: the word is the same
-    // one every other row wears, and what it bounds here is a fringe rather than
-    // paint.
-    if layer.filter.is_some() {
-        return "Clip: keep this filter inside the paint it is filtering \u{2014} it may \
-                change the color that is there, never spread past its edge.";
-    }
-    if layer.is_group {
-        return "Clip: this group shows only where there is paint under the group.";
-    }
-    match layer.carrier {
-        // Inside a group the bound is the group, which is the whole reason groups
-        // and clipping are one feature rather than two.
-        Some(_) => {
-            "Clip: show only where there is paint under this layer *within its group* \
-             \u{2014} the whole stack below it, not just the one layer."
-        }
-        None => {
-            "Clip: show only where there is paint under this layer. To clip to one \
-             layer alone, Carry it onto that layer first."
         }
     }
 }

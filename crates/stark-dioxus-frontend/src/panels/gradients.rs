@@ -176,7 +176,7 @@ fn GradientPopout() -> Element {
 /// because both commit paths — Enter and blur — need it, and one of them
 /// fires while the field is on its way out (the layer row's argument, whole).
 #[component]
-fn GradientRow(entry: gradients::GradientEntry, active: bool) -> Element {
+fn GradientRow(entry: stark_ui::gradients::GradientEntry, active: bool) -> Element {
     let state = use_context::<AppState>();
     let mut draft = use_signal(|| None::<String>);
     let strip = gradients::css_strip(&entry.gradient);

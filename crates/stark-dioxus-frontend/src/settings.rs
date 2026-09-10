@@ -40,7 +40,8 @@ use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
 use stark_engine::command::ViewCommand;
-use stark_ui::prefs::ChromeHiding;
+use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
+use strum::VariantArray;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
 /// Done or by clicking the backdrop (as the other dialogs are).
@@ -162,10 +163,13 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // The one thing the last option has to say: getting them back is a
                 // gesture, and nothing on screen names it.
                 note: Some("With \u{201C}Hide after painting\u{201D}, reach for the right edge of the window to bring the panels back.".to_string()),
-                options: CHROME_CHOICES,
-                value: hiding.key(),
-                onchange: move |name: String| {
-                    chrome_hiding.set(ChromeHiding::from(name));
+                options: ChromeHiding::VARIANTS
+                    .iter()
+                    .map(|c| (*c, c.label(), c.blurb()))
+                    .collect::<Vec<_>>(),
+                value: hiding,
+                onchange: move |choice: ChromeHiding| {
+                    chrome_hiding.set(choice);
                     // A stack already standing down when the choice moves off
                     // "Hide after painting" has nothing left to bring it back —
                     // the slice that hears the pointer is mounted on the very
@@ -208,67 +212,6 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
             }
         }
     }
-}
-
-/// What the chrome-hiding row offers, in the order the chrome gets quieter
-/// ([`ChromeHiding`]): each option's stored name, its label, and the sentence that
-/// says what picking it does.
-///
-/// The names are [`ChromeHiding::key`]'s own, which is what keeps the dialog and the
-/// store speaking one vocabulary — a row here cannot come to offer a value nothing
-/// reads back.
-const CHROME_CHOICES: &[(&str, &str, &str)] = &[
-    (
-        "never",
-        "Always show",
-        "Everything stays where it is, whatever the hand is doing.",
-    ),
-    (
-        "while-painting",
-        "Hide while painting",
-        "The chrome fades for the length of a stroke and is back the moment you lift.",
-    ),
-    (
-        "after-painting",
-        "Hide after painting",
-        "The chrome fades for the stroke, and the panels stay away until you reach for them.",
-    ),
-];
-
-/// The undo-memory ladder, smallest first: what the slider's notches mean.
-///
-/// **A ladder rather than a linear range over bytes**, because the quantity is
-/// scale-free — the difference between 256 MiB and 512 MiB matters to a phone in the
-/// way 4 GiB to 8 GiB matters to a workstation, and a linear slider spends nine
-/// tenths of its travel in a region only one of them cares about. Doubling gives
-/// every notch the same meaning.
-///
-/// The top notch is genuinely unbounded: retention never trims, which is a real
-/// choice on a machine with memory to spare and one a ladder can offer honestly
-/// where a number entry could not. It still floors at the engine's minimum undo
-/// depth, because that floor is about trimming being *useless* below it rather than
-/// about the budget.
-const BUDGET_STEPS: &[(u64, &str)] = &[
-    (256 << 20, "256 MB"),
-    (512 << 20, "512 MB"),
-    (1 << 30, "1 GB"),
-    (2 << 30, "2 GB"),
-    (4 << 30, "4 GB"),
-    (8 << 30, "8 GB"),
-    (u64::MAX, "Unlimited"),
-];
-
-/// The notch `bytes` sits at, or the nearest one below it.
-///
-/// Nearest-below rather than exact, because the stored value is a `u64` that a
-/// future ladder may not name — a preference written by one version has to read as
-/// *something* in the next, and the safe direction is the smaller budget, which
-/// errs toward less memory rather than more.
-fn budget_step(bytes: u64) -> usize {
-    BUDGET_STEPS
-        .iter()
-        .rposition(|(v, _)| *v <= bytes)
-        .unwrap_or(0)
 }
 
 /// One setting chosen from a ladder of values: the same row as [`SettingToggle`],
@@ -343,21 +286,21 @@ fn SettingSlider(
 /// the option under the pointer without spending three lines of dialog on states
 /// nobody picked.
 ///
-/// Stringly typed on purpose. The value is the same name the preference is stored
-/// under (`ChromeHiding::key`), so the dialog, the store and the enum share one
-/// vocabulary and this component stays a *choice* rather than a second component per
-/// enum — the same bargain [`SettingSlider`] makes by sliding an index.
+/// Generic over the choice rather than a component per enum — the same bargain
+/// [`SettingSlider`] makes by sliding an index. The handler is given the value itself,
+/// so a chip cannot offer a name nothing reads back.
 ///
 /// It saves for itself, like the slider and unlike the toggle — persistence hangs off
 /// `SettingToggle`'s own input handler, and a second control cannot inherit it.
 #[component]
-fn SettingChoice(
+fn SettingChoice<T: Copy + PartialEq + 'static>(
     label: String,
     description: String,
     note: Option<String>,
-    options: &'static [(&'static str, &'static str, &'static str)],
-    value: &'static str,
-    onchange: EventHandler<String>,
+    /// Each option, with the word its chip wears and the sentence its hover carries.
+    options: Vec<(T, &'static str, &'static str)>,
+    value: T,
+    onchange: EventHandler<T>,
 ) -> Element {
     let state = use_context::<AppState>();
 
@@ -374,13 +317,13 @@ fn SettingChoice(
                 // shape carries that, where a run of separate chips promises three
                 // switches that could be held down together.
                 div { class: "setting-choice segmented",
-                    for (key, name, about) in options.iter().copied() {
+                    for (option, name, about) in options {
                         button {
-                            key: "{key}",
-                            class: if key == value { "chip active" } else { "chip" },
+                            key: "{name}",
+                            class: if option == value { "chip active" } else { "chip" },
                             title: "{about}",
                             onclick: move |_| {
-                                onchange.call(key.to_string());
+                                onchange.call(option);
                                 prefs::save(state);
                             },
                             "{name}"
@@ -438,57 +381,5 @@ fn SettingToggle(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// **The engine's default must land on a notch**, or the slider opens showing a
-    /// value the app is not using and moving it one step is a jump rather than a
-    /// nudge. The ladder and `stark-engine`'s constant are set independently, so this
-    /// is the only thing holding them together.
-    #[test]
-    fn the_default_budget_is_a_notch_on_the_ladder() {
-        let at = budget_step(stark_engine::DEFAULT_HISTORY_BUDGET);
-        assert_eq!(
-            BUDGET_STEPS[at].0,
-            stark_engine::DEFAULT_HISTORY_BUDGET,
-            "the engine default {} sits between notches, nearest below is {}",
-            stark_engine::DEFAULT_HISTORY_BUDGET,
-            BUDGET_STEPS[at].1,
-        );
-        assert_eq!(BUDGET_STEPS[at].1, "2 GB");
-    }
-
-    /// A stored value the ladder does not name reads as the notch **below** it.
-    ///
-    /// Preferences outlive the version that wrote them, so a ladder that gains or
-    /// loses a rung has to read every previously stored `u64` as something. Below
-    /// rather than nearest, because the two directions are not symmetric: erring
-    /// down costs undo depth the user can see and slide back, erring up quietly
-    /// hands out memory they had asked not to spend.
-    #[test]
-    fn an_unnamed_budget_reads_as_the_notch_below() {
-        // Between 1 GB and 2 GB.
-        assert_eq!(BUDGET_STEPS[budget_step((1 << 30) + 1)].1, "1 GB");
-        // Exactly on a notch is that notch, not the one below.
-        assert_eq!(BUDGET_STEPS[budget_step(1 << 30)].1, "1 GB");
-        // Below every notch — a zero from a caller that meant "as little as
-        // possible" — is the smallest, not a panic and not the largest.
-        assert_eq!(budget_step(0), 0);
-        // And the top is reachable, so "Unlimited" is not a rung nothing selects.
-        assert_eq!(BUDGET_STEPS[budget_step(u64::MAX)].1, "Unlimited");
-    }
-
-    /// The ladder ascends, which `budget_step`'s `rposition` scan assumes and which
-    /// a slider's notches have to do to mean anything.
-    #[test]
-    fn the_ladder_ascends() {
-        assert!(
-            BUDGET_STEPS.windows(2).all(|w| w[0].0 < w[1].0),
-            "the undo-memory ladder is not in increasing order",
-        );
     }
 }

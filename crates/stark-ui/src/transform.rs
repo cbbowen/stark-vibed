@@ -35,6 +35,8 @@
 use stark_model::document::{LayerId, PerspectiveMap, TransformMap, WarpMap, rect_corners};
 use stark_model::geom::{Affine2, Mat2, Vec2};
 
+use crate::icons::Icon;
+
 /// Where a pointer stands relative to the transform widget's ellipse — which
 /// decides what a drag starting there does (§16.6).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -448,11 +450,41 @@ impl Bands {
 ///
 /// An enum of its own rather than a `match` on [`TransformUi`], because a bar has to
 /// name the family the gesture is *not* currently in — that is what its chips are.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// `VariantArray` is the bar's order, which is the order the families are declared in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray)]
 pub enum Family {
     Free,
     Perspective,
     Warp,
+}
+
+impl Family {
+    /// The word its chip wears.
+    pub fn label(self) -> &'static str {
+        match self {
+            Family::Free => "Free",
+            Family::Perspective => "Perspective",
+            Family::Warp => "Warp",
+        }
+    }
+
+    /// What its chip says on hover: what composing in this family does to the paint.
+    pub fn tip(self) -> &'static str {
+        match self {
+            Family::Free => "Move, scale, rotate, shear \u{2014} the ellipse widget",
+            Family::Perspective => "Drag the corners into a perspective (\u{a7}16.8)",
+            Family::Warp => "Bend the paint through a mesh (\u{a7}16.9)",
+        }
+    }
+
+    /// The mark its chip wears.
+    pub fn glyph(self) -> Icon {
+        match self {
+            Family::Free => crate::icons::TRANSFORM,
+            Family::Perspective => crate::icons::PERSPECTIVE,
+            Family::Warp => crate::icons::WARP,
+        }
+    }
 }
 
 /// The layer a transform would act on, and the rectangle to mount it around.
@@ -1985,5 +2017,25 @@ mod switch_tests {
             assert_eq!(then.family(), to);
             assert!(then.is_identity(), "the reopened gesture starts fresh");
         }
+    }
+
+    /// Every family's chip says what it is, and no two say the same thing — a bar of
+    /// chips a hand cannot tell apart is a bar with fewer families on it.
+    #[test]
+    fn every_family_names_itself_once() {
+        use strum::VariantArray;
+
+        let mut words: Vec<_> = Family::VARIANTS.iter().map(|f| f.label()).collect();
+        for f in Family::VARIANTS {
+            assert!(!f.label().is_empty(), "{f:?} has no word");
+            assert!(!f.tip().is_empty(), "{f:?} says nothing on hover");
+        }
+        words.sort_unstable();
+        words.dedup();
+        assert_eq!(
+            words.len(),
+            Family::VARIANTS.len(),
+            "two families share a word"
+        );
     }
 }

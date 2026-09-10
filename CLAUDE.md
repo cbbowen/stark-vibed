@@ -106,7 +106,9 @@ crates/
                    quick-brush rack (§18.1.8) — what a digit holds, what a hold's
                    release keeps and hands back, when two presses are a pick — the canvas
                    rectangles a frontend asks the document for, the layer tree's
-                   arithmetic, the Oklab picker's gamut geometry, the icon catalog — which
+                   arithmetic and its hovers, the tables behind the frame, filter and
+                   timeline bars and the gradient library's record, which row an add just
+                   made, the Oklab picker's gamut geometry, the icon catalog — which
                    glyph each control wears, and why — the view-navigation bindings, the
                    list-drag gesture, both
                    asset libraries — one type generic in what an id is a *reading* of,

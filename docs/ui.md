@@ -1641,6 +1641,13 @@ the exit criterion is an act, not a diff.
   and the transform overlay all draw — so what is wrong is the deferred pass
   specifically.
 
+  **The tables of those still to do came down ahead of their markup**, so each native
+  panel lands on shared rows rather than a third copy: `stark_ui::frame` (the aspects and
+  a new matte's paint), `stark_ui::filter` (the knob tables, and what a point on the dial
+  or the pad means), `stark_ui::timeline` (the transport's pace), `stark_ui::gradients`
+  (the library record and its rename rule), and `stark_ui::mint` — which row an add just
+  made, that the web frontend had answered four ways after one `dispatch`.
+
   **Still to do**: gradients (§22), filters (§21), frames and export (§15), timeline
   mode, and the guide *gesture* the shelf above defers. Each is a large panel with an
   overlay of its own, which is why they sequence after the stack that holds them.

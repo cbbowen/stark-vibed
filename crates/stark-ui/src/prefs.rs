@@ -38,7 +38,17 @@ use crate::storage::{Record, Store};
 /// Three states rather than two switches, because the third combination does not
 /// exist: a stack that stays down after a gesture it never faded for is a panel
 /// vanishing at the moment the artist stopped painting, which is nobody's preference.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::VariantArray,
+)]
 #[serde(from = "String", into = "String")]
 pub enum ChromeHiding {
     /// Never get out of the way: the chrome is where it was put, whatever the hand is
@@ -77,6 +87,29 @@ impl ChromeHiding {
             Self::AfterPainting => "after-painting",
         }
     }
+
+    /// What a settings dialog offers it as.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Never => "Always show",
+            Self::WhilePainting => "Hide while painting",
+            Self::AfterPainting => "Hide after painting",
+        }
+    }
+
+    /// The sentence that says what picking it does.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Never => "Everything stays where it is, whatever the hand is doing.",
+            Self::WhilePainting => {
+                "The chrome fades for the length of a stroke and is back the moment you lift."
+            }
+            Self::AfterPainting => {
+                "The chrome fades for the stroke, and the panels stay away until you reach \
+                 for them."
+            }
+        }
+    }
 }
 
 impl From<String> for ChromeHiding {
@@ -84,8 +117,9 @@ impl From<String> for ChromeHiding {
     /// a later version, or a damaged one. Lenient on purpose: [`Prefs`] is one JSON blob, so an enum that refused an unknown variant would take every
     /// *other* setting down with it rather than costing its own.
     fn from(name: String) -> Self {
-        [Self::Never, Self::WhilePainting, Self::AfterPainting]
-            .into_iter()
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .copied()
             .find(|c| c.key() == name)
             .unwrap_or_default()
     }
@@ -225,9 +259,89 @@ impl Default for Prefs {
     }
 }
 
+/// The undo-memory ladder, smallest first: what a history-budget slider's notches mean
+/// ([`Prefs::history_budget`]).
+///
+/// **A ladder rather than a linear range over bytes**, because the quantity is scale-free:
+/// 256 MB against 512 MB matters to a phone the way 4 GB against 8 GB matters to a
+/// workstation, and a linear slider spends nine tenths of its travel where only one of
+/// them cares. Doubling gives every notch the same meaning.
+///
+/// The top notch is genuinely unbounded — retention never trims — which a ladder can offer
+/// honestly where a number entry could not. It still floors at the engine's minimum undo
+/// depth, because that floor is about trimming being *useless* below it rather than about
+/// the budget.
+pub const BUDGET_STEPS: &[(u64, &str)] = &[
+    (256 << 20, "256 MB"),
+    (512 << 20, "512 MB"),
+    (1 << 30, "1 GB"),
+    (2 << 30, "2 GB"),
+    (4 << 30, "4 GB"),
+    (8 << 30, "8 GB"),
+    (u64::MAX, "Unlimited"),
+];
+
+/// The notch `bytes` sits at, or the nearest one below it.
+///
+/// Nearest-below rather than exact, because a stored budget may be one a later ladder does
+/// not name, and it has to read as *something*; the safe direction is the smaller budget,
+/// which errs toward less memory rather than more.
+pub fn budget_step(bytes: u64) -> usize {
+    BUDGET_STEPS
+        .iter()
+        .rposition(|(v, _)| *v <= bytes)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strum::VariantArray;
+
+    /// **The engine's default must land on a notch**, or the slider opens showing a value
+    /// the app is not using and moving it one step is a jump rather than a nudge. The
+    /// ladder and `stark-engine`'s constant are set independently, so this is the only
+    /// thing holding them together.
+    #[test]
+    fn the_default_budget_is_a_notch_on_the_ladder() {
+        let at = budget_step(stark_engine::DEFAULT_HISTORY_BUDGET);
+        assert_eq!(
+            BUDGET_STEPS[at].0,
+            stark_engine::DEFAULT_HISTORY_BUDGET,
+            "the engine default {} sits between notches, nearest below is {}",
+            stark_engine::DEFAULT_HISTORY_BUDGET,
+            BUDGET_STEPS[at].1,
+        );
+        assert_eq!(BUDGET_STEPS[at].1, "2 GB");
+    }
+
+    /// A stored value the ladder does not name reads as the notch **below** it.
+    ///
+    /// Below rather than nearest, because the two directions are not symmetric: erring
+    /// down costs undo depth the user can see and slide back, erring up quietly hands out
+    /// memory they had asked not to spend.
+    #[test]
+    fn an_unnamed_budget_reads_as_the_notch_below() {
+        // Between 1 GB and 2 GB.
+        assert_eq!(BUDGET_STEPS[budget_step((1 << 30) + 1)].1, "1 GB");
+        // Exactly on a notch is that notch, not the one below.
+        assert_eq!(BUDGET_STEPS[budget_step(1 << 30)].1, "1 GB");
+        // Below every notch — a zero from a caller that meant "as little as possible" —
+        // is the smallest, not a panic and not the largest.
+        assert_eq!(budget_step(0), 0);
+        // And the top is reachable, so "Unlimited" is not a rung nothing selects.
+        assert_eq!(BUDGET_STEPS[budget_step(u64::MAX)].1, "Unlimited");
+    }
+
+    /// The ladder ascends, which `budget_step`'s `rposition` scan assumes and which a
+    /// slider's notches have to do to mean anything.
+    #[test]
+    fn the_ladder_ascends() {
+        assert!(
+            BUDGET_STEPS.windows(2).all(|w| w[0].0 < w[1].0),
+            "the undo-memory ladder is not in increasing order",
+        );
+    }
 
     /// The stored name of a hiding mode is what the dialog offers and what
     /// [`ChromeHiding::from`] reads back, and a name from a version that knows more
@@ -235,11 +349,7 @@ mod tests {
     /// take every *other* preference in the blob down with it ([`Prefs`]).
     #[test]
     fn a_chrome_mode_round_trips_through_its_stored_name() {
-        for mode in [
-            ChromeHiding::Never,
-            ChromeHiding::WhilePainting,
-            ChromeHiding::AfterPainting,
-        ] {
+        for mode in ChromeHiding::VARIANTS.iter().copied() {
             assert_eq!(ChromeHiding::from(mode.key().to_string()), mode);
         }
         assert_eq!(

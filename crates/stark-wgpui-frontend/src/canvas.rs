@@ -1480,21 +1480,23 @@ impl Canvas {
         // Where the artist is looking, which is where a new perspective is centred.
         let center = self.obs.as_ref().map_or(Vec2::ZERO, |o| o.view.center);
         let adding = region == guides::Region::Add;
+        let before: Vec<_> = guides.iter().map(|g| g.id).collect();
         match guides::act(region, &guides, taken, center) {
             Some(guides::Act::Doc(command)) => {
                 self.send(command, cx);
                 // The engine mints no id for a guide — its identity is the id of the
-                // action that added it (§20.5) — so a new one is *found* rather than
-                // returned. It was appended, so it is the tail, and `send` has already
-                // refreshed the projection.
-                if adding && let Some(o) = self.obs.as_ref() {
-                    self.guide = o.guides.last().map(|g| g.id);
+                // action that added it (§20.5) — so a new one is *found*, against the
+                // roster `send` has already refreshed.
+                if adding
+                    && let Some(added) = self.obs.as_ref().and_then(|o| {
+                        stark_ui::mint::minted(&before, o.guides.iter().map(|g| g.id))
+                    })
+                {
+                    self.guide = Some(added);
                     // Drawn straight away: adding a guide is asking to see it, and an
                     // eye that had to be opened afterwards would make the act look
                     // like it had done nothing.
-                    if let Some(id) = self.guide {
-                        self.send(ViewCommand::SetGuideVisible(id, true), cx);
-                    }
+                    self.send(ViewCommand::SetGuideVisible(added, true), cx);
                 }
             }
             Some(guides::Act::View(command)) => self.send(command, cx),
@@ -2522,7 +2524,7 @@ impl Canvas {
     fn bar_act(&mut self, ui: TransformUi, region: transform::Region, cx: &mut Context<'_, Self>) {
         match region {
             transform::Region::Family(i) => {
-                if let Some((to, _)) = transform::FAMILIES.get(i) {
+                if let Some(to) = <Family as strum::VariantArray>::VARIANTS.get(i) {
                     self.switch_family(ui, *to, cx);
                 }
             }
