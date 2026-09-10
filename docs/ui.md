@@ -763,7 +763,7 @@ the web one can do; it should not look like it.
   less space, so the abbreviation column is carried for the *other* frontend's
   benefit rather than used here.
 - **No tour (§24).** Someone installing a native build has already met the web
-  app. `tutor.rs` stays a web-only reader hung off that frontend's own `dispatch`,
+  app. `tutor/` stays a web-only reader hung off that frontend's own `dispatch`,
   and the native seam does not grow a hook for it.
 - **No browser-shaped affordances.** A session ticket rides the URL fragment
   because a link is how a browser is handed anything (§12); native exchanges the
@@ -831,7 +831,7 @@ two things one week apart is exactly what the glossary rule exists to stop.
 **Tier C — stays in each frontend, twice**: everything under `panels/` that is
 markup, `layout.rs`, `widgets.rs`, `rail.rs`, `overlays.rs`, `navigator.rs`,
 `brush_editor.rs`, `settings.rs`, `canvas.rs`, `main.rs`, each `render.rs`, each
-`platform.rs`, and `tutor.rs` by decision.
+`platform.rs`, and `tutor/` by decision.
 
 `brush_editor.rs` was read too generously here, and the native dialog is what found
 it. The *markup* is Tier C and stayed; the **rows** never were — which parameter is in

@@ -262,7 +262,7 @@ pub fn guide_boxes() -> Vec<(String, f32, f32)> {
 ///
 /// First rather than all, because the caller is pointing at *a* thing and a
 /// selector that matched two would mean the thing had no single place to be pointed
-/// at — see [`crate::tutor::Anchor`], which is what builds the selectors and is the
+/// at — see `tutor::Anchor`, which is what builds the selectors and is the
 /// only place they are written.
 ///
 /// `None` for "not on screen" is the answer the caller wants and not a failure: a

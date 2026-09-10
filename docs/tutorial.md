@@ -17,7 +17,7 @@ pays it for one binding by bringing its options bar up on Alt (§18.0.2): press 
 modifier and the thing it does announces itself. This chapter is the same answer
 generalized to everything no modifier announces.
 
-The whole feature is `stark-dioxus-frontend/src/tutor.rs`, one line in
+The whole feature is `stark-dioxus-frontend/src/tutor/`, one line in
 `dispatch`, and eight call sites that say something the command stream cannot —
 three brackets and five reports (§24.2). It turns on three decisions: what
 brings a lesson (§24.1), where the counting comes from (§24.2), and what a card

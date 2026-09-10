@@ -251,7 +251,7 @@ fn landing(visible: &[PanelId], drag: &Grab) -> Option<(Slide, f32)> {
 /// One function because it is asked in four places — the `data-panel` attribute
 /// [`Panel`] writes, the key [`start_drag`] grabs by, the list [`landing`] matches,
 /// and the selector the guided tour's card points at
-/// ([`tutor::Anchor`](crate::tutor::Anchor)) — and a box matched to the wrong panel
+/// (`tutor::Anchor`) — and a box matched to the wrong panel
 /// is measured in silence: any box is a plausible box, whichever element it came
 /// from (§11). Stated once, the four cannot disagree; stated four times, `{id:?}`
 /// was the agreement.

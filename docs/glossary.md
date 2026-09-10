@@ -117,10 +117,10 @@ these should appear in code again.
 |---|---|---|
 | **action** | An entry in the log — the document itself (§4). Deterministically ordered, replayable, never deleted (retired ones are tombstoned). | [`stark-model/src/document/action.rs`](../crates/stark-model/src/document/action.rs) |
 | **command** | What the frontend *asks for*. A command may produce an action, several, or none; the boundary between the two is §4. | [`stark-engine/src/command.rs`](../crates/stark-engine/src/command.rs) |
-| **deed** | What the guided tour reads off the `dispatch` seam: not what a command *says*, but what it *changed* (§24). Only `tutor.rs` uses this word. | [`stark-dioxus-frontend/src/tutor.rs`](../crates/stark-dioxus-frontend/src/tutor.rs) |
+| **deed** | What the guided tour reads off the `dispatch` seam: not what a command *says*, but what it *changed* (§24). Only `tutor/` uses this word. | [`stark-dioxus-frontend/src/tutor/lessons.rs`](../crates/stark-dioxus-frontend/src/tutor/lessons.rs) |
 | **timeline** | The history structure: the ordered actions plus what is currently materialized. `DocState` is its derived, cached view. | [`stark-engine/src/document/timeline.rs`](../crates/stark-engine/src/document/timeline.rs) |
 | **roster** | A list the document or session owns in order — the presence roster (§17), the drawing-guide roster (§20.5). Always qualified. | [`stark-engine/src/peer.rs`](../crates/stark-engine/src/peer.rs) |
-| **ledger** | Browser-local, per-viewer state that is *not* in the document — what the tour has already said. | [`stark-dioxus-frontend/src/tutor.rs`](../crates/stark-dioxus-frontend/src/tutor.rs) |
+| **ledger** | Browser-local, per-viewer state that is *not* in the document — what the tour has already said. | [`stark-dioxus-frontend/src/tutor/lessons.rs`](../crates/stark-dioxus-frontend/src/tutor/lessons.rs) |
 
 ## Naming rules this file implies
 

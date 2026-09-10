@@ -141,7 +141,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 # The tests that pin how a stored row is spelled (gradients.rs, layout.rs, records.rs,
-# tutor.rs).
+# tutor/lessons.rs).
 serde_json = "1"
 
 # The shared lint set (root Cargo.toml).

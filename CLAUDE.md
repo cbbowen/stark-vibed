@@ -123,7 +123,7 @@ crates/
                    were two frontends
   stark-dioxus-frontend/
                    Dioxus 0.7 frontend; owns the wgpu::Surface
-    tutor.rs       the guided tour (§24): the one reader hung off `dispatch`, and
+    tutor/         the guided tour (§24): the one reader hung off `dispatch`, and
                    the only module that asks what a command *changes* rather than
                    what it says
     index.html     the page shell: links the manifest, registers the worker
