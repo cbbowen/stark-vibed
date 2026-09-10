@@ -11,6 +11,7 @@
 //! and `tests/platform_parity.rs` holds the two signatures equal.
 
 use dioxus::prelude::*;
+use stark_ui::assets::Decoded;
 
 use super::{Coalesced, ElementBox, RawPointer};
 
@@ -171,12 +172,12 @@ pub fn local_set(_key: &str, _value: &str) -> bool {
 
 pub fn local_remove(_key: &str) {}
 
-pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
-    keys.iter().map(|_| None).collect()
+pub async fn blob_get_many(_keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
+    Err("no blob store off the web".to_string())
 }
 
-pub async fn blob_put(_key: &str, _bytes: &[u8]) -> bool {
-    false
+pub async fn blob_put(_key: &str, _bytes: &[u8]) -> Result<(), String> {
+    Err("no blob store off the web".to_string())
 }
 
 pub async fn blob_delete(_key: &str) {}
@@ -197,7 +198,7 @@ pub async fn normalize_substrate_image(_bytes: Vec<u8>) -> Result<Vec<u8>, Strin
     Err("no image decoder off the web".to_string())
 }
 
-pub async fn decode_image(_bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
+pub async fn decode_image(_bytes: Vec<u8>) -> Result<Decoded, String> {
     Err("no image decoder off the web".to_string())
 }
 

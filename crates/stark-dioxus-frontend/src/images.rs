@@ -24,6 +24,7 @@ use crate::state::{AppState, dispatch};
 use stark_assetid::Picture;
 use stark_engine::command::DocCommand;
 use stark_model::geom::{IVec2, Vec2};
+use stark_ui::assets::Decoded;
 
 /// What the file picker offers. `image/*` rather than a list of extensions, because
 /// the decoder is the browser's (§23) — enumerating formats here would be this app
@@ -128,7 +129,11 @@ pub fn bind_paste(state: AppState) {
 /// through — the hazard `files::ExportModal` avoids by doing the opposite.
 fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
     spawn_forever(async move {
-        let (width, height, pixels) = match decode_image(bytes).await {
+        let Decoded {
+            width,
+            height,
+            rgba,
+        } = match decode_image(bytes).await {
             Ok(decoded) => decoded,
             Err(e) => return tracing::error!("could not read that image: {e}"),
         };
@@ -139,7 +144,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
         let png = match (Picture {
             width,
             height,
-            pixels,
+            pixels: rgba,
         })
         .encode()
         {

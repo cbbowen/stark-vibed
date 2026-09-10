@@ -3,6 +3,7 @@
 //! `tests/platform_parity.rs` holds the two to one surface.
 
 use dioxus::prelude::*;
+use stark_ui::assets::Decoded;
 
 use super::{Coalesced, ElementBox, RawPointer};
 
@@ -139,10 +140,24 @@ impl WindowEvent {
 /// Resolve after `ms` milliseconds (so a settle animation can finish before the order is
 /// committed). Browser `setTimeout` on web; a no-op off-wasm.
 pub async fn sleep_ms(ms: i32) {
+    called_back(|window, wake| {
+        window.set_timeout_with_callback_and_timeout_and_arguments_0(wake, ms)
+    })
+    .await;
+}
+
+/// Await the browser calling the function `schedule` hands it.
+///
+/// Resolved at once where there is no window or `schedule` fails: an await nothing
+/// will wake hangs its task, where waking early costs only a pause.
+async fn called_back(
+    schedule: impl Fn(&web_sys::Window, &js_sys::Function) -> Result<i32, wasm_bindgen::JsValue>,
+) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = web_sys::window()
-            .expect("window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        let scheduled = web_sys::window().is_some_and(|window| schedule(&window, &resolve).is_ok());
+        if !scheduled {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
@@ -707,13 +722,7 @@ pub fn canvas_by_id(id: &str) -> Canvas {
 /// microtask drain, which is the right place for setup and the wrong one for a
 /// paint (see that function's note).
 pub async fn next_frame() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .expect("window")
-            .request_animation_frame(&resolve)
-            .expect("request_animation_frame");
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    called_back(|window, wake| window.request_animation_frame(wake)).await;
 }
 
 /// How many physical pixels the display packs into a CSS pixel — what
@@ -854,16 +863,18 @@ const BLOB_DB: (&str, u32, &str) = ("stark", 1, "blobs");
 ///
 /// Opened per call rather than held: a live handle blocks another tab's upgrade, and
 /// the calls here are a startup read and the odd import — not something in a loop.
-async fn blob_db() -> Option<web_sys::IdbDatabase> {
+async fn blob_db() -> Result<web_sys::IdbDatabase, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::Closure;
 
     let (name, version, store) = BLOB_DB;
-    let request = web_sys::window()?
+    let request = web_sys::window()
+        .ok_or("no window")?
         .indexed_db()
-        .ok()??
+        .map_err(|e| reason(&e))?
+        .ok_or("no IndexedDB in this browser")?
         .open_with_u32(name, version)
-        .ok()?;
+        .map_err(|e| reason(&e))?;
     // An object store can only be created inside the upgrade, so this closure is the
     // whole of the schema. `once_into_js` hands ownership to JS, which is what a
     // handler that fires at most once wants — there is nothing here to keep alive.
@@ -877,7 +888,11 @@ async fn blob_db() -> Option<web_sys::IdbDatabase> {
         }
     });
     request.set_onupgradeneeded(Some(upgrade.unchecked_ref()));
-    blob_pending((*request).clone()).await.ok()?.dyn_into().ok()
+    blob_pending((*request).clone())
+        .await
+        .map_err(|e| reason(&e))?
+        .dyn_into()
+        .map_err(|_| "the open resolved to something other than a database".to_string())
 }
 
 /// Hang a future off an IndexedDB request, **now** — the handlers are attached before
@@ -890,52 +905,87 @@ async fn blob_db() -> Option<web_sys::IdbDatabase> {
 /// caller can yield, so a batch may be started in one pass and collected in another —
 /// which is also what keeps a batch inside one transaction (see [`blob_get_many`]).
 ///
-/// The API is event-based rather than promise-based, so the pair of one-shot handlers
-/// is wrapped in a promise built here. A channel crate for two closures would be the
-/// larger dependency.
+/// The API is event-based rather than promise-based, so the one-shot handlers are
+/// wrapped in a promise built here. A failure rejects with the request's
+/// `DOMException`, so the caller can say which failure it was.
 fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
     use wasm_bindgen::prelude::Closure;
 
     let promise = js_sys::Promise::new(&mut move |resolve, reject| {
-        let done = request.clone();
+        let (done, failed) = (request.clone(), request.clone());
         let ok = Closure::once_into_js(move |_: web_sys::Event| {
             let value = done.result().unwrap_or(JsValue::UNDEFINED);
             let _ = resolve.call1(&JsValue::NULL, &value);
         });
-        let failed = Closure::once_into_js(move |_: web_sys::Event| {
-            let _ = reject.call0(&JsValue::NULL);
+        let refuse = reject.clone();
+        let failure = Closure::once_into_js(move |_: web_sys::Event| {
+            let error = failed.error().ok().flatten();
+            let _ = refuse.call1(
+                &JsValue::NULL,
+                &error.map_or(JsValue::UNDEFINED, Into::into),
+            );
         });
         request.set_onsuccess(Some(ok.unchecked_ref()));
-        request.set_onerror(Some(failed.unchecked_ref()));
+        request.set_onerror(Some(failure.unchecked_ref()));
+        // An open that needs an upgrade waits for every older connection to close, and
+        // an await on it would wait as long.
+        if let Some(open) = request.dyn_ref::<web_sys::IdbOpenDbRequest>() {
+            let blocked = Closure::once_into_js(move |_: web_sys::Event| {
+                let why = "another tab holds the blob store open at an older version";
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(why));
+            });
+            open.set_onblocked(Some(blocked.unchecked_ref()));
+        }
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+}
+
+/// Hang a future off `tx` finishing, now, for [`blob_pending`]'s reason — rejected with
+/// the transaction's `DOMException` if it aborts.
+///
+/// **Only this says a write landed.** A request succeeds when the store accepts it; a
+/// full disk aborts the transaction at commit, after every request in it succeeded.
+fn blob_committed(tx: &web_sys::IdbTransaction) -> wasm_bindgen_futures::JsFuture {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::prelude::Closure;
+
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let aborted = tx.clone();
+        let complete = Closure::once_into_js(move |_: web_sys::Event| {
+            let _ = resolve.call0(&JsValue::NULL);
+        });
+        let abort = Closure::once_into_js(move |_: web_sys::Event| {
+            let error = aborted.error().map_or(JsValue::UNDEFINED, Into::into);
+            let _ = reject.call1(&JsValue::NULL, &error);
+        });
+        tx.set_oncomplete(Some(complete.unchecked_ref()));
+        tx.set_onabort(Some(abort.unchecked_ref()));
     });
     wasm_bindgen_futures::JsFuture::from(promise)
 }
 
 /// The bytes stored under each of `keys`, in that order — `None` where this browser
-/// has nothing under one, or could not read it.
+/// has nothing under one, or could not read it — or why the store could not be read
+/// at all.
 ///
 /// **One transaction, all the requests issued before any of them is awaited.** A
 /// transaction stays alive across a microtask checkpoint but not across a turn of the
 /// event loop, so issuing request *n+1* only after *n* has resolved is the shape that
 /// works right up until it does not. Starting them all first makes the whole batch
 /// one exchange with the store and takes the question off the table.
-pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
+pub async fn blob_get_many(keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
 
     let (_, _, name) = BLOB_DB;
-    let nothing = || keys.iter().map(|_| None).collect();
-    let Some(db) = blob_db().await else {
-        return nothing();
-    };
-    let Ok(store) = db
+    let db = blob_db().await?;
+    let store = db
         .transaction_with_str(name)
         .and_then(|tx| tx.object_store(name))
-    else {
-        return nothing();
-    };
+        .map_err(|e| reason(&e))?;
 
     let pending: Vec<_> = keys
         .iter()
@@ -953,35 +1003,28 @@ pub async fn blob_get_many(keys: &[String]) -> Vec<Option<Vec<u8>>> {
         };
         out.push(bytes);
     }
-    out
+    Ok(out)
 }
 
-/// Store `bytes` under `key`. `false` if they did not land — no store, or no room in
-/// it.
-///
-/// A full disk surfaces as this request's own error rather than as a short write,
-/// which is what makes awaiting the request the answer to "did it land" — and what
-/// lets `stark_ui::storage` keep saying so in one line.
-pub async fn blob_put(key: &str, bytes: &[u8]) -> bool {
+/// Store `bytes` under `key`, or say why they did not land — the store's
+/// `DOMException` (`QuotaExceededError` for a full disk), or [`blob_pending`]'s
+/// blocked open.
+pub async fn blob_put(key: &str, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::JsValue;
 
     let (_, _, name) = BLOB_DB;
-    let Some(db) = blob_db().await else {
-        return false;
-    };
-    let Ok(store) = db
+    let db = blob_db().await?;
+    let tx = db
         .transaction_with_str_and_mode(name, web_sys::IdbTransactionMode::Readwrite)
-        .and_then(|tx| tx.object_store(name))
-    else {
-        return false;
-    };
+        .map_err(|e| reason(&e))?;
+    let committed = blob_committed(&tx);
     // `Uint8Array::from` copies into the JS heap, so the borrow does not have to
     // outlive the call — the same bargain `download_bytes` makes below.
     let value = js_sys::Uint8Array::from(bytes);
-    let Ok(request) = store.put_with_key(&value, &JsValue::from_str(key)) else {
-        return false;
-    };
-    blob_pending(request).await.is_ok()
+    tx.object_store(name)
+        .and_then(|store| store.put_with_key(&value, &JsValue::from_str(key)))
+        .map_err(|e| reason(&e))?;
+    committed.await.map(|_| ()).map_err(|e| reason(&e))
 }
 
 /// Drop whatever is stored under `key`. Silent either way: the caller has already
@@ -990,7 +1033,7 @@ pub async fn blob_delete(key: &str) {
     use wasm_bindgen::JsValue;
 
     let (_, _, name) = BLOB_DB;
-    let Some(db) = blob_db().await else { return };
+    let Ok(db) = blob_db().await else { return };
     let Ok(store) = db
         .transaction_with_str_and_mode(name, web_sys::IdbTransactionMode::Readwrite)
         .and_then(|tx| tx.object_store(name))
@@ -1095,16 +1138,24 @@ async fn read_file(file: web_sys::File) -> Result<Vec<u8>, String> {
 
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
-        // A `DOMException` (`NotReadableError` for a file gone from disk) is an `Error`,
-        // whose `toString` is its name and message.
-        .map_err(|e| match e.dyn_ref::<js_sys::Error>() {
-            Some(error) => String::from(error.to_string()),
-            None => format!("{e:?}"),
-        })?;
+        .map_err(|e| reason(&e))?;
     let buffer = buffer
         .dyn_ref::<js_sys::ArrayBuffer>()
         .ok_or("`File.arrayBuffer` resolved to something other than an ArrayBuffer")?;
     Ok(js_sys::Uint8Array::new(buffer).to_vec())
+}
+
+/// A thrown or rejected value as a person reads it.
+///
+/// A `DOMException` (`NotReadableError`, `QuotaExceededError`, …) is an `Error`, whose
+/// `toString` is its name and message.
+fn reason(e: &wasm_bindgen::JsValue) -> String {
+    use wasm_bindgen::JsCast;
+
+    match e.dyn_ref::<js_sys::Error>() {
+        Some(error) => String::from(error.to_string()),
+        None => e.as_string().unwrap_or_else(|| format!("{e:?}")),
+    }
 }
 
 /// Hand `on_file` whatever file the OS launched the app with — the other end of
@@ -1202,12 +1253,7 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
 ///
 /// Returns the PNG bytes and whether the inversion fired (so the UI can say so).
 pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
-    let (width, height, rgba) = decode_to_canvas(bytes, stark_ui::assets::SHAPE_CAP).await?;
-    stark_ui::assets::shape_png(stark_ui::assets::Decoded {
-        width,
-        height,
-        rgba,
-    })
+    stark_ui::assets::shape_png(decode_to_canvas(bytes, stark_ui::assets::SHAPE_CAP).await?)
 }
 
 /// Normalize an image into a **canvas-substrate PNG**, using the browser as the
@@ -1222,21 +1268,18 @@ pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), St
 /// and hashes what it finds: this makes a substrate *possible*, and the id still comes
 /// out of the bytes.
 pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let (width, height, rgba) = decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?;
-    stark_ui::assets::substrate_png(stark_ui::assets::Decoded {
-        width,
-        height,
-        rgba,
-    })
+    stark_ui::assets::substrate_png(decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?)
 }
 
-/// Decode `bytes` through the browser, downscaled so the longest edge is at most
-/// `cap`, and hand back its straight RGBA8 — the first half of every import here.
+/// Decode `bytes` through the browser into straight RGBA8, its longest edge brought
+/// within `cap` — the first half of every import here.
 ///
-/// Split out because it is the same eight calls each time and the *browser* is the
-/// only thing in the chain that can resample without materializing the full-size
-/// buffer first (see [`decode_image`], which spells out what that saves).
-async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<(u32, u32, Vec<u8>), String> {
+/// The browser resamples because `drawImage` is the one step in the chain that scales
+/// without first materializing the full-size buffer: a 48-megapixel photograph is
+/// 190 MB of RGBA before anything has looked at it. `getImageData` is specified as
+/// un-premultiplied sRGB, the form [`Decoded`] and
+/// [`Picture`](stark_assetid::Picture) are both defined in.
+async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<Decoded, String> {
     use wasm_bindgen::JsCast;
 
     let window = web_sys::window().ok_or("no window")?;
@@ -1260,7 +1303,7 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<(u32, u32, Vec<u8>
     // The *size* is the shared rule's, even though the resampling is not: two
     // frontends asking their own resampler for two different sizes would be a
     // divergence that did not have to exist (`stark_ui::assets`).
-    let (w, h) = stark_ui::assets::fit(sw, sh, cap);
+    let (width, height) = stark_ui::assets::fit(sw, sh, cap);
 
     let document = window.document().ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = document
@@ -1268,85 +1311,32 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<(u32, u32, Vec<u8>
         .ok()
         .and_then(|e| e.dyn_into().ok())
         .ok_or("could not create a canvas")?;
-    canvas.set_width(w);
-    canvas.set_height(h);
+    canvas.set_width(width);
+    canvas.set_height(height);
     let ctx: web_sys::CanvasRenderingContext2d = canvas
         .get_context("2d")
         .ok()
         .flatten()
         .and_then(|c| c.dyn_into().ok())
         .ok_or("no 2d context")?;
-    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, w as f64, h as f64)
+    let (dw, dh) = (f64::from(width), f64::from(height));
+    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, dw, dh)
         .map_err(|_| "could not draw the image".to_string())?;
     let data = ctx
-        .get_image_data(0.0, 0.0, w as f64, h as f64)
+        .get_image_data(0.0, 0.0, dw, dh)
         .map_err(|_| "could not read the pixels".to_string())?;
-    Ok((w, h, data.data().0))
+    Ok(Decoded {
+        width,
+        height,
+        rgba: data.data().0,
+    })
 }
 
-/// Decode an image into straight RGBA8, **using the browser as the decoder** — so
-/// every format it can display can be placed (JPEG, PNG, WebP, AVIF, GIF, …).
-///
-/// The same route [`normalize_shape_image`] takes and for the same reason: shipping a
-/// decoder per format would be a second, smaller answer to a question the platform
-/// already answers completely (§23). What comes back is what a `PlaceImage` carries —
-/// `getImageData` is specified as **un-premultiplied** sRGB, which is exactly the form
-/// [`Picture`](stark_assetid::Picture) is defined in, so nothing has to be undone on
-/// either side.
-///
-/// Downscaled so the longest edge is at most the identity contract's cap
-/// ([`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM)) — which `stark_assetid::picture`
-/// would apply anyway, so this is an optimization and not the rule. Here because the
-/// *browser* is the only thing in the chain that can resample
-/// without first materializing the full-size buffer: a 48-megapixel phone photograph
-/// is 190 MB of RGBA before anything has looked at it, and `drawImage` never allocates
-/// it at all.
-pub async fn decode_image(bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {
-    use wasm_bindgen::JsCast;
-
-    let window = web_sys::window().ok_or("no window")?;
-    let array = js_sys::Uint8Array::from(bytes.as_slice());
-    let parts = js_sys::Array::of1(&array.buffer());
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
-        .map_err(|_| "could not wrap the image bytes".to_string())?;
-    let promise = window
-        .create_image_bitmap_with_blob(&blob)
-        .map_err(|_| "image decoding unavailable".to_string())?;
-    let bitmap: web_sys::ImageBitmap = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "not an image the browser can decode".to_string())?
-        .dyn_into()
-        .map_err(|_| "unexpected decode result".to_string())?;
-
-    let (sw, sh) = (bitmap.width(), bitmap.height());
-    if sw == 0 || sh == 0 {
-        return Err("the image is empty".to_string());
-    }
-    let cap = stark_assetid::MAX_PICTURE_DIM;
-    let scale = (cap as f64 / sw.max(sh) as f64).min(1.0);
-    let w = ((sw as f64 * scale) as u32).max(1);
-    let h = ((sh as f64 * scale) as u32).max(1);
-
-    let document = window.document().ok_or("no document")?;
-    let canvas: web_sys::HtmlCanvasElement = document
-        .create_element("canvas")
-        .ok()
-        .and_then(|e| e.dyn_into().ok())
-        .ok_or("could not create a canvas")?;
-    canvas.set_width(w);
-    canvas.set_height(h);
-    let ctx: web_sys::CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .ok()
-        .flatten()
-        .and_then(|c| c.dyn_into().ok())
-        .ok_or("no 2d context")?;
-    ctx.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, w as f64, h as f64)
-        .map_err(|_| "could not draw the image".to_string())?;
-    let data = ctx
-        .get_image_data(0.0, 0.0, w as f64, h as f64)
-        .map_err(|_| "could not read the pixels".to_string())?;
-    Ok((w, h, data.data().0))
+/// Decode an image to place (§23), capped at the identity contract's
+/// [`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM) — which `stark_assetid` applies
+/// anyway, so the cap here only spares the full-size buffer.
+pub async fn decode_image(bytes: Vec<u8>) -> Result<Decoded, String> {
+    decode_to_canvas(bytes, stark_assetid::MAX_PICTURE_DIM).await
 }
 
 /// Hand `handler` the bytes of the first image on the clipboard whenever one is

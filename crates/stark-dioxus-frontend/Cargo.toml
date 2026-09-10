@@ -99,6 +99,8 @@ web-sys = { version = "0.3", features = [
     "IdbTransaction",
     "IdbTransactionMode",
     "IdbObjectStore",
+    # What a failed request or aborted write was (platform::blob_put): quota, closed, …
+    "DomException",
     # Save / open / export (platform::download_bytes, platform::pick_file): a
     # download is a Blob behind an object URL on a synthetic <a download>; opening
     # is a hidden <input type=file> whose file is read with `Blob.arrayBuffer()`.
