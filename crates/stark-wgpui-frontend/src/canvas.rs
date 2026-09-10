@@ -2629,18 +2629,22 @@ impl Canvas {
     /// Move one of the Select section's dials.
     pub(crate) fn turn_dial(
         &mut self,
-        dial: select::Dial,
+        dial: stark_ui::selection::Dial,
         fraction: f32,
         cx: &mut Context<'_, Self>,
     ) {
         let v = dial.value_at(fraction);
         match dial {
-            select::Dial::Feather => self.send(ViewCommand::SetSelectionFeather(v), cx),
-            select::Dial::FillOpacity => self.send(ViewCommand::SetShapeOpacity(v), cx),
+            stark_ui::selection::Dial::Feather => {
+                self.send(ViewCommand::SetSelectionFeather(v), cx)
+            }
+            stark_ui::selection::Dial::FillOpacity => {
+                self.send(ViewCommand::SetShapeOpacity(v), cx)
+            }
             // Previewed while the hand is on it and committed on release — the mask's
             // strength is the document's, so a drag that logged per sample would
             // spend a hundred undo steps crossing the track.
-            select::Dial::MaskOpacity => {
+            stark_ui::selection::Dial::MaskOpacity => {
                 self.send(ViewCommand::PreviewSelectionOpacity(Some(v)), cx)
             }
         }
@@ -2651,11 +2655,11 @@ impl Canvas {
     /// were set as they moved, so there is nothing left to do for them.
     pub(crate) fn settle_dial(
         &mut self,
-        dial: select::Dial,
+        dial: stark_ui::selection::Dial,
         fraction: f32,
         cx: &mut Context<'_, Self>,
     ) {
-        if dial == select::Dial::MaskOpacity {
+        if dial == stark_ui::selection::Dial::MaskOpacity {
             self.send(ViewCommand::PreviewSelectionOpacity(None), cx);
             self.send(DocCommand::SetSelectionOpacity(dial.value_at(fraction)), cx);
         }

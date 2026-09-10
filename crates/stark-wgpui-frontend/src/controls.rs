@@ -27,9 +27,9 @@ use crate::brush::Brush;
 use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
 use crate::panel::KNOBS;
-use crate::select::Dial;
 use stark_ui::guides as gd;
 use stark_ui::lighting as light;
+use stark_ui::selection::Dial;
 
 /// Every dial the Select section can mount, in one order, so a state exists for each
 /// whether or not this frame shows it.

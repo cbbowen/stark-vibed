@@ -31,13 +31,6 @@ use wgpui::{
 
 use crate::style::{self, StyleExt};
 
-/// What the hover says the group fence does — the web bar's own sentence, since the
-/// fence is one idea and two apps explaining it differently would be two apps.
-const GROUP_TIP: &str = "Only the selected layer's group answers \u{2014} its siblings and the \
-                         layer carrying them. Turn off to sample the whole document over the \
-                         canvas color, so bare canvas and thin paint answer with what the eye \
-                         sees";
-
 /// Which of the bar's controls a press landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
@@ -178,7 +171,7 @@ pub fn bar(sampler: Sampler, bindings: &Bindings, regions: &Regions) -> impl Int
             stark_ui::icons::GROUP_ONLY,
             "Group",
             sampler.group_only,
-            GROUP_TIP.to_string(),
+            stark_ui::pick::GROUP_TIP.to_string(),
         ))
         // How much canvas one sample averages. The words are the radii spelled out
         // (`stark_ui::pick::patch_word`), so a chip cannot offer a square the engine

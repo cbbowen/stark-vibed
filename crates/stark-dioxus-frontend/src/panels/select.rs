@@ -16,6 +16,7 @@ use crate::widgets::{CommandButton, Slider, slider_fill};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
 use stark_ui::commands::Command;
+use stark_ui::selection::Dial;
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does
 /// with the region they enclose, and the feather applied to its edge.
@@ -165,7 +166,8 @@ pub fn SelectPanel() -> Element {
         // the four selecting actions the gesture's disarm takes it away along
         // with the tool.
         if armed {
-            Slider { label: "Feather", glyph: stark_ui::icons::FEATHER, min: 0.0, max: 64.0, value: feather,
+            Slider { label: Dial::Feather.label(), glyph: Dial::Feather.glyph(),
+                min: Dial::Feather.range().0, max: Dial::Feather.range().1, value: feather,
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
         div { class: "tool-row stacked segmented",

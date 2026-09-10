@@ -24,6 +24,16 @@ use crate::commands::PickScope;
 /// which is what [`PickOptions::radius`] takes. `2r + 1` is the square each describes
 /// ([`patch_word`]), so the words a bar wears are derived rather than written beside
 /// the numbers they have to agree with.
+/// What the group fence means, in the one sentence both bars explain it with (§18.0.2).
+///
+/// The fence is one idea, and two apps explaining it differently would be two apps —
+/// which is what the native bar's own constant said while holding a copy of the web
+/// bar's `title`.
+pub const GROUP_TIP: &str = "Only the selected layer's group answers \u{2014} its siblings and the \
+                             layer carrying them. Turn off to sample the whole document over the \
+                             canvas color, so bare canvas and thin paint answer with what the eye \
+                             sees";
+
 pub const PATCHES: [u32; 4] = [0, 1, 2, 5];
 
 /// How a patch is spelled on a bar: the prior art's point sample, or the `N×N` square

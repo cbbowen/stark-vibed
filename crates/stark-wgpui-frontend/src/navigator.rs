@@ -31,7 +31,7 @@
 //!
 //! One refresh composites every tile in the document — nothing on an edit, ruinous per
 //! pointer sample. So it is a picture of the **committed** document, refreshed when
-//! that moves, never while a gesture is in flight, and at most once every [`SETTLE`]
+//! that moves, never while a gesture is in flight, and at most once every [`stark_ui::bounds::SETTLE`]
 //! seconds so a held undo collapses into one render rather than thirty. The marker
 //! over the top is painted from the live view instead, so panning costs nothing.
 

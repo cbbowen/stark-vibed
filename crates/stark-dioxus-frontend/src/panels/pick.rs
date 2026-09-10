@@ -92,10 +92,7 @@ pub fn PickBar() -> Element {
             // the fence comes down.
             button {
                 class: chip(grouped),
-                title: "Only the selected layer's group answers \u{2014} its \
-                        siblings and the layer carrying them. Turn off to sample \
-                        the whole document over the canvas color, so bare canvas \
-                        and thin paint answer with what the eye sees",
+                title: stark_ui::pick::GROUP_TIP,
                 onclick: move |_| group_only.set(!grouped),
                 {icon(stark_ui::icons::GROUP_ONLY)}
                 {label("Group")}

@@ -27,7 +27,7 @@ use stark_engine::command::Tool;
 use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
-use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word};
+use stark_ui::selection::{Dial, SHAPE_ACTIONS, SHAPE_TOOLS, action_word, dials};
 use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb, rgba};
 
 use crate::controls::Controls;
@@ -45,103 +45,6 @@ pub const SELECT_ACTS: [Command; 5] = [
     Command::FloatSelection,
     Command::Transform,
 ];
-
-/// The three dials this section can show, each mounted only while it means something.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Dial {
-    /// The edge the next shape gesture's rasterizer strikes, canvas px. Chosen
-    /// *before* the gesture, so it is shown for exactly as long as one is pending.
-    Feather,
-    /// How strongly a **fill** gesture's paint lands — mounted under the Fill action,
-    /// because that is the only action it is about.
-    FillOpacity,
-    /// How strongly the whole mask gates. Not a gesture's setting but the
-    /// selection's, set after the fact, so it appears with the selection rather than
-    /// with the tool.
-    MaskOpacity,
-}
-
-impl Dial {
-    /// The mark the track wears (`stark_ui::icons`).
-    ///
-    /// The fill's dial takes the bucket its own action chip wears, and the adjacency
-    /// is the point: the dial is mounted only while Fill is the armed action, so it
-    /// appears directly under the lit chip whose strength it sets.
-    fn glyph(self) -> Icon {
-        match self {
-            Dial::Feather => stark_ui::icons::FEATHER,
-            Dial::FillOpacity => stark_ui::icons::PAINT_BUCKET,
-            Dial::MaskOpacity => stark_ui::icons::OPACITY,
-        }
-    }
-
-    /// What the hover says the mark means.
-    fn tip(self) -> &'static str {
-        match self {
-            Dial::Feather => {
-                "Feather \u{2014} how far the next shape's edge is softened, in canvas px"
-            }
-            Dial::FillOpacity => "Fill opacity \u{2014} how strongly a fill gesture's paint lands",
-            Dial::MaskOpacity => {
-                "Selection strength \u{2014} how hard the mask gates what every tool does"
-            }
-        }
-    }
-
-    /// The dial's range. Feather is a canvas-px length; the other two are strengths.
-    pub fn range(self) -> (f32, f32) {
-        match self {
-            Dial::Feather => (0.0, MAX_FEATHER),
-            Dial::FillOpacity | Dial::MaskOpacity => (0.0, 1.0),
-        }
-    }
-
-    /// The step a track moves in: whole px for a length, a hundredth for a strength.
-    pub fn step(self) -> f32 {
-        match self {
-            Dial::Feather => 1.0,
-            Dial::FillOpacity | Dial::MaskOpacity => 0.01,
-        }
-    }
-
-    pub fn read(self, o: &ObservableState) -> f32 {
-        match self {
-            Dial::Feather => o.selection_feather,
-            Dial::FillOpacity => o.shape_opacity,
-            Dial::MaskOpacity => o.selection_opacity,
-        }
-    }
-
-    /// The value a fraction along this dial's track means.
-    pub fn value_at(self, fraction: f32) -> f32 {
-        let (lo, hi) = self.range();
-        lo + fraction.clamp(0.0, 1.0) * (hi - lo)
-    }
-}
-
-/// The widest edge the feather dial offers, canvas px — the same ceiling the web
-/// panel's slider carries.
-const MAX_FEATHER: f32 = 64.0;
-
-/// Which dials to show, given what is armed and what there is.
-///
-/// A list rather than three flags because the section draws them in order and the
-/// press has to find them by that order; and computed in one place because "is a
-/// shape tool in hand" is asked by each of the three answers.
-pub fn dials(o: Option<&ObservableState>) -> Vec<Dial> {
-    let Some(o) = o else { return Vec::new() };
-    let mut out = Vec::new();
-    if o.tool.is_selection() {
-        out.push(Dial::Feather);
-        if o.shape_action == ShapeAction::Fill {
-            out.push(Dial::FillOpacity);
-        }
-    }
-    if o.has_selection {
-        out.push(Dial::MaskOpacity);
-    }
-    out
-}
 
 /// Which control a measured rectangle belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
