@@ -23,7 +23,7 @@ use stark_model::geom::Vec2;
 use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
-use stark_ui::brush_config::{BrushEffectType, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_config::{BrushEffectType, SIZE_STEP, step_size};
 use stark_ui::commands::{Bindings, Command, Gate, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input as chrome_input;
@@ -65,13 +65,6 @@ use crate::render::{Preview, Renderer};
 use crate::select;
 use crate::slots::Rack;
 use crate::transform;
-
-/// How far one press of the bracket keys moves the brush's size, as a factor.
-///
-/// A ratio rather than a step, because size is perceived logarithmically: a pixel
-/// added to a 4-px tip is a quarter of it and nothing at all to a 400-px one. The same
-/// figure the web frontend steps by.
-const SIZE_STEP: f32 = 1.1;
 
 /// Something the window has to say about the last act — a failure, or the one kind
 /// of success that leaves nothing on screen. Queued by [`Canvas::report`] and
@@ -3486,7 +3479,7 @@ impl Canvas {
 
     /// Step the brush's size by a factor, clamped to the range the panel offers.
     fn step_size(&mut self, factor: f32, cx: &mut Context<'_, Self>) {
-        self.brush.tune.size = (self.brush.tune.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
+        self.brush.tune.size = step_size(self.brush.tune.size, factor);
         self.send_brush(cx);
     }
 

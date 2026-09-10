@@ -12,6 +12,14 @@
 /// disagreeing with the file it had just written.
 pub const DOC_EXT: &str = "stark";
 
+/// What an export offers as its JPEG quality, out of 100 (§15.6).
+///
+/// High enough that the ringing does not show on a painting's own edges, low enough
+/// that the file is worth choosing JPEG for. Here for [`DOC_EXT`]'s reason: both
+/// frontends offer it as the default, and the native one's constant said so — "the
+/// same figure the web frontend offers as its default".
+pub const JPEG_QUALITY: u8 = 90;
+
 /// The default name a new file is offered under.
 ///
 /// Here for [`DOC_EXT`]'s reason — it carries the extension, so two frontends

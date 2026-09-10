@@ -24,7 +24,7 @@ use stark_model::document::SelectionOp;
 use crate::input::accel;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
-use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_config::{SIZE_STEP, step_size};
 use stark_ui::commands::{Bindings, Chord, Command, Gate};
 use stark_ui::keys::{Keystroke, Mods, Role};
 
@@ -306,17 +306,6 @@ fn open_dialog(mut flag: Signal<bool>) {
     flag.set(true);
 }
 
-/// One tap of `[` or `]`, as a ratio.
-///
-/// Equal *ratios* rather than equal pixels, because the hand feels radius
-/// proportionally: the +1px that is a visible jump on a 5px liner is nothing on
-/// a 300px wash. A tenth is about the smallest change a mark reliably shows,
-/// and it compounds across the whole range quickly under the key's own
-/// auto-repeat — 1 → 500 is ~65 repeats, a couple of seconds of holding `]`.
-/// Up and down are exact inverses (multiply by it, divide by it), so a tap too
-/// far is a tap back rather than a slowly drifting number.
-const SIZE_STEP: f32 = 1.1;
-
 /// Step the live brush's radius by `factor` — the keyboard sibling of the Size
 /// slider and the accelerator drag (§18.1.9), writing through the same
 /// [`update_brush`] and clamped to the same bounds, so a tap cannot put the
@@ -326,9 +315,7 @@ const SIZE_STEP: f32 = 1.1;
 /// the slider this shadows is not refused mid-playback either — the keyboard
 /// says what the panel says.
 fn step_radius(state: AppState, factor: f32) {
-    update_brush(state, move |_, t| {
-        t.size = (t.size * factor).clamp(MIN_RADIUS, MAX_RADIUS);
-    });
+    update_brush(state, move |_, t| t.size = step_size(t.size, factor));
 }
 
 /// Arm `tool` for the next canvas gesture — or hand the brush back, if it is

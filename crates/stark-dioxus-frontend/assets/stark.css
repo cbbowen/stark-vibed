@@ -1791,7 +1791,11 @@ hr {
   background: conic-gradient(var(--danger) var(--slot-clear-sweep), #0000 0);
   transform: scale(1.2);
   transition: transform 120ms ease-out;
+  /* The duration is set inline from `stark_ui::slots::CLEAR_HOLD` (§18.1.8): the
+     sweep is the clock, so the number has one home and this rule keeps only the
+     curve. The fallback is that value, for a render that somehow sets no style. */
   animation: slot-clear-arm 600ms linear forwards;
+  animation-duration: var(--slot-clear-hold, 600ms);
 }
 
 @keyframes slot-clear-arm {

@@ -258,11 +258,6 @@ impl ExportFormat {
     }
 }
 
-/// Fixed rather than asked in the dialog: 90 is the lowest quality at which the
-/// encoder keeps full chroma (4:4:4) — below it, subsampling smears exactly the
-/// colored edges a painting is made of.
-const JPEG_QUALITY: u8 = 90;
-
 /// The export dialog: pick a format, a resolution and a substrate, see the pixel
 /// size you will get, and write the picture.
 #[component]
@@ -466,7 +461,11 @@ async fn export_image(
     let image = readback.await.map_err(|e| e.to_string())?;
     let (encoded, name, mime) = match format {
         ExportFormat::Png => (image.to_png(), "painting.png", "image/png"),
-        ExportFormat::Jpg => (image.to_jpeg(JPEG_QUALITY), "painting.jpg", "image/jpeg"),
+        ExportFormat::Jpg => (
+            image.to_jpeg(stark_ui::files::JPEG_QUALITY),
+            "painting.jpg",
+            "image/jpeg",
+        ),
     };
     download_bytes(&encoded.map_err(|e| e.to_string())?, name, mime)?;
     if let Some(revision) = rendered {

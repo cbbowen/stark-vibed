@@ -38,6 +38,15 @@ use crate::brush_config::{BrushConfig, Transient};
 use crate::presets::PresetEntry;
 use crate::storage::{self, Store};
 
+/// How long the trash is held before the slot goes, seconds (§18.1.8).
+///
+/// **The clock and the picture are one value.** The web app's fill *is* the clock, so
+/// its stylesheet takes its `animation-duration` from here rather than restating the
+/// number; the native frame reads it to decide both how much red to draw and whether the
+/// hold has closed. Either way what is shown and what happens cannot come apart. Not
+/// shortened for anything: it is not decoration, it is the hold.
+pub const CLEAR_HOLD: f64 = 0.6;
+
 /// How many quick brushes there are — one per digit.
 pub const COUNT: usize = 10;
 

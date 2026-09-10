@@ -30,15 +30,7 @@ use wgpui::{
 };
 
 use crate::style;
-
-/// How long the trash is held before the slot goes, seconds.
-///
-/// **The clock and the picture are one value**, which is the web app's bargain reached
-/// from the other side: over there the fill *is* the clock and the duration is stated
-/// once in the stylesheet, and here there is no stylesheet — so the frame reads this to
-/// decide both how much red to draw and whether the hold has closed, and the two cannot
-/// come apart. Not shortened for anything: it is not decoration, it is the hold.
-pub const CLEAR_HOLD: f64 = 0.6;
+use stark_ui::slots::CLEAR_HOLD;
 
 /// A row's width, logical px — and what the held one grows to.
 ///

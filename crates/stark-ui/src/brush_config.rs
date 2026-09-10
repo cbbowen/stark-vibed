@@ -83,6 +83,26 @@ pub const MIN_RADIUS: f32 = 1.0;
 /// The maximum brush radius ([`BrushParams::size`]).
 pub const MAX_RADIUS: f32 = 500.0;
 
+/// What `Command::BrushSmaller` and `BrushLarger` mean (§25.2).
+///
+/// A ratio rather than a step, because size is perceived logarithmically: a pixel added
+/// to a 4-px tip is a quarter of it and nothing at all to a 400-px one. Fine enough that
+/// one tap is a nudge, coarse enough that it compounds across the whole range quickly
+/// under the key's own auto-repeat — 1 to 500 is ~65 repeats, a couple of seconds of
+/// holding `]`.
+pub const SIZE_STEP: f32 = 1.1;
+
+/// `size` stepped by `factor`, held to what a slider could show.
+///
+/// The clamp travels with the step because the two are one act: a tap must not put the
+/// brush anywhere the panel could not show or take back. Up and down are exact inverses
+/// (multiply by it, divide by it), so a tap too far is a tap back rather than a slowly
+/// drifting number — which holds only while both ends clamp the same way, and that is
+/// what this being one function is for.
+pub fn step_size(size: f32, factor: f32) -> f32 {
+    (size * factor).clamp(MIN_RADIUS, MAX_RADIUS)
+}
+
 /// The most flow the sliders offer (`BrushDynamics::add`). Three, not one, because
 /// `add` is a rate rather than a fraction — the everyday brush sits near 1 and a
 /// loaded one that buries what is under it wants more.

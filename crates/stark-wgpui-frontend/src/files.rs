@@ -106,19 +106,12 @@ pub fn encode(image: &stark_engine::RgbaImage, path: &Path) -> Result<Vec<u8>, S
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
     let encoded = if jpeg {
-        image.to_jpeg(EXPORT_JPEG_QUALITY)
+        image.to_jpeg(stark_ui::files::JPEG_QUALITY)
     } else {
         image.to_png()
     };
     encoded.map_err(|e| format!("could not encode the picture: {e}"))
 }
-
-/// The quality a JPEG export is written at.
-///
-/// High enough that the artefacts are not what a viewer notices first, and short of
-/// the top where the file grows faster than the picture improves. The same figure the
-/// web frontend offers as its default.
-const EXPORT_JPEG_QUALITY: u8 = 90;
 
 /// The title bar's text: the file this window holds, whether it has unsaved work,
 /// and whether anyone else is painting on it.

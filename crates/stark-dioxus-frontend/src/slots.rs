@@ -400,6 +400,10 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                                 button {
                                     class: "slot-clear",
                                     class: if arming_now == Some(slot) { "arming" },
+                                    // The sweep's clock, from the one place it is
+                                    // stated (§18.1.8) — the stylesheet keeps the
+                                    // curve and not the number.
+                                    style: "--slot-clear-hold: {stark_ui::slots::CLEAR_HOLD * 1000.0}ms",
                                     title: "Hold to clear this slot",
                                     onpointerdown: move |e| {
                                         if e.trigger_button() == Some(MouseButton::Primary) {
