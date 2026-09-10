@@ -26,7 +26,7 @@ use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, SIZE_STEP, step_size};
 use stark_ui::commands::{Bindings, Command, Gate, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
-use stark_ui::input as chrome_input;
+use stark_ui::input;
 use stark_ui::keys::Mods;
 use stark_ui::lighting as light;
 use stark_ui::nav;
@@ -851,13 +851,13 @@ impl Canvas {
             // Which device made the press is the other half `stark_ui::input` cannot
             // know, and it is a real difference: a mouse walks the screen in whole
             // pixels while a digitizer resolves well below one.
-            tolerance: chrome_input::tolerance(view, resolution(pen)),
+            tolerance: input::tolerance(view, resolution(pen)),
             // Zero for the shape tools, which fit no curve: a marquee's corner is
             // where the hand put it, and towing it would round the corner off.
             rope: if tool.is_selection() {
                 0.0
             } else {
-                chrome_input::rope(view, smoothing)
+                input::rope(view, smoothing)
             },
         });
         self.held = Some(if tool.is_selection() {
@@ -1107,7 +1107,7 @@ impl Canvas {
         {
             return self.clear_hover_mark(cx);
         }
-        let hand = chrome_input::Hovering {
+        let hand = input::Hovering {
             panning: self.space,
             // A held chord arms an act that reads the *shown* canvas back — the
             // eyedropper, and the layer carry on the day it lands. The mark is a
@@ -1129,7 +1129,7 @@ impl Canvas {
         };
         let view = r.view();
         let sample = sample_at(view, at, origin, scale, now, pen);
-        match hand.report(sample, chrome_input::tolerance(view, resolution(pen))) {
+        match hand.report(sample, input::tolerance(view, resolution(pen))) {
             Some(report) => self.send_hover(Some(report), cx),
             None => self.clear_hover_mark(cx),
         }
@@ -3300,7 +3300,7 @@ impl Canvas {
                     .as_ref()
                     .and_then(|e| e.preview.as_ref())
                     .map_or(0.0, |p| {
-                        stark_ui::input::rope(p.view(), self.brush.config.smoothing)
+                        input::rope(p.view(), self.brush.config.smoothing)
                     });
                 if let Some(editor) = self.editor.as_mut() {
                     editor.start_stroke(pos, rope);
@@ -4270,9 +4270,9 @@ fn sample_at(
 /// px — the half of `stark_ui::input::tolerance` only a frontend can answer.
 fn resolution(pen: Option<&Pose>) -> f32 {
     if pen.is_some() {
-        chrome_input::PEN_RESOLUTION
+        input::PEN_RESOLUTION
     } else {
-        chrome_input::MOUSE_RESOLUTION
+        input::MOUSE_RESOLUTION
     }
 }
 
