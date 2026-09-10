@@ -28,6 +28,7 @@ use stark_ui::commands::{Bindings, Command, Gate, VisibilityToggle};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input as chrome_input;
 use stark_ui::keys::Mods;
+use stark_ui::lighting as light;
 use stark_ui::nav;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
@@ -1343,16 +1344,16 @@ impl Canvas {
     /// parameters are a *view* setting, the substrate's scale is the **document's**,
     /// and the headroom is this client's own preference and reaches the engine only
     /// through the window's own capability (`Renderer::apply_hdr`).
-    pub(crate) fn turn_light(&mut self, dial: lighting::Dial, v: f32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn turn_light(&mut self, dial: light::Dial, v: f32, cx: &mut Context<'_, Self>) {
         match dial {
-            lighting::Dial::Impasto | lighting::Dial::Texture | lighting::Dial::Gloss => {
+            light::Dial::Impasto | light::Dial::Texture | light::Dial::Gloss => {
                 let mut media = self
                     .obs
                     .as_ref()
                     .map_or_else(stark_engine::MediaParams::default, |o| o.media);
                 match dial {
-                    lighting::Dial::Impasto => media.height_strength = v,
-                    lighting::Dial::Texture => media.substrate_strength = v,
+                    light::Dial::Impasto => media.height_strength = v,
+                    light::Dial::Texture => media.substrate_strength = v,
                     _ => media.specular = v,
                 }
                 self.send(ViewCommand::SetMediaParams(media), cx);
@@ -1361,13 +1362,13 @@ impl Canvas {
             // drag is a run of history entries. Honest but coarse, exactly as the
             // layer opacity above is, and the preview pair is the same stage of its
             // own for both.
-            lighting::Dial::Scale => {
+            light::Dial::Scale => {
                 let scale = stark_model::SubstrateScale::new(v.round().max(0.0) as u16);
                 self.send(DocCommand::SetSubstrateScale(scale), cx);
             }
             // Shown but not kept: a headroom is written down when the hand comes off
             // it ([`settle_light`]), so one drag is one write rather than one a frame.
-            lighting::Dial::Headroom => {
+            light::Dial::Headroom => {
                 self.hdr.headroom = v;
                 self.apply_hdr(cx);
             }
@@ -1375,13 +1376,8 @@ impl Canvas {
     }
 
     /// The end of a track's drag, for the one dial that has anything to do there.
-    pub(crate) fn settle_light(
-        &mut self,
-        dial: lighting::Dial,
-        _v: f32,
-        _cx: &mut Context<'_, Self>,
-    ) {
-        if dial == lighting::Dial::Headroom {
+    pub(crate) fn settle_light(&mut self, dial: light::Dial, _v: f32, _cx: &mut Context<'_, Self>) {
+        if dial == light::Dial::Headroom {
             let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
             prefs.hdr = self.hdr;
             stark_ui::storage::save(&prefs);

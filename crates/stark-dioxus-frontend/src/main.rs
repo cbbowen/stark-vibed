@@ -82,7 +82,7 @@ use layout::{resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use overlays::{BrushCursor, PeerCursors, PickLoupe, TowStringOverlay, TuneReadoutOverlay};
 use panels::brush::PresetSaveModal;
-use panels::lighting::{DEFAULT_ENVIRONMENT, environment_asset};
+use panels::lighting::environment_asset;
 use panels::{
     FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
     GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, StackPopouts, TimelineBar,
@@ -93,6 +93,7 @@ use rail::CommandRail;
 use render::CANVAS_ID;
 use slots::SlotOverlay;
 use stark_engine::command::ViewCommand;
+use stark_ui::lighting::DEFAULT_ENVIRONMENT;
 use state::{AppState, update_brush};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus

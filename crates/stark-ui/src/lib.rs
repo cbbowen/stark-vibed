@@ -45,6 +45,11 @@
 //!   this, and the name would have been read as those here.
 //! - [`layer_tree`] — what the Layers panel draws, and what a drop into it means
 //!   (§14.6, §14.8).
+//! - [`lighting`] — the environments the Lighting panel lists and the five knobs
+//!   it draws (§6.3, §6.4, §6.5). The bytes behind an environment stay each
+//!   frontend's: one fetches them, the other carries them.
+//! - [`guides`] — the drawing guides' vocabulary (§20): the axis names and pairs a
+//!   perspective quad is read through, and the octave a lattice sits on.
 //! - [`reorder`] — moving a row of a list by dragging it, with no opinion about
 //!   what the list is. Two panels are rosters; this is the gesture they share.
 //! - [`library`] — the gallery thumbnails a browser-held asset library shows
@@ -104,12 +109,14 @@ pub mod color;
 pub mod commands;
 pub mod drags;
 pub mod files;
+pub mod guides;
 pub mod icons;
 pub mod identity;
 pub mod input;
 pub mod keys;
 pub mod layer_tree;
 pub mod library;
+pub mod lighting;
 pub mod nav;
 pub mod panels;
 pub mod pick;

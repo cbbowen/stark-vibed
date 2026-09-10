@@ -13,6 +13,7 @@ use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams, Output, Transfer};
 use stark_model::{SubstrateId, SubstrateScale};
+use stark_ui::lighting::{Dial, ENVIRONMENTS};
 use stark_ui::prefs::Hdr;
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
@@ -26,27 +27,6 @@ pub const ENV_BLOEM_HILL: Asset = asset!("/assets/environment/bloem_hill_01_1k.h
 pub const ENV_KLOOFENDAL_OVERCAST: Asset =
     asset!("/assets/environment/kloofendal_overcast_puresky_1k.hdr");
 pub const ENV_QWANTANI_DUSK: Asset = asset!("/assets/environment/qwantani_dusk_2_puresky_1k.hdr");
-
-/// The selectable lighting environments, in display order (§6.3). One row per
-/// environment, its bytes (if any) resolved by
-/// [`environment_asset`]. `Neutral` leads because it is the reference light — the
-/// achromatic one you switch to to judge color; the HDRs are the room you paint in.
-pub const ENVIRONMENTS: &[(EnvironmentId, &str)] = &[
-    (EnvironmentId::Neutral, "Neutral"),
-    (EnvironmentId::Ferndale, "Ferndale studio"),
-    (EnvironmentId::BloemHill, "Bloem hill"),
-    (EnvironmentId::KloofendalOvercast, "Kloofendal overcast"),
-    (EnvironmentId::QwantaniDusk, "Qwantani dusk"),
-];
-
-/// What the app lights the canvas with on startup: the achromatic reference light,
-/// which is also what the engine boots on. Paint reads as its own color under it —
-/// normalized by the irradiance a flat canvas receives, the media pass is an
-/// identity under it (§6.3) — so
-/// what you mix is what you see, and the studio HDR is the deliberate switch into a
-/// room. Kept a named constant because the startup hook in `main.rs` fetches its
-/// bytes if it has any; `Neutral` is procedural, so today that fetch is skipped.
-pub const DEFAULT_ENVIRONMENT: EnvironmentId = EnvironmentId::Neutral;
 
 /// Lighting controls for the image-based-lighting media pass (§6.3).
 /// The canvas is lit by the chosen environment; these tune how it reads. Exposure is
@@ -130,11 +110,18 @@ pub fn LightingPanel() -> Element {
         }
     });
     rsx! {
-        Slider { label: "Impasto", glyph: stark_ui::icons::IMPASTO, min: 0.0, max: 1.0, value: p.height_strength,
+        // Each track's ends, its mark and its caption come off the dial rather than
+        // being spelled here: the gloss ceiling in particular was a literal on this
+        // side and a named constant on the native one whose doc said it was copying
+        // this slider (§11.2).
+        Slider { label: Dial::Impasto.label(), glyph: Dial::Impasto.glyph(),
+            min: Dial::Impasto.range().0, max: Dial::Impasto.range().1, value: p.height_strength,
             oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: "Texture", glyph: stark_ui::icons::TEXTURE, min: 0.0, max: 1.0, value: p.substrate_strength,
+        Slider { label: Dial::Texture.label(), glyph: Dial::Texture.glyph(),
+            min: Dial::Texture.range().0, max: Dial::Texture.range().1, value: p.substrate_strength,
             oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
-        Slider { label: "Gloss", glyph: stark_ui::icons::GLOSS, min: 0.0, max: 0.35, value: p.specular,
+        Slider { label: Dial::Gloss.label(), glyph: Dial::Gloss.glyph(),
+            min: Dial::Gloss.range().0, max: Dial::Gloss.range().1, value: p.specular,
             oninput: move |v| update_media(state, move |m| m.specular = v) }
         // The canvas colour, and the surface it is laid on: the two choices in this
         // panel that are made by *looking*, and so the two that want more room than a
@@ -236,8 +223,9 @@ pub fn LightingPanel() -> Element {
             // The slider stands in for a headroom the platform will not report
             // (`Renderer::display_headroom`); a figure the screen states is used as is.
             if hdr.on && display_headroom.is_none() {
-                Slider { label: "Headroom", glyph: stark_ui::icons::HDR,
-                    min: Hdr::MIN_HEADROOM, max: Hdr::MAX_HEADROOM, value: hdr.clamped_headroom(),
+                Slider { label: Dial::Headroom.label(), glyph: Dial::Headroom.glyph(),
+                    min: Dial::Headroom.range().0, max: Dial::Headroom.range().1,
+                    value: hdr.clamped_headroom(),
                     oninput: move |v| change_hdr(state, move |h| h.headroom = v),
                     onsettle: move |_| crate::prefs::save(state) }
             }

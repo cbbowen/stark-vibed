@@ -27,9 +27,9 @@ use crate::brush::Brush;
 use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
 use crate::guides;
-use crate::lighting;
 use crate::panel::KNOBS;
 use crate::select::Dial;
+use stark_ui::lighting as light;
 
 /// Every dial the Select section can mount, in one order, so a state exists for each
 /// whether or not this frame shows it.
@@ -45,12 +45,12 @@ pub struct Controls {
     pub opacity: Entity<SliderState>,
     /// The selected layer's blend mode, over [`BlendMode::ALL`]'s labels.
     pub blend: Entity<SelectState<Vec<SharedString>>>,
-    /// The Lighting shelf's five, in `lighting::DIALS`' order — see
-    /// [`Controls::light`].
-    lights: [Entity<SliderState>; lighting::DIALS.len()],
+    /// The Lighting shelf's five, in `stark_ui::lighting::Dial`'s own order —
+    /// see [`Controls::light`].
+    lights: [Entity<SliderState>; <light::Dial as strum::EnumCount>::COUNT],
     /// The Guides shelf's two, in `guides::DIALS`' order.
     guide_dials: [Entity<SliderState>; guides::DIALS.len()],
-    /// Which room the canvas is lit in, over `lighting::ENVIRONMENTS`' names.
+    /// Which room the canvas is lit in, over `light::ENVIRONMENTS`' names.
     pub environment: Entity<SelectState<Vec<SharedString>>>,
     /// The color panel's notation field: what the picker stands on, as text a
     /// person can read, copy, or type over (`stark_ui::color::parse_color`).
@@ -136,7 +136,8 @@ impl Controls {
         // The Lighting shelf's tracks. Three are a view setting, one is document
         // state and one is this client's own preference — a split the view answers
         // (`Canvas::turn_light`) rather than the track, which knows only its range.
-        let lights = lighting::DIALS.map(|dial| {
+        let lights = std::array::from_fn(|i| {
+            let dial = <light::Dial as strum::VariantArray>::VARIANTS[i];
             let (lo, hi) = dial.range();
             let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
             subs.push(cx.subscribe(
@@ -162,7 +163,7 @@ impl Controls {
             );
             state
         });
-        let lights_labels: Vec<SharedString> = lighting::ENVIRONMENTS
+        let lights_labels: Vec<SharedString> = light::ENVIRONMENTS
             .iter()
             .map(|(_, name)| SharedString::from(*name))
             .collect();
@@ -174,7 +175,7 @@ impl Controls {
                 let SelectEvent::Confirm(Some(label)) = event else {
                     return;
                 };
-                if let Some((id, _)) = lighting::ENVIRONMENTS
+                if let Some((id, _)) = light::ENVIRONMENTS
                     .iter()
                     .find(|(_, name)| *name == label.as_ref())
                 {
@@ -276,12 +277,10 @@ impl Controls {
     }
 
     /// The state behind one of the Lighting shelf's tracks.
-    pub fn light(&self, dial: lighting::Dial) -> &Entity<SliderState> {
-        let i = lighting::DIALS
-            .iter()
-            .position(|d| *d == dial)
-            .expect("every lighting dial has a state");
-        &self.lights[i]
+    pub fn light(&self, dial: light::Dial) -> &Entity<SliderState> {
+        // Seated rather than searched: the index is exhaustive, so a sixth dial
+        // is a compile error where the old `expect` was a panic on opening.
+        &self.lights[dial.index()]
     }
 
     /// The state behind one of the Guides shelf's tracks.
@@ -346,7 +345,10 @@ impl Controls {
                 settle(state, dial.read(o), window, cx);
             }
         }
-        for (dial, state) in lighting::DIALS.iter().zip(&self.lights) {
+        for (dial, state) in <light::Dial as strum::VariantArray>::VARIANTS
+            .iter()
+            .zip(&self.lights)
+        {
             settle(state, dial.read(obs, hdr), window, cx);
         }
         // Only where there is a guide in hand: with none the tracks are not drawn at
@@ -383,7 +385,7 @@ impl Controls {
         settle(&self.opacity, opacity, window, cx);
         let want = obs
             .map(|o| o.environment)
-            .and_then(|env| lighting::ENVIRONMENTS.iter().position(|(id, _)| *id == env))
+            .and_then(|env| light::ENVIRONMENTS.iter().position(|(id, _)| *id == env))
             .map(IndexPath::new);
         if self.environment.read(cx).selected_index(cx) != want {
             self.environment
