@@ -1280,7 +1280,7 @@ fn schedule_paint(state: AppState) {
         // present around it. Its *count* over the window is the frame rate the app
         // actually achieved, which is the top line of the end-to-end story and the
         // number every phase row underneath is read against.
-        stark_engine::timing::span!("frame");
+        stark_engine::timing::span!(stark_engine::timing::FRAME);
         let mut queued = state.paint_queued;
         queued.set(false);
         // A device that has died renders nothing, and **this** is where that has to
@@ -1477,7 +1477,7 @@ pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
     // 240 Hz pen is being heard at 240 Hz or at 60 is a question only this row
     // answers. It contains `input.fit`, so the difference between the two is the
     // engine door and the paint request around the work.
-    stark_engine::timing::span!("input.sample");
+    stark_engine::timing::span!(stark_engine::timing::INPUT_SAMPLE);
     with_engine_quiet(state, |r| r.process(command));
     request_paint(state);
 }

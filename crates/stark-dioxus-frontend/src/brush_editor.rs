@@ -486,15 +486,11 @@ fn effect_label(effect: BrushEffectType) -> &'static str {
 
 /// The fold signal for one group, out of the run the dialog keeps.
 ///
-/// A slice indexed by the group's place in [`SECTIONS`] rather than four named
-/// signals: the groups are a table now, and four names beside a table is the second
-/// list that comes apart from it.
+/// An array seated by [`Section::index`] rather than four named signals: the groups
+/// are a table now, and four names beside a table is the second list that comes apart
+/// from it.
 fn fold(signals: &[Signal<bool>; SECTIONS.len()], section: Section) -> Signal<bool> {
-    let i = SECTIONS
-        .iter()
-        .position(|s| *s == section)
-        .expect("every group is in the table it came from");
-    signals[i]
+    signals[section.index()]
 }
 
 /// A parameter slider with its **pen mapping** hung off the end (§6.2): the base
@@ -863,15 +859,27 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     crate::platform::next_frame().await;
     let built = {
         let renderer = state.renderer.peek();
-        renderer.as_ref().map(|main| {
-            let mut r = main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID));
-            r.process(DocCommand::SetSubstrateColor(
-                main.observe().substrate_color,
-            ));
-            r
-        })
+        let Some(main) = renderer.as_ref() else {
+            return;
+        };
+        main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID))
+            .map(|mut r| {
+                r.process(DocCommand::SetSubstrateColor(
+                    main.observe().substrate_color,
+                ));
+                r
+            })
     };
-    let Some(mut r) = built else { return };
+    // A refused surface leaves the column blank, as the navigator's does
+    // (`Renderer::attach_overview`): every preview handler already treats a missing
+    // renderer as nothing to draw on.
+    let mut r = match built {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("brush preview surface unavailable: {e}");
+            return;
+        }
+    };
 
     // Re-read the element before anything is measured against it: both strokes are
     // placed from `r.size()`, so a stale viewport would put them off the column as

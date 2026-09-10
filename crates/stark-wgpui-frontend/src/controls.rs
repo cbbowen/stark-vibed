@@ -31,16 +31,13 @@ use stark_ui::guides as gd;
 use stark_ui::lighting as light;
 use stark_ui::selection::Dial;
 
-/// Every dial the Select section can mount, in one order, so a state exists for each
-/// whether or not this frame shows it.
-pub const DIALS: [Dial; 3] = [Dial::Feather, Dial::FillOpacity, Dial::MaskOpacity];
-
 /// The states, and the subscriptions that make them heard.
 pub struct Controls {
     /// The brush panel's four, in [`KNOBS`]' order.
     pub knobs: [Entity<SliderState>; KNOBS.len()],
-    /// The Select section's, in [`DIALS`]' order — see [`Controls::dial`].
-    dials: [Entity<SliderState>; DIALS.len()],
+    /// The Select section's, in `stark_ui::selection::Dial`'s own order, one whether
+    /// or not this frame shows it — see [`Controls::dial`].
+    dials: [Entity<SliderState>; <Dial as strum::EnumCount>::COUNT],
     /// The selected layer's opacity.
     pub opacity: Entity<SliderState>,
     /// The selected layer's blend mode, over [`BlendMode::ALL`]'s labels.
@@ -97,7 +94,8 @@ impl Controls {
             );
             state
         });
-        let dials = DIALS.map(|dial| {
+        let dials = std::array::from_fn(|i| {
+            let dial = <Dial as strum::VariantArray>::VARIANTS[i];
             let (lo, hi) = dial.range();
             let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
             subs.push(cx.subscribe(
@@ -287,11 +285,7 @@ impl Controls {
     /// The state behind one of the Guides shelf's tracks.
     pub fn guide(&self, dial: gd::Dial) -> &Entity<SliderState> {
         // Seated rather than searched, as the lighting dials are.
-        let i = <gd::Dial as strum::VariantArray>::VARIANTS
-            .iter()
-            .position(|d| *d == dial)
-            .expect("every guide dial has a state");
-        &self.guide_dials[i]
+        &self.guide_dials[dial.index()]
     }
 
     /// The state behind one of the brush editor's modulatable tracks.
@@ -316,11 +310,7 @@ impl Controls {
 
     /// The state behind one of the Select section's dials.
     pub fn dial(&self, dial: Dial) -> &Entity<SliderState> {
-        let i = DIALS
-            .iter()
-            .position(|d| *d == dial)
-            .expect("every dial has a state");
-        &self.dials[i]
+        &self.dials[dial.index()]
     }
 
     /// Bring every state up to what the model says, once per frame.
@@ -343,7 +333,10 @@ impl Controls {
             settle(state, fraction(knob.read(brush), lo, hi), window, cx);
         }
         if let Some(o) = obs {
-            for (dial, state) in DIALS.iter().zip(&self.dials) {
+            for (dial, state) in <Dial as strum::VariantArray>::VARIANTS
+                .iter()
+                .zip(&self.dials)
+            {
                 settle(state, dial.read(o), window, cx);
             }
         }

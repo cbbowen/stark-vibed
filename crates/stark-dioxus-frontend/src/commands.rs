@@ -479,3 +479,81 @@ fn close_dialogs(state: AppState) -> bool {
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn character(s: &str) -> Key {
+        Key::Character(s.to_owned())
+    }
+
+    #[test]
+    fn a_single_char_is_typed() {
+        assert_eq!(
+            stroke_of(Modifiers::empty(), &character("z"), "KeyZ"),
+            Keystroke::new(Some('z'), "KeyZ"),
+        );
+    }
+
+    /// A dead key or an IME composition reports more than one `char`, and neither is a
+    /// chord.
+    #[test]
+    fn a_composed_string_types_nothing() {
+        for composed in ["e\u{301}", "ab", ""] {
+            let stroke = stroke_of(Modifiers::empty(), &character(composed), "KeyE");
+            assert_eq!(stroke, Keystroke::new(None, "KeyE"), "{composed:?}");
+        }
+    }
+
+    #[test]
+    fn the_keys_a_capture_spends_have_their_roles() {
+        for (key, role) in [
+            (Key::Escape, Role::Escape),
+            (Key::Backspace, Role::Backspace),
+            (Key::Control, Role::Modifier),
+            (Key::Shift, Role::Modifier),
+            (Key::Alt, Role::Modifier),
+            (Key::AltGraph, Role::Modifier),
+            (Key::Meta, Role::Modifier),
+            (Key::Enter, Role::Ordinary),
+        ] {
+            let stroke = stroke_of(Modifiers::empty(), &key, "");
+            assert_eq!(stroke, Keystroke::new(None, "").as_role(role), "{key:?}");
+        }
+    }
+
+    /// Ctrl here, Command on a Mac: either is the accelerator (`input::accel`).
+    #[test]
+    fn control_and_meta_both_hold_the_accelerator() {
+        let accel = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        for m in [
+            Modifiers::CONTROL,
+            Modifiers::META,
+            Modifiers::CONTROL | Modifiers::META,
+        ] {
+            assert_eq!(stroke_of(m, &character("s"), "KeyS").mods, accel, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn shift_and_alt_are_read_as_themselves() {
+        let stroke = stroke_of(Modifiers::SHIFT | Modifiers::ALT, &character("S"), "KeyS");
+        let held = Mods {
+            ctrl: false,
+            shift: true,
+            alt: true,
+        };
+        assert_eq!(stroke.mods, held);
+    }
+
+    #[test]
+    fn code_passes_through_unchanged() {
+        for code in ["KeyZ", "Digit1", "BracketLeft", ""] {
+            assert_eq!(stroke_of(Modifiers::CONTROL, &Key::F1, code).code, code);
+        }
+    }
+}

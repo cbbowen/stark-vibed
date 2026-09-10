@@ -57,11 +57,9 @@ use crate::widgets::Modal;
 #[component]
 pub fn GpuFailureModal() -> Element {
     let state = use_context::<AppState>();
-    // The app never started, which is asked first: it is the arm that means there
-    // is no projection for the read below to find.
-    if let Some(why) = (state.startup_failure)() {
-        return rsx! { NoGpu { why } };
-    }
+    // Every hook before either early return: hooks are positional, so one skipped on
+    // some renders hands its slot to the next (`slots::SlotOverlay`).
+    //
     // Cloned out of the projection rather than held across the render: `Arc`, so
     // this is a refcount bump, and the guard must not be live when Save reads the
     // renderer.
@@ -72,13 +70,20 @@ pub fn GpuFailureModal() -> Element {
     // it on every command of every session to decide, again, that there was
     // nothing to report. The `Option<Arc<_>>` compares by pointer, so the memo
     // propagates exactly once, when the device dies (`state::use_obs`).
-    let Some(failure) = use_obs(state, |o| o.gpu_failure.clone())().flatten() else {
-        return rsx! {};
-    };
+    let gpu_failure = use_obs(state, |o| o.gpu_failure.clone());
     // Saved once. The button stays — a download the browser silently declined is
     // the one case where asking again is the right move — but the word changes, so
     // a click that appeared to do nothing is distinguishable from one that worked.
     let mut saved = use_signal(|| false);
+
+    // The app never started, which is asked first: it is the arm that means there
+    // is no projection for the read below to find.
+    if let Some(why) = (state.startup_failure)() {
+        return rsx! { NoGpu { why } };
+    }
+    let Some(failure) = gpu_failure().flatten() else {
+        return rsx! {};
+    };
 
     rsx! {
         // No `on_close`, unlike every other dialog in the app: there is nothing

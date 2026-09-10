@@ -980,13 +980,15 @@ impl Renderer {
     /// [`attach_overview`](Self::attach_overview) is and for the same reason: the
     /// shared pipelines are built for one format, and a second surface that chose
     /// differently would fail validation rather than merely look wrong.
-    pub fn shared(&self, canvas: Canvas) -> Renderer {
+    ///
+    /// Errs where the browser refuses `canvas` a surface, as
+    /// [`attach_overview`](Self::attach_overview) can; the caller decides what a
+    /// missing preview looks like.
+    pub fn shared(&self, canvas: Canvas) -> Result<Renderer, wgpu::CreateSurfaceError> {
         let (width, height) = canvas.laid_out_size();
         canvas.set_buffer_size(width, height);
-        let surface: wgpu::Surface<'static> = self
-            .instance
-            .create_surface(canvas.surface_target())
-            .expect("create preview canvas surface");
+        let surface: wgpu::Surface<'static> =
+            self.instance.create_surface(canvas.surface_target())?;
         let caps = surface.get_capabilities(&self.adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1002,7 +1004,7 @@ impl Renderer {
         };
         surface.configure(&self.engine.gpu().device, &config);
         let engine = Engine::new_sharing(&self.engine, Extent2::new(width, height));
-        Renderer {
+        Ok(Renderer {
             canvas,
             instance: self.instance.clone(),
             adapter: self.adapter.clone(),
@@ -1017,7 +1019,7 @@ impl Renderer {
             overview: None,
             layer_thumbs: stark_engine::Offscreen::default(),
             frames_in_flight: Arc::new(AtomicU32::new(0)),
-        }
+        })
     }
 
     /// The expensive half of this renderer's engine, on its own

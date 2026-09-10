@@ -652,7 +652,7 @@ pub enum Row {
 /// `Hash` because a frontend keeps a *set* of them — which are folded, which have
 /// their "Show more" open — and a set keyed by anything else would be a second name
 /// for a group.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, strum::VariantArray)]
 pub enum Section {
     /// The footprint the stroke sweeps along the path.
     Tip,
@@ -682,6 +682,18 @@ pub struct Shown {
 }
 
 impl Section {
+    /// Where this group sits in [`SECTIONS`] — the seat a frontend keeps its state for
+    /// the group in. Exhaustive, so a fifth group does not compile until it says where
+    /// it sits, where a `position().expect()` would panic on the frame the dialog opened.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Tip => 0,
+            Self::Effect => 1,
+            Self::Color => 2,
+            Self::Wet => 3,
+        }
+    }
+
     /// The name the group wears. The effect group is named for the effect in force:
     /// the sections below it come and go with that switch, so a title saying which is
     /// what makes the coming and going read as an answer rather than as a glitch.
@@ -1113,6 +1125,18 @@ mod tests {
             tune: Transient::default(),
             space: ColorSpaceId::Oklab,
             substrate: SubstrateId::Flat,
+        }
+    }
+
+    /// Every group, including one added to the enum and left out of the table.
+    #[test]
+    fn every_section_sits_in_the_seat_its_index_names() {
+        for section in <Section as strum::VariantArray>::VARIANTS {
+            assert_eq!(
+                SECTIONS.get(section.index()),
+                Some(section),
+                "{section:?} names a seat it does not sit in",
+            );
         }
     }
 

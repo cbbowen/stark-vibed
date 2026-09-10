@@ -41,12 +41,15 @@ const REFRESH_MS: i32 = 500;
 /// The rows whose *count* is the headline, paired with what that count means.
 ///
 /// The end-to-end story in two numbers, and the reason the dialog is not just a
-/// table: `frame` is the rate the canvas actually reached the screen at and
-/// `input.sample` is the rate pointer reports actually reached the engine at, and
-/// every phase below is read as an explanation of one of those two.
+/// table: [`timing::FRAME`] is the rate the canvas actually reached the screen at
+/// and [`timing::INPUT_SAMPLE`] is the rate pointer reports actually reached the
+/// engine at, and every phase below is read as an explanation of one of those two.
+///
+/// Named by the same constants `state` opens the spans under, so a renamed span
+/// cannot leave its headline reading an em-dash.
 const HEADLINE: [(&str, &str, &str); 2] = [
-    ("frame", "Frames", "painted per second"),
-    ("input.sample", "Pointer", "samples per second"),
+    (timing::FRAME, "Frames", "painted per second"),
+    (timing::INPUT_SAMPLE, "Pointer", "samples per second"),
 ];
 
 /// The Timing Stats dialog, opened from the command search and dismissed by Done or by
@@ -262,24 +265,5 @@ mod tests {
         // Under the finest browser clock: shown as under the tick, never as zero.
         assert_eq!(duration(Duration::from_nanos(300)), "\u{2039}\u{2009}tick");
         assert_eq!(duration(Duration::ZERO), "\u{2039}\u{2009}tick");
-    }
-
-    /// Both headline rows have to name phases that are actually instrumented, or the
-    /// dialog opens with two em-dashes and no way to tell a quiet session from a
-    /// renamed span.
-    ///
-    /// Checked against the *names* rather than against a snapshot, because a snapshot
-    /// needs a painted frame and this test has no GPU: what can drift is the string,
-    /// and it drifts at the `timing::span!` call site in `state.rs`.
-    #[test]
-    fn the_headline_names_are_the_ones_the_frontend_opens() {
-        let source = include_str!("state.rs");
-        for (name, _, _) in HEADLINE {
-            assert!(
-                source.contains(&format!("timing::span!(\"{name}\")")),
-                "the Timing Stats headline reads `{name}`, which nothing in state.rs \
-                 opens any more — the row will always be an em-dash",
-            );
-        }
     }
 }

@@ -3299,9 +3299,7 @@ impl Canvas {
                     .editor
                     .as_ref()
                     .and_then(|e| e.preview.as_ref())
-                    .map_or(0.0, |p| {
-                        input::rope(p.view(), self.brush.config.smoothing)
-                    });
+                    .map_or(0.0, |p| input::rope(p.view(), self.brush.config.smoothing));
                 if let Some(editor) = self.editor.as_mut() {
                     editor.start_stroke(pos, rope);
                 }

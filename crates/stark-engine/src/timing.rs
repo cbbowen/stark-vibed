@@ -77,6 +77,15 @@ use crate::unpoisoned;
 /// which is what an unqualified target defaults to.
 pub const TARGET: &str = "stark::timing";
 
+/// The span a frontend opens around each frame it shows; its count over the window is
+/// the frame rate the app reached. A constant, unlike the other phase names, because a
+/// timing view reads it by name as well as the frontend opening it.
+pub const FRAME: &str = "frame";
+
+/// The span a frontend opens around each pointer report it hands the engine; its count
+/// over the window is the input rate the engine actually heard.
+pub const INPUT_SAMPLE: &str = "input.sample";
+
 /// Which half of the world a layer wants: `TimingFilter::<true>` is the half that
 /// measures, `TimingFilter::<false>` the half that logs.
 ///
