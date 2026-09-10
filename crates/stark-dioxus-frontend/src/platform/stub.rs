@@ -5,7 +5,7 @@
 //! the answer below rather than a browser's, so a green host build says nothing about
 //! `web.rs`. The answers therefore say that nothing happened — an empty list, a `None`,
 //! a `false`, and an `Err` from every act a caller would otherwise report as done — and
-//! [`Canvas::surface_target`], which cannot answer at all, panics.
+//! [`Canvas::surface_target`] and [`canvas_by_id`], which cannot answer at all, panic.
 //!
 //! Undocumented item for item: each is the second half of one documented in `web.rs`,
 //! and `tests/platform_parity.rs` holds the two signatures equal.
@@ -136,7 +136,7 @@ pub fn canvas_of(_e: &Event<MountedData>) -> Option<Canvas> {
 }
 
 pub fn canvas_by_id(_id: &str) -> Canvas {
-    Canvas
+    unimplemented!("stark-dioxus-frontend targets the web; there is no document off it")
 }
 
 pub async fn next_frame() {}

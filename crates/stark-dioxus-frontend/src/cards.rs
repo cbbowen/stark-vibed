@@ -24,6 +24,15 @@ pub fn thumb_style(url: Option<&str>) -> String {
 }
 
 /// A `data:` URL for `card`, or `None` if the encode failed.
+pub fn data_url(card: Card) -> Option<String> {
+    let png = encode_png(card)?;
+    Some(format!(
+        "data:image/png;base64,{}",
+        crate::base64::encode(&png)
+    ))
+}
+
+/// `card` as PNG bytes, or `None` if the encode failed.
 ///
 /// Two channel layouts for the two readings, and neither is a style choice:
 ///
@@ -35,7 +44,7 @@ pub fn thumb_style(url: Option<&str>) -> String {
 /// - **Height** is opaque grey. A substrate has no gaps: its low ground is as much a
 ///   part of it as its high ground, and drawing the lows transparent would show a
 ///   canvas full of holes.
-pub fn data_url(card: Card) -> Option<String> {
+pub fn encode_png(card: Card) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut out, card.width, card.height);
@@ -54,8 +63,5 @@ pub fn data_url(card: Card) -> Option<String> {
             Ink::Height => writer.write_image_data(&card.texels).ok()?,
         }
     }
-    Some(format!(
-        "data:image/png;base64,{}",
-        crate::base64::encode(&out)
-    ))
+    Some(out)
 }

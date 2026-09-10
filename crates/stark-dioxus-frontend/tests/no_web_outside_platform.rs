@@ -5,11 +5,19 @@
 //! `#[cfg(target_arch = "wasm32")]`, and that is where a browser call outside the platform
 //! module would hide: checked only by the wasm build, which runs no tests. `dioxus::web`
 //! is the other door to the same types — its `WebEventExt` hands back a `web_sys` event —
-//! and it resolves on the host too.
+//! and it resolves on the host too. The trait is named on its own because a grouped
+//! import, `use dioxus::{web::WebEventExt}`, never spells `dioxus::web`.
 
 use std::path::{Path, PathBuf};
 
-const BROWSER: &[&str] = &["web_sys", "js_sys", "wasm_bindgen", "dioxus::web"];
+const BROWSER: &[&str] = &[
+    "web_sys",
+    "js_sys",
+    "wasm_bindgen",
+    "dioxus::web",
+    "dioxus_web",
+    "WebEventExt",
+];
 
 #[test]
 fn only_the_web_half_of_platform_names_the_browser() {
@@ -25,7 +33,7 @@ fn only_the_web_half_of_platform_names_the_browser() {
     let mut found = Vec::new();
     for path in rust_files(&src) {
         let relative = path.strip_prefix(&src).expect("the walk stays under src");
-        if relative == web || relative.starts_with(Path::new("platform").join("web")) {
+        if relative == web {
             continue;
         }
         for (line, name) in browser_names(&read(&path)) {

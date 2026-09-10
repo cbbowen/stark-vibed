@@ -1,5 +1,5 @@
 //! Standard base64 with padding (RFC 4648 §4), for the `data:` URLs the chrome puts its
-//! thumbnails and swatches in. Encode only: nothing here reads one back but a test.
+//! thumbnails and swatches in. Encode only: nothing reads one back.
 
 /// `data` as padded standard base64.
 pub fn encode(data: &[u8]) -> String {
@@ -16,35 +16,6 @@ pub fn encode(data: &[u8]) -> String {
         out.push(if chunk.len() > 2 { sextet(n, 0) } else { '=' });
     }
     out
-}
-
-/// The inverse of [`encode`], for the tests that read a `data:` URL back. Stops at the
-/// first `=`.
-///
-/// Spelled as ranges rather than as a table inverted from [`encode`]'s alphabet, so a
-/// round trip compares two independent statements of it.
-#[cfg(test)]
-pub fn decode(text: &str) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for &c in text.as_bytes() {
-        let value = match c {
-            b'=' => break,
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return Err(format!("{:?} is not a base64 character", char::from(c))),
-        };
-        acc = (acc << 6) | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -68,23 +39,5 @@ mod tests {
         for (plain, encoded) in vectors {
             assert_eq!(encode(plain), encoded, "encoding {plain:?}");
         }
-    }
-
-    /// Every byte value, at every remainder a length can leave, survives the round trip.
-    #[test]
-    fn a_byte_ramp_round_trips_at_every_remainder() {
-        let ramp: Vec<u8> = (0..=u8::MAX).collect();
-        for len in [0, 1, 2, 3, 4, 5, 254, 255, 256] {
-            let data = &ramp[..len];
-            assert_eq!(decode(&encode(data)).as_deref(), Ok(data), "{len} bytes");
-        }
-    }
-
-    #[test]
-    fn decode_refuses_a_character_outside_the_alphabet() {
-        assert!(
-            decode("Zm9v!").is_err(),
-            "`!` is not in the alphabet, so the text is not base64"
-        );
     }
 }

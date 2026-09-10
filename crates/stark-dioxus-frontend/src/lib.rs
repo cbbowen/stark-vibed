@@ -13,13 +13,11 @@
 //! is the list of what is on screen and the order it is stacked in, plus the
 //! startup task that builds the engine and everything that has to wait for one.
 //!
-//! The three things it used to also be are beside it now. [`crate::canvas`] is
-//! the painting surface and the press ladder that decides what a pointer on it
-//! means (§25.4); [`crate::overlays`] is the chrome that rides over it — peer
-//! cursors, the brush ring, the tow string; [`crate::rail`] is the command rail,
-//! its menus and the search palette. Each of those is one subject with one long
-//! argument, and reading `app`'s stacking order should not mean scrolling past
-//! all three.
+//! Not here: [`crate::canvas`], the painting surface and the press ladder that decides
+//! what a pointer on it means (§25.4); [`crate::overlays`], the chrome that rides over
+//! it — peer cursors, the brush ring, the tow string; and [`crate::rail`], the command
+//! rail, its menus and the search palette. Each is one subject with one long argument,
+//! and `app`'s stacking order should read without scrolling past them.
 
 // `rsx!` lowers every interpolated attribute and text node — `id: "{CANVAS_ID}"`,
 // `"{title}"` — through `format!`, so clippy sees a `format!` with nothing to

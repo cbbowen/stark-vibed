@@ -39,12 +39,8 @@ pub fn install_tracing() {
     }
 }
 
-/// The page's painting surface, as everything outside this module sees it.
-///
-/// `render::Renderer` held a `web_sys::HtmlCanvasElement` and reached for its
-/// methods directly; this is the three things it actually did with one. Off wasm
-/// it is a unit, which is honest — there is no canvas, and [`Self::surface_target`]
-/// says so the way `render` always did.
+/// The page's painting surface, as everything outside this module sees it: the three
+/// things `render` does with a `<canvas>`, and no `web_sys` type.
 #[derive(Clone)]
 pub struct Canvas(web_sys::HtmlCanvasElement);
 
@@ -515,10 +511,8 @@ pub fn on_window_blur(handler: impl FnMut() + 'static) {
 /// whether it appears at all. All a page can say is *that* it objects, which is why
 /// this takes a predicate and returns nothing. It says it twice, because engines
 /// disagree about which way counts: `preventDefault` is what the current spec reads,
-/// a non-empty `returnValue` what older ones read. The string itself has not been
-/// shown to a user by any major browser in years — it was a phishing surface — and
-/// what matters about it is only that it is *not empty*. It is a sentence anyway, on
-/// the chance some engine somewhere still prints one.
+/// a non-empty `returnValue` what older ones read. No major browser shows that string,
+/// so all it has to be is *not empty*; it is a sentence for any engine that still does.
 ///
 /// A browser also declines to prompt at all until the page has been interacted with,
 /// which is a condition this app meets by the time it has anything to lose.
@@ -740,12 +734,10 @@ pub fn device_pixel_ratio() -> f32 {
 ///
 /// `performance.now()` rather than `Date.now()`, because every use of this is a
 /// *duration*: `PEER_TIMEOUT`, `HEARTBEAT`, `GESTURE_TIMEOUT`, `GESTURE_RESYNC`.
-/// Nothing compares it across clients, and nothing needs an epoch. A wall clock
-/// stepping — an NTP correction, a user changing the system time — broke those
-/// durations in both directions: backwards, `now - pub_at` went negative, the
-/// heartbeat stopped coming due and every peer dropped this client after six
-/// seconds of apparent silence; forwards, the whole roster expired in a single
-/// tick.
+/// Nothing compares it across clients, and nothing needs an epoch. A wall clock can
+/// step — an NTP correction, a user changing the system time — and a step backwards
+/// stops the heartbeat coming due until every peer drops this client, while one
+/// forwards expires the whole roster in a single tick.
 ///
 /// `performance.now()` is missing only in environments with no `performance` at
 /// all, where `Date.now()` is the best available answer.
@@ -844,11 +836,8 @@ pub fn local_remove(key: &str) {
 // The raw half of [`stark_ui::storage`]'s second door. `localStorage` above is *text*,
 // and a few megabytes of it per origin shared across every record this browser keeps
 // — so bytes go to IndexedDB instead, which is quota'd against the disk, and which
-// does its reading and writing off the thread the canvas paints on (§25.6).
-//
-// Everything here is `async` for that last reason and not by taste: the store this
-// replaces was synchronous, and re-encoding a shape library on the main thread is
-// the cost that made the replacement worth doing.
+// does its reading and writing off the thread the canvas paints on (§25.6), which is
+// why everything here is `async`.
 
 /// The database, its version, and its one object store.
 ///
@@ -987,7 +976,7 @@ pub async fn blob_put(key: &str, bytes: &[u8]) -> bool {
         return false;
     };
     // `Uint8Array::from` copies into the JS heap, so the borrow does not have to
-    // outlive the call — the same bargain `download_bytes` makes above.
+    // outlive the call — the same bargain `download_bytes` makes below.
     let value = js_sys::Uint8Array::from(bytes);
     let Ok(request) = store.put_with_key(&value, &JsValue::from_str(key)) else {
         return false;
@@ -1088,10 +1077,10 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
         let on_file = on_file.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let name = file.name();
-            let Some(bytes) = read_file(file).await else {
-                return tracing::error!(name, "the chosen file could not be read");
-            };
-            on_file(name, bytes);
+            match read_file(file).await {
+                Ok(bytes) => on_file(name, bytes),
+                Err(reason) => tracing::error!(name, reason, "the chosen file could not be read"),
+            }
         });
     });
     input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
@@ -1099,16 +1088,23 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     input.click();
 }
 
-/// The bytes of a file the page was handed — picked, launched or pasted — or `None` if
-/// the browser would not read it.
-async fn read_file(file: web_sys::File) -> Option<Vec<u8>> {
+/// The bytes of a file the page was handed — picked, launched or pasted — or the
+/// browser's reason for not reading them.
+async fn read_file(file: web_sys::File) -> Result<Vec<u8>, String> {
     use wasm_bindgen::JsCast;
 
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
-        .ok()?;
-    let buffer = buffer.dyn_ref::<js_sys::ArrayBuffer>()?;
-    Some(js_sys::Uint8Array::new(buffer).to_vec())
+        // A `DOMException` (`NotReadableError` for a file gone from disk) is an `Error`,
+        // whose `toString` is its name and message.
+        .map_err(|e| match e.dyn_ref::<js_sys::Error>() {
+            Some(error) => String::from(error.to_string()),
+            None => format!("{e:?}"),
+        })?;
+    let buffer = buffer
+        .dyn_ref::<js_sys::ArrayBuffer>()
+        .ok_or("`File.arrayBuffer` resolved to something other than an ArrayBuffer")?;
+    Ok(js_sys::Uint8Array::new(buffer).to_vec())
 }
 
 /// Hand `on_file` whatever file the OS launched the app with — the other end of
@@ -1184,10 +1180,12 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
                 return;
             };
             let name = file.name();
-            let Some(bytes) = read_file(file).await else {
-                return tracing::error!(name, "the launched file could not be read");
-            };
-            on_file(name, bytes);
+            match read_file(file).await {
+                Ok(bytes) => on_file(name, bytes),
+                Err(reason) => {
+                    tracing::error!(name, reason, "the launched file could not be read");
+                }
+            }
         });
     });
     let _ = set_consumer.call1(&queue, consumer.as_ref().unchecked_ref());
@@ -1400,10 +1398,13 @@ pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
             e.prevent_default();
             let handler = handler.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let Some(bytes) = read_file(file).await else {
-                    return tracing::error!("the pasted image could not be read");
-                };
-                handler(bytes);
+                let name = file.name();
+                match read_file(file).await {
+                    Ok(bytes) => handler(bytes),
+                    Err(reason) => {
+                        tracing::error!(name, reason, "the pasted image could not be read");
+                    }
+                }
             });
         });
     let _ = window.add_event_listener_with_callback("paste", cb.as_ref().unchecked_ref());

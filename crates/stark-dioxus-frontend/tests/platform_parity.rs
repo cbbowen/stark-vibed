@@ -9,10 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Each public item keyed `kind name` (`fn pick_file`, `fn Canvas::key`, `struct Canvas`),
-/// valued with its signature's tokens after [`normalize`]: everything a fn declares after
-/// its name, and a const's type. Empty for a type, whose fields are the one thing the
-/// two halves are meant to disagree on.
+/// Each public item keyed `kind name`, an inherent `impl`'s through its type (`fn
+/// pick_file`, `fn KeyEvent::key`, `struct Canvas`), valued with its signature's tokens
+/// after [`normalize`]: everything a fn declares after its name, and a const's type.
+/// Empty for a type, whose fields are the one thing the two halves are meant to disagree
+/// on.
 type Items = BTreeMap<String, Vec<String>>;
 
 #[test]
@@ -70,6 +71,7 @@ use super::{A, B};
 /* pub fn in_a_block_comment() { /* nested } */ */
 const BRACE: char = '{';
 const ESCAPED: char = '\'';
+const BYTE: u8 = b'{';
 #[derive(Clone)]
 pub struct Tuple(inner::Thing);
 pub(crate) struct Restricted;
@@ -91,9 +93,34 @@ fn private(f: impl Fn()) -> impl Iterator<Item = u8> {
     pub fn inside_a_body() {}
 }
 
+pub fn digest(bytes: [u8; 4], mut r#type: u8) -> [u8; 4] {
+    bytes
+}
+
+pub fn each<F>(f: F)
+where
+    for<'a> F: Fn(&'a str),
+{
+}
+
+pub const fn limit() -> u32 {
+    LIMIT
+}
+
 impl Tuple {
+    pub const SIZE: usize = 1;
     pub fn method(&mut self, _x: u8) {}
     fn private_method(&self) {}
+}
+
+pub struct Holder<T>(T);
+
+impl<T> Holder<T>
+where
+    for<'a> T: Fn(&'a u8),
+{
+    pub const SIZE: [u8; 4] = [0; 4];
+    pub fn call(&self) {}
 }
 
 impl Clone for Restricted {
@@ -109,14 +136,21 @@ pub async fn after_the_impls() {}
         .map(|(name, signature)| (name, join(&signature)))
         .collect();
     let expected = [
+        ("const Holder<T>::SIZE", ": [u8; 4]"),
         ("const LIMIT", ": u32"),
+        ("const Tuple::SIZE", ": usize"),
+        ("fn Holder<T>::call", "fn(&self)"),
         ("fn Tuple::method", "fn(&mut self, x: u8)"),
         ("fn after_the_impls", "async fn()"),
+        ("fn digest", "fn(bytes: [u8; 4], r#type: u8) -> [u8; 4]"),
+        ("fn each", "fn<F>(f: F) where for<'a> F: Fn(&'a str)"),
+        ("fn limit", "const fn() -> u32"),
         (
             "fn multi_line",
             "fn<'a>(first: &'a str, second: impl FnMut(Vec<u8>) -> bool + 'static) \
              -> Result<(), String> where 'a: 'static",
         ),
+        ("struct Holder", ""),
         ("struct Restricted", ""),
         ("struct Tuple", ""),
     ]
@@ -173,12 +207,9 @@ fn items(source: &str) -> Items {
             "fn" if at_item_level => {
                 let end = position(&tokens, i, &["{", ";"]);
                 if let (Some(start), Some(name)) = (public.take(), next) {
-                    let owner = inherent
-                        .as_ref()
-                        .map_or(String::new(), |(ty, _)| format!("{ty}::"));
                     let mut signature = tokens[start..=i].to_vec();
                     signature.extend_from_slice(&tokens[(i + 2).min(end)..end]);
-                    found.insert(format!("fn {owner}{name}"), normalize(&signature));
+                    found.insert(key("fn", inherent.as_ref(), name), normalize(&signature));
                 }
                 i = end;
                 continue;
@@ -186,15 +217,14 @@ fn items(source: &str) -> Items {
             "impl" if depth == 0 => {
                 let open = position(&tokens, i, &["{"]);
                 let header = &tokens[i + 1..open];
-                inherent = (!header.iter().any(|t| t == "for"))
-                    .then(|| (join(without_generics(header)), depth + 1));
+                inherent = (!is_trait_impl(header)).then(|| (join(self_type(header)), depth + 1));
                 public = None;
                 i = open;
                 continue;
             }
             kind @ ("struct" | "enum" | "union" | "type" | "trait") if at_item_level => {
                 if let (Some(_), Some(name)) = (public.take(), next) {
-                    found.insert(format!("{kind} {name}"), Vec::new());
+                    found.insert(key(kind, inherent.as_ref(), name), Vec::new());
                 }
             }
             // `const` and `static` items — not a `const fn`, whose `const` is a qualifier.
@@ -208,7 +238,7 @@ fn items(source: &str) -> Items {
                 let end = position(&tokens, i, &["=", ";"]);
                 if let Some(name) = tokens.get(name_at) {
                     let ty = &tokens[(name_at + 1).min(end)..end];
-                    found.insert(format!("{kind} {name}"), normalize(ty));
+                    found.insert(key(kind, inherent.as_ref(), name), normalize(ty));
                 }
             }
             _ => {}
@@ -216,6 +246,15 @@ fn items(source: &str) -> Items {
         i += 1;
     }
     found
+}
+
+/// An item's key in [`Items`]: `kind name`, or `kind Type::name` inside an inherent `impl`,
+/// so two types' items of one name stay two items.
+fn key(kind: &str, inherent: Option<&(String, usize)>, name: &str) -> String {
+    match inherent {
+        Some((ty, _)) => format!("{kind} {ty}::{name}"),
+        None => format!("{kind} {name}"),
+    }
 }
 
 /// Drop from a signature what is not part of one. See
@@ -258,8 +297,11 @@ fn tokens(source: &str) -> Vec<String> {
         } else if let Some(end) = literal_end(&chars, i) {
             (end, true)
         } else if word(c) || (c == '\'' && next.is_some_and(word)) {
-            let rest = chars[i + 1..].iter().take_while(|&&c| word(c)).count();
-            (i + 1 + rest, true)
+            // A raw identifier is one word, or `r#impl` would be read as an `impl`.
+            let raw = c == 'r' && next == Some('#') && chars.get(i + 2).copied().is_some_and(word);
+            let from = if raw { i + 2 } else { i + 1 };
+            let rest = chars[from..].iter().take_while(|&&c| word(c)).count();
+            (from + rest, true)
         } else if matches!((c, next), (':', Some(':')) | ('-', Some('>'))) {
             (i + 2, true)
         } else {
@@ -346,12 +388,38 @@ fn literal_end(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The index of the first of `stops` at or after `from`, or the end.
+/// The index of the first of `stops` at or after `from` that no bracket opened since
+/// encloses, or the end — so neither the `;` of `[u8; 4]` nor the `=` of `Item = u8`
+/// ends an item.
+///
+/// `<` is a bracket in a type and an operator in an expression. A signature holds an
+/// expression only in a `{ … }` const block or an array's length, so there it opens
+/// nothing.
 fn position(tokens: &[String], from: usize, stops: &[&str]) -> usize {
-    tokens[from..]
-        .iter()
-        .position(|t| stops.contains(&t.as_str()))
-        .map_or(tokens.len(), |n| from + n)
+    // Each open bracket's closer, and whether what it encloses is an expression.
+    let mut open: Vec<(&str, bool)> = Vec::new();
+    for (i, token) in tokens.iter().enumerate().skip(from) {
+        let token = token.as_str();
+        let in_expression = open.last().is_some_and(|&(_, expression)| expression);
+        match token {
+            _ if open.is_empty() && stops.contains(&token) => return i,
+            "(" => open.push((")", in_expression)),
+            "[" => open.push(("]", in_expression)),
+            "<" if !in_expression => open.push((">", false)),
+            "{" => open.push(("}", true)),
+            // An array's length follows its `;`.
+            ";" => {
+                if let Some(("]", expression)) = open.last_mut() {
+                    *expression = true;
+                }
+            }
+            _ if open.last().is_some_and(|&(closer, _)| closer == token) => {
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+    tokens.len()
 }
 
 /// The `)` matching the `(` at `open`, or the end.
@@ -372,25 +440,28 @@ fn closing(tokens: &[String], open: usize) -> usize {
     tokens.len()
 }
 
-/// An `impl` header without the `<…>` an `impl<T>` opens with.
-fn without_generics(header: &[String]) -> &[String] {
-    if header.first().is_none_or(|t| t != "<") {
-        return header;
-    }
-    let mut depth = 0usize;
-    for (i, token) in header.iter().enumerate() {
-        match token.as_str() {
-            "<" => depth += 1,
-            ">" => {
-                depth -= 1;
-                if depth == 0 {
-                    return &header[i + 1..];
-                }
-            }
-            _ => {}
-        }
-    }
-    &[]
+/// Whether an `impl` header names a trait: it holds a `for` that is not a higher-ranked
+/// binder (`for<'a>`), which a where clause on either kind of `impl` may hold.
+fn is_trait_impl(header: &[String]) -> bool {
+    header.iter().enumerate().any(|(i, token)| {
+        let binder = header.get(i + 1).is_some_and(|t| t == "<")
+            && header
+                .get(i + 2)
+                .is_some_and(|t| t.starts_with('\'') || t == ">");
+        token == "for" && !binder
+    })
+}
+
+/// The type an inherent `impl` header is for, without the `<…>` an `impl<T>` opens with
+/// or the where clause it may end with.
+fn self_type(header: &[String]) -> &[String] {
+    let start = if header.first().is_some_and(|t| t == "<") {
+        (position(header, 1, &[">"]) + 1).min(header.len())
+    } else {
+        0
+    };
+    let ty = &header[start..];
+    &ty[..position(ty, 0, &["where"])]
 }
 
 /// Tokens back to text, spaced the way rustfmt spaces a signature.
@@ -409,7 +480,7 @@ fn join(tokens: &[String]) -> String {
 
 fn spaced(prev: &str, token: &str) -> bool {
     ((is_word(prev) || matches!(prev, ")" | ">")) && is_word(token))
-        || matches!(prev, "," | ":" | "->" | "+" | "=")
+        || matches!(prev, "," | ":" | ";" | "->" | "+" | "=")
         || matches!(token, "->" | "+" | "=")
 }
 

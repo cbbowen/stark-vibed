@@ -384,11 +384,8 @@ mod tests {
     /// shows through however the source spelled that.
     #[test]
     fn where_a_shape_does_not_cover_the_thumbnail_is_clear() {
-        let url = encode_thumb(&disc(false)).expect("a thumbnail");
-        let b64 = url
-            .strip_prefix("data:image/png;base64,")
-            .expect("a png data url");
-        let bytes = crate::base64::decode(b64).expect("base64");
+        let card = assets::card::<assets::Shapes>(&disc(false)).expect("a card");
+        let bytes = crate::cards::encode_png(card).expect("a thumbnail");
 
         let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
             .read_info()
