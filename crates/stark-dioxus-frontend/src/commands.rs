@@ -4,14 +4,14 @@
 //! The registry itself is `stark_ui::commands` — the variants, the chords, the
 //! words, the tables. What is here is the half that could not travel:
 //!
-//! - **`run`** dispatches, opens dialogs and writes signals, and *answers* the gate
-//!   the registry asks (`Command::gate`) — whether the playhead is moving and whether
-//!   a mode is composing are the app's facts, and the classification is not. A free
-//!   function rather than a method, because `Command` belongs to another crate now
-//!   and the orphan rule says so (CLAUDE.md) — which is the boundary reporting
-//!   itself: every arm reaches `AppState`.
-//! - **`active`** reads this frontend's own state rather than the engine's
-//!   projection, so it cannot be a rule over `ObservableState` the way `enabled` is.
+//! - **`run`** dispatches, opens dialogs and writes signals, once [`admit`] has read
+//!   the act's gate against this browser's answers ([`Gates`]) — whether the playhead
+//!   is moving and whether a mode is composing are the app's facts, and the
+//!   classification is not. A free function rather than a method, because `Command`
+//!   belongs to another crate now and the orphan rule says so (CLAUDE.md) — which is
+//!   the boundary reporting itself: every arm reaches `AppState`.
+//! - **`active`** is the registry's list of switches over this frontend's own state
+//!   ([`Lit`]), which no rule over `ObservableState` could read the way `enabled` does.
 //! - **`icon`** is inline SVG (`crate::icons`), which is a DOM idiom.
 //! - **`find`** and the four store doors, which hold signals.
 
@@ -24,7 +24,9 @@ use stark_model::document::SelectionOp;
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_ui::brush_config::{SIZE_STEP, step_size};
-use stark_ui::commands::{Bindings, Chord, Command, Gate};
+use stark_ui::commands::{
+    Bindings, Chord, Command, Gates, Lit, PickScope, VisibilityToggle, admit,
+};
 use stark_ui::keys::{Keystroke, Role};
 
 /// Put this browser's stored table where the chrome reads it. The reading and the
@@ -110,69 +112,81 @@ pub fn find(state: AppState, stroke: &Keystroke<'_>) -> Option<Command> {
         .filter(|c| claims(*c, state))
 }
 
+/// Whether `command` is a switch that is on — the registry's list
+/// ([`stark_ui::commands::active`]) over this browser's signals.
+///
+/// Every answer is a `read`, not a `peek`: a lit chip's memo is mounted on this
+/// (`widgets::CommandButton`, `rail::CmdItem`), and a chord pressed under the bar has to
+/// move the light the chip would have moved.
 pub fn active(command: Command, state: AppState) -> Option<bool> {
-    match command {
-        Command::SelectRect => Some(armed(state, Tool::SelectRect)),
-        Command::SelectEllipse => Some(armed(state, Tool::SelectEllipse)),
-        Command::SelectLasso => Some(armed(state, Tool::SelectLasso)),
-        Command::ToggleTimeline => Some(*state.timeline.open.read()),
-        Command::ToggleNavigator => Some(*state.navigator.read()),
-        Command::ToggleQuickBrushes => Some(*state.slots.pinned.read()),
-        Command::ToggleHdr => Some(state.hdr.read().on),
-        // Exactly one of the three is lit, always, which is the claim that
-        // the row is one question rather than three switches — and it is
-        // read here so a chord pressed under the bar moves the light the
-        // chip would have moved.
-        Command::SetPickScope(scope) => Some(*state.pick.scope.read() == scope),
-        Command::TogglePanel(id) => Some(!state.panels.hidden.read().contains(&id)),
-        Command::Share => Some(*state.collab.phase.read() == crate::collab::CollabPhase::Shared),
-        _ => None,
+    stark_ui::commands::active(command, &state)
+}
+
+impl Lit for AppState {
+    fn showing(&self, what: VisibilityToggle) -> Option<bool> {
+        Some(match what {
+            VisibilityToggle::Panel(id) => !self.panels.hidden.read().contains(&id),
+            VisibilityToggle::Navigator => *self.navigator.read(),
+            VisibilityToggle::QuickBrushes => *self.slots.pinned.read(),
+            VisibilityToggle::Timeline => *self.timeline.open.read(),
+        })
+    }
+
+    fn hdr_on(&self) -> bool {
+        self.hdr.read().on
+    }
+
+    fn pick_scope(&self) -> PickScope {
+        *self.pick.scope.read()
+    }
+
+    fn tool(&self) -> Option<Tool> {
+        self.obs.read().as_ref().map(|o| o.tool)
+    }
+
+    fn sharing(&self) -> bool {
+        *self.collab.phase.read() == crate::collab::CollabPhase::Shared
+    }
+}
+
+/// This browser's answers to a command's gate (§25.2). Asked from handlers, so the facts
+/// are peeks.
+impl Gates for AppState {
+    fn playing(&self) -> bool {
+        crate::panels::timeline::is_playing(*self)
+    }
+
+    fn composing(&self) -> bool {
+        crate::modes::is_composing(*self)
+    }
+
+    /// For the reason playback stops when the transport is touched: the hand has taken
+    /// the playhead back off the loop that was moving it.
+    fn stop_playback(&mut self) {
+        crate::panels::timeline::stop(*self);
+    }
+
+    /// The abandoning path (`modes::leave`): the preview dropped, nothing committed.
+    fn leave_mode(&mut self) {
+        crate::modes::leave(*self);
     }
 }
 
 /// Do what a command means here — the act's own half, after its gate.
 ///
-/// **The gate is asked once, off the registry** ([`Command::gate`]), where it used to
-/// be an `if may_edit` in eight arms, a bespoke half-gate in a ninth and an
-/// `edit_history` in the last two: which question an act must ask is a fact about the
-/// act, not about the arm that happens to answer it (§25.2). What is left to an arm is
-/// a question about this frontend's own surfaces — FinishMode's open dialog — which is
-/// not a class the registry has anything to say about.
+/// **The gate is asked once, off the registry**, and read once ([`admit`] over
+/// [`Command::gate`]), where it used to be an `if may_edit` in eight arms, a bespoke
+/// half-gate in a ninth and an `edit_history` in the last two: which question an act must
+/// ask is a fact about the act, not about the arm that happens to answer it (§25.2). What
+/// is left to an arm is a question about this frontend's own surfaces — FinishMode's
+/// open dialog — which is not a class the registry has anything to say about.
 ///
 /// Never gated on [`Command::enabled`], which is presentation and may grow a rule
 /// that has nothing to do with whether the act may run.
 pub fn run(command: Command, state: AppState) {
-    match command.gate() {
-        // Ungated: tuning the brush, moving the view and toggling a panel commit
-        // nothing (§25.2).
-        Gate::Free => {}
-        Gate::Edit => {
-            if !may_edit(state) {
-                return;
-            }
-        }
-        // Half of `may_edit`, and the halves are asked separately on purpose: a guide
-        // is a document edit (§20.5) and the playhead refuses it like any other, but
-        // the composing half is deliberately not asked — the act puts down whatever
-        // was composing (`modes::leave`), so it replaces a mode rather than being
-        // refused by one.
-        Gate::EditReplacingMode => {
-            if crate::panels::timeline::is_playing(state) {
-                return;
-            }
-        }
-        // Undo and redo *resolve* rather than refuse: nothing on screen says they are
-        // unavailable — no bar stood down to carry the message — so a shortcut that
-        // silently did nothing would read as a broken keyboard rather than as a rule.
-        // Editing the history is instead an unambiguous statement that the
-        // composition in flight is over, so it ends the way scrubbing ends one: the
-        // preview dropped, nothing committed. Playback stops for the reason it stops
-        // when the transport is touched — the hand has taken the playhead back off
-        // the loop that was moving it.
-        Gate::History => {
-            crate::panels::timeline::stop(state);
-            crate::modes::leave(state);
-        }
+    let mut host = state;
+    if !admit(command.gate(), &mut host) {
+        return;
     }
     match command {
         Command::Undo => dispatch(state, DocCommand::Undo),
@@ -295,9 +309,9 @@ fn open_dialog(mut flag: Signal<bool>) {
 /// [`update_brush`] and clamped to the same bounds, so a tap cannot put the
 /// brush anywhere the panel could not show or take back.
 ///
-/// Ungated by [`may_edit`] on purpose: tuning the brush edits no document, and
-/// the slider this shadows is not refused mid-playback either — the keyboard
-/// says what the panel says.
+/// Ungated on purpose ([`Gate::Free`](stark_ui::commands::Gate::Free)): tuning the
+/// brush edits no document, and the slider this shadows is not refused mid-playback
+/// either — the keyboard says what the panel says.
 fn step_radius(state: AppState, factor: f32) {
     update_brush(state, move |_, t| t.size = step_size(t.size, factor));
 }
@@ -347,36 +361,6 @@ pub fn arm_shape_tool(state: AppState) {
         let last = *state.shape_tool.peek();
         arm_tool(state, last);
     }
-}
-
-/// Whether `tool` is the one the next gesture would use — reactively (`read`,
-/// not `peek`), because this is the answer a lit chip is mounted on.
-fn armed(state: AppState, tool: Tool) -> bool {
-    state.obs.read().as_ref().is_some_and(|o| o.tool == tool)
-}
-
-/// Whether a **document edit** may be accepted right now — this frontend's answer to
-/// [`Gate::Edit`], which is the registry's question.
-///
-/// The two questions the canvas already asks of a press, asked of every other
-/// door into the document — the keyboard shortcuts and the chrome's own rows,
-/// which between them were the doors that asked neither:
-///
-/// - **The playhead is moving.** A commit clears the withheld half of the
-///   timeline, so an edit laid under a running playback deletes the rest of the
-///   piece (`crate::panels::timeline`). The canvas refuses a press for this;
-///   Ctrl+A went through and truncated the history from the keyboard — and the
-///   menu's Deselect kept doing it after the keyboard was fixed, which is what
-///   putting the gate on the act rather than the call site is for.
-/// - **A mode is composing.** Its preview is computed against the committed
-///   document (`crate::modes`), and the bar that carries these very commands
-///   stands recessed and inert behind the mode's own — deselecting
-///   mid-transform would move the wrong region on "Done"
-///   (`crate::panels::select::SelectionBar`). The chrome says what the screen
-///   says — and this gate is also what lets a recessed bar keep its chips
-///   mounted: a click that somehow reached one would be refused here.
-fn may_edit(state: AppState) -> bool {
-    !crate::panels::timeline::is_playing(state) && !crate::modes::is_composing(state)
 }
 
 /// Esc's ladder (MODAL_DESIGN.md), one rung per press: the open dialog, else

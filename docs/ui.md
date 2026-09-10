@@ -85,11 +85,11 @@ surrounds it.
   display name, terse chip word (`Command::word`, the abbreviation a control in
   a narrow column wears — "Rect" for "Rectangle select"), mark, tooltip,
   availability (`Command::enabled`, what a row greys on), whether the act is
-  live right now (`Command::active`, drawn two ways from one answer: the pale
+  live right now (`commands::active`, drawn two ways from one answer: the pale
   accent on the mark, which a menu row and a palette row draw alike, and a lit
   `CommandButton` — the armed shape tool, Share while a session runs),
   the advertised shortcut (`Command::shortcut`), the gate its act must ask
-  (`Command::run`), and the chord that reaches it from the keyboard
+  (`Command::gate`, read by `commands::admit`), and the chord that reaches it from the keyboard
   (`commands::Bindings`). The chrome *renders* a command rather than restating it — a bar
   chip or panel-header button is `widgets::CommandButton`, a menu row is the
   rail's `CmdItem` — so what a menu claims, what a chip does and what the
@@ -821,7 +821,7 @@ two things one week apart is exactly what the glossary rule exists to stop.
 | module | lines | what has to give |
 |---|---|---|
 | `storage.rs` | 633 | six `platform::` calls become a `Backend` trait (below) |
-| `commands.rs` | 2462 | `Command`'s ~35 variants and every descriptive method (`name`, `word`, `aliases`, `icon`, `hint`, `tooltip`, `shortcut`, `rebindable`, `enabled`) plus `Chord`/`Bindings`/`search` go down; `active` and `run` take `AppState` and stay |
+| `commands.rs` | 2462 | `Command`'s ~35 variants and every descriptive method (`name`, `word`, `aliases`, `icon`, `hint`, `tooltip`, `shortcut`, `rebindable`, `enabled`) plus `Chord`/`Bindings`/`search` go down; `run` takes `AppState` and stays, while its gate (`admit`) and which commands are switches (`active`) came down over two traits a frontend answers (`Gates`, `Lit`) |
 | `drags.rs` | 1343 | everything but `Mods::of(dioxus::html::Modifiers)`, which becomes a constructor each frontend feeds |
 | `icons.rs` | 607 | the `include_str!` table goes down; the `Element`-returning helper stays |
 | `presets.rs`, `slots.rs`, `prefs.rs`, `visibility.rs`, `modes.rs` | 3133 | each is a record plus a policy plus a signal-shaped shell; the shell stays |
@@ -1668,8 +1668,8 @@ the exit criterion is an act, not a diff.
   argument `identity` already made about a 32-byte key and is why that module keeps
   bytes rather than a `SecretKey`. So each frontend keeps its own pump, and what
   came down is the thing both were about to spell twice: what a session **link**
-  is. `stark_ui::collab` is `invite_link` and `ticket_in`, and it is the whole of
-  the sharing vocabulary that is not the network.
+  is. `stark_ui::collab` is `invite_link`, `ticket_in` and the session's `Phase`, and
+  it is the whole of the sharing vocabulary that is not the network.
 
   **A window has no address**, which is the difference the stage was really about.
   The web app builds its invitation out of `location`, because the page *is* the

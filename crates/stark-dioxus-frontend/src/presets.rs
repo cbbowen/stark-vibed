@@ -51,7 +51,7 @@ use crate::slots;
 use crate::state::{AppState, update_brush};
 use stark_ui::brush_config::{BrushConfig, Transient};
 use stark_ui::presets::{
-    self, BuiltinShapes, Overwrite, PresetEntry, is_builtin, overwrite, persist, read_storage,
+    self, BuiltinShapes, Overwrite, PresetEntry, overwrite, persist, read_storage,
 };
 
 /// The live brush, snapshotted: both halves — the tool ([`BrushConfig`]) and
@@ -104,26 +104,20 @@ pub fn load(state: AppState) {
 /// parameters are still moving, a default that cannot be updated is a default
 /// that is wrong.
 ///
-/// A stored preset whose name collides with one of the app's is **dropped**. That is
-/// how a browser holding persisted copies of the built-ins sheds them — and how one
-/// that saved over a built-in loses that edit, which is the same act read from the
-/// other side. Storage is rewritten without them, once, and only if something actually
-/// went, so an ordinary start writes nothing.
+/// A stored preset whose name one of the app's holds is **dropped**
+/// ([`presets::merge_shipped`]), and storage is rewritten without it — once, and only if
+/// something went, so an ordinary start writes nothing.
 pub fn install_builtins(state: AppState) {
-    let mut list = default_presets(state);
+    let shipped = default_presets(state);
     let mut entries = state.presets;
-    let stored: Vec<PresetEntry> = entries.peek().iter().cloned().collect();
-    let kept: Vec<PresetEntry> = stored
-        .iter()
-        .filter(|u| !list.iter().any(|d| d.name == u.name))
-        .cloned()
-        .collect();
-    let dropped = kept.len() != stored.len();
-    list.extend(kept);
-    entries.set(list);
+    // Taken rather than cloned: the merge moves the stored rows in behind the shipped
+    // ones, and the signal is set once with the result.
+    let stored = std::mem::take(&mut *entries.write());
+    let (list, dropped) = presets::merge_shipped(shipped, stored);
     if dropped {
-        persist(&entries.read());
+        persist(&list);
     }
+    entries.set(list);
 }
 
 /// Make `name`'s preset the live brush — the painting color stays, everything
@@ -218,69 +212,37 @@ pub fn apply_first(state: AppState) {
     }
 }
 
-/// Snapshot the live brush under `name` and persist. Saving under a name one of
-/// the *user's* presets already has overwrites that preset in place — updating,
-/// not duplicating, which keeps names unique and rows stable.
-///
-/// A name one of the **app's** presets holds is refused outright, and the dialog
-/// says so before the button is reachable ([`is_builtin`]). Overwriting is not
-/// on offer — the next start would rebuild the built-in from source and the work
-/// would be gone — and adding a second row under the same name would make "the
-/// preset called Pen" two different brushes to every lookup in this module.
-/// Refusing here as well as in the dialog because this is the function that
-/// would have to be right if a second caller ever appeared.
+/// Snapshot the live brush under `name` and persist ([`presets::upsert`]): over the
+/// user's preset of that name in its own row, and never under a name one of the app's
+/// presets holds — which the dialog says before the button is reachable
+/// ([`presets::is_builtin`]).
 pub fn save_current(state: AppState, name: String) {
     let (brush, transient) = worn(state);
-    // Its own statement, not inline in the `if`: a `peek` guard in a condition
-    // stays borrowed through the body, and the body of the next one writes the
-    // very signal being read.
-    let refused = is_builtin(&state.presets.peek(), &name);
-    if refused {
+    let mut entries = state.presets;
+    // Its own statement: the write guard must be gone before `persist` reads the list.
+    let saved = presets::upsert(&mut entries.write(), &name, brush, transient);
+    if saved.is_err() {
         return;
     }
-    let mut entries = state.presets;
-    {
-        let mut list = entries.write();
-        match list.iter_mut().find(|e| e.name == name) {
-            Some(e) => {
-                e.brush = brush;
-                e.transient = transient;
-            }
-            None => list.push(PresetEntry {
-                name: name.clone(),
-                brush,
-                transient,
-                // The user's own: no home on the rack, and storage's to keep.
-                slot: None,
-                builtin: false,
-            }),
-        }
-    }
-    persist(&entries.read());
+    persist(&entries.peek());
     // The brush in hand now *is* this preset, whichever it was taken from.
     let mut in_hand = state.preset_in_hand;
     in_hand.set(Some(name));
 }
 
-/// Drop one of the user's presets from the library. The live brush is untouched
-/// — it stops matching a library entry, nothing more. Every quick slot bound to
-/// the preset is emptied with it (`slots::unbind`): a slot is a name and a tune,
+/// Drop one of the user's presets from the library ([`presets::remove`]). The live
+/// brush is untouched — it stops matching a library entry, nothing more. Every quick slot
+/// bound to the preset is emptied with it (`slots::unbind`): a slot is a name and a tune,
 /// and a name the library no longer answers to holds nothing.
-///
-/// The app's own presets survive by name, which is belt and braces: their rows
-/// wear a lock rather than a trash, so nothing offers this. It costs one term to
-/// say it here too, and the alternative is a list that could be left showing a
-/// built-in the next start would silently bring back.
 pub fn remove(state: AppState, name: &str) {
     let mut entries = state.presets;
-    // Its own statement, for the `peek` rule — and before anything moves, since a
-    // built-in that stays must keep its slots too.
-    let refused = is_builtin(&entries.peek(), name);
-    if refused {
+    // Its own statement, for the write guard — and nothing below runs unless a row went,
+    // since a built-in that stays must keep its slots too.
+    let removed = presets::remove(&mut entries.write(), name);
+    if !removed {
         return;
     }
-    entries.write().retain(|e| e.name != name);
-    persist(&entries.read());
+    persist(&entries.peek());
     slots::unbind(state, name);
     // A brush taken from a preset that is gone descends from nothing the library
     // has: no name to show for it, and nothing left to overwrite. Bound before the

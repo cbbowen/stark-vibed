@@ -24,7 +24,7 @@ use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
 use stark_ui::assets;
 use stark_ui::brush_config::{BrushEffectType, SIZE_STEP, step_size};
-use stark_ui::commands::{Bindings, Command, Gate, VisibilityToggle};
+use stark_ui::commands::{Bindings, Command, Gates, Lit, PickScope, VisibilityToggle, admit};
 use stark_ui::drags::{DragAction, DragBindings, DragButton};
 use stark_ui::input;
 use stark_ui::keys::Mods;
@@ -32,7 +32,7 @@ use stark_ui::lighting as light;
 use stark_ui::nav;
 use stark_ui::panels::PanelId;
 use stark_ui::prefs::{Hdr, Prefs};
-use stark_ui::slots::{self, Grip};
+use stark_ui::slots::{self, Grip, RackState};
 use stark_ui::transform::{Bands, Family, Grab, Hint, Switch, TransformUi};
 use wgpui::{
     AnyElement, Context, DispatchPhase, FocusHandle, KeyDownEvent, KeyUpEvent,
@@ -586,7 +586,7 @@ impl Canvas {
         // come before the catch-all below, which is what turns a press on a column
         // into nothing rather than into paint.
         if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
-            self.act(region, cx);
+            self.act(region, window, cx);
             return;
         }
         if let Some(region) = guides::hit(&self.guide_regions, ev.position) {
@@ -664,7 +664,7 @@ impl Canvas {
                     // listening for: it counts as the hold's change even where it moves
                     // nothing, which is exactly the case of filling a slot with the
                     // brush already in hand (§18.1.8, `slots::Held::claim`).
-                    self.claim_slot();
+                    self.claim_slot(cx);
                     self.brush.wear(&name);
                     self.send_brush(cx);
                 }
@@ -1277,12 +1277,14 @@ impl Canvas {
     /// Do what a press on the layers panel means.
     ///
     /// The *meaning* is `layers::act`, which is a function over the rows so that it
-    /// can be tested; what is here is the two things it cannot do — send the command,
-    /// and fold a group, which is this client's own state rather than the document's.
-    fn act(&mut self, region: layers::Region, cx: &mut Context<'_, Self>) {
+    /// can be tested; what is here is what it cannot do — run the registry's act, send
+    /// the command, and fold a group, which is this client's own state rather than the
+    /// document's.
+    fn act(&mut self, region: layers::Region, window: &mut Window, cx: &mut Context<'_, Self>) {
         let rows = self.rows();
         let active = self.obs.as_ref().map(|o| o.active_layer);
         match layers::act(region, &rows, active) {
+            Some(Act::Command(command)) => self.run(command, window, cx),
             Some(Act::Doc(command)) => self.send(command, cx),
             Some(Act::Peer(command)) => self.send(command, cx),
             Some(Act::Fold(id)) => {
@@ -1822,7 +1824,7 @@ impl Canvas {
         let title = files::window_title(
             self.path.as_deref(),
             self.unsaved(),
-            self.collab.phase == collab::Phase::Shared,
+            self.collab.phase == stark_ui::collab::Phase::Shared,
         );
         if title != self.title {
             window.set_window_title(&title);
@@ -1931,8 +1933,8 @@ impl Canvas {
         match self.collab.phase {
             // Binding and waiting for a relay takes a moment, and a second press
             // inside it would bind a second endpoint over the first.
-            collab::Phase::Connecting => return,
-            collab::Phase::Shared => {
+            stark_ui::collab::Phase::Connecting => return,
+            stark_ui::collab::Phase::Shared => {
                 let Some(tx) = self.collab.broadcaster() else {
                     return;
                 };
@@ -1943,7 +1945,7 @@ impl Canvas {
                 }));
                 return;
             }
-            collab::Phase::Solo => {}
+            stark_ui::collab::Phase::Solo => {}
         }
         let Some(r) = self.renderer.as_mut() else {
             return;
@@ -1958,7 +1960,7 @@ impl Canvas {
         r.start_collaboration(stark_engine::Identity::new(actor, id.boot));
         let (doc, assets) = (r.document_file(), r.all_asset_bytes());
         self.obs = Some(r.observe());
-        self.collab.phase = collab::Phase::Connecting;
+        self.collab.phase = stark_ui::collab::Phase::Connecting;
         self.say("making a link\u{2026}".to_string());
         self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
             let done = collab::host(doc, assets).await;
@@ -1978,14 +1980,14 @@ impl Canvas {
     /// two frontends would come to accept different things.
     fn join(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         match self.collab.phase {
-            collab::Phase::Connecting => return,
+            stark_ui::collab::Phase::Connecting => return,
             // Not silence: a row that looked available and did nothing is the failure
             // the menu's own rule is about (`crate::menu`).
-            collab::Phase::Shared => {
+            stark_ui::collab::Phase::Shared => {
                 self.report("this canvas is already in a session".to_string());
                 return self.repaint(cx);
             }
-            collab::Phase::Solo => {}
+            stark_ui::collab::Phase::Solo => {}
         }
         let pasted = cx
             .read_from_clipboard()
@@ -2028,7 +2030,7 @@ impl Canvas {
             self.report("that is not a session link".to_string());
             return self.repaint(cx);
         }
-        self.collab.phase = collab::Phase::Connecting;
+        self.collab.phase = stark_ui::collab::Phase::Connecting;
         self.say("joining\u{2026}".to_string());
         self.collab.task = Some(cx.spawn_in(window, async move |this, cx| {
             let done = collab::join(link).await;
@@ -2064,7 +2066,7 @@ impl Canvas {
                 if !self.take_session_document(&file, &owed) {
                     // Refused, with the painting on screen untouched and the reason
                     // already reported. Dropping the session is what ends it.
-                    self.collab.phase = collab::Phase::Solo;
+                    self.collab.phase = stark_ui::collab::Phase::Solo;
                     self.retitle(window);
                     return self.repaint(cx);
                 }
@@ -2091,7 +2093,7 @@ impl Canvas {
                     r.end_collaboration();
                     self.obs = Some(r.observe());
                 }
-                self.collab.phase = collab::Phase::Solo;
+                self.collab.phase = stark_ui::collab::Phase::Solo;
                 self.report(why);
             }
         }
@@ -2153,7 +2155,7 @@ impl Canvas {
         cx: &mut Context<'_, Self>,
     ) {
         self.collab.session = Some(session);
-        self.collab.phase = collab::Phase::Shared;
+        self.collab.phase = stark_ui::collab::Phase::Shared;
         let mut events = collab::pump(events);
         // Replacing the pump drops the old one, and a dropped wgpui `Task` is a
         // cancelled one — which is what keeps a previous session's tail out of this
@@ -2352,7 +2354,7 @@ impl Canvas {
     /// work itself — `presence_due` is a `&self` comparison, so an idle shared session
     /// costs it per frame and takes no mutable borrow at all.
     fn tick_presence(&mut self, cx: &mut Context<'_, Self>) {
-        if self.collab.phase != collab::Phase::Shared {
+        if self.collab.phase != stark_ui::collab::Phase::Shared {
             return;
         }
         let now = self.elapsed();
@@ -2379,19 +2381,12 @@ impl Canvas {
     /// Whether a command names something this window is currently *in* — `None` for
     /// an act, which is in no state at all.
     ///
-    /// The web frontend's `commands::active`, asked of this window's own fields, and
+    /// `stark_ui::commands::active`, asked of this window's own fields ([`Lit`]), and
     /// it is what a menu row's tick reads (`menu::bar`). One answer for the row and
     /// for the chord that reaches the same command, so a switch cannot move without
     /// the tick moving with it.
     fn active(&self, command: Command) -> Option<bool> {
-        match command {
-            Command::TogglePanel(id) => Some(self.shown(VisibilityToggle::Panel(id))),
-            Command::ToggleNavigator => Some(self.shown(VisibilityToggle::Navigator)),
-            Command::ToggleQuickBrushes => Some(self.rack.pinned),
-            Command::ToggleHdr => Some(self.hdr.on),
-            Command::SetPickScope(scope) => Some(self.sampler.scope == scope),
-            _ => None,
-        }
+        stark_ui::commands::active(command, self)
     }
 
     /// Where the canvas surface begins in the window, in logical px: what is left once
@@ -3097,31 +3092,13 @@ impl Canvas {
         // which is presentation and says so: a row greys because there is nothing to
         // undo, and the day it greys for a reason that is only about the screen, a
         // `run` that asked it would silently refuse the act.
-        match command.gate() {
-            // View, brush and chrome acts, which commit nothing.
-            Gate::Free => {}
-            Gate::Edit => {
-                if !self.may_edit() {
-                    return;
-                }
-            }
-            // The composing half is not *refused* — the act replaces the mode rather
-            // than being turned away by it (§20.5) — so the replacing is done here.
-            // The web app gets it for free, since its guide edit is itself a mode and
-            // `modes::enter` leaves the last one; `guide_act` composes nothing, so
-            // without this the commit would land under a preview computed against the
-            // document it moves. The playhead half has nothing to refuse on: no
-            // timeline yet (§11.2).
-            Gate::EditReplacingMode => self.leave_mode(cx),
-            // These two *resolve* rather than refuse — nothing on screen says undo is
-            // unavailable, so a silent refusal would read as a broken keyboard. There
-            // is no playback to stop, so putting the composition down is the whole of
-            // it, and it has to happen for the same reason as above.
-            Gate::History => self.leave_mode(cx),
+        if !admit(command.gate(), &mut Gating { canvas: self, cx }) {
+            return;
         }
         let doc = match command {
             Command::Undo => Some(DocCommand::Undo),
             Command::Redo => Some(DocCommand::Redo),
+            Command::AddLayer => Some(layers::add_layer(self.obs.as_ref().map(|o| o.active_layer))),
             // Covering everything *is* selecting nothing, so Ctrl+A and Ctrl+D are
             // one act (§6.8) — which is the registry's claim, and this is it honoured
             // rather than restated.
@@ -3181,25 +3158,14 @@ impl Canvas {
             | Command::Deselect
             | Command::InvertSelection
             | Command::FloatSelection
-            | Command::FillSelection => {}
+            | Command::FillSelection
+            | Command::AddLayer => {}
             // Turned away by [`answers`] before the match was reached.
             _ => {}
         }
         if let Some(doc) = doc {
             self.send(doc, cx);
         }
-    }
-
-    /// Whether a **document edit** may be accepted right now — this window's answer to
-    /// [`Gate::Edit`], which is the registry's question (§25.2).
-    ///
-    /// One of the two halves so far. A transform's preview is computed against the
-    /// committed document, so an edit laid under one would move the wrong region on
-    /// Done — which is the bug §25.2 names, and which this window had until the
-    /// classification came down. The other half is the playhead, and there is no
-    /// timeline here yet (§11.2): it arrives as one more `&&`.
-    fn may_edit(&self) -> bool {
-        self.mode.is_none()
     }
 
     // --- the brush editor (§6.2, `crate::brush_editor`) -----------------------
@@ -3493,132 +3459,70 @@ impl Canvas {
 
     // --- the quick-brush rack (§18.1.8, `crate::slots`) -----------------------
     //
-    // The rule is `stark_ui::slots`', shared with the web frontend. What is here is
-    // what only this window can do: reach the live brush, keep the four values, and ask
-    // for a frame.
+    // The rule and the sequence that applies it are `stark_ui::slots`', shared with the
+    // web frontend. What is here is what only this window can do: keep the values, send
+    // the brush, and ask for a frame.
 
-    /// Put `config` on at `tune`, keeping the colour in hand, and tell the engine — the
-    /// one door every swap comes through, in both directions (`Brush::put_on`).
-    fn wear(
+    /// Run one step of the rack's sequence against the brush in hand, then owe what it
+    /// moved: the rack written down, the brush sent, a frame.
+    ///
+    /// The three values are moved out and back rather than held as one, because the
+    /// pinned rack's own pointer state lives beside them (`crate::slots::Rack`).
+    fn step_rack(
         &mut self,
-        config: stark_ui::brush_config::BrushConfig,
-        tune: stark_ui::brush_config::Transient,
-        from: Option<String>,
+        act: impl FnOnce(&mut RackState, &mut Brush) -> slots::Changed,
         cx: &mut Context<'_, Self>,
     ) {
-        self.brush.put_on(config, tune, from);
-        self.send_brush(cx);
+        let before = (self.brush.worn(), self.brush.from.clone());
+        let mut rack = RackState {
+            brushes: std::mem::take(&mut self.rack.brushes),
+            held: self.rack.held.take(),
+            taps: self.rack.taps,
+        };
+        let changed = act(&mut rack, &mut self.brush);
+        RackState {
+            brushes: self.rack.brushes,
+            held: self.rack.held,
+            taps: self.rack.taps,
+        } = rack;
+        if changed.bindings {
+            slots::persist(&self.rack.brushes);
+        }
+        if self.brush.worn() != before.0 {
+            self.send_brush(cx);
+        } else if changed.any() || self.brush.from != before.1 {
+            self.repaint(cx);
+        }
     }
 
-    /// Begin holding `slot`.
-    ///
-    /// Ignored when a hold is already in flight, which is what makes it safe to call on
-    /// every keydown: a held key repeats at the system's rate and each repeat is another
-    /// keydown. The one exception is `Grip::displaces`' — an act over a posture.
-    ///
-    /// A slot with nothing in it still enters the hold rather than declining: the hold
-    /// *is* the arming, and holding an empty number while clicking a preset is how the
-    /// number gets its first brush.
+    /// Begin holding `slot` (`RackState::hold`) — safe on every keydown, since a held key
+    /// repeats at the system's rate.
     fn hold_slot(&mut self, slot: slots::Digit, grip: Grip, cx: &mut Context<'_, Self>) {
-        if let Some(held) = self.rack.held.as_ref() {
-            match held.displaced_by(grip) {
-                Some((slot, grip)) => self.release_slot(slot, grip, cx),
-                None => return,
-            }
-        }
-        // Counted below the guard above, so a held key's repeats are never presses; and
-        // for keys alone, since a tail is on the glass or off it and two dabs of it are
-        // two erase strokes.
-        let picked = grip == Grip::Key && self.rack.taps.press(slot, self.elapsed());
-        let mut hold = slots::Held::open(
-            slot,
-            grip,
-            self.brush.worn(),
-            self.brush.from.clone(),
-            picked,
-        );
-        // The slot's brush as it is *now* — its preset looked up live, at the slot's own
-        // size and flow. A binding the library cannot answer is an empty slot, and an
-        // empty slot is held without a swap.
-        let bound = self.rack.brushes[slot.as_index()].clone();
-        if let Some(bound) = bound
-            && let Some((config, tune)) = slots::resolve(&self.brush.library, &bound)
-        {
-            self.wear(config, tune, Some(bound.preset), cx);
-            // Read back rather than assumed: what the app now holds is what the release
-            // has to compare against.
-            hold.enter(self.brush.tune);
-        }
-        self.rack.held = Some(hold);
-        self.repaint(cx);
+        let now = self.elapsed();
+        self.step_rack(|rack, brush| rack.hold(slot, grip, now, brush), cx);
     }
 
-    /// End the hold on `slot`, if `grip` is what is holding it: keep whatever was
-    /// changed, and put the displaced brush back (`slots::Held::settle`).
+    /// End the hold on `slot`, if `grip` is what is holding it (`RackState::release`).
     fn release_slot(&mut self, slot: slots::Digit, grip: Grip, cx: &mut Context<'_, Self>) {
-        let Some(held) = self.rack.held.take_if(|held| held.ends_on(slot, grip)) else {
-            return;
-        };
-        let (kept, back) = held.settle(self.brush.tune, self.brush.from.as_deref());
-        if let Some(bound) = kept {
-            self.assign_slot(held.slot(), bound);
-        }
-        // Back through the door it left by, with the name it had: the hold borrowed the
-        // hand, and a preset chosen *during* it went to the slot, not to this. Or not
-        // back at all, for a double-tap's hold, whose whole point is that the swap
-        // stands.
-        match back {
-            Some((config, tune)) => self.wear(config, tune, held.base_from(), cx),
-            None => self.repaint(cx),
-        }
+        self.step_rack(|rack, brush| rack.release(slot, grip, brush), cx);
     }
 
-    /// End whatever hold is in flight, whoever made it — for the one event that can take
-    /// a key away without ever sending its keyup: the window losing focus.
+    /// End whatever hold is in flight, whoever made it — for the window losing focus,
+    /// which sends no keyup.
     fn release_slots(&mut self, cx: &mut Context<'_, Self>) {
-        if let Some((slot, grip)) = self.rack.held.as_ref().map(|h| (h.slot(), h.grip())) {
-            self.release_slot(slot, grip, cx);
-        }
+        self.step_rack(|rack, brush| rack.release_all(brush), cx);
     }
 
-    /// Say that a whole tool was just put on deliberately, so a hold in flight keeps
-    /// what is live when it ends whether or not that moved anything.
-    ///
-    /// Raised by the two acts that mean *the artist chose a tool from a library* — a
-    /// preset row clicked and a rack row clicked — and by nothing else. A knob turned
-    /// needs no such word: it changed a value, and `settle`'s comparison sees that.
-    /// Never from inside [`wear`](Self::wear), which the hold uses itself in both
-    /// directions and which would therefore make every hold claim itself on the way in.
-    fn claim_slot(&mut self) {
-        if let Some(held) = self.rack.held.as_mut() {
-            held.claim();
-        }
+    /// Say that a whole tool was just put on deliberately — a preset row clicked — so a
+    /// hold in flight keeps what is live when it ends (`slots::Held::claim`).
+    fn claim_slot(&mut self, cx: &mut Context<'_, Self>) {
+        self.step_rack(|rack, _| rack.claim(), cx);
     }
 
-    /// Make `slot`'s brush the live one for good — what clicking a row of the pinned
-    /// rack does, and the only way to a slot for a hand with no keyboard under it.
-    ///
-    /// Tapping the number twice arrives at the same place by another route: the second
-    /// press enters a hold whose release keeps the slot's brush rather than putting the
-    /// displaced one back (`slots::Held`), so this is not called for it and there is no
-    /// second path to one outcome.
+    /// Make `slot`'s brush the live one for good — what clicking a row of the pinned rack
+    /// does, and the only way to a slot for a hand with no keyboard under it.
     fn pick_slot(&mut self, slot: slots::Digit, cx: &mut Context<'_, Self>) {
-        let Some(bound) = self.rack.brushes[slot.as_index()].clone() else {
-            return;
-        };
-        // A binding the library cannot answer is an empty row, and an empty row's click
-        // puts on nothing.
-        let Some((config, tune)) = slots::resolve(&self.brush.library, &bound) else {
-            return;
-        };
-        self.claim_slot();
-        self.wear(config, tune, Some(bound.preset), cx);
-    }
-
-    /// Bind `slot` and write the rack down.
-    fn assign_slot(&mut self, slot: slots::Digit, bound: slots::QuickBrush) {
-        slots::assign(&mut self.rack.brushes, slot, bound);
-        slots::persist(&self.rack.brushes);
+        self.step_rack(|rack, brush| rack.pick(slot, brush), cx);
     }
 
     /// Empty `slot` and write the rack down — the trash on a pinned row, held until its
@@ -3743,7 +3647,7 @@ impl Render for Canvas {
         // itself (`stark_pen`), a peer's frames arrive on a task, a resize is a frame
         // the surface element asks for, and everything a command touches goes through
         // `repaint`.
-        if self.collab.phase == collab::Phase::Shared {
+        if self.collab.phase == stark_ui::collab::Phase::Shared {
             window.request_animation_frame();
         }
         // The rack's one clock: the trash held down empties its slot when the fill it
@@ -4326,6 +4230,7 @@ pub fn answers(command: Command) -> bool {
         | Command::FloatSelection
         | Command::FillSelection
         | Command::Transform
+        | Command::AddLayer
         // The three shape tools, and the two steps on the brush.
         | Command::SelectRect
         | Command::SelectEllipse
@@ -4349,7 +4254,7 @@ pub fn answers(command: Command) -> bool {
         | Command::CancelMode
         | Command::FinishMode => true,
         // A surface this window has not got: no new-document dialog, no clipboard or
-        // file import (§23), no gradient bar, no layer or frame stack to add to, no
+        // file import (§23), no gradient bar, no frame to add, no
         // preset-name dialog, no settings page, no timing readout, no credits — and no
         // timeline at all, which is why `ToggleTimeline` is not a Window-menu row
         // either (`crate::menu`). `MirrorView` is the one that is merely not written
@@ -4358,13 +4263,64 @@ pub fn answers(command: Command) -> bool {
         | Command::ImportImage
         | Command::MirrorView
         | Command::GradientFill
-        | Command::AddLayer
         | Command::AddFrame
         | Command::SavePreset
         | Command::Settings
         | Command::ToggleTimeline
         | Command::TimingStats
         | Command::Credits => false,
+    }
+}
+
+/// This window's answers to a command's gate (§25.2), with the context that leaving a
+/// mode asks for.
+struct Gating<'a, 'b> {
+    canvas: &'a mut Canvas,
+    cx: &'a mut Context<'b, Canvas>,
+}
+
+impl Gates for Gating<'_, '_> {
+    /// No timeline here yet (§11.2), so no playhead to refuse on or to stop.
+    fn playing(&self) -> bool {
+        false
+    }
+
+    fn composing(&self) -> bool {
+        self.canvas.mode.is_some()
+    }
+
+    fn stop_playback(&mut self) {}
+
+    fn leave_mode(&mut self) {
+        self.canvas.leave_mode(self.cx);
+    }
+}
+
+impl Lit for Canvas {
+    fn showing(&self, what: VisibilityToggle) -> Option<bool> {
+        match what {
+            VisibilityToggle::Panel(_) | VisibilityToggle::Navigator => Some(self.shown(what)),
+            // The rack floats rather than docking, so its pin is not in `hidden`.
+            VisibilityToggle::QuickBrushes => Some(self.rack.pinned),
+            // No timeline here yet (§11.2).
+            VisibilityToggle::Timeline => None,
+        }
+    }
+
+    fn hdr_on(&self) -> bool {
+        self.hdr.on
+    }
+
+    fn pick_scope(&self) -> PickScope {
+        self.sampler.scope
+    }
+
+    fn tool(&self) -> Option<Tool> {
+        self.obs.as_ref().map(|o| o.tool)
+    }
+
+    fn sharing(&self) -> bool {
+        self.collab.phase == stark_ui::collab::Phase::Shared
     }
 }
 

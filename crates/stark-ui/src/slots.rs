@@ -532,6 +532,170 @@ impl Held {
     }
 }
 
+/// Whether a press made with `grip` opens a hold, given the one in flight: always with
+/// nothing held, and otherwise only where it takes the brush from that hold
+/// ([`Grip::displaces`]). What makes a held key's auto-repeat, and a hovering tail's
+/// every report, harmless.
+pub fn opens(held: Option<&Held>, grip: Grip) -> bool {
+    held.is_none_or(|h| h.displaced_by(grip).is_some())
+}
+
+/// What a frontend lends the rack: the live brush, to read and to replace.
+///
+/// The library is behind [`resolve`](Self::resolve) rather than passed beside it, so a
+/// frontend that keeps it in a signal holds no guard on it while [`wear`](Self::wear)
+/// rewrites the brush.
+pub trait Wearer {
+    /// The live brush, both halves.
+    fn worn(&self) -> (BrushConfig, Transient);
+    /// The preset the live brush was taken from.
+    fn in_hand(&self) -> Option<String>;
+    /// The brush `slot` stands for right now, in this frontend's library ([`resolve`]).
+    fn resolve(&self, slot: &QuickBrush) -> Option<(BrushConfig, Transient)>;
+    /// Put `brush` on at `tune`, keeping the hand's color, as taken `from` a preset.
+    ///
+    /// The one door every swap comes through, in both directions — so it must never
+    /// raise [`Held::claim`], or every hold would claim itself on the way in.
+    fn wear(&mut self, brush: BrushConfig, tune: Transient, from: Option<String>);
+}
+
+/// What one step of the rack's sequence moved, so a frontend writes back — and stores —
+/// only that.
+#[must_use]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Changed {
+    /// The hold in flight, or the tap window beside it.
+    pub hold: bool,
+    /// A binding was written, so the rack is owed to storage ([`persist`]).
+    pub bindings: bool,
+}
+
+impl Changed {
+    /// Whether anything moved at all.
+    pub fn any(self) -> bool {
+        self.hold || self.bindings
+    }
+}
+
+/// The rack's values — the ten bindings, the hold in flight and the tap window — and the
+/// sequence that applies [`Held`]'s rule to them.
+///
+/// The sequence is a thing to be sure of apart from the rule: which hold a press releases
+/// first, what a swap is read back as, and that a binding is written before the displaced
+/// brush goes back on. Both frontends wrote it out step for step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RackState {
+    /// What each digit holds.
+    pub brushes: Rack,
+    /// The hold in flight — `Some` for exactly as long as a key or the pen's tail holds
+    /// a slot.
+    pub held: Option<Held>,
+    /// The last press of a number key, for the double-tap.
+    pub taps: Taps,
+}
+
+impl Default for RackState {
+    fn default() -> Self {
+        Self {
+            brushes: empty_rack(),
+            held: None,
+            taps: Taps::default(),
+        }
+    }
+}
+
+impl RackState {
+    /// Begin holding `slot`, `now` being seconds on the clock [`Taps`] reads.
+    ///
+    /// Ignored unless the press [`opens`] a hold; a hold it displaces is released first. A
+    /// slot with nothing in it is still held, without a swap: the hold *is* the arming,
+    /// and holding an empty number while clicking a preset is how it gets its first brush.
+    /// Only a key's press counts toward a double-tap — two dabs of the tail are two erase
+    /// strokes — and it is counted below the guard, so a key's repeats are never presses.
+    pub fn hold(&mut self, slot: Digit, grip: Grip, now: f64, hand: &mut impl Wearer) -> Changed {
+        if !opens(self.held.as_ref(), grip) {
+            return Changed::default();
+        }
+        let displaced = match self.held.as_ref().and_then(|h| h.displaced_by(grip)) {
+            Some((slot, grip)) => self.release(slot, grip, hand),
+            None => Changed::default(),
+        };
+        let picked = grip == Grip::Key && self.taps.press(slot, now);
+        let mut hold = Held::open(slot, grip, hand.worn(), hand.in_hand(), picked);
+        if let Some(bound) = &self.brushes[slot.as_index()]
+            && let Some((brush, tune)) = hand.resolve(bound)
+        {
+            hand.wear(brush, tune, Some(bound.preset.clone()));
+            // Read back rather than assumed: a swap clamps what the renderer cannot draw,
+            // and the release compares against what the hand actually holds.
+            hold.enter(hand.worn().1);
+        }
+        self.held = Some(hold);
+        Changed {
+            hold: true,
+            bindings: displaced.bindings,
+        }
+    }
+
+    /// End the hold on `slot`, if `grip` is what holds it ([`Held::ends_on`]): bind what was
+    /// changed, then put the displaced brush back with the name it had — or leave the slot's
+    /// in hand, for a double-tap's hold ([`Held::settle`]).
+    pub fn release(&mut self, slot: Digit, grip: Grip, hand: &mut impl Wearer) -> Changed {
+        let Some(held) = self.held.take_if(|h| h.ends_on(slot, grip)) else {
+            return Changed::default();
+        };
+        let in_hand = hand.in_hand();
+        let (kept, back) = held.settle(hand.worn().1, in_hand.as_deref());
+        let bindings = kept.is_some();
+        if let Some(bound) = kept {
+            assign(&mut self.brushes, held.slot(), bound);
+        }
+        if let Some((brush, tune)) = back {
+            hand.wear(brush, tune, held.base_from());
+        }
+        Changed {
+            hold: true,
+            bindings,
+        }
+    }
+
+    /// End whatever hold is in flight, whoever made it — for the one event that takes a
+    /// key away without its keyup: the window losing the keyboard.
+    pub fn release_all(&mut self, hand: &mut impl Wearer) -> Changed {
+        match self.held.as_ref().map(|h| (h.slot(), h.grip())) {
+            Some((slot, grip)) => self.release(slot, grip, hand),
+            None => Changed::default(),
+        }
+    }
+
+    /// Say that a whole tool was just put on deliberately ([`Held::claim`]). Nothing moves
+    /// with no hold in flight, which is every other click on the same rows.
+    pub fn claim(&mut self) -> Changed {
+        Changed {
+            hold: self.held.as_mut().is_some_and(Held::claim),
+            bindings: false,
+        }
+    }
+
+    /// Make `slot`'s brush the live one for good — a pinned row clicked.
+    ///
+    /// A claim, so a hold in flight keeps it: holding 3 and clicking 5 copies 5 onto 3,
+    /// and does so when 5 is already what is in hand. A binding the library cannot answer
+    /// puts on nothing.
+    pub fn pick(&mut self, slot: Digit, hand: &mut impl Wearer) -> Changed {
+        let Some(bound) = &self.brushes[slot.as_index()] else {
+            return Changed::default();
+        };
+        let Some((brush, tune)) = hand.resolve(bound) else {
+            return Changed::default();
+        };
+        let preset = bound.preset.clone();
+        let changed = self.claim();
+        hand.wear(brush, tune, Some(preset));
+        changed
+    }
+}
+
 /// What the rack is drawn from: the ten bindings, the library that turns a name into a
 /// brush, the hold in flight and the brush in hand.
 ///
@@ -1137,5 +1301,224 @@ mod tests {
         assert_eq!(listed[0].name, None);
         assert!(listed[0].label().starts_with("Empty"));
         assert!(!listed[0].lit);
+    }
+
+    /// A live brush answering from its own library, which writes down every swap made on it.
+    struct Live {
+        brush: (BrushConfig, Transient),
+        in_hand: Option<String>,
+        library: Vec<PresetEntry>,
+        worn: Vec<(BrushConfig, Transient, Option<String>)>,
+    }
+
+    impl Wearer for Live {
+        fn worn(&self) -> (BrushConfig, Transient) {
+            self.brush
+        }
+
+        fn in_hand(&self) -> Option<String> {
+            self.in_hand.clone()
+        }
+
+        fn resolve(&self, slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
+            resolve(&self.library, slot)
+        }
+
+        fn wear(&mut self, brush: BrushConfig, tune: Transient, from: Option<String>) {
+            self.brush = BrushConfig::worn_over(brush, tune, self.brush.1);
+            self.in_hand.clone_from(&from);
+            self.worn.push((brush, tune, from));
+        }
+    }
+
+    fn pen() -> BrushConfig {
+        BrushConfig::default()
+    }
+
+    fn ink() -> BrushConfig {
+        BrushConfig {
+            smoothing: 0.75,
+            ..BrushConfig::default()
+        }
+    }
+
+    /// Painting with Pen at 18, on a library of Pen and Ink, with Ink bound to 3 at 40.
+    fn painting() -> (RackState, Live) {
+        let mut rack = RackState::default();
+        assign(
+            &mut rack.brushes,
+            d(3),
+            QuickBrush {
+                preset: "Ink".into(),
+                transient: tune(40.0, 1.0),
+            },
+        );
+        let live = Live {
+            brush: (pen(), tune(18.0, 1.0)),
+            in_hand: Some("Pen".into()),
+            library: vec![
+                entry("Pen", pen(), tune(18.0, 1.0)),
+                entry("Ink", ink(), tune(24.0, 1.0)),
+            ],
+            worn: Vec::new(),
+        };
+        (rack, live)
+    }
+
+    /// The pair each swap put on, by preset and size.
+    fn swaps(live: &Live) -> Vec<(Option<&str>, f32)> {
+        live.worn
+            .iter()
+            .map(|(_, tune, from)| (from.as_deref(), tune.size))
+            .collect()
+    }
+
+    /// The one rule end to end: the slot's brush for the length of the hold, then the pair
+    /// that was in hand, under the name it had.
+    #[test]
+    fn a_release_hands_back_the_displaced_brush_with_its_name() {
+        let (mut rack, mut live) = painting();
+        let held = rack.hold(d(3), Grip::Key, 10.0, &mut live);
+        assert_eq!(
+            held,
+            Changed {
+                hold: true,
+                bindings: false
+            }
+        );
+        let released = rack.release(d(3), Grip::Key, &mut live);
+        assert_eq!(
+            released,
+            Changed {
+                hold: true,
+                bindings: false
+            },
+            "an unused hold binds nothing"
+        );
+        assert_eq!(swaps(&live), vec![(Some("Ink"), 40.0), (Some("Pen"), 18.0)]);
+        assert_eq!(live.worn[1].0, pen(), "the displaced tool itself");
+        assert_eq!(rack.held, None);
+    }
+
+    /// Tapped twice, the second release hands nothing back.
+    #[test]
+    fn a_double_tap_keeps_the_swap() {
+        let (mut rack, mut live) = painting();
+        let _ = rack.hold(d(3), Grip::Key, 10.0, &mut live);
+        let _ = rack.release(d(3), Grip::Key, &mut live);
+        let _ = rack.hold(d(3), Grip::Key, 10.0 + DOUBLE_TAP / 2.0, &mut live);
+        let _ = rack.release(d(3), Grip::Key, &mut live);
+        assert_eq!(
+            swaps(&live),
+            vec![
+                (Some("Ink"), 40.0),
+                (Some("Pen"), 18.0),
+                (Some("Ink"), 40.0)
+            ],
+            "on, back, on again — and not back"
+        );
+        assert_eq!(live.in_hand.as_deref(), Some("Ink"));
+    }
+
+    /// A key pressed under the pen's tail releases the tail's hold first and takes the
+    /// brush; the tail's next report takes nothing back.
+    #[test]
+    fn a_key_displaces_the_pens_tail() {
+        let (mut rack, mut live) = painting();
+        assign(
+            &mut rack.brushes,
+            ERASER,
+            QuickBrush {
+                preset: "Pen".into(),
+                transient: tune(80.0, 1.0),
+            },
+        );
+        let _ = rack.hold(ERASER, Grip::Eraser, 1.0, &mut live);
+        assert_eq!(
+            rack.hold(ERASER, Grip::Eraser, 1.1, &mut live),
+            Changed::default(),
+            "a tail's every report while it faces the glass is the hold it has"
+        );
+        let _ = rack.hold(d(3), Grip::Key, 2.0, &mut live);
+        assert_eq!(
+            swaps(&live),
+            vec![
+                (Some("Pen"), 80.0),
+                (Some("Pen"), 18.0),
+                (Some("Ink"), 40.0)
+            ]
+        );
+        let held = rack.held.as_ref().expect("the key's hold");
+        assert_eq!((held.slot(), held.grip()), (d(3), Grip::Key));
+        assert_eq!(
+            rack.hold(ERASER, Grip::Eraser, 2.1, &mut live),
+            Changed::default(),
+            "the tail cannot take it back"
+        );
+    }
+
+    /// Letting go of everything puts back what was displaced, and binds what was changed.
+    #[test]
+    fn releasing_all_puts_everything_back() {
+        let (mut rack, mut live) = painting();
+        assert_eq!(
+            rack.release_all(&mut live),
+            Changed::default(),
+            "nothing held, nothing moves"
+        );
+        let _ = rack.hold(d(3), Grip::Key, 1.0, &mut live);
+        // A Size drag under the hold.
+        live.brush.1.size = 64.0;
+        assert_eq!(
+            rack.release_all(&mut live),
+            Changed {
+                hold: true,
+                bindings: true
+            }
+        );
+        assert_eq!(rack.held, None);
+        assert_eq!(swaps(&live).last(), Some(&(Some("Pen"), 18.0)));
+        assert_eq!(
+            rack.brushes[3]
+                .as_ref()
+                .map(|b| (b.preset.as_str(), b.transient.size)),
+            Some(("Ink", 64.0))
+        );
+    }
+
+    /// An empty slot is held — the hold is the arming — and nothing is put on.
+    #[test]
+    fn holding_an_empty_slot_wears_nothing() {
+        let (mut rack, mut live) = painting();
+        assert_eq!(
+            rack.hold(d(5), Grip::Key, 1.0, &mut live),
+            Changed {
+                hold: true,
+                bindings: false
+            }
+        );
+        assert!(live.worn.is_empty());
+        assert_eq!(rack.held.as_ref().map(Held::slot), Some(d(5)));
+    }
+
+    /// A row picked under a hold is a claim: holding an empty 5 and picking 3 binds 5 to
+    /// what 3 holds.
+    #[test]
+    fn a_row_picked_under_a_hold_binds_the_held_digit() {
+        let (mut rack, mut live) = painting();
+        let _ = rack.hold(d(5), Grip::Key, 1.0, &mut live);
+        assert_eq!(
+            rack.pick(d(3), &mut live),
+            Changed {
+                hold: true,
+                bindings: false
+            }
+        );
+        assert!(rack.release(d(5), Grip::Key, &mut live).bindings);
+        assert_eq!(
+            rack.brushes[5].as_ref().map(|b| b.preset.as_str()),
+            Some("Ink")
+        );
+        assert_eq!(swaps(&live).last(), Some(&(Some("Pen"), 18.0)));
     }
 }

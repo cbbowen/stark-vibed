@@ -91,18 +91,12 @@ impl Renderer {
         self.transfer.is_hdr()
     }
 
-    /// Tell the engine what the window is (§6.5): the surface's transfer — stated
-    /// even with the switch off, since `Command::ToggleHdr`'s `enabled` reads it —
-    /// and the headroom: the display's where reported (`Window::display_headroom`),
-    /// `choice`'s where not, and 1 with the switch off.
+    /// Tell the engine what the window is (§6.5) — `stark_ui::lighting::output` over
+    /// `choice`, this surface's transfer, and the display's own headroom where
+    /// `Window::display_headroom` reports one.
     pub fn apply_hdr(&mut self, choice: Hdr, display_headroom: Option<f32>) {
-        let headroom = if choice.on && self.hdr_capable() {
-            display_headroom.unwrap_or_else(|| choice.clamped_headroom())
-        } else {
-            1.0
-        };
-        self.engine
-            .process(ViewCommand::SetOutput(Output::new(self.transfer, headroom)));
+        let output = stark_ui::lighting::output(choice, self.transfer, display_headroom);
+        self.engine.process(ViewCommand::SetOutput(output));
     }
 
     /// Send a command to the engine — the **only** way to move engine state through a

@@ -403,10 +403,9 @@ pub fn act(region: Region, rows: &[Row], active: Option<LayerId>) -> Option<Act>
         // to go offers no button at all.
         Region::Carry(id) => Act::Doc(row(id)?.carry()?),
         Region::Release(id) => Act::Doc(row(id)?.release()?),
-        Region::Add => Act::Doc(DocCommand::AddLayer {
-            carrier: None,
-            above: active,
-        }),
+        // The registry's act, so the shelf, the palette and a chord are one act under one
+        // gate (§25.2).
+        Region::Add => Act::Command(Command::AddLayer),
         Region::Duplicate => Act::Doc(DocCommand::DuplicateLayer(active?)),
         // The tree says whether a removal would leave a document behind (§14.2), so
         // the refusal is a property of the row rather than a count kept here.
@@ -419,8 +418,19 @@ pub fn act(region: Region, rows: &[Row], active: Option<LayerId>) -> Option<Act>
     })
 }
 
-/// What a press turns into. Two kinds, because they are two kinds of state (§4).
+/// What adding a layer sends: a plain layer above the selected one, or on top with nothing
+/// selected (§14.2).
+pub fn add_layer(active: Option<LayerId>) -> DocCommand {
+    DocCommand::AddLayer {
+        carrier: None,
+        above: active,
+    }
+}
+
+/// What a press turns into.
 pub enum Act {
+    /// One of the registry's acts, run through the window's own door (`Canvas::run`).
+    Command(Command),
     /// A document edit: logged, undoable, replicated.
     Doc(DocCommand),
     /// Which layer this client paints on — presence, not the document (§17.4).
@@ -558,10 +568,15 @@ mod tests {
         let rows = stack();
         assert!(act(Region::Duplicate, &rows, None).is_none());
         assert!(act(Region::Remove, &rows, None).is_none());
-        // Add is the exception: with nothing selected it goes on top.
+        // Add is the exception: it is the registry's act, and with nothing selected the
+        // layer goes on top.
         assert!(matches!(
             act(Region::Add, &rows, None),
-            Some(Act::Doc(DocCommand::AddLayer { above: None, .. }))
+            Some(Act::Command(Command::AddLayer))
+        ));
+        assert!(matches!(
+            add_layer(None),
+            DocCommand::AddLayer { above: None, .. }
         ));
     }
 

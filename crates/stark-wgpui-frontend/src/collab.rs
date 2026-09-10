@@ -60,25 +60,10 @@ use stark_net::{
 
 use crate::render::Renderer;
 
-/// Where a session stands, as the chrome needs to know it.
-///
-/// Three states rather than a `bool`, because binding and relay-readiness take a
-/// noticeable moment and a second Share pressed inside it would bind a second
-/// endpoint over the first.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Phase {
-    #[default]
-    Solo,
-    /// Setup in flight — hosting or joining. Both acts are refused while it lasts.
-    Connecting,
-    /// Live in a shared session.
-    Shared,
-}
-
 /// The live session and where it stands, which are one fact and so one value.
 #[derive(Default)]
 pub struct Collab {
-    pub phase: Phase,
+    pub phase: stark_ui::collab::Phase,
     /// The session itself. Held here rather than inside the runtime because
     /// [`Broadcaster::broadcast`] is synchronous and runs on the dispatch path: every
     /// committed action goes out through it, and a hop through a task per command is

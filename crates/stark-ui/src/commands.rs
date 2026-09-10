@@ -18,10 +18,11 @@
 //!
 //! Three things stay with each frontend, and each for its own reason:
 //!
-//! - **what a command *does*** — `run` dispatches, opens dialogs, writes signals, and
-//!   asks gates that are the app's;
-//! - **whether it is *live right now*** — `active` reads a frontend's own state
-//!   rather than the engine's projection;
+//! - **what a command *does*** — `run` dispatches, opens dialogs and writes signals,
+//!   once [`admit`] has read the act's [`Gate`] against the app's own [`Gates`];
+//! - **the facts a lit control stands on** — which panel is up, which tool is armed
+//!   — are a frontend's own state, so it answers [`Lit`] and [`active`] says which
+//!   commands those facts light;
 //! - **its mark** — the web app's icons are inline SVG, which is a DOM idiom; a
 //!   native chrome draws a glyph another way entirely.
 //!
@@ -33,6 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 use stark_engine::ObservableState;
+use stark_engine::command::Tool;
 
 use crate::icons::Icon;
 use crate::keys::{Keystroke, Mods, Role};
@@ -343,8 +345,8 @@ pub enum Command {
 /// asked it would silently refuse an act.
 ///
 /// **Total** — a new command must say which class it is in, so a gate cannot be
-/// forgotten by being left off a list. What a frontend still owes is the *answers*:
-/// whether its playhead is moving, whether a mode is composing.
+/// forgotten by being left off a list. What a frontend still owes is the *answers*
+/// ([`Gates`]): whether its playhead is moving, whether a mode is composing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Gate {
     /// The act asks nothing of the app before it runs. Mostly because it commits
@@ -369,6 +371,118 @@ pub enum Gate {
     /// composition down, then act. Nothing on screen says they are unavailable, so a
     /// silent refusal would read as a broken keyboard rather than as a rule.
     History,
+}
+
+/// What a frontend answers a [`Gate`] with (§25.2): its two facts, and the two things
+/// it does when an act resolves rather than refuses.
+pub trait Gates {
+    /// Whether the playhead is moving (§18.2.4).
+    fn playing(&self) -> bool;
+    /// Whether a mode is composing, whose preview is computed against the committed
+    /// document.
+    fn composing(&self) -> bool;
+    /// Stop playback, leaving the playhead where it stands.
+    fn stop_playback(&mut self);
+    /// Put down whatever is composing, dropping its preview and committing nothing.
+    fn leave_mode(&mut self);
+}
+
+/// Whether an act classed `gate` may run now — doing on the way what its class
+/// resolves rather than refuses. The one reading of [`Gate`], so two `run`s cannot
+/// come to answer an arm two ways.
+pub fn admit(gate: Gate, host: &mut impl Gates) -> bool {
+    match gate {
+        Gate::Free => true,
+        Gate::Edit => may_edit(host),
+        // Put down here rather than by the act, so no act of the class can forget to:
+        // an edit landing under a live preview would move what "Done" then moves again.
+        Gate::EditReplacingMode => {
+            if host.playing() {
+                return false;
+            }
+            host.leave_mode();
+            true
+        }
+        Gate::History => {
+            host.stop_playback();
+            host.leave_mode();
+            true
+        }
+    }
+}
+
+/// Whether a **document edit** may be accepted now — [`Gate::Edit`]'s question, for a
+/// control that asks it of an act outside the registry (§25.1).
+///
+/// Refused while the playhead moves, because a commit clears the withheld half of the
+/// timeline; and while a mode composes, because its preview is computed against the
+/// document the edit would move.
+pub fn may_edit(host: &impl Gates) -> bool {
+    !host.playing() && !host.composing()
+}
+
+/// The facts a lit control stands on — a frontend's own state, so each answers them
+/// and [`active`] says which commands they light.
+pub trait Lit {
+    /// Whether `what` is on screen; `None` where this frontend has no such thing.
+    fn showing(&self, what: VisibilityToggle) -> Option<bool>;
+    /// Whether the HDR switch is on (§6.5).
+    fn hdr_on(&self) -> bool;
+    /// How far the next sample reaches (§18.0.2).
+    fn pick_scope(&self) -> PickScope;
+    /// The tool the next canvas gesture would use; `None` with no engine to ask.
+    fn tool(&self) -> Option<Tool>;
+    /// Whether a shared session is live (§12).
+    fn sharing(&self) -> bool;
+}
+
+/// Whether `command` is a switch that is on — `None` for an act, which is in no state
+/// at all. What a menu's tick and a lit chip both read, so the two cannot disagree.
+///
+/// Each arm asks `lit` one question, so a frontend that subscribes on read wakes a
+/// control for its own state and for nothing else.
+pub fn active(command: Command, lit: &impl Lit) -> Option<bool> {
+    match command {
+        Command::SelectRect => Some(lit.tool() == Some(Tool::SelectRect)),
+        Command::SelectEllipse => Some(lit.tool() == Some(Tool::SelectEllipse)),
+        Command::SelectLasso => Some(lit.tool() == Some(Tool::SelectLasso)),
+        Command::ToggleHdr => Some(lit.hdr_on()),
+        // Exactly one of the three is lit, always: the row is one question rather than
+        // three switches.
+        Command::SetPickScope(scope) => Some(lit.pick_scope() == scope),
+        Command::Share => Some(lit.sharing()),
+        Command::TogglePanel(id) => lit.showing(VisibilityToggle::Panel(id)),
+        Command::ToggleNavigator => lit.showing(VisibilityToggle::Navigator),
+        Command::ToggleQuickBrushes => lit.showing(VisibilityToggle::QuickBrushes),
+        Command::ToggleTimeline => lit.showing(VisibilityToggle::Timeline),
+        Command::Undo
+        | Command::Redo
+        | Command::Deselect
+        | Command::InvertSelection
+        | Command::MirrorView
+        | Command::BrushSmaller
+        | Command::BrushLarger
+        | Command::NewDocument
+        | Command::OpenDocument
+        | Command::SaveDocument
+        | Command::ImportImage
+        | Command::ExportImage
+        | Command::Join
+        | Command::TimingStats
+        | Command::Credits
+        | Command::Settings
+        | Command::EditBrush
+        | Command::SavePreset
+        | Command::Transform
+        | Command::FloatSelection
+        | Command::FillSelection
+        | Command::GradientFill
+        | Command::AddLayer
+        | Command::AddFrame
+        | Command::AddPerspective
+        | Command::CancelMode
+        | Command::FinishMode => None,
+    }
 }
 
 /// The chord table Stark ships with. **A command's first row is the one the
@@ -1372,7 +1486,8 @@ impl Command {
     /// projection — so a greyed row and a refused act cannot disagree.
     ///
     /// A rule over [`ObservableState`] rather than over a frontend's state, which is
-    /// what lets it travel: `active` is the one that could not (see the module note).
+    /// what lets it travel with no trait between: [`active`] reads a frontend's through
+    /// [`Lit`].
     pub fn enabled(self, o: Option<&ObservableState>) -> bool {
         match self {
             Command::Undo => o.is_some_and(|o| o.can_undo),
@@ -2642,5 +2757,149 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A host that answers the two facts as told, and writes down what it is asked to do.
+    struct Recorder {
+        playing: bool,
+        composing: bool,
+        did: Vec<&'static str>,
+    }
+
+    impl Gates for Recorder {
+        fn playing(&self) -> bool {
+            self.playing
+        }
+
+        fn composing(&self) -> bool {
+            self.composing
+        }
+
+        fn stop_playback(&mut self) {
+            self.did.push("stop playback");
+        }
+
+        fn leave_mode(&mut self) {
+            self.did.push("leave mode");
+        }
+    }
+
+    /// Every gate against every pair of facts: which refuse, and what the two classes that
+    /// resolve do on the way through.
+    #[test]
+    fn every_gate_is_answered_as_its_class_says() {
+        for (playing, composing) in [(false, false), (true, false), (false, true), (true, true)] {
+            let admitted = |gate| {
+                let mut host = Recorder {
+                    playing,
+                    composing,
+                    did: Vec::new(),
+                };
+                (admit(gate, &mut host), host.did)
+            };
+            let facts = format!("playing {playing}, composing {composing}");
+            assert_eq!(admitted(Gate::Free), (true, vec![]), "{facts}");
+            assert_eq!(
+                admitted(Gate::Edit),
+                (!playing && !composing, vec![]),
+                "{facts}"
+            );
+            let replacing = if playing {
+                (false, vec![])
+            } else {
+                (true, vec!["leave mode"])
+            };
+            assert_eq!(
+                admitted(Gate::EditReplacingMode),
+                replacing,
+                "{facts}: only the playhead refuses it, and it puts the mode down itself"
+            );
+            assert_eq!(
+                admitted(Gate::History),
+                (true, vec!["stop playback", "leave mode"]),
+                "{facts}"
+            );
+        }
+    }
+
+    /// A frontend with every switch on and every shelf answered by `showing`.
+    struct Everything {
+        showing: Option<bool>,
+    }
+
+    impl Lit for Everything {
+        fn showing(&self, _: VisibilityToggle) -> Option<bool> {
+            self.showing
+        }
+
+        fn hdr_on(&self) -> bool {
+            true
+        }
+
+        fn pick_scope(&self) -> PickScope {
+            PickScope::default()
+        }
+
+        fn tool(&self) -> Option<Tool> {
+            Some(Tool::SelectRect)
+        }
+
+        fn sharing(&self) -> bool {
+            true
+        }
+    }
+
+    /// Only a switch is ever lit or dark; every other command is in no state at all.
+    ///
+    /// The switches are written out again, and that is the test: `active`'s `match` is
+    /// total, so a command *added* has to be placed — but one moved between its arms is
+    /// caught by nothing else.
+    #[test]
+    fn only_a_switch_is_in_a_state() {
+        let lit = Everything {
+            showing: Some(true),
+        };
+        for &command in ALL {
+            let switch = matches!(
+                command,
+                Command::SelectRect
+                    | Command::SelectEllipse
+                    | Command::SelectLasso
+                    | Command::ToggleHdr
+                    | Command::SetPickScope(_)
+                    | Command::Share
+                    | Command::TogglePanel(_)
+                    | Command::ToggleNavigator
+                    | Command::ToggleQuickBrushes
+                    | Command::ToggleTimeline
+            );
+            assert_eq!(active(command, &lit).is_some(), switch, "{command:?}");
+        }
+    }
+
+    /// A shelf a frontend has not got is in no state rather than off.
+    #[test]
+    fn a_shelf_a_frontend_has_not_got_is_in_no_state() {
+        let lit = Everything { showing: None };
+        for entry in VisibilityToggle::ALL {
+            assert_eq!(active(entry.command(), &lit), None, "{entry:?}");
+        }
+    }
+
+    /// Exactly one reach is lit — the one in force — and one armed tool lights its own chip
+    /// alone.
+    #[test]
+    fn one_of_a_row_of_choices_is_lit() {
+        let lit = Everything {
+            showing: Some(true),
+        };
+        let scopes: Vec<PickScope> = PickScope::VARIANTS
+            .iter()
+            .copied()
+            .filter(|s| active(Command::SetPickScope(*s), &lit) == Some(true))
+            .collect();
+        assert_eq!(scopes, vec![PickScope::default()]);
+        assert_eq!(active(Command::SelectRect, &lit), Some(true));
+        assert_eq!(active(Command::SelectLasso, &lit), Some(false));
     }
 }

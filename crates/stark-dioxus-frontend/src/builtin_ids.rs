@@ -50,30 +50,22 @@ pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
     out
 }
 
-/// Install one piece of locally-resolved content into the engine, under the id
-/// that asked for it — the same two calls the network path makes for a resolved
-/// asset, because locally-resolved content is not a different kind of content,
-/// only a different way of getting hold of it.
+/// Install one piece of content into the engine, under the id that asked for it —
+/// read out of this app's own bundle or arrived off a peer, which are two ways of
+/// getting hold of one kind of content (§12.4).
 ///
-/// `accept_substrate` re-derives the id and refuses bytes that do not match, so a
-/// catalog file that changed out from under a document is caught there rather
-/// than deposited through the wrong substrate; both wrappers log their own refusal.
-/// **Exhaustive on the need, with no `_` arm**, rather than branching on whether it
-/// names a substrate. That is not a style preference: `AssetNeed::substrate()` answers
-/// `None` for a brush *and* for a picture (§23), so the two-arm form quietly filed a
-/// picture's RGBA bytes in the brush store, where they would decode as luminance ×
-/// alpha and be neither. The catalogs ship no pictures, so it could not fire today —
-/// which is exactly the kind of latent wrong-bag bug §8 keys the bags apart to
-/// prevent, and the reason this refuses instead.
+/// `accept_substrate` and `accept_picture` re-derive the id and refuse bytes that do not
+/// match, so a file that changed out from under a document is caught there rather than
+/// deposited through the wrong substrate; each wrapper logs its own refusal.
+///
+/// **Exhaustive on the need, with no `_` arm.** `AssetNeed::substrate()` answers `None`
+/// for a brush *and* for a picture (§23), so a two-arm form files a picture's RGBA bytes
+/// in the brush store, where they decode as luminance × alpha and are neither (§8).
 pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
     match need {
         AssetNeed::Brush(_) => r.import_brush(bytes),
         AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
-        // No build ships a picture: one is by definition something a person brought
-        // in, so a catalog naming one is a catalog that is wrong about itself.
-        AssetNeed::Picture(id) => {
-            tracing::error!(?id, "the shipped catalog cannot resolve a picture")
-        }
+        AssetNeed::Picture(id) => r.accept_picture(id, bytes),
     }
 }
 

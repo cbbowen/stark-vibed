@@ -264,7 +264,7 @@ pub fn SelectionBar() -> Element {
     // stays on screen dimmed and inert behind the mode's own, so the place its
     // Done and Esc return to is visible the whole time. Inert twice over —
     // `.recessed` takes the pointer events, and every chip here runs an act
-    // that asks `commands::may_edit`, which refuses while a mode is composing.
+    // that asks `stark_ui::commands::may_edit`, which refuses while a mode is composing.
     let composing = crate::modes::composing(state).is_some();
 
     rsx! {

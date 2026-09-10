@@ -1,9 +1,9 @@
-//! A shared session as a **link** (§12.4): the address a peer opens, and the
-//! ticket read back out of one.
+//! A shared session as a **link** (§12.4): the address a peer opens, the ticket
+//! read back out of one, and where a session stands.
 //!
 //! Nothing about the network is here — a ticket is an opaque string to this
-//! module, and what it decodes to is `stark-net`'s. What is here is the two
-//! string operations both frontends need and neither can own alone.
+//! module, and what it decodes to is `stark-net`'s. What is here is what both
+//! frontends need and neither can own alone.
 //!
 //! # Why a frontend needs the web client's address
 //!
@@ -27,6 +27,21 @@
 /// rather than a preference: there is one hosted build, and a link to anywhere
 /// else would not open the app. A private deployment changes it here.
 pub const WEB_APP: &str = "https://cbbowen.github.io/stark-vibed/";
+
+/// Where a session stands, as a chrome needs to know it.
+///
+/// Three states rather than a `bool`, because binding and relay-readiness take a
+/// noticeable moment, and a second Share pressed inside it would bind a second endpoint
+/// over the first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Phase {
+    #[default]
+    Solo,
+    /// Setup in flight — hosting or joining. Both acts are refused while it lasts.
+    Connecting,
+    /// Live in a shared session.
+    Shared,
+}
 
 /// The invitation to hand out: the hosted client, with `ticket` in its fragment.
 pub fn invite_link(ticket: &str) -> String {

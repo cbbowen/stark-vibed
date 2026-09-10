@@ -200,8 +200,8 @@ fn CmdItem(command: Command) -> Element {
     //
     // Both facts in the **one** memo, which is what that argument asks for: the
     // lit state was read straight out of the registry in the body below, and
-    // `Command::active` asks the projection for the three shape tools
-    // (`commands::armed`) — so a row for one of those was subscribed to every
+    // `commands::active` asks the projection for the three shape tools
+    // (`Lit::tool`) — so a row for one of those was subscribed to every
     // engine write however narrow its `enabled` memo was.
     let look = use_obs_opt(state, move |o| {
         (command.enabled(o), commands::active(command, state))

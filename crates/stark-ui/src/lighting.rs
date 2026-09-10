@@ -12,7 +12,7 @@
 //! binary carries it through `include_bytes!`, and §11.2's N7 argues both. Each
 //! frontend keeps its own resolver; only the *list* is shared.
 
-use stark_engine::{EnvironmentId, MediaParams, ObservableState};
+use stark_engine::{EnvironmentId, MediaParams, ObservableState, Output, Transfer};
 use stark_model::SubstrateScale;
 
 use crate::icons::Icon;
@@ -181,6 +181,22 @@ pub fn dials(hdr: Hdr, hdr_capable: bool, display_headroom: Option<f32>) -> Vec<
         .collect()
 }
 
+/// What the display is (§6.5): the surface's transfer, always — `Command::ToggleHdr`'s
+/// `enabled` reads it with the switch off — and a headroom above white only where the
+/// switch is on and the transfer can show one: the display's own figure where it states
+/// one, this client's choice where it does not.
+///
+/// Capable is [`Transfer::is_hdr`]. A wide gamut is not range, so an 8-bit `display-p3`
+/// surface is driven at white: a knee above what it can show would only clip.
+pub fn output(choice: Hdr, transfer: Transfer, display_headroom: Option<f32>) -> Output {
+    let headroom = if choice.on && transfer.is_hdr() {
+        display_headroom.unwrap_or_else(|| choice.clamped_headroom())
+    } else {
+        1.0
+    };
+    Output::new(transfer, headroom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +282,50 @@ mod tests {
     fn every_dial_sits_in_the_seat_its_index_names() {
         for (i, dial) in Dial::VARIANTS.iter().enumerate() {
             assert_eq!(dial.index(), i, "{dial:?} names a seat it does not sit in");
+        }
+    }
+
+    /// With the switch on over a surface that can show range, the headroom is the
+    /// display's own figure where it states one and the choice where it does not; with
+    /// the switch off it is white.
+    #[test]
+    fn a_capable_surface_is_driven_by_the_display_then_the_choice() {
+        let on = Hdr {
+            on: true,
+            headroom: 3.0,
+        };
+        let off = Hdr { on: false, ..on };
+        for transfer in [
+            Transfer::ExtendedSrgb,
+            Transfer::Linear,
+            Transfer::ExtendedDisplayP3,
+        ] {
+            let at = |headroom| Output::new(transfer, headroom);
+            assert_eq!(output(on, transfer, Some(4.0)), at(4.0), "{transfer:?}");
+            assert_eq!(output(on, transfer, None), at(3.0), "{transfer:?}");
+            assert_eq!(output(off, transfer, Some(4.0)), at(1.0), "{transfer:?}");
+            assert_eq!(output(off, transfer, None), at(1.0), "{transfer:?}");
+        }
+    }
+
+    /// A surface with no range above white is driven at white whatever is asked — a wide
+    /// gamut included, which is not range.
+    #[test]
+    fn a_surface_without_range_is_driven_at_white() {
+        let on = Hdr {
+            on: true,
+            headroom: 3.0,
+        };
+        for transfer in [Transfer::Srgb, Transfer::DisplayP3] {
+            for choice in [on, Hdr { on: false, ..on }] {
+                for display in [Some(4.0), None] {
+                    assert_eq!(
+                        output(choice, transfer, display),
+                        Output::new(transfer, 1.0),
+                        "{transfer:?}"
+                    );
+                }
+            }
         }
     }
 }

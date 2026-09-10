@@ -11,7 +11,7 @@ use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
 use crate::widgets::{PopoutId, Slider, slider_fill};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
-use stark_engine::{EnvironmentId, MediaParams, Output, Transfer};
+use stark_engine::{EnvironmentId, MediaParams};
 use stark_model::{SubstrateId, SubstrateScale};
 use stark_ui::lighting::{Dial, ENVIRONMENTS};
 use stark_ui::prefs::Hdr;
@@ -233,11 +233,9 @@ pub fn LightingPanel() -> Element {
     }
 }
 
-/// Tell the engine what the screen is (§6.5): the surface's transfer — stated even
-/// with the switch off, since `Command::ToggleHdr`'s `enabled` reads it — and the
-/// headroom: the display's where reported, this browser's choice where not, and 1
-/// with the switch off. Run once the renderer is up (`prefs::load_engine`) and
-/// whenever either half moves.
+/// Tell the engine what the screen is (§6.5) — `stark_ui::lighting::output` over this
+/// browser's choice and the canvas in front of it. Run once the renderer is up
+/// (`prefs::load_engine`) and whenever either half moves.
 pub fn apply_output(state: AppState) {
     let choice = *state.hdr.peek();
     let Some((transfer, display)) = state
@@ -248,14 +246,9 @@ pub fn apply_output(state: AppState) {
     else {
         return;
     };
-    let headroom = if choice.on && transfer != Transfer::Srgb {
-        display.unwrap_or_else(|| choice.clamped_headroom())
-    } else {
-        1.0
-    };
     dispatch(
         state,
-        ViewCommand::SetOutput(Output::new(transfer, headroom)),
+        ViewCommand::SetOutput(stark_ui::lighting::output(choice, transfer, display)),
     );
 }
 

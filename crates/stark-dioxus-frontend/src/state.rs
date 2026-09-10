@@ -22,7 +22,7 @@ use crate::render::Renderer;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
-use stark_model::document::{GuideId, LayerId};
+use stark_model::document::GuideId;
 use stark_model::geom::Vec2;
 use stark_ui::commands::PickScope;
 use stark_ui::commands::VisibilityToggle;
@@ -368,7 +368,7 @@ pub struct Signals {
     /// modes share one: nothing previews off this, and [`mode`](Self::mode)
     /// never holds it, so "one mode composing at a time" stays true while it is
     /// held.
-    pub gradient_resume: Signal<Option<GradientUi>>,
+    pub gradient_resume: Signal<Option<stark_ui::modes::GradientUi>>,
     /// Whether a [`request_paint`] is already waiting on the next animation frame.
     /// The latch that turns any number of paint requests into one paint per frame.
     /// Read and written only from non-component code (`peek`/`set`), so no
@@ -974,69 +974,6 @@ where
     T: PartialEq + 'static,
 {
     use_memo(move || slice(state.obs.read().as_ref()))
-}
-
-/// The gradient gesture being composed on the shared gradient bar (§22.4):
-/// what the ramp lands on, how the composing drag is read, and the drag itself.
-///
-/// The drag is kept as its two raw points and the axis **derived** per kind —
-/// linear reads them as from→to, radial as centre and reach — so switching
-/// kinds on the bar reinterprets the drag the hand already made instead of
-/// throwing it away.
-#[derive(Clone, PartialEq)]
-pub struct GradientUi {
-    /// What "Done" commits — a fill of the selection, or a matte's paint. One
-    /// bar, one catcher, two targets: the interface for laying a ramp is the
-    /// same wherever the ramp lands.
-    pub target: GradientTarget,
-    /// How the drag becomes an axis — the bar's Linear/Radial chips.
-    pub kind: GradientAxisKind,
-    /// The composing drag, canvas space: anchor and current end. `None` until
-    /// the first drag — there is no axis to preview yet.
-    pub drag: Option<(Vec2, Vec2)>,
-}
-
-/// What the gradient bar's ramp lands on (§22.4).
-#[derive(Clone, PartialEq)]
-pub enum GradientTarget {
-    /// Fill the selection on `layer`. The ramp is read live from the library
-    /// (the pop-out's highlighted row), so a click there re-previews.
-    ///
-    /// It lays opaque paint through the mask, so how strongly it lands is the
-    /// selection's business and there is nothing here to capture (§6.8).
-    Fill { layer: LayerId },
-    /// Repaint the matte `layer` (§15.4). The ramp rides the target — seeded
-    /// from the matte's own paint, so re-composing an old gradient's axis does
-    /// not silently swap its colors for the library's current row; a library
-    /// click replaces it deliberately. `None` when the mode was entered with
-    /// nothing to seed from — an empty library — and the bar's well is then
-    /// where the first ramp arrives; until one does, there is nothing to
-    /// preview and Done leaves without laying.
-    Matte {
-        layer: LayerId,
-        gradient: Option<stark_model::Gradient>,
-    },
-}
-
-/// How a gradient drag is read as an axis (§22.4).
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum GradientAxisKind {
-    Linear,
-    Radial,
-}
-
-impl GradientUi {
-    /// The axis the current drag composes, or `None` before the first drag.
-    pub fn axis(&self) -> Option<stark_model::document::GradientAxis> {
-        let (from, to) = self.drag?;
-        Some(match self.kind {
-            GradientAxisKind::Linear => stark_model::document::GradientAxis::Linear { from, to },
-            GradientAxisKind::Radial => stark_model::document::GradientAxis::Radial {
-                center: from,
-                radius: from.distance(to),
-            },
-        })
-    }
 }
 
 /// Timeline mode's signals (§18.2.4), grouped because they are one

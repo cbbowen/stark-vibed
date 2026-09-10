@@ -16,6 +16,7 @@
 use stark_engine::command::ViewCommand;
 use stark_ui::brush_config::{BrushConfig, Transient};
 use stark_ui::presets::{BuiltinShapes, PresetEntry, shipped};
+use stark_ui::slots::{self, QuickBrush, Wearer};
 
 /// The brush the app opens on and the library it can be swapped for.
 pub struct Brush {
@@ -118,5 +119,25 @@ impl Brush {
     /// the name off.
     pub fn tuned_off_preset(&mut self) {
         self.from = None;
+    }
+}
+
+/// What the quick-brush rack borrows a brush through, and hands it back by (§18.1.8,
+/// `stark_ui::slots::RackState`).
+impl Wearer for Brush {
+    fn worn(&self) -> (BrushConfig, Transient) {
+        Brush::worn(self)
+    }
+
+    fn in_hand(&self) -> Option<String> {
+        self.from.clone()
+    }
+
+    fn resolve(&self, slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
+        slots::resolve(&self.library, slot)
+    }
+
+    fn wear(&mut self, brush: BrushConfig, tune: Transient, from: Option<String>) {
+        self.put_on(brush, tune, from);
     }
 }

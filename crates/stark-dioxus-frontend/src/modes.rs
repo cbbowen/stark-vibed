@@ -43,7 +43,8 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{AppState, GradientUi, GuideEdit};
+use crate::state::{AppState, GuideEdit};
+use stark_ui::modes::GradientUi;
 use stark_ui::transform::TransformUi;
 
 /// The composing mode in flight, and what it is composing.

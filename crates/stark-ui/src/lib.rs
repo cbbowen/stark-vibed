@@ -48,6 +48,8 @@
 //! - [`lighting`] — the environments the Lighting panel lists and the five knobs
 //!   it draws (§6.3, §6.4, §6.5). The bytes behind an environment stay each
 //!   frontend's: one fetches them, the other carries them.
+//! - [`modes`] — what a composing mode composes (§22.4): values a chrome holds for the
+//!   length of a mode.
 //! - [`guides`] — the drawing guides' vocabulary (§20): the axis names and pairs a
 //!   perspective quad is read through, and the octave a lattice sits on.
 //! - [`reorder`] — moving a row of a list by dragging it, with no opinion about
@@ -134,6 +136,7 @@ pub mod layer_tree;
 pub mod library;
 pub mod lighting;
 pub mod mint;
+pub mod modes;
 pub mod nav;
 pub mod panels;
 pub mod pick;

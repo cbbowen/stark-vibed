@@ -507,6 +507,82 @@ pub fn overwrite(
     }
 }
 
+/// The app's own presets ahead of what this client stored, less any stored preset whose
+/// name one of them holds — and whether one went, so storage is rewritten only then.
+///
+/// Dropping is how a client holding persisted copies of the built-ins sheds them, and how
+/// one that saved over a built-in loses that edit: the app's definition is the only copy,
+/// so a stored one is a staler one.
+pub fn merge_shipped(
+    mut shipped: Vec<PresetEntry>,
+    mut stored: Vec<PresetEntry>,
+) -> (Vec<PresetEntry>, bool) {
+    let before = stored.len();
+    stored.retain(|entry| find(&shipped, &entry.name).is_none());
+    let dropped = stored.len() != before;
+    shipped.append(&mut stored);
+    (shipped, dropped)
+}
+
+/// A save refused because one of the app's own presets holds the name ([`upsert`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BuiltinName;
+
+impl std::fmt::Display for BuiltinName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the name belongs to one of the app's own presets")
+    }
+}
+
+impl std::error::Error for BuiltinName {}
+
+/// Save `brush` at `transient` under `name`: over the user's preset of that name, in its
+/// own row, or as a new row at the end.
+///
+/// # Errors
+///
+/// [`BuiltinName`] where one of the app's presets holds the name. The next start rebuilds a
+/// built-in from its definition, so an overwrite would not last, and a second row under the
+/// name would make "the preset called X" two brushes to every lookup.
+pub fn upsert(
+    entries: &mut Vec<PresetEntry>,
+    name: &str,
+    brush: BrushConfig,
+    transient: Transient,
+) -> Result<(), BuiltinName> {
+    if is_builtin(entries, name) {
+        return Err(BuiltinName);
+    }
+    match entries.iter_mut().find(|e| e.name == name) {
+        Some(entry) => {
+            entry.brush = brush;
+            entry.transient = transient;
+        }
+        None => entries.push(PresetEntry {
+            name: name.to_owned(),
+            brush,
+            transient,
+            // The user's own: no home on the rack, and storage's to keep.
+            slot: None,
+            builtin: false,
+        }),
+    }
+    Ok(())
+}
+
+/// Drop the user's preset called `name`, and say whether one went.
+///
+/// One of the app's own is never removed: nothing is stored behind it, and the next start
+/// would bring it back.
+pub fn remove(entries: &mut Vec<PresetEntry>, name: &str) -> bool {
+    if is_builtin(entries, name) {
+        return false;
+    }
+    let before = entries.len();
+    entries.retain(|e| e.name != name);
+    entries.len() != before
+}
+
 // --- persistence ----------------------------------------------------------
 //
 // One entry per **user** preset, through `stark_ui::storage`, which is where the format
@@ -800,5 +876,97 @@ mod tests {
             overwrite(&entries, Some("Mine"), &edited),
             Overwrite::Ready("Mine".into())
         );
+    }
+
+    fn user(name: &str) -> PresetEntry {
+        PresetEntry {
+            name: name.into(),
+            brush: BrushConfig::default(),
+            transient: Transient::default(),
+            slot: None,
+            builtin: false,
+        }
+    }
+
+    fn names(entries: &[PresetEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    /// A stored copy of a built-in is dropped and the drop reported; the user's own rows
+    /// follow the shipped ones, in the order they were stored.
+    #[test]
+    fn a_stored_copy_of_a_builtin_is_dropped_behind_the_shipped_list() {
+        let shipped = table();
+        let builtin = shipped[0].name.clone();
+        let stored = vec![user("Zed"), user(&builtin), user("Alpha")];
+        let (merged, dropped) = merge_shipped(shipped.clone(), stored);
+        assert!(dropped);
+        assert_eq!(names(&merged[..shipped.len()]), names(&shipped));
+        assert_eq!(names(&merged[shipped.len()..]), vec!["Zed", "Alpha"]);
+        assert!(
+            merged[0].builtin,
+            "the app's definition won, not the stored copy"
+        );
+    }
+
+    /// A clean start drops nothing, so storage is not rewritten.
+    #[test]
+    fn a_clean_start_drops_nothing() {
+        let shipped = table();
+        let (merged, dropped) = merge_shipped(shipped.clone(), vec![user("Mine")]);
+        assert!(!dropped);
+        assert_eq!(merged.len(), shipped.len() + 1);
+        assert!(!merge_shipped(shipped, Vec::new()).1);
+    }
+
+    /// A built-in's name is not the user's to save under, and a refusal writes nothing.
+    #[test]
+    fn upsert_refuses_a_builtin_name() {
+        let mut entries = table();
+        let before = entries.clone();
+        let builtin = entries[0].name.clone();
+        let saved = upsert(
+            &mut entries,
+            &builtin,
+            BrushConfig::default(),
+            Transient::default(),
+        );
+        assert_eq!(saved, Err(BuiltinName));
+        assert!(entries == before, "a refusal writes nothing");
+    }
+
+    /// Saving over the user's own name replaces that row where it stands; a new name is a
+    /// new row at the end.
+    #[test]
+    fn upsert_replaces_in_place() {
+        let mut entries = vec![user("One"), user("Two"), user("Three")];
+        let tuned = Transient {
+            size: 77.0,
+            ..Transient::default()
+        };
+        assert_eq!(
+            upsert(&mut entries, "Two", BrushConfig::default(), tuned),
+            Ok(())
+        );
+        assert_eq!(names(&entries), vec!["One", "Two", "Three"]);
+        assert_eq!(entries[1].transient.size, 77.0);
+        assert_eq!(
+            upsert(&mut entries, "Four", BrushConfig::default(), tuned),
+            Ok(())
+        );
+        assert_eq!(names(&entries), vec!["One", "Two", "Three", "Four"]);
+        assert!(!entries[3].builtin && entries[3].slot.is_none());
+    }
+
+    /// Remove answers whether a row went — and a built-in never goes.
+    #[test]
+    fn remove_answers_whether_it_removed() {
+        let mut entries = table();
+        entries.push(user("Mine"));
+        let builtin = entries[0].name.clone();
+        assert!(remove(&mut entries, "Mine"));
+        assert!(!remove(&mut entries, "Mine"), "already gone");
+        assert!(!remove(&mut entries, &builtin));
+        assert!(find(&entries, &builtin).is_some());
     }
 }

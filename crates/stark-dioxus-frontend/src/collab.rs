@@ -28,7 +28,6 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::Identity;
 use stark_engine::command::ViewCommand;
-use stark_model::SubstrateId;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
@@ -288,7 +287,7 @@ pub fn leave(state: AppState) {
     });
     let mut ticket = state.collab.ticket;
     ticket.set(None);
-    set_url_ticket(None);
+    crate::platform::set_url_fragment(None);
     set_phase(state, CollabPhase::Solo);
     spawn_forever(async move {
         if let Some(frame) = farewell {
@@ -335,7 +334,7 @@ pub fn flush_outbox(state: AppState) {
 fn install(state: AppState, session: CollabSession, mut events: Events, ticket_text: String) {
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
-    set_url_ticket(Some(&ticket_text));
+    crate::platform::set_url_fragment(Some(&ticket_text));
     let mut ticket = state.collab.ticket;
     ticket.set(Some(ticket_text));
 
@@ -349,75 +348,24 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
             // engine: only a merged action moves the document the chrome renders
             // from, and presence arrives at pointer rate — publishing on that
             // cadence would drag a full component tree behind every peer's pointer.
-            let Some((publish, repaint)) = crate::state::with_engine_quiet(state, |r| {
-                match event {
-                    // Repaint: an asset resolved off a *presence* head arrives
-                    // while the peer's live stroke is already on screen as a
-                    // round-tip fallback — the import is what upgrades it. (On
-                    // the commit path the following Action repaints anyway;
-                    // assets are rare enough that one extra request is free.)
-                    RemoteEvent::Asset { need, bytes } => {
-                        // The transport says which store these bytes belong in —
-                        // the action that referenced them is the only thing that
-                        // knows, and a brush mask and a canvas substrate decode
-                        // differently (§6.6, §6.4).
-                        match need {
-                            AssetNeed::Brush(_) => r.import_brush(&bytes),
-                            // Arrives *before* the `SetSubstrate` that wanted it, so
-                            // the tooth reads the real substrate from the very first
-                            // stroke after the switch rather than baking a flat
-                            // deposit that no later arrival un-bakes.
-                            AssetNeed::Substrate(id) => {
-                                r.accept_substrate(SubstrateId::Image(id), &bytes)
-                            }
-                            // Likewise before the `PlaceImage` that wanted it: the
-                            // transport parks that action until the pixels land,
-                            // because a placement without them is not a degraded
-                            // placement, it is an empty layer (§23).
-                            AssetNeed::Picture(id) => r.accept_picture(id, &bytes),
-                        }
-                        (false, true)
-                    }
-                    RemoteEvent::Action(action) => {
-                        r.merge_remote(action);
-                        (true, true)
-                    }
-                    // A peer moved, switched layer, or drew another stretch of a
-                    // live stroke (§17.4). Repaint only when the frame
-                    // reached the *canvas*, which `merge_presence` is what decides:
-                    // a cursor and a name are DOM chrome drawn from the roster, which
-                    // the presence pump pushes on its own cadence, so a remote
-                    // pointer move owes no compositor pass at all. And leave `obs`
-                    // alone regardless: presence changes nothing the chrome renders
-                    // from, and refreshing it at pointer rate would re-run the whole
-                    // component tree.
-                    RemoteEvent::Presence { actor, frame } => {
-                        // Dated here, with the same clock the presence pump ticks
-                        // the expiry with. The engine's own clock is no substitute:
-                        // it advances only when that pump has something to drain,
-                        // which on a client that is just watching is the heartbeat
-                        // — and a frame stamped a whole heartbeat stale trips
-                        // `GESTURE_TIMEOUT` mid-stroke.
-                        (false, r.merge_presence(actor, frame, now_seconds()))
-                    }
-                    // The promise `join` made, called in: a peer named content
-                    // this build ships with. Handled off this task — the read is
-                    // a fetch and the pump is holding the renderer guard.
-                    RemoteEvent::ResolveLocally { need } => {
-                        supply_locally(state, need);
-                        (false, false)
-                    }
-                }
-            }) else {
+            let now = now_seconds();
+            let Some(wake) =
+                crate::state::with_engine_quiet(state, |r| apply_remote(r, event, now))
+            else {
                 continue;
             };
+            // After the guard is down: resolving reads the session signal and starts a
+            // fetch.
+            if let Some(need) = wake.resolve {
+                supply_locally(state, need);
+            }
             // Requested, not painted inline: peer gesture frames arrive at ~30 Hz
             // *per stroking peer*, on top of the local pointer rate — the request
             // latch is what folds all of it into one paint per displayed frame.
-            if repaint {
+            if wake.repaint {
                 crate::state::request_paint(state);
             }
-            if publish {
+            if wake.publish {
                 crate::state::publish_observation(state);
             }
         }
@@ -428,6 +376,55 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
         old.cancel();
     }
     start_presence_pump(state);
+}
+
+/// What one remote event owes, once the engine guard is down.
+#[derive(Default)]
+struct Wake {
+    /// The document moved, so the projection the chrome renders from is stale.
+    publish: bool,
+    /// The canvas moved, so a frame is owed.
+    repaint: bool,
+    /// A peer named content this build ships with. Resolving it is a fetch, which must
+    /// not start under the guard the pump holds.
+    resolve: Option<AssetNeed>,
+}
+
+/// Feed one remote event into the engine (§12).
+fn apply_remote(r: &mut crate::render::Renderer, event: RemoteEvent, now: f64) -> Wake {
+    match event {
+        // The transport parks the `SetSubstrate` or `PlaceImage` that wanted these bytes
+        // until they land (§6.4, §23). The repaint is for a *presence* head, whose live
+        // stroke is already on screen as a round-tip fallback the import upgrades.
+        RemoteEvent::Asset { need, bytes } => {
+            crate::builtin_ids::install(r, need, &bytes);
+            Wake {
+                repaint: true,
+                ..Wake::default()
+            }
+        }
+        RemoteEvent::Action(action) => {
+            r.merge_remote(action);
+            Wake {
+                publish: true,
+                repaint: true,
+                resolve: None,
+            }
+        }
+        // A frame repaints only where it reached the canvas: a cursor and a name are DOM
+        // chrome drawn from the roster, which the presence pump pushes on its own cadence
+        // (§17.4). Dated with that pump's clock — the engine's own advances only when
+        // there is something to drain, and a frame stamped a heartbeat stale trips
+        // `GESTURE_TIMEOUT` mid-stroke.
+        RemoteEvent::Presence { actor, frame } => Wake {
+            repaint: r.merge_presence(actor, frame, now),
+            ..Wake::default()
+        },
+        RemoteEvent::ResolveLocally { need } => Wake {
+            resolve: Some(need),
+            ..Wake::default()
+        },
+    }
 }
 
 /// Publish this client's presence on a fixed cadence for as long as the session
@@ -489,7 +486,7 @@ fn start_presence_pump(state: AppState) {
                     let ticket_text = tx.ticket().await.to_string();
                     let mut ticket_sig = state.collab.ticket;
                     if ticket_sig.peek().as_deref() != Some(ticket_text.as_str()) {
-                        set_url_ticket(Some(&ticket_text));
+                        crate::platform::set_url_fragment(Some(&ticket_text));
                         ticket_sig.set(Some(ticket_text));
                     }
                 }
@@ -600,21 +597,6 @@ pub fn url_ticket() -> Option<String> {
     fragment.starts_with("stark").then_some(fragment)
 }
 
-/// The invitation to hand out: this page's address with `ticket` in the fragment.
-///
-/// Rebuilt from the ticket rather than read back out of `location.href`, so the
-/// dialog re-renders when the ticket signal changes — `location` is not reactive,
-/// and reading it during a render that beat `replaceState` would show the old URL.
-fn invite_url(ticket: &str) -> String {
-    crate::platform::url_with_fragment(ticket)
-}
-
-/// Reflect (or clear) the live session's ticket in the URL bar. Uses
-/// `replaceState` so joining/leaving doesn't pollute tab history.
-fn set_url_ticket(ticket: Option<&str>) {
-    crate::platform::set_url_fragment(ticket);
-}
-
 /// The label and style for how a peer's connection reaches us, from the link
 /// the mesh reports for it — or `None`, meaning no direct connection at all:
 /// the mesh forwards that peer's traffic through the members that do have one.
@@ -706,7 +688,13 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                         "Anyone who opens this link paints here with you, in real time. Every member can pass it on."
                     }
                     {
-                        let url = invite_url(ticket.as_deref().unwrap_or_default());
+                        // Rebuilt from the ticket rather than read back out of
+                        // `location.href`, so the dialog re-renders when the ticket
+                        // signal changes: `location` is not reactive, and a render that
+                        // beat `replaceState` would show the old URL.
+                        let url = crate::platform::url_with_fragment(
+                            ticket.as_deref().unwrap_or_default(),
+                        );
                         let to_copy = url.clone();
                         rsx! {
                             div { class: "invite-row",

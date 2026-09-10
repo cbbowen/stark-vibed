@@ -4,8 +4,9 @@
 //! **The rule is not here.** What a slot holds, what a press and a release each
 //! decide, how two presses become a pick and which rows the rack draws are
 //! `stark_ui::slots` — one function each, shared with the native frontend (§11.2). So
-//! is the record. What is left is what only a frontend can do: reach the live brush
-//! through [`presets::wear`], keep the four values in signals, and draw.
+//! is the record, and the sequence a hold applies it in. What is left is what only a
+//! frontend can do: reach the live brush through [`presets::wear`], keep the four values
+//! in signals, and draw.
 //!
 //! Everything the feature does still falls out of the one rule rather than being
 //! wired up three times:
@@ -35,133 +36,111 @@ use crate::layout::chrome_dimmed;
 use crate::presets;
 use crate::state::AppState;
 use stark_ui::brush_config::{BrushConfig, Transient};
-use stark_ui::slots::{self, Digit, ERASER, Grip, Held, QuickBrush, Row, View};
+use stark_ui::slots::{
+    self, Changed, Digit, ERASER, Grip, Held, QuickBrush, RackState, Row, View, Wearer,
+};
 
-/// [`slots::resolve`] against the app's library, for the callers that have only the
-/// state: its own statement so the library's read guard is dropped before the caller
-/// goes on to dispatch (`presets::wear` rewrites signals under it).
-fn resolve_in(state: AppState, slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
-    let library = state.presets.peek();
-    slots::resolve(&library, slot)
+/// The live brush, lent to the rack's sequence (`slots::RackState`). Every read is its
+/// own statement, so no guard is alive when `wear` dispatches and rewrites the brush
+/// signal underneath it (`state::update_brush`).
+struct LiveBrush(AppState);
+
+impl Wearer for LiveBrush {
+    fn worn(&self) -> (BrushConfig, Transient) {
+        presets::worn(self.0)
+    }
+
+    fn in_hand(&self) -> Option<String> {
+        self.0.preset_in_hand.peek().clone()
+    }
+
+    fn resolve(&self, slot: &QuickBrush) -> Option<(BrushConfig, Transient)> {
+        slots::resolve(&self.0.presets.peek(), slot)
+    }
+
+    fn wear(&mut self, brush: BrushConfig, tune: Transient, from: Option<String>) {
+        presets::wear(self.0, brush, tune, from);
+    }
 }
 
-/// Begin holding `slot`. Ignored when a hold is already in flight — which is what
-/// makes it safe to call on every keydown, since a held key repeats at the system's
-/// repeat rate and each repeat is another keydown, and on every report of a hovering
-/// pen, which is what the tail's hold is read off (`input::tail_says`).
+/// Run one step of the rack's sequence over this browser's three signals.
 ///
-/// The one exception is [`Grip::displaces`]'s: a number deliberately pressed under a
-/// hovering tail takes the brush from it.
-///
-/// A slot with nothing in it still enters the hold rather than declining: the hold
-/// *is* the arming, and holding an empty number while clicking a preset is how the
-/// number gets its first brush.
+/// The values are taken out, stepped and written back, so no signal guard is alive while
+/// the step puts a brush on; and a signal is written only where the step moved it, since
+/// a write wakes every reader.
+fn step(state: AppState, act: impl FnOnce(&mut RackState, &mut LiveBrush) -> Changed) {
+    let mut rack = RackState {
+        brushes: state.slots.brushes.peek().clone(),
+        held: state.slots.held.peek().clone(),
+        taps: *state.slots.taps.peek(),
+    };
+    let changed = act(&mut rack, &mut LiveBrush(state));
+    let RackState {
+        brushes,
+        held,
+        taps,
+    } = rack;
+    if changed.bindings {
+        slots::persist(&brushes);
+        let mut signal = state.slots.brushes;
+        signal.set(brushes);
+    }
+    if changed.hold {
+        let mut signal = state.slots.held;
+        signal.set(held);
+        let mut signal = state.slots.taps;
+        signal.set(taps);
+    }
+}
+
+/// Begin holding `slot` (`slots::RackState::hold`) — safe on every keydown, since a held
+/// key repeats, and on every report of a hovering pen, which is what the tail's hold is
+/// read off (`input::tail_says`).
 ///
 /// A **key** pressed twice within `slots::DOUBLE_TAP` enters its second hold *picked*:
-/// the same hold, whose release keeps the slot's brush in hand instead of handing the
-/// displaced one back — the click's outcome ([`pick`]) by way of the keyboard. Counted
-/// below the guard on a hold in flight, so a held key's repeats are never presses; and
-/// counted for keys alone, since the pen's tail is on the glass or off it, and two
-/// dabs of it are two erase strokes.
+/// its release keeps the slot's brush in hand — the click's outcome ([`pick`]) by way of
+/// the keyboard.
 pub fn hold(state: AppState, slot: Digit, grip: Grip) {
-    let mut held = state.slots.held;
-    // Answered without cloning the hold, since this runs on every report of a hovering
-    // pen and nearly all of them are already holding.
-    let displaced = {
-        let in_flight = held.peek();
-        match in_flight.as_ref() {
-            Some(h) => match h.displaced_by(grip) {
-                Some(pair) => Some(pair),
-                None => return,
-            },
-            None => None,
-        }
-    };
-    if let Some((slot, grip)) = displaced {
-        release(state, slot, grip);
+    // Asked of the hold alone before anything is cloned: nearly every report of a
+    // hovering pen is already holding.
+    let opens = slots::opens(state.slots.held.peek().as_ref(), grip);
+    if !opens {
+        return;
     }
-    let mut taps = state.slots.taps;
-    let picked = grip == Grip::Key && taps.write().press(slot, crate::platform::now_seconds());
-    // Each read is its own statement, so no guard is alive when `wear` dispatches and
-    // rewrites the brush signal underneath it (`state::update_brush`).
-    let base = presets::worn(state);
-    let base_from = state.preset_in_hand.peek().clone();
-    let bound = state.slots.brushes.peek()[slot.as_index()].clone();
-    let mut hold = Held::open(slot, grip, base, base_from, picked);
-    // The slot's brush as it is *now* — its preset looked up live, at the slot's own
-    // size and flow. A binding the library cannot answer is an empty slot, and an
-    // empty slot is held without a swap.
-    if let Some(bound) = bound
-        && let Some((brush, tune)) = resolve_in(state, &bound)
-    {
-        presets::wear(state, brush, tune, Some(bound.preset));
-        // Read back rather than assumed: `wear` resolves the stamp and clamps what the
-        // renderer cannot draw, so what the app now holds is not necessarily what was
-        // handed to it — and it is what the release has to compare against.
-        hold.enter(presets::worn(state).1);
-    }
-    held.set(Some(hold));
+    let now = crate::platform::now_seconds();
+    step(state, |rack, hand| rack.hold(slot, grip, now, hand));
 }
 
 /// Say that a whole tool was just put on **deliberately** — a preset row clicked
-/// ([`presets::apply`]) or another slot's row ([`pick`]) — so a hold in flight keeps
-/// what is live when it ends whether or not that moved anything ([`Held::claim`]).
-///
-/// A no-op with no hold in flight, which is every other click on those same rows.
+/// ([`presets::apply`]) — so a hold in flight keeps what is live when it ends
+/// ([`Held::claim`]).
 pub fn claim(state: AppState) {
-    let mut held = state.slots.held;
-    let Some(mut h) = held.peek().clone() else {
-        return;
-    };
-    if h.claim() {
-        held.set(Some(h));
-    }
+    step(state, |rack, _| rack.claim());
 }
 
-/// End the hold on `slot`, if `grip` is what is holding it ([`Held::ends_on`]): keep
-/// whatever was changed, and put the displaced brush back.
+/// End the hold on `slot`, if `grip` is what is holding it
+/// (`slots::RackState::release`).
 pub fn release(state: AppState, slot: Digit, grip: Grip) {
-    let mut held = state.slots.held;
-    // The guard is answered before the hold is cloned: this runs on every report of a
-    // pen whose tail is not facing the glass (`input::tail_says`), and the overwhelming
-    // majority of them are holding nothing.
-    let h = {
-        let in_flight = held.peek();
-        match in_flight.as_ref() {
-            Some(h) if h.ends_on(slot, grip) => h.clone(),
-            _ => return,
-        }
-    };
-    held.set(None);
-    let current = presets::worn(state).1;
-    // The tool the number would be bound to: whatever preset is in hand at the release
-    // — the one a click under the hold put on, or the slot's own.
-    let from = state.preset_in_hand.peek().clone();
-    let (kept, back) = h.settle(current, from.as_deref());
-    if let Some(bound) = kept {
-        assign(state, h.slot(), bound);
+    // Asked before anything is cloned: this runs on every report of a pen whose tail is
+    // not facing the glass, and nearly all of them are holding nothing.
+    let ends = state
+        .slots
+        .held
+        .peek()
+        .as_ref()
+        .is_some_and(|h| h.ends_on(slot, grip));
+    if !ends {
+        return;
     }
-    // Back through the door it left by, with the name it had: the hold borrowed the
-    // hand, and a preset chosen *during* it went to the slot, not to this. Or not back
-    // at all, for a double-tap's hold, whose whole point is that the swap stands.
-    if let Some((back, back_tune)) = back {
-        presets::wear(state, back, back_tune, h.base_from());
-    }
+    step(state, |rack, hand| rack.release(slot, grip, hand));
 }
 
-/// End whatever hold is in flight, whoever made it — for the one event that can take a
-/// key away without ever sending its keyup: the window losing focus.
-///
-/// Alt+Tab with a number held would otherwise leave the swap in force for the rest of
-/// the session, with the key that would undo it now belonging to another window. The
-/// same class of bug the modifier tracker (`input`'s `track_mods`) rules out by
-/// re-reading the modifier set, ruled out here by the event that says the keyboard has
-/// gone.
+/// End whatever hold is in flight, whoever made it — for the window losing focus, which
+/// takes a key away without ever sending its keyup. Alt+Tab with a number held would
+/// otherwise leave the swap in force, with the key that would undo it belonging to
+/// another window.
 pub fn release_all(state: AppState) {
-    let held = state.slots.held.peek().clone();
-    if let Some(h) = held {
-        release(state, h.slot(), h.grip());
-    }
+    step(state, |rack, hand| rack.release_all(hand));
 }
 
 /// The rack, drawn while a number is held (§18.1.8): a column down the left of the
@@ -459,17 +438,9 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
 /// live when it ends — so holding 3 and clicking 5 copies 5 onto 3, binding and tune
 /// alike, exactly as holding 3 and clicking a preset assigns that preset. One rule, not
 /// a special case (`Held::settle`), and it is a whole tool arriving, so it says so
-/// ([`claim`]) — copying 5 onto 3 must work when 5 is already what is in hand.
+/// ([`Held::claim`]) — copying 5 onto 3 must work when 5 is already what is in hand.
 pub fn pick(state: AppState, slot: Digit) {
-    let bound = state.slots.brushes.peek()[slot.as_index()].clone();
-    let Some(bound) = bound else { return };
-    // A binding the library cannot answer is an empty row, and an empty row's click
-    // puts on nothing.
-    let Some((brush, tune)) = resolve_in(state, &bound) else {
-        return;
-    };
-    claim(state);
-    presets::wear(state, brush, tune, Some(bound.preset));
+    step(state, |rack, hand| rack.pick(slot, hand));
 }
 
 /// Pin the rack up or put it away, and remember it — **the only thing that writes
@@ -495,15 +466,6 @@ pub fn set_pinned(state: AppState, pinned: bool) {
     }
     up.set(pinned);
     crate::visibility::persist(state);
-}
-
-/// Bind `slot` to `brush` — a preset, at a size and flow — and persist the rack.
-pub fn assign(state: AppState, slot: Digit, brush: QuickBrush) {
-    let mut brushes = state.slots.brushes;
-    // Its own statement, this module's rule: a write guard held across the call would
-    // still be alive under the `read` beside it.
-    slots::assign(&mut brushes.write(), slot, brush);
-    slots::persist(&brushes.read());
 }
 
 /// Empty `slot` and persist the rack — the trash on a pinned row, held down until its
@@ -544,7 +506,7 @@ pub fn load(state: AppState) {
 /// restating it — so a tool reaches the keyboard under the name the panel lists it by.
 ///
 /// **Seeded in memory and not persisted.** Storage is written only by the user's own
-/// act ([`assign`]), which is what `read_storage().is_some()` then means: not "this
+/// act ([`slots::assign`]), which is what `read_storage().is_some()` then means: not "this
 /// browser has run Stark before" but "this browser has set a slot". That keeps the seed
 /// live — a shipped preset moved to another digit reaches the rack on the next start,
 /// exactly as its edits reach the preset list — and it costs nothing that a binding does
