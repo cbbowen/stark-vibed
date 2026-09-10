@@ -31,11 +31,10 @@ use dioxus::html::{Key, Modifiers};
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 
-use crate::collab::now_seconds;
 use crate::commands;
 use crate::panels::select::current_action;
 use crate::platform::{
-    self, RawPointer, capture_pointer, on_window_blur, on_window_event, on_window_key,
+    self, RawPointer, capture_pointer, now_seconds, on_window_blur, on_window_event, on_window_key,
     on_window_pointer, sleep_ms,
 };
 use crate::slots;

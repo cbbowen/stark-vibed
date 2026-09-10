@@ -48,8 +48,8 @@
 //! - [`lighting`] — the environments the Lighting panel lists and the five knobs
 //!   it draws (§6.3, §6.4, §6.5). The bytes behind an environment stay each
 //!   frontend's: one fetches them, the other carries them.
-//! - [`modes`] — what a composing mode composes (§22.4): values a chrome holds for the
-//!   length of a mode.
+//! - [`modes`] — which composing mode is live and what it composes (§16.6, §20.5,
+//!   §22.4): values a chrome holds for the length of a mode.
 //! - [`guides`] — the drawing guides' vocabulary (§20): the axis names and pairs a
 //!   perspective quad is read through, and the octave a lattice sits on.
 //! - [`reorder`] — moving a row of a list by dragging it, with no opinion about
@@ -67,8 +67,9 @@
 //!   second copy of. Also what a pointer does before it has meant anything: the touch
 //!   slop, the hold, and a finger's held press (§6.9, §18.1.11).
 //! - [`collab`] — a shared session as a *link* (§12.4): the address a peer opens,
-//!   and the ticket read back out of one. The whole of what both frontends say
-//!   about sharing that is not the network.
+//!   the ticket read back out of one, where a session stands, and a collaborator as a
+//!   chrome draws them (§17.4). The whole of what both frontends say about sharing
+//!   that is not the network.
 //! - [`pick`] — the eyedropper's options and its arming (§18.0.2): what a sample is
 //!   taken with, how a reach resolves against the layer selected *now*, and whether
 //!   a press would sample rather than paint.

@@ -43,73 +43,8 @@
 
 use dioxus::prelude::*;
 
-use crate::state::{AppState, GuideEdit};
-use stark_ui::modes::GradientUi;
-use stark_ui::transform::TransformUi;
-
-/// The composing mode in flight, and what it is composing.
-///
-/// Named rather than a bare `bool` because [`leave`] has to know *what* to put
-/// down: each of the four holds a preview of a different kind, and dropping the
-/// wrong one leaves the canvas showing a composition nothing is composing.
-///
-/// It carries the payload rather than pointing at a signal that holds it, which
-/// is what makes "the mode in hand" and "what it is composing" one value that
-/// cannot come apart — a mode live with its gesture missing, or a gesture live
-/// under a different mode's catcher, are both unspellable.
-#[derive(Clone, PartialEq)]
-pub enum Composing {
-    /// The transform widget (§16.6).
-    Transform(TransformUi),
-    /// A perspective guide being shaped (§20.5).
-    GuideEdit(GuideEdit),
-    /// The gradient library's trace, armed from its pop-out (§22.2).
-    ///
-    /// The one mode with no payload: what a trace composes is a path held by
-    /// its own overlay, because a trace that is abandoned leaves nothing and a
-    /// fresh arm should start clean either way
-    /// (`panels::gradients::GradientTraceOverlay`).
-    GradientTrace,
-    /// The gradient fill's axis, on the shared bar (§22.4).
-    GradientFill(GradientUi),
-}
-
-impl Composing {
-    /// The transform in hand, if that is the mode — for the chrome that wants
-    /// one particular mode's gesture rather than the fact of any.
-    ///
-    /// Three extractors rather than a `match` at each of the thirty-odd call
-    /// sites, and they read as what those sites are asking:
-    /// `modes::composing(state).and_then(Composing::transform)`.
-    pub fn transform(self) -> Option<TransformUi> {
-        match self {
-            Composing::Transform(ui) => Some(ui),
-            _ => None,
-        }
-    }
-
-    /// The guide being shaped, if that is the mode (§20.5).
-    pub fn guide_edit(self) -> Option<GuideEdit> {
-        match self {
-            Composing::GuideEdit(edit) => Some(edit),
-            _ => None,
-        }
-    }
-
-    /// The gradient axis being composed, if that is the mode (§22.4).
-    pub fn gradient_fill(self) -> Option<GradientUi> {
-        match self {
-            Composing::GradientFill(ui) => Some(ui),
-            _ => None,
-        }
-    }
-
-    /// Whether these are the same *mode*, whatever each is composing — what
-    /// [`advance`] asks, and nothing else needs.
-    fn same_mode(&self, other: &Composing) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-}
+use crate::state::AppState;
+use stark_ui::modes::Composing;
 
 /// The mode composing right now, for chrome that must stand down while one is.
 ///
@@ -287,62 +222,5 @@ pub fn leave(state: AppState) {
     let mut resume = state.gradient_resume;
     if resume.peek().is_some() {
         resume.set(None);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use stark_model::document::{ActionId, ActorId, GuideId};
-
-    fn a_guide() -> Composing {
-        Composing::GuideEdit(GuideEdit {
-            id: GuideId(ActionId {
-                lamport: 1,
-                actor: ActorId(1),
-            }),
-            locked: [false; 3],
-        })
-    }
-
-    /// An extractor answers for **its own** mode and for no other, which is the
-    /// whole of what the call sites lean on: `composing(state).and_then(
-    /// Composing::guide_edit)` has to be `None` while a gradient axis is being
-    /// composed, or a guide bar would mount over a gradient's catcher.
-    #[test]
-    fn an_extractor_answers_only_for_its_own_mode() {
-        assert!(a_guide().guide_edit().is_some());
-        assert!(a_guide().transform().is_none());
-        assert!(a_guide().gradient_fill().is_none());
-
-        assert!(Composing::GradientTrace.guide_edit().is_none());
-        assert!(Composing::GradientTrace.transform().is_none());
-        assert!(Composing::GradientTrace.gradient_fill().is_none());
-    }
-
-    /// [`advance`]'s gate: same mode with a different payload passes, a
-    /// different mode does not.
-    ///
-    /// This is the check that keeps `advance` from being a second `enter` — the
-    /// one that would swap a mode without dropping the preview the old one was
-    /// showing, which is the failure the single signal exists to rule out.
-    #[test]
-    fn same_mode_ignores_the_payload_and_nothing_else() {
-        let mut moved = match a_guide() {
-            Composing::GuideEdit(mut e) => {
-                e.locked[1] = true;
-                Composing::GuideEdit(e)
-            }
-            _ => unreachable!(),
-        };
-        assert!(
-            a_guide().same_mode(&moved),
-            "a lock is not a different mode"
-        );
-        assert!(a_guide() != moved, "and it is a different value");
-
-        moved = Composing::GradientTrace;
-        assert!(!a_guide().same_mode(&moved));
-        assert!(!moved.same_mode(&a_guide()));
     }
 }

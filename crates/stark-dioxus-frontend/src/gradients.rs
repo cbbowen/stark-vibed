@@ -123,12 +123,12 @@ pub fn load(state: AppState) {
 /// **Asked of `modes`, not of a flag here**, which is what it was. A trace is one
 /// of the four composing modes, and a second place recording that it is live is a
 /// second place for "one mode at a time" to be false in
-/// (`crate::modes::Composing`). This is the render-time half — subscribing, so a
+/// (`stark_ui::modes::Composing`). This is the render-time half — subscribing, so a
 /// chip lit by it goes out when the mode does.
 pub fn armed(state: AppState) -> bool {
     matches!(
         crate::modes::composing(state),
-        Some(crate::modes::Composing::GradientTrace)
+        Some(stark_ui::modes::Composing::GradientTrace)
     )
 }
 
@@ -156,7 +156,7 @@ pub fn set_armed(state: AppState, on: bool) {
         // trace's catcher is the last of the four to be stacked, so arming while
         // a transform is composing would otherwise leave two of them over one
         // pointer (`crate::modes`).
-        crate::modes::enter(state, crate::modes::Composing::GradientTrace);
+        crate::modes::enter(state, stark_ui::modes::Composing::GradientTrace);
         let mut resume = state.gradient_resume;
         resume.set(held);
         let mut notice = state.gradients.notice;

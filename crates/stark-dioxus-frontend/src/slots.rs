@@ -230,7 +230,7 @@ pub fn SlotOverlay() -> Element {
     // leaving it recomputing against every engine write for the whole time the rack is
     // away, which is nearly all of the time. Mounted behind the gate instead, it does
     // not exist until there is something to show, exactly as the timeline bar is
-    // mounted (`main`).
+    // mounted (`crate::app`).
     if !pinned && holding.is_none() {
         return rsx! {};
     }

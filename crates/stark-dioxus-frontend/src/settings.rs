@@ -34,12 +34,12 @@
 
 use dioxus::prelude::*;
 
-use crate::collab::CollabPhase;
 use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Modal, slider_fill};
 use stark_engine::command::ViewCommand;
+use stark_ui::collab::Phase;
 use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
 use strum::VariantArray;
 
@@ -76,7 +76,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let budget = engine_owned().map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |(_, b, _)| b);
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
-    let shared = (state.collab.phase)() == CollabPhase::Shared;
+    let shared = (state.collab.phase)() == Phase::Shared;
 
     rsx! {
         // Wide, for the reason Credits and Timing Stats are: this is the

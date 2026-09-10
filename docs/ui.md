@@ -1748,7 +1748,8 @@ That is one file old and already the exact failure §25 was written to prevent �
 apart" — and it is the first thing N2 should delete.
 
 The other candidates already visible: the brush bounds sitting in a markup module
-(above); `render::PeerInfo`, a chrome-facing projection of a peer that is
+(above); `render::PeerInfo` (now `stark_ui::collab::Peer`), a chrome-facing
+projection of a peer that is
 deliberately not the engine's `Peer` and that both frontends will want; and every
 threshold in `input/` that two gestures read and one file owns. Each is the same
 shape as the adapter — parked on the nearest wall rather than the right one, and
@@ -2532,7 +2533,8 @@ it takes goes to the preview or to a list that scrolls inside it.
 a dialog — and it is mostly what a *well* opens: a choice made by looking rather
 than by reading, offered beside the control that holds it. There are five, and
 they are one list, `widgets::PopoutId`, because at most one may be open at a time
-and `modes::Composing`'s argument applies unchanged — two open at once is a state
+and `stark_ui::modes::Composing`'s argument applies unchanged — two open at once
+is a state
 nothing wants and nothing should have to prevent. They were `use_signal(|| false)`
 locals of the surfaces that drew them, which made them invisible to the app and in
 particular to Escape, whose ladder knew the dialogs, the composing modes, the

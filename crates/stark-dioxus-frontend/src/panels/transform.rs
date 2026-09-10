@@ -43,13 +43,13 @@ use dioxus::prelude::*;
 use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
-use crate::modes::Composing;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::CommandButton;
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
+use stark_ui::modes::Composing;
 use stark_ui::transform::{Bands, Family, Grab, Hint, Switch, TransformState, TransformUi};
 
 /// Enter transform mode around the current selection, in the Free (affine)

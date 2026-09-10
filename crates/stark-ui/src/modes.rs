@@ -1,9 +1,97 @@
-//! What a composing mode composes (§22.4): the values a chrome holds for the length of
-//! a mode, with no signal and no toolkit in them.
+//! Which whole-canvas **composing mode** is live, and what it composes (§16.6, §20.5,
+//! §22.2, §22.4): the values a chrome holds for the length of a mode, with no signal and
+//! no toolkit in them. Entering a mode, leaving one and dropping its preview are each
+//! frontend's.
 
 use stark_model::Gradient;
-use stark_model::document::{GradientAxis, LayerId};
+use stark_model::document::{GradientAxis, GuideId, LayerId};
 use stark_model::geom::Vec2;
+
+use crate::transform::TransformUi;
+
+/// The composing mode in flight, and what it is composing.
+///
+/// Four gestures take the canvas away from the brush for the length of a composition, and
+/// **one value holds whichever is live**, so two modes at once is a state a chrome cannot
+/// express rather than one every entry point has to remember to decline.
+///
+/// Named rather than a `bool` because leaving a mode has to know *what* to put down: each
+/// holds a preview of a different kind, and dropping the wrong one leaves the canvas
+/// showing a composition nothing is composing. It carries the payload rather than pointing
+/// at where one is kept, so a mode live with its gesture missing is unspellable.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Composing {
+    /// The transform widget (§16.6).
+    Transform(TransformUi),
+    /// A perspective guide being shaped (§20.5).
+    GuideEdit(GuideEdit),
+    /// The gradient library's trace, armed from its pop-out (§22.2).
+    ///
+    /// The one mode with no payload: a trace's path is held by its own overlay, since an
+    /// abandoned trace leaves nothing and a fresh arm should start clean either way.
+    GradientTrace,
+    /// The gradient fill's axis, on the shared gradient bar (§22.4).
+    GradientFill(GradientUi),
+}
+
+impl Composing {
+    /// The transform in hand, if that is the mode.
+    ///
+    /// An extractor per payload rather than a `match` at each call site, so that a site
+    /// reads as its question: `composing.and_then(Composing::transform)`.
+    pub fn transform(self) -> Option<TransformUi> {
+        match self {
+            Self::Transform(ui) => Some(ui),
+            _ => None,
+        }
+    }
+
+    /// The guide being shaped, if that is the mode (§20.5).
+    pub fn guide_edit(self) -> Option<GuideEdit> {
+        match self {
+            Self::GuideEdit(edit) => Some(edit),
+            _ => None,
+        }
+    }
+
+    /// The gradient axis being composed, if that is the mode (§22.4).
+    pub fn gradient_fill(self) -> Option<GradientUi> {
+        match self {
+            Self::GradientFill(ui) => Some(ui),
+            _ => None,
+        }
+    }
+
+    /// Whether these are the same *mode*, whatever each is composing.
+    ///
+    /// What a drag sample asks before it replaces the payload: it may change what the live
+    /// mode composes but never which mode is live, since that swap would skip dropping the
+    /// old mode's preview.
+    pub fn same_mode(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+/// A drawing guide selected for composing (§20.5): which guide the mode edits, and the
+/// per-axis locks constraining the canvas drag.
+///
+/// The locks live here rather than on the guide because they are gesture state — a
+/// constraint on the hand for one sitting, not a fact about the guide worth saving.
+/// Leaving the mode releases them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GuideEdit {
+    /// Which guide is being shaped
+    /// ([`ObservableState::guides`](stark_engine::ObservableState::guides)).
+    ///
+    /// An id rather than an index, because the roster is document state: a peer's edit or
+    /// an undo can reorder it or take a row out from under the hand, and an index would
+    /// silently address a *different* guide.
+    pub id: GuideId,
+    /// World axes held fixed under the orbit drag: one lock constrains the drag to turning
+    /// about that axis, two pin the frame entirely
+    /// ([`PerspectiveGuide::dragged`](stark_model::document::PerspectiveGuide::dragged)).
+    pub locked: [bool; 3],
+}
 
 /// The gradient gesture composed on the shared gradient bar (§22.4): what the ramp lands
 /// on, how the drag is read, and the drag itself.
@@ -68,6 +156,7 @@ impl GradientUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::document::{ActionId, ActorId};
 
     fn fill(kind: GradientAxisKind, drag: Option<(Vec2, Vec2)>) -> GradientUi {
         GradientUi {
@@ -114,5 +203,53 @@ mod tests {
         for kind in [GradientAxisKind::Linear, GradientAxisKind::Radial] {
             assert_eq!(fill(kind, None).axis(), None, "{kind:?}");
         }
+    }
+
+    fn a_guide() -> Composing {
+        Composing::GuideEdit(GuideEdit {
+            id: GuideId(ActionId {
+                lamport: 1,
+                actor: ActorId(1),
+            }),
+            locked: [false; 3],
+        })
+    }
+
+    /// An extractor answers for **its own** mode and for no other, which is the whole of
+    /// what the call sites lean on: `and_then(Composing::guide_edit)` has to be `None`
+    /// while a gradient axis is being composed, or a guide bar would mount over a
+    /// gradient's catcher.
+    #[test]
+    fn an_extractor_answers_only_for_its_own_mode() {
+        assert!(a_guide().guide_edit().is_some());
+        assert!(a_guide().transform().is_none());
+        assert!(a_guide().gradient_fill().is_none());
+
+        assert!(Composing::GradientTrace.guide_edit().is_none());
+        assert!(Composing::GradientTrace.transform().is_none());
+        assert!(Composing::GradientTrace.gradient_fill().is_none());
+    }
+
+    /// A drag sample's gate: the same mode with a different payload passes, a different
+    /// mode does not — which is what keeps replacing a payload from being a second entry
+    /// that swaps the mode without dropping the preview the old one was showing.
+    #[test]
+    fn same_mode_ignores_the_payload_and_nothing_else() {
+        let mut moved = match a_guide() {
+            Composing::GuideEdit(mut e) => {
+                e.locked[1] = true;
+                Composing::GuideEdit(e)
+            }
+            _ => unreachable!(),
+        };
+        assert!(
+            a_guide().same_mode(&moved),
+            "a lock is not a different mode"
+        );
+        assert_ne!(a_guide(), moved, "and it is a different value");
+
+        moved = Composing::GradientTrace;
+        assert!(!a_guide().same_mode(&moved));
+        assert!(!moved.same_mode(&a_guide()));
     }
 }

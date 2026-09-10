@@ -40,16 +40,17 @@ use std::collections::HashSet;
 use dioxus::html::Key;
 use dioxus::prelude::*;
 
+use crate::collab::css_color;
 use crate::icons::{icon, label};
 use crate::panels::filter::AddFilterButton;
 use crate::panels::reorder;
 use crate::platform::{capture_pointer, layer_boxes, select_all};
 use crate::preview;
-use crate::render::PeerInfo;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, LayerId};
+use stark_ui::collab::Peer;
 use stark_ui::commands::Command;
 use stark_ui::layer_tree::{
     self, BEND_HINT, INDENT, Row, bend_ends, blend_hint, clip_hint, landing, opacity_hint, rows,
@@ -789,7 +790,7 @@ pub fn LayerRow(
                 for peer in peers_on(state, id) {
                     div {
                         class: "peer-chip",
-                        style: "background:{peer.css_color()}",
+                        style: "background:{css_color(&peer)}",
                         title: "{peer.name} is working on this layer",
                         "{peer.initials()}"
                     }
@@ -921,7 +922,7 @@ pub fn LayerRow(
 }
 
 /// The collaborators whose selected layer is `id`.
-fn peers_on(state: AppState, id: stark_model::document::LayerId) -> Vec<PeerInfo> {
+fn peers_on(state: AppState, id: stark_model::document::LayerId) -> Vec<Peer> {
     state
         .collab
         .peers

@@ -32,6 +32,7 @@ use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
 };
+use stark_ui::collab::{Peer, Phase};
 
 use crate::icons::icon;
 use crate::state::AppState;
@@ -47,25 +48,14 @@ const PRESENCE_TICK_MS: i32 = 33;
 /// connection is made, lost, or upgraded by hole punching, never per frame.
 const LINK_POLL_TICKS: u32 = 60;
 
-/// The UI's view of the collaboration state.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum CollabPhase {
-    #[default]
-    Solo,
-    /// Session setup (bind/online/join) in flight.
-    Connecting,
-    /// Live in a shared session.
-    Shared,
-}
-
 /// Start hosting the current document. Async: binds the endpoint, waits
 /// (bounded) for relay readiness so the ticket is dialable, then flips the
 /// engine into shared mode and stores the ticket for the dialog.
 pub fn share(state: AppState) {
-    if (state.collab.phase)() != CollabPhase::Solo {
+    if (state.collab.phase)() != Phase::Solo {
         return;
     }
-    set_phase(state, CollabPhase::Connecting);
+    set_phase(state, Phase::Connecting);
     spawn_forever(async move {
         // The actor id derives from the endpoint identity, and the shared log
         // must carry it before the snapshot is served — so settle the key first,
@@ -80,7 +70,7 @@ pub fn share(state: AppState) {
             r.start_collaboration(Identity::new(actor, id.boot));
             (r.document_file(), r.all_asset_bytes())
         }) else {
-            set_phase(state, CollabPhase::Solo);
+            set_phase(state, Phase::Solo);
             return;
         };
 
@@ -119,7 +109,7 @@ pub fn share(state: AppState) {
 /// twice is how two doors onto one act come to accept different strings. So it is
 /// decided once, in `stark_ui::collab`, which the native frontend reads too.
 pub fn join(state: AppState, link: String) {
-    if (state.collab.phase)() != CollabPhase::Solo {
+    if (state.collab.phase)() != Phase::Solo {
         return;
     }
     let Some(text) = stark_ui::collab::ticket_in(&link) else {
@@ -133,7 +123,7 @@ pub fn join(state: AppState, link: String) {
             return;
         }
     };
-    set_phase(state, CollabPhase::Connecting);
+    set_phase(state, Phase::Connecting);
     spawn_forever(async move {
         // Same persisted key as hosting uses: joining is not a different person.
         let id = crate::identity::get();
@@ -187,7 +177,7 @@ pub fn join(state: AppState, link: String) {
                     // The renderer is gone (or the GPU is): nothing to say beyond
                     // going back to solo, which is what every other guard here does.
                     None => {
-                        set_phase(state, CollabPhase::Solo);
+                        set_phase(state, Phase::Solo);
                         return;
                     }
                     // The session is one this build cannot render. Worth saying out
@@ -288,7 +278,7 @@ pub fn leave(state: AppState) {
     let mut ticket = state.collab.ticket;
     ticket.set(None);
     crate::platform::set_url_fragment(None);
-    set_phase(state, CollabPhase::Solo);
+    set_phase(state, Phase::Solo);
     spawn_forever(async move {
         if let Some(frame) = farewell {
             let _ = session.broadcaster().publish(frame).await;
@@ -340,7 +330,7 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
 
     let mut session_sig = state.collab.session;
     session_sig.set(Some(session));
-    set_phase(state, CollabPhase::Shared);
+    set_phase(state, Phase::Shared);
 
     let task = spawn_forever(async move {
         while let Some(event) = events.recv().await {
@@ -348,7 +338,7 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
             // engine: only a merged action moves the document the chrome renders
             // from, and presence arrives at pointer rate — publishing on that
             // cadence would drag a full component tree behind every peer's pointer.
-            let now = now_seconds();
+            let now = crate::platform::now_seconds();
             let Some(wake) =
                 crate::state::with_engine_quiet(state, |r| apply_remote(r, event, now))
             else {
@@ -491,7 +481,7 @@ fn start_presence_pump(state: AppState) {
                     }
                 }
                 ticks = ticks.wrapping_add(1);
-                let now = now_seconds();
+                let now = crate::platform::now_seconds();
                 // `peek`, not `read`: this runs outside any component, and subscribing
                 // a background task to a signal is meaningless anyway.
                 let work = state
@@ -560,17 +550,19 @@ fn start_presence_pump(state: AppState) {
     }
 }
 
-/// Seconds on the monotonic clock `stark-engine` deliberately does not own — see
-/// [`platform::now_seconds`](crate::platform::now_seconds), which holds the whole
-/// argument for which clock and why.
-pub(crate) fn now_seconds() -> f64 {
-    crate::platform::now_seconds()
+/// A peer's color as a CSS `rgb(...)`, for the dots, chips and cursors that stand for
+/// them.
+pub fn css_color(peer: &Peer) -> String {
+    let [r, g, b] = peer
+        .color
+        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    format!("rgb({r},{g},{b})")
 }
 
-fn set_phase(state: AppState, phase: CollabPhase) {
+fn set_phase(state: AppState, phase: Phase) {
     let mut p = state.collab.phase;
     p.set(phase);
-    if phase != CollabPhase::Solo {
+    if phase != Phase::Solo {
         let mut err = state.collab.error;
         err.set(None);
     }
@@ -579,7 +571,7 @@ fn set_phase(state: AppState, phase: CollabPhase) {
 fn fail(state: AppState, message: String) {
     let mut err = state.collab.error;
     err.set(Some(message));
-    set_phase(state, CollabPhase::Solo);
+    set_phase(state, Phase::Solo);
 }
 
 // --- tickets in the URL fragment ---
@@ -646,7 +638,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 // failed — which is why the offer below is both halves rather than a
                 // "Try again": the two cases want different buttons and the dialog
                 // cannot tell them apart, so it offers both and neither is wrong.
-                CollabPhase::Solo => rsx! {
+                Phase::Solo => rsx! {
                     div { class: "modal-subtitle",
                         "This canvas isn't shared. Paste a link to join someone else's, or start a session of your own."
                     }
@@ -680,10 +672,10 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 // One word for both acts: which one is in flight is already on the
                 // screen behind this, and "Creating a link…" said the wrong thing to
                 // somebody who had just pressed Join.
-                CollabPhase::Connecting => rsx! {
+                Phase::Connecting => rsx! {
                     div { class: "modal-subtitle", "Connecting…" }
                 },
-                CollabPhase::Shared => rsx! {
+                Phase::Shared => rsx! {
                     div { class: "modal-subtitle",
                         "Anyone who opens this link paints here with you, in real time. Every member can pass it on."
                     }
@@ -746,7 +738,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                                             .find(|l| l.actor == peer.actor)
                                             .map(|l| l.kind);
                                         let (label, class) = link_badge(kind);
-                                        let color = peer.css_color();
+                                        let color = css_color(&peer);
                                         rsx! {
                                             div { class: "peer-row",
                                                 span {

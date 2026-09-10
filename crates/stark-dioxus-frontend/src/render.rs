@@ -122,46 +122,6 @@ struct Overview {
     targets: stark_engine::Offscreen,
 }
 
-/// A collaborator, as the chrome draws them (§17.4).
-///
-/// Deliberately not the engine's [`Peer`](stark_engine::Peer): that carries the
-/// in-flight gesture, which is a whole stroke path and is the *canvas's* business,
-/// not the DOM's. What the chrome needs is who is here, where they are, and where
-/// they are working.
-///
-/// Kept out of [`ObservableState`] for a related
-/// reason: `obs` drives the entire component tree and is refreshed after every
-/// command, while this changes thirty times a second whenever anybody moves.
-#[derive(Clone, PartialEq, Debug)]
-pub struct PeerInfo {
-    pub actor: stark_model::document::ActorId,
-    pub name: String,
-    pub color: [f32; 3],
-    pub active_layer: stark_model::document::LayerId,
-    pub cursor: Option<stark_model::geom::Vec2>,
-}
-
-impl PeerInfo {
-    /// The peer's color as a CSS `rgb(...)`, for chips and cursors.
-    pub fn css_color(&self) -> String {
-        let [r, g, b] = self
-            .color
-            .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-        format!("rgb({r},{g},{b})")
-    }
-
-    /// A one- or two-character badge: the name's initials, so a chip reads as a
-    /// person rather than as a colored dot.
-    pub fn initials(&self) -> String {
-        self.name
-            .split_whitespace()
-            .filter_map(|w| w.chars().next())
-            .take(2)
-            .collect::<String>()
-            .to_uppercase()
-    }
-}
-
 impl Renderer {
     /// Send a command to the engine — the **only** way to move engine state through
     /// a `Renderer`, deliberately.
@@ -665,16 +625,10 @@ impl Renderer {
     }
 
     /// Everyone else in the session, for the peer chrome (§17.4).
-    pub fn peers(&self) -> Vec<PeerInfo> {
+    pub fn peers(&self) -> Vec<stark_ui::collab::Peer> {
         self.engine
             .peers()
-            .map(|p| PeerInfo {
-                actor: p.actor,
-                name: p.name.clone(),
-                color: p.color,
-                active_layer: p.active_layer,
-                cursor: p.cursor,
-            })
+            .map(stark_ui::collab::Peer::from)
             .collect()
     }
 

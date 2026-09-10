@@ -19,6 +19,7 @@
 
 use dioxus::prelude::*;
 
+use crate::collab::css_color;
 use crate::state::{AppState, BrushRing, FlowBar, TuneReadout, use_obs};
 use stark_ui::drags::DragAction;
 
@@ -61,7 +62,7 @@ pub fn PeerCursors() -> Element {
                             div {
                                 key: "{peer.actor.0}",
                                 class: "peer-cursor",
-                                style: "left:{p.x}px; top:{p.y}px; --peer:{peer.css_color()}",
+                                style: "left:{p.x}px; top:{p.y}px; --peer:{css_color(&peer)}",
                                 div { class: "peer-cursor-dot" }
                                 div { class: "peer-cursor-name", "{peer.name}" }
                             }

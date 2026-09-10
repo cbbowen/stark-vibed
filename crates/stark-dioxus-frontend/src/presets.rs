@@ -217,8 +217,13 @@ pub fn apply_first(state: AppState) {
 /// presets holds — which the dialog says before the button is reachable
 /// ([`presets::is_builtin`]).
 pub fn save_current(state: AppState, name: String) {
-    let (brush, transient) = worn(state);
     let mut entries = state.presets;
+    // Refused off a `peek`: a write guard wakes every reader of the library when it drops,
+    // changed or not.
+    if presets::check_save(&entries.peek(), &name).is_err() {
+        return;
+    }
+    let (brush, transient) = worn(state);
     // Its own statement: the write guard must be gone before `persist` reads the list.
     let saved = presets::upsert(&mut entries.write(), &name, brush, transient);
     if saved.is_err() {
@@ -236,8 +241,12 @@ pub fn save_current(state: AppState, name: String) {
 /// and a name the library no longer answers to holds nothing.
 pub fn remove(state: AppState, name: &str) {
     let mut entries = state.presets;
-    // Its own statement, for the write guard — and nothing below runs unless a row went,
-    // since a built-in that stays must keep its slots too.
+    // Refused off a `peek`, for `save_current`'s reason — and nothing below runs unless a
+    // row goes, since a built-in that stays must keep its slots too.
+    if !presets::can_remove(&entries.peek(), name) {
+        return;
+    }
+    // Its own statement, for the write guard.
     let removed = presets::remove(&mut entries.write(), name);
     if !removed {
         return;

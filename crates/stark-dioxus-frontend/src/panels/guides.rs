@@ -41,11 +41,10 @@ use dioxus::prelude::*;
 use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
-use crate::modes::Composing;
 use crate::panels::reorder;
 use crate::platform::{capture_pointer, guide_boxes, select_all};
 use crate::preview;
-use crate::state::{AppState, GuideEdit, dispatch, use_obs_opt};
+use crate::state::{AppState, dispatch, use_obs_opt};
 use crate::widgets::{CommandButton, slider_fill};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -55,6 +54,7 @@ use stark_ui::commands::Command;
 use stark_ui::guides::{
     AXIS_NAMES, CELL_OCTAVES, FOCAL_RANGE, GuideRegion, Handles, PAIR_AXES, anchor_at,
 };
+use stark_ui::modes::{Composing, GuideEdit};
 use stark_ui::reorder::{Grab, Motion, Slide};
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this

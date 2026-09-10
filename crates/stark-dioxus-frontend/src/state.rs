@@ -22,7 +22,6 @@ use crate::render::Renderer;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
-use stark_model::document::GuideId;
 use stark_model::geom::Vec2;
 use stark_ui::commands::PickScope;
 use stark_ui::commands::VisibilityToggle;
@@ -355,7 +354,7 @@ pub struct Signals {
     /// sample and one commit on "Done" (`crate::preview`). A guide's *camera* is
     /// document state and lives in the log; what is here is only which guide is
     /// in hand, and the locks held on it for this sitting.
-    pub mode: Signal<Option<crate::modes::Composing>>,
+    pub mode: Signal<Option<stark_ui::modes::Composing>>,
     /// The gradient-bar gesture a **trace** set aside (§22.2), to be handed back
     /// when the trace ends. `None` whenever no trace is armed.
     ///
@@ -434,7 +433,7 @@ pub struct Signals {
     /// The pop-out a bar or a panel has flown open, if any (`widgets::PopoutId`,
     /// §25.7).
     ///
-    /// **One signal for all of them**, on `modes::Composing`'s argument: two open
+    /// **One signal for all of them**, on `stark_ui::modes::Composing`'s argument: two open
     /// at once is a state nothing wants and nothing should have to prevent. And
     /// app state rather than the locals these were, so Escape can see them —
     /// deliberately *not* a [`Dialogs`] flag, which is also the list that stands
@@ -481,7 +480,7 @@ pub struct Signals {
 /// their longer-standing fields.
 #[derive(Clone, Copy)]
 pub struct Dialogs {
-    /// "New document…" (`NewDocumentModal` in `main`).
+    /// "New document…" (`substrates::NewDocumentModal`).
     pub new_document: Signal<bool>,
     /// The share dialog (`collab::SessionModal`). Sharing starts on the command
     /// that raises this; the dialog exists to hand over the link.
@@ -505,14 +504,14 @@ impl AppState {
     /// Every root-mounted dialog's flag, the two long-standing brush fields
     /// included — what Esc's first rung asks and lowers (`crate::commands`,
     /// MODAL_DESIGN.md). Lowering a flag here *is* the dialog's own close:
-    /// each `on_close` in `main` does nothing else.
+    /// each `on_close` in `rail` and `crate::app` does nothing else.
     ///
     /// Kept beside [`Dialogs`] so a new modal's flag joins this list in the
     /// same edit that adds its field — the one list in the app that has to
     /// know every dialog, stated once. The GPU-failure modal is deliberately
     /// absent: it has no flag because it may not be dismissed (§5).
     ///
-    /// **In stacking order**: the same order `main` mounts them in, so the last
+    /// **In stacking order**: the same order `crate::app` mounts them in, so the last
     /// flag up is the dialog on top — which is what Esc lowers, one per press
     /// (`commands::close_dialogs`). Only the last pair ever actually stacks: the
     /// preset-name dialog is raised by the brush editor and has to come down
@@ -569,34 +568,6 @@ pub struct SlotState {
     /// clicks — the only route to a slot for a hand with no keyboard under it, which
     /// is a standing choice about the screen and not a glance at one.
     pub pinned: Signal<bool>,
-}
-
-/// A drawing guide selected for composing (§20.5): which entry of the
-/// engine's guide list the mode edits, and the per-axis locks constraining
-/// the canvas drag.
-///
-/// The locks live here rather than on the guide because they are *gesture*
-/// state — a constraint on the hand for the duration of the mode, not a fact
-/// about the guide worth keeping (or, later, saving). Leaving the mode
-/// releases them.
-#[derive(Clone, Copy, PartialEq)]
-pub struct GuideEdit {
-    /// Which guide is being shaped ([`ObservableState::guides`]).
-    ///
-    /// An **id**, not the index it used to be, and the difference is the whole of
-    /// what a guide having one buys this mode (§20.5): the roster is document state
-    /// now, so a peer's edit or an undo can reorder it or take a row out from under
-    /// the hand. An index had to be re-pointed by every path that could move the
-    /// list — the panel's reorder, its removal — and would silently address a
-    /// *different* guide for any path that forgot. There is nothing to re-point.
-    pub id: GuideId,
-    /// World axes held fixed under the orbit drag: one lock constrains the
-    /// drag to turning about that axis, two pin the frame entirely
-    /// ([`PerspectiveGuide::dragged`](stark_model::document::PerspectiveGuide::dragged)).
-    ///
-    /// Not part of the guide, and not part of the document: a lock is a constraint
-    /// on the hand for the duration of one sitting.
-    pub locked: [bool; 3],
 }
 
 /// The drag-and-hold drawing assist's setting (§6.9).
@@ -779,7 +750,7 @@ impl AppState {
             // Seeded with the Color panel's opening color rather than the model
             // default's black: the panel reads its picker's seed off this signal
             // at mount, before any engine exists, and the first stroke has to
-            // lay the color the marker shows (`main` pushes the same
+            // lay the color the marker shows (`crate::app` pushes the same
             // configuration to the engine once one is up).
             brush: root_signal(stark_ui::brush_config::BrushConfig::default),
             transient: root_signal(|| stark_ui::brush_config::Transient {
@@ -852,7 +823,7 @@ impl CollabState {
         Self {
             session: root_signal(|| None),
             ticket: root_signal(|| None),
-            phase: root_signal(collab::CollabPhase::default),
+            phase: root_signal(stark_ui::collab::Phase::default),
             error: root_signal(|| None),
             peers: root_signal(Vec::new),
             links: root_signal(Vec::new),
@@ -1058,14 +1029,14 @@ pub struct CollabState {
     /// The shareable ticket string, while hosting/joined.
     pub ticket: Signal<Option<String>>,
     /// Where the session lifecycle stands (drives the dialog + rail badge).
-    pub phase: Signal<collab::CollabPhase>,
+    pub phase: Signal<stark_ui::collab::Phase>,
     /// The last share/join failure, surfaced in the dialog.
     pub error: Signal<Option<String>>,
     /// Who else is in the session, refreshed by the presence pump
     /// (§17.4). Its own signal rather than a field of `obs`: it changes on every remote
     /// pointer move, and re-running the whole component tree at that rate to move a
     /// cursor would be absurd.
-    pub peers: Signal<Vec<crate::render::PeerInfo>>,
+    pub peers: Signal<Vec<stark_ui::collab::Peer>>,
     /// How each directly-connected peer is reached — WebRTC, hole-punched UDP,
     /// or an iroh relay — polled off the mesh by the presence pump on a slow
     /// cadence (links change on the order of seconds, not frames). Peers in the

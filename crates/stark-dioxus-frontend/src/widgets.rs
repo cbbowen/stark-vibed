@@ -224,7 +224,7 @@ pub fn Modal(
 /// neither a panel nor a dialog is named (§25.7).
 ///
 /// **One at a time, in one signal** ([`AppState::popout`](crate::state::AppState)),
-/// on `modes::Composing`'s argument: two open at once is a state nothing wants
+/// on `stark_ui::modes::Composing`'s argument: two open at once is a state nothing wants
 /// and nothing should have to prevent. They were `use_signal(|| false)` locals of
 /// the surfaces that draw them, which made them invisible to the app — and in
 /// particular to Escape, whose ladder knows the dialogs, the composing modes, the

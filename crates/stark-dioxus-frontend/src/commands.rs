@@ -145,7 +145,7 @@ impl Lit for AppState {
     }
 
     fn sharing(&self) -> bool {
-        *self.collab.phase.read() == crate::collab::CollabPhase::Shared
+        *self.collab.phase.read() == stark_ui::collab::Phase::Shared
     }
 }
 
@@ -427,8 +427,8 @@ fn dialog_open(state: AppState) -> bool {
 }
 
 /// Lower the root dialog on top, if one is up; `true` if one was. Lowering the
-/// flag *is* the dialog's own close — every `on_close` in `main` does nothing
-/// else (`AppState::root_dialogs`).
+/// flag *is* the dialog's own close — every `on_close` in `rail` and `crate::app`
+/// does nothing else (`AppState::root_dialogs`).
 ///
 /// The topmost only, one per press: the list is in stacking order, and the
 /// preset-name dialog stands over the brush editor that raised it — an Esc

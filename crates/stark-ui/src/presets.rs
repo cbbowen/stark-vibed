@@ -536,23 +536,35 @@ impl std::fmt::Display for BuiltinName {
 
 impl std::error::Error for BuiltinName {}
 
-/// Save `brush` at `transient` under `name`: over the user's preset of that name, in its
-/// own row, or as a new row at the end.
+/// Whether a brush may be saved under `name` — [`upsert`]'s rule, asked of a shared
+/// library so that a frontend can refuse without taking it for writing.
 ///
 /// # Errors
 ///
 /// [`BuiltinName`] where one of the app's presets holds the name. The next start rebuilds a
 /// built-in from its definition, so an overwrite would not last, and a second row under the
 /// name would make "the preset called X" two brushes to every lookup.
+pub fn check_save(entries: &[PresetEntry], name: &str) -> Result<(), BuiltinName> {
+    if is_builtin(entries, name) {
+        Err(BuiltinName)
+    } else {
+        Ok(())
+    }
+}
+
+/// Save `brush` at `transient` under `name`: over the user's preset of that name, in its
+/// own row, or as a new row at the end.
+///
+/// # Errors
+///
+/// [`BuiltinName`] where [`check_save`] refuses the name; the library is left as it was.
 pub fn upsert(
     entries: &mut Vec<PresetEntry>,
     name: &str,
     brush: BrushConfig,
     transient: Transient,
 ) -> Result<(), BuiltinName> {
-    if is_builtin(entries, name) {
-        return Err(BuiltinName);
-    }
+    check_save(entries, name)?;
     match entries.iter_mut().find(|e| e.name == name) {
         Some(entry) => {
             entry.brush = brush;
@@ -570,17 +582,24 @@ pub fn upsert(
     Ok(())
 }
 
-/// Drop the user's preset called `name`, and say whether one went.
+/// Whether the preset called `name` may be removed — [`remove`]'s rule, asked of a shared
+/// library so that a frontend can refuse without taking it for writing: the preset is
+/// there, and it is the user's own.
 ///
-/// One of the app's own is never removed: nothing is stored behind it, and the next start
-/// would bring it back.
+/// One of the app's own never is: nothing is stored behind it, and the next start would
+/// bring it back.
+pub fn can_remove(entries: &[PresetEntry], name: &str) -> bool {
+    !is_builtin(entries, name) && find(entries, name).is_some()
+}
+
+/// Drop the user's preset called `name`, by [`can_remove`]'s rule, and say whether one
+/// went.
 pub fn remove(entries: &mut Vec<PresetEntry>, name: &str) -> bool {
-    if is_builtin(entries, name) {
-        return false;
+    let removable = can_remove(entries, name);
+    if removable {
+        entries.retain(|e| e.name != name);
     }
-    let before = entries.len();
-    entries.retain(|e| e.name != name);
-    entries.len() != before
+    removable
 }
 
 // --- persistence ----------------------------------------------------------
@@ -919,12 +938,21 @@ mod tests {
         assert!(!merge_shipped(shipped, Vec::new()).1);
     }
 
-    /// A built-in's name is not the user's to save under, and a refusal writes nothing.
+    /// A built-in's name is not the user's to save under — answered from the list alone, so
+    /// a frontend need not take it for writing — and a refused upsert writes nothing.
     #[test]
     fn upsert_refuses_a_builtin_name() {
         let mut entries = table();
+        entries.push(user("Mine"));
         let before = entries.clone();
         let builtin = entries[0].name.clone();
+        assert_eq!(check_save(&entries, &builtin), Err(BuiltinName));
+        assert_eq!(
+            check_save(&entries, "Mine"),
+            Ok(()),
+            "the user's own is theirs to overwrite"
+        );
+        assert_eq!(check_save(&entries, "New"), Ok(()));
         let saved = upsert(
             &mut entries,
             &builtin,
@@ -958,14 +986,18 @@ mod tests {
         assert!(!entries[3].builtin && entries[3].slot.is_none());
     }
 
-    /// Remove answers whether a row went — and a built-in never goes.
+    /// Remove answers whether a row went — and a built-in never goes — and the list alone
+    /// answers the same beforehand.
     #[test]
     fn remove_answers_whether_it_removed() {
         let mut entries = table();
         entries.push(user("Mine"));
         let builtin = entries[0].name.clone();
+        assert!(can_remove(&entries, "Mine"));
         assert!(remove(&mut entries, "Mine"));
+        assert!(!can_remove(&entries, "Mine"), "already gone");
         assert!(!remove(&mut entries, "Mine"), "already gone");
+        assert!(!can_remove(&entries, &builtin));
         assert!(!remove(&mut entries, &builtin));
         assert!(find(&entries, &builtin).is_some());
     }

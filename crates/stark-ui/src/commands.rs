@@ -79,7 +79,7 @@ use crate::storage::{self, Entry, Store};
 /// a field an older record lacks has to say what its absence meant).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Chord {
-    /// Ctrl, or Command on a Mac (`input::accel`).
+    /// Ctrl, or Command on a Mac ([`keys::accel`](crate::keys::accel)).
     pub ctrl: bool,
     pub shift: bool,
     /// Alt, or Option on a Mac. Last of the three and defaulted for the store's
@@ -226,7 +226,8 @@ pub enum Command {
     ToggleHdr,
     BrushSmaller,
     BrushLarger,
-    /// Open the "New document…" dialog (`main::NewDocumentModal`).
+    /// Open the "New document…" dialog (the web frontend's `NewDocumentModal`, in its
+    /// `substrates` module).
     NewDocument,
     OpenDocument,
     SaveDocument,

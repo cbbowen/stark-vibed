@@ -32,7 +32,6 @@ use crate::gradients;
 use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
-use crate::modes::Composing;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
@@ -42,7 +41,7 @@ use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
-use stark_ui::modes::{GradientAxisKind, GradientTarget, GradientUi};
+use stark_ui::modes::{Composing, GradientAxisKind, GradientTarget, GradientUi};
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
 /// transform's choice — the active layer if paintable, else the topmost

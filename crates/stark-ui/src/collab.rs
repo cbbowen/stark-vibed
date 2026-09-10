@@ -1,5 +1,5 @@
 //! A shared session as a **link** (§12.4): the address a peer opens, the ticket
-//! read back out of one, and where a session stands.
+//! read back out of one, where a session stands, and who else is in it (§17.4).
 //!
 //! Nothing about the network is here — a ticket is an opaque string to this
 //! module, and what it decodes to is `stark-net`'s. What is here is what both
@@ -21,6 +21,9 @@
 //! is what makes [`ticket_in`] a `split` rather than a parse — no `#` can occur
 //! inside a ticket, so the first one is the whole of the boundary.
 
+use stark_model::document::{ActorId, LayerId};
+use stark_model::geom::Vec2;
+
 /// Where the web client lives — what a native invitation names.
 ///
 /// A constant rather than a setting, because it is a fact about this project
@@ -41,6 +44,49 @@ pub enum Phase {
     Connecting,
     /// Live in a shared session.
     Shared,
+}
+
+/// A collaborator, as a chrome draws them (§17.4).
+///
+/// Not the engine's [`Peer`](stark_engine::Peer): that carries the in-flight gesture, a
+/// whole stroke path that is the canvas's business. A chrome needs who is here, where
+/// they are pointing and which layer they are working on — and needs it apart from
+/// [`ObservableState`](stark_engine::ObservableState), which is refreshed once per
+/// command while this changes whenever anybody moves.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Peer {
+    pub actor: ActorId,
+    pub name: String,
+    pub color: [f32; 3],
+    pub active_layer: LayerId,
+    /// Canvas space.
+    pub cursor: Option<Vec2>,
+}
+
+impl Peer {
+    /// The name's initials, so a chip reads as a person rather than as a coloured dot:
+    /// the first character of each of its first two words, upper-cased. One word gives
+    /// one initial, and a name with no words gives an empty badge.
+    pub fn initials(&self) -> String {
+        self.name
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase()
+    }
+}
+
+impl From<&stark_engine::Peer> for Peer {
+    fn from(peer: &stark_engine::Peer) -> Self {
+        Self {
+            actor: peer.actor,
+            name: peer.name.clone(),
+            color: peer.color,
+            active_layer: peer.active_layer,
+            cursor: peer.cursor,
+        }
+    }
 }
 
 /// The invitation to hand out: the hosted client, with `ticket` in its fragment.
@@ -127,5 +173,31 @@ mod tests {
     #[test]
     fn the_case_of_a_ticket_is_left_alone() {
         assert_eq!(ticket_in("#starkAo3LrQ"), Some("starkAo3LrQ"));
+    }
+
+    fn named(name: &str) -> Peer {
+        Peer {
+            actor: ActorId(1),
+            name: name.to_owned(),
+            color: [0.0; 3],
+            active_layer: LayerId::ROOT,
+            cursor: None,
+        }
+    }
+
+    /// A badge is the first character of each of the first two words, upper-cased, however
+    /// the words are spaced — and a third word is not a third initial.
+    #[test]
+    fn initials_are_the_first_two_words_upper_cased() {
+        assert_eq!(named("ada lovelace").initials(), "AL");
+        assert_eq!(named("  Ada \t King   Lovelace ").initials(), "AK");
+    }
+
+    /// One word is one initial, and a name with no words is an empty badge.
+    #[test]
+    fn a_single_word_is_one_initial_and_a_blank_name_is_none() {
+        assert_eq!(named("ada").initials(), "A");
+        assert_eq!(named("").initials(), "");
+        assert_eq!(named(" \t ").initials(), "");
     }
 }

@@ -67,11 +67,10 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::collab::now_seconds;
 use crate::input::elem_xy;
 use crate::layout::chrome_dimmed;
 use crate::panels::frame::piece_frame;
-use crate::platform::{capture_pointer, sleep_ms};
+use crate::platform::{capture_pointer, now_seconds, sleep_ms};
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::ExportScale;
 use stark_engine::Extent2;
