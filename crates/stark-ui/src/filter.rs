@@ -19,7 +19,7 @@ use crate::icons::Icon;
 /// of these to disagree with the value it displays. `get`/`set` are the pair that makes
 /// the whole filter travel on every edit (§21.6): a bar reads the settings off the
 /// projection, replaces one number, and sends the result back.
-pub struct Knob<F: 'static> {
+pub struct FilterKnob<F: 'static> {
     pub name: &'static str,
     pub hint: &'static str,
     /// The mark this knob wears — and so whether its word may be hidden. A knob with a
@@ -49,7 +49,7 @@ pub struct Knob<F: 'static> {
     pub fmt: fn(f32) -> String,
 }
 
-impl<F: 'static> Knob<F> {
+impl<F: 'static> FilterKnob<F> {
     /// The number beside the track for `settings`.
     pub fn readout(&self, settings: &F) -> String {
         (self.fmt)((self.get)(settings) / self.scale)
@@ -69,8 +69,8 @@ pub fn fmt_degrees(v: f32) -> String {
 /// The color filter's **lightness** knobs — the two the chroma dial has nothing to say
 /// about, because they act on Oklab `L` and the dial is one slice of constant `L`. A
 /// plane picture cannot show a move along the axis it is perpendicular to.
-pub const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
-    Knob {
+pub const COLOR_KNOBS: &[FilterKnob<ColorAdjust>] = &[
+    FilterKnob {
         name: "Exposure",
         hint: "Stops of light. +1 is twice as much, \u{2212}1 is half \u{2014} applied \
                to the light itself, so it brightens the way an exposure does rather \
@@ -84,7 +84,7 @@ pub const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
         // Signed: a stop is centred on zero, and "0.50" and "+0.50" say different things.
         fmt: |v| format!("{v:+.2}"),
     },
-    Knob {
+    FilterKnob {
         name: "Contrast",
         hint: "Spread about mid-grey. 1 leaves it alone, 0 flattens the picture to \
                one tone. It moves lightness only \u{2014} the colors keep their \
@@ -101,8 +101,8 @@ pub const COLOR_KNOBS: &[Knob<ColorAdjust>] = &[
 
 /// The focal blur's **size** knob (§21.12) — the one every aperture has. A radius is one
 /// number with no partner to make a vector with, so a track is the right control. No
-/// glyph, on [`Knob::glyph`]'s bar rule.
-pub const BLUR_KNOBS: &[Knob<FocalBlur>] = &[Knob {
+/// glyph, on [`FilterKnob::glyph`]'s bar rule.
+pub const BLUR_KNOBS: &[FilterKnob<FocalBlur>] = &[FilterKnob {
     name: "Radius",
     hint: "The circle of confusion's radius, in canvas pixels \u{2014} how far each \
            point's light is spread. A true convolution with the aperture, so lights \
@@ -121,10 +121,10 @@ pub const BLUR_KNOBS: &[Knob<FocalBlur>] = &[Knob {
 ///
 /// Every `set` in the aperture tables rebuilds its own variant rather than reaching
 /// through an accessor (§21.12): a parameter a shape does not have is not there to be
-/// written, so the `_` arm is the shape changed underneath a row about to be unmounted,
-/// and leaving it alone is the only right answer.
-pub const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
-    Knob {
+/// written, so the `other => other` arm is the shape changed underneath a row about to be
+/// unmounted, and leaving it alone is the only right answer.
+pub const BLADES_KNOBS: &[FilterKnob<FocalBlur>] = &[
+    FilterKnob {
         name: "Blades",
         hint: "How many blades the iris has \u{2014} five, six and eight are the \
                common ones, and each makes its own polygon out of every \
@@ -132,7 +132,7 @@ pub const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
                stopping down that brings the blades into the bokeh.",
         glyph: None,
         range: (Aperture::BLADES.0 as f32, Aperture::BLADES.1 as f32),
-        // A count, so the track lands on one — see [`Knob::step`].
+        // A count, so the track lands on one — see [`FilterKnob::step`].
         step: Some(1.0),
         scale: 1.0,
         get: |b| match b.aperture {
@@ -153,7 +153,7 @@ pub const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
         },
         fmt: |v| format!("{v:.0}"),
     },
-    Knob {
+    FilterKnob {
         name: "Angle",
         hint: "Which way the polygon points.",
         glyph: None,
@@ -181,7 +181,7 @@ pub const BLADES_KNOBS: &[Knob<FocalBlur>] = &[
 /// Also where the mirror lens is advertised: the two are one shape, so the doughnut is a
 /// place on this track rather than a chip of its own — and a knob whose point cannot be
 /// guessed has to say what it is for.
-pub const DISC_KNOBS: &[Knob<FocalBlur>] = &[Knob {
+pub const DISC_KNOBS: &[FilterKnob<FocalBlur>] = &[FilterKnob {
     name: "Obstruction",
     hint: "How much of the aperture's middle is blocked, as a share of the radius. \
            0 is a plain disc; wind it up and you have a mirror lens, whose \
@@ -206,8 +206,8 @@ pub const DISC_KNOBS: &[Knob<FocalBlur>] = &[Knob {
 }];
 
 /// The knobs an [`Aperture::Oval`] has: how hard the squeeze, and along what.
-pub const OVAL_KNOBS: &[Knob<FocalBlur>] = &[
-    Knob {
+pub const OVAL_KNOBS: &[FilterKnob<FocalBlur>] = &[
+    FilterKnob {
         name: "Squeeze",
         hint: "The long axis over the short one \u{2014} 2\u{d7} is the anamorphic \
                cinema means when it says the word. The long axis stays the radius, \
@@ -229,7 +229,7 @@ pub const OVAL_KNOBS: &[Knob<FocalBlur>] = &[
         },
         fmt: |v| format!("{v:.2}\u{d7}"),
     },
-    Knob {
+    FilterKnob {
         name: "Angle",
         hint: "Which way the long axis runs.",
         glyph: None,
@@ -254,7 +254,7 @@ pub const OVAL_KNOBS: &[Knob<FocalBlur>] = &[
 
 /// The knobs the chosen aperture adds under the radius — one or two, never none: every
 /// shape is a family rather than a single figure.
-pub fn aperture_knobs(aperture: &Aperture) -> &'static [Knob<FocalBlur>] {
+pub fn aperture_knobs(aperture: &Aperture) -> &'static [FilterKnob<FocalBlur>] {
     match aperture {
         Aperture::Disc { .. } => DISC_KNOBS,
         Aperture::Blades { .. } => BLADES_KNOBS,
@@ -335,9 +335,12 @@ pub const DIAL_GRAB: f32 = 10.0;
 /// One angle step for both pictures, because "the round angles" is a fact about hands:
 /// the dial's rotation and the fringe's axis want the same dozen directions.
 pub const ANGLE_STEP: f32 = std::f32::consts::PI / 12.0; // 15°
+/// The saturation a stepped drag snaps to, as a factor.
 pub const SATURATION_STEP: f32 = 0.05;
+/// The tint a stepped drag snaps to, per Oklab axis.
 pub const TINT_STEP: f32 = 0.01;
-pub const SPREAD_STEP: f32 = 1.0; // one canvas px
+/// The spread a stepped drag snaps to, in canvas px.
+pub const SPREAD_STEP: f32 = 1.0;
 
 /// Where an Oklab `(a, b)` lands in the dial's box, in px from its top-left. `a` runs
 /// left→right and `b` bottom→top — the color picker's own orientation, warm at the top,

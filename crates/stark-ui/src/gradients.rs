@@ -14,6 +14,9 @@ use crate::storage::{self, Store};
 
 /// One named gradient — and, unchanged, one stored entry: both fields are durable, so a
 /// second struct to map it onto would be a copy with nothing to say.
+///
+/// A stored ramp that `Gradient`'s own deserialization cannot repair costs its entry on the
+/// way back ([`storage::load_list`]), rather than loading as a ramp nothing can sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GradientEntry {
     /// Unique in the library, because it is the entry's identity: the selection, a
@@ -39,26 +42,33 @@ pub fn current<'a>(
         .or_else(|| entries.first())
 }
 
-/// Why [`rename`] left the library as it was.
+/// Why a rename leaves the library as it was ([`check_rename`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RenameRefused {
+pub enum RenameRefused<'a> {
     /// The new name is empty once trimmed.
     Empty,
     /// The new name is the one the entry already wears.
     Unchanged,
-    /// Another entry already wears it. The one refusal worth telling the artist about:
-    /// a rename field whose text was silently ignored reads as a lost edit.
-    Taken,
+    /// Another entry already wears this name, trimmed. The one refusal worth telling the
+    /// artist about: a rename field whose text was silently ignored reads as a lost edit.
+    Taken(&'a str),
     /// No entry wears the old name.
     Missing,
 }
 
-/// Rename the entry called `from` to `to`, trimmed, in place.
+/// Whether the entry called `from` may be renamed `to`: where that entry sits, and the
+/// name it would take — `to`, trimmed.
+///
+/// Asked of a shared library, so a frontend can refuse without taking it for writing.
 ///
 /// # Errors
 ///
-/// [`RenameRefused`] says why nothing changed; the library is untouched in every case.
-pub fn rename(entries: &mut [GradientEntry], from: &str, to: &str) -> Result<(), RenameRefused> {
+/// [`RenameRefused`] says why the library must stay as it is.
+pub fn check_rename<'a>(
+    entries: &[GradientEntry],
+    from: &str,
+    to: &'a str,
+) -> Result<(usize, &'a str), RenameRefused<'a>> {
     let to = to.trim();
     if to.is_empty() {
         return Err(RenameRefused::Empty);
@@ -67,13 +77,27 @@ pub fn rename(entries: &mut [GradientEntry], from: &str, to: &str) -> Result<(),
         return Err(RenameRefused::Unchanged);
     }
     if entries.iter().any(|e| e.name == to) {
-        return Err(RenameRefused::Taken);
+        return Err(RenameRefused::Taken(to));
     }
-    let entry = entries
-        .iter_mut()
-        .find(|e| e.name == from)
+    let at = entries
+        .iter()
+        .position(|e| e.name == from)
         .ok_or(RenameRefused::Missing)?;
-    entry.name = to.to_string();
+    Ok((at, to))
+}
+
+/// Rename the entry called `from` to `to`, trimmed, in place, by [`check_rename`]'s rule.
+///
+/// # Errors
+///
+/// [`RenameRefused`] says why nothing changed; the library is untouched in every case.
+pub fn rename<'a>(
+    entries: &mut [GradientEntry],
+    from: &str,
+    to: &'a str,
+) -> Result<(), RenameRefused<'a>> {
+    let (at, to) = check_rename(entries, from, to)?;
+    entries[at].name = to.to_owned();
     Ok(())
 }
 
@@ -84,20 +108,6 @@ pub fn next_name(entries: &[GradientEntry]) -> String {
         .map(|i| format!("Gradient {i}"))
         .find(|n| !entries.iter().any(|e| &e.name == n))
         .expect("an unbounded count always reaches a free name")
-}
-
-/// Store the library.
-///
-/// The format and its skip-a-damaged-entry rule are `storage`'s. What this library leans
-/// on it for is `Gradient`'s own deserialization gate: what that cannot repair is refused
-/// there and the entry dropped on the way back, rather than becoming an unsampleable ramp.
-pub fn persist(entries: &[GradientEntry]) {
-    storage::save_list(entries);
-}
-
-/// What this client has stored, or `None` where it has stored nothing.
-pub fn read_storage() -> Option<Vec<GradientEntry>> {
-    storage::load_list()
 }
 
 #[cfg(test)]
@@ -142,26 +152,25 @@ mod tests {
         assert_eq!(next_name(&entries), "Gradient 1");
     }
 
+    /// Read back through `storage::load_list`'s own list reader — every step but the store.
     #[test]
-    fn a_stored_entry_survives_the_round_trip_and_a_bad_one_is_repaired() {
+    fn a_stored_library_reads_back_and_a_bad_ramp_is_repaired() {
         let entry = GradientEntry {
             name: "Dusk".into(),
             gradient: gradient(),
         };
-        let json = serde_json::to_string(&entry).expect("an entry encodes");
-        let back: GradientEntry = serde_json::from_str(&json).expect("round trip");
-        assert_eq!(back.name, "Dusk");
-        assert_eq!(back.gradient, entry.gradient);
-
+        let saved = serde_json::to_string(&entry).expect("an entry encodes");
         // One stop names no ramp, and the load path repairs it into one rather than
-        // refusing (§22.1) — so the row survives `storage::load_list` as a flat ramp of
-        // its own color, under the name the artist gave it, rather than vanishing from a
-        // list the artist can see.
+        // refusing (§22.1) — so the row survives as a flat ramp of its own color, under the
+        // name the artist gave it, rather than vanishing from a list the artist can see.
         let bad = r#"{"name":"Bad","gradient":[{"t":0.5,"color":[0.25,0.5,0.75]}]}"#;
-        let back: GradientEntry = serde_json::from_str(bad).expect("a row still reads");
-        assert_eq!(back.name, "Bad");
-        assert_eq!(back.gradient.sample(0.0), Srgb::new([0.25, 0.5, 0.75]));
-        assert_eq!(back.gradient.sample(1.0), Srgb::new([0.25, 0.5, 0.75]));
+        let (back, dropped) =
+            storage::entries::<GradientEntry>(&format!("[{saved},{bad}]")).expect("the list reads");
+        assert_eq!(dropped, storage::Dropped::default(), "a row was dropped");
+        assert_eq!(back[0], entry);
+        assert_eq!(back[1].name, "Bad");
+        assert_eq!(back[1].gradient.sample(0.0), Srgb::new([0.25, 0.5, 0.75]));
+        assert_eq!(back[1].gradient.sample(1.0), Srgb::new([0.25, 0.5, 0.75]));
     }
 
     /// A rename happens in place — the row keeps its seat in the list — and takes the
@@ -179,8 +188,8 @@ mod tests {
     fn a_rename_refuses_a_name_already_worn() {
         let mut entries = library(&["Dusk", "Dawn"]);
         assert_eq!(
-            rename(&mut entries, "Dawn", "Dusk"),
-            Err(RenameRefused::Taken)
+            rename(&mut entries, "Dawn", " Dusk "),
+            Err(RenameRefused::Taken("Dusk"))
         );
         assert_eq!(
             names(&entries),
@@ -212,6 +221,36 @@ mod tests {
             ["Dusk", "Dawn"],
             "a refusal moved the library"
         );
+    }
+
+    /// The check is the rule [`rename`] keeps, asked of a shared library: it refuses what a
+    /// rename refuses, and otherwise names the row and the trimmed name the rename writes.
+    #[test]
+    fn a_rename_is_checked_without_the_library_for_writing() {
+        let entries = library(&["Dusk", "Dawn"]);
+        assert_eq!(
+            check_rename(&entries, "Dawn", "  Morning "),
+            Ok((1, "Morning"))
+        );
+        for (from, to) in [
+            ("Dawn", "  Morning "),
+            ("Dawn", " Dusk "),
+            ("Dawn", " \t "),
+            ("Dawn", " Dawn "),
+            ("Noon", "Evening"),
+        ] {
+            let mut renamed = entries.clone();
+            match (
+                check_rename(&entries, from, to),
+                rename(&mut renamed, from, to),
+            ) {
+                (Ok((at, name)), Ok(())) => assert_eq!(renamed[at].name, name),
+                (Err(checked), Err(refused)) => assert_eq!(checked, refused),
+                (checked, refused) => {
+                    panic!("{from:?} to {to:?}: the check says {checked:?}, the rename {refused:?}")
+                }
+            }
+        }
     }
 
     /// The selection wins while it names an entry; otherwise the first stands in, so a

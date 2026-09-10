@@ -27,7 +27,7 @@
 //! list in the core's own order. The bar itself keys everything per-kind off the
 //! selected filter — its controls, its label, its neutral — so a new kind lands in
 //! one `match` arm and nothing else. [`knob_rows`] is still the cheap way to fill
-//! that arm: a `const` table of [`Knob`]s and no more bar code.
+//! that arm: a `const` table of [`FilterKnob`]s and no more bar code.
 //!
 //! **Neither kind of filter here is only sliders**, and both for the same reason:
 //! their numbers are not separate things, so separate tracks would be the wrong
@@ -72,9 +72,9 @@ use stark_model::gradient::Gradient;
 use stark_ui::commands::Command;
 use stark_ui::filter::{
     ANGLE_STEP, BLUR_KNOBS, COLOR_KNOBS, DEG, DIAL_AB, DIAL_CHROMA, DIAL_GRAB, DIAL_L, DIAL_PX,
-    DIAL_SCALE, Knob, PAD_HANDLE, PAD_MID, PAD_PX, PAD_R, PAD_RINGS, SATURATION_STEP, SPREAD_STEP,
-    TINT_STEP, aperture_glyph, aperture_hint, aperture_knobs, dial_ab, dial_xy, fmt_degrees,
-    pad_radius, pad_spread, pad_xy, snapped, spectrum_stops,
+    DIAL_SCALE, FilterKnob, PAD_HANDLE, PAD_MID, PAD_PX, PAD_R, PAD_RINGS, SATURATION_STEP,
+    SPREAD_STEP, TINT_STEP, aperture_glyph, aperture_hint, aperture_knobs, dial_ab, dial_xy,
+    fmt_degrees, pad_radius, pad_spread, pad_xy, snapped, spectrum_stops,
 };
 
 /// The run of shape buttons: which aperture the light is spread through (§21.12).
@@ -112,7 +112,7 @@ fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
                         let next = FocalBlur { aperture, ..blur };
                         dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
                     },
-                    // Mark then word, the pairing [`Knob::glyph`] enforces for a
+                    // Mark then word, the pairing [`FilterKnob::glyph`] enforces for a
                     // track — kept by hand here because a button has no one field to
                     // read it off. The word may go in minimal mode precisely because
                     // the mark is a picture of the shape and not a symbol for it.
@@ -285,7 +285,7 @@ fn knob_rows<F: Copy + 'static>(
     state: AppState,
     id: LayerId,
     current: F,
-    knobs: &'static [Knob<F>],
+    knobs: &'static [FilterKnob<F>],
     wrap: fn(F) -> Filter,
     tuning: Signal<Option<(LayerId, Filter)>>,
 ) -> Element {
@@ -298,7 +298,7 @@ fn knob_rows<F: Copy + 'static>(
                 span { class: "filter-knob-label",
                     // Mark then word, and the word hideable only because the mark is
                     // there to survive it — the pair `widgets::Slider` reads off one
-                    // `Option`, for the reason on [`Knob::glyph`].
+                    // `Option`, for the reason on [`FilterKnob::glyph`].
                     match knob.glyph {
                         Some(glyph) => rsx! { {icon(glyph)} {label(knob.name)} },
                         None => rsx! { "{knob.name}" },

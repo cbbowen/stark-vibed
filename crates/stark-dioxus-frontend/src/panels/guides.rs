@@ -238,11 +238,10 @@ fn add_and_edit(state: AppState, add: DocCommand) {
 /// carries a name at all: two would put one gesture two undo steps deep with a
 /// nameless guide in between.
 fn duplicate_guide(state: AppState, id: GuideId) {
-    let guides = guides_of(state);
-    let Some(source) = guides.iter().find(|g| g.id == id) else {
+    let Some(source) = guides_of(state).into_iter().find(|g| g.id == id) else {
         return;
     };
-    dispatch(
+    add_and_edit(
         state,
         DocCommand::AddGuide {
             guide: source.guide,
@@ -250,18 +249,6 @@ fn duplicate_guide(state: AppState, id: GuideId) {
             name: source.name.as_deref().map(str::to_owned),
         },
     );
-    // The copy landed directly after its source, which is where to find it — the
-    // roster read *after* the dispatch, since the engine mints no id to hand back
-    // (§20.5).
-    let after = guides_of(state);
-    let copy = after
-        .iter()
-        .position(|g| g.id == id)
-        .and_then(|i| after.get(i + 1))
-        .map(|g| g.id);
-    if let Some(copy) = copy {
-        begin_guide_edit(state, copy);
-    }
 }
 
 /// Move the guide `id` so that it sits at index `to` in the roster.

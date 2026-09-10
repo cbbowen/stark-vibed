@@ -112,7 +112,7 @@ impl Row {
     /// [`has_backdrop`]: LayerInfo::has_backdrop
     /// [`has_underlay`]: LayerInfo::has_underlay
     pub fn blend_inert(&self) -> bool {
-        !self.info.has_backdrop || self.info.filter.is_some()
+        blend_inert(&self.info)
     }
 
     /// Whether the clip chip has anything to say about this layer — see
@@ -120,6 +120,12 @@ impl Row {
     pub fn clip_inert(&self) -> bool {
         clip_inert(&self.info)
     }
+}
+
+/// [`Row::blend_inert`], asked of the layer alone — so [`blend_hint`] explains a dead
+/// picker by the same predicate that killed it.
+fn blend_inert(info: &LayerInfo) -> bool {
+    !info.has_backdrop || info.filter.is_some()
 }
 
 /// [`Row::clip_inert`], asked of the layer alone — so [`clip_hint`] explains a dead chip
@@ -137,10 +143,15 @@ fn clip_inert(info: &LayerInfo) -> bool {
 /// travels with the document, but deciding that a painter wants to hear "cannot blow out"
 /// rather than "conjugate of addition under `x/(1+x)`" is a presentation call.
 pub fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
-    // The two cases where the control is not saying what it usually says come first,
-    // because they are about *this row* rather than about the mode.
-    if !layer.has_backdrop {
-        return "Nothing composites under this layer, so every mode looks the same here.";
+    // The cases where the control is not saying what it usually says come first, because
+    // they are about *this row* rather than about the mode.
+    if blend_inert(layer) {
+        return if layer.filter.is_some() {
+            "A filter has no paint of its own to blend \u{2014} it adjusts what is already \
+             under it \u{2014} so it takes no blend mode."
+        } else {
+            "Nothing composites under this layer, so every mode looks the same here."
+        };
     }
     if layer.is_group {
         return match mode {
@@ -1022,6 +1033,36 @@ mod tests {
                         "filter={filter} backdrop={backdrop} underlay={underlay}: the hover \
                          and the chip disagree about whether it is live"
                     );
+                }
+            }
+        }
+    }
+
+    /// The blend picker's hover goes dead exactly where the picker does, whatever mode the
+    /// row holds — on a filter wherever it sits, not only over nothing — and a filter's
+    /// says why it is a filter's.
+    #[test]
+    fn a_blend_hint_is_inert_exactly_where_its_picker_is() {
+        let dead = [
+            blend_hint(BlendMode::Normal, &arranged(false, false, false).info),
+            blend_hint(BlendMode::Normal, &arranged(true, true, true).info),
+        ];
+        assert_ne!(
+            dead[0], dead[1],
+            "a filter's dead picker borrows the floor's reason"
+        );
+        for mode in BlendMode::ALL {
+            for filter in [false, true] {
+                for backdrop in [false, true] {
+                    for underlay in [false, true] {
+                        let row = arranged(filter, backdrop, underlay);
+                        assert_eq!(
+                            dead.contains(&blend_hint(mode, &row.info)),
+                            row.blend_inert(),
+                            "{mode:?} filter={filter} backdrop={backdrop} underlay={underlay}: \
+                             the hover and the picker disagree about whether it is live"
+                        );
+                    }
                 }
             }
         }

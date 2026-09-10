@@ -314,7 +314,7 @@ pub fn load_list<T: Entry + DeserializeOwned>() -> Option<Vec<T>> {
 /// it throughout — a field added without a default drops every row with the same
 /// error — so the second message onwards is the first repeated per entry.
 #[derive(Default, Debug, PartialEq)]
-struct Dropped {
+pub(crate) struct Dropped {
     count: usize,
     first: Option<String>,
 }
@@ -324,7 +324,7 @@ struct Dropped {
 /// A value that is not a list at all is `None` rather than an empty one: an unreadable
 /// record and an absent one are the same case, and the emptied-versus-never-set
 /// distinction above must not be decided by damage.
-fn entries<T: DeserializeOwned>(json: &str) -> Option<(Vec<T>, Dropped)> {
+pub(crate) fn entries<T: DeserializeOwned>(json: &str) -> Option<(Vec<T>, Dropped)> {
     let values: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
     let mut kept = Vec::with_capacity(values.len());
     let mut dropped = Dropped::default();

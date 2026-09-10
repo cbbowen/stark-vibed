@@ -110,7 +110,7 @@ pub fn current_name(state: AppState) -> Option<String> {
 /// renderer exists — entries are pure data and the pop-out should be populated
 /// on first open.
 pub fn load(state: AppState) {
-    let Some(entries) = stark_ui::gradients::read_storage() else {
+    let Some(entries) = stark_ui::storage::load_list::<GradientEntry>() else {
         return;
     };
     let mut list = state.gradients.entries;
@@ -226,7 +226,7 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
             });
             name
         };
-        stark_ui::gradients::persist(&entries.read());
+        stark_ui::storage::save_list(&entries.read());
         // And take it in hand. A trace is a *choosing* gesture — the line was
         // drawn to get this ramp — so the capture lands selected rather than at
         // the foot of the library with something else still the highlighted
@@ -242,10 +242,10 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
 pub fn remove(state: AppState, name: &str) {
     let mut entries = state.gradients.entries;
     entries.write().retain(|e| e.name != name);
-    stark_ui::gradients::persist(&entries.read());
+    stark_ui::storage::save_list(&entries.read());
 }
 
-/// Rename one gradient, by the library's own rule ([`stark_ui::gradients::rename`]).
+/// Rename one gradient, by the library's own rule ([`stark_ui::gradients::check_rename`]).
 ///
 /// A name another entry already wears is refused, and the notice says so rather than a
 /// silent no-op leaving the field's text apparently ignored. A selection pointing at the
@@ -253,11 +253,12 @@ pub fn remove(state: AppState, name: &str) {
 /// hand as a side effect of relabelling it.
 pub fn rename(state: AppState, from: &str, to: &str) {
     let mut entries = state.gradients.entries;
-    let renamed = stark_ui::gradients::rename(&mut entries.write(), from, to);
-    let to = to.trim();
-    match renamed {
-        Ok(()) => {}
-        Err(RenameRefused::Taken) => {
+    // Refused off a `peek`: a write guard wakes every reader of the library when it drops,
+    // changed or not, and a field closed on its own name is the everyday case.
+    let checked = stark_ui::gradients::check_rename(&entries.peek(), from, to);
+    let (at, to) = match checked {
+        Ok(rename) => rename,
+        Err(RenameRefused::Taken(to)) => {
             let mut notice = state.gradients.notice;
             notice.set(Some(format!(
                 "There is already a gradient named \u{201c}{to}\u{201d} \u{2014} \
@@ -265,10 +266,11 @@ pub fn rename(state: AppState, from: &str, to: &str) {
             )));
             return;
         }
-        // Nothing to rename to, or nothing to rename: it costs nothing and says nothing.
+        // Nothing to rename to, or nothing to rename: say nothing.
         Err(RenameRefused::Empty | RenameRefused::Unchanged | RenameRefused::Missing) => return,
-    }
-    stark_ui::gradients::persist(&entries.read());
+    };
+    entries.write()[at].name = to.to_owned();
+    stark_ui::storage::save_list(&entries.read());
     let mut sel = state.gradients.selected;
     if sel.peek().as_deref() == Some(from) {
         sel.set(Some(to.to_string()));

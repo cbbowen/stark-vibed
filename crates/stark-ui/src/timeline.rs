@@ -15,6 +15,9 @@ pub const BASE_RATE: f32 = 8.0;
 /// the speed control — so past this point the *stride* grows instead ([`pace`]).
 pub const MIN_TICK_MS: f32 = 16.0;
 
+/// Most actions a tick crosses: past any real history, and nowhere near overflowing `at + stride`.
+pub const MAX_STRIDE: usize = 1 << 20;
+
 /// Most ticks a track draws. Past this they sit closer together than a hairline and stop
 /// being marks at all; the fill and the counter still say where the playhead is.
 pub const MAX_TICKS: usize = 240;
@@ -43,7 +46,9 @@ pub fn pace(speed: f32) -> (i32, usize) {
     } else {
         (
             MIN_TICK_MS as i32,
-            (MIN_TICK_MS / per_step).round().max(1.0) as usize,
+            (MIN_TICK_MS / per_step)
+                .round()
+                .clamp(1.0, MAX_STRIDE as f32) as usize,
         )
     }
 }
@@ -82,14 +87,14 @@ mod tests {
         }
     }
 
-    /// Every tick crosses at least one action — including for the speeds no chip offers
-    /// but a stored or mistyped value could: nothing, less than nothing, not a number.
+    /// Every tick crosses at least one action and at most [`MAX_STRIDE`] — including at
+    /// speeds no chip offers: nothing, less than nothing, not a number, unbounded.
     #[test]
-    fn every_tick_crosses_at_least_one_action() {
+    fn every_stride_is_at_least_one_action_and_bounded() {
         for speed in sweep().chain([0.0, -1.0, f32::NAN, f32::INFINITY]) {
             let (_, stride) = pace(speed);
             assert!(
-                stride >= 1,
+                (1..=MAX_STRIDE).contains(&stride),
                 "{speed}\u{00D7} strides {stride} actions a tick"
             );
         }

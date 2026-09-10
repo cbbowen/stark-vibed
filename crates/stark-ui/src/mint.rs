@@ -3,10 +3,8 @@
 //! An add answers nothing — a command returns no value (§4) — and the engine mints the
 //! new id itself: a layer's out of the action that created it, a guide's as that
 //! action's own id (§20.5). So a frontend that selects what it added has to *find* it,
-//! and the one way that does not depend on where the row landed is to compare the roster
-//! before the dispatch with the roster after. "The topmost matte", "the last guide" or
-//! "one past its source" each name somebody else's row the moment the insertion point
-//! moves, or a peer's row arrives in the same place.
+//! and the one way that does not depend on where the row landed — a peer's may land there
+//! too — is to compare the roster before the dispatch with the roster after.
 
 /// The one id in `after` that is not in `before`.
 ///
@@ -26,9 +24,7 @@ mod tests {
     use super::*;
     use stark_model::document::{ActionId, ActorId, GuideId, LayerId};
 
-    /// A layer roster as the engine projects it — bottom of the document first, a
-    /// group's base *before* the rows it carries — which is the order `layer_tree`'s
-    /// fixtures write and the order a frontend reads the ids off in.
+    /// A layer roster; [`minted`] ignores its order.
     fn roster(ids: &[u64]) -> Vec<LayerId> {
         ids.iter().copied().map(LayerId::solo).collect()
     }
