@@ -11,8 +11,14 @@
 //! answer "which rectangle, when the obvious one is missing" — the selection's hull,
 //! or the paint's, or failing both what is on screen — and an answer given twice is
 //! two answers one edit apart.
+//!
+//! The navigator's [`Overview`] joined them for the same reason one rung down. It is
+//! a canvas rectangle plus the size it is drawn at, and [`marker`] is where the
+//! viewport falls inside it — which both frontends worked out for themselves, by two
+//! different routes, while the native one's own doc said that "a second spelling of
+//! that map is the one thing an overview must not have".
 
-use stark_engine::ObservableState;
+use stark_engine::{ObservableState, ViewTransform};
 use stark_model::geom::Vec2;
 
 /// The painted content's canvas-space bounds, inset to the populated tiles.
@@ -106,9 +112,93 @@ pub fn piece_frame(o: &ObservableState) -> Option<stark_model::document::LayerId
         .map(|l| l.id)
 }
 
+/// How long a change has to stop arriving before a miniature is drawn again, in
+/// seconds.
+///
+/// Long enough to collapse a burst — a held undo, a peer's actions landing, the several
+/// commits a fill-then-recolour makes — short enough that a stroke's overview appears
+/// while the artist is still looking at where it landed.
+pub const SETTLE: f64 = 0.18;
+
+/// Where a miniature of the piece sits in canvas space, and how large it is drawn.
+///
+/// All a navigator keeps: the picture itself lives on the GPU, in the surface behind
+/// it. `Copy` and four numbers wide, so a view that re-renders on every engine write
+/// can read it freely — where a readback path would keep a pixel buffer here and have
+/// to be careful never to clone it.
+///
+/// The size is in whatever px the frontend lays out in — logical for a docked column,
+/// CSS for a surface presented 1:1 — because nothing here divides by it except
+/// [`Self::target`], which takes a fraction.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Overview {
+    /// The canvas-space rect the miniature covers.
+    pub min: Vec2,
+    /// The far corner of it.
+    pub max: Vec2,
+    /// Its drawn width.
+    pub width: f32,
+    /// Its drawn height.
+    pub height: f32,
+}
+
+impl Overview {
+    /// The overview a plan describes, at this display's scale.
+    pub fn of(plan: &stark_engine::ExportPlan, scale: f32) -> Self {
+        let scale = if scale > 0.0 { scale } else { 1.0 };
+        Self {
+            min: plan.min,
+            max: plan.max,
+            width: plan.size.width as f32 / scale,
+            height: plan.size.height as f32 / scale,
+        }
+    }
+
+    /// The canvas rect's extent, floored off zero.
+    ///
+    /// A frame dragged to nothing is a real state, and every reader here divides by
+    /// this — so the floor is the type's rather than each caller's to remember.
+    pub fn span(self) -> Vec2 {
+        (self.max - self.min).max(Vec2::splat(1e-3))
+    }
+
+    /// Where a press at fraction `(fx, fy)` of the miniature points, in canvas space.
+    pub fn target(self, fx: f32, fy: f32) -> Vec2 {
+        self.min + (self.max - self.min) * Vec2::new(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0))
+    }
+}
+
+/// The viewport marker's four corners inside `over`, as fractions of it, in the order
+/// top-left, top-right, bottom-right, bottom-left of the **screen**.
+///
+/// A miniature is always upright — it is a picture of the *piece*, and an overview that
+/// turned with the easel would answer "where am I?" with a moving frame of reference.
+/// So the turn shows in the marker instead: the viewport is a screen-aligned rectangle,
+/// which in canvas space is a rotated one, and these are its corners mapped back into
+/// the picture.
+///
+/// Taken through the view's own screen→canvas mapping ([`ViewTransform::canvas_delta`])
+/// rather than an inverse worked out here: the zoom, the turn and the mirror are all in
+/// it, and a second spelling of that map would put the marker somewhere the pointer does
+/// not agree with. Both frontends had one until this was the only one.
+///
+/// **Not clamped**: the rect is placed where it truly falls and the box clips it, so
+/// panning off the piece shows the marker sliding out of frame rather than sticking to
+/// an edge and claiming you are still on the painting.
+pub fn marker(over: Overview, view: ViewTransform) -> [(f32, f32); 4] {
+    let span = over.span();
+    let half = Vec2::new(view.viewport.width as f32, view.viewport.height as f32) * 0.5;
+    [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sy)| {
+        let corner = view.center + view.canvas_delta(half * Vec2::new(sx, sy));
+        let f = (corner - over.min) / span;
+        (f.x, f.y)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_engine::Extent2;
 
     /// A thin axis is grown about its own centre, so the rectangle does not walk
     /// while it is being made grabbable.
@@ -148,5 +238,81 @@ mod tests {
             Vec2::new(0.0, 0.0),
         ]);
         assert_eq!(got, Some((Vec2::new(-2.0, -1.0), Vec2::new(3.0, 5.0))));
+    }
+
+    fn piece() -> Overview {
+        Overview {
+            min: Vec2::splat(-200.0),
+            max: Vec2::splat(200.0),
+            width: 200.0,
+            height: 200.0,
+        }
+    }
+
+    /// A view looking at the middle of the piece puts the marker in the middle of the
+    /// miniature, and one covering half the piece covers half the miniature.
+    #[test]
+    fn the_marker_sits_where_the_view_is_centred() {
+        let view = ViewTransform::identity(Extent2::new(200, 200));
+        let corners = marker(piece(), view);
+        let mid = corners
+            .iter()
+            .fold((0.0, 0.0), |a, c| (a.0 + c.0, a.1 + c.1));
+        assert!((mid.0 / 4.0 - 0.5).abs() < 1e-4, "{corners:?}");
+        assert!((mid.1 / 4.0 - 0.5).abs() < 1e-4, "{corners:?}");
+        // 200 screen px at zoom 1 over a 400 px piece is half of it.
+        assert!(
+            (corners[1].0 - corners[0].0 - 0.5).abs() < 1e-4,
+            "{corners:?}"
+        );
+    }
+
+    /// Zooming in shrinks the marker — the one thing an overview is for.
+    #[test]
+    fn zooming_in_shrinks_the_marker() {
+        let mut view = ViewTransform::identity(Extent2::new(200, 200));
+        let wide = marker(piece(), view);
+        view.zoom_about(Vec2::ZERO, 2.0);
+        let close = marker(piece(), view);
+        let w = |c: [(f32, f32); 4]| c[1].0 - c[0].0;
+        assert!(
+            (w(close) - w(wide) * 0.5).abs() < 1e-4,
+            "2x should halve it"
+        );
+    }
+
+    /// Panning off the piece slides the marker out of frame rather than pinning it to
+    /// an edge and claiming you are still on the painting.
+    #[test]
+    fn panning_off_the_piece_takes_the_marker_with_it() {
+        let mut view = ViewTransform::identity(Extent2::new(200, 200));
+        view.center_on(Vec2::new(4_000.0, 0.0));
+        let corners = marker(piece(), view);
+        assert!(corners.iter().all(|c| c.0 > 1.0), "{corners:?}");
+    }
+
+    /// A frame dragged to nothing divides by a floor rather than by zero, so what comes
+    /// back is still numbers and not a run of NaNs a frontend silently drops.
+    #[test]
+    fn a_collapsed_piece_still_yields_numbers() {
+        let flat = Overview {
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+            width: 200.0,
+            height: 100.0,
+        };
+        let view = ViewTransform::identity(Extent2::new(200, 100));
+        let corners = marker(flat, view);
+        assert!(corners.iter().all(|c| c.0.is_finite() && c.1.is_finite()));
+    }
+
+    /// A press at a fraction of the miniature points at the matching fraction of the
+    /// piece, and a press outside it is held to the edge — a click cannot ask for a
+    /// centre off the picture.
+    #[test]
+    fn a_press_points_at_the_fraction_it_lands_on() {
+        assert_eq!(piece().target(0.5, 0.5), Vec2::ZERO);
+        assert_eq!(piece().target(0.0, 0.0), Vec2::splat(-200.0));
+        assert_eq!(piece().target(2.0, -1.0), Vec2::new(200.0, -200.0));
     }
 }

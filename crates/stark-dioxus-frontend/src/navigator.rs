@@ -80,6 +80,7 @@ use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
 use stark_model::geom::Vec2;
+use stark_ui::bounds::Overview;
 
 /// The box the miniature is fitted into, in CSS px — the largest it is ever drawn,
 /// on whichever axis the piece runs out of first.
@@ -97,11 +98,10 @@ use stark_model::geom::Vec2;
 const MAX_WIDTH: u32 = 260;
 const MAX_HEIGHT: u32 = 200;
 
-/// How long a change has to stop arriving before the miniature is re-rendered.
-/// Long enough to collapse a burst — a held undo, a peer's actions landing, the
-/// several commits a Fill-then-recolor makes — short enough that a single stroke's
-/// overview appears while the artist is still looking at where it landed.
-const SETTLE_MS: i32 = 180;
+/// [`stark_ui::bounds::SETTLE`] in the milliseconds this frontend's timer takes.
+/// How long the wait is is the overview's business; what a `sleep` is denominated in
+/// is this frontend's.
+const SETTLE_MS: i32 = (stark_ui::bounds::SETTLE * 1000.0) as i32;
 
 /// Show the overview or put it away, and remember it — **the only thing that writes
 /// [`Signals::navigator`](crate::state::Signals::navigator)(crate::state::Signals::navigator)**, which is what makes
@@ -122,23 +122,6 @@ pub fn set_open(state: AppState, open: bool) {
     }
     showing.set(open);
     crate::visibility::persist(state);
-}
-
-/// Where the miniature sits in canvas space, and how large it is drawn.
-///
-/// All the overlay keeps: the picture itself lives on the GPU, in the surface bound to
-/// its canvas. `Copy`, and four numbers wide, so the component that
-/// re-renders on every engine write can read it freely — where a readback path would
-/// keep a ~150 KB pixel buffer here and have to be careful never to clone it.
-#[derive(Clone, Copy, PartialEq)]
-struct Overview {
-    /// The canvas-space rect the miniature covers.
-    min: Vec2,
-    max: Vec2,
-    /// Its size in px, which is also its CSS size — the surface is presented 1:1,
-    /// like the painting canvas, which ignores `devicePixelRatio` too.
-    width: u32,
-    height: u32,
 }
 
 /// Draw the miniature: one render of the committed document into the overlay's own
@@ -169,12 +152,9 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
     crate::state::with_engine_quiet(state, |r| {
         let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
         let plan = r.export_plan(frame, fit).ok()?;
-        r.paint_overview(&plan).then_some(Overview {
-            min: plan.min,
-            max: plan.max,
-            width: plan.size.width,
-            height: plan.size.height,
-        })
+        // Scale 1.0: this surface is presented 1:1, like the painting canvas, which
+        // ignores `devicePixelRatio` too.
+        r.paint_overview(&plan).then(|| Overview::of(&plan, 1.0))
     })
     .flatten()
 }
@@ -196,19 +176,32 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
 /// the stylesheet contributes is a minimum size, so a viewport that is a fraction
 /// of a percent of a large canvas is still something you can see.
 fn viewport_style(over: Overview, view: stark_engine::ViewTransform) -> String {
-    let span = (over.max - over.min).max(Vec2::splat(1e-3));
-    // The viewport's own size in canvas px — the rect *before* it is turned, so this
-    // is the screen rectangle over the zoom rather than the bound it sweeps.
-    let size = Vec2::new(view.viewport.width as f32, view.viewport.height as f32)
-        / view.zoom.max(1e-6)
-        / span
-        * 100.0;
-    let at = (view.center - over.min) / span * 100.0;
-    let o = view.orientation().transpose();
+    // Off the shared map (`stark_ui::bounds::marker`) rather than an inverse worked
+    // out here: the zoom, the turn and the mirror are all in it, and a second
+    // spelling would put the marker somewhere the pointer does not agree with. What
+    // stays this frontend's is the *encoding* — CSS wants a placed box and a matrix
+    // where the native overlay wants four points.
+    let c = stark_ui::bounds::marker(over, view);
+    let pt = |i: usize| Vec2::new(c[i].0, c[i].1);
+    let (tl, tr, bl) = (pt(0), pt(1), pt(3));
+    // The half-axes of the parallelogram those corners describe. Their lengths are
+    // the unturned box; their directions are the turn, which is exactly the split
+    // `width`/`height` and `matrix()` want.
+    let x = (tr - tl) * 0.5;
+    let y = (bl - tl) * 0.5;
+    let at = (tl + x + y) * 100.0;
+    let size = Vec2::new(x.length(), y.length()) * 2.0 * 100.0;
+    // A degenerate axis has no direction to state; the identity is the honest
+    // fallback, and the box it turns is zero-sized anyway.
+    let unit = |v: Vec2, fallback: Vec2| {
+        let n = v.length();
+        if n > 1e-9 { v / n } else { fallback }
+    };
+    let (ux, uy) = (unit(x, Vec2::X), unit(y, Vec2::Y));
     format!(
         "left: {:.3}%; top: {:.3}%; width: {:.3}%; height: {:.3}%; \
          transform: translate(-50%, -50%) matrix({}, {}, {}, {}, 0, 0);",
-        at.x, at.y, size.x, size.y, o.x_axis.x, o.x_axis.y, o.y_axis.x, o.y_axis.y,
+        at.x, at.y, size.x, size.y, ux.x, ux.y, uy.x, uy.y,
     )
 }
 
@@ -353,7 +346,7 @@ pub fn NavigatorOverlay() -> Element {
     // presented 1:1, so the element's own coordinates are the picture's.
     let target = move |e: &Event<PointerData>| {
         let o = over.peek().as_ref().copied()?;
-        let f = elem_xy(e) / Vec2::new(o.width.max(1) as f32, o.height.max(1) as f32);
+        let f = elem_xy(e) / Vec2::new(o.width.max(1.0), o.height.max(1.0));
         Some(o.min + (o.max - o.min) * f)
     };
 
@@ -471,8 +464,8 @@ mod tests {
         Overview {
             min: Vec2::new(-200.0, -100.0),
             max: Vec2::new(200.0, 100.0),
-            width: 200,
-            height: 100,
+            width: 200.0,
+            height: 100.0,
         }
     }
 
@@ -535,8 +528,8 @@ mod tests {
         let flat = Overview {
             min: Vec2::ZERO,
             max: Vec2::ZERO,
-            width: 200,
-            height: 100,
+            width: 200.0,
+            height: 100.0,
         };
         let view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
         let style = viewport_style(flat, view);

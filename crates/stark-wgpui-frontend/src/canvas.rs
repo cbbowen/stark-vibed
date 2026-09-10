@@ -251,7 +251,7 @@ pub struct Canvas {
     /// Where the navigator's miniature sits in canvas space, and how large it is
     /// drawn — four numbers, because the picture itself is a surface on the GPU
     /// (`crate::navigator`).
-    overview: Option<navigator::Overview>,
+    overview: Option<stark_ui::bounds::Overview>,
     /// The committed revision that miniature is a picture of, and when it was drawn.
     /// Together they are the whole of the refresh policy: draw when the document has
     /// moved, never under a live gesture, and at most once a settle.
@@ -1560,7 +1560,7 @@ impl Canvas {
         let plan = self
             .renderer
             .as_ref()
-            .and_then(|r| r.overview_plan(frame, navigator::Overview::box_for(scale)));
+            .and_then(|r| r.overview_plan(frame, navigator::box_for(scale)));
         let Some(plan) = plan else {
             self.overview = None;
             return;
@@ -1568,7 +1568,7 @@ impl Canvas {
         // The box the shelf lays out is the plan's whether or not this frame draws
         // into it — so the miniature keeps the piece's aspect from the first frame,
         // and the column does not change shape under a refresh.
-        self.overview = Some(navigator::Overview::of(&plan, scale));
+        self.overview = Some(stark_ui::bounds::Overview::of(&plan, scale));
         // The first call sizes the surface from the plan and the element resizes it
         // from its own bounds a frame later, so the two disagree by a pixel of layout
         // rounding on the frame after the shelf appears — and every frame after that
@@ -1578,7 +1578,7 @@ impl Canvas {
             .as_ref()
             .is_some_and(Renderer::overview_resized);
         let moved = revision != self.overview_at || self.overview_when.is_infinite();
-        let due = lost || (moved && now - self.overview_when >= navigator::SETTLE);
+        let due = lost || (moved && now - self.overview_when >= stark_ui::bounds::SETTLE);
         if due
             && quiet
             && let Some(r) = self.renderer.as_mut()
