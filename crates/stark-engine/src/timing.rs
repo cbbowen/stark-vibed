@@ -10,6 +10,8 @@
 //!   Timing Stats dialog and in `examples/stroke_bench`'s table on its own. Dotted
 //!   names (`stroke.loop`, `render.composite`) group for the eye and are **not** a
 //!   call tree: one histogram aggregates every call site that opened that name.
+//!   [`FRAME`] and [`INPUT_SAMPLE`] are the exception: a timing view reads those two
+//!   by name for its headline.
 //! - **A row is a distribution.** `mean` is what a phase costs; `p99`/`max` are what
 //!   makes it hitch, which is the number a painter feels and an average hides.
 //! - **Totals are read against the window, not against each other.** [`Timings`]
@@ -78,8 +80,10 @@ use crate::unpoisoned;
 pub const TARGET: &str = "stark::timing";
 
 /// The span a frontend opens around each frame it shows; its count over the window is
-/// the frame rate the app reached. A constant, unlike the other phase names, because a
-/// timing view reads it by name as well as the frontend opening it.
+/// the frame rate the app reached.
+///
+/// This and [`INPUT_SAMPLE`] are constants, unlike every other phase name, because a
+/// timing view reads them by name as well as the frontend opening them.
 pub const FRAME: &str = "frame";
 
 /// The span a frontend opens around each pointer report it hands the engine; its count
@@ -339,9 +343,9 @@ impl Timings {
     /// How often `name` ran, per second of the window. `None` when the phase is not
     /// instrumented in this build or has not run.
     ///
-    /// The end-to-end numbers are this shape: `rate("frame")` is the frame rate the
-    /// app achieved and `rate("input.sample")` the pointer reports a second that
-    /// reached the engine — the pair the latency question is asked in.
+    /// The end-to-end numbers are this shape: the rate of [`FRAME`] is the frame rate
+    /// the app achieved and the rate of [`INPUT_SAMPLE`] the pointer reports a second
+    /// that reached the engine — the pair the latency question is asked in.
     pub fn rate(&self, name: &str) -> Option<f64> {
         let phase = self.phases.iter().find(|p| p.name == name)?;
         let window = self.window.as_secs_f64();

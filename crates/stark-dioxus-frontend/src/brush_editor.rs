@@ -857,28 +857,25 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     // than at the canvas's 300×150 intrinsic size. Still only a seed: the element
     // is re-read below, right before anything is placed against it.
     crate::platform::next_frame().await;
-    let built = {
+    let mut r = {
         let renderer = state.renderer.peek();
         let Some(main) = renderer.as_ref() else {
             return;
         };
-        main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID))
-            .map(|mut r| {
-                r.process(DocCommand::SetSubstrateColor(
-                    main.observe().substrate_color,
-                ));
-                r
-            })
-    };
-    // A refused surface leaves the column blank, as the navigator's does
-    // (`Renderer::attach_overview`): every preview handler already treats a missing
-    // renderer as nothing to draw on.
-    let mut r = match built {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("brush preview surface unavailable: {e}");
-            return;
-        }
+        // A refused surface leaves the column blank, as the navigator's does
+        // (`Renderer::attach_overview`): every preview handler already treats a
+        // missing renderer as nothing to draw on.
+        let mut r = match main.shared(crate::platform::canvas_by_id(PREVIEW_CANVAS_ID)) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("brush preview surface unavailable: {e}");
+                return;
+            }
+        };
+        r.process(DocCommand::SetSubstrateColor(
+            main.observe().substrate_color,
+        ));
+        r
     };
 
     // Re-read the element before anything is measured against it: both strokes are

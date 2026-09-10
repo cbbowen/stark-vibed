@@ -652,7 +652,7 @@ pub enum Row {
 /// `Hash` because a frontend keeps a *set* of them — which are folded, which have
 /// their "Show more" open — and a set keyed by anything else would be a second name
 /// for a group.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, strum::VariantArray)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, strum::VariantArray, strum::EnumCount)]
 pub enum Section {
     /// The footprint the stroke sweeps along the path.
     Tip,
@@ -665,8 +665,17 @@ pub enum Section {
     Wet,
 }
 
-/// The groups in the order the dialog stacks them.
-pub const SECTIONS: [Section; 4] = [Section::Tip, Section::Effect, Section::Color, Section::Wet];
+/// The groups in the order the dialog stacks them: the declaration order, derived as
+/// [`MOD_ROWS`] is, so a new group has one order to be put in.
+pub const SECTIONS: [Section; Section::COUNT] = {
+    let mut sections = [Section::Tip; Section::COUNT];
+    let mut i = 0;
+    while i < Section::COUNT {
+        sections[i] = Section::VARIANTS[i];
+        i += 1;
+    }
+    sections
+};
 
 /// The runtime facts a section's rows depend on that the brush does not carry.
 ///
@@ -683,15 +692,9 @@ pub struct Shown {
 
 impl Section {
     /// Where this group sits in [`SECTIONS`] — the seat a frontend keeps its state for
-    /// the group in. Exhaustive, so a fifth group does not compile until it says where
-    /// it sits, where a `position().expect()` would panic on the frame the dialog opened.
+    /// the group in. Agrees with [`SECTIONS`] by construction, as [`ModRow::index`] does.
     pub fn index(self) -> usize {
-        match self {
-            Self::Tip => 0,
-            Self::Effect => 1,
-            Self::Color => 2,
-            Self::Wet => 3,
-        }
+        self as usize
     }
 
     /// The name the group wears. The effect group is named for the effect in force:
@@ -1125,18 +1128,6 @@ mod tests {
             tune: Transient::default(),
             space: ColorSpaceId::Oklab,
             substrate: SubstrateId::Flat,
-        }
-    }
-
-    /// Every group, including one added to the enum and left out of the table.
-    #[test]
-    fn every_section_sits_in_the_seat_its_index_names() {
-        for section in <Section as strum::VariantArray>::VARIANTS {
-            assert_eq!(
-                SECTIONS.get(section.index()),
-                Some(section),
-                "{section:?} names a seat it does not sit in",
-            );
         }
     }
 

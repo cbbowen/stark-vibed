@@ -489,25 +489,19 @@ mod tests {
     }
 
     #[test]
-    fn a_single_char_is_typed() {
+    fn only_exactly_one_char_is_typed() {
         assert_eq!(
             stroke_of(Modifiers::empty(), &character("z"), "KeyZ"),
             Keystroke::new(Some('z'), "KeyZ"),
         );
-    }
-
-    /// A dead key or an IME composition reports more than one `char`, and neither is a
-    /// chord.
-    #[test]
-    fn a_composed_string_types_nothing() {
-        for composed in ["e\u{301}", "ab", ""] {
-            let stroke = stroke_of(Modifiers::empty(), &character(composed), "KeyE");
-            assert_eq!(stroke, Keystroke::new(None, "KeyE"), "{composed:?}");
+        for other in ["e\u{301}", "ab", ""] {
+            let stroke = stroke_of(Modifiers::empty(), &character(other), "KeyE");
+            assert_eq!(stroke, Keystroke::new(None, "KeyE"), "{other:?}");
         }
     }
 
     #[test]
-    fn the_keys_a_capture_spends_have_their_roles() {
+    fn named_keys_take_their_roles() {
         for (key, role) in [
             (Key::Escape, Role::Escape),
             (Key::Backspace, Role::Backspace),
@@ -523,7 +517,6 @@ mod tests {
         }
     }
 
-    /// Ctrl here, Command on a Mac: either is the accelerator (`input::accel`).
     #[test]
     fn control_and_meta_both_hold_the_accelerator() {
         let accel = Mods {
@@ -543,9 +536,9 @@ mod tests {
     fn shift_and_alt_are_read_as_themselves() {
         let stroke = stroke_of(Modifiers::SHIFT | Modifiers::ALT, &character("S"), "KeyS");
         let held = Mods {
-            ctrl: false,
             shift: true,
             alt: true,
+            ..Mods::default()
         };
         assert_eq!(stroke.mods, held);
     }
