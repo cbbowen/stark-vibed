@@ -428,7 +428,7 @@ substrate is saved, bundled, replayed and fetched by a peer through the machiner
 from. The frontend keeps the library the way it keeps imported brush stamps
 (§25.6): a name and an id in `localStorage`, the height map in the blob store
 beside it, and the parts both libraries share in
-`stark-dioxus-frontend/src/library.rs`. The one real difference between
+`stark-ui/src/library.rs`. The one real difference between
 importing a stamp and importing a substrate is polarity. A stamp's is a
 *spelling* — white paints, and a scan of ink on paper means the opposite — so
 the import inverts a dark-on-light image; a substrate's polarity **is the

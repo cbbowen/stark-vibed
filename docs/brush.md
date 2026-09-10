@@ -1813,7 +1813,7 @@ of their decoded coverage, so every engine (main canvas, brush-editor preview, a
 peer's) lands on the same `AssetId`, and a built-in is referenced downstream
 exactly like a user's imported shape — a `BrushShape::Stamp`, with no notion of
 "built-in" anywhere. Adding a shape is a PNG plus a row. Brush *presets*
-(`stark-dioxus-frontend/src/presets.rs`) are the one thing that has to wait for
+(`stark-ui/src/presets.rs`) are the one thing that has to wait for
 the fetch, since a preset stores a content id. The large substrate maps are
 fetched lazily, only when a substrate is selected. This keeps multi-megabyte
 assets out of the wasm binary and is the path that scales as the libraries grow.

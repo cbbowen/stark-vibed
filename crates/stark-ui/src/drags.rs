@@ -526,10 +526,9 @@ impl DragAction {
 
 /// A named table: what one app puts these three drags on (§25.8).
 ///
-/// Indexed by **the app somebody is arriving from**, not by distinct tables —
-/// which is why Clip Studio Paint and Corel Painter both have a row although
-/// they agree on all three. A preset is picked by recognising a name, and a list
-/// that had merged them would offer neither.
+/// Indexed by **the app somebody is arriving from**, not by distinct tables: two
+/// apps that agreed on all three would still each keep a row. A preset is picked
+/// by recognising a name, and a list that had merged them would offer neither.
 ///
 /// The tables are each app's defaults for these three gestures, on Windows, with
 /// the accelerator standing in for Ctrl and Command alike (`input::accel`). They

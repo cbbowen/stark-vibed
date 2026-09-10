@@ -1926,10 +1926,10 @@ once, and given up for good if the two disagree.
 ## 25. Commands and drag bindings
 
 The chrome reaches every act and every bound gesture through one of two tables.
-The **command registry** (`stark-dioxus-frontend/src/commands.rs`) holds the
+The **command registry** (`stark-ui/src/commands.rs`) holds the
 simple acts — undo, deselect, open the export dialog — each a variant of
 `Command` carrying its whole description, with the keyboard as one rebindable
-column. The **drag table** (`stark-dioxus-frontend/src/drags.rs`) holds the
+column. The **drag table** (`stark-ui/src/drags.rs`) holds the
 canvas presses that open something other than painting — the brush-tuning drag
 (§18.1.9), the eyedropper (§18.0.2), the layer carry (§16.11) — each a row
 binding an exact chord+button to a `DragAction`. A third registry sits one layer
@@ -2235,11 +2235,11 @@ checklist:
 ### 25.6 The browser-local store
 
 The third registry, and the one added last because it was learned the hard way.
-`Store` (`stark-dioxus-frontend/src/storage.rs`) enumerates every record this
-browser keeps — eleven of them: the five libraries (brush shapes, canvas
-substrates, presets, gradients, quick brushes), the ⚙ dialog's settings, the
-chord table, the drag table, what is on screen, what the tour has seen, and this
-client's identity.
+`Store` (`stark-ui/src/storage.rs`) enumerates every record a client keeps —
+twelve of them: the five libraries (brush shapes, canvas substrates, presets,
+gradients, quick brushes), the ⚙ dialog's settings, the chord table, the drag
+table, what is on screen, what the tour has seen, this client's identity, and —
+the native frontend's alone — where the window was.
 
 One law, the same one: **one authority, and callers hand it typed values rather
 than spelling a format.** Here that is enforced by the type system — a type
@@ -2262,11 +2262,11 @@ no untyped door, so there is nowhere for another format to come from.
 
 The registry row still carries both facts about a record — its `localStorage`
 key and the name a quota warning calls it by — and the impls name a *variant*
-rather than restating those strings. Eleven impls each spelling their own key
-would scatter the answer to "what does this browser keep?" across eleven modules,
+rather than restating those strings. An impl per record spelling its own key
+would scatter the answer to "what does this client keep?" across as many modules,
 and nothing would notice two of them colliding.
 
-**Two traits, not one, because nine of the eleven records are lists.** `Record` is
+**Two traits, not one, because nine of the twelve records are lists.** `Record` is
 the whole of what a key holds (`load`/`save`); `Entry` is one item of a library
 (`load_list`/`save_list`). Under a single trait, `load::<StoredPanel>()` would
 compile and quietly answer `None` — an array is not an object — leaving a panel
@@ -2329,7 +2329,7 @@ is a worse answer than the defaults. `load_list` also tells `None` from
 seeded from the preset library, an emptied one is left empty.
 
 **Bytes are not kept in `localStorage` at all.** It is text, and ~5 MB of it per
-origin *shared across all eleven records*. A brush shape's PNG lived there once,
+origin *shared across every record kept there*. A brush shape's PNG lived there once,
 base64'd inline in the shape library's rows: two of the app's own stamps are
 408 KB and 226 KB on disk, half as much again as base64, and twice that against
 the quota in an engine that counts a JS string's UTF-16. Five or ten imports
@@ -2562,7 +2562,7 @@ are a press away and cost the column nothing.
 ### 25.8 Rebinding a drag, and the one time we ask
 
 The drag table's rows are the user's. `DragBindings`
-(`stark-dioxus-frontend/src/drags.rs`) is `defaults()` with this browser's own
+(`stark-ui/src/drags.rs`) is `defaults()` with this browser's own
 rows laid over it, and it is what both readers ask — `find` on the press,
 `armed` on the advertisement — so a rebind moves the cursor's promise in the
 same frame it moves the press. The shape is `commands::Bindings`', copied
@@ -2593,12 +2593,12 @@ Four rules carry over from the chord table, each for its own reason:
 A modifier drag is discoverable only through what appears while it is held
 (§25.3), which makes three of them three secrets — and every app an artist
 arrives from keeps those secrets somewhere else. `DragPreset` is a named table
-per app: Stark, Photoshop, Clip Studio Paint, Corel Painter, Rebelle, Krita.
+per app: Stark, Photoshop, Clip Studio Paint, Rebelle, Krita.
 
 Two things about that list are deliberate. It is indexed by **the app somebody is
-arriving from**, not by distinct tables — Clip Studio Paint and Corel Painter
-agree on all three and both have a row, because a preset is picked by
-recognising a name and a merged row would offer neither. And a preset may leave
+arriving from**, not by distinct tables — two apps that agreed on all three would
+still each get a row, because a preset is picked by recognising a name and a
+merged row would offer neither. And a preset may leave
 an action **unbound**: Krita reaches the layer carry through a tool rather than
 through a modifier, and inventing one for it would be putting words in its
 mouth. `matches` is asked per chip rather than answered once, so two presets that
@@ -2654,10 +2654,10 @@ chrome-hiding states in ⚙ (`settings::SettingChoice`), the selection panel's t
 and combine rows, the eyedropper's scope, the timeline's speeds, the focal blur's
 aperture (§21.12) — and equally any
 run of buttons offering alternative answers to one question, whether or not one of
-them stays lit: the drag presets (§25.8) are six tables to *start from*, and they
+them stays lit: the drag presets (§25.8) are five tables to *start from*, and they
 are the same control. The run's closed seams, single outer radius and one hairline
-per seam say that picking one un-picks the rest. Six chips standing apart with gaps
-between them say the opposite — six switches that could all be held down at once —
+per seam say that picking one un-picks the rest. Five chips standing apart with gaps
+between them say the opposite — five switches that could all be held down at once —
 which is a promise the code then has to spend a comment apologising for.
 
 **If they will not all fit on one line, it is a drop-down instead** (`.select`,

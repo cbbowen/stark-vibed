@@ -500,9 +500,9 @@ as long as the transform is a similarity (move, turn, uniform scale), and any
 eccentricity *is* the distortion. A circle rather than the hull's own aspect,
 precisely for that reading — a rectangle-shaped reference would start a
 rectangular selection's widget as an ellipse and the shape would say "distorted"
-before anything happened. Its radius is the geometric mean of the hull's
-half-extents (the area of the hull's inscribed ellipse), so it stays proportionate
-for elongated selections.
+before anything happened. It **circumscribes** the hull — its radius is the
+hypotenuse of the half-extents — so the whole selection is inside the widget and
+the rim is somewhere to grab on every side of it.
 
 One surface carries the whole affine group with three gestures, chosen by where
 the drag starts:

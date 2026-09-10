@@ -343,7 +343,7 @@ mappings onto one target is likewise a `Vec` away, and would multiply.
 It is what makes a brush feel *authored* rather than configured — and what makes
 a brush **library** worth shipping, which is the thing users actually shop for.
 (The library's skeleton exists: named per-user presets persist in `localStorage`
-and apply from the Brush panel, `stark-dioxus-frontend/src/presets.rs`, where
+and apply from the Brush panel, over `stark-ui/src/presets.rs`, where
 the shipped Pencil now maps tilt → stretch and pressure → flow — leaning the pen
 draws the tip out along the lean rather than scaling it up, §6.6; shape
 import/persistence is done, §6.6; §18.1.8 puts ten of them under the number

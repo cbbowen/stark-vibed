@@ -32,7 +32,7 @@
 //!
 //! Every module was already this crate before this crate existed — each was split
 //! out of the web frontend *because it was the part that could be tested*, which is
-//! the same line drawn one file early. The 45 tests came with them.
+//! the same line drawn one file early. Their tests came with them.
 //!
 //! - [`brush_config`] — the brush as a frontend carries it: the durable half (what
 //!   the tool *is*) beside the transient one (the size, flow and colour in hand),
