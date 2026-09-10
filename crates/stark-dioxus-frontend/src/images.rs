@@ -61,7 +61,7 @@ pub fn import_image(state: AppState) {
 /// **Every drop, not only an image**, because the alternative is not "nothing happens":
 /// an unclaimed drop is handled by the browser, and what the browser does with a
 /// dropped file is navigate to it, discarding an unsaved painting. The root therefore
-/// claims all of them (`main`), which makes deciding what each one *is* this function's
+/// claims all of them (`crate::app`), which makes deciding what each one *is* this function's
 /// job.
 ///
 /// A `.stark` opens as a document — the other thing this app can be handed, and the

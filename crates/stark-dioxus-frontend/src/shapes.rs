@@ -127,7 +127,7 @@ fn encode_thumb(png: &[u8]) -> Option<String> {
 /// nothing and reports "failed to load" every time it is clicked.
 ///
 /// Awaited before the first thing that resolves a stamp id — `presets::apply_first`,
-/// in `main` — which is what the ordering there is for.
+/// in `crate::app` — which is what the ordering there is for.
 pub async fn load(state: AppState) {
     let mut entries = state.shapes.entries;
     entries.set(assets::load::<assets::Shapes>().await);

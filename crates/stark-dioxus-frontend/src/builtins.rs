@@ -3,7 +3,7 @@
 //! A built-in is a PNG under `assets/shape/`, bundled as a static file and
 //! **fetched at runtime** so the stamps stay out of the wasm binary. Every
 //! engine imports the bytes once at startup — the main canvas ([`import_all`]
-//! from `main`) and the brush editor's preview — and because the engine keys an
+//! from `crate::app`) and the brush editor's preview — and because the engine keys an
 //! asset by the hash of its decoded coverage, all of them land on the same
 //! [`AssetId`](stark_model::AssetId). That is what lets a built-in be referenced
 //! the way any other

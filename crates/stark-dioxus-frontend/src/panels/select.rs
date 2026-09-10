@@ -225,7 +225,7 @@ pub fn SelectPanel() -> Element {
 /// that happen to be greyed out — and without spending panel space the rest of
 /// the time.
 ///
-/// Positioned by the shared `.bottom-bars` column in `main`, which it shares with
+/// Positioned by the shared `.bottom-bars` column in `crate::app`, which it shares with
 /// the frame bar (built on the same argument) so the two stack rather than overlap.
 #[component]
 pub fn SelectionBar() -> Element {

@@ -30,7 +30,7 @@ use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
 
 /// Object before the page goes away, if the document on screen holds work this
-/// browser is the only copy of. Bound once by `main`, for the life of the page.
+/// browser is the only copy of. Bound once by the root (`crate::app`), for the life of the page.
 ///
 /// This app keeps the painting in the tab: there is no autosave and no server, so a
 /// reload or a closed tab is the end of anything neither Save nor Export has taken
@@ -153,7 +153,7 @@ pub fn open_document(state: AppState) {
 ///
 /// - **After the renderer exists.** A queued launch is delivered the moment a
 ///   consumer is set, and [`open_bytes`] needs an engine to load into — with none
-///   it would return having silently dropped the file. So `main` binds this at the
+///   it would return having silently dropped the file. So the root binds this at the
 ///   end of its startup task rather than in the root's body.
 /// - **Possibly more than once.** The manifest asks for `focus-existing`, so a
 ///   second launch reaches the *running* app instead of reloading it. That is the

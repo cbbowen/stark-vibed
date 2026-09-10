@@ -860,7 +860,7 @@ and nothing below ever asks which frontend it is in.
 `storage.rs` funnels to today, so this is a six-method trait with one impl per
 frontend and no design left to do.
 
-**Each frontend installs it in `main`, before the app runs.** Not a rule of taste:
+**Each frontend installs it before the app runs** — the web app in `run`, the native one in `main`. Not a rule of taste:
 a read with no store installed answers `None`, which is the same answer as "this
 client has nothing stored", so the caller takes its default and nothing says why.
 The web app installed in the root component's body for a release, below
