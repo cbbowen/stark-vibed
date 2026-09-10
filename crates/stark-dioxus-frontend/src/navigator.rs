@@ -156,8 +156,8 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
     .flatten()
 }
 
-/// A CSS box for the part of `over` the viewport covers, in percentages of the
-/// miniature, turned to match the view.
+/// A CSS box for the part of `over` the viewport covers, in the miniature's px, turned
+/// to match the view.
 ///
 /// The miniature itself is always upright — it is a picture of the *piece*, and an
 /// overview that turned with the easel would answer "where am I?" with a moving
@@ -178,16 +178,22 @@ fn viewport_style(over: Overview, view: stark_engine::ViewTransform) -> String {
     // spelling would put the marker somewhere the pointer does not agree with. What
     // stays this frontend's is the *encoding* — CSS wants a placed box and a matrix
     // where the native overlay wants four points.
+    //
+    // Into px before anything is measured: on a miniature that is not square a fraction
+    // of its width and one of its height are different lengths, so a length taken
+    // across both is wrong and, at an angle, the two axes shear. And px out, because a
+    // CSS `%` width is of the frame's width whichever way the box is turned.
+    let px = Vec2::new(over.width, over.height);
     let c = stark_ui::bounds::marker(over, view);
-    let pt = |i: usize| Vec2::new(c[i].0, c[i].1);
+    let pt = |i: usize| Vec2::new(c[i].0, c[i].1) * px;
     let (tl, tr, bl) = (pt(0), pt(1), pt(3));
-    // The half-axes of the parallelogram those corners describe. Their lengths are
-    // the unturned box; their directions are the turn, which is exactly the split
+    // The half-axes of the rectangle those corners describe. Their lengths are the
+    // unturned box; their directions are the turn, which is exactly the split
     // `width`/`height` and `matrix()` want.
     let x = (tr - tl) * 0.5;
     let y = (bl - tl) * 0.5;
-    let at = (tl + x + y) * 100.0;
-    let size = Vec2::new(x.length(), y.length()) * 2.0 * 100.0;
+    let at = tl + x + y;
+    let size = Vec2::new(x.length(), y.length()) * 2.0;
     // A degenerate axis has no direction to state; the identity is the honest
     // fallback, and the box it turns is zero-sized anyway.
     let unit = |v: Vec2, fallback: Vec2| {
@@ -196,7 +202,7 @@ fn viewport_style(over: Overview, view: stark_engine::ViewTransform) -> String {
     };
     let (ux, uy) = (unit(x, Vec2::X), unit(y, Vec2::Y));
     format!(
-        "left: {:.3}%; top: {:.3}%; width: {:.3}%; height: {:.3}%; \
+        "left: {:.3}px; top: {:.3}px; width: {:.3}px; height: {:.3}px; \
          transform: translate(-50%, -50%) matrix({}, {}, {}, {}, 0, 0);",
         at.x, at.y, size.x, size.y, ux.x, ux.y, uy.x, uy.y,
     )
@@ -300,7 +306,7 @@ pub fn NavigatorOverlay() -> Element {
             }
             if let Some(next) = draw_overview(state, frame) {
                 over.set(Some(next));
-                refresh.write().drawn(revision, now_seconds());
+                refresh.write().record(revision, now_seconds());
             }
         });
     });
@@ -429,7 +435,7 @@ pub fn NavigatorOverlay() -> Element {
                             && let Some(next) = draw_overview(state, frame)
                         {
                             over.set(Some(next));
-                            refresh.write().drawn(revision, now_seconds());
+                            refresh.write().record(revision, now_seconds());
                         }
                     },
                 }
@@ -444,9 +450,10 @@ pub fn NavigatorOverlay() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_engine::Extent2;
+    use stark_engine::{Extent2, ViewTransform};
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
-    /// A 400×200 piece under a miniature, and a viewport looking at it.
+    /// A 400×200 piece under a 200×100 miniature.
     fn piece() -> Overview {
         Overview {
             min: Vec2::new(-200.0, -100.0),
@@ -456,14 +463,21 @@ mod tests {
         }
     }
 
-    /// One declaration out of the style string, as a number.
+    /// A 200×100 viewport turned to `angle`.
+    fn turned(angle: f32) -> ViewTransform {
+        let mut view = ViewTransform::identity(Extent2::new(200, 100));
+        view.set_rotation(angle);
+        view
+    }
+
+    /// One declaration out of the style string, which must be in px.
     fn css(style: &str, name: &str) -> f32 {
         style
             .split(';')
             .filter_map(|d| d.split_once(':'))
             .find(|(k, _)| k.trim() == name)
-            .and_then(|(_, v)| v.trim().trim_end_matches('%').parse().ok())
-            .unwrap_or_else(|| panic!("no {name} in {style}"))
+            .and_then(|(_, v)| v.trim().strip_suffix("px")?.parse().ok())
+            .unwrap_or_else(|| panic!("no {name} in px in {style}"))
     }
 
     /// The four numbers of the style's `matrix()`.
@@ -484,28 +498,60 @@ mod tests {
         [n[0], n[1], n[2], n[3]]
     }
 
-    /// Where the corners fall is `stark_ui::bounds::marker`'s; what is this
-    /// frontend's is the CSS for them — a box placed by its centre and sized by its
-    /// two axes, in percentages of the miniature, turned by a `matrix()` of the
-    /// axes' directions. A quarter turn is the case that says so: the screen's width
-    /// runs down the piece, so the box's width is measured along its height.
+    /// The corners the style draws, in miniature px and in `marker`'s order: the box's
+    /// own corners through its `matrix()`, about the centre `translate(-50%, -50%)`
+    /// puts at `left`/`top`.
+    fn drawn(style: &str) -> [Vec2; 4] {
+        let at = Vec2::new(css(style, "left"), css(style, "top"));
+        let half = Vec2::new(css(style, "width"), css(style, "height")) * 0.5;
+        let [a, b, c, d] = matrix(style);
+        let (ux, uy) = (Vec2::new(a, b), Vec2::new(c, d));
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+            .map(|(sx, sy)| at + ux * (sx * half.x) + uy * (sy * half.y))
+    }
+
+    /// `stark_ui::bounds::marker`'s corners, in miniature px.
+    fn marked(over: Overview, view: ViewTransform) -> [Vec2; 4] {
+        stark_ui::bounds::marker(over, view)
+            .map(|(fx, fy)| Vec2::new(fx * over.width, fy * over.height))
+    }
+
+    #[track_caller]
+    fn assert_draws(style: &str, want: [Vec2; 4]) {
+        for (got, want) in drawn(style).into_iter().zip(want) {
+            assert!(got.distance(want) < 1e-2, "drew {got} for {want}: {style}");
+        }
+    }
+
+    /// Where the corners fall is `marker`'s; the CSS box is this frontend's. A quarter
+    /// turn on a miniature that is not square is the case a box measured in fractions of
+    /// it got wrong: the screen's 200 px width runs down all 100 px of the miniature's
+    /// height, and its 100 px height across a quarter of the width, 50 px.
     #[test]
-    fn the_style_is_the_markers_turned_box() {
-        let mut view = stark_engine::ViewTransform::identity(Extent2::new(200, 100));
-        view.set_rotation(std::f32::consts::FRAC_PI_2);
+    fn a_quarter_turn_draws_the_markers_box() {
+        let view = turned(FRAC_PI_2);
         let style = viewport_style(piece(), view);
-        assert!((css(&style, "left") - 50.0).abs() < 1e-2, "{style}");
-        assert!((css(&style, "top") - 50.0).abs() < 1e-2, "{style}");
-        // 200 screen px down a 200 px-tall piece is all of it; 100 across a 400
-        // px-wide one is a quarter.
-        assert!((css(&style, "width") - 100.0).abs() < 1e-2, "{style}");
-        assert!((css(&style, "height") - 25.0).abs() < 1e-2, "{style}");
+        let want = marked(piece(), view);
+        assert_draws(&style, want);
+        let (lo, hi) = stark_ui::bounds::aabb(drawn(&style)).expect("four corners");
+        assert!((hi - lo).distance(Vec2::new(50.0, 100.0)) < 1e-2, "{style}");
+        // Signed, so a turn is told from its inverse: the box's x axis runs along
+        // `tr - tl`, and its y axis a quarter turn on from that.
+        let [_, b, c, _] = matrix(&style);
+        let edge = want[1] - want[0];
+        assert_eq!(b.signum(), edge.y.signum(), "{style}");
+        assert_eq!(c.signum(), -edge.y.signum(), "{style}");
+    }
+
+    /// At an angle, fractions of a miniature that is not square shear the box. In px its
+    /// edges are perpendicular, and its corners are the marker's.
+    #[test]
+    fn an_angled_box_is_not_skewed() {
+        let view = turned(FRAC_PI_4);
+        let style = viewport_style(piece(), view);
         let [a, b, c, d] = matrix(&style);
-        assert!(a.abs() < 1e-5 && d.abs() < 1e-5, "{style}");
-        assert!(
-            (b.abs() - 1.0).abs() < 1e-5 && (c.abs() - 1.0).abs() < 1e-5,
-            "{style}"
-        );
+        assert!((a * c + b * d).abs() < 1e-4, "{style}");
+        assert_draws(&style, marked(piece(), view));
     }
 
     /// A degenerate marker — a frame dragged to nothing, a viewport with no width —
@@ -520,14 +566,8 @@ mod tests {
             height: 100.0,
         };
         let cases = [
-            (
-                flat,
-                stark_engine::ViewTransform::identity(Extent2::new(200, 100)),
-            ),
-            (
-                piece(),
-                stark_engine::ViewTransform::identity(Extent2::new(0, 100)),
-            ),
+            (flat, ViewTransform::identity(Extent2::new(200, 100))),
+            (piece(), ViewTransform::identity(Extent2::new(0, 100))),
         ];
         for (over, view) in cases {
             let style = viewport_style(over, view);

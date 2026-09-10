@@ -153,8 +153,8 @@ impl Refresh {
             && self.drawn.is_none_or(|(_, when)| now - when >= SETTLE)
     }
 
-    /// `revision` was drawn at `now`.
-    pub fn drawn(&mut self, revision: u64, now: f64) {
+    /// Record that `revision` was drawn at `now`.
+    pub fn record(&mut self, revision: u64, now: f64) {
         self.drawn = Some((revision, now));
     }
 }
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn a_refresh_is_due_when_the_revision_moves() {
         let mut refresh = Refresh::default();
-        refresh.drawn(5, 1.0);
+        refresh.record(5, 1.0);
         assert!(
             !refresh.due(5, 10.0, false),
             "still a picture of this revision"
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn a_refresh_waits_out_a_gesture() {
         let mut refresh = Refresh::default();
-        refresh.drawn(5, 1.0);
+        refresh.record(5, 1.0);
         assert!(!refresh.due(6, 10.0, true));
     }
 
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn a_refresh_comes_at_most_once_a_settle() {
         let mut refresh = Refresh::default();
-        refresh.drawn(5, 1.0);
+        refresh.record(5, 1.0);
         assert!(!refresh.due(6, 1.0 + SETTLE * 0.5, false));
         assert!(refresh.due(6, 1.0 + SETTLE * 2.0, false));
     }

@@ -220,9 +220,10 @@ impl Dwell {
         true
     }
 
-    /// Whether the hold is earned at `now` — `true` once per stop, which it latches, so a
+    /// Whether the hold is earned at `now`, **taking** it: `true` once per stop, so a
     /// pointer that simply stays put is reported once rather than on every look.
-    pub fn due(&mut self, now: f64) -> bool {
+    #[must_use = "a hold taken and ignored is a hold lost"]
+    pub fn take_due(&mut self, now: f64) -> bool {
         if self.fired || now - self.since < DWELL {
             return false;
         }
@@ -437,7 +438,7 @@ mod tests {
             let now = f64::from(step) * 0.03;
             let jitter = Vec2::new(if step % 2 == 0 { 1.5 } else { -1.5 }, 1.0);
             assert!(!dwell.moved(jitter, now), "jitter restarted the clock");
-            fired += usize::from(dwell.due(now));
+            fired += usize::from(dwell.take_due(now));
         }
         assert_eq!(fired, 1);
     }
@@ -446,15 +447,15 @@ mod tests {
     #[test]
     fn moving_past_the_slop_rearms_the_hold() {
         let mut dwell = Dwell::new(Vec2::ZERO, 0.0);
-        assert!(dwell.due(DWELL));
-        assert!(!dwell.due(DWELL * 2.0), "one report per stop");
+        assert!(dwell.take_due(DWELL));
+        assert!(!dwell.take_due(DWELL * 2.0), "one report per stop");
         let later = DWELL * 2.0;
         assert!(dwell.moved(Vec2::new(DWELL_SLOP * 2.0, 0.0), later));
         assert!(
-            !dwell.due(later + DWELL * 0.5),
+            !dwell.take_due(later + DWELL * 0.5),
             "the clock restarted at the move"
         );
-        assert!(dwell.due(later + DWELL * 1.5));
+        assert!(dwell.take_due(later + DWELL * 1.5));
     }
 
     /// A press that has travelled has asked to paint, and coming back to where it landed

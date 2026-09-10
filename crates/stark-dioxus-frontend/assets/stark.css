@@ -1933,8 +1933,8 @@ hr {
    pixel size its plan was rendered at, set on the element together with the surface
    configuration (`Renderer::paint_overview`). So nothing here may give the canvas a
    width or a height — a CSS size would stretch a portrait piece to some box's
-   proportions, and the viewport marker, positioned in percentages of this box, would
-   then sit over a picture it does not describe.
+   proportions, and the viewport marker, placed in the plan's pixels, would then sit
+   over a picture it does not describe.
 
    Which is the whole reason this is no longer a panel: a panel is a fixed-width
    column, so the picture was letterboxed into it and the difference was spent on

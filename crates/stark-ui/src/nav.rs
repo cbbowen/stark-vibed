@@ -437,21 +437,35 @@ mod tests {
         assert!((scale - 4.0).abs() < 1e-5, "{scale}");
     }
 
-    /// A twist inside the band turns nothing, and one that goes out past it and comes back
-    /// leaves the canvas exactly where it was — the raw twist is what accumulates.
+    /// A twist inside the band turns nothing; past it the band is spent once, off the whole
+    /// twist rather than off each step; and out and back returns the canvas to where it was.
+    ///
+    /// Landed off a quarter turn: landed on one, the snap pulled every small answer back to
+    /// the starting angle, and this passed with no band at all.
     #[test]
-    fn a_twist_inside_the_band_turns_nothing_and_out_and_back_is_exact() {
-        let mut touch = pair(100.0);
+    fn a_twist_spends_its_band_once_and_out_and_back_returns() {
+        let angle: f32 = 0.5;
+        let reach = angle + TWIST_DEADZONE * 3.0;
+        assert_eq!(snap_quarter(angle), angle, "clear of the snap");
+        assert_eq!(snap_quarter(reach), reach, "clear of the snap");
+        let mut touch = Touch::default();
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, angle, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, angle, 0.0));
         // Out past the slop along the pair first, so what follows is twist alone.
         let (_, along) = pinch(touch.finger_move(2, Vec2::new(150.0, 0.0)));
         assert_eq!(along, 0.0);
         let at = |angle: f32| Vec2::from_angle(angle) * 150.0;
         let (_, inside) = pinch(touch.finger_move(2, at(TWIST_DEADZONE * 0.5)));
         assert_eq!(inside, 0.0, "inside the band");
+        // Three bands of twist ask for two; a band spent per step would leave one and a
+        // half. The tolerance is for `angle_to`'s `acos`, which is coarse near small angles.
         let (_, out) = pinch(touch.finger_move(2, at(TWIST_DEADZONE * 3.0)));
-        assert!(out > 0.0, "past the band");
+        assert!((out - TWIST_DEADZONE * 2.0).abs() < 1e-4, "{out}");
         let (_, back) = pinch(touch.finger_move(2, at(0.0)));
-        assert_eq!(out + back, 0.0, "back where it started");
+        assert!(
+            (out + back).abs() < 1e-4,
+            "back where it started: {out} + {back}"
+        );
     }
 
     /// A third finger is a bystander: its moves are the gesture's and ask for nothing,
@@ -522,6 +536,36 @@ mod tests {
         assert!(touch.is_idle());
     }
 
+    /// The clock starts on the finger that finds the surface empty and no later one, so a
+    /// long press joined by a quick second finger is not a two-finger tap.
+    #[test]
+    fn a_late_second_finger_does_not_restart_the_clock() {
+        let mut touch = Touch::default();
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0, 5.0));
+        assert_eq!(touch.finger_up(2, 5.1), Lift::Continuing);
+        assert_eq!(touch.finger_up(1, 5.1), Lift::Ended { tap: None });
+    }
+
+    /// Lifting one of the pair re-forms it from the next finger down, from where that
+    /// finger *is*: a bystander's moves are recorded, so the new pair's first step scales
+    /// by that step rather than jumping back to where the finger landed.
+    #[test]
+    fn a_lift_re_forms_the_pair_without_a_jump() {
+        let mut touch = pair(100.0);
+        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0, 0.0));
+        pinch(touch.finger_move(2, Vec2::new(200.0, 0.0)));
+        assert!(matches!(
+            touch.finger_move(3, Vec2::new(0.0, 300.0)),
+            Moved::Navigation(None)
+        ));
+        assert_eq!(touch.finger_up(1, 0.1), Lift::Continuing);
+        let (scale, turn) = pinch(touch.finger_move(3, Vec2::new(0.0, 301.0)));
+        let step = Vec2::new(-200.0, 301.0).length() / Vec2::new(-200.0, 300.0).length();
+        assert!((scale - step).abs() < 1e-5, "{scale} for a step of {step}");
+        assert_eq!(turn, 0.0);
+    }
+
     /// The four ways an episode can end, and only one of them is a tap.
     #[test]
     fn a_tap_is_short_and_still() {
@@ -551,13 +595,15 @@ mod tests {
         assert_eq!(turn_to(view, Vec2::ZERO, 1.0), None);
     }
 
-    /// A long pull a little off square lands exactly square: the snap is on the target.
+    /// A long pull a little off square lands square: the snap is on the target, and a full
+    /// ease arrives at it.
     #[test]
-    fn a_long_pull_near_square_lands_exactly_square() {
+    fn a_long_pull_near_square_lands_square() {
         let view = ViewTransform::identity(Extent2::new(200, 200));
         let off = TURN_SNAP * 0.5;
         let up = Vec2::from_angle(-std::f32::consts::FRAC_PI_2 - off);
-        assert_eq!(turn_to(view, up * TURN_FOLLOW_PX * 2.0, 1.0), Some(0.0));
+        let to = turn_to(view, up * TURN_FOLLOW_PX * 2.0, 1.0).expect("a pull");
+        assert!(to.abs() < 1e-6, "{to}");
     }
 
     /// The short way round is never more than half a turn, and it always arrives.

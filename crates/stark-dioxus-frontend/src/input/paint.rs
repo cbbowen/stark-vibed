@@ -16,9 +16,8 @@
 use super::*;
 use stark_ui::input::{DWELL, Dwell, HeldPress};
 
-/// How often the hold watcher looks, in ms. Well under a tenth of [`DWELL`], so the
-/// snap lands within a frame or two of the hold being earned, and far too rare to
-/// cost anything.
+/// How often the hold watcher looks, in ms, which is how late a snap can land after
+/// its hold is earned: under a seventh of [`DWELL`], and far too rare to cost anything.
 const DWELL_POLL_MS: i32 = 60;
 
 /// The canvas's **paint** gesture: a stroke or a marquee, from the press that
@@ -273,7 +272,7 @@ impl Paint {
                 let Some(mut held) = *dwell.peek() else {
                     return;
                 };
-                if !held.due(now_seconds()) {
+                if !held.take_due(now_seconds()) {
                     continue;
                 }
                 // Latched *before* dispatching, so a pointer that simply stays put

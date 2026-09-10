@@ -111,8 +111,8 @@ mod tests {
     fn press(key: &str, ctrl: bool, shift: bool) -> wgpui::Keystroke {
         wgpui::Keystroke {
             modifiers: wgpui::Modifiers {
-                control: ctrl && !cfg!(target_os = "macos"),
-                platform: ctrl && cfg!(target_os = "macos"),
+                control: ctrl,
+                platform: false,
                 shift,
                 alt: false,
                 function: false,

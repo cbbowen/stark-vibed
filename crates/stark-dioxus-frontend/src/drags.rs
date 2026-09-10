@@ -25,9 +25,8 @@ use strum::VariantArray;
 /// [`Modifiers`], shared by the press path and the key tracker so the two cannot read
 /// the same keystroke differently.
 ///
-/// The frontend's half of `stark_ui::keys::Mods`, for the reason the chord
-/// table's `stroke` is a frontend's: only this side knows that the accelerator is
-/// Command on a Mac.
+/// The frontend's half of `stark_ui::keys::Mods`: which DOM modifiers are the
+/// accelerator's keys is this side's to say (`input::accel`).
 pub fn mods_of(m: Modifiers) -> Mods {
     Mods {
         ctrl: accel(m),

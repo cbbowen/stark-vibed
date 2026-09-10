@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Mods {
-    /// The accelerator: Ctrl, or Command on a Mac.
+    /// The accelerator: Ctrl or the platform key, either one on every OS ([`accel`]).
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,

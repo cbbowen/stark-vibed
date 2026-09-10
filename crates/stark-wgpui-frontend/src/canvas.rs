@@ -1570,7 +1570,7 @@ impl Canvas {
             && let Some(r) = self.renderer.as_mut()
             && r.paint_overview(window, &plan)
         {
-            self.overview_drawn.drawn(revision, now);
+            self.overview_drawn.record(revision, now);
         }
     }
 

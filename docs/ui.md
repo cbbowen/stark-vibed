@@ -159,7 +159,9 @@ surrounds it.
   that is either the *character* it types — a mnemonic follows the layout,
   because Z undoes wherever the layout puts the Z — or the *position* it sits
   at — a spatial pair is about adjacency, and `[`/`]` step the brush precisely
-  because they are side by side (`slots::of_code`'s argument, §18.1.8). Chords
+  because they are side by side (`slots::of_code`'s argument, §18.1.8). The
+  accelerator is either key on every OS, so the Windows or Super key counts as Ctrl
+  on Windows and Linux, and Ctrl reaches Command's chords on macOS. Chords
   are exact: Ctrl+Shift+Z is its own row rather than Ctrl+Z plus a bystander,
   and Alt+H is not the bare `h` row with a passenger. **Ctrl+Alt is bindable
   and never shipped.** On Windows AltGr *is* Ctrl+Alt — the OS synthesizes the
@@ -974,8 +976,8 @@ the exit criterion is an act, not a diff.
   `keys::Keystroke` is what a chord is matched against and `keys::Mods` the triple
   both tables compare exactly; "the two tables read one keystroke the same way" had
   been a *comment* in the chord table, and is now the reason they share a module.
-  What a frontend still owes is only what a frontend alone knows: that the
-  accelerator is Command on a Mac, and what the layout typed.
+  What a frontend still owes is only what a frontend alone knows: which of its
+  toolkit's modifiers are the accelerator's two keys, and what the layout typed.
 
   Three things did **not** travel, each for its own reason. `run` dispatches and
   asks the app's gates; `active` reads a frontend's own state rather than
