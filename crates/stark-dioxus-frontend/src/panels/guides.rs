@@ -52,6 +52,7 @@ use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide, PlaneTrace};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
+use stark_ui::guides::{AXIS_NAMES, CELL_OCTAVES, PAIR_AXES};
 use stark_ui::reorder::{Grab, Motion, Slide};
 
 /// The axis hues, by **name**: `stark.css` declares `--axis-x/y/z` and this
@@ -69,17 +70,11 @@ use stark_ui::reorder::{Grab, Motion, Slide};
 /// `tests::the_chips_are_painted_in_the_shader_s_own_axis_hues` parses the
 /// stylesheet and holds the two together.
 const AXIS_CSS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
-const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
-/// The two axes of each pair plane, in the order the chip shows them: XY, YZ,
-/// ZX.
-///
-/// The model's own cyclic order, pair `k` being spanned by axes `(k, k+1)`, and
-/// the chips are read in it rather than sorted: the three then run X→Y→Z→X, so
-/// each chip picks up where the last left off and every axis letter appears
-/// exactly twice, once on each side. Sorting the last one to "XZ" would break
-/// that at the only place it shows.
-const PAIR_AXES: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
+/// The opacity track's ends, off the dial that owns them
+/// (`stark_ui::guides::Dial::Opacity`) rather than spelled here three times as the
+/// fill, the `min` and the `max`.
+const OPACITY_RANGE: (f32, f32) = stark_ui::guides::Dial::Opacity.range();
 
 /// Grab radius of the center-of-view crosshair, screen px.
 const CENTER_GRAB_PX: f32 = 14.0;
@@ -91,18 +86,6 @@ const LINE_BAND_PX: f32 = 10.0;
 /// The lens's travel, canvas px: wide enough for any drawing, floored so the
 /// circle cannot be dragged through its own center into a degenerate camera.
 const FOCAL_RANGE: (f32, f32) = (120.0, 12000.0);
-
-/// The cell scale the bar offers, as **halvings** of the default lattice
-/// (§20.3): two steps coarser to two steps finer, and nothing in between.
-///
-/// The model draws a valid grid at any scale; this is what the control offers,
-/// and the reason is that a grid meant to be counted on should *refine* rather
-/// than slide. Double the cells and every line of the coarser grid is still a
-/// line of the finer one with a new line between each pair — nothing an artist
-/// has already counted against moves. At any other ratio the whole family slides
-/// along its pencil toward the corner's own edge, which reads as the grid
-/// drifting sideways rather than as a change of scale.
-const CELL_OCTAVES: (i32, i32) = (-2, 2);
 
 /// The engine's guide roster, as this client sees it (§20.5) — the document's
 /// guides, each row carrying whether this client's eye on it is open.
@@ -348,10 +331,7 @@ fn remove_guide(state: AppState, id: GuideId) {
 /// described, not named, and the description of the second row is "the second one".
 /// Naming it is how you stop it moving.
 fn guide_label(index: usize, guide: &GuideInfo) -> String {
-    match &guide.name {
-        Some(name) => name.to_string(),
-        None => format!("Perspective {}", index + 1),
-    }
+    stark_ui::guides::label(index, guide)
 }
 
 /// The Drawing Guides panel: the roster of guides, shaped like the Layers panel — a
@@ -681,8 +661,7 @@ pub fn PerspectiveGuideBar() -> Element {
     // of its own can say about the size of a cell (§20.3). The bar states it in
     // halvings of the default ([`CELL_OCTAVES`]) — the guide's own length is the
     // ladder's rung, so there is no separate number to keep in step.
-    let base = PerspectiveGuide::default().lattice;
-    let octave = (g.lattice.length() / base.length()).log2().round();
+    let octave = stark_ui::guides::octave(g);
     let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
 
     rsx! {
@@ -830,7 +809,7 @@ pub fn PerspectiveGuideBar() -> Element {
                 oninput: move |e| {
                     if let Ok(k) = e.value().parse::<f32>() {
                         drag_guide(state, pending, id, move |g| {
-                            g.lattice = base * 2f32.powi(k.round() as i32);
+                            *g = stark_ui::guides::with_octave(*g, k);
                         });
                     }
                 },
@@ -848,8 +827,8 @@ pub fn PerspectiveGuideBar() -> Element {
             }
             input {
                 class: "slider",
-                style: slider_fill(0.1, 1.0, opacity),
-                r#type: "range", min: "0.1", max: "1", step: "any",
+                style: slider_fill(OPACITY_RANGE.0, OPACITY_RANGE.1, opacity),
+                r#type: "range", min: "{OPACITY_RANGE.0}", max: "{OPACITY_RANGE.1}", step: "any",
                 value: "{opacity}",
                 title: "How strongly the guide reads over the paint",
                 oninput: move |e| {

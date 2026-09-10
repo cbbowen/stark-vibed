@@ -1449,7 +1449,12 @@ impl Canvas {
 
     /// Move one of the Guides shelf's tracks: a whole edit of the camera in hand,
     /// because that is the shape `DocCommand::SetGuide` takes.
-    pub(crate) fn turn_guide(&mut self, dial: guides::Dial, v: f32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn turn_guide(
+        &mut self,
+        dial: stark_ui::guides::Dial,
+        v: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some((id, camera)) = self.held_guide() else {
             return;
         };

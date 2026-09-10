@@ -85,6 +85,15 @@ pub fn unnamed_label(index: usize) -> String {
     format!("Perspective {}", index + 1)
 }
 
+/// What a roster row calls `guide`: its own name if it has been given one, and its
+/// place if it has not ([`unnamed_label`]).
+pub fn label(index: usize, guide: &stark_engine::GuideInfo) -> String {
+    match &guide.name {
+        Some(name) => name.to_string(),
+        None => unnamed_label(index),
+    }
+}
+
 /// A guides panel's two continuous knobs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray, strum::EnumCount)]
 pub enum Dial {
@@ -135,7 +144,10 @@ impl Dial {
     }
 
     /// The ends of its track.
-    pub fn range(self) -> (f32, f32) {
+    ///
+    /// `const`, so a frontend that wants one end as its own named constant can take it
+    /// from here rather than spelling the number again.
+    pub const fn range(self) -> (f32, f32) {
         match self {
             Dial::Cells => (CELL_OCTAVES.0 as f32, CELL_OCTAVES.1 as f32),
             Dial::Opacity => (MIN_OPACITY, 1.0),
@@ -143,7 +155,7 @@ impl Dial {
     }
 
     /// Whole rungs for the ladder, a hundredth for a strength.
-    pub fn step(self) -> f32 {
+    pub const fn step(self) -> f32 {
         match self {
             Dial::Cells => 1.0,
             Dial::Opacity => 0.01,
@@ -233,6 +245,21 @@ mod tests {
             seen[b] += 1;
         }
         assert_eq!(seen, [2, 2, 2], "the pair planes do not close a cycle");
+    }
+
+    /// Both dials say something on hover, and say it about themselves — what a column
+    /// with no captions stands on. The label leads the tip so the two cannot come to
+    /// call one knob two things.
+    #[test]
+    fn every_dial_says_what_it_does() {
+        for dial in Dial::VARIANTS {
+            assert!(!dial.label().is_empty(), "{dial:?} has no caption");
+            assert!(
+                dial.tip().starts_with(dial.label()),
+                "{dial:?}'s hover does not lead with its own name: {:?}",
+                dial.tip()
+            );
+        }
     }
 
     /// A track a hand cannot move back off is the failure this table rules out.

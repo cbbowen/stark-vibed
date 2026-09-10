@@ -26,9 +26,9 @@ use stark_ui::brush_editor::{self, Knob, ModRow, Shown};
 use crate::brush::Brush;
 use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
-use crate::guides;
 use crate::panel::KNOBS;
 use crate::select::Dial;
+use stark_ui::guides as gd;
 use stark_ui::lighting as light;
 
 /// Every dial the Select section can mount, in one order, so a state exists for each
@@ -48,8 +48,8 @@ pub struct Controls {
     /// The Lighting shelf's five, in `stark_ui::lighting::Dial`'s own order —
     /// see [`Controls::light`].
     lights: [Entity<SliderState>; <light::Dial as strum::EnumCount>::COUNT],
-    /// The Guides shelf's two, in `guides::DIALS`' order.
-    guide_dials: [Entity<SliderState>; guides::DIALS.len()],
+    /// The Guides shelf's two, in `stark_ui::guides::Dial`'s own order.
+    guide_dials: [Entity<SliderState>; <gd::Dial as strum::EnumCount>::COUNT],
     /// Which room the canvas is lit in, over `light::ENVIRONMENTS`' names.
     pub environment: Entity<SelectState<Vec<SharedString>>>,
     /// The color panel's notation field: what the picker stands on, as text a
@@ -151,7 +151,8 @@ impl Controls {
             ));
             state
         });
-        let guide_dials = guides::DIALS.map(|dial| {
+        let guide_dials = std::array::from_fn(|i| {
+            let dial = <gd::Dial as strum::VariantArray>::VARIANTS[i];
             let (lo, hi) = dial.range();
             let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
             subs.push(
@@ -284,8 +285,9 @@ impl Controls {
     }
 
     /// The state behind one of the Guides shelf's tracks.
-    pub fn guide(&self, dial: guides::Dial) -> &Entity<SliderState> {
-        let i = guides::DIALS
+    pub fn guide(&self, dial: gd::Dial) -> &Entity<SliderState> {
+        // Seated rather than searched, as the lighting dials are.
+        let i = <gd::Dial as strum::VariantArray>::VARIANTS
             .iter()
             .position(|d| *d == dial)
             .expect("every guide dial has a state");
@@ -355,7 +357,10 @@ impl Controls {
         // all (`crate::guides`), and writing them would be settling a control nobody
         // can see onto a camera that does not exist.
         if let Some(g) = guide {
-            for (dial, state) in guides::DIALS.iter().zip(&self.guide_dials) {
+            for (dial, state) in <gd::Dial as strum::VariantArray>::VARIANTS
+                .iter()
+                .zip(&self.guide_dials)
+            {
                 settle(state, dial.read(&g), window, cx);
             }
         }

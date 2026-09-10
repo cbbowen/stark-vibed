@@ -17,147 +17,22 @@
 //! So a guide added here is `PerspectiveGuide::default` placed where the artist is
 //! looking: two-point, turned 30°, drawing immediately. This shelf then dresses it —
 //! how fine the grid is, how strongly it reads, which planes are ruled, which lens.
+//!
+//! **What a rung of the cell ladder means, and what the three planes are called, are
+//! `stark_ui::guides`'.** They were this file's, under a doc saying they were "the web
+//! app's own figures … because a rung has to be the same grid in both apps" — which
+//! is true, and was being kept true by hand.
 
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide};
 use stark_ui::commands::{Bindings, Command};
+use stark_ui::guides::{AXIS_NAMES, Dial, PAIR_AXES, label};
 use stark_ui::icons::Icon;
 use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, px};
 
 use crate::controls::Controls;
 use crate::style::{self, StyleExt};
-
-/// The cell scale the shelf offers, as **halvings** of the default lattice (§20.3):
-/// two steps coarser to two steps finer, and nothing in between.
-///
-/// The model draws a valid grid at any scale; this is what the control offers, and
-/// the reason is that a grid meant to be counted on should *refine* rather than
-/// slide. Double the cells and every line of the coarser grid is still a line of the
-/// finer one with a new line between each pair — nothing already counted against
-/// moves. At any other ratio the whole family slides along its pencil toward the
-/// corner's own edge, which reads as the grid drifting sideways.
-///
-/// The web app's own figures (`panels::guides::CELL_OCTAVES`), because a rung has to
-/// be the same grid in both apps.
-pub const CELL_OCTAVES: (i32, i32) = (-2, 2);
-
-/// The floor the opacity track offers. A guide at zero is a guide that is on and
-/// invisible, which the eye already says better.
-const MIN_OPACITY: f32 = 0.1;
-
-/// The two axes of each pair plane, in the order the chip shows them: XY, YZ, ZX.
-///
-/// The model's own cyclic order, pair `k` being spanned by axes `(k, k+1)`, and the
-/// chips are read in it rather than sorted: the three then run X→Y→Z→X, so each chip
-/// picks up where the last left off and every axis letter appears exactly twice.
-const PAIR_AXES: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
-
-const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
-
-/// The shelf's two continuous knobs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Dial {
-    /// How fine the grid is, in halvings of the default lattice.
-    Cells,
-    /// How strongly the whole overlay reads over the paint.
-    Opacity,
-}
-
-/// Both, in the order the shelf draws them.
-pub const DIALS: [Dial; 2] = [Dial::Cells, Dial::Opacity];
-
-impl Dial {
-    pub fn glyph(self) -> Icon {
-        match self {
-            // A fan of lines from a point, which is exactly what this number counts:
-            // the guide's fans are its parametrization (§20.5).
-            Dial::Cells => stark_ui::icons::DENSITY,
-            Dial::Opacity => stark_ui::icons::OPACITY,
-        }
-    }
-
-    fn tip(self) -> &'static str {
-        match self {
-            Dial::Cells => {
-                "Cells \u{2014} how fine the grid is; each step halves the cell, so every \
-                 line of the coarser grid is still a line of this one"
-            }
-            Dial::Opacity => "Opacity \u{2014} how strongly the guide reads over the paint",
-        }
-    }
-
-    pub fn range(self) -> (f32, f32) {
-        match self {
-            Dial::Cells => (CELL_OCTAVES.0 as f32, CELL_OCTAVES.1 as f32),
-            Dial::Opacity => (MIN_OPACITY, 1.0),
-        }
-    }
-
-    /// Whole rungs for the ladder, a hundredth for a strength.
-    pub fn step(self) -> f32 {
-        match self {
-            Dial::Cells => 1.0,
-            Dial::Opacity => 0.01,
-        }
-    }
-
-    /// Where the dial stands for `guide`.
-    pub fn read(self, guide: &PerspectiveGuide) -> f32 {
-        match self {
-            Dial::Cells => octave(guide),
-            Dial::Opacity => guide.opacity,
-        }
-    }
-
-    /// The guide `value` asks for. Stated as a whole edit of the camera rather than
-    /// as a field write, because that is the shape every act on this shelf takes:
-    /// `DocCommand::SetGuide` carries the camera entire (§20.5).
-    pub fn write(self, mut guide: PerspectiveGuide, value: f32) -> PerspectiveGuide {
-        match self {
-            Dial::Cells => {
-                // Stepped off the *default* rather than off the guide's current
-                // lattice, so a rung is the same grid however it was reached.
-                let base = PerspectiveGuide::default().lattice;
-                guide.lattice = base * 2f32.powi(value.round() as i32);
-            }
-            Dial::Opacity => guide.opacity = value.clamp(MIN_OPACITY, 1.0),
-        }
-        guide
-    }
-
-    fn readout(self, v: f32) -> String {
-        match self {
-            Dial::Cells => format!("{v:+.0}"),
-            Dial::Opacity => format!("{v:.2}"),
-        }
-    }
-}
-
-/// Which rung of the cell ladder `guide` stands on.
-///
-/// The grid's scale is the *length* of the lattice: how many cells lie between the
-/// eye and its corner, which is all a camera with no world scale of its own can say
-/// about the size of a cell (§20.3).
-fn octave(guide: &PerspectiveGuide) -> f32 {
-    let base = PerspectiveGuide::default().lattice.length();
-    if base <= 0.0 || guide.lattice.length() <= 0.0 {
-        return 0.0;
-    }
-    (guide.lattice.length() / base).log2().round()
-}
-
-/// What to call a guide that has never been named: its place in the roster.
-///
-/// Numbered by *position*, which shifts when a row above it goes — the honest reading
-/// for a row that is being described rather than named. Naming it is how you stop it
-/// moving. The web app's roster says the same thing the same way.
-pub fn label(index: usize, guide: &stark_engine::GuideInfo) -> String {
-    match &guide.name {
-        Some(name) => name.to_string(),
-        None => format!("Perspective {}", index + 1),
-    }
-}
 
 /// Which control a press on the shelf landed on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -384,14 +259,19 @@ pub fn guides_body(
                              into circles, and both poles of every axis come into view",
                         )),
                 )
-                .children(DIALS.into_iter().map(|dial| {
-                    crate::panel::Slider::new(
-                        dial.glyph(),
-                        dial.tip(),
-                        dial.readout(dial.read(&g)),
-                        controls.guide(dial),
-                    )
-                }))
+                .children(
+                    <Dial as strum::VariantArray>::VARIANTS
+                        .iter()
+                        .copied()
+                        .map(|dial| {
+                            crate::panel::Slider::new(
+                                dial.glyph(),
+                                dial.tip(),
+                                dial.readout(dial.read(&g)),
+                                controls.guide(dial),
+                            )
+                        }),
+                )
         }))
 }
 
@@ -509,50 +389,6 @@ mod tests {
             info(1, PerspectiveGuide::default()),
             info(2, PerspectiveGuide::default()),
         ]
-    }
-
-    /// Both dials say what they do — what a column with no labels stands on
-    /// (`crate::panel`).
-    ///
-    /// A glyph is the type's own guarantee now (`stark_ui::icons::Icon::svg`), so
-    /// what is left to check is the word behind the hover.
-    #[test]
-    fn every_dial_says_what_it_does() {
-        for dial in DIALS {
-            assert!(!dial.tip().is_empty());
-            let (lo, hi) = dial.range();
-            assert!(hi > lo);
-        }
-    }
-
-    /// A rung of the cell ladder reads back as the rung it was written at, which is
-    /// what lets the track draw its handle where the hand left it.
-    #[test]
-    fn a_cell_rung_reads_back_as_itself() {
-        for rung in CELL_OCTAVES.0..=CELL_OCTAVES.1 {
-            let g = Dial::Cells.write(PerspectiveGuide::default(), rung as f32);
-            assert_eq!(Dial::Cells.read(&g), rung as f32, "rung {rung}");
-        }
-    }
-
-    /// The default guide stands at rung zero, so the ladder is centred on what an add
-    /// produces rather than on an arbitrary lattice.
-    #[test]
-    fn the_default_guide_stands_at_the_middle_rung() {
-        assert_eq!(octave(&PerspectiveGuide::default()), 0.0);
-    }
-
-    /// A degenerate lattice — one a peer could send, since the model clamps for
-    /// finiteness and not for length — reads as the middle rung rather than as a
-    /// negative infinity the track would place off its own end.
-    #[test]
-    fn a_collapsed_lattice_still_lands_on_a_rung() {
-        let mut g = PerspectiveGuide::default();
-        // Through the default's own lattice rather than a named zero: `Vec3` is
-        // glam's and the model does not re-export it, and what matters here is the
-        // length rather than the type.
-        g.lattice *= 0.0;
-        assert_eq!(octave(&g), 0.0);
     }
 
     /// The eye is **session** state and the planes are the document's — the split
