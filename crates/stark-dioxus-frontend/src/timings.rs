@@ -1,7 +1,7 @@
 //! The Timing Stats dialog: where this session's time has actually gone
 //! (`stark_engine::timing`, §7.1).
 //!
-//! Off the command search, on the rail's own rule (main.rs): an infrequent command, read
+//! Off the command search, on the rail's own rule (lib.rs): an infrequent command, read
 //! when a question comes up rather than kept on screen. It is deliberately **not** a
 //! panel — a live frame-rate readout beside the canvas is a thing to watch instead of
 //! painting, and the whole point of the histograms is that they keep accruing while

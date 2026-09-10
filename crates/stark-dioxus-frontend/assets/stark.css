@@ -1,6 +1,6 @@
 /* Global stylesheet for the Stark web UI, imported via `asset!` +
    `document::Stylesheet` (§11). Holds the shared panel chrome (as CSS
-   custom properties) and the component classes referenced from main.rs, so the
+   custom properties) and the component classes referenced from lib.rs, so the
    rsx! blocks carry class names instead of inline style strings. Only genuinely
    dynamic styling (hue gradient, marker position, selected/active state) stays
    inline at the call site. */
@@ -1540,7 +1540,7 @@ hr {
   height: 11px;
 }
 
-/* --- the chrome down the left (`main.rs`, `.left-chrome`) ---
+/* --- the chrome down the left (`lib.rs`, `.left-chrome`) ---
    Two things live on this edge and neither is a panel: the quick-brush rack while a
    number key is held (§18.1.8), and the navigator's miniature in the corner (§11).
    One column holds both, because the two are sized by facts that have nothing to do

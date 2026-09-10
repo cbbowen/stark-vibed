@@ -366,9 +366,9 @@ surrounds it.
   dropdown is absolutely positioned inside the rail, whose own `backdrop-filter`
   makes a stacking context, so its `z-index: 1000` is spent clearing the rail's
   buttons. Left level with the chrome, the rail lost to everything mounted after
-  it in `main.rs` — the quick-brush rack covering the menu that puts the rack
+  it in `lib.rs` — the quick-brush rack covering the menu that puts the rack
   away. **Anything sharing a rung is ordered by the DOM**,
-  so a tie there is a statement about the order in `main.rs` and is commented as
+  so a tie there is a statement about the order in `lib.rs` and is commented as
   one where it matters (the pop-out and the card at 26).
 - **The navigator's miniature is a second surface, not an image the UI carries.**
   An overview is the one piece of chrome that cannot be derived from
@@ -871,7 +871,7 @@ only place that difference can be told.
 
 #### What a native platform layer owes
 
-`platform.rs` is 1778 lines of web answers to a shorter list of questions. The
+`platform/web.rs` is 1411 lines of web answers to a shorter list of questions. The
 native ones:
 
 | capability | web today | native |

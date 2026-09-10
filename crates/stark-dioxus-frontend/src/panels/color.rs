@@ -364,10 +364,7 @@ fn bmp_data_url(w: usize, h: usize, rgb: &[u8]) -> String {
         }
         bmp.resize(bmp.len() + stride - w * 3, 0);
     }
-    format!(
-        "url(data:image/bmp;base64,{})",
-        crate::platform::base64_encode(&bmp)
-    )
+    format!("url(data:image/bmp;base64,{})", crate::base64::encode(&bmp))
 }
 
 /// The picker's wheel at lightness `l`.

@@ -13,12 +13,6 @@ default = ["mixbox", "webrtc"]
 mixbox = ["stark-engine/mixbox"]
 webrtc = ["stark-net/webrtc"]
 
-[build-dependencies]
-# Hashing the bundled shapes and substrates into their content ids at build time
-# (build.rs). The whole reason that crate is separate from stark-engine: an id has
-# to be computable without linking a GPU renderer.
-stark-assetid = { workspace = true }
-
 [dependencies]
 stark-assetid = { workspace = true }
 # The document (§2), depended on directly rather than through the engine: a type
@@ -35,17 +29,12 @@ stark-net = { path = "../stark-net", default-features = false }
 dioxus = { version = "0.7.10", features = ["web", "asset"] }
 wgpu = { workspace = true }
 tracing = { workspace = true, features = ["max_level_debug"] }
-# Composing the console layer with the engine's timing layer over one registry
-# (`main::install_tracing`, §7.1) — the two are exact complements, so neither can
-# be installed with `set_as_global_default` alone.
-tracing-subscriber = { workspace = true }
 # Brush presets and the ⚙ dialog's settings persist to localStorage as JSON
 # (presets.rs, prefs.rs): text, so a stored value is legible in devtools and
 # editable by hand, which a browser-local table is worth. The save format
 # reconciles by name too now (§8), so this is no longer the only door that does.
-# Both already in the tree via dioxus.
+# Already in the tree via dioxus.
 serde = { workspace = true }
-serde_json = "1"
 # Encoding a brush shape's coverage as the gallery's thumbnail (shapes.rs): the
 # card has to show a *field*, not the file it was authored from, and that means
 # an alpha channel the source may not have had. Already in the wasm build under
@@ -110,9 +99,9 @@ web-sys = { version = "0.3", features = [
     "IdbTransaction",
     "IdbTransactionMode",
     "IdbObjectStore",
-    # Save / open / export (platform.rs): a download is a Blob behind an object
-    # URL on a synthetic <a download>; opening is a hidden <input type=file>
-    # whose bytes come back through FileReader.
+    # Save / open / export (platform::download_bytes, platform::pick_file): a
+    # download is a Blob behind an object URL on a synthetic <a download>; opening
+    # is a hidden <input type=file> whose file is read with `Blob.arrayBuffer()`.
     "Blob",
     "BlobPropertyBag",
     "Url",
@@ -120,8 +109,6 @@ web-sys = { version = "0.3", features = [
     "HtmlInputElement",
     "File",
     "FileList",
-    "FileReader",
-    "ProgressEvent",
     "EventTarget",
     # Importing custom brush shapes (platform::normalize_shape_image): the
     # browser decodes any image format it knows into a canvas, we normalize the
@@ -142,8 +129,18 @@ web-sys = { version = "0.3", features = [
     "DataTransferItemList",
 ] }
 console_error_panic_hook = "0.1"
-# Routes `tracing` events to the browser console (set as the global subscriber).
+# Routes `tracing` events to the browser console, as one layer of the subscriber
+# `platform::install_tracing` sets.
 tracing-wasm = "0.2"
+# Composing that console layer with the engine's timing layer over one registry
+# (`platform::install_tracing`, §7.1) — the two are exact complements, so neither can
+# be installed with `set_as_global_default` alone.
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# The tests that pin how a stored row is spelled (gradients.rs, layout.rs, records.rs,
+# tutor.rs).
+serde_json = "1"
 
 # The shared lint set (root Cargo.toml).
 [lints]

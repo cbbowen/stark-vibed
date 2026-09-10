@@ -67,7 +67,7 @@ use stark_engine::Extent2;
 use stark_engine::{ExportScale, LayerInfo};
 use stark_model::document::LayerId;
 
-use crate::platform::{base64_encode, sleep_ms};
+use crate::platform::sleep_ms;
 use crate::state::{AppState, root_signal};
 
 /// Thumbnail pixel size: 2× the box a row shows it in, so it stays crisp on a
@@ -309,7 +309,7 @@ async fn generate(
             .await
             .ok()
             .and_then(|image| image.to_png().ok())
-            .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
+            .map(|png| format!("data:image/png;base64,{}", crate::base64::encode(&png)))
             .unwrap_or_default(),
         None => String::new(),
     };

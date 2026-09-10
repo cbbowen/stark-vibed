@@ -2,7 +2,7 @@
 //! under.
 //!
 //! Off the command search rather than a panel or the command rail, on the rail's own rule
-//! (main.rs): that menu is where infrequent commands live, and this is the least
+//! (lib.rs): that menu is where infrequent commands live, and this is the least
 //! frequent of them — read once, if ever.
 //!
 //! Two things it is deliberately not. It is not a settings dialog, so nothing here

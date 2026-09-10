@@ -1,29 +1,25 @@
-//! The off-wasm half of [`crate::platform`]: one stand-in per browser call, so
-//! the crate still compiles for the host.
+//! The host's half of [`crate::platform`]: what tests and clippy link in place of
+//! `web.rs`, so the crate compiles off wasm.
 //!
-//! **These are what `cargo test` and `cargo clippy --workspace --all-targets`
-//! link**, which is worth being exact about, because it is easy to read the
-//! host build as coverage and it is the opposite: every one of the browser
-//! calls next door is untested logic, and a test that reaches anything through
-//! this module is exercising the answer below rather than the one a browser
-//! gives. What the host build buys is the boundary — a browser call written into
-//! a panel stops it, at the line that wrote it (see [`super`]'s doc) — and it
-//! buys nothing else.
+//! Compiling is all it buys. A test that reaches a browser call through here exercises
+//! the answer below rather than a browser's, so a green host build says nothing about
+//! `web.rs`. The answers therefore say that nothing happened — an empty list, a `None`,
+//! a `false`, and an `Err` from every act a caller would otherwise report as done — and
+//! [`Canvas::surface_target`], which cannot answer at all, panics.
 //!
-//! So the answers here are chosen to be *honest about being nothing*: an empty
-//! list, a `None`, a `false`, a size of one pixel. The one exception is
-//! [`Canvas::surface_target`], which cannot answer honestly and says so by
-//! panicking — reaching it off the web is a bug rather than a fallback.
-//!
-//! Undocumented by design, item for item: every one of these is the second half
-//! of something documented in [`super`], and a doc comment here would be a second
-//! description to keep in step with the first. What is worth saying about the
-//! pair is said there — which is the argument for collecting them rather than
-//! leaving each one under the doc it does not get.
+//! Undocumented item for item: each is the second half of one documented in `web.rs`,
+//! and `tests/platform_parity.rs` holds the two signatures equal.
 
 use dioxus::prelude::*;
 
-use super::*;
+use super::{Coalesced, ElementBox, RawPointer};
+
+#[derive(Clone)]
+pub struct Canvas;
+
+pub struct KeyEvent;
+
+pub struct WindowEvent;
 
 impl Canvas {
     pub fn laid_out_size(&self) -> (u32, u32) {
@@ -65,12 +61,9 @@ impl WindowEvent {
     pub fn prevent_default(&self) {}
 }
 
-#[derive(Clone)]
-pub struct Canvas;
+pub fn install_panic_hook() {}
 
-pub struct KeyEvent;
-
-pub struct WindowEvent;
+pub fn install_tracing() {}
 
 pub async fn sleep_ms(_ms: i32) {}
 
@@ -189,19 +182,19 @@ pub async fn blob_put(_key: &str, _bytes: &[u8]) -> bool {
 pub async fn blob_delete(_key: &str) {}
 
 pub fn download_bytes(_bytes: &[u8], _filename: &str, _mime: &str) -> Result<(), String> {
-    Ok(())
+    Err("no browser to download through".to_string())
 }
 
 pub fn pick_file(_accept: &str, _on_file: impl Fn(String, Vec<u8>) + 'static) {}
 
 pub fn on_file_launch(_on_file: impl Fn(String, Vec<u8>) + 'static) {}
 
-pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
-    Ok((bytes, false))
+pub async fn normalize_shape_image(_bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+    Err("no image decoder off the web".to_string())
 }
 
-pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    Ok(bytes)
+pub async fn normalize_substrate_image(_bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Err("no image decoder off the web".to_string())
 }
 
 pub async fn decode_image(_bytes: Vec<u8>) -> Result<(u32, u32, Vec<u8>), String> {

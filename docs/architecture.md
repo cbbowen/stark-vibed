@@ -140,7 +140,8 @@ stark/
 │   └── stark-dioxus-frontend/  # Dioxus 0.7 frontend (§11)
 │       ├── assets/             # shipped images + stylesheet (fetched at runtime)
 │       └── src/
-│           ├── main.rs         # app root, canvas, command rail
+│           ├── main.rs         # the entry point: calls `run`
+│           ├── lib.rs          # app root, canvas, command rail
 │           ├── state.rs        # AppState + the dispatch seam
 │           ├── render.rs       # WebGPU surface + Engine wrapper
 │           ├── input.rs        # DOM events → InputCommand
@@ -150,7 +151,8 @@ stark/
 │           ├── settings.rs     # the unified settings dialog
 │           ├── prefs.rs        # what that dialog sets (localStorage)
 │           ├── widgets.rs      # shared small controls
-│           ├── platform.rs     # the two browser-only helpers
+│           ├── platform.rs     # the browser boundary's shared types
+│           ├── platform/       # web.rs (wasm32) and stub.rs (host): one surface
 │           ├── shapes.rs       # the per-browser brush shape library
 │           ├── presets.rs      # named brush presets (localStorage)
 │           ├── builtins.rs     # the built-in shape table

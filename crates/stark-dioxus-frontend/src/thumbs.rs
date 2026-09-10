@@ -53,7 +53,6 @@ use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
-use crate::platform::base64_encode;
 use crate::state::{AppState, root_signal};
 use stark_ui::brush_config::{BrushConfig, Transient};
 
@@ -351,7 +350,7 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
             .await
             .ok()
             .and_then(|image| image.to_png().ok())
-            .map(|png| format!("data:image/png;base64,{}", base64_encode(&png)))
+            .map(|png| format!("data:image/png;base64,{}", crate::base64::encode(&png)))
             .unwrap_or_default(),
         Err(_) => String::new(),
     };

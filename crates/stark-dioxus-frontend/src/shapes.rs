@@ -388,7 +388,7 @@ mod tests {
         let b64 = url
             .strip_prefix("data:image/png;base64,")
             .expect("a png data url");
-        let bytes = crate::platform::base64_decode(b64).expect("base64");
+        let bytes = crate::base64::decode(b64).expect("base64");
 
         let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
             .read_info()

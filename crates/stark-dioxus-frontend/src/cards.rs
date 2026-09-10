@@ -56,6 +56,6 @@ pub fn data_url(card: Card) -> Option<String> {
     }
     Some(format!(
         "data:image/png;base64,{}",
-        crate::platform::base64_encode(&out)
+        crate::base64::encode(&out)
     ))
 }
