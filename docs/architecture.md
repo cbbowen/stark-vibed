@@ -153,9 +153,11 @@ stark/
 │           ├── widgets.rs      # shared small controls
 │           ├── platform.rs     # the browser boundary's shared types
 │           ├── platform/       # web.rs (wasm32) and stub.rs (host): one surface
-│           ├── shapes.rs       # the per-browser brush shape library
+│           ├── library.rs      # the two asset libraries: stamps and substrates
+│           ├── shapes.rs       # picking a stamp out of that library
 │           ├── presets.rs      # named brush presets (localStorage)
-│           ├── builtins.rs     # the built-in shape table
+│           ├── builtins.rs     # the built-in shapes, imported at start
+│           ├── shipped.rs      # the bundled files, one table for both catalogs
 │           ├── brush_editor.rs # the brush dialog + its preview engine
 │           ├── thumbs.rs       # rendered preset thumbnails (a shared engine)
 │           ├── layer_thumbs.rs # rendered layer thumbnails (the live engine)

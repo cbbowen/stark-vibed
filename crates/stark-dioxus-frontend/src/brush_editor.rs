@@ -39,6 +39,7 @@
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
+use stark_ui::assets::Shapes;
 use stark_ui::icons::Icon;
 
 use stark_engine::command::InputSample;
@@ -50,6 +51,7 @@ use dioxus::html::HasFileData;
 
 use crate::commands;
 use crate::icons::icon;
+use crate::library;
 use crate::panels::brush::{set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
@@ -654,7 +656,7 @@ fn curve_plot(m: Modulation) -> Element {
 /// an async import (finishing long after its click handler returned) still
 /// refresh the preview. Safe as a child component (unlike the slider rows):
 /// nothing here spawns into this scope — imports are `spawn_forever` in
-/// `crate::shapes`.
+/// `crate::library`.
 #[component]
 fn ShapeGallery() -> Element {
     let state = use_context::<AppState>();
@@ -667,14 +669,14 @@ fn ShapeGallery() -> Element {
     // still in flight has no id yet, so it simply never reads as selected —
     // clicking it is the same no-op, and both settle when the bytes land. Its
     // picture waits on the same moment, because the picture is the *coverage the
-    // engine imported* rather than the bundled file (`shapes::thumbnail`): a
+    // engine imported* rather than the bundled file (`library::thumbnail`): a
     // built-in is authored the same way a user's shape is, so it is shown the
     // same way, and neither has to have put its coverage in an alpha channel.
     let builtins = crate::builtins::resolved(state)
         .into_iter()
         .map(|(builtin, id)| {
             let active = matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id);
-            let thumb = id.and_then(|id| crate::shapes::thumbnail(state, id));
+            let thumb = id.and_then(|id| library::thumbnail::<Shapes>(state, id));
             (builtin.name, thumb, active)
         });
     let entries = state.shapes.entries;
@@ -688,9 +690,9 @@ fn ShapeGallery() -> Element {
             .map(|e| {
                 (
                     e.id,
-                    crate::shapes::id_hex(e.id),
+                    e.id.to_hex(),
                     e.name.clone(),
-                    crate::shapes::thumbnail(state, e.id),
+                    library::thumbnail::<Shapes>(state, e.id),
                 )
             })
             .collect::<Vec<_>>()
@@ -727,7 +729,7 @@ fn ShapeGallery() -> Element {
                 e.prevent_default();
                 e.stop_propagation();
                 dropping.set(false);
-                crate::shapes::import_dropped(state, e.files());
+                library::import_dropped::<Shapes>(state, e.files(), crate::shapes::select);
             },
 
             div { class: card(is_round),
@@ -768,7 +770,7 @@ fn ShapeGallery() -> Element {
                 // `pick_file` must run inside the click gesture — no task hop.
                 onclick: move |_| {
                     pick_file("image/*", move |name, bytes| {
-                        crate::shapes::import_file(state, name, bytes);
+                        library::import_file::<Shapes>(state, name, bytes, crate::shapes::select);
                     });
                 },
                 div { class: "asset-thumb plus", {icon(stark_ui::icons::ADD)} }

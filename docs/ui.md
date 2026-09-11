@@ -2396,7 +2396,7 @@ impl storage::Entry for StoredShape { const STORE: Store = Store::Shapes; }  // 
 impl storage::Blob  for ShapeEntry  { const STORE: Store = Store::Shapes; }  // the PNG
 
 storage::blob_save::<ShapeEntry>(id, &png).await;      // -> stark.shapes/<hex>
-let png = storage::blob_load_all::<ShapeEntry>(&ids).await;  // one exchange, in order
+let png = storage::blob_load_all::<ShapeEntry>(&ids).await?; // one exchange, in order
 ```
 
 One `Store` row still answers where the record lives: a blob's key is the record's
@@ -2421,8 +2421,12 @@ every time it is clicked.
 Two consequences worth stating, because both are new kinds of thing for this
 registry to have. The blob store is **evictable** under storage pressure, so "the
 row is here and the bytes are gone" is a state to expect rather than one that only
-follows a crash; `shapes::load` drops such a row and writes the library back
-without it, which is the list format's damage rule one store further down. And it
+follows a crash; `assets::load` drops such a row and writes the library back
+without it, which is the list format's damage rule one store further down. A store
+that cannot be *read* at all — an open another tab blocks — is not that state, and
+`Backend::blob_get_many` answers it as an error rather than as every blob missing:
+then every row is kept, nothing is written, and the rows are held so that an import
+later in the session lands beside them instead of over them. And it
 is **asynchronous**, which is the other half of what was wrong with the old
 arrangement: `save_list` re-encodes a whole library per change, and it was doing
 that on the thread the canvas paints on. Reading the shape library is a fetch now,

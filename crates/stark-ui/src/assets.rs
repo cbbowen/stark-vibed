@@ -27,9 +27,11 @@
 //! Under the cap there is no resample and the two agree exactly.
 
 use std::marker::PhantomData;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use stark_assetid::{AssetId, Canonical};
+use stark_model::AssetNeed;
 
 use crate::storage::{self, Store};
 
@@ -49,12 +51,21 @@ pub const SUBSTRATE_CAP: u32 = stark_assetid::MAX_SUBSTRATE_DIM;
 /// Shared so both frontends ask their own resampler for the *same* size, which is the
 /// half of the divergence above that did not have to exist. Floored at one texel: a
 /// zero-sized image is not an image, and the callers below say so.
+///
+/// **In integers, so an oversized long edge becomes the cap exactly.** A float scale
+/// `cap / long` multiplied back by `long` lands a hair under `cap` for thousands of
+/// sizes, and the truncation made that `cap − 1`. The short edge is the floor of the
+/// same ratio.
 pub fn fit(w: u32, h: u32, cap: u32) -> (u32, u32) {
-    let scale = (f64::from(cap) / f64::from(w.max(h).max(1))).min(1.0);
-    (
-        ((f64::from(w) * scale) as u32).max(1),
-        ((f64::from(h) * scale) as u32).max(1),
-    )
+    let long = w.max(h);
+    if long <= cap {
+        return (w.max(1), h.max(1));
+    }
+    let scale = |side: u32| {
+        let scaled = u64::from(side) * u64::from(cap) / u64::from(long);
+        u32::try_from(scaled).expect("a side no longer than the long one scales to at most the cap")
+    };
+    (scale(w).max(1), scale(h).max(1))
 }
 
 /// A decoded image on its way into a library: straight (un-premultiplied) sRGB RGBA8,
@@ -198,6 +209,9 @@ pub trait Kind: 'static {
     const STORE: Store;
     /// What one is called, for a message a person reads.
     const NOUN: &'static str;
+    /// What an entry is called when the file it came from has no name to give it
+    /// (`library::display_name`).
+    const FALLBACK_NAME: &'static str;
     /// The field an id is a hash of, under this library's reading.
     ///
     /// **The whole of the difference.** The same grayscale PNG canonicalizes to the
@@ -206,6 +220,9 @@ pub trait Kind: 'static {
     fn canonical(png: &[u8]) -> Option<Canonical>;
     /// What a gallery card is a picture of.
     fn ink() -> Ink;
+    /// What a live session is told this client holds under `id` — the same reading
+    /// again, as the store a peer's engine files the bytes in (§12.4).
+    fn need(id: AssetId) -> AssetNeed;
 }
 
 /// The brush stamps a user brought in (§6.6).
@@ -214,6 +231,7 @@ pub struct Shapes;
 impl Kind for Shapes {
     const STORE: Store = Store::Shapes;
     const NOUN: &'static str = "shape";
+    const FALLBACK_NAME: &'static str = "Imported shape";
 
     fn canonical(png: &[u8]) -> Option<Canonical> {
         stark_assetid::coverage(png).ok()
@@ -221,6 +239,10 @@ impl Kind for Shapes {
 
     fn ink() -> Ink {
         Ink::Coverage
+    }
+
+    fn need(id: AssetId) -> AssetNeed {
+        AssetNeed::Brush(id)
     }
 }
 
@@ -230,6 +252,7 @@ pub struct Substrates;
 impl Kind for Substrates {
     const STORE: Store = Store::Substrates;
     const NOUN: &'static str = "substrate";
+    const FALLBACK_NAME: &'static str = "Imported substrate";
 
     fn canonical(png: &[u8]) -> Option<Canonical> {
         stark_assetid::height(png).ok()
@@ -237,6 +260,10 @@ impl Kind for Substrates {
 
     fn ink() -> Ink {
         Ink::Height
+    }
+
+    fn need(id: AssetId) -> AssetNeed {
+        AssetNeed::Substrate(id)
     }
 }
 
@@ -502,10 +529,32 @@ impl<K: Kind> storage::Blob for Row<K> {
 /// under storage pressure, so that is a state to expect rather than one that only
 /// follows a crash, and an entry that cannot be painted with is not an asset. Leaving
 /// it in would show a card that draws nothing and fails every time it is clicked.
+///
+/// **A blob store that could not be read at all is not that state**, and taking it for
+/// one would erase both libraries over a blocked open. Then nothing is dropped and
+/// nothing written: the library opens empty for the session, and its rows are held
+/// (`UNREAD`) so that a write the session makes lands beside them rather than over.
 pub async fn load<K: Kind>() -> Vec<Entry> {
     let rows = storage::load_list::<Row<K>>().unwrap_or_default();
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let ids: Vec<AssetId> = rows.iter().map(|r| r.id).collect();
-    let blobs = storage::blob_load_all::<Row<K>>(&ids).await;
+    let blobs = match storage::blob_load_all::<Row<K>>(&ids).await {
+        Ok(blobs) => blobs,
+        Err(reason) => {
+            tracing::warn!(
+                "could not read the images of {} ({reason}); its {} entries are kept, and \
+                 not shown",
+                K::STORE.named().1,
+                rows.len(),
+            );
+            let mut unread = unread();
+            unread.retain(|(store, ..)| *store != K::STORE);
+            unread.extend(rows.into_iter().map(|row| (K::STORE, row.name, row.id)));
+            return Vec::new();
+        }
+    };
     let kept: Vec<Entry> = rows
         .into_iter()
         .zip(blobs)
@@ -528,7 +577,23 @@ pub async fn load<K: Kind>() -> Vec<Entry> {
     kept
 }
 
-/// Write the library's rows — [`Entry`] narrowed to what is durable about it.
+/// Rows [`load`] kept without their bytes because the blob store could not be read:
+/// `(record, name, id)`.
+///
+/// Held for the rest of the process so that [`persist`] writes them back. Without it,
+/// the first import after a blocked open would write the library as the one entry the
+/// session holds — the erasure `load` declined, one step later. Process state, and this
+/// module's only: a frontend holds entries with their bytes in hand, and these have none.
+static UNREAD: Mutex<Vec<(Store, String, AssetId)>> = Mutex::new(Vec::new());
+
+/// [`UNREAD`], poisoning ignored: every row in it is whole whatever a panic tore, and
+/// honouring the poison would drop them all at the next [`persist`].
+fn unread() -> MutexGuard<'static, Vec<(Store, String, AssetId)>> {
+    UNREAD.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Write the library's rows — [`Entry`] narrowed to what is durable about it — with any
+/// `UNREAD` ones after them.
 ///
 /// The bytes are not this function's to write: an entry reaching here always has them
 /// stored already, because every caller put them there first.
@@ -538,14 +603,22 @@ pub async fn load<K: Kind>() -> Vec<Entry> {
 /// inline was a base64 of every image in the library, on the thread the canvas paints
 /// on, per change.
 pub fn persist<K: Kind>(entries: &[Entry]) {
+    let unread = unread();
+    let held = unread
+        .iter()
+        .filter(|(store, _, id)| *store == K::STORE && !entries.iter().any(|e| e.id == *id))
+        .map(|(_, name, id)| (name, *id));
     let rows: Vec<Row<K>> = entries
         .iter()
-        .map(|e| Row {
-            name: e.name.clone(),
-            id: e.id,
+        .map(|e| (&e.name, e.id))
+        .chain(held)
+        .map(|(name, id)| Row {
+            name: name.clone(),
+            id,
             kind: PhantomData,
         })
         .collect();
+    drop(unread);
     storage::save_list(&rows);
 }
 
@@ -593,6 +666,190 @@ mod tests {
         assert_eq!(fit(64, 64, 1024), (64, 64));
         // A sliver still has a texel on its short edge rather than none.
         assert_eq!(fit(4096, 1, 1024), (1024, 1));
+    }
+
+    /// **An oversized long edge becomes the cap exactly** — for every long edge up to
+    /// forty thousand, either way round — and the short edge is the floor of the same
+    /// ratio, checked as the inequality that defines a floor rather than as the
+    /// arithmetic that computes it.
+    ///
+    /// The float form put the long edge a texel short for thousands of sizes: 6272
+    /// against a 4096 cap came out 4095.
+    #[test]
+    fn an_oversized_long_edge_becomes_the_cap_exactly() {
+        for cap in [SHAPE_CAP, SUBSTRATE_CAP, 4096] {
+            for long in cap + 1..=40_000 {
+                for short in [1, long / 3, long / 2, long - 1, long] {
+                    let (w, h) = fit(long, short, cap);
+                    assert_eq!(w, cap, "{long}×{short} within {cap} came out {w}×{h}");
+                    let (reach, long64, h64) = (
+                        u64::from(short) * u64::from(cap),
+                        u64::from(long),
+                        u64::from(h),
+                    );
+                    let floor = (h == 1 && reach < long64)
+                        || (h64 * long64 <= reach && reach < (h64 + 1) * long64);
+                    assert!(floor, "{long}×{short} within {cap} came out {w}×{h}");
+                    assert_eq!(fit(short, long, cap), (h, w), "and the other way round");
+                }
+            }
+        }
+    }
+
+    /// Each library announces an entry as the need its own engine store takes: a stamp
+    /// as a brush, and a substrate as the very substrate a document moves onto.
+    #[test]
+    fn each_kind_names_an_entry_to_a_session_by_its_own_need() {
+        let id = AssetId([7; 32]);
+        assert!(matches!(Shapes::need(id), AssetNeed::Brush(named) if named == id));
+        assert_eq!(
+            Substrates::need(id).substrate(),
+            Some(stark_model::SubstrateId::Image(id))
+        );
+    }
+
+    // --- the two stores, through a fake -----------------------------------------
+
+    /// One library test at a time, with nothing held back from an earlier one: each
+    /// test's store is its own thread's, but [`UNREAD`] is the process's.
+    fn exclusive() -> MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        let turn = ONE.lock().unwrap_or_else(PoisonError::into_inner);
+        unread().clear();
+        turn
+    }
+
+    /// Run what the fake store answers at once.
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(out) => out,
+            std::task::Poll::Pending => panic!("the fake store answers at once"),
+        }
+    }
+
+    fn entry(name: &str, n: u8) -> Entry {
+        Entry {
+            name: name.to_string(),
+            png: vec![n; 4],
+            id: AssetId([n; 32]),
+        }
+    }
+
+    fn named<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Vec<(String, AssetId)> {
+        entries
+            .into_iter()
+            .map(|e| (e.name.clone(), e.id))
+            .collect()
+    }
+
+    /// The rows `K`'s record holds now, read back through the store.
+    fn rows<K: Kind>() -> Vec<(String, AssetId)> {
+        storage::load_list::<Row<K>>()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| (row.name, row.id))
+            .collect()
+    }
+
+    /// **A blob store that cannot be read keeps every row and writes nothing** — and a
+    /// write later in the session goes down beside those rows rather than over them.
+    ///
+    /// Folded into "every blob is missing", an open another tab blocks would erase both
+    /// libraries and strand every image they named.
+    #[test]
+    fn an_unreadable_blob_store_keeps_every_row_and_writes_nothing() {
+        let _turn = exclusive();
+        let store = storage::fake::install();
+        let (a, b) = (entry("a", 1), entry("b", 2));
+        for e in [&a, &b] {
+            ready(store_bytes::<Shapes>(e.id, &e.png));
+        }
+        persist::<Shapes>(&[a.clone(), b.clone()]);
+        let (key, _) = Shapes::STORE.named();
+        let stored = store.text(key);
+        store.take_writes();
+
+        store.cut_off("another tab holds the store open at an older version");
+        assert!(
+            ready(load::<Shapes>()).is_empty(),
+            "with no bytes in hand there is no entry to show"
+        );
+        assert_eq!(
+            store.take_writes(),
+            Vec::<String>::new(),
+            "and nothing is written"
+        );
+        assert_eq!(store.text(key), stored, "so every row is where it was");
+
+        let c = entry("c", 3);
+        persist::<Shapes>(std::slice::from_ref(&c));
+        assert_eq!(
+            rows::<Shapes>(),
+            named([&c, &a, &b]),
+            "an import this session lands beside the rows it could not read"
+        );
+    }
+
+    /// And a store that *can* be read still drops the row whose bytes are gone, writing
+    /// the library back without it.
+    #[test]
+    fn a_missing_blob_still_costs_its_row() {
+        let _turn = exclusive();
+        let store = storage::fake::install();
+        let (kept, lost) = (entry("kept", 1), entry("lost", 2));
+        ready(store_bytes::<Substrates>(kept.id, &kept.png));
+        persist::<Substrates>(&[kept.clone(), lost]);
+        store.take_writes();
+
+        let loaded = ready(load::<Substrates>());
+        assert_eq!(
+            named(&loaded),
+            named([&kept]),
+            "only the entry with its bytes loads"
+        );
+        let (key, _) = Substrates::STORE.named();
+        assert_eq!(
+            store.take_writes(),
+            vec![format!("set {key}")],
+            "and the library is written back without the other"
+        );
+        assert_eq!(rows::<Substrates>(), named([&kept]));
+    }
+
+    /// **A heal stores the bytes under their new id, then the row, then drops the old
+    /// bytes** — so a crash anywhere leaves a row naming bytes that are there.
+    #[test]
+    fn a_heal_moves_the_bytes_before_the_row_and_drops_the_old_ones_after() {
+        let _turn = exclusive();
+        let store = storage::fake::install();
+        let stale = entry("Bristles", 1);
+        ready(store_bytes::<Shapes>(stale.id, &stale.png));
+        persist::<Shapes>(std::slice::from_ref(&stale));
+        store.take_writes();
+
+        let actual = AssetId([9; 32]);
+        let healed = Entry {
+            id: actual,
+            ..stale.clone()
+        };
+        ready(heal::<Shapes>(
+            std::slice::from_ref(&healed),
+            stale.id,
+            actual,
+            &healed.png,
+        ));
+        let (key, _) = Shapes::STORE.named();
+        assert_eq!(
+            store.take_writes(),
+            vec![
+                format!("put {key}/{}", actual.to_hex()),
+                format!("set {key}"),
+                format!("delete {key}/{}", stale.id.to_hex()),
+            ]
+        );
+        assert_eq!(rows::<Shapes>(), named([&healed]));
     }
 
     /// A light border reads as ink on paper and is inverted; a dark one is already

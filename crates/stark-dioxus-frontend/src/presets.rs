@@ -184,7 +184,7 @@ pub fn wear(state: AppState, brush: BrushConfig, tune: Transient, from: Option<S
     // The one part of a swap that is this *browser's*, and so the one part below the
     // shared door: which stamps a session actually has is a fact about this library.
     brush.shape = match brush.shape {
-        BrushShape::Stamp(id) => crate::shapes::ensure(state, id)
+        BrushShape::Stamp(id) => crate::library::ensure::<stark_ui::assets::Shapes>(state, id)
             .map(BrushShape::Stamp)
             .unwrap_or_default(),
         round @ BrushShape::Round { .. } => round,

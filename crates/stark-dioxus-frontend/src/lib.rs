@@ -49,6 +49,7 @@ mod images;
 mod input;
 mod layer_thumbs;
 mod layout;
+mod library;
 mod modes;
 mod navigator;
 mod overlays;
@@ -62,6 +63,7 @@ mod records;
 mod render;
 mod settings;
 mod shapes;
+mod shipped;
 mod slots;
 mod state;
 mod substrates;
@@ -262,13 +264,13 @@ fn app() -> Element {
             // and *before* `apply_first` below, which is the first thing that turns a
             // preset's stamp id back into bytes: a library that had not arrived yet
             // would put those brushes silently on the round tip.
-            shapes::load(state).await;
+            library::load::<stark_ui::assets::Shapes>(state).await;
 
             // And the custom surface library, on the same footing and for a sharper
             // version of the same reason: a document opened from a file may name a
             // substrate this browser holds, and a library that had not arrived yet would
             // leave the gallery unable to say so (§6.4).
-            substrates::load(state).await;
+            library::load::<stark_ui::assets::Substrates>(state).await;
 
             // The app's own presets join the library now rather than at
             // `presets::load`: they name bundled brush shapes, and a stamp is

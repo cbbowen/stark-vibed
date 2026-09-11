@@ -219,7 +219,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
 /// Register the picture with a live session's mirror so peers can fetch it by hash.
 /// A no-op when solo; idempotent when repeated, because it is content-addressed.
 ///
-/// `shapes::seed_session`'s twin, and the reason a placed image needs no chunking of
+/// `library::seed_session`'s twin, and the reason a placed image needs no chunking of
 /// its own: the log carries 32 bytes and the pixels travel over the blob ALPN, so a
 /// photograph never has to fit in a gossip message (§12.4).
 fn seed_session(state: AppState, id: stark_model::AssetId, bytes: Vec<u8>) {

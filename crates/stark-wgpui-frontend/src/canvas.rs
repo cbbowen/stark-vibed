@@ -2750,7 +2750,7 @@ impl Canvas {
         match self.renderer.as_mut()?.import_substrate(png) {
             Ok(id) => {
                 if let SubstrateId::Image(content) = id {
-                    self.offer(AssetNeed::Substrate(content));
+                    self.offer(<assets::Substrates as assets::Kind>::need(content));
                 }
                 Some(id)
             }
@@ -2792,7 +2792,7 @@ impl Canvas {
         // The bytes have just entered the engine, so this is the moment a peer could
         // need them. The early return above needs no such offer: an asset the engine
         // already held was seeded when the session started.
-        self.offer(AssetNeed::Brush(actual));
+        self.offer(<assets::Shapes as assets::Kind>::need(actual));
         Some(actual)
     }
 
@@ -2854,13 +2854,6 @@ impl Canvas {
         bytes: &[u8],
         cx: &mut Context<'_, Self>,
     ) {
-        let name = stark_ui::library::display_name(
-            &file_name,
-            match which {
-                gallery::Which::Shapes => "Imported shape",
-                gallery::Which::Substrates => "Imported substrate",
-            },
-        );
         match which {
             gallery::Which::Shapes => {
                 let (png, inverted) = match crate::assets::as_shape(bytes) {
@@ -2878,8 +2871,8 @@ impl Canvas {
                 // names *those*, and a library holding anything else would be a
                 // library whose rows do not match its blobs.
                 let canonical = r.asset_bytes(id).unwrap_or(png);
-                self.keep::<assets::Shapes>(id, name, canonical);
-                self.offer(AssetNeed::Brush(id));
+                self.keep::<assets::Shapes>(&file_name, id, canonical);
+                self.offer(<assets::Shapes as assets::Kind>::need(id));
                 self.wear_shape(BrushShape::Stamp(id), cx);
                 if inverted {
                     self.report(
@@ -2895,6 +2888,7 @@ impl Canvas {
                     Ok(v) => v,
                     Err(e) => return self.refuse(&file_name, e, cx),
                 };
+                // Offered to the session on its way in (`import_substrate`).
                 let Some(id) = self.import_substrate(&png, cx) else {
                     return;
                 };
@@ -2906,30 +2900,25 @@ impl Canvas {
                     .as_ref()
                     .and_then(|r| r.substrate_bytes(id))
                     .unwrap_or(png);
-                self.keep::<assets::Substrates>(content, name, canonical);
+                self.keep::<assets::Substrates>(&file_name, content, canonical);
                 self.wear_substrate(id, cx);
             }
         }
     }
 
-    /// Put an entry in its library and on disk — **bytes before the row that names
-    /// them**, which is `stark_ui::assets`' order and its reason.
+    /// Put an entry in its library and on disk, named after the file it came from —
+    /// **bytes before the row that names them**, which is `stark_ui::assets`' order and
+    /// its reason.
     ///
     /// A repeat import is free and silent: content addressing means the id is already
     /// there, so the entry is not added twice.
-    fn keep<K: assets::Kind>(&mut self, id: AssetId, name: String, png: Vec<u8>) {
-        // Which list, taken from `K` rather than from a second argument beside it:
-        // the type already says which store the bytes go to, and a parameter that
-        // could disagree with it is a way for a shape to be filed as a substrate.
-        let entries = if K::STORE == <assets::Shapes as assets::Kind>::STORE {
-            &mut self.shapes
-        } else {
-            &mut self.substrates
-        };
+    fn keep<K: assets::Kind>(&mut self, file_name: &str, id: AssetId, png: Vec<u8>) {
+        let entries = self.entries_of::<K>();
         if entries.iter().any(|e| e.id == id) {
             return;
         }
         pollster::block_on(assets::store_bytes::<K>(id, &png));
+        let name = stark_ui::library::display_name(file_name, K::FALLBACK_NAME);
         entries.push(assets::Entry { name, png, id });
         assets::persist::<K>(entries);
     }
@@ -2944,20 +2933,35 @@ impl Canvas {
     fn forget_asset(&mut self, which: gallery::Which, id: AssetId, cx: &mut Context<'_, Self>) {
         match which {
             gallery::Which::Shapes => {
-                self.shapes.retain(|e| e.id != id);
-                assets::persist::<assets::Shapes>(&self.shapes);
-                pollster::block_on(assets::drop_bytes::<assets::Shapes>(id));
+                self.forget::<assets::Shapes>(id);
                 if self.brush.config.shape == BrushShape::Stamp(id) {
                     self.wear_shape(BrushShape::default(), cx);
                 }
             }
-            gallery::Which::Substrates => {
-                self.substrates.retain(|e| e.id != id);
-                assets::persist::<assets::Substrates>(&self.substrates);
-                pollster::block_on(assets::drop_bytes::<assets::Substrates>(id));
-            }
+            gallery::Which::Substrates => self.forget::<assets::Substrates>(id),
         }
         self.repaint(cx);
+    }
+
+    /// The half of [`forget_asset`](Self::forget_asset) both libraries share.
+    fn forget<K: assets::Kind>(&mut self, id: AssetId) {
+        let entries = self.entries_of::<K>();
+        entries.retain(|e| e.id != id);
+        assets::persist::<K>(entries);
+        pollster::block_on(assets::drop_bytes::<K>(id));
+    }
+
+    /// The entries of `K`'s library.
+    ///
+    /// Taken from `K` rather than from an argument beside it: the type already says which
+    /// store the bytes go to, and a parameter that could disagree with it is a way for a
+    /// shape to be filed as a substrate.
+    fn entries_of<K: assets::Kind>(&mut self) -> &mut Vec<assets::Entry> {
+        if K::STORE == <assets::Shapes as assets::Kind>::STORE {
+            &mut self.shapes
+        } else {
+            &mut self.substrates
+        }
     }
 
     /// Say why a file could not be taken, naming it.

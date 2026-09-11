@@ -170,6 +170,13 @@ pub struct Signals {
     /// false → true wakes its readers exactly when they asked to be woken, and it
     /// says what it means at the site that reads it.
     pub renderer_ready: Signal<bool>,
+    /// How many shipped assets have landed in the main engine since it was published —
+    /// the substrate maps fetched on first use (`crate::shipped::landed`).
+    ///
+    /// For [`renderer_ready`](Self::renderer_ready)'s reason: a picker listing shipped
+    /// assets has to redraw when one lands, and reading the renderer to learn that
+    /// redrew it on every command. A count, because more than one lands.
+    pub shipped_landed: Signal<u32>,
     /// The `doc_revision` this document was last **written out** at — by Save, which
     /// wrote the log, or by Export, which drew the picture. Zero until one of them
     /// has happened (`crate::files`).
@@ -378,10 +385,10 @@ pub struct Signals {
     /// Timeline mode: scrubbing and playing back the history
     /// (§18.2.4; `crate::panels::timeline`).
     pub timeline: TimelineState,
-    /// The custom brush-shape library (§6.6; `crate::shapes`).
-    pub shapes: ShapesState,
-    /// The custom canvas-substrate library (§6.4; `crate::substrates`).
-    pub substrates: SubstratesState,
+    /// The brush stamps this browser has imported (§6.6; `crate::library`).
+    pub shapes: crate::library::LibraryState,
+    /// The canvas substrates this browser has imported (§6.4; `crate::library`).
+    pub substrates: crate::library::LibraryState,
     /// The brush preset library (`crate::presets`), loaded from `localStorage`
     /// at startup like the shape library.
     pub presets: Signal<Vec<stark_ui::presets::PresetEntry>>,
@@ -678,43 +685,6 @@ pub struct TowUi {
     pub rope: f32,
 }
 
-/// The custom canvas-substrate library's signals (`crate::substrates`) — [`ShapesState`]'s
-/// sibling, and root-owned for its reason.
-#[derive(Clone, Copy)]
-pub struct SubstratesState {
-    /// Library entries, read at startup from the browser's two stores (§25.6). Empty
-    /// until that read lands, which is why `substrates::load` is awaited ahead of the
-    /// first thing that could resolve one.
-    pub entries: Signal<Vec<crate::substrates::SubstrateEntry>>,
-    /// A transient line under the surface gallery: import errors, or the "already in
-    /// your library" note. `None` when quiet.
-    pub notice: Signal<Option<String>>,
-}
-
-impl SubstratesState {
-    fn new() -> Self {
-        Self {
-            entries: root_signal(Vec::new),
-            notice: root_signal(|| None),
-        }
-    }
-}
-
-/// The custom brush-shape library's signals (`crate::shapes`). Root-owned:
-/// imports are started from the brush editor's modal scope but must survive
-/// its close.
-#[derive(Clone, Copy)]
-pub struct ShapesState {
-    /// Library entries, read at startup from the browser's two stores — the rows
-    /// from `localStorage`, their images from the blob store (§25.6). Empty until
-    /// that read lands, which is why `shapes::load` is awaited ahead of the first
-    /// thing that resolves a stamp id.
-    pub entries: Signal<Vec<crate::shapes::ShapeEntry>>,
-    /// A transient line under the shape gallery: import errors, or the
-    /// "inverted a dark-on-light image" explanation. `None` when quiet.
-    pub notice: Signal<Option<String>>,
-}
-
 impl AppState {
     /// Build the app's state. Call once, from the root component.
     ///
@@ -732,6 +702,7 @@ impl AppState {
             obs: ReadOnly(root_signal(|| None)),
             startup_failure: root_signal(|| None),
             renderer_ready: root_signal(|| false),
+            shipped_landed: root_signal(|| 0),
             written_revision: root_signal(|| 0),
             space_down: root_signal(|| false),
             held_mods: root_signal(Default::default),
@@ -769,8 +740,8 @@ impl AppState {
             paint_queued: root_signal(|| false),
             collab: CollabState::new(),
             timeline: TimelineState::new(),
-            shapes: ShapesState::new(),
-            substrates: SubstratesState::new(),
+            shapes: crate::library::LibraryState::new(),
+            substrates: crate::library::LibraryState::new(),
             presets: root_signal(Vec::new),
             preset_in_hand: root_signal(|| None),
             thumbs: crate::thumbs::ThumbState::new(),
@@ -844,15 +815,6 @@ impl TimelineState {
             playing: root_signal(|| false),
             speed: root_signal(|| 1.0),
             task: root_signal(|| None),
-        }
-    }
-}
-
-impl ShapesState {
-    fn new() -> Self {
-        Self {
-            entries: root_signal(Vec::new),
-            notice: root_signal(|| None),
         }
     }
 }

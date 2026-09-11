@@ -1807,7 +1807,8 @@ live as static files under `stark-dioxus-frontend/assets/`, bundled by `asset!`
 with cache-busting URLs; the frontend fetches them on demand with
 `dioxus::asset_resolver::read_asset_bytes` (HTTP on web, filesystem on native)
 and hands the bytes to the engine. The built-in shapes are listed in one table
-(`stark-dioxus-frontend/src/builtins.rs`) and fetched once at startup, which is
+(`stark-ui/src/assets.rs`, its files bundled by
+`stark-dioxus-frontend/src/shipped.rs`) and fetched once at startup, which is
 what makes an id available to name them by: imported bytes are keyed by the hash
 of their decoded coverage, so every engine (main canvas, brush-editor preview, a
 peer's) lands on the same `AssetId`, and a built-in is referenced downstream

@@ -25,8 +25,9 @@
 //! holder either has those exact bytes or knows precisely what to ask a peer for, and
 //! what comes back is verified against the id that asked for it.
 //!
-//! **Adding a built-in substrate is a file plus a row in [`assets::SHIPPED_SUBSTRATES`]** — it then appears
-//! in the Lighting panel's picker and in the New-document dialog.
+//! **Adding a built-in substrate is a file plus a row in [`assets::SHIPPED_SUBSTRATES`]**,
+//! and its `asset!` row in `crate::shipped` — it then appears in the Lighting panel's
+//! picker and in the New-document dialog.
 //!
 //! # The user's own substrates
 //!
@@ -37,12 +38,12 @@
 //! and fetched by a peer the same way. There is no second mechanism here — only a
 //! second place the bytes come from.
 //!
-//! So the library is `crate::shapes` for substrates, down to the storage: rows (a name
-//! and an id) in `localStorage`, height maps in the blob store beside them (§25.6),
-//! and the shared parts of both in `stark_ui::library`. Import runs through
-//! [`normalize_substrate_image`], which is where
-//! the one real difference between the two lives — a stamp's polarity is a spelling
-//! and a substrate's polarity *is the substrate*, so nothing here inverts anything.
+//! So the library is the brush stamps' library with substrates in it, down to the
+//! storage — rows in `localStorage`, height maps in the blob store beside them (§25.6)
+//! — and it is written once, in `crate::library`. The one real difference between the
+//! two is decided below this frontend (`stark_ui::assets::substrate_png`): a stamp's
+//! polarity is a spelling and a substrate's polarity *is the substrate*, so nothing
+//! inverts one.
 //!
 //! [`Pick`] is what the two halves have in common at the picker: a built-in is chosen
 //! by catalog name because its id is not knowable until its map has been fetched, and
@@ -55,259 +56,12 @@ use dioxus::prelude::*;
 use stark_engine::command::DocCommand;
 use stark_model::{AssetId, SubstrateId};
 
-use crate::platform::normalize_substrate_image;
+use crate::library;
 use crate::render::Renderer;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::Modal;
 use stark_model::ColorSpaceId;
-use stark_ui::assets::{self, Pick};
-use stark_ui::library::{self, Thumbs};
-
-/// The bundled height map behind a catalog row, by the row's path.
-///
-/// **The one thing the catalog cannot carry.** Which substrates ship, what they are
-/// called and how they are described are `stark_ui::assets::SHIPPED_SUBSTRATES`,
-/// because a name is what a preset asks for and a second catalog would be a second
-/// answer. An `Asset` is not: `asset!` is a proc macro that demands a path literal in
-/// this crate, so the files are spelled here — and a test checks the two agree.
-const BUNDLED: &[(&str, Asset)] = &[
-    ("substrate/Linen.png", asset!("/assets/substrate/Linen.png")),
-    ("substrate/Rough.png", asset!("/assets/substrate/Rough.png")),
-];
-
-/// The bundled file at `path`, if this catalog claims it.
-pub fn bundled_at(path: &str) -> Option<Asset> {
-    BUNDLED.iter().find(|(p, _)| *p == path).map(|(_, a)| *a)
-}
-
-/// The bundled file for a catalog row, or `None` for the procedural one.
-pub fn bundled(row: &assets::Shipped) -> Option<Asset> {
-    bundled_at(row.path?)
-}
-
-// --- the user's library ----------------------------------------------------
-
-/// One imported substrate, **with its bytes in hand** — `crate::shapes`'s
-/// `ShapeEntry` for substrates, which is to say the same crate type under the other
-/// name (`stark_ui::assets`).
-pub type SubstrateEntry = assets::Entry;
-
-/// This library's gallery thumbnails ([`Thumbs`]) — the *height field* each id names.
-///
-/// Its own cache, not `crate::shapes`': a grayscale PNG canonicalizes to one id under
-/// both readings, so one table would hand a substrate the picture of a stamp.
-static THUMBS: Thumbs<String> = Thumbs::new();
-
-/// A `background-image` data URL showing the height field `id` names.
-///
-/// **The field itself, in grey, opaque** — which is what a substrate *is*, and the one
-/// place this differs from a stamp's card. A stamp is drawn as white ink over nothing,
-/// because coverage says where paint lands and the card must show the panel through
-/// the gaps; a substrate has no gaps. Its low substrate is as much a part of it as its high
-/// substrate, and drawing the lows transparent would show a canvas full of holes.
-///
-/// Bytes come from the engine's store first and the library second, on [`ensure`]'s
-/// order and for its reason: a built-in is only ever in the engine, and a substrate
-/// imported in an earlier session is only ever in the library until it is picked.
-/// `None` while a built-in's fetch is still in flight — the same moment its card is
-/// not yet clickable — or if the bytes do not decode.
-pub fn thumbnail(state: AppState, id: AssetId) -> Option<String> {
-    if let Some(url) = THUMBS.get(id) {
-        return Some(url);
-    }
-    let bytes = {
-        let renderer = state.renderer;
-        let guard = renderer.read();
-        guard
-            .as_ref()
-            .and_then(|r| r.substrate_bytes(SubstrateId::Image(id)))
-    }
-    .or_else(|| {
-        state
-            .substrates
-            .entries
-            .read()
-            .iter()
-            .find(|e| e.id == id)
-            .map(|e| e.png.clone())
-    })?;
-    let url = encode_thumb(&bytes)?;
-    THUMBS.put(id, url.clone());
-    Some(url)
-}
-
-/// Decode `png` to its height field, reduce it to a thumbnail, and encode that as an
-/// opaque grayscale PNG.
-///
-/// Through `stark_assetid::height`, not through the file's own pixels: the card then
-/// shows the field the *tooth will read*, so a source that put its height somewhere
-/// the engine does not look shows up as a card that looks wrong rather than as a mark
-/// that is.
-fn encode_thumb(png: &[u8]) -> Option<String> {
-    crate::cards::data_url(assets::card::<assets::Substrates>(png)?)
-}
-
-/// Populate the library signal from storage. Called once at app start.
-///
-/// Two reads, because the library is kept in two stores — see `crate::shapes`'s
-/// `load`, which this is the sibling of, for the whole of why a row whose bytes are
-/// gone is **dropped** rather than kept as a card that draws nothing.
-pub async fn load(state: AppState) {
-    let mut entries = state.substrates.entries;
-    entries.set(assets::load::<assets::Substrates>().await);
-}
-
-/// Import an image file as a new substrate: normalize in the browser, canonicalize in
-/// the engine, add to the library, and **switch the document onto it**.
-///
-/// Switching is the difference from a shape import, and it is not a flourish: a shape
-/// joins a gallery you then paint with, while a substrate is the thing you are painting
-/// *on*. Importing one and having to click it afterwards would be two acts where the
-/// artist made one. The switch goes through [`select`], so it is a logged action like
-/// any other pick.
-pub fn import_file(state: AppState, file_name: String, bytes: Vec<u8>) {
-    let mut notice = state.substrates.notice;
-    notice.set(None);
-    spawn_forever(async move {
-        let png = match normalize_substrate_image(bytes).await {
-            Ok(png) => png,
-            Err(e) => {
-                notice.set(Some(format!("Couldn't import “{file_name}”: {e}.")));
-                return;
-            }
-        };
-        // The canonical bytes, not the file's: what the id names, what a save file
-        // bundles, and what a peer is served are all one representation (§8, §19).
-        //
-        // Quiet: readying a substrate names it and changes no document state. What
-        // publishes is the `SetSubstrate` in [`select`] below, which is a command.
-        let imported = crate::state::with_engine_quiet(state, |r| {
-            r.import_substrate(&png)
-                .map(|id| (id, r.substrate_bytes(id).unwrap_or(png)))
-        })
-        .flatten();
-        let Some((surface, canonical)) = imported else {
-            notice.set(Some(format!(
-                "Couldn't import “{file_name}”: it is not a height map this build can read."
-            )));
-            return;
-        };
-        let SubstrateId::Image(id) = surface else {
-            // Unreachable: `import_substrate` hashes an image, and `Flat` is the one
-            // substrate that has no image. Said rather than unwrapped, because what it
-            // would mean is that the engine invented a procedural substrate out of bytes.
-            notice.set(Some(format!(
-                "Couldn't import “{file_name}”: it canonicalized to the flat substrate."
-            )));
-            return;
-        };
-
-        let name = library::display_name(&file_name, "Imported surface");
-        let mut entries = state.substrates.entries;
-        let known = entries.read().iter().any(|e| e.id == id);
-        if !known {
-            // Bytes before the row that names them (`storage::blob_save`): the other
-            // order can leave a library pointing at a substrate that was never stored.
-            assets::store_bytes::<assets::Substrates>(id, &canonical).await;
-            entries.write().push(SubstrateEntry {
-                name: name.clone(),
-                png: canonical,
-                id,
-            });
-            persist(&entries.read());
-        }
-        select(state, Pick::Custom(id));
-        notice.set(known.then(|| format!("“{name}” is already in your library — selected it.")));
-    });
-}
-
-/// Import files dropped onto the surface gallery. Each file reads and imports
-/// independently; when several are dropped the last to finish is the one the document
-/// ends on (arbitrary but harmless — every one lands in the library).
-pub fn import_dropped(state: AppState, files: Vec<dioxus::html::FileData>) {
-    for file in files {
-        spawn_forever(async move {
-            let name = file.name();
-            match file.read_bytes().await {
-                Ok(bytes) => import_file(state, name, bytes.to_vec()),
-                Err(e) => {
-                    let mut notice = state.substrates.notice;
-                    notice.set(Some(format!("Couldn't read “{name}”: {e}.")));
-                }
-            }
-        });
-    }
-}
-
-/// Make sure `id` is usable as a substrate: its bytes in this document's engine,
-/// returning the id to reference it by — healed when the stored id predates a
-/// canonicalization change. `None` when the bytes are nowhere to be found, the canvas
-/// isn't up yet, or the import failed.
-///
-/// `crate::shapes`'s `ensure` for substrates, and it matters more here: a `SetSubstrate`
-/// naming a substrate the engine has no bytes for does not merely look wrong, it bakes a
-/// flat deposit into stored tiles that nothing later un-bakes (§6.4).
-pub fn ensure(state: AppState, id: AssetId) -> Option<SubstrateId> {
-    let surface = SubstrateId::Image(id);
-    // Already in this document's engine — imported here, or arrived with a loaded
-    // file, or fetched off a peer.
-    let held = state
-        .renderer
-        .peek()
-        .as_ref()
-        .is_some_and(|r| r.substrate_bytes(surface).is_some());
-    if held {
-        return Some(surface);
-    }
-
-    let entry = state
-        .substrates
-        .entries
-        .read()
-        .iter()
-        .find(|e| e.id == id)
-        .cloned()?;
-    let actual =
-        crate::state::with_engine_quiet(state, |r| r.import_substrate(&entry.png)).flatten();
-    let Some(actual) = actual else {
-        let mut notice = state.substrates.notice;
-        notice.set(Some(format!("“{}” failed to load.", entry.name)));
-        return None;
-    };
-    if actual != surface
-        && let SubstrateId::Image(healed) = actual
-    {
-        // The stored id predates a canonicalization change; heal it in place. The
-        // write ordering that keeps a row from naming bytes that are not there is
-        // `assets::heal`'s, not this module's — `crate::shapes::ensure` has the whole
-        // argument, and this was the one copy of it left.
-        let mut entries = state.substrates.entries;
-        if let Some(e) = entries.write().iter_mut().find(|e| e.id == id) {
-            e.id = healed;
-        }
-        let bytes = entry.png;
-        spawn_forever(async move {
-            let rows = entries.read().clone();
-            assets::heal::<assets::Substrates>(&rows, id, healed, &bytes).await;
-        });
-    }
-    Some(actual)
-}
-
-/// Drop an entry from the library. Paintings already made on it are untouched — the
-/// engine's per-document store keeps every imported substrate, and save files bundle
-/// whatever the log names (§8). A document *currently* on the removed substrate stays on
-/// it: the substrate is what the painting is on, so taking it out of the picker must not
-/// silently repaint the canvas.
-pub fn remove(state: AppState, id: AssetId) {
-    let mut entries = state.substrates.entries;
-    entries.write().retain(|e| e.id != id);
-    persist(&entries.read());
-    // The row first, then the bytes (`storage::blob_save`): a crash between the two
-    // strands some bytes, which costs space; the other order strands the *row*, which
-    // costs a substrate that cannot be painted on.
-    spawn_forever(async move { assets::drop_bytes::<assets::Substrates>(id).await });
-}
+use stark_ui::assets::{self, Pick, Substrates};
 
 // --- resolving and switching ------------------------------------------------
 
@@ -324,15 +78,7 @@ fn substrate(name: &str) -> Option<&'static assets::Shipped> {
 /// callers that own a `Renderer` and callers that reach it through a signal: this
 /// is the awaiting half, and it borrows nothing.
 async fn fetch(name: &str) -> Option<Vec<u8>> {
-    let asset = bundled(substrate(name)?)?;
-    tracing::info!(substrate = name, url = %asset, "fetching canvas substrate");
-    match dioxus::asset_resolver::read_asset_bytes(asset).await {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            tracing::warn!("could not fetch the canvas substrate “{name}”: {e}");
-            None
-        }
-    }
+    crate::shipped::fetch_bytes(substrate(name)?.path?).await
 }
 
 /// Whether `name` needs no image: `Flat` is its own id, known without a fetch.
@@ -389,7 +135,11 @@ pub async fn open_default(r: &mut Renderer, color_space: stark_model::ColorSpace
 /// publishes.
 pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
     let name = match pick {
-        Pick::Custom(id) => return ensure(state, id).unwrap_or_default(),
+        Pick::Custom(id) => {
+            return library::ensure::<Substrates>(state, id)
+                .map(SubstrateId::Image)
+                .unwrap_or_default();
+        }
         Pick::Builtin(name) => name,
     };
     let known = state
@@ -406,9 +156,12 @@ pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
     let Some(bytes) = fetch(name).await else {
         return SubstrateId::Flat;
     };
-    crate::state::with_engine_quiet(state, |r| r.load_substrate(name, &bytes))
-        .flatten()
-        .unwrap_or_default()
+    let landed =
+        crate::state::with_engine_quiet(state, |r| r.load_substrate(name, &bytes)).flatten();
+    if landed.is_some() {
+        crate::shipped::landed(state);
+    }
+    landed.unwrap_or_default()
 }
 
 /// Switch the document's substrate and repaint — the painting is preserved; existing
@@ -423,13 +176,22 @@ pub fn select(state: AppState, pick: Pick) {
     // so outliving the panel is safe).
     spawn_forever(async move {
         let id = resolve_signal(state, pick).await;
-        seed_session(state, id);
+        // One out of the library was offered on its way through `library::ensure`.
+        if matches!(pick, Pick::Builtin(_)) {
+            seed_session(state, id);
+        }
         dispatch(state, DocCommand::SetSubstrate(id));
     });
 }
 
-/// Register a substrate with a live session so peers can fetch it by hash. A no-op
-/// when solo; idempotent when repeated (content-addressed).
+/// [`select`] for a substrate in the library, by the id it is held under — what an
+/// import does once the file is in.
+fn select_custom(state: AppState, id: AssetId) {
+    select(state, Pick::Custom(id));
+}
+
+/// Register a shipped substrate with a live session so peers can fetch it by hash. A
+/// no-op when solo; idempotent when repeated (content-addressed).
 ///
 /// Called *before* the `SetSubstrate` is dispatched, and the order matters: the
 /// broadcast attaches a transfer hash looked up from what has been registered here,
@@ -437,29 +199,29 @@ pub fn select(state: AppState, pick: Pick) {
 /// the action, find no hash, and be left on the flat stand-in, which is the very
 /// failure this design removes.
 fn seed_session(state: AppState, id: SubstrateId) {
-    let Some(broadcaster) = state
-        .collab
-        .session
-        .read()
-        .as_ref()
-        .map(|s| s.broadcaster())
-    else {
+    // `Flat` is procedural: no bytes to register, and no peer can be waiting on it.
+    let SubstrateId::Image(asset) = id else {
         return;
     };
+    // Solo there is nobody to offer it to, and a height map is megabytes to copy out
+    // of the engine for nobody.
+    if state.collab.session.peek().is_none() {
+        return;
+    }
     let bytes = state
         .renderer
         .peek()
         .as_ref()
         .and_then(|r| r.substrate_bytes(id));
-    // `Flat` is procedural: no bytes to register, and no peer can be waiting on it.
-    if let (Some(bytes), Some(need)) = (bytes, stark_net::AssetNeed::for_substrate(id)) {
-        broadcaster.add_content(need, bytes);
+    if let Some(bytes) = bytes {
+        library::seed_session::<Substrates>(state, asset, bytes);
     }
 }
 
 /// Every catalog substrate paired with the id it resolved to — `None` for one whose
 /// height map has not been fetched. For the pickers, which list them and mark the
-/// one the document is on; `read`, so a row settles when its fetch lands.
+/// one the document is on, and which redraw when a fetch lands
+/// ([`shipped::watch`](crate::shipped::watch)) rather than on every engine write.
 ///
 /// The library's substrates are not here: those are `state.substrates.entries`, and each
 /// already carries the id it is named by. A document may also be on a substrate that is
@@ -467,7 +229,8 @@ fn seed_session(state: AppState, id: SubstrateId) {
 /// in this browser's library — which is why a picker asks this rather than assuming
 /// its own list is exhaustive ([`SubstrateGallery`] draws that case as its own card).
 pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<SubstrateId>)> {
-    let renderer = state.renderer.read();
+    crate::shipped::watch(state);
+    let renderer = state.renderer.peek();
     assets::SHIPPED_SUBSTRATES
         .iter()
         .map(|g| {
@@ -478,15 +241,6 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<Substr
             (g, id)
         })
         .collect()
-}
-
-// --- persistence ------------------------------------------------------------
-
-/// Write the library's rows — [`SubstrateEntry`] narrowed to what is durable about it.
-/// The bytes are not this function's to write; every caller reaching here has put
-/// them down already (`crate::shapes`'s `persist` has the argument).
-fn persist(entries: &[SubstrateEntry]) {
-    assets::persist::<assets::Substrates>(entries);
 }
 
 // --- the pickers ------------------------------------------------------------
@@ -501,8 +255,8 @@ fn persist(entries: &[SubstrateEntry]) {
 /// `use_hook`, so it runs once per mount, and cheap on every mount after the first —
 /// [`resolve_signal`] answers from the id already cached. `spawn_forever` because the
 /// panel can be closed mid-fetch and the substrate it readies is worth keeping.
-/// Whoever asked redraws when a map lands without being told to: [`resolved`] and
-/// [`thumbnail`] both read the renderer signal, and the quiet import writes it.
+/// Whoever asked redraws when a map lands: [`resolved`] watches for one, and
+/// [`resolve_signal`] says when one has (`crate::shipped`).
 ///
 /// **Two callers, and they are not the same moment.** [`SubstrateGallery`] asks
 /// because it is about to draw every card; [`SubstrateWell`] asks because it cannot
@@ -565,7 +319,7 @@ pub fn SubstrateWell() -> Element {
     let current = use_obs(state, |o| o.substrate)().unwrap_or_default();
     let name = current_name(state, current).unwrap_or_default();
     let thumb = match current {
-        SubstrateId::Image(id) => thumbnail(state, id),
+        SubstrateId::Image(id) => library::thumbnail::<Substrates>(state, id),
         SubstrateId::Flat => None,
     };
     // Lit while the gallery it opened is standing beside the panel, for the swatch
@@ -627,7 +381,13 @@ pub fn SubstrateGallery() -> Element {
         entries
             .read()
             .iter()
-            .map(|e| (e.id, e.name.clone(), thumbnail(state, e.id)))
+            .map(|e| {
+                (
+                    e.id,
+                    e.name.clone(),
+                    library::thumbnail::<Substrates>(state, e.id),
+                )
+            })
             .collect::<Vec<_>>()
     });
     // A substrate in neither list — one a peer brought, or one that came in with a file
@@ -641,7 +401,7 @@ pub fn SubstrateGallery() -> Element {
             if !catalog.iter().any(|(_, c)| *c == Some(current))
                 && !thumbs().iter().any(|(e, ..)| *e == id) =>
         {
-            Some((id, thumbnail(state, id)))
+            Some((id, library::thumbnail::<Substrates>(state, id)))
         }
         _ => None,
     };
@@ -652,7 +412,7 @@ pub fn SubstrateGallery() -> Element {
     // — the trap `crate::shapes`' gallery is written around too.
     let builtins = catalog.into_iter().map(move |(g, id)| {
         let thumb = match id {
-            Some(SubstrateId::Image(a)) => thumbnail(state, a),
+            Some(SubstrateId::Image(a)) => library::thumbnail::<Substrates>(state, a),
             _ => None,
         };
         (g.name, g.blurb, thumb, id == Some(current))
@@ -684,7 +444,7 @@ pub fn SubstrateGallery() -> Element {
                 e.prevent_default();
                 e.stop_propagation();
                 dropping.set(false);
-                import_dropped(state, e.files());
+                library::import_dropped::<Substrates>(state, e.files(), select_custom);
             },
 
             for (name, blurb, thumb, active) in builtins {
@@ -714,7 +474,7 @@ pub fn SubstrateGallery() -> Element {
                         title: "Remove from library",
                         onclick: move |e| {
                             e.stop_propagation();
-                            remove(state, id);
+                            library::remove::<Substrates>(state, id);
                         },
                         {crate::icons::icon(stark_ui::icons::REMOVE)}
                     }
@@ -733,7 +493,7 @@ pub fn SubstrateGallery() -> Element {
                 // `pick_file` must run inside the click gesture — no task hop.
                 onclick: move |_| {
                     crate::platform::pick_file("image/*", move |name, bytes| {
-                        import_file(state, name, bytes);
+                        library::import_file::<Substrates>(state, name, bytes, select_custom);
                     });
                 },
                 div { class: "asset-thumb plus", {crate::icons::icon(stark_ui::icons::ADD)} }

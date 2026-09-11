@@ -124,31 +124,16 @@ impl stark_ui::storage::Backend for LocalStore {
     fn blob_get_many<'a>(
         &'a self,
         keys: &'a [String],
-    ) -> stark_ui::storage::Stored<'a, Vec<Option<Vec<u8>>>> {
-        Box::pin(async move {
-            blob_get_many(keys).await.unwrap_or_else(|reason| {
-                // `Backend` has no word for an unreachable store, so every entry reads as
-                // evicted — said here, because the library reading it drops them.
-                tracing::warn!(reason, "the blob store could not be read");
-                vec![None; keys.len()]
-            })
-        })
+    ) -> stark_ui::storage::Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
+        Box::pin(blob_get_many(keys))
     }
 
     fn blob_put<'a>(
         &'a self,
         key: &'a str,
         bytes: &'a [u8],
-    ) -> stark_ui::storage::Stored<'a, bool> {
-        Box::pin(async move {
-            match blob_put(key, bytes).await {
-                Ok(()) => true,
-                Err(reason) => {
-                    tracing::warn!(key, reason, "the blob store did not take a write");
-                    false
-                }
-            }
-        })
+    ) -> stark_ui::storage::Stored<'a, Result<(), String>> {
+        Box::pin(blob_put(key, bytes))
     }
 
     fn blob_delete<'a>(&'a self, key: &'a str) -> stark_ui::storage::Stored<'a, ()> {

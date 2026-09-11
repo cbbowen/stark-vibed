@@ -1,6 +1,6 @@
 //! What a **browser-held asset library** is made of — the parts both of them share.
 //!
-//! There are two, and both are a frontend's (`shapes` and `substrates` in the web one):
+//! There are two, and both are a frontend's (`library` in the web one):
 //! the brush stamps a user brought in (§6.6) and the canvas substrates (§6.4). They are the same object twice over. An
 //! entry is a canonical image keyed by its content id, the id is the whole of the
 //! reference, the rows go to `localStorage` and the bytes to the blob store beside

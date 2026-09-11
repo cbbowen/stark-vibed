@@ -89,19 +89,34 @@ impl Files {
     /// unlinking the target would not fix — a scanner holding the file open, most
     /// likely — and removing it first would answer a write this process could not
     /// finish by deleting the copy the user still has.
-    fn write(&self, key: &str, bytes: &[u8]) -> bool {
+    fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
         let path = self.path(key);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let Some(temp) = scratch(&path) else {
-            return false;
-        };
-        if !flushed(&temp, bytes) || std::fs::rename(&temp, &path).is_err() {
+        let temp = scratch(&path).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "a key with no file name")
+        })?;
+        let landed = flushed(&temp, bytes).and_then(|()| std::fs::rename(&temp, &path));
+        if landed.is_err() {
             let _ = std::fs::remove_file(&temp);
-            return false;
         }
-        true
+        landed
+    }
+
+    /// The bytes under a blob key: `None` where there is no such file, and an error for
+    /// one that is there and will not read.
+    ///
+    /// The error says nothing about whether the bytes exist, so it must not be answered
+    /// as their absence: a library drops a row whose bytes are missing
+    /// (`stark_ui::assets::load`).
+    fn blob(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let path = self.path(key);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
     }
 }
 
@@ -112,12 +127,11 @@ impl Files {
 /// whose contents never landed. What is still the filesystem's business is whether
 /// the rename itself survives — losing it costs the new value, which is the failure
 /// this whole path is built to leave behind.
-fn flushed(path: &std::path::Path, bytes: &[u8]) -> bool {
+fn flushed(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let Ok(mut file) = std::fs::File::create(path) else {
-        return false;
-    };
-    file.write_all(bytes).is_ok() && file.sync_all().is_ok()
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Where [`Files::write`] stages a record before renaming it into place.
@@ -146,28 +160,31 @@ impl Backend for Files {
     }
 
     fn set(&self, key: &str, value: &str) -> bool {
-        self.write(key, value.as_bytes())
+        self.write(key, value.as_bytes()).is_ok()
     }
 
     fn remove(&self, key: &str) {
         let _ = std::fs::remove_file(self.path(key));
     }
 
-    fn blob_get_many<'a>(&'a self, keys: &'a [String]) -> Stored<'a, Vec<Option<Vec<u8>>>> {
+    fn blob_get_many<'a>(
+        &'a self,
+        keys: &'a [String],
+    ) -> Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
         // Ready rather than spawned: the reads are `std::fs`, which is what a native
         // blob store *is*. The signature is async because the web's answer has to be
         // — IndexedDB is a promise — and a future that is already finished costs a
         // poll. Trading that for a thread pool would be paying for the browser's
         // constraint on a platform that does not have it.
         Box::pin(std::future::ready(
-            keys.iter()
-                .map(|k| std::fs::read(self.path(k)).ok())
-                .collect(),
+            keys.iter().map(|key| self.blob(key)).collect(),
         ))
     }
 
-    fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, bool> {
-        Box::pin(std::future::ready(self.write(key, bytes)))
+    fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, Result<(), String>> {
+        Box::pin(std::future::ready(
+            self.write(key, bytes).map_err(|e| e.to_string()),
+        ))
     }
 
     fn blob_delete<'a>(&'a self, key: &'a str) -> Stored<'a, ()> {
@@ -349,10 +366,31 @@ mod tests {
     fn a_blobs_directory_is_made_before_it_is_staged_into() {
         let dir = Scratch::new("blobs");
         let f = files(&dir.0);
-        assert!(f.write("stark.shapes/00ff", b"png"));
+        f.write("stark.shapes/00ff", b"png")
+            .expect("the first blob of a record lands");
         assert_eq!(
             std::fs::read(f.path("stark.shapes/00ff")).ok(),
             Some(b"png".to_vec())
+        );
+    }
+
+    /// **A blob that is not there is `None`; one that is there and will not read is an
+    /// error** — so a library keeps its row rather than taking an unreadable file for an
+    /// evicted one (`stark_ui::assets::load`).
+    #[test]
+    fn a_blob_that_will_not_read_is_not_a_missing_one() {
+        let dir = Scratch::new("unreadable");
+        let f = files(&dir.0);
+        let keys = ["stark.shapes/00ff".to_string()];
+        assert_eq!(
+            pollster::block_on(f.blob_get_many(&keys)),
+            Ok(vec![None]),
+            "nothing stored is nothing stored"
+        );
+        std::fs::create_dir_all(f.path(&keys[0])).expect("something in the blob's way");
+        assert!(
+            pollster::block_on(f.blob_get_many(&keys)).is_err(),
+            "a directory where the bytes go is not their absence"
         );
     }
 

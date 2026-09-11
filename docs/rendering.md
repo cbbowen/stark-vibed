@@ -416,9 +416,9 @@ coverage mask is, and a document that switched part-way needs both. The engine
 limit (preserving tileability), hashes, and returns the id — so an id is only
 knowable once the bytes are in hand. And `DEFAULT_SUBSTRATE` is `Flat`, because
 core naming linen would be core naming an image it cannot produce; the frontend
-holds a catalog (`stark-dioxus-frontend/src/substrates.rs`, the analogue of
-`builtins.rs` for shapes) and opens a fresh document on a substrate once its map
-has landed.
+holds a catalog (`stark-ui/src/assets.rs`, beside the shapes', its files bundled by
+`stark-dioxus-frontend/src/shipped.rs`) and opens a fresh document on a substrate
+once its map has landed.
 
 **And a user brings one the same way.** This is the payoff of the paragraph above
 rather than a feature beside it: because a substrate *is* its bytes, "built-in" is a

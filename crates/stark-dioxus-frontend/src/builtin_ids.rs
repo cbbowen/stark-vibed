@@ -1,26 +1,18 @@
 //! What the app already has, by content id (§6.6, §6.4, §12.4).
 //!
-//! The table of ids is `stark_ui::assets` — hashed at build time, in the crate
-//! both frontends depend on, so there is one answer to "what does this build already
+//! The table of ids is `stark_ui::assets` — hashed at build time, in the crate both
+//! frontends depend on, so there is one answer to "what does this build already
 //! have" rather than one per frontend. What is left here is the two halves that need
-//! this frontend's own vocabulary: an id becomes a `dioxus::Asset` to fetch, and a
-//! fetched asset becomes an `AssetNeed` the session glue speaks in.
+//! this frontend's own vocabulary: an id is read out of this build's bundle
+//! (`crate::shipped`), and what was read becomes an import into the engine.
 //!
 //! What the table buys: a peer that switches to a substrate this app ships with names
 //! it by content id like any other, and the receiver — knowing it can resolve that id
 //! from its own bundle — declines the transfer instead of pulling megabytes over the
 //! network for bytes sitting next to its binary.
 
-use stark_assetid::AssetId;
 use stark_model::SubstrateId;
 use stark_net::AssetNeed;
-
-/// The bundled file behind a content id, if this build ships it — for actually making
-/// good on what `stark_ui::assets::resolvable` promised.
-pub fn asset_for(id: AssetId) -> Option<dioxus::prelude::Asset> {
-    let path = stark_ui::assets::shipped_at(id)?.path?;
-    crate::builtins::bundled_at(path).or_else(|| crate::substrates::bundled_at(path))
-}
 
 /// Read content out of this app's own bundle, by content id (§12.4, §8).
 ///
@@ -35,16 +27,17 @@ pub fn asset_for(id: AssetId) -> Option<dioxus::prelude::Asset> {
 pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
     let mut out = Vec::new();
     for &need in owed {
-        let Some(asset) = asset_for(need.content()) else {
+        let Some(path) = stark_ui::assets::shipped_at(need.content()).and_then(|row| row.path)
+        else {
             // Not ours to resolve. Either the host omitted something we never
             // promised, or this build's catalog moved under a document that
             // referenced the old one.
             tracing::warn!(?need, "owed content is not in this build's bundle");
             continue;
         };
-        match dioxus::asset_resolver::read_asset_bytes(asset).await {
-            Ok(bytes) => out.push((need, bytes)),
-            Err(e) => tracing::warn!(?need, "could not read owed content locally: {e}"),
+        // A read that fails has said why; the need is left out, for the reason above.
+        if let Some(bytes) = crate::shipped::fetch_bytes(path).await {
+            out.push((need, bytes));
         }
     }
     out
@@ -66,55 +59,5 @@ pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
         AssetNeed::Brush(_) => r.import_brush(bytes),
         AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
         AssetNeed::Picture(id) => r.accept_picture(id, bytes),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// The catalog names its files as paths and this frontend names them again as
-    /// `asset!` literals, because a proc macro needs a literal and a lookup needs a
-    /// string. Two spellings of one filename is exactly the kind of thing that drifts.
-    ///
-    /// The other half — that a catalog path is a file that was actually hashed — is
-    /// `stark_ui::assets`', where the id table is. This half cannot move with it:
-    /// an `Asset` is a `dioxus` type and the crate below names none.
-    #[test]
-    fn every_catalog_row_has_the_file_this_frontend_bundles() {
-        for row in stark_ui::assets::SHIPPED_SHAPES
-            .iter()
-            .chain(stark_ui::assets::SHIPPED_SUBSTRATES)
-        {
-            let Some(path) = row.path else { continue };
-            assert!(
-                super::asset_for(
-                    stark_ui::assets::shipped_id(path).expect("a catalog row is hashed")
-                )
-                .is_some(),
-                "the catalog names {path} and no `asset!` in this frontend does"
-            );
-        }
-    }
-
-    /// And nothing is bundled that no row offers — a file fetched by nothing is
-    /// weight in the deploy that the manifest still carries.
-    #[test]
-    fn nothing_this_frontend_bundles_is_unreachable() {
-        let claimed: Vec<&str> = stark_ui::assets::SHIPPED_SHAPES
-            .iter()
-            .chain(stark_ui::assets::SHIPPED_SUBSTRATES)
-            .filter_map(|s| s.path)
-            .collect();
-        for path in [
-            "shape/Worn_Bristles.png",
-            "shape/Flat.png",
-            "shape/Pencil.png",
-        ] {
-            assert!(crate::builtins::bundled_at(path).is_some());
-            assert!(claimed.contains(&path), "{path} is bundled but unreachable");
-        }
-        for path in ["substrate/Linen.png", "substrate/Rough.png"] {
-            assert!(crate::substrates::bundled_at(path).is_some());
-            assert!(claimed.contains(&path), "{path} is bundled but unreachable");
-        }
     }
 }
