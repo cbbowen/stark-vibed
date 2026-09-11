@@ -60,15 +60,17 @@
 //! *main* renderer and must take its borrow. That is the whole of what makes the
 //! pacing below matter.
 
-use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use stark_engine::Extent2;
 use stark_engine::{ExportScale, LayerInfo};
 use stark_model::document::LayerId;
+use stark_model::geom::IVec2;
 
+use crate::cards::readback_url;
 use crate::platform::sleep_ms;
-use crate::state::{AppState, root_signal};
+use crate::state::AppState;
+use crate::thumbs::generator::{Generated, Insert, Pace, holds};
 
 /// Thumbnail pixel size: 2× the box a row shows it in, so it stays crisp on a
 /// dense display. Square, because the document it frames may be any shape and
@@ -82,6 +84,9 @@ const THUMB: u32 = 64;
 /// peer's arriving actions into one pass — with a second job here: a stroke
 /// commits on pen-up and the hand usually goes straight back down, so this is also
 /// what keeps a run of strokes from rendering a thumbnail between each.
+///
+/// Once per run, before the first row rather than before each: a panel opening on
+/// a twenty-layer document would otherwise take twenty settles to fill.
 const SETTLE_MS: i32 = 180;
 
 /// How long the generator waits between rows.
@@ -100,15 +105,14 @@ const BETWEEN_MS: i32 = 16;
 /// the panel, which is closed as often as it is open.
 #[derive(Clone, Copy)]
 pub struct LayerThumbState {
-    /// Finished thumbnails: a `data:image/png` URL per `(layer, revision)`.
+    /// Finished thumbnails: a `data:image/png` URL per layer, filed under the
+    /// [`Subject`] it shows.
     ///
-    /// One entry per layer rather than an append-only log, unlike the brush
-    /// cache: a brush library is a fixed set of things a user made, while a layer
-    /// is repainted all day, so keeping every revision's picture would grow
-    /// without bound over a session's painting.
-    pub cache: Signal<Vec<Thumb>>,
-    /// Whether the generator task is running — at most one at a time.
-    pub busy: Signal<bool>,
+    /// Replaced rather than appended, unlike the brush cache: a brush library is a
+    /// fixed set of things a user made, while a layer is repainted all day, so
+    /// keeping every revision's picture would grow without bound over a session's
+    /// painting.
+    pictures: Generated<Subject>,
 }
 
 impl LayerThumbState {
@@ -117,15 +121,20 @@ impl LayerThumbState {
     /// fields and the values they open on stay in one place.
     pub(crate) fn new() -> Self {
         Self {
-            cache: root_signal(Vec::new),
-            busy: root_signal(|| false),
+            pictures: Generated::new(
+                Insert::Replace(|a: &Subject, b: &Subject| a.layer == b.layer),
+                Pace {
+                    settle_ms: SETTLE_MS,
+                    between_ms: BETWEEN_MS,
+                },
+            ),
         }
     }
 }
 
-/// One row's finished picture, and what it is a picture of.
-#[derive(Clone, PartialEq)]
-pub struct Thumb {
+/// What a row's picture is of: the key it is filed under.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Subject {
     pub layer: LayerId,
     /// `LayerInfo::content_revision` at the moment it was rendered.
     pub revision: u64,
@@ -134,19 +143,15 @@ pub struct Thumb {
     /// *piece* (§14.6): moving a layer moves where its paint sits in that frame
     /// without minting a revision (§14.12.4), and a key of the revision alone
     /// left the row showing the paint where it used to be.
-    pub translation: stark_model::geom::IVec2,
-    /// A `data:image/png` URL, or empty for a render that failed — cached as a
-    /// miss so the generator cannot spin on it.
-    pub url: String,
+    pub translation: IVec2,
 }
 
 /// The picture we hold for `layer`, whatever it is a picture of.
 ///
-/// At most one, because [`generate`] *replaces* a layer's entry rather than
-/// appending to it — which is what lets the two questions below be asked of the
-/// same entry.
-fn held(cache: &[Thumb], layer: LayerId) -> Option<&Thumb> {
-    cache.iter().find(|t| t.layer == layer)
+/// At most one, because the cache *replaces* a layer's entry rather than appending
+/// to it — which is what lets the two questions below be asked of the same entry.
+fn held(cache: &[(Subject, String)], layer: LayerId) -> Option<&(Subject, String)> {
+    cache.iter().find(|(subject, _)| subject.layer == layer)
 }
 
 /// The thumbnail to draw in `layer`'s row: **the last picture of it we rendered,
@@ -171,8 +176,10 @@ pub fn url(state: AppState, layer: &LayerInfo) -> Option<String> {
     // Asked for its `None` alone: a layer that holds no tiles has no picture to
     // show, whatever the cache may still hold under its id.
     layer.content_revision?;
-    let cache = state.layer_thumbs.cache.read();
-    held(&cache, layer.id).map(|t| t.url.clone())
+    state
+        .layer_thumbs
+        .pictures
+        .with(|cache| held(cache, layer.id).map(|(_, url)| url.clone()))
 }
 
 /// Whether `l` is worth rendering: it has tiles, it has some, and the isolate
@@ -189,7 +196,7 @@ fn worth_rendering(l: &LayerInfo) -> bool {
     l.content_revision.is_some() && l.visible && l.opacity > 0.0
 }
 
-/// The first layer whose thumbnail is missing or out of date, with the revision to
+/// The first layer whose thumbnail is missing or out of date, as the subject to
 /// render it at.
 ///
 /// **This is where the revision is the key** — it decides what to *re-render*, as
@@ -199,49 +206,40 @@ fn worth_rendering(l: &LayerInfo) -> bool {
 ///
 /// Top-down, which is the order the panel draws in: the rows a user is looking at
 /// fill first.
-fn first_stale(
-    layers: &[LayerInfo],
-    cache: &[Thumb],
-) -> Option<(LayerId, u64, stark_model::geom::IVec2)> {
+fn first_stale(layers: &[LayerInfo], cache: &[(Subject, String)]) -> Option<Subject> {
     layers
         .iter()
         .rev()
         .filter(|l| worth_rendering(l))
         .find_map(|l| {
-            let revision = l.content_revision?;
             // The picture is a function of the tiles *and* of where the frame
             // puts them in the piece (§14.12), so both key it.
-            let fresh = held(cache, l.id)
-                .is_some_and(|t| t.revision == revision && t.translation == l.translation);
-            (!fresh).then_some((l.id, revision, l.translation))
+            let subject = Subject {
+                layer: l.id,
+                revision: l.content_revision?,
+                translation: l.translation,
+            };
+            (!holds(cache, &subject)).then_some(subject)
         })
 }
 
 /// [`first_stale`] against the live document and the live cache.
-fn next_stale(state: AppState) -> Option<(LayerId, u64, stark_model::geom::IVec2)> {
+fn next_stale(state: AppState) -> Option<Subject> {
     let obs = state.obs.peek();
-    let cache = state.layer_thumbs.cache.peek();
-    first_stale(&obs.as_ref()?.layers, &cache)
+    let layers = &obs.as_ref()?.layers;
+    state
+        .layer_thumbs
+        .pictures
+        .with_peek(|cache| first_stale(layers, cache))
 }
 
 /// Make sure every layer with a picture to show has an up-to-date thumbnail,
-/// rendering the stale ones in the background.
-///
-/// Idempotent and cheap when nothing is stale; safe to call from a render effect.
-/// One generator at a time, re-scanning after each row, so a layer painted while
-/// it runs is picked up by the running task rather than needing a second one.
+/// rendering the stale ones in the background ([`Generated::refresh`]). Cheap when
+/// nothing is stale; safe to call from a render effect.
 pub fn refresh(state: AppState) {
-    if *state.layer_thumbs.busy.peek() || next_stale(state).is_none() {
-        return;
-    }
-    let mut busy = state.layer_thumbs.busy;
-    busy.set(true);
-    spawn_forever(async move {
-        // Wait out the burst — the navigator's settle (§11) — once, before the first
-        // row rather than before each: a panel opening on a twenty-layer document
-        // would otherwise take twenty settles to fill.
-        sleep_ms(SETTLE_MS).await;
-        while let Some((layer, revision, translation)) = next_stale(state) {
+    state.layer_thumbs.pictures.refresh(
+        move || next_stale(state),
+        async move |subject: &Subject| {
             // Never render with a hand on the canvas. This render takes the engine's
             // own borrow, so one landing mid-stroke spends its cost exactly where it
             // is least affordable — and `canvas_active` covers strokes, marquees,
@@ -254,26 +252,15 @@ pub fn refresh(state: AppState) {
             while *state.canvas_active.peek() {
                 sleep_ms(SETTLE_MS).await;
             }
-            if !generate(state, layer, revision, translation).await {
-                // No renderer yet, or a lost device. The panel's effect calls
-                // `refresh` again when the renderer lands.
-                break;
-            }
-            sleep_ms(BETWEEN_MS).await;
-        }
-        let mut busy = state.layer_thumbs.busy;
-        busy.set(false);
-    });
+            generate(state, subject.layer).await
+        },
+    );
 }
 
-/// Render one layer's thumbnail and put it in the cache. `false` when there is no
-/// renderer to draw with — the one condition worth stopping the pass for.
-async fn generate(
-    state: AppState,
-    layer: LayerId,
-    revision: u64,
-    translation: stark_model::geom::IVec2,
-) -> bool {
+/// Render `layer`'s thumbnail as a `data:` URL, empty when there is nothing to frame
+/// or the readback failed. `None` when there is no renderer to draw with — the one
+/// condition worth stopping the pass for.
+async fn generate(state: AppState, layer: LayerId) -> Option<String> {
     // The frame the navigator frames itself against, so an overview and a row's
     // picture cannot come to disagree about where the piece is. Read before the
     // engine borrow, not inside it: `piece_frame` reads `obs`, which the borrow
@@ -294,37 +281,14 @@ async fn generate(
             .export_plan(frame, ExportScale::Fit(Extent2::new(THUMB, THUMB)))
             .ok()?;
         r.export_layer(layer, &plan).ok()
-    });
-    let readback = match asked {
-        // No renderer at all — the caller stops the pass.
-        None => return false,
+    })?;
+    Some(match asked {
+        Some(readback) => readback_url(readback).await,
         // A renderer, but nothing to frame: an empty canvas with no frame has no
-        // picture to be a thumbnail of. Cached as a miss so the generator moves on
+        // picture to be a thumbnail of. Filed as a miss so the generator moves on
         // rather than asking again every pass.
-        Some(None) => None,
-        Some(Some(readback)) => Some(readback),
-    };
-    let url = match readback {
-        Some(f) => f
-            .await
-            .ok()
-            .and_then(|image| image.to_png().ok())
-            .map(|png| format!("data:image/png;base64,{}", crate::base64::encode(&png)))
-            .unwrap_or_default(),
         None => String::new(),
-    };
-    let mut cache = state.layer_thumbs.cache;
-    let mut cache = cache.write();
-    // One entry per layer: replace this layer's, rather than appending, so a
-    // session's painting does not grow the cache without bound.
-    cache.retain(|t| t.layer != layer);
-    cache.push(Thumb {
-        layer,
-        revision,
-        translation,
-        url,
-    });
-    true
+    })
 }
 
 /// Drop cached thumbnails for layers the document no longer has.
@@ -333,17 +297,10 @@ async fn generate(
 /// deleted layer's id is never reissued (`a_duplicates_ids_are_not_reused_after_a_reload`),
 /// so nothing can come to read it — this is memory, not correctness.
 pub fn prune(state: AppState, live: &[LayerInfo]) {
-    let mut cache = state.layer_thumbs.cache;
-    if cache
-        .peek()
-        .iter()
-        .all(|t| live.iter().any(|l| l.id == t.layer))
-    {
-        return;
-    }
-    cache
-        .write()
-        .retain(|t| live.iter().any(|l| l.id == t.layer));
+    state
+        .layer_thumbs
+        .pictures
+        .retain(|subject| live.iter().any(|l| l.id == subject.layer));
 }
 
 #[cfg(test)]
@@ -371,17 +328,20 @@ mod tests {
             has_underlay: true,
             merge_down: None,
             content_revision: Some(revision),
-            translation: stark_model::geom::IVec2::ZERO,
+            translation: IVec2::ZERO,
         }
     }
 
-    fn thumb(id: u64, revision: u64) -> Thumb {
-        Thumb {
+    fn subject(id: u64, revision: u64) -> Subject {
+        Subject {
             layer: LayerId::solo(id),
             revision,
-            translation: stark_model::geom::IVec2::ZERO,
-            url: format!("data:image/png;base64,r{revision}"),
+            translation: IVec2::ZERO,
         }
+    }
+
+    fn thumb(id: u64, revision: u64) -> (Subject, String) {
+        (subject(id, revision), format!("r{revision}"))
     }
 
     /// The blank flash this split exists to rule out: a commit — a peer's, most
@@ -392,8 +352,8 @@ mod tests {
     fn a_commit_does_not_take_the_row_s_picture_away() {
         let cache = [thumb(1, 7)];
         assert_eq!(
-            held(&cache, LayerId::solo(1)).map(|t| t.url.as_str()),
-            Some("data:image/png;base64,r7")
+            held(&cache, LayerId::solo(1)).map(|(_, url)| url.as_str()),
+            Some("r7")
         );
     }
 
@@ -401,10 +361,9 @@ mod tests {
     /// draws is the one the generator is asked to replace.
     #[test]
     fn but_it_is_still_the_row_to_render_next() {
-        let zero = stark_model::geom::IVec2::ZERO;
         assert_eq!(
             first_stale(&[paint(1, 8)], &[thumb(1, 7)]),
-            Some((LayerId::solo(1), 8, zero))
+            Some(subject(1, 8))
         );
         assert_eq!(first_stale(&[paint(1, 8)], &[thumb(1, 8)]), None);
     }
@@ -414,14 +373,17 @@ mod tests {
     /// now stands at.
     #[test]
     fn a_translated_layer_is_the_row_to_render_next() {
-        let d = stark_model::geom::IVec2::new(300, -40);
+        let d = IVec2::new(300, -40);
         let moved = LayerInfo {
             translation: d,
             ..paint(1, 8)
         };
         assert_eq!(
             first_stale(&[moved], &[thumb(1, 8)]),
-            Some((LayerId::solo(1), 8, d))
+            Some(Subject {
+                translation: d,
+                ..subject(1, 8)
+            })
         );
     }
 

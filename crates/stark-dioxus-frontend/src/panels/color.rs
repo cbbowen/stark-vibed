@@ -9,6 +9,7 @@
 
 use dioxus::prelude::*;
 
+use crate::cards::{Mime, bytes_url};
 use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
 use stark_model::color::Gamut;
@@ -364,7 +365,7 @@ fn bmp_data_url(w: usize, h: usize, rgb: &[u8]) -> String {
         }
         bmp.resize(bmp.len() + stride - w * 3, 0);
     }
-    format!("url(data:image/bmp;base64,{})", crate::base64::encode(&bmp))
+    format!("url({})", bytes_url(Mime::Bmp, &bmp))
 }
 
 /// The picker's wheel at lightness `l`.

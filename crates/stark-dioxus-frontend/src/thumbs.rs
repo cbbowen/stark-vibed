@@ -39,7 +39,8 @@
 //! `state::with_engine`: it has no observable projection and no chrome reading
 //! one back, so there is no publish to pair a mutation with.
 
-use dioxus::dioxus_core::spawn_forever;
+pub mod generator;
+
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
@@ -53,7 +54,9 @@ use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
+use crate::cards::readback_url;
 use crate::state::{AppState, root_signal};
+use generator::{Generated, Insert, Pace, holds};
 use stark_ui::brush_config::{BrushConfig, Transient};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
@@ -79,14 +82,18 @@ const STROKE_COLOR: [f32; 3] = [0.55, 0.55, 0.55];
 const LIGHT_PAINT: [f32; 3] = [0.80, 0.80, 0.80];
 const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 
+/// What a thumbnail is filed under: a brush snapshot, its tune [`keyed`].
+type Key = (BrushConfig, Transient);
+
 /// The thumbnail machinery's signals. All root-owned (`state::root_signal`):
 /// generation runs in `spawn_forever` tasks that outlive whichever panel asked.
 #[derive(Clone, Copy)]
 pub struct ThumbState {
     /// Finished thumbnails: a `data:image/png` URL per brush snapshot — both
     /// halves, since a slot's tune is part of its picture — found by comparing
-    /// the snapshot itself ([`lookup`]).
-    pub cache: Signal<Vec<((BrushConfig, Transient), String)>>,
+    /// the snapshot itself ([`lookup`]). Appended: a snapshot is the whole of what
+    /// its picture shows, so no later render supersedes one.
+    pictures: Generated<Key>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
@@ -100,8 +107,6 @@ pub struct ThumbState {
     /// the loop. This is a handful of refcount bumps and outlives whoever published
     /// it.
     pub shared: Signal<Option<stark_engine::EngineShared>>,
-    /// Whether the generator task is running — at most one at a time.
-    pub busy: Signal<bool>,
 }
 
 impl ThumbState {
@@ -110,10 +115,9 @@ impl ThumbState {
     /// fields and the values they open on stay in one place.
     pub(crate) fn new() -> Self {
         Self {
-            cache: root_signal(Vec::new),
+            pictures: Generated::new(Insert::Append, Pace::EAGER),
             rig: root_signal(|| None),
             shared: root_signal(|| None),
-            busy: root_signal(|| false),
         }
     }
 }
@@ -145,18 +149,18 @@ pub struct Rig {
 /// reason.
 fn lookup(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
     let key = (*w, keyed(t));
-    state
-        .thumbs
-        .cache
-        .read()
-        .iter()
-        .find(|(cached, _)| *cached == key)
-        .map(|(_, url)| url.clone())
+    state.thumbs.pictures.with(|cache| {
+        cache
+            .iter()
+            .find(|(cached, _)| *cached == key)
+            .map(|(_, url)| url.clone())
+    })
 }
 
 /// The tune **as the thumbnail paints it**: the test stroke's own gray in place
-/// of the painting color. Both the render and the cache key go through it, so
-/// the key cannot come to disagree with the picture about what a thumbnail is.
+/// of the painting color. The cache key is made here and the render paints the
+/// key it is handed, so the key cannot come to disagree with the picture about
+/// what a thumbnail is.
 ///
 /// The picture ignores the RGB it is handed — every thumbnail is drawn in
 /// [`STROKE_COLOR`], over the same two grays — so two tunes differing only in
@@ -185,44 +189,13 @@ pub fn url(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
 }
 
 /// Make sure every brush that has a picture to show has a thumbnail, generating
-/// the missing ones in the background. Idempotent and cheap when nothing is
-/// missing; safe to call from a render effect.
-///
-/// One generator at a time: the task re-scans after each thumbnail, so a brush
-/// that appears while it runs is picked up by the running task rather than
-/// needing a second one.
+/// the missing ones in the background ([`Generated::refresh`]). Cheap when nothing
+/// is missing; safe to call from a render effect.
 pub fn refresh(state: AppState) {
-    if *state.thumbs.busy.peek() || next_missing(state).is_none() {
-        return;
-    }
-    let mut busy = state.thumbs.busy;
-    busy.set(true);
-    spawn_forever(async move {
-        while let Some((w, t)) = next_missing(state) {
-            if !generate(state, w, t).await {
-                // No engine to render with (startup, or a lost device). The
-                // library effect calls `refresh` again when the renderer lands.
-                break;
-            }
-            // Generation just cached an entry for `w`, so the cache must now answer
-            // for it — and if it does not, `next_missing` will hand back the same
-            // brush forever and this loop will never end. That is reachable in
-            // exactly one way, since the lookup is `PartialEq`: a brush holding a
-            // parameter that is not equal to itself, which is to say a NaN. Nothing
-            // in the app can produce one (sliders clamp, and JSON cannot even carry
-            // it), so this is a guarantee of termination rather than a case that
-            // happens — the loop cannot spin, whatever is in the library.
-            if lookup(state, &w, t).is_none() {
-                tracing::warn!(
-                    "a brush parameter does not compare equal to itself; \
-                                skipping the rest of the thumbnails"
-                );
-                break;
-            }
-        }
-        let mut busy = state.thumbs.busy;
-        busy.set(false);
-    });
+    state.thumbs.pictures.refresh(
+        move || next_missing(state),
+        async move |key: &Key| generate(state, *key).await,
+    );
 }
 
 /// The first brush with no thumbnail yet: the library in order, then the
@@ -236,32 +209,30 @@ pub fn refresh(state: AppState) {
 /// looking at fills in before the rack they have to hold a key to see — and a
 /// slot still at its preset's own size costs nothing here, since the two are one
 /// key.
-fn next_missing(state: AppState) -> Option<(BrushConfig, Transient)> {
-    let cache = state.thumbs.cache.peek();
+fn next_missing(state: AppState) -> Option<Key> {
     let presets = state.presets.peek();
     let rack = state.slots.brushes.peek();
-    presets
-        .iter()
-        .map(|e| (e.brush, e.transient))
-        .chain(
-            rack.iter()
-                .flatten()
-                .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
-        )
-        // Asked on the same terms the cache answers on ([`keyed`]) — and it has
-        // to be, or a brush filed under its rendered color would be reported
-        // missing forever and `refresh` would never finish its scan.
-        .find(|(w, t)| {
-            let key = (*w, keyed(*t));
-            !cache.iter().any(|(cached, _)| *cached == key)
-        })
+    state.thumbs.pictures.with_peek(|cache| {
+        presets
+            .iter()
+            .map(|e| (e.brush, e.transient))
+            .chain(
+                rack.iter()
+                    .flatten()
+                    .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
+            )
+            // Asked on the same terms the cache answers on ([`keyed`]) — and it has
+            // to be, or a brush filed under its rendered color would be reported
+            // missing forever and the run would never finish its scan.
+            .map(|(w, t)| (w, keyed(t)))
+            .find(|key| !holds(cache, key))
+    })
 }
 
-/// Render one thumbnail and put it in the cache. `false` when there is no main
-/// renderer to share an engine from yet — the one condition worth stopping for;
-/// a preset whose render fails for its own reasons is skipped by caching a blank
-/// entry rather than retried forever.
-async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
+/// Render the thumbnail for `key` as a `data:` URL, empty for a render that failed
+/// for its own reasons. `None` when there is no main renderer to share an engine
+/// from yet — the one condition worth stopping for.
+async fn generate(state: AppState, (w, t): Key) -> Option<String> {
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
@@ -270,9 +241,7 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
         if guard.is_none() {
             // The shared half, not the renderer: nothing here needs the canvas, the
             // document or the gesture in flight.
-            let Some(shared) = state.thumbs.shared.peek().clone() else {
-                return false;
-            };
+            let shared = state.thumbs.shared.peek().clone()?;
             let mut engine = Engine::on_shared(shared, Extent2::new(THUMB_W, THUMB_H));
             // Pin the look the module doc promises: flat substrate, neutral light,
             // default media, white substrate (what an eraser's bite reveals).
@@ -313,12 +282,11 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
                 ),
             });
         }
-        // The tune the cache will file this under, which is the tune the stroke
-        // is laid at: one statement of "the color a thumbnail is painted in".
-        let keyed_tune = keyed(t);
+        // The key's tune, already [`keyed`]: the tune the cache files this under is
+        // the tune the stroke is laid at.
         rig.engine.process(ViewCommand::SetBrush {
-            brush: w.params(keyed_tune),
-            color: keyed_tune.color,
+            brush: w.params(t),
+            color: t.color,
         });
         let rope = stark_ui::input::rope(view, w.smoothing);
         rig.engine
@@ -340,23 +308,15 @@ async fn generate(state: AppState, w: BrushConfig, t: Transient) -> bool {
         }
         readback
     };
-    let url = match readback {
-        // Two ways to come back empty, and both cache the miss so the generator
-        // cannot spin on it: a view the device refuses (unreachable at these
-        // sizes), and a readback that failed because the GPU did (§5) — which the
-        // canvas will be reporting through `ObservableState::gpu_failure` anyway,
-        // so a thumbnail is not the place to raise it.
-        Ok(f) => f
-            .await
-            .ok()
-            .and_then(|image| image.to_png().ok())
-            .map(|png| format!("data:image/png;base64,{}", crate::base64::encode(&png)))
-            .unwrap_or_default(),
+    Some(match readback {
+        // Two ways to come back empty, and both are filed as a miss so the run
+        // moves past them: a view the device refuses (unreachable at these sizes),
+        // and a readback that failed because the GPU did (§5) — which the canvas
+        // will be reporting through `ObservableState::gpu_failure` anyway, so a
+        // thumbnail is not the place to raise it.
+        Ok(f) => readback_url(f).await,
         Err(_) => String::new(),
-    };
-    let mut cache = state.thumbs.cache;
-    cache.write().push(((w, keyed(t)), url));
-    true
+    })
 }
 
 /// The view a preset's thumbnail renders through, scaled to the brush: the test

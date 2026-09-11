@@ -1,4 +1,5 @@
-//! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6).
+//! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6), and the
+//! `data:` URL every picture the chrome makes from bytes travels in.
 //!
 //! What the picture *is* — the canonical field an id names, reduced to a card's size,
 //! and whether it is coverage or height — is `stark_ui::assets::card`. All that is
@@ -7,6 +8,7 @@
 //! becomes base64. The native frontend hands the same numbers to a texture instead,
 //! which is exactly why the numbers and not the encoding are what moved down.
 
+use stark_engine::RgbaImage;
 use stark_ui::assets::{Card, Ink};
 
 /// A card's `background-image` declaration — written out as `none` when there is no
@@ -23,13 +25,47 @@ pub fn thumb_style(url: Option<&str>) -> String {
     }
 }
 
+/// What a `data:` URL says its bytes are.
+#[derive(Clone, Copy)]
+pub enum Mime {
+    Png,
+    Bmp,
+}
+
+impl Mime {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Bmp => "image/bmp",
+        }
+    }
+}
+
+/// `bytes` as a base64 `data:` URL of type `mime`.
+pub fn bytes_url(mime: Mime, bytes: &[u8]) -> String {
+    format!(
+        "data:{};base64,{}",
+        mime.as_str(),
+        crate::base64::encode(bytes)
+    )
+}
+
+/// A readback as a PNG `data:` URL, or empty when the readback or the encode failed:
+/// both thumbnail caches file a failure as a miss rather than raise it.
+pub async fn readback_url(
+    readback: impl Future<Output = stark_engine::Result<RgbaImage>>,
+) -> String {
+    readback
+        .await
+        .ok()
+        .and_then(|image| image.to_png().ok())
+        .map(|png| bytes_url(Mime::Png, &png))
+        .unwrap_or_default()
+}
+
 /// A `data:` URL for `card`, or `None` if the encode failed.
 pub fn data_url(card: Card) -> Option<String> {
-    let png = encode_png(card)?;
-    Some(format!(
-        "data:image/png;base64,{}",
-        crate::base64::encode(&png)
-    ))
+    encode_png(card).map(|png| bytes_url(Mime::Png, &png))
 }
 
 /// `card` as PNG bytes, or `None` if the encode failed.
@@ -64,4 +100,15 @@ pub fn encode_png(card: Card) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bytes_url_names_its_type_and_carries_base64() {
+        assert_eq!(bytes_url(Mime::Png, b"foo"), "data:image/png;base64,Zm9v");
+        assert_eq!(bytes_url(Mime::Bmp, b""), "data:image/bmp;base64,");
+    }
 }
