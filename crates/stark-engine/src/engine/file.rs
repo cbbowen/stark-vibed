@@ -287,13 +287,13 @@ impl Engine {
     }
 
     /// Whether this engine already holds what `need` names, in whichever of the
-    /// three stores it belongs to.
+    /// three stores it belongs to — asked without copying the bytes.
     pub fn holds(&self, need: AssetNeed) -> bool {
         match need {
             AssetNeed::Brush(id) => self.has_asset(id),
             AssetNeed::Substrate(_) => need
                 .substrate()
-                .is_some_and(|id| self.substrate_bytes(id).is_some()),
+                .is_some_and(|id| self.shared.apply.substrates.is_loaded(Substrate::new(id))),
             AssetNeed::Picture(id) => self.shared.apply.pictures.contains(id),
         }
     }

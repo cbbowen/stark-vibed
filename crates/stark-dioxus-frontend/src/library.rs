@@ -15,12 +15,12 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_model::{AssetId, SubstrateId};
-use stark_ui::assets::{self, Entry, Kind, Shapes, Substrates};
+use stark_ui::assets::{self, Entry, Kind, Shapes, Substrates, Unread};
 use stark_ui::library::Thumbs;
 
 use crate::platform::{normalize_shape_image, normalize_substrate_image};
 use crate::render::Renderer;
-use crate::state::{AppState, root_signal, with_engine_quiet};
+use crate::state::{AppState, gpu_lost, root_signal, with_engine_quiet};
 
 /// One library's signals. Root-owned: an import is started from a gallery's scope and
 /// must outlive it.
@@ -30,6 +30,9 @@ pub struct LibraryState {
     /// that read lands, which is why [`load`] is awaited ahead of the first thing that
     /// resolves an id out of it.
     pub entries: Signal<Vec<Entry>>,
+    /// The stored rows whose bytes would not read this session. Never shown, and written
+    /// back beside `entries` by every write of the library.
+    pub unread: Signal<Vec<Unread>>,
     /// A transient line under the gallery: why an import was refused, or what it did to
     /// the file. `None` when quiet.
     pub notice: Signal<Option<String>>,
@@ -39,6 +42,7 @@ impl LibraryState {
     pub(crate) fn new() -> Self {
         Self {
             entries: root_signal(Vec::new),
+            unread: root_signal(Vec::new),
             notice: root_signal(|| None),
         }
     }
@@ -50,6 +54,8 @@ impl LibraryState {
 /// A trait over the engine rather than two more functions on the kind, so the
 /// operations below can run in a test against a fake one — a renderer needs a GPU.
 pub trait Engine<K: Kind> {
+    /// Whether this document holds `id`, asked without copying the bytes.
+    fn holds(&self, id: AssetId) -> bool;
     /// The canonical bytes this document holds under `id`.
     fn held(&self, id: AssetId) -> Option<Vec<u8>>;
     /// Canonicalize `png` into this document, answering the id it is held under.
@@ -57,6 +63,10 @@ pub trait Engine<K: Kind> {
 }
 
 impl Engine<Shapes> for Renderer {
+    fn holds(&self, id: AssetId) -> bool {
+        Renderer::holds(self, Shapes::need(id))
+    }
+
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
         self.asset_bytes(id)
     }
@@ -67,6 +77,10 @@ impl Engine<Shapes> for Renderer {
 }
 
 impl Engine<Substrates> for Renderer {
+    fn holds(&self, id: AssetId) -> bool {
+        Renderer::holds(self, Substrates::need(id))
+    }
+
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
         self.substrate_bytes(SubstrateId::Image(id))
     }
@@ -172,17 +186,25 @@ fn card_url<K: Kind>(png: &[u8]) -> Option<String> {
 }
 
 /// Fill `K`'s library from the browser's two stores — `stark_ui::assets::load`, which
-/// says what a row whose bytes are gone costs. Awaited once at start.
+/// says what a row whose bytes are gone costs, and what one whose bytes would not read
+/// does. Awaited once at start.
 pub async fn load<K: Shelf>(state: AppState) {
-    let mut entries = K::library(state).entries;
-    entries.set(assets::load::<K>().await);
+    let LibraryState {
+        mut entries,
+        mut unread,
+        ..
+    } = K::library(state);
+    let loaded = assets::load::<K>().await;
+    entries.set(loaded.entries);
+    unread.set(loaded.unread);
 }
 
 /// Import a picked file into `K`'s library — decoded in the browser, canonicalized in the
 /// engine, added — and hand its id to `then`, which picks it.
 ///
 /// A file the library holds already adds nothing and says so, and `then` runs all the
-/// same: importing a file twice picks it rather than refusing it.
+/// same: importing a file twice picks it rather than refusing it. So does a file the
+/// store would not take, which is in this document and not in the library.
 pub fn import_file<K: Shelf>(
     state: AppState,
     file_name: String,
@@ -221,9 +243,9 @@ pub fn import_file<K: Shelf>(
             png: canonical,
             id,
         };
-        let known = admit::<K>(library, entry).await;
+        let admitted = admit::<K>(library, entry).await;
         then(state, id);
-        notice.set(said(&name, known, note));
+        notice.set(said(&name, &admitted, note));
     });
 }
 
@@ -237,37 +259,60 @@ fn canonicalize<K: Kind>(
     Ok((id, engine.held(id).unwrap_or(png)))
 }
 
+/// What adding an import to its library came to.
+#[derive(Debug, PartialEq)]
+enum Admitted {
+    /// Its id was in the library already.
+    Known,
+    Added,
+    /// The store would not take its bytes, for this reason, so no row names them: it is
+    /// in this document and not in the library.
+    Unsaved(String),
+}
+
 /// Add an imported entry to the library — its bytes stored before the row that names
-/// them (`storage::blob_save`) — unless its id is there already. Answers whether it was.
+/// them, and no row when they did not land (`assets::store_bytes`) — unless its id is
+/// there already.
 ///
 /// Asked again once the bytes are down: a second drop of the same file can land while
 /// this one's are being written, and a library holding one id twice draws two cards for
 /// one thing.
-async fn admit<K: Kind>(library: LibraryState, entry: Entry) -> bool {
+async fn admit<K: Kind>(library: LibraryState, entry: Entry) -> Admitted {
     let id = entry.id;
     let holds = |entries: &[Entry]| entries.iter().any(|e| e.id == id);
-    let mut entries = library.entries;
+    let LibraryState {
+        mut entries,
+        unread,
+        ..
+    } = library;
     if holds(&entries.peek()) {
-        return true;
+        return Admitted::Known;
     }
-    assets::store_bytes::<K>(id, &entry.png).await;
+    let stored = assets::store_bytes::<K>(id, &entry.png).await;
     if holds(&entries.peek()) {
-        return true;
+        return Admitted::Known;
+    }
+    if let Err(why) = stored {
+        return Admitted::Unsaved(why);
     }
     entries.write().push(entry);
-    assets::persist::<K>(&entries.peek());
-    false
+    assets::persist::<K>(&entries.peek(), &unread.peek());
+    Admitted::Added
 }
 
-/// What an import says under the gallery: that the file was there already, what the
-/// import did to it, or nothing.
-fn said(name: &str, known: bool, note: Option<&str>) -> Option<String> {
-    match (known, note) {
-        (true, _) => Some(format!(
+/// What an import says under the gallery: that the file was there already, that the
+/// library could not keep it, what the import did to it, or nothing.
+fn said(name: &str, admitted: &Admitted, note: Option<&str>) -> Option<String> {
+    match (admitted, note) {
+        (Admitted::Known, _) => Some(format!(
             "“{name}” is already in your library — selected it."
         )),
-        (false, Some(note)) => Some(format!("“{name}” {note}")),
-        (false, None) => None,
+        (Admitted::Unsaved(why), note) => Some(format!(
+            "“{name}” is in this document only: your library couldn't store it ({why}).{}",
+            note.map(|note| format!(" It {note}")).unwrap_or_default()
+        )),
+        (Admitted::Added, Some(note)) => Some(format!("“{name}” {note}")),
+        (Admitted::Added, None) => None,
     }
 }
 
@@ -305,93 +350,142 @@ pub fn import_dropped<K: Shelf>(
 /// substrate: a `SetSubstrate` naming bytes the engine lacks bakes a flat deposit into
 /// tiles that nothing later un-bakes (§6.4).
 ///
-/// One door to the engine, `with_engine_quiet` — readying an asset changes no document
-/// state — taken once and synchronously, so nothing is borrowed across the heal's await.
+/// An id the engine holds already is answered under `peek`, which is every pick after
+/// the first; only an import takes the engine's write door, `with_engine_quiet` —
+/// readying an asset changes no document state — once and synchronously, so nothing is
+/// borrowed across the heal's await.
 pub fn ensure<K: Shelf>(state: AppState, id: AssetId) -> Option<AssetId>
 where
     Renderer: Engine<K>,
 {
-    let library = K::library(state);
-    let Reached {
-        id,
-        bytes,
-        healed_from,
-    } = with_engine_quiet(state, |r| reach::<K>(r, library, id)).flatten()?;
-    if let Some(stale) = healed_from {
-        // The signal has moved already — the caller is about to paint with `id` — and
-        // the two stores follow in a task, in the order `assets::heal` states.
-        let (entries, png) = (library.entries, bytes.clone());
-        spawn_forever(async move {
-            let rows = entries.peek().to_vec();
-            assets::heal::<K>(&rows, stale, id, &png).await;
-        });
+    if gpu_lost(state) {
+        return None;
     }
-    seed_session::<K>(state, id, bytes);
+    let held = state
+        .renderer
+        .peek()
+        .as_ref()
+        .map(|r| <Renderer as Engine<K>>::holds(r, id))?;
+    let id = if held {
+        id
+    } else {
+        let library = K::library(state);
+        let Reached { id, healed } =
+            with_engine_quiet(state, |r| reach::<K>(r, library, id)).flatten()?;
+        if let Some(Healed { stale, png }) = healed {
+            heal::<K>(library, stale, id, png);
+        }
+        id
+    };
+    offer::<K>(state, id);
     Some(id)
 }
 
-/// What [`ensure`] found with the engine in hand.
+/// What [`reach`] found with the engine in hand.
 struct Reached {
     /// The id to reference the asset by.
     id: AssetId,
-    /// The canonical bytes it names, to offer a session.
-    bytes: Vec<u8>,
-    /// The id the library row held before it moved onto `id`, when it had to.
-    healed_from: Option<AssetId>,
+    /// The row's move onto `id`, when it had to move.
+    healed: Option<Healed>,
 }
 
-/// [`ensure`]'s engine half: held already, or imported out of the library — and the row
-/// moved onto the id the engine gave, when the two differ.
+/// A library row moved off the id it was stored under.
+struct Healed {
+    stale: AssetId,
+    /// The row's bytes, to store under the id it moved onto.
+    png: Vec<u8>,
+}
+
+/// [`ensure`]'s import half, for an id the engine does not hold: the library's bytes
+/// imported, and the row moved onto the id the engine gave when the two differ.
 fn reach<K: Kind>(
     engine: &mut impl Engine<K>,
     library: LibraryState,
     id: AssetId,
 ) -> Option<Reached> {
-    // Already in this document: imported here, arrived with a loaded file, or fetched
-    // off a peer.
-    if let Some(bytes) = engine.held(id) {
-        return Some(Reached {
-            id,
-            bytes,
-            healed_from: None,
-        });
-    }
-    let (name, png) = library
-        .entries
-        .peek()
-        .iter()
-        .find(|e| e.id == id)
-        .map(|e| (e.name.clone(), e.png.clone()))?;
-    let actual = match engine.import(&png) {
+    let imported = {
+        let entries = library.entries.peek();
+        let entry = entries.iter().find(|e| e.id == id)?;
+        engine
+            .import(&entry.png)
+            .map_err(|why| format!("“{}” failed to load: {why}.", entry.name))
+    };
+    let actual = match imported {
         Ok(actual) => actual,
-        Err(why) => {
+        Err(said) => {
             let mut notice = library.notice;
-            notice.set(Some(format!("“{name}” failed to load: {why}.")));
+            notice.set(Some(said));
             return None;
         }
     };
-    let healed_from = (actual != id).then(|| {
-        let mut entries = library.entries;
-        if let Some(row) = entries.write().iter_mut().find(|e| e.id == id) {
-            row.id = actual;
-        }
-        id
+    if actual == id {
+        return Some(Reached { id, healed: None });
+    }
+    let mut entries = library.entries;
+    let png = entries.write().iter_mut().find(|e| e.id == id).map(|row| {
+        row.id = actual;
+        row.png.clone()
     });
     Some(Reached {
         id: actual,
-        bytes: png,
-        healed_from,
+        healed: png.map(|png| Healed { stale: id, png }),
     })
 }
 
+/// Follow a row's move onto `actual` into the two stores, in the order `assets::heal`
+/// states — the rows read once the bytes have landed, so an import or removal made
+/// during the write is written with them.
+///
+/// The signal moved already, since the caller is about to paint with `actual`. When the
+/// bytes do not land it moves back: the stores still name them by `stale`, and a later
+/// write this session would otherwise name bytes that were never stored. The next pick
+/// heals it again.
+fn heal<K: Kind>(library: LibraryState, stale: AssetId, actual: AssetId, png: Vec<u8>) {
+    let LibraryState {
+        mut entries,
+        unread,
+        ..
+    } = library;
+    spawn_forever(async move {
+        let rows = move || assets::persist::<K>(&entries.peek(), &unread.peek());
+        if assets::heal::<K>(stale, actual, &png, rows).await.is_err()
+            && let Some(row) = entries.write().iter_mut().find(|e| e.id == actual)
+        {
+            row.id = stale;
+        }
+    });
+}
+
+/// Offer what this document holds under `id` to a live session. Copied only when there
+/// is one: a height map is megabytes to copy for nobody.
+fn offer<K: Kind>(state: AppState, id: AssetId)
+where
+    Renderer: Engine<K>,
+{
+    if state.collab.session.peek().is_none() {
+        return;
+    }
+    let bytes = state
+        .renderer
+        .peek()
+        .as_ref()
+        .and_then(|r| <Renderer as Engine<K>>::held(r, id));
+    if let Some(bytes) = bytes {
+        seed_session::<K>(state, id, bytes);
+    }
+}
+
 /// Drop an entry from `K`'s library — the row first, then the bytes, an import's order
-/// reversed and for its reason (`storage::blob_save`). Paint made with it is untouched:
-/// the engine's per-document store keeps every imported asset, and a save file bundles
-/// whatever its log names (§8).
+/// reversed and for its reason (`storage::blob_save`). Paint made with it is untouched,
+/// and a document on a removed substrate stays on it: the engine's per-document store
+/// keeps every imported asset, and a save file bundles whatever its log names (§8).
 pub fn remove<K: Shelf>(state: AppState, id: AssetId) {
-    let mut entries = K::library(state).entries;
-    entries.write().retain(|e| e.id != id);
-    assets::persist::<K>(&entries.peek());
+    let LibraryState {
+        mut entries,
+        mut unread,
+        ..
+    } = K::library(state);
+    assets::remove::<K>(&mut entries.write(), &mut unread.write(), id);
     spawn_forever(async move { assets::drop_bytes::<K>(id).await });
 }
 
@@ -412,10 +506,11 @@ pub fn seed_session<K: Kind>(state: AppState, id: AssetId, bytes: Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, MutexGuard, Once, PoisonError};
+    use std::cell::RefCell;
+    use std::sync::Once;
 
     use dioxus::dioxus_core::{ScopeId, VirtualDom};
-    use stark_ui::storage::{Backend, Stored};
+    use stark_ui::storage::{Backend, BlobRead, Stored, at_once};
 
     use super::*;
 
@@ -440,6 +535,10 @@ mod tests {
     }
 
     impl<K: Kind> Engine<K> for Fake {
+        fn holds(&self, id: AssetId) -> bool {
+            self.held.iter().any(|(held, _)| *held == id)
+        }
+
         fn held(&self, id: AssetId) -> Option<Vec<u8>> {
             self.held
                 .iter()
@@ -463,17 +562,16 @@ mod tests {
     fn shelf(entries: Vec<Entry>) -> LibraryState {
         LibraryState {
             entries: Signal::new(entries),
+            unread: Signal::new(Vec::new()),
             notice: Signal::new(None),
         }
     }
 
-    /// Run what the store below answers at once.
-    fn ready<F: Future>(future: F) -> F::Output {
-        let mut future = std::pin::pin!(future);
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(out) => out,
-            std::task::Poll::Pending => panic!("the store answers at once"),
+    fn pencil(n: u8) -> Entry {
+        Entry {
+            name: "Pencil".to_string(),
+            png: vec![n; 4],
+            id: AssetId([n; 32]),
         }
     }
 
@@ -494,42 +592,54 @@ mod tests {
 
             let reached =
                 reach::<Shapes>(&mut engine, library, stale).expect("the library has the bytes");
-            assert_eq!((reached.id, reached.healed_from), (actual, Some(stale)));
+            assert_eq!(reached.id, actual);
+            let healed = reached.healed.expect("the row moved");
+            assert_eq!(healed.stale, stale);
             assert_eq!(
-                reached.bytes,
+                healed.png,
                 vec![7; 4],
-                "the session is offered the row's bytes"
+                "the row's bytes go to the id it moved onto"
             );
             assert_eq!(
                 library.entries.peek()[0].id,
                 actual,
                 "and the row moved onto the id the engine gave"
             );
-
-            let again = reach::<Shapes>(&mut engine, library, actual).expect("held now");
-            assert_eq!((again.id, again.healed_from), (actual, None));
-            assert_eq!(engine.imports, 1, "so it was not imported twice");
+            assert!(
+                Engine::<Shapes>::holds(&engine, actual),
+                "so the next ask finds it held rather than importing it again"
+            );
+            assert_eq!(engine.imports, 1);
         });
     }
 
-    /// What this process's store was asked to write under the shape library's key.
+    /// What this test thread asked the store to write — the process's store, but each
+    /// thread's own tape — and why the store refuses blob writes while it does.
     ///
     /// Installed rather than handed in, because `storage::install` is the only way in and
-    /// keeps the first backend it is given — which is why the test using it shows the
+    /// keeps the first backend it is given — which is why the tests using it show the
     /// tape is live before relying on it saying nothing.
     struct Tape;
 
-    static TAPE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    fn tape() -> MutexGuard<'static, Vec<String>> {
-        TAPE.lock().unwrap_or_else(PoisonError::into_inner)
+    thread_local! {
+        static TAPE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static FULL: RefCell<Option<String>> = const { RefCell::new(None) };
     }
 
     fn record(what: &str, key: &str) {
-        // Only this library's keys: another test in the process may keep a record too.
-        if key.starts_with(Shapes::STORE.named().0) {
-            tape().push(format!("{what} {key}"));
-        }
+        TAPE.with_borrow_mut(|tape| tape.push(format!("{what} {key}")));
+    }
+
+    /// The tape since this was last asked, oldest first.
+    fn tape() -> Vec<String> {
+        TAPE.take()
+    }
+
+    fn install_tape() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| stark_ui::storage::install(Tape));
+        TAPE.take();
+        FULL.set(None);
     }
 
     impl Backend for Tape {
@@ -547,11 +657,14 @@ mod tests {
         fn blob_get_many<'a>(
             &'a self,
             keys: &'a [String],
-        ) -> Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
-            Box::pin(std::future::ready(Ok(vec![None; keys.len()])))
+        ) -> Stored<'a, Result<Vec<BlobRead>, String>> {
+            Box::pin(std::future::ready(Ok(vec![Ok(None); keys.len()])))
         }
 
         fn blob_put<'a>(&'a self, key: &'a str, _: &'a [u8]) -> Stored<'a, Result<(), String>> {
+            if let Some(why) = FULL.with_borrow(Clone::clone) {
+                return Box::pin(std::future::ready(Err(why)));
+            }
             record("put", key);
             Box::pin(std::future::ready(Ok(())))
         }
@@ -567,9 +680,7 @@ mod tests {
     /// rather than imported.
     #[test]
     fn an_import_the_library_already_holds_stores_nothing_twice() {
-        static INSTALL: Once = Once::new();
-        INSTALL.call_once(|| stark_ui::storage::install(Tape));
-        tape().clear();
+        install_tape();
         in_app(|| {
             let id = AssetId([3; 32]);
             let mut engine = Fake::landing_on(id);
@@ -582,25 +693,63 @@ mod tests {
                     png: canonical,
                     id,
                 };
-                ready(admit::<Shapes>(library, entry))
+                at_once(admit::<Shapes>(library, entry))
             };
 
-            assert!(!take(&mut engine), "the first import is new");
-            assert!(
-                !std::mem::take(&mut *tape()).is_empty(),
-                "and its bytes and row were stored"
+            assert_eq!(
+                take(&mut engine),
+                Admitted::Added,
+                "the first import is new"
             );
+            assert!(!tape().is_empty(), "and its bytes and row were stored");
 
-            assert!(take(&mut engine), "the second is content the library holds");
-            assert_eq!(*tape(), Vec::<String>::new(), "so nothing is stored again");
+            assert_eq!(
+                take(&mut engine),
+                Admitted::Known,
+                "the second is content the library holds"
+            );
+            assert_eq!(tape(), Vec::<String>::new(), "so nothing is stored again");
             assert_eq!(
                 library.entries.peek().len(),
                 1,
                 "and no second card is drawn"
             );
             assert_eq!(
-                said("Pencil", true, Some("was inverted")).as_deref(),
+                said("Pencil", &Admitted::Known, Some("was inverted")).as_deref(),
                 Some("“Pencil” is already in your library — selected it."),
+            );
+        });
+    }
+
+    /// **An import whose bytes the store refuses is not added and writes no row** — a row
+    /// naming bytes that never landed is dropped by the next load, and the import with
+    /// it. The gallery is told it is in this document only, and why.
+    #[test]
+    fn an_import_the_store_refuses_adds_no_row_and_writes_nothing() {
+        install_tape();
+        in_app(|| {
+            let library = shelf(Vec::new());
+            assert_eq!(
+                at_once(admit::<Shapes>(library, pencil(1))),
+                Admitted::Added
+            );
+            assert!(!tape().is_empty(), "the tape is live");
+
+            FULL.set(Some("QuotaExceededError".to_string()));
+            let refused = at_once(admit::<Shapes>(library, pencil(2)));
+            assert_eq!(refused, Admitted::Unsaved("QuotaExceededError".to_string()));
+            assert_eq!(tape(), Vec::<String>::new(), "no row is written");
+            assert_eq!(
+                library.entries.peek().len(),
+                1,
+                "and no card is drawn for it"
+            );
+            assert_eq!(
+                said("Pencil", &refused, None).as_deref(),
+                Some(
+                    "“Pencil” is in this document only: your library couldn't store it \
+                     (QuotaExceededError)."
+                ),
             );
         });
     }

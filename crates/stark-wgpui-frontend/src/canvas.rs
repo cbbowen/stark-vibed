@@ -252,6 +252,10 @@ pub struct Canvas {
     /// substrates a person brought in, read from the store at start.
     shapes: Vec<assets::Entry>,
     substrates: Vec<assets::Entry>,
+    /// Each library's stored rows whose bytes would not read this session: never shown,
+    /// and written back beside the entries by every write (`stark_ui::assets::Unread`).
+    shapes_unread: Vec<assets::Unread>,
+    substrates_unread: Vec<assets::Unread>,
     /// The substrate the document is on, so a card can show as chosen. Read back from
     /// the engine would be better, but `ObservableState::substrate` is a
     /// `SubstrateId` and a card is keyed by the `AssetId` inside it.
@@ -376,8 +380,14 @@ impl Canvas {
         // is synchronous file I/O (`crate::store`), so this parks on nothing — and
         // doing it here rather than in a task is what makes the roster below a fact
         // rather than a race.
-        let shapes = pollster::block_on(assets::load::<assets::Shapes>());
-        let substrates = pollster::block_on(assets::load::<assets::Substrates>());
+        let assets::Loaded {
+            entries: shapes,
+            unread: shapes_unread,
+        } = pollster::block_on(assets::load::<assets::Shapes>());
+        let assets::Loaded {
+            entries: substrates,
+            unread: substrates_unread,
+        } = pollster::block_on(assets::load::<assets::Substrates>());
         // The color the session opens on is the crate's, so the picker and the brush
         // start on one color rather than the picker showing something the first stroke
         // would not lay (`stark_ui::color::INITIAL_COLOR`).
@@ -459,6 +469,8 @@ impl Canvas {
             overview_drawn: stark_ui::bounds::Refresh::default(),
             shapes,
             substrates,
+            shapes_unread,
+            substrates_unread,
             substrate: SubstrateId::Flat,
             hint: Hint::Move,
             mode: None,
@@ -2781,12 +2793,20 @@ impl Canvas {
             }
         };
         if actual != entry.id {
-            if let Some(e) = self.shapes.iter_mut().find(|e| e.id == entry.id) {
-                e.id = actual;
-            }
-            let rows = self.shapes.clone();
-            pollster::block_on(assets::heal::<assets::Shapes>(
-                &rows, entry.id, actual, &entry.png,
+            // The row moves only once its bytes are stored under `actual`; refused, it
+            // keeps naming the bytes that are there, and heals on a later pick. The
+            // store has said why (`storage::blob_save`).
+            let (shapes, unread) = (&mut self.shapes, &self.shapes_unread);
+            let _ = pollster::block_on(assets::heal::<assets::Shapes>(
+                entry.id,
+                actual,
+                &entry.png,
+                || {
+                    if let Some(e) = shapes.iter_mut().find(|e| e.id == entry.id) {
+                        e.id = actual;
+                    }
+                    assets::persist::<assets::Shapes>(shapes, unread);
+                },
             ));
         }
         // The bytes have just entered the engine, so this is the moment a peer could
@@ -2871,10 +2891,12 @@ impl Canvas {
                 // names *those*, and a library holding anything else would be a
                 // library whose rows do not match its blobs.
                 let canonical = r.asset_bytes(id).unwrap_or(png);
-                self.keep::<assets::Shapes>(&file_name, id, canonical);
+                let kept = self.keep::<assets::Shapes>(&file_name, id, canonical);
                 self.offer(<assets::Shapes as assets::Kind>::need(id));
                 self.wear_shape(BrushShape::Stamp(id), cx);
-                if inverted {
+                if let Err(unkept) = kept {
+                    self.report(unkept);
+                } else if inverted {
                     self.report(
                         "that image read as dark ink on light paper, so it was inverted — \
                          white now paints"
@@ -2900,8 +2922,12 @@ impl Canvas {
                     .as_ref()
                     .and_then(|r| r.substrate_bytes(id))
                     .unwrap_or(png);
-                self.keep::<assets::Substrates>(&file_name, content, canonical);
+                let kept = self.keep::<assets::Substrates>(&file_name, content, canonical);
                 self.wear_substrate(id, cx);
+                if let Err(unkept) = kept {
+                    self.report(unkept);
+                    self.repaint(cx);
+                }
             }
         }
     }
@@ -2911,16 +2937,28 @@ impl Canvas {
     /// its reason.
     ///
     /// A repeat import is free and silent: content addressing means the id is already
-    /// there, so the entry is not added twice.
-    fn keep<K: assets::Kind>(&mut self, file_name: &str, id: AssetId, png: Vec<u8>) {
-        let entries = self.entries_of::<K>();
+    /// there, so the entry is not added twice. Bytes the store refuses add no entry,
+    /// since a row naming them would be dropped by the next load, and the `Err` is what
+    /// to tell the person: the asset is in this document only.
+    fn keep<K: assets::Kind>(
+        &mut self,
+        file_name: &str,
+        id: AssetId,
+        png: Vec<u8>,
+    ) -> Result<(), String> {
+        let (entries, unread) = self.library_of::<K>();
         if entries.iter().any(|e| e.id == id) {
-            return;
+            return Ok(());
         }
-        pollster::block_on(assets::store_bytes::<K>(id, &png));
+        pollster::block_on(assets::store_bytes::<K>(id, &png)).map_err(|why| {
+            format!(
+                "“{file_name}” is in this document only: the library could not store it ({why})"
+            )
+        })?;
         let name = stark_ui::library::display_name(file_name, K::FALLBACK_NAME);
         entries.push(assets::Entry { name, png, id });
-        assets::persist::<K>(entries);
+        assets::persist::<K>(entries, unread);
+        Ok(())
     }
 
     /// Drop an entry from a library. **The row first, then the bytes** — the same rule
@@ -2945,22 +2983,23 @@ impl Canvas {
 
     /// The half of [`forget_asset`](Self::forget_asset) both libraries share.
     fn forget<K: assets::Kind>(&mut self, id: AssetId) {
-        let entries = self.entries_of::<K>();
-        entries.retain(|e| e.id != id);
-        assets::persist::<K>(entries);
+        let (entries, unread) = self.library_of::<K>();
+        assets::remove::<K>(entries, unread, id);
         pollster::block_on(assets::drop_bytes::<K>(id));
     }
 
-    /// The entries of `K`'s library.
+    /// The entries of `K`'s library, and its unread rows.
     ///
     /// Taken from `K` rather than from an argument beside it: the type already says which
     /// store the bytes go to, and a parameter that could disagree with it is a way for a
     /// shape to be filed as a substrate.
-    fn entries_of<K: assets::Kind>(&mut self) -> &mut Vec<assets::Entry> {
+    fn library_of<K: assets::Kind>(
+        &mut self,
+    ) -> (&mut Vec<assets::Entry>, &mut Vec<assets::Unread>) {
         if K::STORE == <assets::Shapes as assets::Kind>::STORE {
-            &mut self.shapes
+            (&mut self.shapes, &mut self.shapes_unread)
         } else {
-            &mut self.substrates
+            (&mut self.substrates, &mut self.substrates_unread)
         }
     }
 

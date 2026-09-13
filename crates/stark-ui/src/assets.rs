@@ -27,7 +27,6 @@
 //! Under the cap there is no resample and the two agree exactly.
 
 use std::marker::PhantomData;
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use stark_assetid::{AssetId, Canonical};
@@ -521,6 +520,36 @@ impl<K: Kind> storage::Blob for Row<K> {
     const STORE: Store = K::STORE;
 }
 
+/// A stored row whose bytes would not read this session: kept, and not shown.
+///
+/// A frontend holds these beside its entries and hands both to [`persist`], so a write
+/// the session makes lands beside them rather than over them — without them, the first
+/// import after a blocked read would write the library as the entries in hand, which is
+/// the erasure [`load`] declined, one step later.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Unread {
+    name: String,
+    id: AssetId,
+}
+
+impl<K> From<Row<K>> for Unread {
+    fn from(row: Row<K>) -> Self {
+        Self {
+            name: row.name,
+            id: row.id,
+        }
+    }
+}
+
+/// A library as [`load`] read it.
+#[derive(Default)]
+pub struct Loaded {
+    /// The rows whose bytes are in hand.
+    pub entries: Vec<Entry>,
+    /// The rows whose bytes would not read. Empty after a read that went through.
+    pub unread: Vec<Unread>,
+}
+
 /// Read a library out of its two stores.
 ///
 /// Two reads because it is kept in two: the rows out of the text store, then their
@@ -530,18 +559,27 @@ impl<K: Kind> storage::Blob for Row<K> {
 /// follows a crash, and an entry that cannot be painted with is not an asset. Leaving
 /// it in would show a card that draws nothing and fails every time it is clicked.
 ///
-/// **A blob store that could not be read at all is not that state**, and taking it for
-/// one would erase both libraries over a blocked open. Then nothing is dropped and
-/// nothing written: the library opens empty for the session, and its rows are held
-/// (`UNREAD`) so that a write the session makes lands beside them rather than over.
-pub async fn load<K: Kind>() -> Vec<Entry> {
+/// **Bytes that would not read are not that state**, and taking them for it would
+/// erase a library over a blocked open. Such a row is kept [`Unread`]; when the whole
+/// store would not read, every row is, and nothing is written.
+pub async fn load<K: Kind>() -> Loaded {
     let rows = storage::load_list::<Row<K>>().unwrap_or_default();
     if rows.is_empty() {
-        return Vec::new();
+        return Loaded::default();
     }
     let ids: Vec<AssetId> = rows.iter().map(|r| r.id).collect();
-    let blobs = match storage::blob_load_all::<Row<K>>(&ids).await {
-        Ok(blobs) => blobs,
+    let reads = match storage::blob_load_all::<Row<K>>(&ids).await {
+        Ok(reads) if reads.len() == rows.len() => Ok(reads),
+        // Zipped against the rows, a short answer would drop the rest as missing.
+        Ok(reads) => Err(format!(
+            "the store answered {} reads for {} images",
+            reads.len(),
+            rows.len()
+        )),
+        Err(reason) => Err(reason),
+    };
+    let reads = match reads {
+        Ok(reads) => reads,
         Err(reason) => {
             tracing::warn!(
                 "could not read the images of {} ({reason}); its {} entries are kept, and \
@@ -549,51 +587,48 @@ pub async fn load<K: Kind>() -> Vec<Entry> {
                 K::STORE.named().1,
                 rows.len(),
             );
-            let mut unread = unread();
-            unread.retain(|(store, ..)| *store != K::STORE);
-            unread.extend(rows.into_iter().map(|row| (K::STORE, row.name, row.id)));
-            return Vec::new();
+            return Loaded {
+                entries: Vec::new(),
+                unread: rows.into_iter().map(Unread::from).collect(),
+            };
         }
     };
-    let kept: Vec<Entry> = rows
-        .into_iter()
-        .zip(blobs)
-        .filter_map(|(row, png)| {
-            png.map(|png| Entry {
+
+    let mut loaded = Loaded::default();
+    let (mut dropped, mut failed) = (0, None);
+    for (row, read) in rows.into_iter().zip(reads) {
+        match read {
+            Ok(Some(png)) => loaded.entries.push(Entry {
                 name: row.name,
                 png,
                 id: row.id,
-            })
-        })
-        .collect();
-    if kept.len() != ids.len() {
+            }),
+            Ok(None) => dropped += 1,
+            Err(reason) => {
+                failed.get_or_insert(reason);
+                loaded.unread.push(row.into());
+            }
+        }
+    }
+    if let Some(reason) = failed {
         tracing::warn!(
-            "{} {}(s) had lost their image and were dropped from the library",
-            ids.len() - kept.len(),
+            "{} images of {} would not read ({reason}); their entries are kept, and not shown",
+            loaded.unread.len(),
+            K::STORE.named().1,
+        );
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            "{dropped} {}(s) had lost their image and were dropped from the library",
             K::NOUN
         );
-        persist::<K>(&kept);
+        persist::<K>(&loaded.entries, &loaded.unread);
     }
-    kept
+    loaded
 }
 
-/// Rows [`load`] kept without their bytes because the blob store could not be read:
-/// `(record, name, id)`.
-///
-/// Held for the rest of the process so that [`persist`] writes them back. Without it,
-/// the first import after a blocked open would write the library as the one entry the
-/// session holds — the erasure `load` declined, one step later. Process state, and this
-/// module's only: a frontend holds entries with their bytes in hand, and these have none.
-static UNREAD: Mutex<Vec<(Store, String, AssetId)>> = Mutex::new(Vec::new());
-
-/// [`UNREAD`], poisoning ignored: every row in it is whole whatever a panic tore, and
-/// honouring the poison would drop them all at the next [`persist`].
-fn unread() -> MutexGuard<'static, Vec<(Store, String, AssetId)>> {
-    UNREAD.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Write the library's rows — [`Entry`] narrowed to what is durable about it — with any
-/// `UNREAD` ones after them.
+/// Write the library's rows — [`Entry`] narrowed to what is durable about it — with the
+/// [`Unread`] ones after them, an id both hold written once.
 ///
 /// The bytes are not this function's to write: an entry reaching here always has them
 /// stored already, because every caller put them there first.
@@ -602,12 +637,11 @@ fn unread() -> MutexGuard<'static, Vec<(Store, String, AssetId)>> {
 /// and ids is a couple of kilobytes; what happened at this line when the PNGs rode
 /// inline was a base64 of every image in the library, on the thread the canvas paints
 /// on, per change.
-pub fn persist<K: Kind>(entries: &[Entry]) {
-    let unread = unread();
+pub fn persist<K: Kind>(entries: &[Entry], unread: &[Unread]) {
     let held = unread
         .iter()
-        .filter(|(store, _, id)| *store == K::STORE && !entries.iter().any(|e| e.id == *id))
-        .map(|(_, name, id)| (name, *id));
+        .filter(|u| !entries.iter().any(|e| e.id == u.id))
+        .map(|u| (&u.name, u.id));
     let rows: Vec<Row<K>> = entries
         .iter()
         .map(|e| (&e.name, e.id))
@@ -618,14 +652,25 @@ pub fn persist<K: Kind>(entries: &[Entry]) {
             kind: PhantomData,
         })
         .collect();
-    drop(unread);
     storage::save_list(&rows);
 }
 
-/// Store one entry's bytes. **Before the row that names them**: the other order can
-/// leave a library pointing at an asset that was never stored.
-pub async fn store_bytes<K: Kind>(id: AssetId, png: &[u8]) {
-    storage::blob_save::<Row<K>>(id, png).await;
+/// Take `id` out of a library — its entry, and an unread row under the same id — and
+/// write the rows. [`drop_bytes`] follows.
+///
+/// Both, because an unread row left behind would be written back naming the bytes the
+/// drop is about to delete.
+pub fn remove<K: Kind>(entries: &mut Vec<Entry>, unread: &mut Vec<Unread>, id: AssetId) {
+    entries.retain(|e| e.id != id);
+    unread.retain(|u| u.id != id);
+    persist::<K>(entries, unread);
+}
+
+/// Store one entry's bytes, or say why the store would not take them. **Before the row
+/// that names them, and no row on `Err`**: either mistake leaves a library naming an
+/// asset that was never stored, which the next [`load`] drops.
+pub async fn store_bytes<K: Kind>(id: AssetId, png: &[u8]) -> Result<(), String> {
+    storage::blob_save::<Row<K>>(id, png).await
 }
 
 /// Forget one entry's bytes. **After the row that named them**, which is the same rule
@@ -635,16 +680,26 @@ pub async fn drop_bytes<K: Kind>(id: AssetId) {
     storage::blob_remove::<Row<K>>(id).await;
 }
 
-/// Move an entry to the id its bytes actually canonicalize to.
+/// Move an entry to the id its bytes actually canonicalize to, for a stored id that
+/// predates a canonicalization change (§19): the bytes under `actual`, then
+/// `write_rows`, then the bytes under `stale` dropped — [`store_bytes`]'s order, for its
+/// reason.
 ///
-/// For a stored id that predates a canonicalization change: the bytes under their new
-/// name, then the rows, then the old name dropped — [`store_bytes`]'s order, for its
-/// reason. `entries` is expected to already carry the new id, since the caller is
-/// about to paint with it.
-pub async fn heal<K: Kind>(entries: &[Entry], stale: AssetId, actual: AssetId, png: &[u8]) {
-    store_bytes::<K>(actual, png).await;
-    persist::<K>(entries);
+/// `write_rows` should [`persist`] the library as it stands when it is called, which is
+/// after the write: an import or a removal that landed meanwhile is part of it.
+///
+/// On `Err` neither it nor the drop runs, so the stored row keeps `stale` and the bytes
+/// it names, and heals next time.
+pub async fn heal<K: Kind>(
+    stale: AssetId,
+    actual: AssetId,
+    png: &[u8],
+    write_rows: impl FnOnce(),
+) -> Result<(), String> {
+    store_bytes::<K>(actual, png).await?;
+    write_rows();
     drop_bytes::<K>(stale).await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -710,24 +765,7 @@ mod tests {
 
     // --- the two stores, through a fake -----------------------------------------
 
-    /// One library test at a time, with nothing held back from an earlier one: each
-    /// test's store is its own thread's, but [`UNREAD`] is the process's.
-    fn exclusive() -> MutexGuard<'static, ()> {
-        static ONE: Mutex<()> = Mutex::new(());
-        let turn = ONE.lock().unwrap_or_else(PoisonError::into_inner);
-        unread().clear();
-        turn
-    }
-
-    /// Run what the fake store answers at once.
-    fn ready<F: Future>(future: F) -> F::Output {
-        let mut future = std::pin::pin!(future);
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        match future.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(out) => out,
-            std::task::Poll::Pending => panic!("the fake store answers at once"),
-        }
-    }
+    use storage::at_once;
 
     fn entry(name: &str, n: u8) -> Entry {
         Entry {
@@ -753,6 +791,22 @@ mod tests {
             .collect()
     }
 
+    /// Where the fake keeps `id`'s bytes under `K`.
+    fn blob<K: Kind>(id: AssetId) -> String {
+        format!("{}/{}", K::STORE.named().0, id.to_hex())
+    }
+
+    /// A fresh store holding `entries`, bytes and rows, with nothing on its tape.
+    fn stocked<K: Kind>(entries: &[Entry]) -> &'static storage::fake::Fake {
+        let store = storage::fake::install();
+        for e in entries {
+            at_once(store_bytes::<K>(e.id, &e.png)).expect("the fake takes a write");
+        }
+        persist::<K>(entries, &[]);
+        store.take_writes();
+        store
+    }
+
     /// **A blob store that cannot be read keeps every row and writes nothing** — and a
     /// write later in the session goes down beside those rows rather than over them.
     ///
@@ -760,20 +814,15 @@ mod tests {
     /// libraries and strand every image they named.
     #[test]
     fn an_unreadable_blob_store_keeps_every_row_and_writes_nothing() {
-        let _turn = exclusive();
-        let store = storage::fake::install();
         let (a, b) = (entry("a", 1), entry("b", 2));
-        for e in [&a, &b] {
-            ready(store_bytes::<Shapes>(e.id, &e.png));
-        }
-        persist::<Shapes>(&[a.clone(), b.clone()]);
+        let store = stocked::<Shapes>(&[a.clone(), b.clone()]);
         let (key, _) = Shapes::STORE.named();
         let stored = store.text(key);
-        store.take_writes();
 
         store.cut_off("another tab holds the store open at an older version");
+        let loaded = at_once(load::<Shapes>());
         assert!(
-            ready(load::<Shapes>()).is_empty(),
+            loaded.entries.is_empty(),
             "with no bytes in hand there is no entry to show"
         );
         assert_eq!(
@@ -784,7 +833,7 @@ mod tests {
         assert_eq!(store.text(key), stored, "so every row is where it was");
 
         let c = entry("c", 3);
-        persist::<Shapes>(std::slice::from_ref(&c));
+        persist::<Shapes>(std::slice::from_ref(&c), &loaded.unread);
         assert_eq!(
             rows::<Shapes>(),
             named([&c, &a, &b]),
@@ -792,20 +841,75 @@ mod tests {
         );
     }
 
+    /// **Each blob answers for its own row**: one that reads is shown, one that is not
+    /// there costs its row, and one that would not read is kept unread — and the library
+    /// written back without the missing one still holds the unread one.
+    #[test]
+    fn a_read_a_missing_and_an_unreadable_blob_are_shown_dropped_and_kept() {
+        let (read, missing, unreadable) = (entry("read", 1), entry("missing", 2), entry("held", 3));
+        let store = stocked::<Substrates>(&[read.clone(), unreadable.clone()]);
+        persist::<Substrates>(&[read.clone(), missing, unreadable.clone()], &[]);
+        store.take_writes();
+        store.spoil(
+            &blob::<Substrates>(unreadable.id),
+            "another process holds the file",
+        );
+
+        let loaded = at_once(load::<Substrates>());
+        assert_eq!(
+            named(&loaded.entries),
+            named([&read]),
+            "only the read one is shown"
+        );
+        assert_eq!(
+            loaded.unread,
+            vec![Unread {
+                name: unreadable.name.clone(),
+                id: unreadable.id
+            }],
+            "the unreadable one is held"
+        );
+        let (key, _) = Substrates::STORE.named();
+        assert_eq!(
+            store.take_writes(),
+            vec![format!("set {key}")],
+            "the missing one's row is written away"
+        );
+        assert_eq!(
+            rows::<Substrates>(),
+            named([&read, &unreadable]),
+            "and the unreadable one's is written back"
+        );
+    }
+
+    /// A read that goes through holds nothing unread — so a session that follows a
+    /// blocked one writes no row it did not read.
+    #[test]
+    fn a_read_that_goes_through_holds_nothing_unread() {
+        let a = entry("a", 1);
+        let store = stocked::<Shapes>(std::slice::from_ref(&a));
+        let loaded = at_once(load::<Shapes>());
+        assert_eq!(named(&loaded.entries), named([&a]));
+        assert_eq!(loaded.unread, Vec::new());
+        assert_eq!(
+            store.take_writes(),
+            Vec::<String>::new(),
+            "and nothing is written"
+        );
+    }
+
     /// And a store that *can* be read still drops the row whose bytes are gone, writing
     /// the library back without it.
     #[test]
     fn a_missing_blob_still_costs_its_row() {
-        let _turn = exclusive();
-        let store = storage::fake::install();
         let (kept, lost) = (entry("kept", 1), entry("lost", 2));
-        ready(store_bytes::<Substrates>(kept.id, &kept.png));
-        persist::<Substrates>(&[kept.clone(), lost]);
+        let store = stocked::<Substrates>(std::slice::from_ref(&kept));
+        persist::<Substrates>(&[kept.clone(), lost], &[]);
         store.take_writes();
 
-        let loaded = ready(load::<Substrates>());
+        let loaded = at_once(load::<Substrates>());
         assert_eq!(
-            named(&loaded),
+            named(&loaded.entries),
             named([&kept]),
             "only the entry with its bytes loads"
         );
@@ -818,28 +922,59 @@ mod tests {
         assert_eq!(rows::<Substrates>(), named([&kept]));
     }
 
+    /// **Removing an entry takes an unread row under its id with it** — the same file
+    /// imported again after a blocked read. Left behind, it would be written back naming
+    /// the bytes the removal then deletes.
+    #[test]
+    fn removing_an_id_removes_its_unread_row() {
+        let (a, b) = (entry("a", 1), entry("b", 2));
+        let store = stocked::<Shapes>(&[a.clone(), b.clone()]);
+        store.cut_off("another tab holds the store open at an older version");
+        let Loaded {
+            mut entries,
+            mut unread,
+        } = at_once(load::<Shapes>());
+
+        entries.push(entry("a again", 1));
+        remove::<Shapes>(&mut entries, &mut unread, a.id);
+        assert!(entries.is_empty());
+        assert_eq!(
+            rows::<Shapes>(),
+            named([&b]),
+            "no row is left naming the removed bytes"
+        );
+        assert!(unread.iter().all(|u| u.id != a.id));
+    }
+
+    /// A store that will not take the bytes says so, and has written nothing.
+    #[test]
+    fn a_refused_write_says_so_and_writes_nothing() {
+        let store = stocked::<Shapes>(&[]);
+        store.fill("QuotaExceededError");
+        let a = entry("a", 1);
+        assert_eq!(
+            at_once(store_bytes::<Shapes>(a.id, &a.png)),
+            Err("QuotaExceededError".to_string())
+        );
+        assert_eq!(store.take_writes(), Vec::<String>::new());
+    }
+
     /// **A heal stores the bytes under their new id, then the row, then drops the old
     /// bytes** — so a crash anywhere leaves a row naming bytes that are there.
     #[test]
     fn a_heal_moves_the_bytes_before_the_row_and_drops_the_old_ones_after() {
-        let _turn = exclusive();
-        let store = storage::fake::install();
         let stale = entry("Bristles", 1);
-        ready(store_bytes::<Shapes>(stale.id, &stale.png));
-        persist::<Shapes>(std::slice::from_ref(&stale));
-        store.take_writes();
+        let store = stocked::<Shapes>(std::slice::from_ref(&stale));
 
         let actual = AssetId([9; 32]);
         let healed = Entry {
             id: actual,
             ..stale.clone()
         };
-        ready(heal::<Shapes>(
-            std::slice::from_ref(&healed),
-            stale.id,
-            actual,
-            &healed.png,
-        ));
+        at_once(heal::<Shapes>(stale.id, actual, &healed.png, || {
+            persist::<Shapes>(std::slice::from_ref(&healed), &[]);
+        }))
+        .expect("the fake takes a write");
         let (key, _) = Shapes::STORE.named();
         assert_eq!(
             store.take_writes(),
@@ -850,6 +985,35 @@ mod tests {
             ]
         );
         assert_eq!(rows::<Shapes>(), named([&healed]));
+    }
+
+    /// **A heal whose bytes do not land writes no row and drops nothing**, so the stored
+    /// row still names bytes that are there — and heals next time. Written through, the
+    /// row would name bytes that were never stored and the drop delete the only copy.
+    #[test]
+    fn a_heal_the_store_refuses_leaves_the_row_and_its_bytes() {
+        let stale = entry("Bristles", 1);
+        let store = stocked::<Shapes>(std::slice::from_ref(&stale));
+        store.fill("QuotaExceededError");
+
+        let mut wrote = false;
+        let healed = at_once(heal::<Shapes>(
+            stale.id,
+            AssetId([9; 32]),
+            &stale.png,
+            || {
+                wrote = true;
+            },
+        ));
+        assert!(healed.is_err());
+        assert!(!wrote, "no row is written");
+        assert_eq!(
+            store.take_writes(),
+            Vec::<String>::new(),
+            "and nothing is dropped"
+        );
+        assert_eq!(rows::<Shapes>(), named([&stale]));
+        assert!(store.holds_blob(&blob::<Shapes>(stale.id)));
     }
 
     /// A light border reads as ink on paper and is inverted; a dark one is already

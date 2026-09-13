@@ -671,6 +671,11 @@ impl Renderer {
         self.engine.asset_bytes(id)
     }
 
+    /// Whether this document holds what `need` names, without copying its bytes.
+    pub fn holds(&self, need: stark_model::AssetNeed) -> bool {
+        self.engine.holds(need)
+    }
+
     /// Every imported brush asset, to seed a session's asset mirror.
     pub fn all_asset_bytes(&self) -> Vec<(stark_model::AssetId, Vec<u8>)> {
         self.engine.all_asset_bytes()

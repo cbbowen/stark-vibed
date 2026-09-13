@@ -12,6 +12,7 @@
 
 use dioxus::prelude::*;
 use stark_ui::assets::Decoded;
+use stark_ui::storage::BlobRead;
 
 use super::{Coalesced, ElementBox, RawPointer};
 
@@ -172,7 +173,7 @@ pub fn local_set(_key: &str, _value: &str) -> bool {
 
 pub fn local_remove(_key: &str) {}
 
-pub async fn blob_get_many(_keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
+pub async fn blob_get_many(_keys: &[String]) -> Result<Vec<BlobRead>, String> {
     Err("no blob store off the web".to_string())
 }
 

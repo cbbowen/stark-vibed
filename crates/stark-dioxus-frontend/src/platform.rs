@@ -124,7 +124,7 @@ impl stark_ui::storage::Backend for LocalStore {
     fn blob_get_many<'a>(
         &'a self,
         keys: &'a [String],
-    ) -> stark_ui::storage::Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
+    ) -> stark_ui::storage::Stored<'a, Result<Vec<stark_ui::storage::BlobRead>, String>> {
         Box::pin(blob_get_many(keys))
     }
 

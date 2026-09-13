@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use stark_ui::storage::{Backend, Stored};
+use stark_ui::storage::{Backend, BlobRead, Stored};
 
 /// Two directories, resolved once at startup.
 pub struct Files {
@@ -110,7 +110,7 @@ impl Files {
     /// The error says nothing about whether the bytes exist, so it must not be answered
     /// as their absence: a library drops a row whose bytes are missing
     /// (`stark_ui::assets::load`).
-    fn blob(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+    fn blob(&self, key: &str) -> BlobRead {
         let path = self.path(key);
         match std::fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -170,15 +170,19 @@ impl Backend for Files {
     fn blob_get_many<'a>(
         &'a self,
         keys: &'a [String],
-    ) -> Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
+    ) -> Stored<'a, Result<Vec<BlobRead>, String>> {
         // Ready rather than spawned: the reads are `std::fs`, which is what a native
         // blob store *is*. The signature is async because the web's answer has to be
         // — IndexedDB is a promise — and a future that is already finished costs a
         // poll. Trading that for a thread pool would be paying for the browser's
         // constraint on a platform that does not have it.
-        Box::pin(std::future::ready(
-            keys.iter().map(|key| self.blob(key)).collect(),
-        ))
+        //
+        // Never the outer `Err`: a directory has no whole to fail to open, and one file
+        // another process holds costs that one row a session, not the library.
+        Box::pin(std::future::ready(Ok(keys
+            .iter()
+            .map(|key| self.blob(key))
+            .collect())))
     }
 
     fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, Result<(), String>> {
@@ -374,22 +378,25 @@ mod tests {
         );
     }
 
-    /// **A blob that is not there is `None`; one that is there and will not read is an
-    /// error** — so a library keeps its row rather than taking an unreadable file for an
-    /// evicted one (`stark_ui::assets::load`).
+    /// **Each blob answers for itself**: one that is there reads, one that is not is
+    /// `None`, and one that is there and will not read is an error — beside the other
+    /// two rather than instead of them. So a library keeps that one row rather than
+    /// taking an unreadable file for an evicted one, and shows the rest
+    /// (`stark_ui::assets::load`).
     #[test]
-    fn a_blob_that_will_not_read_is_not_a_missing_one() {
+    fn a_blob_that_will_not_read_is_neither_missing_nor_the_whole_store() {
         let dir = Scratch::new("unreadable");
         let f = files(&dir.0);
-        let keys = ["stark.shapes/00ff".to_string()];
-        assert_eq!(
-            pollster::block_on(f.blob_get_many(&keys)),
-            Ok(vec![None]),
-            "nothing stored is nothing stored"
-        );
-        std::fs::create_dir_all(f.path(&keys[0])).expect("something in the blob's way");
+        let keys = ["stark.shapes/01", "stark.shapes/02", "stark.shapes/03"].map(String::from);
+        f.write(&keys[0], b"png").expect("a blob lands");
+        std::fs::create_dir_all(f.path(&keys[2])).expect("something in the blob's way");
+
+        let reads = pollster::block_on(f.blob_get_many(&keys)).expect("a directory always reads");
+        assert_eq!(reads.len(), 3);
+        assert_eq!(reads[0], Ok(Some(b"png".to_vec())), "what is stored reads");
+        assert_eq!(reads[1], Ok(None), "nothing stored is nothing stored");
         assert!(
-            pollster::block_on(f.blob_get_many(&keys)).is_err(),
+            reads[2].is_err(),
             "a directory where the bytes go is not their absence"
         );
     }

@@ -115,9 +115,10 @@
 //! are the same bargain [`identity`](crate::identity) makes and states: what is lost
 //! is *durability*, and the session still works to the end. Nothing here returns an
 //! error for a caller to handle, because there is no handling of it that is better
-//! than carrying on — except [`blob_load_all`]. A library answers a missing blob by
-//! deleting its row, so it has to be able to tell a store it could not read from one
-//! that holds nothing.
+//! than carrying on — except the blob store's reads and writes. A library answers a
+//! missing blob by deleting its row, so [`blob_load_all`] has to tell a blob it could
+//! not read from one that is not there; and a row written after bytes that did not land
+//! names nothing, so [`blob_save`] has to say they did not.
 //!
 //! **A frontend that installs no backend is that same case**, which is why [`install`]
 //! is not required and no call here fails without one. It is how a test runs, and how
@@ -556,14 +557,11 @@ pub trait Backend: Send + Sync + 'static {
     fn set(&self, key: &str, value: &str) -> bool;
     /// Forget `key`. A key that was never stored is not an error.
     fn remove(&self, key: &str);
-    /// The bytes for each of `keys`, in that order — `None` where the store holds
-    /// nothing under one — or why the store could not be read at all. See
-    /// [`blob_load_all`] for why this is plural, and why the two answers must not be
-    /// folded together.
-    fn blob_get_many<'a>(
-        &'a self,
-        keys: &'a [String],
-    ) -> Stored<'a, Result<Vec<Option<Vec<u8>>>, String>>;
+    /// Each of `keys` read on its own, in that order — or why the store could not be
+    /// read at all. See [`blob_load_all`] for why this is plural, and why a read that
+    /// failed must not be answered as a blob that is not there.
+    fn blob_get_many<'a>(&'a self, keys: &'a [String])
+    -> Stored<'a, Result<Vec<BlobRead>, String>>;
     /// Store `bytes` under `key`, or say why the store would not take them.
     fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, Result<(), String>>;
     /// Drop the bytes under `key`.
@@ -773,8 +771,12 @@ fn blob_key<T: Blob>(id: AssetId) -> String {
     format!("{}/{}", T::STORE.named().0, id.to_hex())
 }
 
-/// The bytes for each of `ids`, in that order — `None` where this client has none — or
-/// why the blob store could not be read at all.
+/// One blob's read: its bytes, `None` where the store holds nothing under its key, or
+/// why that one key would not read.
+pub type BlobRead = Result<Option<Vec<u8>>, String>;
+
+/// Each of `ids` read on its own, in that order — or why the blob store could not be
+/// read at all.
 ///
 /// Plural because it is one exchange with the store: the whole library is read at
 /// start, and a door taking one id would make that N opens and N transactions. The
@@ -783,10 +785,11 @@ fn blob_key<T: Blob>(id: AssetId) -> String {
 /// A missing blob is not an error here for the same reason a damaged row is not: it
 /// costs that entry, and the caller is the one that says so. IndexedDB is evictable
 /// under storage pressure, so "the row is here and the bytes are gone" really happens —
-/// `assets::load` drops such a row and writes the library back without it. **A store
-/// that could not be read is the `Err`**, and is kept apart for exactly that reason: an
-/// open another tab blocks, answered as every blob missing, would erase every library.
-pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Result<Vec<Option<Vec<u8>>>, String> {
+/// `assets::load` drops such a row and writes the library back without it. **A read
+/// that failed is an `Err`**, the store's or one key's, and is kept apart for exactly
+/// that reason: an open another tab blocks, or one file another process holds, answered
+/// as missing would erase what it could not read.
+pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Result<Vec<BlobRead>, String> {
     let keys: Vec<String> = ids.iter().map(|&id| blob_key::<T>(id)).collect();
     match backend() {
         Some(b) => b.blob_get_many(&keys).await,
@@ -796,24 +799,25 @@ pub async fn blob_load_all<T: Blob>(ids: &[AssetId]) -> Result<Vec<Option<Vec<u8
     }
 }
 
-/// Store `bytes` under `id`. A store that will not take them warns and carries on,
-/// exactly as [`set`] does — and for the same reason: what is lost is durability, and
-/// the session still works to the end.
+/// Store `bytes` under `id`, or say why the store would not take them — warned here,
+/// so a caller only has to decide what it may no longer write.
 ///
-/// Write this **before** the row that names it. A crash between the two then leaves a
-/// blob nothing points at, which costs some bytes; the other order leaves a row whose
-/// shape has no picture and cannot be painted with.
-pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) {
+/// Write this **before** the row that names it, and **not at all on `Err`**. A crash
+/// between the two then leaves a blob nothing points at, which costs some bytes; the
+/// other order, or a row written over bytes that did not land, leaves a row naming
+/// nothing, which the next load drops.
+pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) -> Result<(), String> {
     let stored = match backend() {
         Some(b) => b.blob_put(&blob_key::<T>(id), bytes).await,
         None => Err("no store is installed".to_string()),
     };
-    if let Err(reason) = stored {
+    if let Err(reason) = &stored {
         tracing::warn!(
             "could not persist an entry of {} ({reason})",
             T::STORE.named().1
         );
     }
+    stored
 }
 
 /// Drop the bytes stored under `id` — **after** the row that named them, per
@@ -821,6 +825,24 @@ pub async fn blob_save<T: Blob>(id: AssetId, bytes: &[u8]) {
 pub async fn blob_remove<T: Blob>(id: AssetId) {
     if let Some(b) = backend() {
         b.blob_delete(&blob_key::<T>(id)).await;
+    }
+}
+
+/// What `future` answers on its first poll — for a test whose store answers at once.
+///
+/// Compiled rather than `#[cfg(test)]` for [`every_field_may_be_absent`]'s reason: the
+/// frontends' tests drive a store through it too.
+///
+/// # Panics
+///
+/// When the future is still pending: nothing would ever wake it.
+#[track_caller]
+pub fn at_once<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(out) => out,
+        std::task::Poll::Pending => panic!("the store did not answer at once"),
     }
 }
 
@@ -833,16 +855,20 @@ pub(crate) mod fake {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
-    use super::{Backend, Stored};
+    use super::{Backend, BlobRead, Stored};
 
     #[derive(Default)]
     pub(crate) struct Fake {
         text: Mutex<BTreeMap<String, String>>,
         blobs: Mutex<BTreeMap<String, Vec<u8>>>,
-        /// Every write, oldest first: `set`, `put` or `delete`, then the key.
+        /// Every write that landed, oldest first: `set`, `put` or `delete`, then the key.
         writes: Mutex<Vec<String>>,
         /// Why the blob store cannot be read, while it cannot.
         unreachable: Mutex<Option<String>>,
+        /// Why one blob will not read, by key.
+        spoiled: Mutex<BTreeMap<String, String>>,
+        /// Why the blob store will not take a write, while it will not.
+        full: Mutex<Option<String>>,
     }
 
     thread_local! {
@@ -875,9 +901,24 @@ pub(crate) mod fake {
             lock(&self.text).get(key).cloned()
         }
 
+        /// Whether a blob is stored under `key`.
+        pub(crate) fn holds_blob(&self, key: &str) -> bool {
+            lock(&self.blobs).contains_key(key)
+        }
+
         /// Make the blob store unreadable, as an open another tab blocks does.
         pub(crate) fn cut_off(&self, why: &str) {
             *lock(&self.unreachable) = Some(why.to_string());
+        }
+
+        /// Make the one blob under `key` unreadable, as a file another process holds is.
+        pub(crate) fn spoil(&self, key: &str, why: &str) {
+            lock(&self.spoiled).insert(key.to_string(), why.to_string());
+        }
+
+        /// Refuse every blob write from now on, as a full disk does.
+        pub(crate) fn fill(&self, why: &str) {
+            *lock(&self.full) = Some(why.to_string());
         }
 
         fn wrote(&self, what: &str, key: &str) {
@@ -903,19 +944,28 @@ pub(crate) mod fake {
         fn blob_get_many<'a>(
             &'a self,
             keys: &'a [String],
-        ) -> Stored<'a, Result<Vec<Option<Vec<u8>>>, String>> {
+        ) -> Stored<'a, Result<Vec<BlobRead>, String>> {
             let unreachable = lock(&self.unreachable).clone();
             let answer = match unreachable {
                 Some(why) => Err(why),
                 None => {
-                    let blobs = lock(&self.blobs);
-                    Ok(keys.iter().map(|key| blobs.get(key).cloned()).collect())
+                    let (blobs, spoiled) = (lock(&self.blobs), lock(&self.spoiled));
+                    Ok(keys
+                        .iter()
+                        .map(|key| match spoiled.get(key) {
+                            Some(why) => Err(why.clone()),
+                            None => Ok(blobs.get(key).cloned()),
+                        })
+                        .collect())
                 }
             };
             Box::pin(std::future::ready(answer))
         }
 
         fn blob_put<'a>(&'a self, key: &'a str, bytes: &'a [u8]) -> Stored<'a, Result<(), String>> {
+            if let Some(why) = lock(&self.full).clone() {
+                return Box::pin(std::future::ready(Err(why)));
+            }
             self.wrote("put", key);
             lock(&self.blobs).insert(key.to_string(), bytes.to_vec());
             Box::pin(std::future::ready(Ok(())))

@@ -4,6 +4,7 @@
 
 use dioxus::prelude::*;
 use stark_ui::assets::Decoded;
+use stark_ui::storage::BlobRead;
 
 use super::{Coalesced, ElementBox, RawPointer};
 
@@ -1003,11 +1004,21 @@ fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture 
     use wasm_bindgen::prelude::Closure;
 
     let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        let done = Closure::once_into_js(move |event: web_sys::Event| {
-            let value = fired_at::<web_sys::IdbRequest>(&event)
-                .and_then(|done| done.result().ok())
-                .unwrap_or(JsValue::UNDEFINED);
-            let _ = resolve.call1(&JsValue::NULL, &value);
+        let done = Closure::once_into_js({
+            let reject = reject.clone();
+            move |event: web_sys::Event| {
+                // Rejected rather than resolved `undefined`, which a `get` reads as
+                // nothing stored.
+                let _ = match fired_at::<web_sys::IdbRequest>(&event)
+                    .and_then(|done| done.result().ok())
+                {
+                    Some(value) => resolve.call1(&JsValue::NULL, &value),
+                    None => {
+                        let why = JsValue::from_str("the request finished with no result to read");
+                        reject.call1(&JsValue::NULL, &why)
+                    }
+                };
+            }
         });
         let failed = Closure::once_into_js(move |event: web_sys::Event| {
             let error = fired_at::<web_sys::IdbRequest>(&event)
@@ -1061,17 +1072,16 @@ fn fired_at<T: wasm_bindgen::JsCast>(event: &web_sys::Event) -> Option<T> {
     event.target()?.dyn_into().ok()
 }
 
-/// The bytes stored under each of `keys`, in that order — `None` where this browser
-/// has nothing under one, or could not read it — or why the store could not be read
-/// at all.
+/// Each of `keys` read on its own, in that order — `None` where this browser has
+/// nothing under one, and the reason where one would not read — or why the store could
+/// not be read at all.
 ///
 /// **One transaction, all the requests issued before any of them is awaited.** A
 /// transaction stays alive across a microtask checkpoint but not across a turn of the
 /// event loop, so issuing request *n+1* only after *n* has resolved is the shape that
 /// works right up until it does not. Starting them all first makes the whole batch
 /// one exchange with the store and takes the question off the table.
-pub async fn blob_get_many(keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, String> {
-    use wasm_bindgen::JsCast;
+pub async fn blob_get_many(keys: &[String]) -> Result<Vec<BlobRead>, String> {
     use wasm_bindgen::JsValue;
 
     let (_, _, name) = BLOB_DB;
@@ -1083,23 +1093,40 @@ pub async fn blob_get_many(keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, Stri
 
     let pending: Vec<_> = keys
         .iter()
-        .map(|key| store.get(&JsValue::from_str(key)).ok().map(blob_pending))
+        .map(|key| {
+            store
+                .get(&JsValue::from_str(key))
+                .map(blob_pending)
+                .map_err(|e| reason(&e))
+        })
         .collect();
     // Every request is issued, so the connection may close: it waits for them.
     drop(db);
     let mut out = Vec::with_capacity(keys.len());
     for request in pending {
-        let bytes = match request {
-            Some(request) => request
-                .await
-                .ok()
-                .and_then(|value| value.dyn_into::<js_sys::Uint8Array>().ok())
-                .map(|array| array.to_vec()),
-            None => None,
+        let read = match request {
+            Ok(request) => request.await.map_err(|e| reason(&e)).and_then(stored_bytes),
+            Err(why) => Err(why),
         };
-        out.push(bytes);
+        out.push(read);
     }
     Ok(out)
+}
+
+/// What a `get` resolved with, as bytes: `undefined` is nothing stored under the key.
+///
+/// Anything else that is not bytes is an error rather than an absence, since only an
+/// absence costs a library its row.
+fn stored_bytes(value: wasm_bindgen::JsValue) -> BlobRead {
+    use wasm_bindgen::JsCast;
+
+    if value.is_undefined() {
+        return Ok(None);
+    }
+    value
+        .dyn_into::<js_sys::Uint8Array>()
+        .map(|array| Some(array.to_vec()))
+        .map_err(|_| "what is stored under the key is not bytes".to_string())
 }
 
 /// Store `bytes` under `key`, or say why they did not land — the store's
