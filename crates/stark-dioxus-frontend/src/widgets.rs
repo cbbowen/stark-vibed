@@ -1,10 +1,17 @@
 //! Small reusable controls shared by the panels, the dialogs and the brush editor.
 
+use std::sync::LazyLock;
+
 use crate::commands;
+use dioxus::html::Key;
 use dioxus::prelude::*;
 use stark_ui::icons::Icon;
+use strum::VariantArray;
 
 use crate::icons::{icon, label as label_span};
+use crate::layout::chrome_dimmed;
+use crate::platform;
+use crate::preview::Preview;
 use crate::state::{AppState, use_obs_opt};
 use stark_ui::commands::Command;
 
@@ -82,38 +89,48 @@ pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
     format!("--fill: {pct}%")
 }
 
+/// A control's mark, then its word — the word wrapped as hideable
+/// ([`crate::icons::label`]) only when there is a mark to survive it. A control with
+/// neither would be anonymous in minimal mode, so an unmarked one keeps its word; one
+/// function, so a slider, a chip and a bar cannot be given the wrong pair.
+fn mark_and_word(glyph: Option<Icon>, word: &str) -> Element {
+    match glyph {
+        Some(glyph) => rsx! { {icon(glyph)} {label_span(word)} },
+        None => rsx! { "{word}" },
+    }
+}
+
+/// What a track stands in, which decides the markup around it — each is keyed by its
+/// own classes in the stylesheet, so a site picks one rather than writing the shell.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum SliderShape {
+    /// A row of a panel or dialog: the mark and word over the track (`.slider-row`).
+    #[default]
+    Row,
+    /// Inline in a bottom bar: the mark and word a `.bar-sub` beside the track.
+    Bar,
+    /// A line of the filter bar's knob grid (`.filter-knob`): the word and the readout
+    /// side by side over the track.
+    Knob,
+}
+
 /// A labelled range control.
 ///
-/// `glyph` is an `Option` because the brush editor's dense parameter list has not been
-/// marked yet, **not** because a slider is expected to go without one. A control's mark
-/// is the half of it that survives its label, so anything reachable wants one; a `None`
-/// here is a row that would be blank if the words were hidden, and is a to-do rather
-/// than a decision (see [`stark_ui::icons::SIZE`]).
+/// `glyph` is an `Option` because the brush editor's parameter list is not marked yet,
+/// not because a slider may go without one: a `None` is a to-do (see
+/// [`stark_ui::icons::SIZE`]). `marked` carries the same fact to the stylesheet, which
+/// folds a marked row onto one line in minimal mode — an unmarked row keeps its word and
+/// cannot fold, or the tracks would start at a ragged edge.
 ///
-/// Which is exactly why the word is wrapped as hideable ([`crate::icons::label`]) only
-/// when there *is* a mark to fall back on. An unmarked slider keeps its word in minimal
-/// mode — not as a special case, but because the two facts are one fact here, and a
-/// component that reads them off each other cannot be given the wrong pair. The rows
-/// still to be marked therefore stay legible in the meantime instead of turning into a
-/// column of anonymous tracks.
+/// `readout` is the number beside the word, never inside it: minimal mode takes a
+/// control's name, not its value. `title` goes on the whole line where there is one,
+/// and on the track in a bar, where the mark and word are a sibling rather than a row.
 ///
-/// `marked` on the row carries that same fact out to the stylesheet, which needs it for
-/// a second reason: in minimal mode a marked row folds onto **one line**, its glyph to
-/// the left of the track instead of over it, which is where the mode's vertical saving
-/// in the panel stack actually comes from. A row that kept its word cannot fold — the
-/// words differ in length, so the tracks would start at a ragged left edge — and it
-/// does not have to, because the class it would need is the one it does not get.
+/// `onsettle` is wired to all three events that can end a drag
+/// ([`Preview::settle`] says why one is not enough). A slider whose value is document
+/// state is a [`PreviewSlider`], which cannot preview without settling.
 ///
-/// `onsettle` is the other half of a control whose value is **document state**: such
-/// a slider previews per sample and lays its answer down once, and this is where the
-/// three events that can end a drag are wired (see
-/// [`Preview::settle`](crate::preview::Preview::settle) for why it takes all three).
-/// A slider setting view state — most of them — leaves it out and has nothing to
-/// settle.
-///
-/// `disabled` greys the track out (`.slider:disabled`) for a value that has
-/// nothing to act on right now — the way a chip is disabled, and for the same
-/// reason: a control that can be moved and does nothing reads as broken.
+/// `disabled` greys the track out for a value with nothing to act on, as a chip is.
 #[component]
 pub fn Slider(
     label: String,
@@ -121,37 +138,350 @@ pub fn Slider(
     min: f32,
     max: f32,
     value: f32,
+    /// What the track snaps to, or `None` for continuous.
+    #[props(default)]
+    step: Option<f32>,
+    #[props(default)] readout: Option<String>,
+    #[props(default)] title: Option<String>,
+    #[props(default)] disabled: bool,
+    #[props(default)] shape: SliderShape,
     oninput: EventHandler<f32>,
     #[props(default)] onsettle: Option<EventHandler<()>>,
-    #[props(default)] disabled: bool,
 ) -> Element {
     let settle = move || {
         if let Some(h) = &onsettle {
             h.call(());
         }
     };
-    rsx! {
-        div { class: if glyph.is_some() { "slider-row marked" } else { "slider-row" },
-            div { class: "slider-label",
-                match glyph {
-                    Some(glyph) => rsx! { {icon(glyph)} {label_span(&label)} },
-                    None => rsx! { "{label}" },
-                }
+    let step = step.map_or_else(|| "any".to_string(), |s| s.to_string());
+    let name = mark_and_word(glyph, &label);
+    let (line_title, track_title) = match shape {
+        SliderShape::Bar => (None, title),
+        SliderShape::Row | SliderShape::Knob => (title, None),
+    };
+    let track = rsx! {
+        input {
+            class: "slider",
+            style: slider_fill(min, max, value),
+            r#type: "range", min: "{min}", max: "{max}", step, value: "{value}",
+            title: track_title,
+            disabled,
+            oninput: move |e| {
+                if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
+            },
+            onchange: move |_| settle(),
+            onpointerup: move |_| settle(),
+            onpointercancel: move |_| settle(),
+        }
+    };
+    match shape {
+        SliderShape::Row => rsx! {
+            div {
+                class: if glyph.is_some() { "slider-row marked" } else { "slider-row" },
+                title: line_title,
+                div { class: "slider-label", {name} {readout} }
+                {track}
             }
-            input {
-                class: "slider",
-                style: slider_fill(min, max, value),
-                r#type: "range", min: "{min}", max: "{max}", step: "any", value: "{value}",
-                disabled,
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
-                },
-                onchange: move |_| settle(),
-                onpointerup: move |_| settle(),
-                onpointercancel: move |_| settle(),
+        },
+        SliderShape::Bar => rsx! {
+            span { class: "bar-sub", {name} {readout} }
+            {track}
+        },
+        SliderShape::Knob => rsx! {
+            div { class: "filter-knob", title: line_title,
+                span { class: "filter-knob-label", {name} }
+                span { class: "filter-knob-value", {readout} }
+                {track}
+            }
+        },
+    }
+}
+
+/// A [`Slider`] over **document state**: every sample is shown through `preview` and
+/// the value is laid down once, when the drag settles (`crate::preview`) — one undo step
+/// per adjustment rather than one per pointer move.
+///
+/// `map` turns a track position into the value, or `None` when there is nothing left to
+/// show it on (a guide removed under the hand). `pending` is the site's, since one bar's
+/// knobs and pictures can share it. The three settle events are this component's, so a
+/// site that previews cannot forget to lay down.
+#[component]
+pub fn PreviewSlider<T: Clone + 'static>(
+    preview: Preview<T>,
+    pending: Signal<Option<T>>,
+    map: Callback<f32, Option<T>>,
+    label: String,
+    #[props(default)] glyph: Option<Icon>,
+    min: f32,
+    max: f32,
+    value: f32,
+    #[props(default)] step: Option<f32>,
+    #[props(default)] readout: Option<String>,
+    #[props(default)] title: Option<String>,
+    #[props(default)] disabled: bool,
+    #[props(default)] shape: SliderShape,
+) -> Element {
+    let state = use_context::<AppState>();
+    rsx! {
+        Slider {
+            label, glyph, min, max, value, step, readout, title, disabled, shape,
+            oninput: move |v| {
+                if let Some(value) = map.call(v) {
+                    preview.during(state, pending, value);
+                }
+            },
+            onsettle: move |()| preview.settle(state, pending),
+        }
+    }
+}
+
+/// The chrome's button, lit while what it names is in force.
+///
+/// `class` is a chip class of its own beside `chip`, for the few drawn differently
+/// (`axis-chip`, `gradient-trace`). `title` is not optional: a chip is mostly a mark,
+/// and the tooltip is where it says what it does.
+#[component]
+pub fn Chip(
+    #[props(default)] active: bool,
+    #[props(default)] disabled: bool,
+    title: String,
+    #[props(default)] class: &'static str,
+    #[props(default)] style: Option<String>,
+    onclick: EventHandler<MouseEvent>,
+    children: Element,
+) -> Element {
+    rsx! {
+        button {
+            class: "chip",
+            class: "{class}",
+            class: if active { "active" },
+            disabled,
+            title,
+            style,
+            onclick: move |e| onclick.call(e),
+            {children}
+        }
+    }
+}
+
+/// What a chip in a [`Segmented`] run shows.
+#[derive(Clone, PartialEq)]
+pub enum Face {
+    /// A mark and its word, the word hideable in minimal mode.
+    Marked(Icon, &'static str),
+    /// A word alone, which minimal mode leaves standing — an axis's letter.
+    Word(&'static str),
+    /// Drawn by the site, for the face the catalog cannot give: a bucket full of the
+    /// paint it would lay, a plane lettered in its two axes' hues.
+    Drawn(Element),
+}
+
+impl Face {
+    fn draw(self) -> Element {
+        match self {
+            Face::Marked(glyph, word) => mark_and_word(Some(glyph), word),
+            Face::Word(word) => mark_and_word(None, word),
+            Face::Drawn(drawn) => drawn,
+        }
+    }
+}
+
+/// One answer in a [`Segmented`] run.
+#[derive(Clone, PartialEq)]
+pub struct Choice<V> {
+    pub value: V,
+    pub face: Face,
+    pub tip: String,
+    /// Per chip rather than one `selected` for the run, because not every run lights
+    /// exactly one: the guide bar's locks may all be held.
+    pub lit: bool,
+    /// [`Chip`]'s own class.
+    pub class: &'static str,
+    pub style: Option<String>,
+}
+
+impl<V> Choice<V> {
+    /// `value` wearing `face`, explained by `tip`: unlit, with no class or style of its
+    /// own — the rest is struct update at the site.
+    pub fn new(value: V, face: Face, tip: impl Into<String>) -> Self {
+        Self {
+            value,
+            face,
+            tip: tip.into(),
+            lit: false,
+            class: "",
+            style: None,
+        }
+    }
+}
+
+/// A run of chips answering one question, which is one control (§25.9): it always wears
+/// `.segmented`, whose closed seams say that picking one un-picks the rest. `class` is
+/// the run's classes beside that.
+///
+/// A pick hands its value to `onpick`; what re-picking the lit chip means is the site's.
+#[component]
+pub fn Segmented<V: Clone + PartialEq + 'static>(
+    choices: Vec<Choice<V>>,
+    onpick: EventHandler<V>,
+    #[props(default)] class: &'static str,
+) -> Element {
+    rsx! {
+        div { class: "{class}", class: "segmented",
+            // Keyed by place: a run is a fixed set of answers and never reorders.
+            for (i, Choice { value, face, tip, lit, class: own, style }) in choices.into_iter().enumerate() {
+                Chip {
+                    key: "{i}",
+                    active: lit,
+                    title: tip,
+                    class: own,
+                    style,
+                    onclick: move |_| onpick.call(value.clone()),
+                    {face.draw()}
+                }
             }
         }
     }
+}
+
+/// A drop-down over a list of names, answering with the index of the one picked — the
+/// ladder's rung for a choice too wide for a [`Segmented`] run (§25.9).
+#[component]
+pub fn Select(
+    options: Vec<&'static str>,
+    selected: Option<usize>,
+    #[props(default)] title: Option<String>,
+    #[props(default)] disabled: bool,
+    onchange: EventHandler<usize>,
+) -> Element {
+    let names = options.clone();
+    rsx! {
+        select {
+            class: "select",
+            title,
+            disabled,
+            onchange: move |e| {
+                if let Some(i) = names.iter().position(|name| *name == e.value()) {
+                    onchange.call(i);
+                }
+            },
+            for (i, name) in options.into_iter().enumerate() {
+                option { value: "{name}", selected: selected == Some(i), "{name}" }
+            }
+        }
+    }
+}
+
+/// A bottom bar (MODAL_DESIGN.md): its mark and name, then its controls.
+///
+/// `mode` marks the composing mode's own bar (`.mode-bar`). Every other bar **recedes**
+/// while a mode composes — dimmed and inert (`.recessed` takes the pointer), but on
+/// screen, so the place the mode's Done and Esc return to stays in view. A mode's own
+/// bar never does; the gradient bar parked behind a trace is not a mode's bar while it
+/// is parked.
+#[component]
+pub fn Bar(
+    class: &'static str,
+    glyph: Icon,
+    word: String,
+    #[props(default)] mode: bool,
+    children: Element,
+) -> Element {
+    let state = use_context::<AppState>();
+    let recessed = !mode && crate::modes::composing(state).is_some();
+    rsx! {
+        div {
+            class: "{class}",
+            class: if mode { "mode-bar" },
+            class: "chrome",
+            class: if chrome_dimmed(state) { "dimmed" },
+            class: if recessed { "recessed" },
+            span { class: "bar-label", {mark_and_word(Some(glyph), &word)} }
+            {children}
+        }
+    }
+}
+
+/// A bar's **Done**: a chip that wears a registry command's chord but runs the bar's own
+/// act — not a [`CommandButton`], because the command is how the *keyboard* reaches that
+/// act, while the act the chip runs belongs to the bar drawing it.
+///
+/// Worded as `Command::FinishMode` is, whichever chord it advertises: a filter's or a
+/// frame's Done is Esc's act, but every edit on those bars is laid as it is made, so
+/// leaving keeps them and the chip is still a Done.
+#[component]
+pub fn ActChip(command: Command, title: String, onclick: EventHandler<MouseEvent>) -> Element {
+    let state = use_context::<AppState>();
+    let finish = Command::FinishMode;
+    rsx! {
+        Chip {
+            title: stark_ui::commands::advertised(&title, command, &state.bindings.read()),
+            onclick,
+            {icon(finish.icon())}
+            {label_span(finish.word())}
+        }
+    }
+}
+
+/// The name field a double-click opens over a roster row — a layer's, a guide's, a
+/// gradient's.
+///
+/// It opens on `seed`, the row's *name*: seeding with the description standing in for a
+/// missing one would turn opening the field and pressing Enter into naming the row
+/// "Layer 3". `placeholder` says what the row is called meanwhile. It takes the keyboard
+/// with its text selected, since the usual reason to open it is to replace the name.
+///
+/// **Blur** and **Enter** commit — Enter directly, since a focused element that is
+/// removed does not reliably fire `blur` — and **Escape** abandons. Whichever runs first
+/// *takes* the draft, so the blur that follows a field closed by a key finds nothing.
+/// What else is typed is the field's: the global shortcuts stand aside for a text field
+/// (`input::bind_shortcuts`), and a click in it places the caret rather than reaching the
+/// row beneath.
+#[component]
+pub fn InlineRename(
+    class: &'static str,
+    seed: String,
+    #[props(default)] placeholder: Option<String>,
+    oncommit: EventHandler<String>,
+    onclose: EventHandler<()>,
+) -> Element {
+    let mut draft = use_signal(move || Some(seed));
+    let mut close = move |keep: bool| {
+        let Some(text) = draft.write().take() else {
+            return;
+        };
+        if keep {
+            oncommit.call(text);
+        }
+        onclose.call(());
+    };
+    let text = draft().unwrap_or_default();
+    rsx! {
+        input {
+            class,
+            r#type: "text",
+            value: "{text}",
+            placeholder,
+            onmounted: move |e| focus_selected(&e),
+            oninput: move |e| draft.set(Some(e.value())),
+            onclick: move |e| e.stop_propagation(),
+            ondoubleclick: move |e| e.stop_propagation(),
+            onblur: move |_| close(true),
+            onkeydown: move |e| match e.key() {
+                Key::Enter => close(true),
+                Key::Escape => close(false),
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Take the keyboard and select everything in the field `e` was mounted on — for a field
+/// opened to replace what it holds. Synchronous, so the selection cannot land before the
+/// focus does.
+pub fn focus_selected(e: &Event<MountedData>) {
+    platform::focus(e);
+    platform::select_all(e);
 }
 
 /// The shell every dialog floats in — the dimmed backdrop, the box on it, and
@@ -259,7 +589,7 @@ pub fn Modal(
 /// the painting, and the press that matters there is the artist going back to
 /// painting. `panels::popout` closes on the *gesture* instead of catching the press,
 /// so the stroke that dismisses one also paints (`StackPopouts`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray)]
 pub enum PopoutId {
     /// The rail's map of what is on screen (§25.5). The one member that is not a
     /// well's: it is here for the rung alone, since a menu that answered Escape
@@ -277,8 +607,32 @@ pub enum PopoutId {
 }
 
 impl PopoutId {
-    /// The control this pop-out flies out of, as a selector — and `None` for one
-    /// that is drawn in place inside the bar that owns it.
+    /// What the row this pop-out flies out of wears as its `data-popout`.
+    pub const fn key(self) -> &'static str {
+        match self {
+            PopoutId::VisibilityMenu => "visibility-menu",
+            PopoutId::Parcel => "parcel",
+            PopoutId::GradientLibrary => "gradient-library",
+            PopoutId::SubstrateColor => "substrate-color",
+            PopoutId::SubstrateGallery => "substrate-gallery",
+        }
+    }
+
+    /// That row as a selector, `[data-popout="<key>"]` — built from [`key`](Self::key)
+    /// once per id, so the two cannot name different rows.
+    fn selector(self) -> &'static str {
+        // In `VARIANTS` order, which is declaration order and so the discriminant's.
+        static SELECTORS: LazyLock<Vec<String>> = LazyLock::new(|| {
+            PopoutId::VARIANTS
+                .iter()
+                .map(|id| format!("[data-popout=\"{}\"]", id.key()))
+                .collect()
+        });
+        &SELECTORS[self as usize]
+    }
+
+    /// The row this pop-out flies out of, as a selector — and `None` for one that is
+    /// drawn in place inside the bar that owns it.
     ///
     /// **The answer is where the pop-out is mounted**, which is the whole of the
     /// difference between the two kinds. A bar can draw its own: nothing clips
@@ -296,8 +650,7 @@ impl PopoutId {
     pub fn in_stack(self) -> Option<&'static str> {
         match self {
             PopoutId::VisibilityMenu | PopoutId::Parcel | PopoutId::GradientLibrary => None,
-            PopoutId::SubstrateColor => Some("[data-popout=\"substrate-color\"]"),
-            PopoutId::SubstrateGallery => Some("[data-popout=\"substrate-gallery\"]"),
+            PopoutId::SubstrateColor | PopoutId::SubstrateGallery => Some(self.selector()),
         }
     }
 }
@@ -306,6 +659,15 @@ impl PopoutId {
 /// bar that mounts it.
 pub fn popout_open(state: AppState, id: PopoutId) -> bool {
     *state.popout.read() == Some(id)
+}
+
+/// Whether `id` is open, for the surface that owns it — and that surface's promise to
+/// put it down on the way out (§25.7). A pop-out is drawn by or placed against the
+/// surface that opened it, so one that unmounted with the flag standing would be open
+/// on whatever came up next. A hook: call it unconditionally, above any early return.
+pub fn use_popout(state: AppState, id: PopoutId) -> bool {
+    use_drop(move || close_popout_of(state, id));
+    popout_open(state, id)
 }
 
 /// Open `id`, closing whichever pop-out was open. Toggles, since every one of
@@ -317,7 +679,8 @@ pub fn toggle_popout(state: AppState, id: PopoutId) {
 }
 
 /// Close `id` if it is the one open — what a surface that light-dismisses calls
-/// when it hears the press leave it (`rail::VisibilityMenu`).
+/// when it hears the press leave it (`rail::VisibilityMenu`), and what
+/// [`use_popout`] calls on the way out.
 ///
 /// Guarded, where [`close_popout`] is not, because that press is often the one
 /// opening the *next* pop-out: the focus leaves before the new well's click
@@ -335,11 +698,6 @@ pub fn close_popout_of(state: AppState, id: PopoutId) {
 
 /// Close whatever is open; `true` if anything was — what Escape's first rung
 /// asks (`commands::escape`).
-///
-/// Also what a bar calls on its way out: a pop-out is drawn inside the bar that
-/// owns it, so a bar that unmounts takes the pop-out off the screen without
-/// clearing the flag, and the next time that bar came up the library would be
-/// standing open on it.
 pub fn close_popout(state: AppState) -> bool {
     let mut open = state.popout;
     let was = open.peek().is_some();
@@ -347,4 +705,30 @@ pub fn close_popout(state: AppState) -> bool {
         open.set(None);
     }
     was
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// A stack pop-out is placed against the row wearing its key, so the selector it
+    /// is found by has to be that key's — for every id, and the stack's in particular.
+    #[test]
+    fn a_pop_out_is_found_by_its_own_key() {
+        for id in PopoutId::VARIANTS {
+            let row = format!("[data-popout=\"{}\"]", id.key());
+            assert_eq!(id.selector(), row, "{id:?}");
+            if let Some(selector) = id.in_stack() {
+                assert_eq!(selector, row, "{id:?}");
+            }
+        }
+    }
+
+    /// Two pop-outs wearing one key would place one against the other's row.
+    #[test]
+    fn no_two_pop_outs_share_a_key() {
+        let keys: HashSet<_> = PopoutId::VARIANTS.iter().map(|id| id.key()).collect();
+        assert_eq!(keys.len(), PopoutId::VARIANTS.len());
+    }
 }

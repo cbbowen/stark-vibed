@@ -45,7 +45,7 @@ use crate::input::{Nav, page_xy};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, use_obs};
-use crate::widgets::CommandButton;
+use crate::widgets::{ActChip, Bar, Chip, Choice, CommandButton, Face, Segmented};
 use stark_engine::ViewTransform;
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
@@ -156,41 +156,37 @@ pub fn TransformBar() -> Element {
         return rsx! {};
     };
     let family = ui.family();
-    let chip = |on: bool| if on { "chip active" } else { "chip" };
+    let families: Vec<_> = <Family as strum::VariantArray>::VARIANTS
+        .iter()
+        .map(|&to| Choice {
+            lit: family == to,
+            ..Choice::new(to, Face::Marked(to.glyph(), to.label()), to.tip())
+        })
+        .collect();
 
     rsx! {
-        div {
-            class: "transform-bar mode-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            // The same mark the selection bar's Transform chip wears — this bar stands
-            // in for that one for the gesture's duration, so it carries the glyph of
-            // the button that raised it.
-            span { class: "bar-label",
-                {icon(stark_ui::icons::TRANSFORM)}
-                {label("Transform")}
-            }
+        // The same mark the selection bar's Transform chip wears — this bar stands in
+        // for that one for the gesture's duration.
+        Bar {
+            class: "transform-bar",
+            glyph: stark_ui::icons::TRANSFORM,
+            word: "Transform",
+            mode: true,
 
             span { class: "bar-sep" }
 
-            // The three families. Switching carries the deformation when the new
-            // family holds it exactly (free → perspective, free → warp), and
-            // commits it first when it cannot — never a silent approximation.
-            for to in <Family as strum::VariantArray>::VARIANTS.iter().copied() {
-                button {
-                    key: "{to.label()}",
-                    class: chip(family == to),
-                    title: to.tip(),
-                    onclick: move |_| switch_family(state, ui, to),
-                    {icon(to.glyph())}
-                    {label(to.label())}
-                }
+            // Switching carries the deformation when the new family holds it exactly
+            // (free → perspective, free → warp), and commits it first when it cannot —
+            // never a silent approximation.
+            Segmented {
+                choices: families,
+                onpick: move |to: Family| switch_family(state, ui, to),
             }
             if family == Family::Free {
                 span { class: "bar-sep" }
-                // The axis was already the only thing distinguishing these two buttons,
-                // and it is carried by the glyph: a picture of the mirroring itself.
-                button {
-                    class: "chip",
+                // The axis is the only thing distinguishing these two, and the glyph
+                // carries it: a picture of the mirroring itself.
+                Chip {
                     title: "Mirror left \u{2194} right",
                     onclick: move |_| {
                         if let TransformUi::Affine { rect, ts } = ui {
@@ -200,8 +196,7 @@ pub fn TransformBar() -> Element {
                     {icon(stark_ui::icons::FLIP_H)}
                     {label("Flip")}
                 }
-                button {
-                    class: "chip",
+                Chip {
                     title: "Mirror top \u{2195} bottom",
                     onclick: move |_| {
                         if let TransformUi::Affine { rect, ts } = ui {
@@ -213,20 +208,13 @@ pub fn TransformBar() -> Element {
                 }
             }
             span { class: "bar-sep" }
-            // The way out that keeps nothing — the act `modes::leave` performs
-            // for every other entry point, finally offered as itself. Worn
-            // whole off the registry, Esc advertisement included.
+            // The way out that keeps nothing — the act `modes::leave` performs for every
+            // other entry point, offered as itself.
             CommandButton { command: Command::CancelMode }
-            button {
-                class: "chip",
-                title: stark_ui::commands::advertised(
-                    "Apply the transform \u{2014} one undo step",
-                    Command::FinishMode,
-                    &state.bindings.read(),
-                ),
+            ActChip {
+                command: Command::FinishMode,
+                title: "Apply the transform \u{2014} one undo step",
                 onclick: move |_| finish(state),
-                {icon(stark_ui::icons::DONE)}
-                {label("Done")}
             }
         }
     }

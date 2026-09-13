@@ -37,17 +37,16 @@
 
 use std::collections::HashSet;
 
-use dioxus::html::Key;
 use dioxus::prelude::*;
 
 use crate::collab::css_color;
 use crate::icons::{icon, label};
 use crate::panels::filter::AddFilterButton;
-use crate::panels::reorder;
-use crate::platform::{capture_pointer, layer_boxes, select_all};
+use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::{CommandButton, slider_fill};
+use crate::widgets::{Chip, CommandButton, InlineRename, PreviewSlider, Select};
+use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::{BlendMode, LayerId};
 use stark_ui::collab::Peer;
@@ -109,18 +108,7 @@ pub fn LayerPanel() -> Element {
     // it exists only between a press and its release, is nobody else's business, and
     // — like the panel stack's — is delimited by the browser's own gesture, so it
     // cannot be left armed by a timer that failed to fire (§11).
-    let mut drag = use_signal(|| None::<Grab>);
-    // The opacity being previewed by a slider drag, if one is in flight — the drag's
-    // own "there is something to commit", panel-local like `drag` and delimited by the
-    // same browser gesture. It is the *value*, not a flag, so the commit says what the
-    // last preview showed rather than reading it back off a projection that the
-    // in-flight preview is itself feeding (§14.6).
-    let fading = use_signal(|| None::<(LayerId, f32)>);
-    // The blend mode being previewed by a Bend drag, on `fading`'s pattern and for its
-    // reasons. The whole mode rather than the number, because that is what
-    // `SetLayerBlend` takes — a parameter alone would have to be put back into a mode
-    // at commit time, off the very projection the preview is feeding.
-    let bending = use_signal(|| None::<(LayerId, BlendMode)>);
+    let drag = use_signal(|| None::<Grab>);
 
     // The tree and which row is selected, through **one** memo (`state::use_obs`).
     // Both move on a commit; nothing here has anything to say about a pan or a
@@ -131,10 +119,6 @@ pub fn LayerPanel() -> Element {
     // One memo rather than two because the pair is compared together: a selection
     // change moves `active_layer` while the list stands, and a commit usually moves
     // both, so splitting them would buy one extra comparison and no extra sleep.
-    //
-    // The properties that belong to *whichever* layer is selected live here, once,
-    // rather than being repeated per row and again in the frame bar. A frame is a
-    // layer, so it needs no copies of its own (§15.7).
     let tree = use_obs(state, |o| {
         (
             o.layers.clone(),
@@ -191,166 +175,8 @@ pub fn LayerPanel() -> Element {
     let blend_inert = picked.is_none_or(Row::blend_inert);
     let clip_inert = picked.is_none_or(Row::clip_inert);
     rsx! {
-        if let Some(l) = selected {
-            div { class: "slider-row marked",
-                div { class: "slider-label",
-                    {icon(stark_ui::icons::BLEND)}
-                    {label(if l.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
-                }
-                // Blend and clip are one row because they are one question — *how does
-                // this layer meet what is below it* — and they share the answer's two
-                // halves: the mode says how the paint combines, the toggle says where it
-                // is allowed to land. Both go inert together at the bottom of the
-                // document, which is the other thing the shared row makes visible.
-                //
-                // On a **filter** the two halves come apart, and the row is where you
-                // can see that they were always two: a filter has no source, so the
-                // mode has nothing to describe and goes inert — but "where is this
-                // allowed to land" still has an answer, and the chip stays live to
-                // give it (§21.4).
-                div { class: "row blend-row",
-                    select {
-                        class: "select",
-                        // The mode's own description, so the difference between the two
-                        // light modes is readable without painting a test stroke.
-                        title: "{blend_hint(l.blend, &l)}",
-                        // Inert at the bottom of the document, where there is nothing to
-                        // blend with and every mode is the identity
-                        // (§14.4.3). Shown rather than hidden: the control belongs to the
-                        // layer wherever it sits, and a row that loses a control when it
-                        // is dragged to the bottom reads as a bug.
-                        disabled: blend_inert,
-                        onchange: move |e| {
-                            if let Some(m) = BlendMode::ALL.iter().find(|m| m.label() == e.value()) {
-                                dispatch(state, DocCommand::SetLayerBlend(l.id, *m));
-                            }
-                        },
-                        for mode in BlendMode::ALL {
-                            option {
-                                value: "{mode.label()}",
-                                // `same_mode`, not `==`: the list is of modes at their
-                                // default settings, and a Radiance layer whose Bend has
-                                // been dragged is still on the Radiance row. Under `==`
-                                // it would show no row selected at all — and picking one
-                                // to fix that would reset the very number the drag set.
-                                selected: mode.same_mode(l.blend),
-                                "{mode.label()}"
-                            }
-                        }
-                    }
-                    // A lit chip rather than a tick-box and a sentence. The sentence was
-                    // there because the *word* "Clip" is the thing nobody guesses the
-                    // meaning of — but a sentence is not a label, it is a tooltip that
-                    // had been promoted into the panel, and it cost the control a row of
-                    // its own. It is a tooltip again here, and the glyph carries what a
-                    // one-word label could not.
-                    button {
-                        class: if l.clip { "chip active" } else { "chip" },
-                        title: "{clip_hint(&l)}",
-                        // Inert only where there is nothing beneath — and where a mode
-                        // over nothing is harmlessly the identity, a clip over nothing
-                        // would erase the layer, which is the whole reason this one has
-                        // to be stopped rather than merely left to do nothing
-                        // (§14.4.3).
-                        disabled: clip_inert,
-                        onclick: move |_| dispatch(state, DocCommand::SetLayerClip(l.id, !l.clip)),
-                        {icon(stark_ui::icons::CLIP)}
-                    }
-                }
-            }
-            // `marked`, as `widgets::Slider` sets it on the rows it builds: these two are
-            // hand-rolled (one splits its samples between a preview and one commit, the
-            // other holds a picker and a chip rather than a track), but they wear a glyph,
-            // so they fold onto one line in minimal mode exactly as the component's rows do.
-            div { class: "slider-row marked",
-                // The "— of the group" qualifier rides inside the hideable word rather
-                // than beside it. It is not a second fact about the control; it is the
-                // sentence saying what *this* opacity fades (§14.3), and half a
-                // sentence left standing in minimal mode would read as a bug.
-                div { class: "slider-label",
-                    {icon(stark_ui::icons::OPACITY)}
-                    // A filter's opacity is its **strength** (§21.4), and the word is
-                    // worth changing: "50% opacity" on a color adjustment invites
-                    // the reading that the filter is half transparent, when what it
-                    // is is half applied.
-                    {label(match (l.is_group, l.filter.is_some()) {
-                        (true, _) => "Opacity \u{2014} of the group",
-                        (false, true) => "Strength",
-                        (false, false) => "Opacity",
-                    })}
-                }
-                input {
-                    class: "slider",
-                    style: slider_fill(0.0, 100.0, l.opacity * 100.0),
-                    r#type: "range", min: "0", max: "100", step: "any",
-                    value: "{(l.opacity * 100.0) as i32}",
-                    title: "{opacity_hint(&l)}",
-                    // Previewed per sample, committed once when the drag settles: a
-                    // layer's opacity is document state, so one adjustment must cost
-                    // one undo step — and one replicated action — rather than one per
-                    // pointer move, which is the bargain the frame drag and the canvas
-                    // color already make (§14.6). The engine renders the preview and
-                    // reports it back through `observe`, so the track and the canvas
-                    // both follow the pointer.
-                    oninput: move |e| {
-                        if let Ok(v) = e.value().parse::<f32>() {
-                            preview::LAYER_OPACITY.during(state, fading, (l.id, v / 100.0));
-                        }
-                    },
-                    // Three ways to end, because a range control has three — see
-                    // `Preview::settle`, which holds the why (and is idempotent, so
-                    // arriving twice is free).
-                    onchange: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                    onpointerup: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                    onpointercancel: move |_| preview::LAYER_OPACITY.settle(state, fading),
-                }
-            }
-            // Radiance's own parameter — the first a mode has had (§18.0.4). The row
-            // is here only while the mode is: a Bend on a Multiply layer would be a
-            // control for a number that mode's curve has no place for, and the
-            // document could not hold the setting it appeared to offer. That is the
-            // same argument that put `k` on the variant rather than beside it, read
-            // out into the panel.
-            if let BlendMode::Drago { k } = l.blend {
-                div { class: "slider-row marked",
-                    div { class: "slider-label",
-                        {icon(stark_ui::icons::BEND)}
-                        {label("Bend")}
-                    }
-                    input {
-                        class: "slider",
-                        style: slider_fill(bend_ends().0, bend_ends().1, k.log2()),
-                        r#type: "range", step: "any",
-                        // In **octaves of `k`**, not in `k`. The bend is a scale, so
-                        // what it does to the curve is a matter of ratio: half of 0.2
-                        // is a different mode and half of 3 is barely a change. A
-                        // linear track would spend most of its travel in the flat end
-                        // and cross the whole interesting range in its first few px.
-                        min: "{bend_ends().0}", max: "{bend_ends().1}",
-                        // The document's own value, which during a drag is the
-                        // preview's — the engine renders it and reports it back
-                        // through `observe`, so the track and the canvas follow the
-                        // pointer together, exactly as the opacity slider above does.
-                        value: "{k.log2()}",
-                        title: "{BEND_HINT}",
-                        // Inert with its mode: a bend over nothing bends nothing.
-                        disabled: blend_inert,
-                        // Previewed per sample, committed once when the drag settles —
-                        // the same bargain, through the same pair. The whole mode
-                        // travels rather than the number, because that is what both
-                        // ends of the bargain take.
-                        oninput: move |e| {
-                            if let Ok(stops) = e.value().parse::<f32>() {
-                                let next = BlendMode::Drago { k: stops.exp2() };
-                                preview::LAYER_BLEND.during(state, bending, (l.id, next));
-                            }
-                        },
-                        onchange: move |_| preview::LAYER_BLEND.settle(state, bending),
-                        onpointerup: move |_| preview::LAYER_BLEND.settle(state, bending),
-                        onpointercancel: move |_| preview::LAYER_BLEND.settle(state, bending),
-                    }
-                }
-            }
+        if let Some(layer) = selected {
+            SelectedLayerControls { layer, blend_inert, clip_inert }
         }
 
         hr {}
@@ -400,23 +226,6 @@ pub fn LayerPanel() -> Element {
                         }
                     },
                     onland: move |id: LayerId| {
-                        // A press that never travelled is a click, and the browser is
-                        // about to send one; nothing here has anything to say about it.
-                        if drag.peek().as_ref().is_none_or(|d| !d.live()) {
-                            drag.set(None);
-                            return;
-                        }
-                        // **The disarm goes first**, and for the reason the panel stack's
-                        // does: a row's shift is stated against the panel as it stood when
-                        // the press landed, so a frame carrying the new order while the
-                        // transforms are still on would be the move applied twice. It is
-                        // *spent* rather than dropped so the click behind the release can
-                        // be recognized and swallowed (`reorder::claimed`) — on a panel
-                        // that has just reordered, that click names whichever row took
-                        // this one's place.
-                        if let Some(d) = drag.write().as_mut() {
-                            d.spend();
-                        }
                         // Dragging a layer selects it, drop or no drop: it is the one you
                         // just had in your hand. Said here rather than left to the click
                         // that follows, which this gesture has taken.
@@ -433,6 +242,118 @@ pub fn LayerPanel() -> Element {
                         dispatch(state, l.move_layer(id));
                     },
                 }
+            }
+        }
+    }
+}
+
+/// The properties of **whichever layer is selected**, once, rather than repeated per row
+/// and again in the frame bar — a frame is a layer, so it needs no copies of its own
+/// (§15.7). A component for its two drags' pending values, which live exactly as long as
+/// there is a selected layer to drag the properties of.
+#[component]
+fn SelectedLayerControls(layer: LayerInfo, blend_inert: bool, clip_inert: bool) -> Element {
+    let state = use_context::<AppState>();
+    // What an opacity drag and a Bend drag would lay. The whole mode for Bend rather
+    // than the number, because that is what `SetLayerBlend` takes — a parameter alone
+    // would have to be put back into a mode at commit time, off the very projection the
+    // preview is feeding.
+    let fading = use_signal(|| None::<(LayerId, f32)>);
+    let bending = use_signal(|| None::<(LayerId, BlendMode)>);
+    let id = layer.id;
+    let clip = layer.clip;
+    let modes: Vec<&'static str> = BlendMode::ALL.iter().map(|m| m.label()).collect();
+    // `same_mode`, not `==`: the list is of modes at their default settings, and a
+    // Radiance layer whose Bend has been dragged is still on the Radiance row. Under `==`
+    // it would show no row selected at all — and picking one to fix that would reset the
+    // very number the drag set.
+    let mode = BlendMode::ALL.iter().position(|m| m.same_mode(layer.blend));
+    rsx! {
+        div { class: "slider-row marked",
+            div { class: "slider-label",
+                {icon(stark_ui::icons::BLEND)}
+                {label(if layer.is_group { "Blend \u{2014} of the group" } else { "Blend" })}
+            }
+            // Blend and clip are one row because they are one question — *how does this
+            // layer meet what is below it* — and they share the answer's two halves: the
+            // mode says how the paint combines, the toggle says where it is allowed to
+            // land. Both go inert together at the bottom of the document, which is the
+            // other thing the shared row makes visible.
+            //
+            // On a **filter** the two halves come apart, and the row is where you can see
+            // that they were always two: a filter has no source, so the mode has nothing
+            // to describe and goes inert — but "where is this allowed to land" still has
+            // an answer, and the chip stays live to give it (§21.4).
+            div { class: "row blend-row",
+                // The mode's own description, so the difference between the two light
+                // modes is readable without painting a test stroke. Inert at the bottom
+                // of the document, where every mode is the identity (§14.4.3) — shown
+                // rather than hidden, since the control belongs to the layer wherever it
+                // sits.
+                Select {
+                    title: blend_hint(layer.blend, &layer),
+                    disabled: blend_inert,
+                    options: modes,
+                    selected: mode,
+                    onchange: move |i: usize| {
+                        dispatch(state, DocCommand::SetLayerBlend(id, BlendMode::ALL[i]));
+                    },
+                }
+                // A lit chip rather than a tick-box and a sentence: the sentence is the
+                // tooltip, and the glyph carries what the word "Clip" could not. Inert
+                // only where there is nothing beneath — where a mode over nothing is
+                // harmlessly the identity, a clip over nothing would erase the layer
+                // (§14.4.3).
+                Chip {
+                    active: clip,
+                    title: clip_hint(&layer),
+                    disabled: clip_inert,
+                    onclick: move |_| dispatch(state, DocCommand::SetLayerClip(id, !clip)),
+                    {icon(stark_ui::icons::CLIP)}
+                }
+            }
+        }
+        // A filter's opacity is its **strength** (§21.4): "50% opacity" on a color
+        // adjustment invites the reading that the filter is half transparent, when it is
+        // half applied. The "— of the group" qualifier rides inside the hideable word: it
+        // is the sentence saying what *this* opacity fades (§14.3), and half a sentence
+        // left standing in minimal mode would read as a bug.
+        PreviewSlider {
+            label: match (layer.is_group, layer.filter.is_some()) {
+                (true, _) => "Opacity \u{2014} of the group",
+                (false, true) => "Strength",
+                (false, false) => "Opacity",
+            },
+            glyph: stark_ui::icons::OPACITY,
+            min: 0.0,
+            max: 100.0,
+            value: layer.opacity * 100.0,
+            title: opacity_hint(&layer),
+            preview: preview::LAYER_OPACITY,
+            pending: fading,
+            map: move |v: f32| Some((id, v / 100.0)),
+        }
+        // Radiance's own parameter — the first a mode has had (§18.0.4). The row is here
+        // only while the mode is: a Bend on a Multiply layer would be a control for a
+        // number that mode's curve has no place for, and the document could not hold the
+        // setting it appeared to offer.
+        if let BlendMode::Drago { k } = layer.blend {
+            PreviewSlider {
+                label: "Bend",
+                glyph: stark_ui::icons::BEND,
+                // In **octaves of `k`**, not in `k`. The bend is a scale, so what it does
+                // to the curve is a matter of ratio: half of 0.2 is a different mode and
+                // half of 3 is barely a change. A linear track would spend most of its
+                // travel in the flat end.
+                min: bend_ends().0,
+                max: bend_ends().1,
+                value: k.log2(),
+                title: BEND_HINT,
+                // Inert with its mode: a bend over nothing bends nothing.
+                disabled: blend_inert,
+                preview: preview::LAYER_BLEND,
+                pending: bending,
+                map: move |stops: f32| Some((id, BlendMode::Drago { k: stops.exp2() })),
             }
         }
     }
@@ -455,23 +376,10 @@ pub fn LayerRow(
 ) -> Element {
     let state = use_context::<AppState>();
     let info = row.info.clone();
-    // The rename in progress on *this* row, or `None` while the row is just a row.
-    // Row-local, so opening one leaves every other row alone and closing it needs
-    // nothing cleaned up. The draft is held here rather than read back off the
-    // field on commit because both commit paths — Enter and blur — need it, and one
-    // of them fires while the field is on its way out.
-    let mut draft = use_signal(|| None::<String>);
+    // Whether this row's name is open for renaming — row-local, so opening one leaves
+    // every other row alone.
+    let mut editing = use_signal(|| false);
     let id = info.id;
-    // Commit whatever the field holds, and close it. `take` is what makes the two
-    // commit paths safe to both fire: whichever runs second finds no draft. Leaving
-    // an untouched field costs nothing either — the engine drops a rename to the
-    // name the layer already has, so no undo step is spent on it.
-    let mut commit = move || {
-        let text = draft.write().take();
-        if let Some(text) = text {
-            dispatch(state, DocCommand::SetLayerName(id, Some(text)));
-        }
-    };
     // The row's own fields, read out before the handlers below capture them:
     // `LayerInfo` is `Clone` rather than `Copy` now that it carries the name, and
     // several handlers want a piece of it.
@@ -479,11 +387,6 @@ pub fn LayerRow(
     let matte = info.matte.is_some();
     let filter = info.filter.is_some();
     let label = stark_ui::layer_tree::layer_label(&info);
-    // What the field opens on: the layer's *name*, which for one that has never been
-    // named is empty. Deliberately not the label — seeding with the generated
-    // "Layer 3" would turn opening the field and pressing Enter into a rename to
-    // "Layer 3", quietly making a description into a name. The placeholder carries
-    // the label instead, so the row still says what it is called while empty.
     let seed = info.name.as_deref().unwrap_or_default().to_string();
     // This layer's own paint in miniature, or `None` for a row that has no picture
     // to show (§14.6). The two `None`s are deliberately different things and the
@@ -553,6 +456,14 @@ pub fn LayerRow(
          Double-click to rename"
     } else {
         "Paint on this layer — double-click to rename"
+    };
+    // The two kinds that are a *what* rather than a place to paint share one treatment:
+    // a dimmed, un-pressable-looking name. The mark that used to lead it is in the row's
+    // right-hand slot, with the thumbnails.
+    let name_class = if matte || filter {
+        "layer-name layer-name-kind"
+    } else {
+        "layer-name"
     };
 
     // A row is one line — Carry, the name that selects it, then Duplicate, Remove and
@@ -664,123 +575,27 @@ pub fn LayerRow(
                 } else {
                     span { class: "layer-carry" }
                 }
-                if let Some(text) = draft() {
-                    input {
-                        class: "layer-name",
-                        class: "layer-rename",
-                        r#type: "text",
-                        value: "{text}",
-                        placeholder: "{label}",
-                        // The field is the point of the double-click, so it takes focus
-                        // as it appears rather than asking for a second click. The DOM
-                        // node exists by the time `onmounted` runs, which is what the
-                        // `autofocus` attribute cannot promise for an element inserted
-                        // after load.
-                        onmounted: move |e: Event<MountedData>| {
-                            spawn(async move {
-                                let _ = e.set_focus(true).await;
-                                // Selected, not merely focused: the field opens on the
-                                // name the layer already has, and the usual reason to
-                                // open it is to replace that name rather than add to it.
-                                // Typing over is one keystroke; keeping a word of it is
-                                // one click. Ordered after the focus rather than left to
-                                // `select`'s own — awaiting it is what puts the two in a
-                                // known order.
-                                select_all(&e);
-                            });
+                if editing() {
+                    // The engine drops a rename to the name the layer already has, so
+                    // leaving an untouched field spends no undo step.
+                    InlineRename {
+                        class: "layer-name layer-rename",
+                        seed,
+                        placeholder: label.to_string(),
+                        oncommit: move |text: String| {
+                            dispatch(state, DocCommand::SetLayerName(id, Some(text)));
                         },
-                        oninput: move |e| draft.set(Some(e.value())),
-                        // Committing on blur is what makes this feel like a label rather
-                        // than a form: clicking away is an ordinary way to be finished,
-                        // and nothing is lost by it.
-                        //
-                        // Enter commits directly rather than by blurring — a focused
-                        // element that is removed does not reliably fire `blur` (the very
-                        // thing `platform::on_window_key` exists to work around), so the
-                        // field closing itself cannot be the commit. The two paths cannot
-                        // double up: `commit` *takes* the draft, so whichever runs second
-                        // finds nothing to send.
-                        onblur: move |_| commit(),
-                        // Everything else typed here is left alone: the global shortcuts
-                        // already stand aside for a text field (`input::bind_shortcuts`),
-                        // which is what leaves the browser's own Ctrl+Z editing this text
-                        // instead of the document.
-                        onkeydown: move |e| match e.key() {
-                            Key::Enter => commit(),
-                            // Escape abandons the edit — dropping the draft first, so the
-                            // blur that follows the field's removal has nothing left to
-                            // commit.
-                            Key::Escape => draft.set(None),
-                            _ => {}
-                        },
+                        onclose: move |_| editing.set(false),
                     }
                 } else {
-                    button {
-                        // The two kinds that are a *what* rather than a place to
-                        // paint share one treatment: a dimmed, un-pressable-looking
-                        // name. The mark that used to lead it is in the row's
-                        // right-hand slot now, with the thumbnails.
-                        class: if matte || filter { "layer-name layer-name-kind" } else { "layer-name" },
+                    Grip {
+                        class: name_class,
                         title,
-                        // The click a drag leaves behind is not this row's — the
-                        // drop has already said which layer is selected, and on a
-                        // panel that reordered under the release this click names
-                        // whichever row took the dragged one's place.
-                        onclick: move |_| {
-                            if !reorder::claimed(&mut drag) {
-                                dispatch(state, PeerCommand::SetActiveLayer(id));
-                            }
-                        },
-                        ondoubleclick: move |_| draft.set(Some(seed.clone())),
-                        // The name **is** the grip, as the panel's title is
-                        // (`layout::Panel`): the thing you would reach for to move a
-                        // layer is the layer, and a separate handle beside it would be
-                        // the one part of the row that can be dragged while looking
-                        // like the rest. Its three gestures share one press — a click
-                        // selects, two rename, and a press that travels
-                        // [`GRAB_SLOP`] is a move — so the drag arms here and only
-                        // *becomes* one once the pointer has said so.
-                        //
-                        // Capture is what makes the release certain: it is delivered
-                        // to the capturing element whatever the pointer is over by
-                        // then, and this is a drag where everything under the pointer
-                        // moves as you drag it.
-                        onpointerdown: move |e: Event<PointerData>| {
-                            capture_pointer(&e);
-                            let p = e.client_coordinates();
-                            drag.set(Some(Grab::begin(
-                                id.to_string(),
-                                layer_boxes(),
-                                (p.x as f32, p.y as f32),
-                            )));
-                        },
-                        onpointermove: move |e: Event<PointerData>| {
-                            // The armed check first: it is what keeps every pointer
-                            // move over the panel from dirtying the whole tree — and a
-                            // finished grab is not armed, it is a receipt waiting for
-                            // the click behind it (`reorder::claimed`).
-                            if drag.peek().as_ref().is_none_or(Grab::over) {
-                                return;
-                            }
-                            let p = e.client_coordinates();
-                            // Whether the press that armed this is still down. A row's
-                            // name is both the grip and a thing you hover, so this
-                            // handler hears every pass of the pointer over the panel,
-                            // and a drag whose release went somewhere else would
-                            // otherwise be steered by them (`Grab::track`).
-                            let held = !e.held_buttons().is_empty();
-                            if let Some(d) = drag.write().as_mut() {
-                                d.track((p.x as f32, p.y as f32), held);
-                            }
-                        },
-                        onpointerup: move |_| onland.call(id),
-                        // A cancel — the browser taking the gesture, a pen leaving the
-                        // tablet — ends it the same way, and `onland` declines a drag
-                        // that never went live or that lands where it began.
-                        onpointercancel: move |_| onland.call(id),
-                        // The kind mark used to lead the name here. It sits in the
-                        // right-hand slot with the thumbnails now (below), because it
-                        // is answering their question rather than the name's.
+                        row: RowKey::Layer(id),
+                        drag,
+                        onclick: move |_| dispatch(state, PeerCommand::SetActiveLayer(id)),
+                        ondoubleclick: move |_| editing.set(true),
+                        onland: move |_| onland.call(id),
                         "{label}"
                     }
                 }

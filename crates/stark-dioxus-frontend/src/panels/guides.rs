@@ -34,18 +34,18 @@
 //! in is something the canvas *shows* (the count of finite vanishing points),
 //! not something a control stores.
 
-use dioxus::html::Key;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_dimmed;
-use crate::panels::reorder;
-use crate::platform::{capture_pointer, guide_boxes, select_all};
+use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs_opt};
-use crate::widgets::{CommandButton, slider_fill};
+use crate::widgets::{
+    ActChip, Bar, Chip, Choice, CommandButton, Face, InlineRename, PreviewSlider, Segmented,
+    SliderShape,
+};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide};
@@ -108,8 +108,9 @@ fn camera_of(state: AppState, id: GuideId) -> Option<PerspectiveGuide> {
 /// step (§20.5).
 ///
 /// For the controls that settle the moment they are used: a plane chip, the lens
-/// toggle, a keyboard nudge. A control that is *dragged* wants [`drag_guide`]
-/// instead, so the artist sees every value the pointer crosses and pays for one.
+/// toggle, a keyboard nudge. A drag previews instead — [`drag_guide`] on the canvas,
+/// a `PreviewSlider` on the bar — so the artist sees every value the pointer crosses
+/// and pays for one.
 fn edit_guide(state: AppState, id: GuideId, f: impl FnOnce(&mut PerspectiveGuide)) {
     let Some(mut camera) = camera_of(state, id) else {
         return;
@@ -138,8 +139,8 @@ fn drag_guide(
 }
 
 /// End a guide drag: lay down what the previews have been showing, once.
-/// Idempotent, which is what lets it hang off `change`, `pointerup` and
-/// `pointercancel` alike ([`Preview::settle`](crate::preview::Preview::settle)).
+/// Idempotent, which is what lets it hang off every event that can end one
+/// ([`Preview::settle`](crate::preview::Preview::settle)).
 fn settle_guide(state: AppState, pending: Signal<Option<(GuideId, PerspectiveGuide)>>) {
     preview::GUIDE.settle(state, pending);
 }
@@ -318,7 +319,7 @@ pub fn GuidesPanel() -> Element {
         .map(|e| e.id);
     // The in-flight row drag, if any — panel-local, and delimited by the browser's
     // own gesture rather than by a timer (§11).
-    let mut drag = use_signal(|| None::<Grab>);
+    let drag = use_signal(|| None::<Grab>);
     // Resolved once here rather than read by each row, so the rows that do not move
     // do not re-render as the pointer travels. `lift` is where the dragged row is
     // drawn: straight down the column, because a flat list has no depth for a
@@ -365,22 +366,6 @@ pub fn GuidesPanel() -> Element {
                     motion: land.map_or_else(Motion::default, |s| s.motion(i, lift)),
                     drag,
                     onland: move |from: usize| {
-                        // A press that never travelled is a click, and the browser is
-                        // about to send one; nothing here has anything to say about it.
-                        if drag.peek().as_ref().is_none_or(|d| !d.live()) {
-                            drag.set(None);
-                            return;
-                        }
-                        // The disarm first, so no frame carries both the new order and
-                        // the transforms that were describing the old one — spent rather
-                        // than dropped, so the click behind the release can be swallowed
-                        // (`reorder::claimed`). It has to be: this panel's rows are
-                        // addressed by position, so that click names whichever guide has
-                        // just taken the dragged one's place, and acting on it would put
-                        // the artist in the wrong guide's edit mode.
-                        if let Some(d) = drag.write().as_mut() {
-                            d.spend();
-                        }
                         let Some(slide) = land else {
                             return;
                         };
@@ -409,9 +394,9 @@ pub fn GuidesPanel() -> Element {
 }
 
 /// One guide in the roster. A component rather than markup inlined in the loop
-/// above for the reason [`LayerRow`](super::layer::LayerRow) is one: the rename
-/// field's draft is *row-local* state, so opening one leaves every other row alone
-/// and closing it needs nothing cleaned up — and a hook cannot live inside a `for`.
+/// above for the reason [`LayerRow`](super::layer::LayerRow) is one: whether its name
+/// is open for renaming is *row-local* state, so opening one leaves every other row
+/// alone — and a hook cannot live inside a `for`.
 #[component]
 fn GuideRow(
     index: usize,
@@ -422,32 +407,9 @@ fn GuideRow(
     onland: EventHandler<usize>,
 ) -> Element {
     let state = use_context::<AppState>();
-    // The rename in progress on this row, or `None` while the row is just a row.
-    // Held here rather than read back off the field on commit because both commit
-    // paths — Enter and blur — need it, and one of them fires while the field is on
-    // its way out.
-    let mut draft = use_signal(|| None::<String>);
-    // `take` is what makes the two commit paths safe to both fire: whichever runs
-    // second finds no draft. An emptied field is a *removed* name rather than a
-    // blank one, which is the engine's rule for every name (`normalize_name`), so
-    // the row goes back to describing its position.
+    let mut editing = use_signal(|| false);
     let id = guide.id;
-    let mut commit = move || {
-        let text = draft.write().take();
-        if let Some(text) = text {
-            // Through the engine's name funnel like a layer's: trimmed, capped, and
-            // one that comes out blank clears the name rather than setting an empty
-            // one (`normalize_name`). One logged action, so a mistyped rename is
-            // undoable the way a mis-set opacity is (§20.5).
-            dispatch(state, DocCommand::SetGuideName(id, Some(text)));
-        }
-    };
     let label = guide_label(index, &guide);
-    // What the field opens on: the guide's *name*, which for one never named is
-    // empty. Deliberately not the label — seeding with the generated "Perspective 2"
-    // would turn opening the field and pressing Enter into a rename to "Perspective
-    // 2", quietly making a description into a name, and this panel's descriptions
-    // move when a guide is removed. The placeholder carries the label instead.
     let seed = guide.name.as_deref().unwrap_or_default().to_string();
     let visible = guide.visible;
     // The row's transform, written by `Motion` so every declaration is stated on
@@ -466,90 +428,33 @@ fn GuideRow(
             // rows. The landing is turned back into a guide by the one handler that
             // knows both (`GuidesPanel`'s `onland`).
             "data-guide": "{index}",
-            if let Some(text) = draft() {
-                input {
-                    class: "guide-name",
-                    class: "guide-rename",
-                    r#type: "text",
-                    value: "{text}",
-                    placeholder: "{label}",
-                    // The field is the point of the double-click, so it takes focus
-                    // as it appears rather than asking for a second click.
-                    onmounted: move |e: Event<MountedData>| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                            // Selected, not merely focused: the usual reason to open
-                            // the field is to replace the name rather than add to it.
-                            select_all(&e);
-                        });
+            if editing() {
+                // Through the engine's name funnel like a layer's: trimmed, capped, and one
+                // that comes out blank clears the name, so the row goes back to describing
+                // its position (`normalize_name`). One logged action, so a mistyped rename
+                // is undoable the way a mis-set opacity is (§20.5).
+                InlineRename {
+                    class: "guide-name guide-rename",
+                    seed,
+                    placeholder: label,
+                    oncommit: move |text: String| {
+                        dispatch(state, DocCommand::SetGuideName(id, Some(text)));
                     },
-                    oninput: move |e| draft.set(Some(e.value())),
-                    // Committing on blur is what makes this feel like a label rather
-                    // than a form. Enter commits directly rather than by blurring — a
-                    // focused element that is removed does not reliably fire `blur`.
-                    onblur: move |_| commit(),
-                    onkeydown: move |e| match e.key() {
-                        Key::Enter => commit(),
-                        // Escape abandons the edit — dropping the draft first, so the
-                        // blur that follows has nothing left to commit.
-                        Key::Escape => draft.set(None),
-                        _ => {}
-                    },
+                    onclose: move |_| editing.set(false),
                 }
             } else {
-                // The name selects, and selecting *is* picking the guide up to shape
-                // it, because shaping is all there is to do to one. Double-click
-                // renames, as it does on a layer row — the first click of the pair
-                // landing you in the edit mode is no cost, since the guide you are
-                // renaming is the one you were about to work on.
-                button {
+                // Selecting *is* picking the guide up to shape it, because shaping is all
+                // there is to do to one. The first click of a rename's pair landing you in
+                // the edit mode is no cost, since the guide you are renaming is the one
+                // you were about to work on.
+                Grip {
                     class: "guide-name",
                     title: "Shape this guide \u{2014} drag to reorder, double-click to rename",
-                    // The click a drag leaves behind is not this row's: the drop has
-                    // already said what it meant, and the row this click lands on is
-                    // whichever guide took this one's place.
-                    onclick: move |_| {
-                        if !reorder::claimed(&mut drag) {
-                            begin_guide_edit(state, id);
-                        }
-                    },
-                    ondoubleclick: move |_| draft.set(Some(seed.clone())),
-                    // The name is the grip, as it is on a layer row: the thing you
-                    // would reach for to move a guide is the guide. Capture is what
-                    // makes the release certain — it is delivered to the capturing
-                    // element whatever the pointer is over by then, and this is a drag
-                    // where everything under the pointer moves as you drag it.
-                    onpointerdown: move |e: Event<PointerData>| {
-                        capture_pointer(&e);
-                        let p = e.client_coordinates();
-                        drag.set(Some(Grab::begin(
-                            index.to_string(),
-                            guide_boxes(),
-                            (p.x as f32, p.y as f32),
-                        )));
-                    },
-                    onpointermove: move |e: Event<PointerData>| {
-                        // The armed check first: it keeps every pointer move over the
-                        // panel from dirtying the whole roster — and a finished grab is
-                        // not armed, it is a receipt waiting for the click behind it
-                        // (`reorder::claimed`).
-                        if drag.peek().as_ref().is_none_or(Grab::over) {
-                            return;
-                        }
-                        let p = e.client_coordinates();
-                        // Whether the press that armed this is still down — the name is
-                        // both the grip and a thing you hover, so a drag whose release
-                        // went somewhere this panel never hears about would otherwise
-                        // be steered by the hovers after it (`Grab::track`).
-                        let held = !e.held_buttons().is_empty();
-                        if let Some(d) = drag.write().as_mut() {
-                            d.track((p.x as f32, p.y as f32), held);
-                        }
-                    },
-                    onpointerup: move |_| onland.call(index),
-                    // A cancel — the browser taking the gesture, a pen leaving the
-                    // tablet — ends it the same way.
-                    onpointercancel: move |_| onland.call(index),
+                    row: RowKey::Guide(index),
+                    drag,
+                    onclick: move |_| begin_guide_edit(state, id),
+                    ondoubleclick: move |_| editing.set(true),
+                    onland: move |_| onland.call(index),
                     "{label}"
                 }
             }
@@ -629,71 +534,86 @@ pub fn PerspectiveGuideBar() -> Element {
     // ladder's rung, so there is no separate number to keep in step.
     let octave = stark_ui::guides::octave(g);
     let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
+    // Colored as the axis's own lines are (`AXIS_CSS`).
+    let locks: Vec<_> = (0..3)
+        .map(|i| Choice {
+            lit: edit.locked[i],
+            class: "axis-chip",
+            style: Some(format!("--axis: {}", AXIS_CSS[i])),
+            ..Choice::new(
+                i,
+                Face::Word(AXIS_NAMES[i]),
+                format!("Hold the {} axis fixed under the drag", AXIS_NAMES[i]),
+            )
+        })
+        .collect();
+    let planes: Vec<_> = PAIR_AXES
+        .iter()
+        .enumerate()
+        .map(|(k, &[a, b])| Choice {
+            lit: pairs[k],
+            class: "plane-chip",
+            style: Some(format!(
+                "--axis-a: {}; --axis-b: {}",
+                AXIS_CSS[a], AXIS_CSS[b]
+            )),
+            // Each letter in its own axis's hue, so the chip names the plane by the two
+            // colors ruling it.
+            ..Choice::new(
+                k,
+                Face::Drawn(rsx! {
+                    span { class: "ax-a", "{AXIS_NAMES[a]}" }
+                    span { class: "ax-b", "{AXIS_NAMES[b]}" }
+                }),
+                format!(
+                    "Show the {}{} plane \u{2014} its two fans of guide lines, its horizon \
+                     and its station point",
+                    AXIS_NAMES[a], AXIS_NAMES[b]
+                ),
+            )
+        })
+        .collect();
 
     rsx! {
-        // `mode-bar`: the composing register (MODAL_DESIGN.md). No Cancel chip,
-        // alone among the mode bars, because it would be a lie here: a guide is
-        // shaped live (§20.5), so there is nothing uncommitted for a cancel to
-        // keep back — Esc and Done are one act, and the bar says so by offering
-        // it once.
-        div {
-            class: "guide-bar mode-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            // The Guides panel's own mark, on the bar its rows raise — and the reason
-            // the words here can be the guide's *name*: the glyph says what kind of
-            // thing is being shaped, so the text is free to say which one.
-            //
-            // Hideable, even though a named guide's name is the artist's own. The rule
-            // that protects names is about the places a name is *kept* — the roster in
-            // the panel, which is where a guide is found, chosen and renamed, and which
-            // keeps its text. This bar is not that; it is the mode indicator for the one
-            // guide already in hand, and every other bottom bar's label goes. Leaving
-            // this one standing would make the guide bar the odd bar out for a word that
-            // is legible one panel away.
-            span { class: "bar-label",
-                {icon(stark_ui::icons::PERSPECTIVE_GRID)}
-                {name}
-            }
+        // No Cancel chip, alone among the mode bars, because it would be a lie here: a
+        // guide is shaped live (§20.5), so there is nothing uncommitted for a cancel to
+        // keep back — Esc and Done are one act, and the bar says so by offering it once.
+        //
+        // The words beside the Guides panel's mark are the guide's *name*: the glyph says
+        // what kind of thing is being shaped, so the text is free to say which one. It
+        // goes in minimal mode like every bar's, though a name is the artist's own — the
+        // roster in the panel is where a name is kept, and this is only the indicator for
+        // the guide already in hand.
+        Bar {
+            class: "guide-bar",
+            glyph: stark_ui::icons::PERSPECTIVE_GRID,
+            word: name,
+            mode: true,
 
             span { class: "bar-sep" }
 
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
-            // verticals parallel. Colored as the axis's own lines are.
-            //
-            // All four of the bar's group labels wear a mark, and it is the *label*
-            // that is the optional half rather than the glyph. That is not a rule
-            // about this bar: a mark is what a control still has when its word is
-            // taken away, so anything that can be reached for has to carry one, and a
-            // label with nothing but a word is a control that would vanish.
+            // verticals parallel.
             span { class: "bar-sub",
                 {icon(stark_ui::icons::LOCK)}
                 {label("Lock")}
             }
-            div {
-                class: "segmented",
-                for i in 0..3 {
-                    button {
-                        class: if edit.locked[i] { "chip axis-chip active" } else { "chip axis-chip" },
-                        style: "--axis: {AXIS_CSS[i]}",
-                        title: "Hold the {AXIS_NAMES[i]} axis fixed under the drag",
-                        onclick: move |_| {
-                            // Read live rather than from the render's `edit`, so
-                            // this is the read-modify-write it was; and written
-                            // through `advance`, the one writer that may not
-                            // change *which* mode is live — a lock is a change to
-                            // what this one is composing, nothing more
-                            // (`crate::modes`).
-                            let live = crate::modes::composing_now(state);
-                            let Some(mut edit) = live.and_then(Composing::guide_edit) else {
-                                return;
-                            };
-                            edit.locked[i] = !edit.locked[i];
-                            crate::modes::advance(state, Composing::GuideEdit(edit));
-                        },
-                        "{AXIS_NAMES[i]}"
-                    }
-                }
+            Segmented {
+                choices: locks,
+                onpick: move |i: usize| {
+                    // Read live rather than from the render's `edit`, so this is the
+                    // read-modify-write it was; and written through `advance`, the one
+                    // writer that may not change *which* mode is live — a lock is a
+                    // change to what this one is composing, nothing more
+                    // (`crate::modes`).
+                    let live = crate::modes::composing_now(state);
+                    let Some(mut edit) = live.and_then(Composing::guide_edit) else {
+                        return;
+                    };
+                    edit.locked[i] = !edit.locked[i];
+                    crate::modes::advance(state, Composing::GuideEdit(edit));
+                },
             }
             span { class: "bar-sep" }
             // The same eye the guide's own row wears, asked of one plane of the
@@ -706,29 +626,9 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(stark_ui::icons::VISIBLE)}
                 {label("Show")}
             }
-            div {
-                class: "segmented",
-                for k in 0..3 {
-                    {
-                        let [a, b] = PAIR_AXES[k];
-                        rsx! {
-                            button {
-                                class: if pairs[k] { "chip plane-chip active" } else { "chip plane-chip" },
-                                style: "--axis-a: {AXIS_CSS[a]}; --axis-b: {AXIS_CSS[b]}",
-                                title: "Show the {AXIS_NAMES[a]}{AXIS_NAMES[b]} plane \u{2014} \
-                                        its two fans of guide lines, its horizon and its \
-                                        station point",
-                                onclick: move |_| edit_guide(state, id, move |g| {
-                                    g.pairs[k] = !g.pairs[k];
-                                }),
-                                // Each letter in its own axis's hue, so the chip
-                                // names the plane by the two colors ruling it.
-                                span { class: "ax-a", "{AXIS_NAMES[a]}" }
-                                span { class: "ax-b", "{AXIS_NAMES[b]}" }
-                            }
-                        }
-                    }
-                }
+            Segmented {
+                choices: planes,
+                onpick: move |k: usize| edit_guide(state, id, move |g| g.pairs[k] = !g.pairs[k]),
             }
             span { class: "bar-sep" }
             // The lens (§20.8): one toggle, because everything else about the
@@ -737,8 +637,8 @@ pub fn PerspectiveGuideBar() -> Element {
             // fisheye truly images them to, the second pole of every axis comes
             // into view, and the 90° ring — the classical 5-point grid's
             // boundary — appears around the center.
-            button {
-                class: if lens == Lens::Fisheye { "chip active" } else { "chip" },
+            Chip {
+                active: lens == Lens::Fisheye,
                 title: "Curvilinear (fisheye): a stereographic lens \u{2014} straight \
                         world lines bow into circles, and both poles of every axis \
                         come into view",
@@ -752,71 +652,49 @@ pub fn PerspectiveGuideBar() -> Element {
                 {label("Fisheye")}
             }
             span { class: "bar-sep" }
-            // A fan of lines from a point, which is what this number counts: the
-            // guide's fans are its parametrization (§20.5), so the mark is a picture
-            // of the thing the slider makes more or fewer of.
-            span { class: "bar-sub",
-                {icon(stark_ui::icons::DENSITY)}
-                {label("Cells")}
-            }
-            input {
-                class: "slider",
-                style: slider_fill(CELL_OCTAVES.0 as f32, CELL_OCTAVES.1 as f32, octave),
-                r#type: "range",
-                min: "{CELL_OCTAVES.0}", max: "{CELL_OCTAVES.1}", step: "1",
-                value: "{octave}",
+            // A fan of lines from a point, which is what this number counts: the guide's
+            // fans are its parametrization (§20.5), so the mark is a picture of the thing
+            // the slider makes more or fewer of. Stepped off the *default* rather than off
+            // the guide's current lattice, so a rung is the same grid however it was
+            // reached; where the corner sits is the drag's business, and there is no drag
+            // for it yet (§20.5) — the grid stays hung on the viewer either way (§20.3).
+            PreviewSlider {
+                shape: SliderShape::Bar,
+                label: "Cells",
+                glyph: stark_ui::icons::DENSITY,
+                min: CELL_OCTAVES.0 as f32,
+                max: CELL_OCTAVES.1 as f32,
+                step: 1.0,
+                value: octave,
                 title: "How fine the grid is \u{2014} each step halves the cell, so \
                         every line of the coarser grid is still a line of this one",
-                // Stepped off the *default* rather than off the guide's current
-                // lattice, so a rung is the same grid however it was reached.
-                // Where the corner sits is the drag's business, and there is no
-                // drag for it yet (§20.5) — when there is, this scales about it,
-                // and the grid stays hung on the viewer either way (§20.3).
-                oninput: move |e| {
-                    if let Ok(k) = e.value().parse::<f32>() {
-                        drag_guide(state, pending, id, move |g| {
-                            *g = stark_ui::guides::with_octave(*g, k);
-                        });
-                    }
+                preview: preview::GUIDE,
+                pending,
+                map: move |k: f32| {
+                    camera_of(state, id).map(|g| (id, stark_ui::guides::with_octave(g, k)))
                 },
-                // All three, because none of them alone ends every drag
-                // ([`Preview::settle`], which is idempotent for this reason).
-                onchange: move |_| settle_guide(state, pending),
-                onpointerup: move |_| settle_guide(state, pending),
-                onpointercancel: move |_| settle_guide(state, pending),
             }
             // The ghost the Layers panel and the brush editor wear: how much of what
             // is under this shows through, asked of a guide over the paint.
-            span { class: "bar-sub",
-                {icon(stark_ui::icons::OPACITY)}
-                {label("Opacity")}
-            }
-            input {
-                class: "slider",
-                style: slider_fill(OPACITY_RANGE.0, OPACITY_RANGE.1, opacity),
-                r#type: "range", min: "{OPACITY_RANGE.0}", max: "{OPACITY_RANGE.1}", step: "any",
-                value: "{opacity}",
+            PreviewSlider {
+                shape: SliderShape::Bar,
+                label: "Opacity",
+                glyph: stark_ui::icons::OPACITY,
+                min: OPACITY_RANGE.0,
+                max: OPACITY_RANGE.1,
+                value: opacity,
                 title: "How strongly the guide reads over the paint",
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f32>() {
-                        drag_guide(state, pending, id, move |g| g.opacity = v);
-                    }
+                preview: preview::GUIDE,
+                pending,
+                map: move |v: f32| {
+                    camera_of(state, id).map(|g| (id, PerspectiveGuide { opacity: v, ..g }))
                 },
-                onchange: move |_| settle_guide(state, pending),
-                onpointerup: move |_| settle_guide(state, pending),
-                onpointercancel: move |_| settle_guide(state, pending),
             }
             span { class: "bar-sep" }
-            button {
-                class: "chip",
-                title: stark_ui::commands::advertised(
-                    "Leave the guide as it stands",
-                    Command::FinishMode,
-                    &state.bindings.read(),
-                ),
+            ActChip {
+                command: Command::FinishMode,
+                title: "Leave the guide as it stands",
                 onclick: move |_| end_guide_edit(state),
-                {icon(stark_ui::icons::DONE)}
-                {label("Done")}
             }
         }
     }

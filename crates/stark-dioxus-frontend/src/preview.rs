@@ -32,9 +32,10 @@
 //! something else, or nothing at all. Holding the two in one value means a caller
 //! can only name the pair.
 //!
-//! It does not rule out *forgetting to settle*. What the caller still has to do is
-//! wire [`Preview::settle`] to all three of the events that can end a drag, and
-//! that is why the method is idempotent — see its own note.
+//! It does not rule out *forgetting to settle* a canvas drag, which has to wire
+//! [`Preview::settle`] to every event that can end it — hence the method is
+//! idempotent. A slider cannot forget: [`PreviewSlider`](crate::widgets::PreviewSlider)
+//! owns its three.
 
 use dioxus::prelude::*;
 use stark_model::{Srgb, SubstrateScale};
@@ -51,12 +52,28 @@ use stark_model::geom::Vec2;
 /// it, and the command that lays it down.
 ///
 /// `Copy`, and a pair of function pointers wide, so the constants below are
-/// `const` and handing one to an event closure costs nothing.
-#[derive(Copy, Clone)]
+/// `const` and handing one to an event closure costs nothing — for every `T`, which
+/// is why the impls are written out: a derive would ask `T` to be `Copy` too.
 pub struct Preview<T: 'static> {
     /// `Some(value)` shows it; `None` drops whatever is shown.
     show: fn(Option<T>) -> ViewCommand,
     lay: fn(T) -> DocCommand,
+}
+
+impl<T: 'static> Clone for Preview<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> Copy for Preview<T> {}
+
+/// The same pair, by the addresses of its two commands — what a
+/// [`PreviewSlider`](crate::widgets::PreviewSlider) compares its props by.
+impl<T: 'static> PartialEq for Preview<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::fn_addr_eq(self.show, other.show) && std::ptr::fn_addr_eq(self.lay, other.lay)
+    }
 }
 
 impl<T: 'static> Preview<T> {

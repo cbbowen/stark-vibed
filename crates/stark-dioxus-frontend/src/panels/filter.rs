@@ -36,7 +36,7 @@
 //! `hue`, `saturation` and `tint` are a rotation, a scale and a translation of one
 //! Oklab `(a, b)` plane, so what they are between them is a single affine map — and
 //! the honest picture of an affine map of a plane is the image of a circle.
-//! [`chroma_dial`] draws exactly that, over the same Oklab slice the color picker
+//! [`ChromaDial`] draws exactly that, over the same Oklab slice the color picker
 //! shows, and every part of it is a fact rather than a metaphor: the rim is where a
 //! color of chroma [`DIAL_CHROMA`] ends up, the centre is where a grey ends up, and
 //! the arm is where red ends up. Three tracks could say the same thing, but only one
@@ -45,7 +45,7 @@
 //!
 //! The chromatic filter's `spread` and `angle` are a length and a direction, which is
 //! to say they are **one vector** — the displacement from where the red end of the
-//! spectrum lands to where the blue end does (§21.10). [`fringe_pad`] draws that
+//! spectrum lands to where the blue end does (§21.10). [`FringePad`] draws that
 //! vector, and draws it as the thing it describes: a bar of the real dispersion
 //! spectrum, painted with the pass's own
 //! [`dispersion_weight`](stark_engine::filters::dispersion_weight) at the pass's own
@@ -58,12 +58,12 @@ use std::sync::LazyLock;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::layout::chrome_dimmed;
 use crate::panels::color::ab_field_data_url;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
+use crate::widgets::{ActChip, Bar, Chip, Choice, Face, PreviewSlider, Segmented, SliderShape};
 use stark_engine::LayerInfo;
 use stark_engine::command::DocCommand;
 use stark_model::document::LayerId;
@@ -78,11 +78,8 @@ use stark_ui::filter::{
 };
 
 /// The run of shape buttons: which aperture the light is spread through (§21.12).
-///
-/// One control rather than three chips standing apart, on §25.9's rule — they are
-/// alternative answers to one question and exactly one is lit. Three short words fit
-/// a line with room to spare, so this is the segmented ladder's first rung and not
-/// the `.select` its second.
+/// Three short words fit a line with room to spare, so this is the segmented ladder's
+/// first rung and not the `.select` its second (§25.9).
 ///
 /// A discrete choice, so it commits directly rather than through the
 /// preview-then-settle funnel a track needs: there is nothing continuous to watch
@@ -96,30 +93,28 @@ use stark_ui::filter::{
 /// clicking the chip you are already on must not throw that shape's knobs away, and
 /// dispatching `ALL`'s default for it would do exactly that.
 fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
+    // The word may go in minimal mode precisely because the mark is a picture of the
+    // shape and not a symbol for it.
+    let choices = Aperture::ALL.map(|want| Choice {
+        lit: blur.aperture.same_shape(&want),
+        ..Choice::new(
+            want,
+            Face::Marked(aperture_glyph(&want), want.label()),
+            aperture_hint(&want),
+        )
+    });
     rsx! {
-        div { class: "segmented",
-            for want in Aperture::ALL {
-                button {
-                    key: "{want.label()}",
-                    class: if blur.aperture.same_shape(&want) { "chip active" } else { "chip" },
-                    title: aperture_hint(&want),
-                    onclick: move |_| {
-                        let aperture = if blur.aperture.same_shape(&want) {
-                            blur.aperture
-                        } else {
-                            want
-                        };
-                        let next = FocalBlur { aperture, ..blur };
-                        dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
-                    },
-                    // Mark then word, the pairing [`FilterKnob::glyph`] enforces for a
-                    // track — kept by hand here because a button has no one field to
-                    // read it off. The word may go in minimal mode precisely because
-                    // the mark is a picture of the shape and not a symbol for it.
-                    {icon(aperture_glyph(&want))}
-                    {label(want.label())}
-                }
-            }
+        Segmented {
+            choices: Vec::from(choices),
+            onpick: move |want: Aperture| {
+                let aperture = if blur.aperture.same_shape(&want) {
+                    blur.aperture
+                } else {
+                    want
+                };
+                let next = FocalBlur { aperture, ..blur };
+                dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
+            },
         }
     }
 }
@@ -253,20 +248,18 @@ pub fn AddFilterButton() -> Element {
             }
             if open() {
                 div { class: "filter-add-menu",
-                    for f in Filter::ALL {
-                        {
-                            let name = f.label();
-                            rsx! {
-                                button {
-                                    key: "{name}",
-                                    class: "filter-add-item",
-                                    onpointerdown: move |_| {
-                                        open.set(false);
-                                        add_filter(state, at, f.clone());
-                                    },
-                                    "{name}"
-                                }
-                            }
+                    // The name comes in with the kind, so the body is a plain element: a
+                    // `for` whose body is anything else loses its `key` to positional
+                    // diffing.
+                    for (name, f) in Filter::ALL.into_iter().map(|f| (f.label(), f)) {
+                        button {
+                            key: "{name}",
+                            class: "filter-add-item",
+                            onpointerdown: move |_| {
+                                open.set(false);
+                                add_filter(state, at, f.clone());
+                            },
+                            "{name}"
                         }
                     }
                 }
@@ -277,12 +270,10 @@ pub fn AddFilterButton() -> Element {
 
 /// The rows of sliders for one filter kind — the generic half of the bar, so a kind
 /// whose numbers really are separate is a knob table and nothing else. `current` is
-/// the whole filter's
-/// settings off the projection; each edit replaces one number and sends the whole
-/// thing back through `wrap`, which is what keeps "the filter travels entire" true
-/// per kind without the bar knowing any kind's shape (§21.6).
+/// the whole filter's settings off the projection; each edit replaces one number and
+/// sends the whole thing back through `wrap`, which is what keeps "the filter travels
+/// entire" true per kind without the bar knowing any kind's shape (§21.6).
 fn knob_rows<F: Copy + 'static>(
-    state: AppState,
     id: LayerId,
     current: F,
     knobs: &'static [FilterKnob<F>],
@@ -291,51 +282,20 @@ fn knob_rows<F: Copy + 'static>(
 ) -> Element {
     rsx! {
         for knob in knobs {
-            div {
+            PreviewSlider {
                 key: "{knob.name}",
-                class: "filter-knob",
-                title: "{knob.hint}",
-                span { class: "filter-knob-label",
-                    // Mark then word, and the word hideable only because the mark is
-                    // there to survive it — the pair `widgets::Slider` reads off one
-                    // `Option`, for the reason on [`FilterKnob::glyph`].
-                    match knob.glyph {
-                        Some(glyph) => rsx! { {icon(glyph)} {label(knob.name)} },
-                        None => rsx! { "{knob.name}" },
-                    }
-                }
-                span { class: "filter-knob-value", "{knob.readout(&current)}" }
-                input {
-                    class: "slider",
-                    style: crate::widgets::slider_fill(
-                        knob.range.0,
-                        knob.range.1,
-                        (knob.get)(&current) / knob.scale,
-                    ),
-                    r#type: "range",
-                    min: "{knob.range.0}", max: "{knob.range.1}",
-                    step: match knob.step {
-                        Some(s) => s.to_string(),
-                        None => "any".to_string(),
-                    },
-                    value: "{(knob.get)(&current) / knob.scale}",
-                    // Previewed per sample, committed once when the drag settles.
-                    // A filter is judged *by looking*, so every value the pointer
-                    // crosses has to reach the canvas — and only the answer belongs
-                    // in the log (§21.6).
-                    oninput: move |e| {
-                        if let Ok(v) = e.value().parse::<f32>() {
-                            let next = wrap((knob.set)(current, v * knob.scale));
-                            preview::FILTER.during(state, tuning, (id, next));
-                        }
-                    },
-                    // Three ways to end, because a range control has three — see
-                    // `Preview::settle`, which holds the why (and is idempotent,
-                    // so arriving twice is free).
-                    onchange: move |_| preview::FILTER.settle(state, tuning),
-                    onpointerup: move |_| preview::FILTER.settle(state, tuning),
-                    onpointercancel: move |_| preview::FILTER.settle(state, tuning),
-                }
+                shape: SliderShape::Knob,
+                label: knob.name,
+                glyph: knob.glyph,
+                title: knob.hint,
+                readout: knob.readout(&current),
+                min: knob.range.0,
+                max: knob.range.1,
+                step: knob.step,
+                value: (knob.get)(&current) / knob.scale,
+                preview: preview::FILTER,
+                pending: tuning,
+                map: move |v: f32| Some((id, wrap((knob.set)(current, v * knob.scale)))),
             }
         }
     }
@@ -442,13 +402,12 @@ fn drag_dial(
 ///
 /// So the picture at rest already answers "what will this do to a color", which is
 /// the question three tracks can only answer one number at a time.
-fn chroma_dial(
-    state: AppState,
-    id: LayerId,
-    c: ColorAdjust,
-    tuning: Signal<Option<(LayerId, Filter)>>,
-    mut grabbed: Signal<Option<Grab>>,
-) -> Element {
+#[component]
+fn ChromaDial(id: LayerId, c: ColorAdjust, tuning: Signal<Option<(LayerId, Filter)>>) -> Element {
+    let state = use_context::<AppState>();
+    // Which handle a drag has hold of, `None` between drags — the dial's own, so the
+    // picture another kind of filter mounts in its place starts with nothing in hand.
+    let mut grabbed = use_signal(|| None::<Grab>);
     let (ox, oy) = dial_xy([0.0, 0.0]);
     let (cx, cy) = dial_xy(c.tint);
     let ring = c.saturation * DIAL_CHROMA * DIAL_SCALE;
@@ -642,13 +601,16 @@ fn drag_fringe(
 ///
 /// So the drag is the effect: pull the rainbow out of the middle and turn it, and the
 /// painting does what the pad just did.
-fn fringe_pad(
-    state: AppState,
+#[component]
+fn FringePad(
     id: LayerId,
     c: ChromaticAberration,
     tuning: Signal<Option<(LayerId, Filter)>>,
-    mut pulling: Signal<bool>,
 ) -> Element {
+    let state = use_context::<AppState>();
+    // Whether the pad's one handle is in hand: a `bool` rather than a second [`Grab`],
+    // because the pad has one thing to grab.
+    let mut pulling = use_signal(|| false);
     let (bx, by) = pad_xy(c);
     // The red end: the blue end reflected in the centre, because the spread is
     // symmetric — the fringe parts around the picture rather than dragging it.
@@ -818,8 +780,7 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
                             to pick another or trace a new one",
                 }
                 span { class: "bar-sep" }
-                button {
-                    class: "chip",
+                Chip {
                     title: "Run the ramp the other way \u{2014} what dark paint \
                             takes trades places with what light paint takes",
                     onclick: move |_| {
@@ -842,25 +803,15 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
 #[component]
 pub fn FilterBar() -> Element {
     let state = use_context::<AppState>();
-    // The value a drag is showing, or `None` between drags — the drag's own "there is
-    // something to commit", panel-local and delimited by the browser's own gesture, so
-    // it cannot be left armed. It is the *filter*, not a flag, so the commit says what
-    // the last preview showed rather than reading it back off a projection the preview
-    // is itself feeding (§21.6, and §14.6 for the opacity slider that does the same).
+    // The value a drag is showing, or `None` between drags — shared by every knob and
+    // picture on the bar, and delimited by the browser's own gesture, so it cannot be
+    // left armed. It is the *filter*, not a flag, so the commit says what the last
+    // preview showed rather than reading it back off a projection the preview is itself
+    // feeding (§21.6, and §14.6 for the opacity slider that does the same).
     //
     // **Before** the early return, because a hook that runs only when a filter is
     // selected is a hook that runs sometimes.
     let tuning = use_signal(|| None::<(LayerId, Filter)>);
-    // The dial's half of the same story: which handle a drag has hold of, `None`
-    // between drags. Here rather than inside [`chroma_dial`] for the reason above —
-    // the dial is mounted for one kind of filter, and a hook that runs for one kind
-    // of filter is a hook that runs sometimes.
-    let grabbed = use_signal(|| None::<Grab>);
-    // And the dispersion pad's: whether its one handle is in hand. A `bool` rather
-    // than a second [`Grab`], because the pad has one thing to grab and an enum of one
-    // variant would be a bool that took longer to read. Declared here for the reason
-    // above.
-    let pulling = use_signal(|| false);
     let Some((info, filter)) = use_selected_filter(state)() else {
         return rsx! {};
     };
@@ -869,11 +820,6 @@ pub fn FilterBar() -> Element {
     // hidden or empty. Said once, in the bar, rather than greying out the sliders,
     // which would each have to explain the same thing.
     let inert = !info.has_underlay;
-    // While a mode is composing, this bar recedes with the other standing bars
-    // (MODAL_DESIGN.md) — a trace armed from this bar's own gradient well is the
-    // live case: the bar is the place the capture returns to, and its sliders
-    // must not be pressable under a catcher that owns the pointer.
-    let composing = crate::modes::composing(state).is_some();
 
     // The whole-filter facts the chrome needs, read before the match consumes the
     // filter — its `Clone` is spent on the arms, not on the label.
@@ -887,7 +833,7 @@ pub fn FilterBar() -> Element {
     // is the whole of it, and the gradient map's ramp, likewise.
     let rows = match filter {
         Filter::Color(c) => rsx! {
-            {chroma_dial(state, info.id, c, tuning, grabbed)}
+            ChromaDial { id: info.id, c, tuning }
             span { class: "bar-sep" }
             // Stacked rather than side by side, which is the dial's doing: beside a
             // 116px square, two tracks in a row make a bar half again as wide as it
@@ -895,10 +841,12 @@ pub fn FilterBar() -> Element {
             // bought. They are also a pair — the two ways to move Oklab `L` — so a
             // column reads as one group where a row read as the tail of the dial's.
             div { class: "filter-knob-stack",
-                {knob_rows(state, info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
+                {knob_rows(info.id, c, COLOR_KNOBS, Filter::Color, tuning)}
             }
         },
-        Filter::Chromatic(c) => fringe_pad(state, info.id, c, tuning, pulling),
+        Filter::Chromatic(c) => rsx! {
+            FringePad { id: info.id, c, tuning }
+        },
         Filter::GradientMap(g) => map_rows(state, info.id, g),
         // The shape first and the numbers after it, because the run of buttons is
         // what the knobs under it are *about*: which two tracks are there at all is
@@ -908,24 +856,20 @@ pub fn FilterBar() -> Element {
             {aperture_run(state, info.id, b)}
             span { class: "bar-sep" }
             div { class: "filter-knob-stack",
-                {knob_rows(state, info.id, b, BLUR_KNOBS, Filter::FocalBlur, tuning)}
-                {knob_rows(state, info.id, b, aperture_knobs(&b.aperture), Filter::FocalBlur, tuning)}
+                {knob_rows(info.id, b, BLUR_KNOBS, Filter::FocalBlur, tuning)}
+                {knob_rows(info.id, b, aperture_knobs(&b.aperture), Filter::FocalBlur, tuning)}
             }
         },
     };
 
     rsx! {
-        div {
-            class: "filter-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            class: if composing { "recessed" },
-            // The glyph rides the bar's *label*, as the frame bar's crop marks do:
-            // no single slider here is "the filter", so what the mark identifies is
-            // the bar, and through it the layer you are tuning.
-            span { class: "bar-label",
-                {icon(stark_ui::icons::FILTER)}
-                {label(bar_label)}
-            }
+        // The glyph rides the bar's *label*, as the frame bar's crop marks do: no single
+        // slider here is "the filter", so what the mark identifies is the bar, and through
+        // it the layer you are tuning.
+        Bar {
+            class: "filter-bar",
+            glyph: stark_ui::icons::FILTER,
+            word: bar_label,
 
             span { class: "bar-sep" }
 
@@ -945,8 +889,7 @@ pub fn FilterBar() -> Element {
 
             span { class: "bar-sep" }
 
-            button {
-                class: "chip",
+            Chip {
                 title: "Put every slider back to neutral \u{2014} the filter stays, \
                         doing nothing, until it is dialled again",
                 disabled: at_neutral,
@@ -956,18 +899,11 @@ pub fn FilterBar() -> Element {
                 {icon(stark_ui::icons::RESET)}
                 {label("Neutral")}
             }
-            button {
-                class: "chip",
-                // Esc performs this same act (`commands`' ladder) — advertised
-                // through the registry, the frame bar's reason.
-                title: stark_ui::commands::advertised(
-                    "Stop tuning and go back to painting \u{2014} the filter stays",
-                    Command::CancelMode,
-                    &state.bindings.read(),
-                ),
+            // Esc performs this same act (`commands`' ladder).
+            ActChip {
+                command: Command::CancelMode,
+                title: "Stop tuning and go back to painting \u{2014} the filter stays",
                 onclick: move |_| done_grading(state),
-                {icon(stark_ui::icons::DONE)}
-                {label("Done")}
             }
         }
     }

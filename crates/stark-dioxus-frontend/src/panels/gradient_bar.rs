@@ -26,17 +26,14 @@
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use stark_ui::icons::Icon;
 
 use crate::gradients;
-use crate::icons::{icon, label};
 use crate::input::{Nav, page_xy};
-use crate::layout::chrome_dimmed;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, use_obs};
-use crate::widgets::CommandButton;
+use crate::widgets::{ActChip, Bar, Choice, CommandButton, Face, Segmented};
 use stark_model::Gradient;
 use stark_model::document::{FillOp, GradientAxis, GradientParcel, Parcel};
 use stark_model::geom::Vec2;
@@ -333,26 +330,27 @@ pub fn GradientBar() -> Element {
         };
     // Read reactively so a pick in the library pop-out repaints the strip.
     let strip = ramp_in_hand(state, &ui).map(|g| gradients::css_strip(&g));
-    let kind_chip = |kind: GradientAxisKind, glyph: Icon, name: &'static str| {
-        let active = ui.kind == kind;
-        let chip_ui = ui.clone();
-        rsx! {
-            button {
-                class: if active { "chip active" } else { "chip" },
-                title: match kind {
-                    GradientAxisKind::Linear => "The drag is the ramp: press at its start, release at its end",
-                    GradientAxisKind::Radial => "The drag is the reach: press at the centre, release at the rim",
-                },
-                onclick: move |_| {
-                    // Reinterpret the drag already made rather than losing it —
-                    // `GradientUi::axis` reads the same two points either way.
-                    update(state, GradientUi { kind, ..chip_ui.clone() });
-                },
-                {icon(glyph)}
-                {label(name)}
-            }
-        }
-    };
+    let kinds = Vec::from(
+        [
+            (
+                GradientAxisKind::Linear,
+                stark_ui::icons::GRADIENT_LINEAR,
+                "Linear",
+                "The drag is the ramp: press at its start, release at its end",
+            ),
+            (
+                GradientAxisKind::Radial,
+                stark_ui::icons::GRADIENT_RADIAL,
+                "Radial",
+                "The drag is the reach: press at the centre, release at the rim",
+            ),
+        ]
+        .map(|(kind, glyph, word, tip)| Choice {
+            lit: ui.kind == kind,
+            ..Choice::new(kind, Face::Marked(glyph, word), tip)
+        }),
+    );
+    let pick_ui = ui.clone();
 
     // A drag alone is not enough to have something to lay: entered with an
     // empty library, the axis can be composed before any ramp exists to run
@@ -374,35 +372,34 @@ pub fn GradientBar() -> Element {
     };
 
     rsx! {
-        div {
-            class: "selection-bar gradient-fill-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            // The composing register (`mode-bar`) comes off with the mode:
-            // parked, this is a shelved gesture behind the trace's bar, not
-            // the thing the canvas answers to.
-            class: if parked { "recessed" } else { "mode-bar" },
-            // The library's mark: the bar is that library's ramp being
-            // put to work, so it wears the library's glyph.
-            span { class: "bar-label",
-                {icon(stark_ui::icons::GRADIENT)}
-                {label("Gradient")}
-            }
+        // The library's mark: the bar is that library's ramp being put to work. The
+        // composing register comes off with the mode: parked, this is a shelved gesture
+        // behind the trace's bar, not the thing the canvas answers to.
+        Bar {
+            class: "selection-bar gradient-fill-bar",
+            glyph: stark_ui::icons::GRADIENT,
+            word: "Gradient",
+            mode: !parked,
             // The ramp in hand, and the library behind it: clicking the strip
             // flies the pop-out up (§22.3).
             GradientWell { strip, title: well_title }
             span { class: "bar-sep" }
-            {kind_chip(GradientAxisKind::Linear, stark_ui::icons::GRADIENT_LINEAR, "Linear")}
-            {kind_chip(GradientAxisKind::Radial, stark_ui::icons::GRADIENT_RADIAL, "Radial")}
+            // Reinterpret the drag already made rather than losing it —
+            // `GradientUi::axis` reads the same two points either way.
+            Segmented {
+                choices: kinds,
+                onpick: move |kind: GradientAxisKind| {
+                    update(state, GradientUi { kind, ..pick_ui.clone() });
+                },
+            }
             span { class: "bar-sep" }
             // The way out that keeps nothing, worn whole off the registry with
             // its Esc advertisement (MODAL_DESIGN.md).
             CommandButton { command: Command::CancelMode }
-            button {
-                class: "chip",
-                title: stark_ui::commands::advertised(done_title, Command::FinishMode, &state.bindings.read()),
+            ActChip {
+                command: Command::FinishMode,
+                title: done_title,
                 onclick: move |_| finish(state),
-                {icon(stark_ui::icons::DONE)}
-                {label("Done")}
             }
         }
     }

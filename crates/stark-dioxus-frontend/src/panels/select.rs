@@ -8,11 +8,12 @@ use stark_engine::command::Tool;
 use stark_model::Srgb;
 use stark_ui::icons::Icon;
 
-use crate::icons::{icon, icon_tinted, label};
-use crate::layout::chrome_dimmed;
+use crate::icons::{icon_tinted, label};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
-use crate::widgets::{CommandButton, Slider, slider_fill};
+use crate::widgets::{
+    Bar, Chip, Choice, CommandButton, Face, PreviewSlider, Segmented, Slider, SliderShape,
+};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
 use stark_ui::commands::Command;
@@ -86,7 +87,6 @@ pub fn SelectPanel() -> Element {
     // whatever effect the brush held has (`BrushConfig::color`).
     let brush_color = (state.transient)().color;
 
-    let chip = |on: bool| if on { "chip active" } else { "chip" };
     // *Which* tool is armed is deliberately not in the memo above: the three
     // chips are `CommandButton`s, and each carries its own answer
     // ([`commands::active`](crate::commands::active)) — so moving the light from rect to ellipse
@@ -133,6 +133,30 @@ pub fn SelectPanel() -> Element {
              Stays armed, so you can keep blocking in",
         ),
     ];
+    let actions: Vec<_> = stark_ui::selection::SHAPE_ACTIONS
+        .into_iter()
+        .zip(MARKS)
+        .map(|(a, (glyph, hint))| {
+            let word = stark_ui::selection::action_word(a);
+            // Fill's bucket is *full of* the color it would lay — the one thing that
+            // tells this action from its four neighbours, and one a word cannot carry.
+            // The wash's strength is the marquee fill's own opacity, the slider below,
+            // since the brush color is three channels of pigment and nothing about
+            // amount (§6.2).
+            let face = if a == ShapeAction::Fill {
+                Face::Drawn(rsx! {
+                    {icon_tinted(glyph, [brush_color[0], brush_color[1], brush_color[2], fill_opacity])}
+                    {label(word)}
+                })
+            } else {
+                Face::Marked(glyph, word)
+            };
+            Choice {
+                lit: action == a,
+                ..Choice::new(a, face, hint)
+            }
+        })
+        .collect();
 
     rsx! {
         // `stacked`: glyph over word, which is what buys the icons their room. Side by
@@ -170,30 +194,10 @@ pub fn SelectPanel() -> Element {
                 min: Dial::Feather.range().0, max: Dial::Feather.range().1, value: feather,
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
-        div { class: "tool-row stacked segmented",
-            for (a, (glyph, hint)) in stark_ui::selection::SHAPE_ACTIONS.into_iter().zip(MARKS) {
-                button {
-                    class: chip(action == a),
-                    title: "{hint}",
-                    onclick: move |_| pick_action(state, a),
-                    // Fill's bucket is *full of* the color it would lay, so the row
-                    // says what the gesture will deposit — the one thing that
-                    // distinguishes this action from its four neighbours, and the one
-                    // thing a word cannot carry. The bucket already draws a vessel with
-                    // paint in it, so coloring that is one mark doing both jobs rather
-                    // than a separate swatch beside the word splitting them — and the
-                    // row keeps five glyphs on one baseline.
-                    if a == ShapeAction::Fill {
-                        // The wash's strength is the marquee fill's own opacity —
-                        // the slider below — since the brush color is three channels
-                        // of pigment and nothing about amount (§6.2).
-                        {icon_tinted(glyph, [brush_color[0], brush_color[1], brush_color[2], fill_opacity])}
-                    } else {
-                        {icon(glyph)}
-                    }
-                    {label(stark_ui::selection::action_word(a))}
-                }
-            }
+        Segmented {
+            class: "tool-row stacked",
+            choices: actions,
+            onpick: move |a: ShapeAction| pick_action(state, a),
         }
         // The fill's own opacity (§18.0.4), and Feather's counterpart for that
         // one action: *how soft at the edge*, then *how strong* — both chosen up
@@ -253,33 +257,16 @@ pub fn SelectionBar() -> Element {
     // What a settled drag of the mask's opacity would lay (`preview::settle`).
     let dimming = use_signal(|| None::<f32>);
     let brush_color = (state.transient)().color;
-    // While any mode is composing, its own bar stands in for this one: the
-    // whole-selection commands would fight the gesture (deselecting mid-transform
-    // would move the wrong region on "Done"). Every mode, not the two that hold a
-    // selection preview — a trace or a guide edit owns the canvas just as
-    // completely, and a bar offering to fill through a catcher promises something
-    // the pointer cannot reach (`crate::modes`).
-    //
-    // Stood down by **receding**, not unmounting (MODAL_DESIGN.md): the bar
-    // stays on screen dimmed and inert behind the mode's own, so the place its
-    // Done and Esc return to is visible the whole time. Inert twice over —
-    // `.recessed` takes the pointer events, and every chip here runs an act
-    // that asks `stark_ui::commands::may_edit`, which refuses while a mode is composing.
-    let composing = crate::modes::composing(state).is_some();
 
     rsx! {
         if active {
-            div {
-                class: "selection-bar chrome",
-                class: if chrome_dimmed(state) { "dimmed" },
-                class: if composing { "recessed" },
-                // The Select panel's own mark, on the bar the panel's gestures raise —
-                // the bar is *this panel's* state made visible, so it says so with the
-                // panel's glyph rather than a second picture of a marquee.
-                span { class: "bar-label",
-                    {icon(stark_ui::icons::SELECTION)}
-                    {label("Selection")}
-                }
+            // The Select panel's own mark, on the bar the panel's gestures raise — the
+            // bar is *this panel's* state made visible, so it says so with the panel's
+            // glyph rather than a second picture of a marquee.
+            Bar {
+                class: "selection-bar",
+                glyph: stark_ui::icons::SELECTION,
+                word: "Selection",
 
                 span { class: "bar-sep" }
 
@@ -305,33 +292,18 @@ pub fn SelectionBar() -> Element {
                 // it be set up front while the tool is armed. A deselect lands
                 // it back on 1 (`Selection::plan`), so a dimming never outlives
                 // its selection by accident.
-                //
-                // Previewed while dragging and committed once on release
-                // (`preview::SELECTION_OPACITY`): no pixel changes until
-                // something paints through the mask, but it is document state,
-                // so a drag that logged every value it crossed would spend an
-                // undo step per pointer move on an adjustment the hand made once.
-                span { class: "bar-sub",
-                    {icon(stark_ui::icons::OPACITY)}
-                    {label("Opacity")}
-                }
-                input {
-                    class: "slider",
-                    style: slider_fill(0.0, 1.0, opacity),
-                    r#type: "range", min: "0", max: "1", step: "any",
-                    value: "{opacity}",
+                PreviewSlider {
+                    shape: SliderShape::Bar,
+                    label: "Opacity",
+                    glyph: stark_ui::icons::OPACITY,
+                    min: 0.0,
+                    max: 1.0,
+                    value: opacity,
                     title: "How strongly the selection takes paint \u{2014} a half-dimmed \
                             selection is a half-opacity brush, fill and eraser inside it",
-                    oninput: move |e| {
-                        if let Ok(v) = e.value().parse::<f32>() {
-                            preview::SELECTION_OPACITY.during(state, dimming, v);
-                        }
-                    },
-                    // All three, because none of them alone ends every drag
-                    // (`Preview::settle`, which is idempotent for this reason).
-                    onchange: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
-                    onpointerup: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
-                    onpointercancel: move |_| preview::SELECTION_OPACITY.settle(state, dimming),
+                    preview: preview::SELECTION_OPACITY,
+                    pending: dimming,
+                    map: Some::<f32>,
                 }
 
                 span { class: "bar-sep" }
@@ -359,8 +331,7 @@ pub fn SelectionBar() -> Element {
                 // is `has_selection`, read here off the bar's own memo rather
                 // than the projection so this button, like its neighbours, does
                 // not re-render at pointer rate.
-                button {
-                    class: "chip",
+                Chip {
                     disabled: !has_selection,
                     title: Command::FillSelection.tooltip(&state.bindings.read()),
                     onclick: move |_| commands::run(Command::FillSelection, state),
