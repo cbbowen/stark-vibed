@@ -6,10 +6,11 @@
 //! without signals. `TutorState` keeps it off the reactive graph and publishes only its
 //! [`CardState`]; whatever else a step needs of the host comes back as [`Effects`].
 
+use stark_model::document::BrushParams;
 use stark_ui::prefs::ChromeHiding;
 use strum::EnumCount;
 
-use super::lessons::{Deed, LESSONS, Ledger, Lesson, due};
+use super::lessons::{Deed, LESSONS, Ledger, Lesson, brush_deed, due};
 
 /// How long a gap between two reports of one deed makes them two deeds, in seconds.
 ///
@@ -153,10 +154,19 @@ impl Tour {
         self.not_reaching = self.not_reaching.saturating_sub(1);
     }
 
-    /// Whether a brush write now would be the artist reaching for a control: outside every
-    /// bracket.
-    pub(super) fn is_reaching(&self) -> bool {
-        self.not_reaching == 0
+    /// What a brush write from `was` to `now` reads as ([`brush_deed`]) — nothing inside a
+    /// bracket, where it is not the artist reaching for a control.
+    pub(super) fn brush_write(
+        &self,
+        was: &BrushParams,
+        was_color: [f32; 3],
+        now: &BrushParams,
+        now_color: [f32; 3],
+    ) -> Option<Deed> {
+        if self.not_reaching > 0 {
+            return None;
+        }
+        brush_deed(was, was_color, now, now_color)
     }
 
     /// Feed `travel` page px into the run of panning in flight, answering
@@ -325,6 +335,7 @@ impl Tour {
 
 #[cfg(test)]
 mod tests {
+    use super::super::lessons::Row;
     use super::*;
 
     const CHROME: ChromeHiding = ChromeHiding::AfterPainting;
@@ -420,23 +431,65 @@ mod tests {
         assert_eq!(scored(&tour), 2, "a new run scores at its own crossing");
     }
 
-    /// The brackets nest (§24.2): a quick slot worn mid-tuning-drag opens a bracket inside
-    /// the drag's, and closing it must not count the drag's own writes.
+    /// A brush write inside a bracket reads as nothing, and the brackets nest (§24.2): a
+    /// quick slot worn mid-tuning-drag opens a bracket inside the drag's, and closing it
+    /// must not count the drag's own writes.
     #[test]
     fn a_nested_bracket_does_not_close_the_outer_one() {
+        let was = BrushParams::default();
+        let mut red = was;
+        red.paint_mut().expect("the default brush paints").color = [1.0, 0.0, 0.0];
+        let color = |b: &BrushParams| b.paint().expect("the default brush paints").color;
+        let recolor = |tour: &Tour| tour.brush_write(&was, color(&was), &red, color(&red));
+
         let mut tour = begun();
+        assert_eq!(
+            recolor(&tour),
+            Some(Deed::ChangedColor),
+            "outside every bracket, a reach"
+        );
         tour.open_bracket();
         tour.open_bracket();
         tour.close_bracket();
-        assert!(!tour.is_reaching(), "still inside the drag's bracket");
+        assert_eq!(recolor(&tour), None, "still inside the drag's bracket");
         tour.close_bracket();
-        assert!(tour.is_reaching(), "outside every bracket");
+        assert_eq!(
+            recolor(&tour),
+            Some(Deed::ChangedColor),
+            "outside every bracket again"
+        );
 
         tour.close_bracket();
         tour.open_bracket();
-        assert!(
-            !tour.is_reaching(),
+        assert_eq!(
+            recolor(&tour),
+            None,
             "a stray close leaves no debt for the next open to pay"
+        );
+    }
+
+    /// A deed that answers the waiting card leaves the card empty, even where the same deed
+    /// brings another lesson due — so one deed cannot swap one card for another (§24.3).
+    #[test]
+    fn an_answer_does_not_make_room_for_the_lesson_its_deed_owes() {
+        let mut tour = Tour::default();
+        tour.begin(Ledger::from_rows([Row::Deed {
+            deed: Deed::ChangedColor,
+            count: 9,
+        }]));
+        // By hand: a standing color change forecloses this lesson, so no deed brings it due.
+        tour.card = CardState::Due(lesson("color-panel"));
+
+        let _ = tally(&mut tour, 0.0, Deed::ChangedColor);
+        assert_eq!(
+            tour.card(),
+            CardState::Empty,
+            "answered, and nothing in its place"
+        );
+        assert_eq!(
+            due(tour.ledger(), Deed::ChangedColor, CHROME),
+            Some(lesson("eyedropper")),
+            "the tenth change still owes the eyedropper, not given"
         );
     }
 
@@ -568,7 +621,7 @@ mod tests {
         );
 
         tour.show();
-        let effects = tour.abandon(tip);
+        let _ = tour.abandon(tip);
         assert_eq!(
             tour.card(),
             CardState::Empty,
@@ -578,13 +631,10 @@ mod tests {
             tour.ledger().is_given("be-tip"),
             "the card on screen was answered"
         );
-        assert!(
-            !tour.ledger().is_given("be-paint"),
+        assert_eq!(
+            due(tour.ledger(), Deed::OpenedBrushEditor, CHROME),
+            Some(lesson("be-paint")),
             "the rest stay owed for next time"
-        );
-        assert!(
-            !effects.wake_panels,
-            "a card inside the dialog holds no panels"
         );
     }
 }

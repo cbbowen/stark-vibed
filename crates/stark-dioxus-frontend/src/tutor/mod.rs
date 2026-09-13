@@ -18,8 +18,8 @@
 //!
 //! This module is the hook between them and the app. The tour is written on every deed
 //! and every pan sample, so it sits in a `CopyValue` no render can subscribe to; what
-//! renders read of it — the lesson waiting and the lesson on screen — is copied to two
-//! signals, each written only when it changes ([`publish`]).
+//! renders read of it — the lesson waiting, the lesson on screen and whether dismissing it
+//! brings another — is copied to signals, each written only when it changes ([`publish`]).
 
 mod card;
 mod lessons;
@@ -34,15 +34,16 @@ use stark_engine::command::{DocCommand, GestureCommand, InputCommand, ViewComman
 
 use crate::platform;
 use crate::state::{AppState, root_signal};
-use lessons::{LESSONS, Ledger, brush_deed};
+use lessons::{LESSONS, Ledger};
 use reader::{Effects, Tour};
 
 /// Everything the tour holds, root-owned like the rest of [`AppState`].
 #[derive(Clone, Copy)]
 pub struct TutorState {
     /// The reader. A `CopyValue` rather than a signal, so no render can subscribe to what
-    /// every deed and pan sample writes; changed only through [`step`], except the bracket
-    /// depth and the pan run, which no render reads either.
+    /// every deed and pan sample writes; changed only through [`step`], except by
+    /// [`begin`], which runs before any card is up, and by the bracket depth and the pan
+    /// run, which no render reads.
     tour: CopyValue<Tour>,
     /// The lesson waiting for the screen to be free, copied from the tour by [`publish`].
     /// Read by the card's promotion effect.
@@ -50,6 +51,9 @@ pub struct TutorState {
     /// The lesson on screen, copied likewise. Read by the card and by
     /// `layout::standing_down` ([`holding_panels`]).
     showing: Signal<Option<usize>>,
+    /// Whether dismissing the lesson on screen brings another, copied likewise. Read by the
+    /// card's button.
+    brings_another: Signal<bool>,
     /// Whether tips are wanted (⚙ → Guidance). A preference rather than tour state
     /// (§24.4), so the tour is handed it rather than holding it; turned off through
     /// [`set_enabled`], which also takes down the card on screen.
@@ -67,6 +71,7 @@ impl TutorState {
             tour: use_hook(|| CopyValue::new_in_scope(Tour::default(), ScopeId::ROOT)),
             due: root_signal(|| None),
             showing: root_signal(|| None),
+            brings_another: root_signal(|| false),
             // `prefs::load` overwrites this at app start.
             enabled: root_signal(|| stark_ui::prefs::Prefs::default().tips),
             epoch: root_signal(|| 0),
@@ -168,17 +173,13 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
         // (`commands::edit_history`).
         InputCommand::Doc(DocCommand::Redo) => one(Deed::Redo, !playing(state)),
         InputCommand::Doc(DocCommand::Undo) => one(Deed::Undo, !playing(state)),
-        // Inside a bracket: not somebody reaching for a control ([`not_reaching`]).
-        InputCommand::View(ViewCommand::SetBrush { .. })
-            if !state.tutor.tour.read().is_reaching() =>
-        {
-            Vec::new()
-        }
+        // Nothing inside a bracket ([`not_reaching`]).
         InputCommand::View(ViewCommand::SetBrush { brush, color }) => {
             // The brush still held: `update_brush` dispatches before it moves the signal.
             let held = *state.brush.peek();
             let tune = *state.transient.peek();
-            brush_deed(&held.params(tune), tune.color, brush, *color)
+            let tour = state.tutor.tour.read();
+            tour.brush_write(&held.params(tune), tune.color, brush, *color)
                 .into_iter()
                 .collect()
         }
@@ -277,15 +278,24 @@ fn step(state: AppState, f: impl FnOnce(&mut Tour) -> Effects) {
 }
 
 /// Copy the tour's card into the signals renders read, writing each only if it changed: a
-/// `set` wakes every reader whatever it is handed, and most steps change neither.
+/// `set` wakes every reader whatever it is handed, and most steps change none of them.
 fn publish(state: AppState) {
-    let card = state.tutor.tour.read().card();
+    let chrome = *state.chrome_hiding.peek();
+    let (card, more) = {
+        let tour = state.tutor.tour.read();
+        let card = tour.card();
+        let more = card
+            .showing()
+            .is_some_and(|i| tour.brings_another(i, chrome));
+        (card, more)
+    };
     mirror(state.tutor.due, card.due());
     mirror(state.tutor.showing, card.showing());
+    mirror(state.tutor.brings_another, more);
 }
 
 /// Write `value` into `signal` only if it differs from what the signal holds.
-fn mirror(mut signal: Signal<Option<usize>>, value: Option<usize>) {
+fn mirror<T: Copy + PartialEq + 'static>(mut signal: Signal<T>, value: T) {
     let held = *signal.peek();
     if held != value {
         signal.set(value);

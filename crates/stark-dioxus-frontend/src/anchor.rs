@@ -113,7 +113,7 @@ pub const TRIES: u32 = 8;
 ///
 /// Setting `at` to `None` on the last try is not a failure path either. It is what
 /// takes a surface down that is pointing at something gone; the caller decides
-/// whether the thing itself survives that (`tutor::abandon`).
+/// whether the thing itself survives that (`Tour::abandon`).
 pub fn measure(
     selector: String,
     mut at: Signal<Option<ElementBox>>,

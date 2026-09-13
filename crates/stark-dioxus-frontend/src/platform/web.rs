@@ -148,15 +148,23 @@ pub async fn sleep_ms(ms: i32) {
 
 /// Await the browser calling the function `schedule` hands it.
 ///
-/// Resolved at once where there is no window or `schedule` fails: an await nothing
-/// will wake hangs its task, where waking early costs only a pause.
+/// Where there is no window or `schedule` fails, which a page's main thread never
+/// meets, the reason is logged and the await never finishes. The task waiting on it
+/// stops there; resolving at once instead would turn every `loop { sleep_ms(..) }` into
+/// a spin that never yields to the browser.
 async fn called_back(
     schedule: impl Fn(&web_sys::Window, &js_sys::Function) -> Result<i32, wasm_bindgen::JsValue>,
 ) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let scheduled = web_sys::window().is_some_and(|window| schedule(&window, &resolve).is_ok());
-        if !scheduled {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        let scheduled = match web_sys::window() {
+            Some(window) => schedule(&window, &resolve).map_err(|e| reason(&e)),
+            None => Err("no window".to_string()),
+        };
+        if let Err(reason) = scheduled {
+            tracing::error!(
+                reason,
+                "could not schedule a callback; the task awaiting it stops"
+            );
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
@@ -863,7 +871,7 @@ const BLOB_DB: (&str, u32, &str) = ("stark", 1, "blobs");
 ///
 /// Opened per call rather than held: a live handle blocks another tab's upgrade, and
 /// the calls here are a startup read and the odd import — not something in a loop.
-async fn blob_db() -> Result<web_sys::IdbDatabase, String> {
+async fn blob_db() -> Result<Connection, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::Closure;
 
@@ -876,23 +884,100 @@ async fn blob_db() -> Result<web_sys::IdbDatabase, String> {
         .open_with_u32(name, version)
         .map_err(|e| reason(&e))?;
     // An object store can only be created inside the upgrade, so this closure is the
-    // whole of the schema. `once_into_js` hands ownership to JS, which is what a
-    // handler that fires at most once wants — there is nothing here to keep alive.
+    // whole of the schema.
     let upgrade = Closure::once_into_js(move |event: web_sys::Event| {
-        let Some(target) = event.target() else { return };
-        let opened = target.unchecked_into::<web_sys::IdbOpenDbRequest>();
-        if let Ok(value) = opened.result()
+        if let Some(opened) = fired_at::<web_sys::IdbOpenDbRequest>(&event)
+            && let Ok(value) = opened.result()
             && let Ok(db) = value.dyn_into::<web_sys::IdbDatabase>()
         {
             let _ = db.create_object_store(store);
         }
     });
     request.set_onupgradeneeded(Some(upgrade.unchecked_ref()));
-    blob_pending((*request).clone())
+    blob_opened(&request)
         .await
         .map_err(|e| reason(&e))?
         .dyn_into()
+        .map(Connection)
         .map_err(|_| "the open resolved to something other than a database".to_string())
+}
+
+/// A connection to the blob store, closed when dropped.
+///
+/// `close` lets the transactions already started on a connection finish, so dropping
+/// this once the requests are issued releases it as soon as they are done, on every
+/// way out of the call.
+struct Connection(web_sys::IdbDatabase);
+
+impl std::ops::Deref for Connection {
+    type Target = web_sys::IdbDatabase;
+
+    fn deref(&self) -> &web_sys::IdbDatabase {
+        &self.0
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// Hang a future off the open `request`, now, for [`blob_pending`]'s reason, resolved
+/// with the database.
+///
+/// **A blocked open rejects** rather than wait for every other tab to close the store.
+/// It stays queued all the same, so a database it delivers after that is closed on
+/// arrival. One delivered in time closes itself when another tab asks to upgrade.
+fn blob_opened(request: &web_sys::IdbOpenDbRequest) -> wasm_bindgen_futures::JsFuture {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen::prelude::Closure;
+
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let refused = Rc::new(Cell::new(false));
+        let blocked = Closure::once_into_js({
+            let (refused, reject) = (Rc::clone(&refused), reject.clone());
+            move |_: web_sys::Event| {
+                refused.set(true);
+                let why = "another tab holds the blob store open at an older version";
+                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(why));
+            }
+        });
+        let opened = Closure::once_into_js(move |event: web_sys::Event| {
+            let result = fired_at::<web_sys::IdbRequest>(&event)
+                .and_then(|opened| opened.result().ok())
+                .unwrap_or(JsValue::UNDEFINED);
+            if let Some(db) = result.dyn_ref::<web_sys::IdbDatabase>() {
+                if refused.get() {
+                    db.close();
+                    return;
+                }
+                let yield_to_upgrade = Closure::once_into_js(|event: web_sys::Event| {
+                    if let Some(db) = fired_at::<web_sys::IdbDatabase>(&event) {
+                        db.close();
+                    }
+                });
+                db.set_onversionchange(Some(yield_to_upgrade.unchecked_ref()));
+            }
+            let _ = resolve.call1(&JsValue::NULL, &result);
+        });
+        let failed = Closure::once_into_js(move |event: web_sys::Event| {
+            let error = fired_at::<web_sys::IdbRequest>(&event)
+                .and_then(|opened| opened.error().ok().flatten());
+            let why = error.map_or_else(
+                || JsValue::from_str("the open failed with no reason given"),
+                JsValue::from,
+            );
+            let _ = reject.call1(&JsValue::NULL, &why);
+        });
+        request.set_onblocked(Some(blocked.unchecked_ref()));
+        request.set_onsuccess(Some(opened.unchecked_ref()));
+        request.set_onerror(Some(failed.unchecked_ref()));
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
 }
 
 /// Hang a future off an IndexedDB request, **now** — the handlers are attached before
@@ -908,36 +993,33 @@ async fn blob_db() -> Result<web_sys::IdbDatabase, String> {
 /// The API is event-based rather than promise-based, so the one-shot handlers are
 /// wrapped in a promise built here. A failure rejects with the request's
 /// `DOMException`, so the caller can say which failure it was.
+///
+/// **No handler holds the request**; each reads it off its event. `once_into_js` frees
+/// a handler only by running it, and through the request the one that never runs would
+/// keep its result and its connection alive for good.
 fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
     use wasm_bindgen::prelude::Closure;
 
-    let promise = js_sys::Promise::new(&mut move |resolve, reject| {
-        let (done, failed) = (request.clone(), request.clone());
-        let ok = Closure::once_into_js(move |_: web_sys::Event| {
-            let value = done.result().unwrap_or(JsValue::UNDEFINED);
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let done = Closure::once_into_js(move |event: web_sys::Event| {
+            let value = fired_at::<web_sys::IdbRequest>(&event)
+                .and_then(|done| done.result().ok())
+                .unwrap_or(JsValue::UNDEFINED);
             let _ = resolve.call1(&JsValue::NULL, &value);
         });
-        let refuse = reject.clone();
-        let failure = Closure::once_into_js(move |_: web_sys::Event| {
-            let error = failed.error().ok().flatten();
-            let _ = refuse.call1(
-                &JsValue::NULL,
-                &error.map_or(JsValue::UNDEFINED, Into::into),
+        let failed = Closure::once_into_js(move |event: web_sys::Event| {
+            let error = fired_at::<web_sys::IdbRequest>(&event)
+                .and_then(|failed| failed.error().ok().flatten());
+            let why = error.map_or_else(
+                || JsValue::from_str("the request failed with no reason given"),
+                JsValue::from,
             );
+            let _ = reject.call1(&JsValue::NULL, &why);
         });
-        request.set_onsuccess(Some(ok.unchecked_ref()));
-        request.set_onerror(Some(failure.unchecked_ref()));
-        // An open that needs an upgrade waits for every older connection to close, and
-        // an await on it would wait as long.
-        if let Some(open) = request.dyn_ref::<web_sys::IdbOpenDbRequest>() {
-            let blocked = Closure::once_into_js(move |_: web_sys::Event| {
-                let why = "another tab holds the blob store open at an older version";
-                let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(why));
-            });
-            open.set_onblocked(Some(blocked.unchecked_ref()));
-        }
+        request.set_onsuccess(Some(done.unchecked_ref()));
+        request.set_onerror(Some(failed.unchecked_ref()));
     });
     wasm_bindgen_futures::JsFuture::from(promise)
 }
@@ -953,18 +1035,30 @@ fn blob_committed(tx: &web_sys::IdbTransaction) -> wasm_bindgen_futures::JsFutur
     use wasm_bindgen::prelude::Closure;
 
     let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        let aborted = tx.clone();
         let complete = Closure::once_into_js(move |_: web_sys::Event| {
             let _ = resolve.call0(&JsValue::NULL);
         });
-        let abort = Closure::once_into_js(move |_: web_sys::Event| {
-            let error = aborted.error().map_or(JsValue::UNDEFINED, Into::into);
-            let _ = reject.call1(&JsValue::NULL, &error);
+        // The transaction off the event, for `blob_pending`'s reason.
+        let abort = Closure::once_into_js(move |event: web_sys::Event| {
+            // Null after an `abort()` called with no error behind it.
+            let error = fired_at::<web_sys::IdbTransaction>(&event).and_then(|tx| tx.error());
+            let why = error.map_or_else(
+                || JsValue::from_str("the write was aborted with no reason given"),
+                JsValue::from,
+            );
+            let _ = reject.call1(&JsValue::NULL, &why);
         });
         tx.set_oncomplete(Some(complete.unchecked_ref()));
         tx.set_onabort(Some(abort.unchecked_ref()));
     });
     wasm_bindgen_futures::JsFuture::from(promise)
+}
+
+/// What an IndexedDB event was fired at, as the type its handler was attached to.
+fn fired_at<T: wasm_bindgen::JsCast>(event: &web_sys::Event) -> Option<T> {
+    use wasm_bindgen::JsCast;
+
+    event.target()?.dyn_into().ok()
 }
 
 /// The bytes stored under each of `keys`, in that order — `None` where this browser
@@ -991,6 +1085,8 @@ pub async fn blob_get_many(keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, Stri
         .iter()
         .map(|key| store.get(&JsValue::from_str(key)).ok().map(blob_pending))
         .collect();
+    // Every request is issued, so the connection may close: it waits for them.
+    drop(db);
     let mut out = Vec::with_capacity(keys.len());
     for request in pending {
         let bytes = match request {
@@ -1007,7 +1103,7 @@ pub async fn blob_get_many(keys: &[String]) -> Result<Vec<Option<Vec<u8>>>, Stri
 }
 
 /// Store `bytes` under `key`, or say why they did not land — the store's
-/// `DOMException` (`QuotaExceededError` for a full disk), or [`blob_pending`]'s
+/// `DOMException` (`QuotaExceededError` for a full disk), or [`blob_opened`]'s
 /// blocked open.
 pub async fn blob_put(key: &str, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::JsValue;
@@ -1024,6 +1120,7 @@ pub async fn blob_put(key: &str, bytes: &[u8]) -> Result<(), String> {
     tx.object_store(name)
         .and_then(|store| store.put_with_key(&value, &JsValue::from_str(key)))
         .map_err(|e| reason(&e))?;
+    drop(db);
     committed.await.map(|_| ()).map_err(|e| reason(&e))
 }
 
@@ -1040,9 +1137,12 @@ pub async fn blob_delete(key: &str) {
     else {
         return;
     };
-    if let Ok(request) = store.delete(&JsValue::from_str(key)) {
-        let _ = blob_pending(request).await;
-    }
+    let Ok(request) = store.delete(&JsValue::from_str(key)) else {
+        return;
+    };
+    let deleted = blob_pending(request);
+    drop(db);
+    let _ = deleted.await;
 }
 
 /// Hand `bytes` to the browser as a file download named `filename`.

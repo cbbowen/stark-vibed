@@ -147,6 +147,12 @@ pub fn TutorCard() -> Element {
         });
     });
 
+    // The next lesson also depends on the chrome-hiding setting, which moves outside any step.
+    use_effect(move || {
+        let _ = (state.chrome_hiding)();
+        super::publish(state);
+    });
+
     // Show a lesson that has come due, once the screen is the user's again. Each condition
     // is a claim that the card would be *wrong* now: mid-gesture, a panel opened is put
     // back to sleep by the release; a composing mode owns the whole window
@@ -229,11 +235,7 @@ pub fn TutorCard() -> Element {
         return rsx! {};
     };
     // Whether acknowledging this one brings another, which the button says.
-    let more = state
-        .tutor
-        .tour
-        .read()
-        .brings_another(i, *state.chrome_hiding.peek());
+    let more = (state.tutor.brings_another)();
 
     // Placed against the anchor's own edges, with no reading of the viewport and no
     // measurement of the card itself: the translate does the work that knowing the
